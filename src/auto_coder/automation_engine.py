@@ -5773,6 +5773,22 @@ class AutomationEngine:
                         invalidation_generation=candidate.invalidation_generation,
                         urgent_admission=candidate.urgent_admission,
                     )
+                except GitHubRequestDeferred as exc:
+                    # This first current-state read is also used by refill and
+                    # pending-work dispatch.  A governor refusal is ordinary
+                    # scheduling pressure, not a worker/daemon failure, but
+                    # only the explicitly supported, definitely-unsent typed
+                    # outcomes are safe to retain for automatic resumption.
+                    deferred = _reconciliation_admission_deferral(exc)
+                    if deferred is not None:
+                        return self._defer_issue_evaluation(
+                            repo_name,
+                            item_number,
+                            candidate.data,
+                            deferred,
+                            result,
+                        )
+                    raise
                 except ParentSpecificationError as exc:
                     result.error = f"Parent-Issue reconciliation blocked processing: {exc}"
                     result.target_outcome = ExplicitTargetOutcome.BLOCKED

@@ -30,6 +30,11 @@ the later hierarchy rechecks, including discovery repeated after entering the
 per-Issue generation lock. A definitely-unsent refusal therefore yields the
 lock and returns a durable Deferred result to capacity refill; it cannot escape
 through the synchronous worker boundary and terminate the refill service.
+The initial strict target snapshot in common candidate dispatch uses this same
+typed boundary. A supported Governor refusal there is retained against the
+candidate's carried title/body revision before returning `Deferred`; unsupported
+refusal categories continue through the ordinary failure path rather than
+gaining timed-retry authority.
 The final relationship/generation freshness check before ownership admission
 and a retained owner's submitted-family recheck use this boundary as well, so
 neither can silently downgrade a refusal to stale evidence or lose the pending

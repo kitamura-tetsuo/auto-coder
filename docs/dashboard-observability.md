@@ -1160,6 +1160,16 @@ ownership-freshness and retained-family boundaries. Each verifies durable
 deferral without implementation dispatch; the existing event schema remains
 unchanged.
 
+The initial strict target snapshot in common Issue dispatch now retains the same
+typed, definitely-not-sent Governor refusals before any implementation effect.
+This is observability-neutral: it reuses the existing `Deferred` disposition,
+`issue-processing` pending-work identity, and structured operational diagnostic
+without adding an origin, event field, or dashboard renderer. Runnable coverage
+in `tests/test_pending_work_resumption.py::test_initial_dispatch_snapshot_retains_supported_admission_deferral`
+asserts the diagnostic and durable handoff, while
+`test_initial_dispatch_snapshot_does_not_reclassify_unsupported_refusal` guards
+the failure/deferred distinction.
+
 Shared-governor incarnation ownership changes the existing HTTP admission gate but is
 dashboard-observability neutral. Governor admission still occurs before an Issue or PR
 processing execution outcome becomes known, and the durable pending-work paths still

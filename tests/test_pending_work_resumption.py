@@ -21,6 +21,7 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ExplicitTargetOutcome
 from auto_coder.automation_engine import (
+    ISSUE_PROCESSING_REFRESH_EFFECT,
     ISSUE_PROCESSING_STAGE,
     STARTUP_RECONCILIATION_EFFECT,
     STARTUP_RECONCILIATION_STAGE,
@@ -687,6 +688,115 @@ def _admitted_issue_engine(monkeypatch, tmp_path, issue):
     engine._get_decomposition_validator = MagicMock(return_value=decomposition_validator)
     engine.pending_work_scheduler = MagicMock()
     return engine, store
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "request_in_flight",
+        "admission_queue",
+        "mutation_spacing",
+        "request_rolling_window",
+        "mutation_minute_window",
+        "mutation_hour_window",
+        "governor_initialization_contention",
+        "governor_transaction_contention",
+        "rate_limit_cooldown",
+    ],
+)
+def test_initial_dispatch_snapshot_retains_supported_admission_deferral(tmp_path, monkeypatch, reason):
+    """The first production strict read returns Deferred instead of escaping."""
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "Carried title",
+        "body": "## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    context = GitHubRequestContext(
+        "op",
+        "attempt",
+        "issue-dispatch-snapshot",
+        "https://api.github.com",
+        "GET",
+        "read",
+        "/repos/{repo}/issues/{number}",
+        "owner/repo",
+        "issue:7",
+        strict_read=True,
+    )
+    deferred = GitHubRequestDeferred(context, reason, retry_at=time.time() + 20)
+    engine.github.get_issue_dispatch_snapshot_strict.side_effect = deferred
+
+    with patch.object(engine, "_process_single_candidate_reserved") as implementation:
+        result = engine._process_single_candidate_unified(
+            "owner/repo",
+            Candidate(type="issue", data=dict(issue), priority=0, issue_number=7),
+            engine.config,
+            origin="capacity-refill-intake",
+        )
+
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    obligation = store.get(identity)
+    assert result.success is False
+    assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+    assert result.refill_retry_required is True
+    assert obligation is not None
+    assert obligation.reason is PendingReason.ADMISSION_DEFERRED
+    assert obligation.not_before >= deferred.retry_at
+    assert obligation.unfinished_effects == (ISSUE_PROCESSING_REFRESH_EFFECT, ISSUE_PROCESSING_STAGE)
+    assert f"reason={reason}" in (result.target_reason or "")
+    assert "api_origin=https://api.github.com" in (result.target_reason or "")
+    engine.pending_work_scheduler.wake.assert_called_once_with()
+    implementation.assert_not_called()
+
+
+def test_initial_dispatch_snapshot_does_not_reclassify_unsupported_refusal(tmp_path, monkeypatch):
+    """An unusable Governor state remains a failure, not timed pending work."""
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "T",
+        "body": "## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    context = GitHubRequestContext(
+        "op",
+        "attempt",
+        "issue-dispatch-snapshot",
+        "https://api.github.com",
+        "GET",
+        "read",
+        "/repos/{repo}/issues/{number}",
+        "owner/repo",
+        "issue:7",
+        strict_read=True,
+    )
+    deferred = GitHubRequestDeferred(context, "governor_state_unavailable", retry_at=time.time() + 20)
+    engine.github.get_issue_dispatch_snapshot_strict.side_effect = deferred
+
+    with (
+        patch.object(engine, "_process_single_candidate_reserved") as implementation,
+        pytest.raises(GitHubRequestDeferred) as raised,
+    ):
+        engine._process_single_candidate_unified(
+            "owner/repo",
+            Candidate(type="issue", data=dict(issue), priority=0, issue_number=7),
+            engine.config,
+            origin="capacity-refill-intake",
+        )
+
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    assert raised.value is deferred
+    assert store.get(identity) is None
+    engine.pending_work_scheduler.wake.assert_not_called()
+    implementation.assert_not_called()
 
 
 def test_sibling_gate_retains_wrapped_admission_deferral(tmp_path, monkeypatch):
