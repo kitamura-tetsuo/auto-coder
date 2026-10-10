@@ -2042,10 +2042,6 @@ class TestAdversarialValidationPRFlow:
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
-        # This test exercises saved-result replay, not the independently
-        # configurable validation-count ceiling. Keep environment/repository
-        # defaults from diverting the scenario into the limit branch.
-        config.MAX_ADVERSARIAL_VALIDATIONS = 100
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
 
         with (
@@ -2053,6 +2049,7 @@ class TestAdversarialValidationPRFlow:
                 "auto_coder.pr_processor._send_adversarial_validation_feedback_to_cloud_task",
                 return_value=["Sent saved report"],
             ) as mock_feedback,
+            patch("auto_coder.pr_processor._compose_actionable_feedback", return_value=(("Saved actionable finding",), ())),
             patch("auto_coder.pr_processor._observe_codex_cloud_remediation_activity") as observe_activity,
         ):
             actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
