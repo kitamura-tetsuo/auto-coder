@@ -6140,6 +6140,11 @@ class AutomationEngine:
                     item_number,
                     self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number),
                 )
+            except GitHubRequestDeferred as exc:
+                deferred = _reconciliation_admission_deferral(exc)
+                if deferred is None:
+                    raise
+                return self._defer_issue_evaluation(repo_name, item_number, candidate.data, deferred, result)
             except ParentSpecificationError as exc:
                 result.error = f"Parent-Issue reconciliation blocked processing: {exc}"
                 result.target_outcome = ExplicitTargetOutcome.BLOCKED
@@ -6459,6 +6464,11 @@ class AutomationEngine:
             # not transferable.
             try:
                 dispatch_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
+            except GitHubRequestDeferred as exc:
+                deferred = _reconciliation_admission_deferral(exc)
+                if deferred is None:
+                    raise
+                return self._defer_issue_evaluation(repo_name, item_number, candidate.data, deferred, result)
             except Exception as exc:
                 result.error = f"Cannot confirm validated Issue generation before dispatch: {exc}"
                 result.refill_retry_required = True

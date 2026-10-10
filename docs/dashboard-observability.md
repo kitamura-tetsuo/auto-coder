@@ -1173,6 +1173,9 @@ The same existing diagnostic is retained when a generation-serialized strict
 snapshot refuses admission; `test_generation_serialized_snapshot_retains_bare_admission_deferral`
 drives common dispatch through the owner lock and verifies the durable Deferred
 result without adding a dashboard event shape.
+`test_later_strict_snapshot_retains_bare_admission_deferral` exercises both the
+current-admission and final pre-dispatch strict reads and verifies that neither
+generic error boundary flattens the same diagnostic or durable outcome.
 
 Shared-governor incarnation ownership changes the existing HTTP admission gate but is
 dashboard-observability neutral. Governor admission still occurs before an Issue or PR
