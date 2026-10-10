@@ -1180,9 +1180,13 @@ generic error boundary flattens the same diagnostic or durable outcome.
 `test_future_retained_deadline_blocks_capacity_refill_before_strict_read`
 verify that worker and refill wakes do not create an early strict-read trace or
 alter the durable deadline. `test_due_resumption_preserves_effects_after_later_snapshot_failure`
-keeps the pending effects visible after a distinct resumed-evaluation failure,
+keeps the pending effects visible under distinct non-automatic authentication
+and evaluation-failure blocks after a resumed-evaluation failure,
 and `test_ordinary_worker_reports_retained_issue_as_deferred` verifies the
 existing worker trace uses the deferred outcome instead of a generic failure.
+`test_future_retained_deadline_blocks_invalidation_worker_before_strict_read`
+drives durable-notification intake and verifies it is retained at the same
+deadline before target refresh, dependency evaluation, or stage routing.
 
 Shared-governor incarnation ownership changes the existing HTTP admission gate but is
 dashboard-observability neutral. Governor admission still occurs before an Issue or PR

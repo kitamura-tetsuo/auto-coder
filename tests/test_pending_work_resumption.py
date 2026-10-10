@@ -35,6 +35,7 @@ from auto_coder.automation_engine import (
     _reconciliation_request_error,
     _StartupReconciliationHandler,
 )
+from auto_coder.entity_invalidation import EntityIdentity
 from auto_coder.github_pending_work import (
     PendingObligation,
     PendingReason,
@@ -1237,14 +1238,61 @@ def test_future_retained_deadline_blocks_capacity_refill_before_strict_read(tmp_
     engine._process_single_candidate.assert_not_called()
 
 
+def test_future_retained_deadline_blocks_invalidation_worker_before_strict_read(tmp_path, monkeypatch):
+    """A duplicate durable notification cannot bypass pending-work timing."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "Carried title",
+        "body": "## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    engine._defer_observed_dependency_wait = MagicMock(return_value=False)
+    engine._process_single_candidate = MagicMock()
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    retained = store.defer(identity, _admission_deferral(), (ISSUE_PROCESSING_REFRESH_EFFECT, ISSUE_PROCESSING_STAGE))
+
+    async def scenario():
+        await engine.invalidate_entity("owner/repo", "issue", 7)
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0, "issue"))
+        try:
+            for _ in range(200):
+                deferred = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "issue", 7))
+                if deferred is not None and engine.active_workers.get(0) is None:
+                    return deferred
+                await asyncio.sleep(0.01)
+            raise AssertionError("invalidation was not retained at the pending-work deadline")
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
+    invalidation = asyncio.run(scenario())
+    unchanged = store.get(identity)
+    assert unchanged is not None
+    assert unchanged.not_before == retained.not_before
+    assert unchanged.unfinished_effects == retained.unfinished_effects
+    assert invalidation.retry_not_before == retained.not_before
+    engine.github.get_issue_dispatch_snapshot_strict.assert_not_called()
+    engine._defer_observed_dependency_wait.assert_not_called()
+    engine._process_single_candidate.assert_not_called()
+
+
 @pytest.mark.parametrize(
-    "later_failure",
+    ("later_failure", "expected_reason"),
     [
-        pytest.param(_github_error(GitHubApiOutcome.AUTHENTICATION_FAILURE, status=401), id="authentication"),
-        pytest.param(ValueError("malformed Issue snapshot"), id="malformed-response"),
+        pytest.param(
+            _github_error(GitHubApiOutcome.AUTHENTICATION_FAILURE, status=401),
+            PendingReason.AUTHENTICATION,
+            id="authentication",
+        ),
+        pytest.param(ValueError("malformed Issue snapshot"), PendingReason.EVALUATION_FAILED, id="malformed-response"),
     ],
 )
-def test_due_resumption_preserves_effects_after_later_snapshot_failure(tmp_path, monkeypatch, later_failure):
+def test_due_resumption_preserves_effects_after_later_snapshot_failure(tmp_path, monkeypatch, later_failure, expected_reason):
     """A failed common evaluation is not an acknowledgement of retained effects."""
     issue = {
         "id": 70,
@@ -1272,18 +1320,19 @@ def test_due_resumption_preserves_effects_after_later_snapshot_failure(tmp_path,
 
     engine.github.get_issue_dispatch_snapshot_strict.side_effect = strict_snapshot
     handler = _IssueProcessingStageHandler(engine, "owner/repo")
-    store.mark_running(identity)
+    scheduler = PendingWorkScheduler(store, repository="owner/repo")
 
     with patch.object(engine, "_process_single_candidate_reserved") as implementation:
-        outcome = handler.dispatch(retained)
-        PendingWorkScheduler(store, repository="owner/repo")._apply_outcome(identity, outcome)
+        asyncio.run(scheduler._run_claimed(retained, handler.dispatch))
 
     unfinished = store.get(identity)
     assert calls == 4
-    assert outcome.completed_effects == ()
     assert unfinished is not None
+    assert unfinished.reason is expected_reason
+    assert unfinished.not_before == 0
     assert unfinished.unfinished_effects == retained.unfinished_effects
     assert unfinished.status == "waiting"
+    assert store.due(time.time() + 3600) == []
     implementation.assert_not_called()
 
 

@@ -942,6 +942,7 @@ class CandidateProcessingResult:
     success: bool = False
     actions: List[str] = field(default_factory=list)
     error: Optional[str] = None
+    failure: Optional[BaseException] = None
     outcome: "PRProcessingOutcome" = field(default_factory=lambda: PRProcessingOutcome.SUCCESS)
     refill_retry_required: bool = False
     capacity_deferred: bool = False

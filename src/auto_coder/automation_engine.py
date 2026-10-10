@@ -634,6 +634,10 @@ class _IssueProcessingStageHandler:
                     ISSUE_PROCESSING_STAGE,
                     result.error,
                 )
+            if isinstance(result.failure, GitHubRequestError):
+                return StageOutcome(error=result.failure)
+            if result.error:
+                return StageOutcome(blocked_reason=PendingReason.EVALUATION_FAILED, blocked_error=result.error)
             return StageOutcome()
         return StageOutcome(completed_effects=obligation.unfinished_effects)
 
@@ -3988,6 +3992,28 @@ class AutomationEngine:
                         )
                         if not await asyncio.to_thread(self.invalidations.begin_processing, invalidation_claim):
                             continue
+                        if candidate.type == "issue":
+                            pending_admission = await asyncio.to_thread(
+                                self._future_issue_admission_deferral,
+                                repo_name,
+                                int(item_number),
+                            )
+                            if pending_admission is not None:
+                                await asyncio.to_thread(
+                                    self.invalidations.defer,
+                                    invalidation_claim,
+                                    pending_admission.reason.value,
+                                    pending_admission.not_before,
+                                    "pending-work-admission-deadline",
+                                )
+                                deferral_committed = True
+                                logger.info(
+                                    "Worker {} retained issue #{} until pending admission deadline {}",
+                                    worker_id,
+                                    item_number,
+                                    pending_admission.not_before,
+                                )
+                                continue
                         if candidate.type == "dependency":
                             repo_job_scope = await self._expand_dependency_obligation(repo_name)
                             decision_completed = True
@@ -6197,6 +6223,7 @@ class AutomationEngine:
                 return result
             except Exception as exc:
                 result.error = str(exc)
+                result.failure = exc
                 result.refill_retry_required = True
                 return result
             if not isinstance(current_issue, dict) or current_issue.get("number") != item_number:
@@ -6506,6 +6533,7 @@ class AutomationEngine:
                 return self._defer_issue_evaluation(repo_name, item_number, candidate.data, deferred, result)
             except Exception as exc:
                 result.error = f"Cannot confirm validated Issue generation before dispatch: {exc}"
+                result.failure = exc
                 result.refill_retry_required = True
                 return result
             # Reconcile from the same cache-bypassing generation used for final

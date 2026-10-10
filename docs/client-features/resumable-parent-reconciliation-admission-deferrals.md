@@ -50,6 +50,15 @@ and unrelated capacity wakes therefore leave the retained deadline unchanged;
 once it is due, the pending-work handler performs the normal strict refresh and
 common admission path. An unsuccessful resumed evaluation does not acknowledge
 its unfinished effects merely because common processing returned a result.
+Typed authentication failures replace the expired admission reason with the
+existing authentication operational block, while malformed or other evaluation
+failures become a non-automatic evaluation block; neither inherits timed retry
+authority from the earlier definitely-unsent refusal.
+
+Durable-invalidation workers apply the same deadline gate immediately after
+claiming a duplicate notification, before dependency observations, target
+refresh, stage routing, or common dispatch. The notification is retained at the
+pending-work deadline without changing the pending obligation.
 
 Durable-invalidation stage routing also recognizes an explicitly caused
 reconciliation deferral and stores its reason, API origin, and effective retry
