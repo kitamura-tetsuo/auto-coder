@@ -151,6 +151,11 @@ class IssueDispatchGuard:
         self._cloud_run_repository_factory = cloud_run_repository_factory
         self._cloud_manager_factory = cloud_manager_factory
 
+    @property
+    def database_path(self) -> Path:
+        """Return the durable database path for transactional handoff peers."""
+        return self._db_path
+
     def _connect(self) -> sqlite3.Connection:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(str(self._db_path), timeout=30, isolation_level=None)
@@ -210,7 +215,7 @@ class IssueDispatchGuard:
     @staticmethod
     def _result_from_row(identity: IssueAttemptIdentity, row: sqlite3.Row, diagnostic: str = "") -> DispatchResult:
         stored_state = str(row["state"])
-        outcome = DispatchOutcome.INDETERMINATE if stored_state == "pending" else DispatchOutcome(stored_state)
+        outcome = DispatchOutcome.INDETERMINATE if stored_state in {"pending", "invoking", "local_job_handoff"} else DispatchOutcome(stored_state)
         return DispatchResult(
             identity=identity,
             outcome=outcome,
@@ -396,6 +401,36 @@ class IssueDispatchGuard:
             logger.error(f"Pending Issue dispatch ownership read failed for {identity}: {exc}")
             return None
 
+    def inspect_local_job_authority(self, identity: IssueAttemptIdentity) -> Optional[DispatchResult]:
+        """Return a transferable claim or its already-transferred incarnation."""
+        try:
+            with self._process_lock, self._connect() as connection:
+                row = connection.execute(
+                    "SELECT * FROM issue_dispatch_handoffs WHERE repository_owner=? AND repository_name=? " "AND issue_number=? AND attempt_id=? AND state IN ('pending', 'local_job_handoff')",
+                    self._key(identity),
+                ).fetchone()
+            if row is None:
+                return None
+            return replace(self._result_from_row(identity, row), admitted=str(row["state"]) == "pending")
+        except Exception as exc:
+            logger.error(f"Local-job Issue ownership read failed for {identity}: {exc}")
+            return None
+
+    def mark_invocation_started(self, claim: DispatchResult) -> bool:
+        """Fence adapter entry against a concurrent durable local-job transfer."""
+        if not claim.admitted or not claim.claim_incarnation:
+            return False
+        try:
+            with self._process_lock, self._connect() as connection:
+                cursor = connection.execute(
+                    "UPDATE issue_dispatch_handoffs SET state='invoking', updated_at=? " "WHERE repository_owner=? AND repository_name=? AND issue_number=? " "AND attempt_id=? AND incarnation=? AND state='pending'",
+                    (time.time(), *self._key(claim.identity), claim.claim_incarnation),
+                )
+            return cursor.rowcount == 1
+        except Exception as exc:
+            logger.error(f"Issue dispatch invocation-entry checkpoint failed for {claim.identity}: {exc}")
+            return False
+
     def get_legacy_issue_ownership(self, repository_owner: str, repository_name: str, issue_number: int) -> Optional[LegacyIssueOwnership]:
         """Return preserved attempt-unassociated legacy ownership evidence."""
         try:
@@ -515,6 +550,9 @@ class IssueDispatchGuard:
                 if row is None or str(row["incarnation"]) != claim.claim_incarnation:
                     connection.execute("COMMIT")
                     return replace(claim, outcome=DispatchOutcome.DEFERRED, diagnostic="claim incarnation is stale", tracking_complete=False, admitted=False)
+                if str(row["state"]) == "local_job_handoff":
+                    connection.execute("COMMIT")
+                    return replace(claim, outcome=DispatchOutcome.DEFERRED, diagnostic="claim ownership transferred to durable local job", tracking_complete=False, admitted=False)
                 current_reference = str(row["provider_reference"])
                 if current_reference and observation.provider_reference and current_reference != observation.provider_reference:
                     connection.execute("COMMIT")
@@ -604,6 +642,8 @@ class IssueDispatchGuard:
         claim = self.reserve(identity, candidate)
         if not claim.admitted:
             return claim
+        if not self.mark_invocation_started(claim):
+            return replace(claim, outcome=DispatchOutcome.DEFERRED, diagnostic="dispatch claim changed before adapter entry", tracking_complete=False, admitted=False)
         try:
             observation = submit()
         except Exception as exc:
@@ -651,6 +691,8 @@ class IssueDispatchGuard:
             # a confirmed NOT_STARTED result can have released the predecessor.
             if not claim.admitted:
                 return claim
+            if not self.mark_invocation_started(claim):
+                return replace(claim, outcome=DispatchOutcome.DEFERRED, diagnostic="dispatch claim changed before adapter entry", tracking_complete=False, admitted=False)
             try:
                 observation = invoke(candidate)
             except Exception as exc:

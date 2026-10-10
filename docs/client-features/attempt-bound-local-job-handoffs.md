@@ -20,6 +20,15 @@ even though the guard's general inspection API intentionally presents both
 states as indeterminate to existing consumers. Unreadable PR repair or
 allowance evidence likewise refuses the offer without modifying either owner.
 
+Acceptance is an ownership transfer, not a snapshot followed by an unrelated
+write. The job database attaches the relevant upstream SQLite database(s),
+conditionally changes the exact still-current pre-entry owner, and inserts the
+job in the same transaction. Issue dispatch checkpoints `invoking` immediately
+before calling its adapter; PR repair checkpoints backend entry separately from
+its long-lived `executing` phase. Whichever transition wins prevents the other,
+so a released/replaced owner or an already-entered invocation cannot leave a
+claimable job behind.
+
 Jobs move through separate `pending`, `running`, `result_recorded`,
 `downstream_effects_pending`, and `settled` states. Only a pending job is
 claimable. Claim acquisition creates a random execution incarnation in one
@@ -27,8 +36,11 @@ SQLite transaction; every result and later transition compares that
 incarnation and its expected state. Consequently, contention has one winner
 and a stale runner cannot replace the winner's evidence.
 
-A result records one of `completed`, `cannot_fix`, `failed`, or `interrupted`
-and requires a durable result/output reference. An invocation result is not
+A result records one of `completed`, `cannot_fix`, `failed`, or `interrupted`.
+Before that checkpoint, the store persists the output as an artifact bound to
+the exact job, execution incarnation, and outcome. `record_result` verifies
+that binding transactionally; arbitrary paths, missing artifacts, and another
+job's artifact cannot authorize downstream work. An invocation result is not
 domain completion. Downstream work receives its own pending checkpoint, and
 only its authorized consumer may mark the envelope settled.
 

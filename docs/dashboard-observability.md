@@ -2191,6 +2191,7 @@ when it becomes responsible for execution or downstream effects.
 `tests/test_local_job_handoff.py` is the runnable contract for this currently
 headless boundary. It covers real Issue and PR admission authorities, durable
 reopen, one-winner contention, stale-write rejection, restart reconciliation,
-and the explicit separation between invocation evidence, downstream pending,
-and terminal settlement. Run `bash scripts/test.sh
+atomic upstream ownership transfer versus adapter entry, exact-job result
+artifacts, and the explicit separation between invocation evidence, downstream
+pending, and terminal settlement. Run `bash scripts/test.sh
 tests/test_local_job_handoff.py`.

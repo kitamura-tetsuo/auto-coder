@@ -1,6 +1,6 @@
 """Durable, attempt-bound envelopes for accepted local model jobs.
 
-This module is deliberately an evidence producer.  It does not start a worker,
+This module is deliberately an evidence producer. It does not start a worker,
 invoke a backend, publish changes, or settle the Issue/PR domain owner.
 """
 
@@ -16,7 +16,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from .durable_repair_allowance import RepairAllowanceLedger
+from .durable_repair_allowance import GenerationLifecycleState, RepairAllowanceLedger
 from .issue_dispatch import DispatchOutcome, IssueAttemptIdentity, IssueDispatchGuard
 from .local_review_repair import LocalReviewRepairRequest, LocalReviewRepairStore
 
@@ -49,7 +49,6 @@ class LocalJobOffer:
     upstream_attempt: str
     backend_name: str
     invocation_input: str
-    upstream_incarnation: str = ""
 
     @property
     def input_identity(self) -> str:
@@ -88,12 +87,21 @@ class LocalJobClaim:
     acquired: bool
 
 
+@dataclass(frozen=True)
+class LocalJobResultArtifact:
+    artifact_id: str
+    job_id: str
+    execution_incarnation: str
+    outcome: InvocationOutcome
+    output: str
+
+
 def default_local_job_db_path() -> Path:
     return Path.home() / ".auto-coder" / "local_jobs.sqlite3"
 
 
 class LocalJobStore:
-    """SQLite envelope with transactional offer and incarnation-fenced writes."""
+    """SQLite envelope with atomic ownership transfer and fenced writes."""
 
     def __init__(self, path: Optional[Path] = None) -> None:
         self.path = path or default_local_job_db_path()
@@ -109,6 +117,13 @@ class LocalJobStore:
                 diagnostic TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL,
                 updated_at REAL NOT NULL,
                 UNIQUE(kind, repository, target_number, upstream_attempt))"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS local_job_results (
+                artifact_id TEXT PRIMARY KEY, job_id TEXT NOT NULL,
+                execution_incarnation TEXT NOT NULL, outcome TEXT NOT NULL,
+                output TEXT NOT NULL, created_at REAL NOT NULL,
+                UNIQUE(job_id, execution_incarnation))"""
             )
 
     def _connect(self) -> sqlite3.Connection:
@@ -139,14 +154,79 @@ class LocalJobStore:
             diagnostic=str(row["diagnostic"]),
         )
 
+    @staticmethod
+    def _attach(connection: sqlite3.Connection, path: Path, alias: str) -> None:
+        connection.execute(f"ATTACH DATABASE ? AS {alias}", (str(path),))  # nosec B608: internal alias
+
+    @staticmethod
+    def _existing(connection: sqlite3.Connection, offer: LocalJobOffer, upstream_incarnation: str) -> Optional[LocalJobRecord]:
+        row = connection.execute(
+            "SELECT * FROM local_jobs WHERE kind=? AND repository=? AND target_number=? AND upstream_attempt=?",
+            (offer.kind.value, offer.repository, offer.target_number, offer.upstream_attempt),
+        ).fetchone()
+        if row is None:
+            return None
+        record = LocalJobStore._record(row)
+        if record.job_id != offer.job_id or record.upstream_incarnation != upstream_incarnation:
+            raise ValueError("conflicting durable local-job offer")
+        return record
+
+    @staticmethod
+    def _insert(connection: sqlite3.Connection, offer: LocalJobOffer, upstream_incarnation: str) -> None:
+        now = time.time()
+        connection.execute(
+            "INSERT INTO local_jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', NULL, '', '', ?, ?)",
+            (
+                offer.job_id,
+                offer.kind.value,
+                offer.repository,
+                offer.target_number,
+                offer.upstream_attempt,
+                upstream_incarnation,
+                offer.backend_name,
+                offer.input_identity,
+                offer.invocation_input,
+                LocalJobState.PENDING.value,
+                now,
+                now,
+            ),
+        )
+
     def offer_issue(self, offer: LocalJobOffer, identity: IssueAttemptIdentity, guard: IssueDispatchGuard) -> Optional[LocalJobRecord]:
-        """Persist an Issue job only while its exact dispatch claim is current."""
+        """Atomically transfer an exact, definitely-not-entered Issue claim."""
         if offer.kind is not LocalJobKind.ISSUE_IMPLEMENTATION or offer.repository != identity.full_repository_name or offer.target_number != identity.issue_number or offer.upstream_attempt != identity.implementation_attempt_id:
             return None
-        ownership = guard.inspect_pending_claim(identity)
+        ownership = guard.inspect_local_job_authority(identity)
         if ownership is None or ownership.outcome is not DispatchOutcome.INDETERMINATE or not ownership.claim_incarnation or ownership.backend_name != offer.backend_name:
             return None
-        return self._offer(offer, ownership.claim_incarnation)
+        try:
+            with self._connect() as connection:
+                self._attach(connection, guard.database_path, "upstream")
+                connection.execute("BEGIN IMMEDIATE")
+                existing = self._existing(connection, offer, ownership.claim_incarnation)
+                if existing is not None:
+                    connection.commit()
+                    return existing
+                cursor = connection.execute(
+                    "UPDATE upstream.issue_dispatch_handoffs SET state='local_job_handoff', updated_at=? " "WHERE repository_owner=? AND repository_name=? AND issue_number=? AND attempt_id=? " "AND incarnation=? AND state='pending' AND backend_name=?",
+                    (
+                        time.time(),
+                        identity.repository_owner,
+                        identity.repository_name,
+                        identity.issue_number,
+                        identity.implementation_attempt_id,
+                        ownership.claim_incarnation,
+                        offer.backend_name,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    connection.rollback()
+                    return None
+                self._insert(connection, offer, ownership.claim_incarnation)
+                connection.commit()
+            return self.get(offer.job_id)
+        except (OSError, sqlite3.Error, ValueError):
+            return None
 
     def offer_pr_correction(
         self,
@@ -155,42 +235,51 @@ class LocalJobStore:
         repair_store: LocalReviewRepairStore,
         allowance_ledger: RepairAllowanceLedger,
     ) -> Optional[LocalJobRecord]:
-        """Persist a PR job only for the exact repair claim and allowance generation."""
+        """Atomically transfer exact, definitely-not-entered PR authorities."""
         if offer.kind is not LocalJobKind.PR_REVIEW_CORRECTION or offer.repository != request.repository or offer.target_number != request.pr_number or offer.upstream_attempt != request.attempt_id:
             return None
         try:
             repair = repair_store.get(request)
-            allowance = allowance_ledger.get_snapshot("https://api.github.com", request.repository, request.pr_number)
+            snapshot = allowance_ledger.get_snapshot("https://api.github.com", request.repository, request.pr_number)
         except Exception:
-            # Upstream authorities own their state and diagnostics.  A local
-            # job offer must fail closed without attempting to repair, erase,
-            # or reinterpret either database.
             return None
-        generation = allowance.get_outstanding_generation()
-        if repair is None or repair.phase != "executing" or generation is None or generation.owning_identity != "local-review-repair" or generation.bundle_reference != request.attempt_id:
+        generation = snapshot.get_outstanding_generation()
+        if (
+            repair is None
+            or repair.phase != "executing"
+            or repair.invocation_entered
+            or (repair.local_job_id and repair.local_job_id != offer.job_id)
+            or generation is None
+            or generation.lifecycle_state is not GenerationLifecycleState.RESERVED
+            or generation.owning_identity != "local-review-repair"
+            or generation.bundle_reference != request.attempt_id
+        ):
             return None
-        return self._offer(offer, f"{repair.incarnation}:{generation.generation_id}")
-
-    def _offer(self, offer: LocalJobOffer, upstream_incarnation: str) -> Optional[LocalJobRecord]:
-        """Commit first, then reread the exact record before reporting acceptance."""
-        now = time.time()
+        upstream_incarnation = f"{repair.incarnation}:{generation.generation_id}"
         try:
             with self._connect() as connection:
+                self._attach(connection, repair_store.path, "repair")
+                self._attach(connection, allowance_ledger.database_path, "allowance")
                 connection.execute("BEGIN IMMEDIATE")
-                existing = connection.execute(
-                    "SELECT * FROM local_jobs WHERE kind=? AND repository=? AND target_number=? AND upstream_attempt=?",
-                    (offer.kind.value, offer.repository, offer.target_number, offer.upstream_attempt),
-                ).fetchone()
+                existing = self._existing(connection, offer, upstream_incarnation)
                 if existing is not None:
-                    record = self._record(existing)
                     connection.commit()
-                    if record.job_id != offer.job_id or record.upstream_incarnation != upstream_incarnation:
-                        return None
-                    return record
-                connection.execute(
-                    "INSERT INTO local_jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', NULL, '', '', ?, ?)",
-                    (offer.job_id, offer.kind.value, offer.repository, offer.target_number, offer.upstream_attempt, upstream_incarnation, offer.backend_name, offer.input_identity, offer.invocation_input, LocalJobState.PENDING.value, now, now),
+                    return existing
+                current_generation = connection.execute(
+                    "SELECT 1 FROM allowance.generations WHERE generation_id=? AND bundle_reference=? " "AND owning_identity='local-review-repair' AND lifecycle_state='RESERVED'",
+                    (generation.generation_id, request.attempt_id),
+                ).fetchone()
+                if current_generation is None:
+                    connection.rollback()
+                    return None
+                cursor = connection.execute(
+                    "UPDATE repair.local_review_repair_attempts SET local_job_id=?, updated_at=? " "WHERE repository=? AND pr_number=? AND attempt_id=? AND incarnation=? " "AND phase='executing' AND invocation_entered=0 AND local_job_id=''",
+                    (offer.job_id, time.time(), request.repository, request.pr_number, request.attempt_id, repair.incarnation),
                 )
+                if cursor.rowcount != 1:
+                    connection.rollback()
+                    return None
+                self._insert(connection, offer, upstream_incarnation)
                 connection.commit()
             return self.get(offer.job_id)
         except (OSError, sqlite3.Error, ValueError):
@@ -228,17 +317,87 @@ class LocalJobStore:
         except (OSError, sqlite3.Error, ValueError):
             return None
 
+    def persist_result_artifact(self, claim: LocalJobClaim, outcome: InvocationOutcome, output: str) -> Optional[LocalJobResultArtifact]:
+        """Durably bind invocation output to the exact job and incarnation."""
+        if not claim.acquired or not output:
+            return None
+        artifact_id = hashlib.sha256(json.dumps([claim.record.job_id, claim.record.execution_incarnation, outcome.value, output], separators=(",", ":")).encode()).hexdigest()
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                current = connection.execute(
+                    "SELECT 1 FROM local_jobs WHERE job_id=? AND state=? AND execution_incarnation=?",
+                    (claim.record.job_id, LocalJobState.RUNNING.value, claim.record.execution_incarnation),
+                ).fetchone()
+                if current is None:
+                    connection.rollback()
+                    return None
+                connection.execute(
+                    "INSERT OR IGNORE INTO local_job_results VALUES (?, ?, ?, ?, ?, ?)",
+                    (artifact_id, claim.record.job_id, claim.record.execution_incarnation, outcome.value, output, time.time()),
+                )
+                row = connection.execute(
+                    "SELECT artifact_id, job_id, execution_incarnation, outcome FROM local_job_results " "WHERE job_id=? AND execution_incarnation=?",
+                    (claim.record.job_id, claim.record.execution_incarnation),
+                ).fetchone()
+                connection.commit()
+            if row is None or str(row["artifact_id"]) != artifact_id or str(row["outcome"]) != outcome.value:
+                return None
+            return self.get_result_artifact(artifact_id)
+        except (OSError, sqlite3.Error, ValueError):
+            return None
+
+    def get_result_artifact(self, artifact_id: str) -> Optional[LocalJobResultArtifact]:
+        """Reconstruct one durable output artifact for downstream processing."""
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT artifact_id, job_id, execution_incarnation, outcome, output " "FROM local_job_results WHERE artifact_id=?",
+                    (artifact_id,),
+                ).fetchone()
+            if row is None:
+                return None
+            return LocalJobResultArtifact(
+                str(row["artifact_id"]),
+                str(row["job_id"]),
+                str(row["execution_incarnation"]),
+                InvocationOutcome(row["outcome"]),
+                str(row["output"]),
+            )
+        except (OSError, sqlite3.Error, ValueError):
+            return None
+
     def record_result(self, claim: LocalJobClaim, outcome: InvocationOutcome, result_reference: str, diagnostic: str = "") -> bool:
-        """Checkpoint an actual invocation result; success requires evidence."""
+        """Checkpoint a result only from a verified exact-job artifact."""
         if not claim.acquired or not result_reference:
             return False
-        return self._transition(
-            claim,
-            LocalJobState.RUNNING,
-            LocalJobState.RESULT_RECORDED,
-            "invocation_outcome=?, result_reference=?, diagnostic=?",
-            (outcome.value, result_reference, diagnostic),
-        )
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                evidence = connection.execute(
+                    "SELECT 1 FROM local_job_results WHERE artifact_id=? AND job_id=? " "AND execution_incarnation=? AND outcome=?",
+                    (result_reference, claim.record.job_id, claim.record.execution_incarnation, outcome.value),
+                ).fetchone()
+                if evidence is None:
+                    connection.rollback()
+                    return False
+                cursor = connection.execute(
+                    "UPDATE local_jobs SET state=?, invocation_outcome=?, result_reference=?, diagnostic=?, updated_at=? " "WHERE job_id=? AND state=? AND execution_incarnation=?",
+                    (
+                        LocalJobState.RESULT_RECORDED.value,
+                        outcome.value,
+                        result_reference,
+                        diagnostic,
+                        time.time(),
+                        claim.record.job_id,
+                        LocalJobState.RUNNING.value,
+                        claim.record.execution_incarnation,
+                    ),
+                )
+                connection.commit()
+            return cursor.rowcount == 1
+        except (OSError, sqlite3.Error):
+            return False
 
     def mark_downstream_pending(self, claim: LocalJobClaim) -> bool:
         return self._transition(claim, LocalJobState.RESULT_RECORDED, LocalJobState.DOWNSTREAM_EFFECTS_PENDING)
