@@ -2207,3 +2207,14 @@ this boundary; `tests/test_local_job_runner.py` crosses the real runner thread
 and domain-adapter provider boundary, verifies finite capacity and drain
 admission, and reopens the store to verify the output checkpoint. Run `bash
 scripts/test.sh tests/test_local_job_runner.py`.
+
+Terminal PR resumptions now emit `pr.pending-work-resume-refresh` or
+`pr.merge-operation-resume-refresh` with `SUPERSEDED`, `reason=PR is terminal`,
+and observed `state`/`merged` facts. Their execution also finishes as superseded
+before implementation admission. Existing rendering shows the obsolete refresh
+without a merge-delivery stage; the slot panel reflects ordinary reconciliation
+releasing an idle standalone reservation while retaining live executions.
+Run `bash scripts/test.sh tests/test_terminal_pr_resumption.py
+tests/test_merge_operation_resumption_isolation.py tests/test_dashboard_observability.py`
+for real handlers, durable stores, repeated due selection, and production trace
+evidence reaching the mounted detail view. No schema or renderer changes.

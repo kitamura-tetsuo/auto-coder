@@ -36,3 +36,21 @@ The run-loop regression uses a fake clock and queue barriers to observe the real
 failure-completion wake, verifies no early retry, then advances to the durable
 deadline. It retains a confirmed approval receipt and nonzero merge-throttle
 history to check that pacing preserves existing evidence.
+
+A strict refresh that observes a closed or merged PR ends resumption before
+candidate dispatch or implementation-slot admission, including when the head
+still matches the retained operation. The operation becomes superseded without
+inventing a merge receipt or changing the retained approval/merge effects.
+The equivalent pending PR-evaluation handler also supersedes its obligation.
+Both paths retire CI watches, schedule Issue-owned reclamation, and run ordinary
+slot reconciliation. A standalone PR slot can therefore be released without
+being reacquired by each stale merge retry; live executions and uncertain
+ownership continue to retain capacity under the existing reconciliation rules.
+A changed head on a terminal PR follows this terminal path as well.
+
+Both production resumptions emit their existing resume-refresh stage with
+`SUPERSEDED` and reason `PR is terminal`; the dashboard detail view describes an
+obsolete resumption rather than claiming a new merge. Run
+`bash scripts/test.sh tests/test_terminal_pr_resumption.py` for same/changed-head,
+closed/merged, pending/merge resumption, retained live execution, durable removal
+from due work, and mounted detail projection regressions.

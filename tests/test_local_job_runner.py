@@ -187,3 +187,37 @@ def test_empty_actual_output_is_still_durably_checkpointed(tmp_path: Path) -> No
     artifact = store.get_result_artifact(record.result_reference)
     assert artifact is not None and artifact.output == ""
     runner.close()
+
+
+class FailingArtifactStore(LocalJobStore):
+    def persist_result_artifact(self, claim, outcome, output):  # type: ignore[no-untyped-def]
+        return None
+
+
+def test_failed_result_checkpoint_never_signals_downstream_completion(tmp_path: Path) -> None:
+    accepted_store, job_id = _accepted(tmp_path, "attempt-1")
+    store = FailingArtifactStore(accepted_store.path)
+    adapter = BarrierAdapter()
+    wakes: list[str] = []
+    runner = LocalJobRunner(
+        store,
+        InvocationAdmissionGate(),
+        capacity=1,
+        adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
+        completion_wake=lambda job: wakes.append(job.job_id),
+    )
+
+    assert runner.poll() == 1
+    assert adapter.entered.wait(5)
+    adapter.release.set()
+    _wait(lambda: runner.active_count() == 0)
+
+    restarted = LocalJobStore(store.path)
+    record = restarted.get(job_id)
+    assert record is not None and record.state is LocalJobState.RUNNING
+    assert record.provider_entered
+    assert record.result_reference == ""
+    assert wakes == []
+    assert runner.wake_downstream() == 0
+    assert adapter.calls == 1
+    runner.close()

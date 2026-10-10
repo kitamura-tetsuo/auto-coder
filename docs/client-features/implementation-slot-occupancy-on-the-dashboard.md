@@ -29,3 +29,10 @@ recorded owners and capacity intact. The panel continues to show those durable
 reservations while startup recovery is retained as pending work; an uncertain
 Issue lookup does not turn an occupied slot into free capacity. Indeterminate
 transport delivery remains subject to the existing operational retry policy.
+
+A pending PR evaluation or merge resumption that freshly observes a terminal PR
+reconciles existing ownership before admitting implementation work. Idle
+standalone PR reservations leave the active occupancy snapshot and are not
+recreated by a retained merge retry. A live execution still retains its slot.
+The detail view marks the obsolete resumption's refresh as superseded; this is
+lifecycle evidence, not a claim that this resumption performed a merge.

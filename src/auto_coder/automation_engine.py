@@ -476,6 +476,10 @@ class _PrProcessingStageHandler:
             _record_pr_stage_result(pr_number, "pr.strict-refresh", f"pr#{pr_number} strict refresh", Outcome.DEFERRED, {"reason": str(exc), "phase": "pending-work-resumption"})
             return StageOutcome(error=exc), None
         pr_data = engine.github.get_pr_details(raw_pr)
+        if pr_data.get("state") == "closed" or pr_data.get("merged") is True:
+            engine._reconcile_terminal_pr_resumption(self._repo_name, pr_data)
+            _record_pr_stage_result(pr_number, "pr.pending-work-resume-refresh", f"pr#{pr_number} pending-work resume refresh", Outcome.SUPERSEDED, {"reason": "PR is terminal", "state": pr_data.get("state"), "merged": pr_data.get("merged") is True})
+            return StageOutcome(superseded=True), None
         current_head = str((pr_data.get("head") or {}).get("sha") or "")
         # A changed head since deferral means the retained observations no
         # longer describe the PR being resumed. Discard this obligation and
@@ -559,6 +563,13 @@ class _MergeOperationResumeHandler:
             _record_pr_stage_result(pr_number, "pr.strict-refresh", f"pr#{pr_number} strict refresh", Outcome.DEFERRED, {"reason": str(exc), "phase": "merge-operation-resumption"})
             return Outcome.DEFERRED
         pr_data = engine.github.get_pr_details(raw_pr)
+        if pr_data.get("state") == "closed" or pr_data.get("merged") is True:
+            from .merge_operation_state import get_merge_operation_store
+
+            engine._reconcile_terminal_pr_resumption(operation.identity.repository, pr_data)
+            get_merge_operation_store().supersede(operation.identity)
+            _record_pr_stage_result(pr_number, "pr.merge-operation-resume-refresh", f"pr#{pr_number} merge-operation resume refresh", Outcome.SUPERSEDED, {"reason": "PR is terminal", "state": pr_data.get("state"), "merged": pr_data.get("merged") is True})
+            return Outcome.SUPERSEDED
         current_head = str((pr_data.get("head") or {}).get("sha") or "")
         if current_head and current_head != operation.expected_head_sha:
             # A newer head invalidates this operation's own execution
@@ -7198,6 +7209,21 @@ class AutomationEngine:
         result.target_outcome = ExplicitTargetOutcome.DEFERRED
         result.actions = [f"Deferred BLOCKED publication: {obligation.reason.value}"]
         return result
+
+    def _reconcile_terminal_pr_resumption(self, repo_name: str, pr_data: dict[str, object]) -> None:
+        """End stale resumption work without admitting another implementation.
+
+        The caller has freshly observed terminal PR metadata. Ordinary slot
+        reconciliation still checks execution liveness and complete ownership;
+        Issue-owned work uses the existing retirement obligation as well.
+        """
+        pr_number = pr_data["number"]
+        if isinstance(pr_number, bool) or not isinstance(pr_number, int) or pr_number <= 0:
+            raise ValueError("Terminal PR resumption requires a positive PR number")
+        self.invalidations.retire_ci_watches(repo_name, pr_number)
+        self._schedule_pr_owner_reclamation(repo_name, pr_data)
+        self._get_implementation_slots(repo_name).reconcile(self.github)
+        self.notify_pr_merged_or_closed()
 
     def _schedule_pr_owner_reclamation(self, repo_name: str, pr_data: Dict[str, Any], reason: str = "pr-closed") -> None:
         """Resolve a closed/merged PR's owner and schedule its reclamation check.
