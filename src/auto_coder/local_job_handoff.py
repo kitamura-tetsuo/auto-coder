@@ -83,6 +83,9 @@ class LocalJobRecord:
     source_commit: str = ""
     source_ref: str = ""
     work_branch: str = ""
+    publication_remote: str = ""
+    owner_incarnation: str = ""
+    owner_generation: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +101,17 @@ class LocalJobResultArtifact:
     execution_incarnation: str
     outcome: InvocationOutcome
     output: str
+
+
+@dataclass(frozen=True)
+class LocalJobEffect:
+    """Durable evidence for one controller-owned downstream effect."""
+
+    job_id: str
+    execution_incarnation: str
+    name: str
+    state: str
+    evidence: str = ""
 
 
 def default_local_job_db_path() -> Path:
@@ -121,19 +135,29 @@ class LocalJobStore:
                 diagnostic TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL,
                 updated_at REAL NOT NULL, workspace_path TEXT NOT NULL DEFAULT '',
                 source_commit TEXT NOT NULL DEFAULT '', source_ref TEXT NOT NULL DEFAULT '',
-                work_branch TEXT NOT NULL DEFAULT '',
+                work_branch TEXT NOT NULL DEFAULT '', publication_remote TEXT NOT NULL DEFAULT '',
+                owner_incarnation TEXT NOT NULL DEFAULT '', owner_generation TEXT,
                 UNIQUE(kind, repository, target_number, upstream_attempt))"""
             )
             columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(local_jobs)")}
-            for name in ("workspace_path", "source_commit", "source_ref", "work_branch"):
+            for name in ("workspace_path", "source_commit", "source_ref", "work_branch", "publication_remote", "owner_incarnation"):
                 if name not in columns:
                     connection.execute(f"ALTER TABLE local_jobs ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")  # nosec B608: fixed names
+            if "owner_generation" not in columns:
+                connection.execute("ALTER TABLE local_jobs ADD COLUMN owner_generation TEXT")
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS local_job_results (
                 artifact_id TEXT PRIMARY KEY, job_id TEXT NOT NULL,
                 execution_incarnation TEXT NOT NULL, outcome TEXT NOT NULL,
                 output TEXT NOT NULL, created_at REAL NOT NULL,
                 UNIQUE(job_id, execution_incarnation))"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS local_job_effects (
+                job_id TEXT NOT NULL, execution_incarnation TEXT NOT NULL,
+                name TEXT NOT NULL, state TEXT NOT NULL, evidence TEXT NOT NULL DEFAULT '',
+                updated_at REAL NOT NULL,
+                PRIMARY KEY(job_id, execution_incarnation, name))"""
             )
 
     def _connect(self) -> sqlite3.Connection:
@@ -166,6 +190,9 @@ class LocalJobStore:
             source_commit=str(row["source_commit"]),
             source_ref=str(row["source_ref"]),
             work_branch=str(row["work_branch"]),
+            publication_remote=str(row["publication_remote"]),
+            owner_incarnation=str(row["owner_incarnation"]),
+            owner_generation=str(row["owner_generation"]) if row["owner_generation"] is not None else None,
         )
 
     @staticmethod
@@ -364,15 +391,38 @@ class LocalJobStore:
         except (OSError, sqlite3.Error, ValueError):
             return None
 
-    def bind_workspace(self, claim: LocalJobClaim, *, workspace_path: Path, source_commit: str, source_ref: str, work_branch: str) -> bool:
+    def bind_workspace(
+        self,
+        claim: LocalJobClaim,
+        *,
+        workspace_path: Path,
+        source_commit: str,
+        source_ref: str,
+        work_branch: str,
+        publication_remote: str,
+        owner_incarnation: str,
+        owner_generation: Optional[str],
+    ) -> bool:
         """Fence a prepared full-job workspace to its exact running incarnation."""
-        if not claim.acquired or not workspace_path.is_absolute() or not source_commit or not source_ref or not work_branch:
+        if not claim.acquired or not workspace_path.is_absolute() or not source_commit or not source_ref or not work_branch or not publication_remote:
             return False
         try:
             with self._connect() as connection:
                 cursor = connection.execute(
-                    "UPDATE local_jobs SET workspace_path=?, source_commit=?, source_ref=?, work_branch=?, updated_at=? " "WHERE job_id=? AND state=? AND execution_incarnation=? AND workspace_path=''",
-                    (str(workspace_path), source_commit, source_ref, work_branch, time.time(), claim.record.job_id, LocalJobState.RUNNING.value, claim.record.execution_incarnation),
+                    "UPDATE local_jobs SET workspace_path=?, source_commit=?, source_ref=?, work_branch=?, " "publication_remote=?, owner_incarnation=?, owner_generation=?, updated_at=? " "WHERE job_id=? AND state=? AND execution_incarnation=? AND workspace_path=''",
+                    (
+                        str(workspace_path),
+                        source_commit,
+                        source_ref,
+                        work_branch,
+                        publication_remote,
+                        owner_incarnation,
+                        owner_generation,
+                        time.time(),
+                        claim.record.job_id,
+                        LocalJobState.RUNNING.value,
+                        claim.record.execution_incarnation,
+                    ),
                 )
             return cursor.rowcount == 1
         except (OSError, sqlite3.Error):
@@ -432,6 +482,52 @@ class LocalJobStore:
 
     def mark_downstream_pending(self, claim: LocalJobClaim) -> bool:
         return self._transition(claim, LocalJobState.RESULT_RECORDED, LocalJobState.DOWNSTREAM_EFFECTS_PENDING)
+
+    def record_effect(self, claim: LocalJobClaim, name: str, state: str, evidence: str = "") -> bool:
+        """Upsert fenced publication evidence for the exact result incarnation."""
+        if not claim.acquired or not name or state not in {"pending", "completed", "indeterminate", "failed", "skipped"}:
+            return False
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                current = connection.execute(
+                    "SELECT 1 FROM local_jobs WHERE job_id=? AND execution_incarnation=? " "AND state IN (?, ?)",
+                    (
+                        claim.record.job_id,
+                        claim.record.execution_incarnation,
+                        LocalJobState.RESULT_RECORDED.value,
+                        LocalJobState.DOWNSTREAM_EFFECTS_PENDING.value,
+                    ),
+                ).fetchone()
+                if current is None:
+                    connection.rollback()
+                    return False
+                previous = connection.execute(
+                    "SELECT state FROM local_job_effects WHERE job_id=? AND execution_incarnation=? AND name=?",
+                    (claim.record.job_id, claim.record.execution_incarnation, name),
+                ).fetchone()
+                if previous is not None and str(previous["state"]) in {"completed", "skipped"} and state not in {"completed", "skipped"}:
+                    connection.rollback()
+                    return False
+                connection.execute(
+                    "INSERT INTO local_job_effects VALUES (?, ?, ?, ?, ?, ?) " "ON CONFLICT(job_id, execution_incarnation, name) DO UPDATE SET " "state=excluded.state, evidence=excluded.evidence, updated_at=excluded.updated_at",
+                    (claim.record.job_id, claim.record.execution_incarnation, name, state, evidence, time.time()),
+                )
+                connection.commit()
+            return True
+        except (OSError, sqlite3.Error):
+            return False
+
+    def get_effect(self, job_id: str, execution_incarnation: str, name: str) -> Optional[LocalJobEffect]:
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT job_id, execution_incarnation, name, state, evidence FROM local_job_effects " "WHERE job_id=? AND execution_incarnation=? AND name=?",
+                    (job_id, execution_incarnation, name),
+                ).fetchone()
+            return LocalJobEffect(str(row["job_id"]), str(row["execution_incarnation"]), str(row["name"]), str(row["state"]), str(row["evidence"])) if row is not None else None
+        except (OSError, sqlite3.Error):
+            return None
 
     def settle(self, claim: LocalJobClaim, diagnostic: str = "") -> bool:
         return self._transition(
