@@ -546,9 +546,16 @@ def execute_local_review_repair(
             store.transition(request, claim, "not_started", reason=added.stderr.strip())
             return LocalReviewRepairOutcome("not_started", f"protected checkout failed: {added.stderr.strip()}")
         store.transition(request, claim, "executing", workspace_path=worktree)
-        if provider_entry_authorizer is not None and not provider_entry_authorizer():
-            store.transition(request, claim, "not_started", reason="provider-entry authority changed during preparation")
-            return LocalReviewRepairOutcome("not_started", "provider-entry authority changed during preparation")
+        if provider_entry_authorizer is not None:
+            try:
+                authorized = provider_entry_authorizer()
+            except Exception as exc:
+                reason = f"provider-entry authority is unavailable after preparation: {exc}"
+                store.transition(request, claim, "not_started", reason=reason)
+                return LocalReviewRepairOutcome("not_started", reason)
+            if not authorized:
+                store.transition(request, claim, "not_started", reason="provider-entry authority changed during preparation")
+                return LocalReviewRepairOutcome("not_started", "provider-entry authority changed during preparation")
         if provider_entry_checkpoint is not None and not provider_entry_checkpoint():
             preserve_worktree = True
             return LocalReviewRepairOutcome("indeterminate", "durable provider-entry checkpoint failed")

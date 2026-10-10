@@ -1,5 +1,6 @@
 import asyncio
 import json
+import multiprocessing
 import subprocess
 import threading
 import time
@@ -42,6 +43,18 @@ def _wait_for(predicate, timeout: float = 5) -> None:
     while not predicate():
         assert time.monotonic() < deadline
         time.sleep(0.01)
+
+
+def _offer_in_child(job_path: str, repair_path: str, allowance_path: str, output) -> None:
+    request = _request()
+    job = offer_pr_correction_job(
+        request,
+        "codex",
+        store=LocalJobStore(Path(job_path)),
+        repair_store=LocalReviewRepairStore(Path(repair_path)),
+        allowance_ledger=RepairAllowanceLedger(Path(allowance_path)),
+    )
+    output.put(job.job_id if job is not None else "")
 
 
 def test_offer_is_durable_and_replay_does_not_consume_another_generation(tmp_path: Path) -> None:
@@ -170,6 +183,54 @@ def test_authority_is_revalidated_after_worktree_preparation_before_model_entry(
     runner.close()
 
 
+def test_post_preparation_authority_exception_keeps_original_job_retryable(tmp_path: Path, monkeypatch) -> None:
+    repository, head = _git_repository(tmp_path)
+    monkeypatch.chdir(repository)
+    request = replace(_request(), head_sha=head)
+    jobs = LocalJobStore(tmp_path / "jobs.sqlite3")
+    repairs = LocalReviewRepairStore(tmp_path / "repairs.sqlite3")
+    ledger = RepairAllowanceLedger(tmp_path / "allowance.sqlite3")
+    assert admit_local_repair_allowance(request, ledger)[0] is not None
+    job = offer_pr_correction_job(request, "codex", store=jobs, repair_store=repairs, allowance_ledger=ledger)
+    assert job is not None
+    executor = MagicMock(return_value="ACTION_SUMMARY: no change")
+    authorization_reads = 0
+    unavailable = True
+
+    class TransientAuthorityAdapter(PRCorrectionJobAdapter):
+        def _authority_is_current(self, _job) -> bool:
+            nonlocal authorization_reads
+            authorization_reads += 1
+            if unavailable and authorization_reads == 2:
+                raise RuntimeError("transient GitHub read failure")
+            return True
+
+    adapter = TransientAuthorityAdapter(MagicMock(), MagicMock(return_value=executor), jobs)
+    runner = LocalJobRunner(jobs, InvocationAdmissionGate(), capacity=1, adapters={LocalJobKind.PR_REVIEW_CORRECTION: adapter})
+    with (
+        patch("auto_coder.pr_correction_job.LocalReviewRepairStore", return_value=repairs),
+        patch("auto_coder.pr_correction_job.RepairAllowanceLedger", return_value=ledger),
+    ):
+        assert runner.poll() == 1
+        _wait_for(lambda: runner.active_count() == 0)
+        retained = jobs.get(job.job_id)
+        assert retained is not None and retained.state is LocalJobState.PENDING
+        assert retained.provider_entered is False
+        generation = ledger.get_snapshot("https://api.github.com", request.repository, request.pr_number).get_outstanding_generation()
+        assert generation is not None and generation.delivery_attempts == ()
+        executor.assert_not_called()
+
+        unavailable = False
+        assert runner.poll() == 1
+        _wait_for(lambda: runner.active_count() == 0)
+
+    completed = jobs.get(job.job_id)
+    assert completed is not None and completed.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+    assert completed.owner_generation == job.owner_generation
+    executor.assert_called_once()
+    runner.close()
+
+
 def test_worktree_preparation_failure_retries_same_job_and_invokes_model_once(tmp_path: Path, monkeypatch) -> None:
     repository, head = _git_repository(tmp_path)
     monkeypatch.chdir(repository)
@@ -285,6 +346,106 @@ def test_restart_recovers_publication_checkpoint_before_runner_artifact(tmp_path
     runner.close()
 
 
+def test_restart_recovers_published_checkpoint_before_runner_artifact(tmp_path: Path, monkeypatch) -> None:
+    request = _request()
+    jobs = LocalJobStore(tmp_path / "jobs.sqlite3")
+    repairs = LocalReviewRepairStore(tmp_path / "repairs.sqlite3")
+    ledger = RepairAllowanceLedger(tmp_path / "allowance.sqlite3")
+    authority, reason = admit_local_repair_allowance(request, ledger)
+    assert authority is not None, reason
+    job = offer_pr_correction_job(request, "codex", store=jobs, repair_store=repairs, allowance_ledger=ledger)
+    assert job is not None
+    claim = jobs.claim(job.job_id, "process:999999:1")
+    assert claim is not None and claim.acquired
+    assert jobs.mark_provider_entered(claim)
+    repair_claim = LocalReviewRepairClaim(True, "executing", request.attempt_id, int(job.upstream_incarnation.split(":", 1)[0]))
+    assert repairs.mark_invocation_entered(request, repair_claim, local_job_id=job.job_id)
+    authority.mark_invocation()
+    assert repairs.transition(request, repair_claim, "awaiting_validation", result_sha="published-sha")
+    wake = MagicMock()
+    adapter = PRCorrectionJobAdapter(MagicMock(), MagicMock(), jobs)
+    runner = LocalJobRunner(
+        jobs,
+        InvocationAdmissionGate(),
+        capacity=1,
+        adapters={LocalJobKind.PR_REVIEW_CORRECTION: adapter},
+        completion_wake=wake,
+    )
+
+    with (
+        patch("auto_coder.pr_correction_job.LocalReviewRepairStore", return_value=repairs),
+        patch("auto_coder.pr_correction_job.RepairAllowanceLedger", return_value=ledger),
+        patch("auto_coder.pr_correction_job.execute_local_review_repair") as execute,
+        patch("auto_coder.local_job_runner.runner_owner_alive", return_value=False),
+    ):
+        assert runner.poll() == 0
+        _wait_for(lambda: wake.call_count == 1)
+
+    execute.assert_not_called()
+    recovered = jobs.get(job.job_id)
+    assert recovered is not None and recovered.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+    artifact = jobs.get_result_artifact(recovered.result_reference)
+    assert artifact is not None and json.loads(artifact.output)["phase"] == "awaiting_validation"
+    generation = ledger.get_snapshot("https://api.github.com", request.repository, request.pr_number).get_outstanding_generation()
+    assert generation is not None and generation.lifecycle_state.value == "PENDING_REVALIDATION"
+    runner.close()
+
+
+def test_dead_submitter_replay_preserves_pending_job_ownership(tmp_path: Path) -> None:
+    request = _request()
+    job_path = tmp_path / "jobs.sqlite3"
+    repair_path = tmp_path / "repairs.sqlite3"
+    allowance_path = tmp_path / "allowance.sqlite3"
+    ledger = RepairAllowanceLedger(allowance_path)
+    authority, reason = admit_local_repair_allowance(request, ledger)
+    assert authority is not None, reason
+    context = multiprocessing.get_context("fork")
+    output = context.Queue()
+    process = context.Process(target=_offer_in_child, args=(str(job_path), str(repair_path), str(allowance_path), output))
+    process.start()
+    process.join(5)
+    assert process.exitcode == 0
+    job_id = output.get(timeout=1)
+    jobs = LocalJobStore(job_path)
+    repairs = LocalReviewRepairStore(repair_path)
+    original = jobs.get(job_id)
+    original_repair = repairs.get(request)
+    assert original is not None and original_repair is not None
+
+    replay = offer_pr_correction_job(request, "codex", store=jobs, repair_store=repairs, allowance_ledger=ledger)
+
+    assert replay is not None and replay.job_id == original.job_id
+    retained = repairs.get(request)
+    assert retained is not None
+    assert retained.local_job_id == original_repair.local_job_id
+    assert retained.incarnation == original_repair.incarnation
+    assert replay.owner_generation == authority.generation_id
+
+    class CurrentAuthorityAdapter(PRCorrectionJobAdapter):
+        def _authority_is_current(self, _job) -> bool:
+            return True
+
+    runner = LocalJobRunner(
+        jobs,
+        InvocationAdmissionGate(),
+        capacity=1,
+        adapters={LocalJobKind.PR_REVIEW_CORRECTION: CurrentAuthorityAdapter(MagicMock(), MagicMock(return_value=MagicMock()), jobs)},
+    )
+    with (
+        patch("auto_coder.pr_correction_job.LocalReviewRepairStore", return_value=repairs),
+        patch("auto_coder.pr_correction_job.RepairAllowanceLedger", return_value=ledger),
+        patch(
+            "auto_coder.pr_correction_job.execute_local_review_repair",
+            return_value=LocalReviewRepairOutcome("completed_no_change", "completed", executed=True),
+        ) as execute,
+    ):
+        assert runner.poll() == 1
+        _wait_for(lambda: runner.active_count() == 0)
+    execute.assert_called_once()
+    assert jobs.get(job_id).state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING  # type: ignore[union-attr]
+    runner.close()
+
+
 def test_engine_completion_wake_invalidates_pr_before_settling_job(tmp_path: Path, monkeypatch) -> None:
     """The engine's production completion callback durably wakes validation first."""
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
@@ -351,6 +512,43 @@ def test_engine_completion_wake_invalidates_pr_before_settling_job(tmp_path: Pat
     assert engine.invalidations.pending_count("owner/repo") == 1
     effect = jobs.get_effect(job.job_id, claim.record.execution_incarnation, "pr-validation-wake")
     assert effect is not None and effect.state == "completed"
+
+
+def test_production_delegate_rejects_foreign_head_before_allowance_or_job_acceptance() -> None:
+    from auto_coder.pr_processor import _delegate_cloud_review_thread_repair
+
+    github = MagicMock()
+    evidence = PullRequestRoutingMetadata(
+        "https://api.github.com",
+        "owner/repo",
+        42,
+        "open",
+        "<!-- auto-coder:local-llm -->",
+        "fork-owner/repo",
+        "repair",
+        "head-1",
+    )
+    route = ReviewRepairRouteDecision(ReviewRepairRouteDisposition.LOCAL_REQUIRED, "explicit local", evidence)
+    pr_data = {
+        "number": 42,
+        "state": "open",
+        "body": evidence.body,
+        "head": {"ref": evidence.head_ref, "sha": evidence.head_sha, "repo": {"full_name": evidence.head_repository}},
+        "base": {"ref": "main"},
+    }
+
+    with (
+        patch("auto_coder.pr_processor._select_review_repair_route", return_value=route),
+        patch("auto_coder.pr_processor._revalidate_local_review_repair_route", return_value=route),
+        patch("auto_coder.local_review_repair.admit_local_repair_allowance") as allowance,
+        patch("auto_coder.pr_correction_job.offer_pr_correction_job") as offer,
+    ):
+        result = _delegate_cloud_review_thread_repair("owner/repo", pr_data, github, (), AutomationConfig())
+
+    assert result.local_phase == "not_admitted"
+    assert "foreign-head" in result[0]
+    allowance.assert_not_called()
+    offer.assert_not_called()
 
 
 def test_single_pr_worker_hands_off_second_correction_while_first_backend_is_blocked(tmp_path: Path, monkeypatch) -> None:

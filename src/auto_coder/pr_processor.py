@@ -8598,6 +8598,12 @@ def _delegate_cloud_review_thread_repair(
             evidence = route.evidence
             if evidence is None:
                 return CloudReviewRepairResult([f"Local review repair was not admitted for PR #{pr_number}: authoritative target evidence is absent"], route_disposition="LOCAL_REQUIRED")
+            if evidence.head_repository != repo_name:
+                return CloudReviewRepairResult(
+                    [f"Local review repair was not admitted for PR #{pr_number}: foreign-head pull requests are not eligible"],
+                    route_disposition="LOCAL_REQUIRED",
+                    local_phase="not_admitted",
+                )
             if validated_head_sha and evidence.head_sha != validated_head_sha:
                 return CloudReviewRepairResult([f"Local review repair was not admitted for PR #{pr_number}: validated head has changed"], route_disposition="CONFLICT")
             implementer = (get_pr_author_login(pr_data) or "").lower()

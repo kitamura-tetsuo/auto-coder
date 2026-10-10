@@ -13,6 +13,7 @@ from .local_job_runner import LocalJobExecutionResult
 from .local_review_repair import (
     LocalRepairAllowanceAuthority,
     LocalReviewRepairClaim,
+    LocalReviewRepairOutcome,
     LocalReviewRepairRequest,
     LocalReviewRepairStore,
     execute_local_review_repair,
@@ -83,21 +84,28 @@ def offer_pr_correction_job(
     allowance_ledger: RepairAllowanceLedger | None = None,
 ) -> LocalJobRecord | None:
     """Atomically transfer a definitely-unentered correction to the runner."""
+    if request.head_repository != request.repository:
+        return None
     store = store or LocalJobStore()
     repair_store = repair_store or LocalReviewRepairStore(local_review_repair_db_path(request.repository))
     allowance_ledger = allowance_ledger or RepairAllowanceLedger()
     retained = repair_store.get(request)
-    if retained is not None and retained.phase == "not_started" and retained.local_job_id:
+    if retained is not None and retained.phase in {"executing", "not_started"} and retained.local_job_id:
         existing = store.get(retained.local_job_id)
         snapshot = allowance_ledger.get_snapshot("https://api.github.com", request.repository, request.pr_number)
         generation = snapshot.get_outstanding_generation()
         if (
             existing is not None
-            and existing.state is LocalJobState.PENDING
+            and existing.state is not LocalJobState.SETTLED
             and existing.upstream_attempt == request.attempt_id
             and existing.owner_incarnation == str(retained.incarnation)
             and generation is not None
-            and generation.lifecycle_state is GenerationLifecycleState.RESERVED
+            and generation.lifecycle_state
+            in {
+                GenerationLifecycleState.RESERVED,
+                GenerationLifecycleState.CONFIRMED_DELIVERED,
+                GenerationLifecycleState.PENDING_REVALIDATION,
+            }
             and generation.generation_id == existing.owner_generation
         ):
             return existing
@@ -222,7 +230,7 @@ class PRCorrectionJobAdapter:
         request = self._request(job)
         store = LocalReviewRepairStore(local_review_repair_db_path(request.repository))
         retained = store.get(request)
-        if retained is None or retained.phase != "publication_pending" or retained.local_job_id != job.job_id:
+        if retained is None or retained.phase not in {"publication_pending", "awaiting_validation"} or retained.local_job_id != job.job_id:
             return None
         ledger = RepairAllowanceLedger()
         snapshot = ledger.get_snapshot("https://api.github.com", request.repository, request.pr_number)
@@ -230,7 +238,16 @@ class PRCorrectionJobAdapter:
         if generation is None or generation.generation_id != job.owner_generation:
             return None
         authority = LocalRepairAllowanceAuthority(ledger, request, generation.generation_id, snapshot.epoch)
-        outcome = execute_local_review_repair(request, store=store, allowance_authority=authority)
+        if retained.phase == "awaiting_validation":
+            authority.mark_completion(code_changed=True, evidence=f"local correction published as {retained.result_sha}")
+            outcome = LocalReviewRepairOutcome(
+                "awaiting_validation",
+                f"published {retained.result_sha} to {request.head_ref}; independent validation is required",
+                executed=True,
+                published=True,
+            )
+        else:
+            outcome = execute_local_review_repair(request, store=store, allowance_authority=authority)
         if outcome.phase == "publication_pending":
             return None
         result = InvocationOutcome.FAILED if outcome.phase == "indeterminate" else InvocationOutcome.COMPLETED
