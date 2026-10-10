@@ -119,7 +119,8 @@ from .jules_client import invalidate_jules_sessions_cache
 from .jules_engine import check_and_resume_or_archive_sessions, check_and_start_recurrent_jules_tasks
 from .label_manager import LabelManager
 from .llm_backend_config import active_repo_context, get_pr_review_allowlist_from_config, get_review_adjudicator_allowlist_from_config
-from .local_job_handoff import LocalJobStore
+from .local_job_handoff import LocalJobClaim, LocalJobKind, LocalJobStore
+from .local_job_runner import LocalJobRunner
 from .logger_config import get_logger
 from .merge_operation_scheduler import get_merge_operation_scheduler
 from .merge_operation_state import MergeOperation
@@ -2669,6 +2670,32 @@ class AutomationEngine:
         if concurrency is None:
             concurrency = self.config.MAX_CONCURRENT_TASKS
 
+        from .pr_correction_job import PRCorrectionJobAdapter, build_captured_executor
+
+        local_job_store = LocalJobStore()
+
+        def wake_pr_validation(job: Any) -> None:
+            assert self._loop is not None
+            asyncio.run_coroutine_threadsafe(self.invalidate_entity(job.repository, "pr", job.target_number), self._loop)
+            claim = LocalJobClaim(job, True)
+            local_job_store.record_effect(claim, "pr-validation-wake", "completed", "durable PR invalidation scheduled")
+            local_job_store.settle(claim, "PR validation wake scheduled")
+
+        local_job_runner = LocalJobRunner(
+            local_job_store,
+            self.invocation_gate,
+            capacity=max(1, concurrency),
+            adapters={LocalJobKind.PR_REVIEW_CORRECTION: PRCorrectionJobAdapter(self.github, build_captured_executor)},
+            completion_wake=wake_pr_validation,
+        )
+
+        async def poll_local_jobs() -> None:
+            while True:
+                await asyncio.to_thread(local_job_runner.poll)
+                await asyncio.sleep(0.2)
+
+        local_job_task = asyncio.create_task(poll_local_jobs(), name="durable-local-job-runner")
+
         logger.info(f"Starting automation for repository: {repo_name} with {concurrency} Issue workers and {concurrency} PR workers")
         self.issue_stage_routing.recover(repo_name)
         recovered_identities = self.invalidations.recover(repo_name)
@@ -2776,7 +2803,7 @@ class AutomationEngine:
         # Reserve worker capacity for each type so either lane can make progress.
         workers = [asyncio.create_task(self._worker_loop(repo_name, offset * concurrency + i, item_type), name=f"{item_type}-worker-{i}") for offset, item_type in enumerate(("issue", "pr")) for i in range(concurrency)]
 
-        all_loop_tasks = [producer_task, invalidation_task, pending_work_task, merge_operation_task, claude_followup_recovery_task, *workers]
+        all_loop_tasks = [producer_task, invalidation_task, pending_work_task, merge_operation_task, claude_followup_recovery_task, local_job_task, *workers]
         if codex_recovery_task is not None:
             all_loop_tasks.append(codex_recovery_task)
         if capacity_task is not None:
@@ -2790,6 +2817,7 @@ class AutomationEngine:
                 # ownership and make their callers wait for the true boundary.
                 for task in all_loop_tasks:
                     task.cancel()
+                local_job_runner.close(wait=False)
                 await self._wait_for_protected_invocations()
                 await self._wait_for_interrupted_local_work()
                 await asyncio.gather(*all_loop_tasks, return_exceptions=True)

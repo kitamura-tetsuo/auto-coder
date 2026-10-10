@@ -2285,3 +2285,10 @@ Run `bash scripts/test.sh tests/test_terminal_pr_resumption.py
 tests/test_merge_operation_resumption_isolation.py tests/test_dashboard_observability.py`
 for real handlers, durable stores, repeated due selection, and production trace
 evidence reaching the mounted detail view. No schema or renderer changes.
+# Explicit-local PR correction handoff
+
+The `pr.repair-delegation` stage reports an accepted/deferred local handoff with
+its local phase while the durable local-job runner owns execution independently
+of the PR worker. Runner completion schedules a durable PR invalidation, so the
+ordinary current-head review and validation stages remain the authoritative
+observable outcome rather than treating job acceptance as correction success.

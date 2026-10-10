@@ -334,6 +334,10 @@ class LocalJobStore:
                     connection.rollback()
                     return None
                 self._insert(connection, offer, upstream_incarnation)
+                connection.execute(
+                    "UPDATE local_jobs SET owner_incarnation=?, owner_generation=? WHERE job_id=?",
+                    (str(repair.incarnation), generation.generation_id, offer.job_id),
+                )
                 connection.commit()
             return self.get(offer.job_id)
         except (OSError, sqlite3.Error, ValueError):

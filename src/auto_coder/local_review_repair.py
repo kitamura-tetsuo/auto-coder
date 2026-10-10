@@ -350,12 +350,12 @@ class LocalReviewRepairStore:
             )
             return cursor.rowcount == 1
 
-    def mark_invocation_entered(self, request: LocalReviewRepairRequest, claim: LocalReviewRepairClaim) -> bool:
+    def mark_invocation_entered(self, request: LocalReviewRepairRequest, claim: LocalReviewRepairClaim, *, local_job_id: str = "") -> bool:
         """Fence backend entry against transfer to a durable local job."""
         with self._connect() as connection:
             cursor = connection.execute(
-                "UPDATE local_review_repair_attempts SET invocation_entered=1, updated_at=? " "WHERE repository=? AND pr_number=? AND attempt_id=? AND incarnation=? " "AND phase='executing' AND invocation_entered=0 AND local_job_id=''",
-                (time.time(), request.repository, request.pr_number, claim.attempt_id, claim.incarnation),
+                "UPDATE local_review_repair_attempts SET invocation_entered=1, updated_at=? " "WHERE repository=? AND pr_number=? AND attempt_id=? AND incarnation=? " "AND phase='executing' AND invocation_entered=0 AND local_job_id=?",
+                (time.time(), request.repository, request.pr_number, claim.attempt_id, claim.incarnation, local_job_id),
             )
             return cursor.rowcount == 1
 
@@ -491,6 +491,8 @@ def execute_local_review_repair(
     store: Optional[LocalReviewRepairStore] = None,
     executor: Optional[Callable[[LocalReviewRepairRequest, str], str]] = None,
     allowance_authority: Optional[LocalRepairAllowanceAuthority] = None,
+    accepted_claim: Optional[LocalReviewRepairClaim] = None,
+    local_job_id: str = "",
 ) -> LocalReviewRepairOutcome:
     """Run one fenced correction in a detached exact-head checkout and publish it."""
     if request.head_repository != request.repository:
@@ -501,8 +503,8 @@ def execute_local_review_repair(
         except LocalBackendUnavailableError as exc:
             return LocalReviewRepairOutcome("backend_unavailable", str(exc))
     store = store or LocalReviewRepairStore(local_review_repair_db_path(request.repository))
-    claim = store.admit(request)
-    if not claim.admitted:
+    claim = accepted_claim or store.admit(request)
+    if not claim.admitted and accepted_claim is None:
         if claim.phase == "publication_pending":
             record = store.get(request, claim.attempt_id)
             if record is not None:
@@ -526,7 +528,7 @@ def execute_local_review_repair(
             store.transition(request, claim, "not_started", reason=added.stderr.strip())
             return LocalReviewRepairOutcome("not_started", f"protected checkout failed: {added.stderr.strip()}")
         store.transition(request, claim, "executing", workspace_path=worktree)
-        if not store.mark_invocation_entered(request, claim):
+        if not store.mark_invocation_entered(request, claim, local_job_id=local_job_id):
             preserve_worktree = True
             return LocalReviewRepairOutcome("deferred", "local execution ownership changed before backend entry")
         if allowance_authority is not None:
