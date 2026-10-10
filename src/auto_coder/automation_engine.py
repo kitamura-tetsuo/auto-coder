@@ -2676,7 +2676,8 @@ class AutomationEngine:
 
         def wake_pr_validation(job: Any) -> None:
             assert self._loop is not None
-            asyncio.run_coroutine_threadsafe(self.invalidate_entity(job.repository, "pr", job.target_number), self._loop)
+            wake = asyncio.run_coroutine_threadsafe(self.invalidate_entity(job.repository, "pr", job.target_number), self._loop)
+            wake.result()
             claim = LocalJobClaim(job, True)
             local_job_store.record_effect(claim, "pr-validation-wake", "completed", "durable PR invalidation scheduled")
             local_job_store.settle(claim, "PR validation wake scheduled")
