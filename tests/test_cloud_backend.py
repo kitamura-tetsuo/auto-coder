@@ -27,6 +27,7 @@ from auto_coder.llm_backend_config import (
     is_cloud_mode_enabled,
     is_jules_mode_enabled,
 )
+from auto_coder.local_job_handoff import LocalJobState, LocalJobStore
 from auto_coder.quota_selector import BackendQuotaEvaluation
 
 
@@ -261,6 +262,45 @@ class TestNonDifficultCloudIssueRouting:
         assert execution.result.outcome is DispatchOutcome.INDETERMINATE
         assert "local invocation failed after edit" in execution.result.diagnostic
         remote.assert_not_called()
+
+    def test_local_candidate_is_durably_accepted_without_entering_backend(self, tmp_path, monkeypatch):
+        """A production handoff returns immediately and leaves the exact job pending."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        llm_config = LLMBackendConfiguration.load_from_dict({"backends": {"local-team": {"backend_type": "codex", "model": "test"}}})
+        store = LocalJobStore(tmp_path / "jobs.sqlite3")
+
+        with (
+            patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config),
+            patch("auto_coder.issue_processor.get_current_attempt", return_value=4),
+            patch("auto_coder.issue_processor.get_commit_log", return_value="abc initial"),
+            patch("auto_coder.cli_helpers.build_backend_manager") as backend,
+        ):
+            execution = _dispatch_issue_candidates(
+                "owner/repo",
+                {
+                    "number": 2080,
+                    "title": "Background work",
+                    "body": "Implement the requirement",
+                    "state": "open",
+                    "labels": [],
+                    "user": {"login": "allowed"},
+                },
+                AutomationConfig(),
+                MagicMock(),
+                ["local-team"],
+                local_job_store=store,
+            )
+
+        assert execution.result.outcome is DispatchOutcome.LOCAL_ACCEPTED
+        assert execution.result.provider_reference
+        assert execution.actions == [f"Accepted local implementation job {execution.result.provider_reference} for issue #2080"]
+        accepted = store.get(execution.result.provider_reference)
+        assert accepted is not None
+        assert accepted.state is LocalJobState.PENDING
+        assert accepted.upstream_attempt == "4"
+        assert accepted.backend_name == "local-team"
+        assert "Implement the requirement" in accepted.invocation_input
+        backend.assert_not_called()
 
     def test_jules_alias_uses_selected_credentials_and_tracking_identity(self, tmp_path, monkeypatch):
         """The selected Jules alias owns both transport credentials and binding attribution."""

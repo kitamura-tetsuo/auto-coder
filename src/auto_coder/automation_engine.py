@@ -1029,6 +1029,7 @@ class AutomationEngine:
         # this gate is a separate follow-up (#2010); today this gate only
         # tracks invocations and never gates the daemon's own exit.
         self.invocation_gate = InvocationAdmissionGate()
+        self.local_job_store: Optional[LocalJobStore] = None
         # Full Jules discovery is deliberately delayed after startup.  Claiming
         # a cycle advances this deadline before any HTTP work begins, so a
         # failed listing cannot cause a hot retry on the next loop iteration.
@@ -2665,6 +2666,7 @@ class AutomationEngine:
 
     async def start_automation(self, repo_name: str, concurrency: Optional[int] = None) -> None:
         """Start independent Issue and PR pools with ``concurrency`` workers each."""
+        self.local_job_store = LocalJobStore()
         self._bind_pending_work_scheduler(repo_name)
         if concurrency is None:
             concurrency = self.config.MAX_CONCURRENT_TASKS
@@ -2772,6 +2774,22 @@ class AutomationEngine:
             # preventing ordinary Issue/PR work from serving the repository.
             logger.error(f"Codex initial-PR recovery is unavailable for {repo_name}: {type(exc).__name__}")
         capacity_task = asyncio.create_task(self._capacity_refill_loop(repo_name), name="implementation-capacity-refill") if isinstance(slot_repository, ImplementationSlotRepository) else None
+        local_runner = None
+        local_runner_task = None
+        if isinstance(slot_repository, ImplementationSlotRepository):
+            from .issue_local_job import IssueLocalJobAdapter
+            from .local_job_handoff import LocalJobKind
+            from .local_job_runner import LocalJobRunner
+
+            assert self.local_job_store is not None
+            local_runner = LocalJobRunner(
+                self.local_job_store,
+                self.invocation_gate,
+                capacity=max(1, self.config.MAX_CONCURRENT_IMPLEMENTATIONS),
+                adapters={LocalJobKind.ISSUE_IMPLEMENTATION: IssueLocalJobAdapter(self, repo_name, self.local_job_store, slot_repository, Path.cwd())},
+                completion_wake=lambda _job: self._resume_local_issue_publications(repo_name, slot_repository),
+            )
+            local_runner_task = asyncio.create_task(self._local_job_runner_loop(local_runner), name="durable-local-job-runner")
 
         # Reserve worker capacity for each type so either lane can make progress.
         workers = [asyncio.create_task(self._worker_loop(repo_name, offset * concurrency + i, item_type), name=f"{item_type}-worker-{i}") for offset, item_type in enumerate(("issue", "pr")) for i in range(concurrency)]
@@ -2781,6 +2799,8 @@ class AutomationEngine:
             all_loop_tasks.append(codex_recovery_task)
         if capacity_task is not None:
             all_loop_tasks.append(capacity_task)
+        if local_runner_task is not None:
+            all_loop_tasks.append(local_runner_task)
         shutdown_wait = asyncio.create_task(self._shutdown_event.wait(), name="graceful-shutdown-request")
         try:
             done, _ = await asyncio.wait({*all_loop_tasks, shutdown_wait}, return_when=asyncio.FIRST_COMPLETED)
@@ -2833,8 +2853,20 @@ class AutomationEngine:
             get_health_monitor().record_event("engine_stop", f"unhandled error: {type(e).__name__}: {e}", "")
             raise
         finally:
+            if local_runner is not None:
+                local_runner.close(wait=False)
             shutdown_wait.cancel()
             get_health_monitor().log_snapshot(reason="engine_stop")
+
+    async def _local_job_runner_loop(self, runner: Any) -> None:
+        """Continuously discover durable local jobs without occupying a worker."""
+        assert self._shutdown_event is not None
+        while not self._shutdown_event.is_set():
+            await asyncio.to_thread(runner.poll)
+            try:
+                await asyncio.wait_for(self._shutdown_event.wait(), timeout=0.25)
+            except asyncio.TimeoutError:
+                pass
 
     async def _perform_startup_reconciliation(self, repo_name: str) -> None:
         """Complete startup recovery, retrying governed admission failures durably.
@@ -6983,7 +7015,10 @@ class AutomationEngine:
                     else:
                         result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode)
         finally:
-            if not inherited_execution:
+            from .issue_dispatch import DispatchOutcome
+
+            local_job_owns_execution = candidate.type == "issue" and result.dispatch_result is not None and result.dispatch_result.outcome is DispatchOutcome.LOCAL_ACCEPTED
+            if not inherited_execution and not local_job_owns_execution:
                 slots.finish_execution(owner, execution_id)
                 if result.cloud_submission_not_started is True:
                     if candidate.type == "issue" and implementation_key is not None:
@@ -7186,6 +7221,8 @@ class AutomationEngine:
                             label_context=should_process,
                             implementation_slots=implementation_slots,
                             retry_authority=retry_authority,
+                            local_job_store=self.local_job_store,
+                            implementation_execution_id=implementation_slots.current_execution_id(ImplementationOwner("issue", item_number)) or "",
                         )
                         result.actions = dispatch.actions
                         result.dispatch_result = dispatch.result
@@ -7199,6 +7236,7 @@ class AutomationEngine:
 
                     if result.dispatch_result is not None and result.dispatch_result.outcome not in {
                         DispatchOutcome.LOCAL_COMPLETED,
+                        DispatchOutcome.LOCAL_ACCEPTED,
                         DispatchOutcome.REMOTE_ACCEPTED,
                     }:
                         result.success = False
