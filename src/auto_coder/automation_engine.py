@@ -5925,6 +5925,26 @@ class AutomationEngine:
                             result.target_outcome = ExplicitTargetOutcome.DEFERRED
                             result.actions = ["Deferred - container parent requires decomposition validation"]
                         return result
+                    if not explicit_only and origin in {"durable-invalidation-worker", "capacity-refill-intake", "issue-pending-work-resumption"}:
+                        if self.is_draining:
+                            result.error = "Parent child handoff deferred during graceful shutdown"
+                            result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                            result.refill_retry_required = True
+                            _record_issue_stage_result(item_number, "issue.hierarchy-admission", f"issue#{item_number} hierarchy admission", Outcome.DEFERRED, {"reason": result.error, "authorizes_execution": False})
+                            return result
+                        # A tracking parent coordinates work; running its first
+                        # child inline occupies this worker (or refill pass) for
+                        # the child's entire implementation. Persist every child
+                        # independently so unrelated families can make progress.
+                        child_numbers = [int(child["number"]) for child in open_children]
+                        for child_number in child_numbers:
+                            self.invalidations.invalidate(EntityIdentity(repo_name, "issue", child_number))
+                        if self._invalidation_wake_event is not None and self._loop is not None:
+                            self._loop.call_soon_threadsafe(self._invalidation_wake_event.set)
+                        result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                        result.actions = ["Deferred - submitted children queued for independent evaluation"]
+                        _record_issue_stage_result(item_number, "issue.hierarchy-admission", f"issue#{item_number} hierarchy admission", Outcome.DEFERRED, {"child_issue_numbers": child_numbers, "reason": result.actions[0], "authorizes_execution": False})
+                        return result
                     last_refusal: Optional[CandidateProcessingResult] = None
                     for open_child in open_children:
                         child_number = int(open_child["number"])

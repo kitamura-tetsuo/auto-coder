@@ -1,5 +1,14 @@
 # Mandatory production-to-view dashboard observability regressions
 
+Automatic submitted-parent processing emits `issue.hierarchy-admission` as
+`deferred` after persisting independent open-child obligations. Its facts list
+`child_issue_numbers` and `authorizes_execution=false`; it establishes queue
+handoff only. `test_daemon_parent_child_handoff_reaches_mounted_detail` verifies
+the real production emission through the mounted parent detail view.
+Shutdown before handoff emits the same deferred hierarchy stage with its reason
+and no list of handed-off children. The graceful-shutdown regression preserves
+the parent's retryable obligation after joining the running validation batch.
+
 Merge-operation resume executions retain the stored repository identity and refuse
 foreign work before trace creation. Failed or deferred refreshes keep those
 outcomes while retry deadlines prevent rapid repeated executions; pacing is not
