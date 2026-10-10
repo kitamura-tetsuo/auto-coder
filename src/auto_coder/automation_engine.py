@@ -6984,10 +6984,9 @@ class AutomationEngine:
                         jules_mode,
                         force_adversarial_validation=True,
                         advance_issue_attempt=True,
-                        explicit_only=explicit_only,
                     )
                 else:
-                    result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, force_adversarial_validation=True, explicit_only=explicit_only)
+                    result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, force_adversarial_validation=True)
             else:
                 with slots.serialize(owner):
                     if retry_authority is not None:
@@ -7012,16 +7011,29 @@ class AutomationEngine:
                             jules_mode,
                             manual_retry=True,
                             retry_authority=retry_authority,
-                            explicit_only=explicit_only,
+                            **({"explicit_only": True} if explicit_only and candidate.type == "issue" else {}),
                         )
                         result.actions.insert(
                             0,
                             f"Retry accepted for issue #{item_number}: request={retry_authority.request_id} attempt={retry_authority.attempt_id} phase=owned",
                         )
                     elif advance_issue_attempt:
-                        result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, advance_issue_attempt=True, explicit_only=explicit_only)
+                        result = self._process_single_candidate_reserved(
+                            repo_name,
+                            candidate,
+                            config,
+                            jules_mode,
+                            advance_issue_attempt=True,
+                            **({"explicit_only": True} if explicit_only and candidate.type == "issue" else {}),
+                        )
                     else:
-                        result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, explicit_only=explicit_only)
+                        result = self._process_single_candidate_reserved(
+                            repo_name,
+                            candidate,
+                            config,
+                            jules_mode,
+                            **({"explicit_only": True} if explicit_only and candidate.type == "issue" else {}),
+                        )
         finally:
             from .issue_dispatch import DispatchOutcome
 
