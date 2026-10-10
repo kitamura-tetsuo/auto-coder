@@ -100,6 +100,17 @@ class LocalJobResultArtifact:
     output: str
 
 
+@dataclass(frozen=True)
+class LocalJobEffect:
+    """Durable evidence for one controller-owned downstream effect."""
+
+    job_id: str
+    execution_incarnation: str
+    name: str
+    state: str
+    evidence: str = ""
+
+
 def default_local_job_db_path() -> Path:
     return Path.home() / ".auto-coder" / "local_jobs.sqlite3"
 
@@ -134,6 +145,13 @@ class LocalJobStore:
                 execution_incarnation TEXT NOT NULL, outcome TEXT NOT NULL,
                 output TEXT NOT NULL, created_at REAL NOT NULL,
                 UNIQUE(job_id, execution_incarnation))"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS local_job_effects (
+                job_id TEXT NOT NULL, execution_incarnation TEXT NOT NULL,
+                name TEXT NOT NULL, state TEXT NOT NULL, evidence TEXT NOT NULL DEFAULT '',
+                updated_at REAL NOT NULL,
+                PRIMARY KEY(job_id, execution_incarnation, name))"""
             )
 
     def _connect(self) -> sqlite3.Connection:
@@ -432,6 +450,52 @@ class LocalJobStore:
 
     def mark_downstream_pending(self, claim: LocalJobClaim) -> bool:
         return self._transition(claim, LocalJobState.RESULT_RECORDED, LocalJobState.DOWNSTREAM_EFFECTS_PENDING)
+
+    def record_effect(self, claim: LocalJobClaim, name: str, state: str, evidence: str = "") -> bool:
+        """Upsert fenced publication evidence for the exact result incarnation."""
+        if not claim.acquired or not name or state not in {"pending", "completed", "indeterminate", "failed", "skipped"}:
+            return False
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                current = connection.execute(
+                    "SELECT 1 FROM local_jobs WHERE job_id=? AND execution_incarnation=? " "AND state IN (?, ?)",
+                    (
+                        claim.record.job_id,
+                        claim.record.execution_incarnation,
+                        LocalJobState.RESULT_RECORDED.value,
+                        LocalJobState.DOWNSTREAM_EFFECTS_PENDING.value,
+                    ),
+                ).fetchone()
+                if current is None:
+                    connection.rollback()
+                    return False
+                previous = connection.execute(
+                    "SELECT state FROM local_job_effects WHERE job_id=? AND execution_incarnation=? AND name=?",
+                    (claim.record.job_id, claim.record.execution_incarnation, name),
+                ).fetchone()
+                if previous is not None and str(previous["state"]) in {"completed", "skipped"} and state not in {"completed", "skipped"}:
+                    connection.rollback()
+                    return False
+                connection.execute(
+                    "INSERT INTO local_job_effects VALUES (?, ?, ?, ?, ?, ?) " "ON CONFLICT(job_id, execution_incarnation, name) DO UPDATE SET " "state=excluded.state, evidence=excluded.evidence, updated_at=excluded.updated_at",
+                    (claim.record.job_id, claim.record.execution_incarnation, name, state, evidence, time.time()),
+                )
+                connection.commit()
+            return True
+        except (OSError, sqlite3.Error):
+            return False
+
+    def get_effect(self, job_id: str, execution_incarnation: str, name: str) -> Optional[LocalJobEffect]:
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT job_id, execution_incarnation, name, state, evidence FROM local_job_effects " "WHERE job_id=? AND execution_incarnation=? AND name=?",
+                    (job_id, execution_incarnation, name),
+                ).fetchone()
+            return LocalJobEffect(str(row["job_id"]), str(row["execution_incarnation"]), str(row["name"]), str(row["state"]), str(row["evidence"])) if row is not None else None
+        except (OSError, sqlite3.Error):
+            return None
 
     def settle(self, claim: LocalJobClaim, diagnostic: str = "") -> bool:
         return self._transition(

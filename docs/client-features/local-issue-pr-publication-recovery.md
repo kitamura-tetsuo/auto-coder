@@ -21,3 +21,22 @@ for an empty diff. An empty diff also emits `issue.pr-publication` as `BLOCKED`
 with its reason. PR creation/reuse retains the existing publication-stage
 outcomes and trace schema. Regression coverage is in
 `tests/test_issue_processor.py::TestKeepLabelOnPRCreation`.
+
+Completed asynchronous Issue jobs use a stricter job-scoped finalizer. It
+validates the exact result artifact, execution incarnation, retained workspace,
+source commit, and work branch before committing. Commit, push, PR, and owner
+association each receive a durable effect checkpoint. On restart, completed
+effects are reused and only missing effects resume; the editing backend is never
+invoked by this continuation.
+
+Pushes are confirmed against the remote branch before PR publication. PR
+creation is always followed by authoritative branch lookup, so a lost create
+response reuses the remotely created PR rather than creating another one.
+Unavailable or contradictory lookup evidence remains pending, as do failed or
+ambiguous pushes. `CANNOT_FIX` and authenticated no-change results settle with
+distinct dispositions and cannot manufacture a PR. Implementation ownership is
+associated only after the exact closing PR is confirmed and otherwise remains
+reserved for normal lifecycle recovery.
+
+Regression coverage for the asynchronous boundary is in
+`tests/test_issue_job_finalizer.py`.

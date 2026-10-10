@@ -1919,6 +1919,17 @@ an event schema or processing origin.
 drives new-change publication, clean-tree recovery, existing-PR reuse, empty
 diff, and failed fetch/inspection/push through the production processing boundary.
 See `docs/client-features/local-issue-pr-publication-recovery.md`.
+
+Asynchronous job publication recovery emits
+`issue.local-publication-finalization` from the `startup-recovery` origin for
+each resumed durable job. The generic stage-detail projection exposes the exact
+job ID, disposition, optional PR number, and diagnostic. Confirmed publication,
+authenticated no-change, and `CANNOT_FIX` dispositions are `COMPLETED`; an
+unconfirmed commit, push, PR, or owner association remains `DEFERRED`. This adds
+no renderer or event-schema fields. The production finalization boundary and
+its restart dispositions are exercised by
+`tests/test_issue_job_finalizer.py`; run
+`bash scripts/test.sh tests/test_issue_job_finalizer.py tests/test_dashboard_observability.py`.
 # Codex retirement-accounting fence
 
 Initial-PR recovery stops observing after durable queue handoff or verified

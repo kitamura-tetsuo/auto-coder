@@ -91,6 +91,7 @@ from .invocation_admission import GateSnapshot, GateState, InvocationAdmissionGa
 from .issue_admission_cache import IssueAdmissionCache
 from .issue_context import extract_associated_issue_numbers, get_linked_issues_context
 from .issue_implementation_worker import ImplementationLaneOutcome, IssueImplementationWorker
+from .issue_job_finalizer import IssueJobFinalizer
 from .issue_processor import create_feature_issues
 from .issue_review_rerun import IssueReviewRerunOperation, ReviewSubject, SubjectRerunStatus
 from .issue_review_service import (
@@ -118,6 +119,7 @@ from .jules_client import invalidate_jules_sessions_cache
 from .jules_engine import check_and_resume_or_archive_sessions, check_and_start_recurrent_jules_tasks
 from .label_manager import LabelManager
 from .llm_backend_config import active_repo_context, get_pr_review_allowlist_from_config, get_review_adjudicator_allowlist_from_config
+from .local_job_handoff import LocalJobStore
 from .logger_config import get_logger
 from .merge_operation_scheduler import get_merge_operation_scheduler
 from .merge_operation_state import MergeOperation
@@ -2878,6 +2880,7 @@ class AutomationEngine:
         # its first candidate scan.
         slots = self._get_implementation_slots(repo_name)
         await asyncio.to_thread(slots.reconcile, self.github, True)
+        await asyncio.to_thread(self._resume_local_issue_publications, repo_name, slots)
         # Issue #2148 REQ-002: recover terminal-PR-backed reclamation candidates
         # and unfinished obligations, including owners whose PRs closed while
         # this daemon was offline and are therefore absent from the open-PR
@@ -2890,6 +2893,52 @@ class AutomationEngine:
         # stopped in that gap, the authority journal remains the durable
         # source from which Review-only routing is reconstructed here.
         await asyncio.to_thread(self._recover_issue_review_reruns, repo_name)
+
+    def _resume_local_issue_publications(self, repo_name: str, slots: ImplementationSlotRepository) -> None:
+        """Resume exact job-owned publication effects without model re-entry."""
+        from .issue_processor import _create_pr_for_issue
+
+        def create_pr(record: Any, summary: str) -> object:
+            issue = self.github.get_issue(repo_name, record.target_number)
+            if not isinstance(issue, dict):
+                issue = {
+                    "number": record.target_number,
+                    "title": getattr(issue, "title", "Unknown"),
+                    "body": getattr(issue, "body", "") or "",
+                    "labels": getattr(issue, "labels", []) or [],
+                }
+            return _create_pr_for_issue(
+                repo_name,
+                issue,
+                record.work_branch,
+                self.config.MAIN_BRANCH,
+                summary,
+                self.github,
+                self.config,
+                slots,
+            )
+
+        finalizer = IssueJobFinalizer(
+            LocalJobStore(),
+            slots,
+            lambda repository, branch: self.github.find_pr_by_head_branch(repository, branch),
+            create_pr,
+        )
+        for result in finalizer.resume_all(repo_name):
+            outcome = Outcome.COMPLETED if result.disposition in {"published", "no_change", "cannot_fix"} else Outcome.DEFERRED
+            get_trace_collector().record_event(
+                EventKind.STAGE_RESULT,
+                stage_id="issue.local-publication-finalization",
+                origin="startup-recovery",
+                label=f"issue job {result.job_id} publication finalization",
+                outcome=outcome,
+                facts={
+                    "job_id": result.job_id,
+                    "disposition": result.disposition,
+                    "pr_number": result.pr_number,
+                    "diagnostic": result.diagnostic,
+                },
+            )
 
     async def _reconcile_open_github_entities(self, repo_name: str) -> None:
         """One attempt at recovery through the normal invalidation path.
