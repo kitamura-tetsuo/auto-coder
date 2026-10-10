@@ -13,14 +13,17 @@ not through a preselected processing result.
 from __future__ import annotations
 
 import asyncio
+import io
 import threading
 import time
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ExplicitTargetOutcome
 from auto_coder.automation_engine import (
+    ISSUE_PROCESSING_REFRESH_EFFECT,
     ISSUE_PROCESSING_STAGE,
     STARTUP_RECONCILIATION_EFFECT,
     STARTUP_RECONCILIATION_STAGE,
@@ -32,6 +35,7 @@ from auto_coder.automation_engine import (
     _reconciliation_request_error,
     _StartupReconciliationHandler,
 )
+from auto_coder.entity_invalidation import EntityIdentity
 from auto_coder.github_pending_work import (
     PendingObligation,
     PendingReason,
@@ -41,14 +45,16 @@ from auto_coder.github_pending_work import (
     StageOutcome,
     WorkIdentity,
 )
-from auto_coder.github_request_governor import GitHubRequestDeferred
+from auto_coder.github_request_governor import GitHubRequestDeferred, GitHubRequestGovernor
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from auto_coder.logger_config import setup_logger
 from auto_coder.parent_issue_reconciliation import ParentOperationalError, ParentSpecificationError
 from auto_coder.pr_processor import PR_PROCESSING_STAGE
 from auto_coder.sibling_dependencies import DependencySatisfaction
-from auto_coder.util.gh_cache import GitHubClient, OpenGitHubEntities, OpenGitHubIssue
+from auto_coder.util.gh_cache import GitHubClient, OpenGitHubEntities, OpenGitHubIssue, get_ghapi_client
 from auto_coder.util.github_request_outcome import (
     DeliveryCertainty,
+    DiagnosticTransport,
     GitHubApiOutcome,
     GitHubRequestContext,
     GitHubRequestError,
@@ -56,6 +62,7 @@ from auto_coder.util.github_request_outcome import (
     GitHubRequestRefused,
     GitHubResponseMetadata,
     RequestProvenance,
+    configure_github_request_boundary,
 )
 
 
@@ -689,6 +696,186 @@ def _admitted_issue_engine(monkeypatch, tmp_path, issue):
     return engine, store
 
 
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "request_in_flight",
+        "admission_queue",
+        "mutation_spacing",
+        "request_rolling_window",
+        "mutation_minute_window",
+        "mutation_hour_window",
+        "governor_initialization_contention",
+        "governor_transaction_contention",
+        "rate_limit_cooldown",
+    ],
+)
+def test_initial_dispatch_snapshot_retains_supported_admission_deferral(tmp_path, monkeypatch, reason):
+    """The first production strict read returns Deferred instead of escaping."""
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "Carried title",
+        "body": "## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    context = GitHubRequestContext(
+        "op",
+        "attempt",
+        "issue-dispatch-snapshot",
+        "https://api.github.com",
+        "GET",
+        "read",
+        "/repos/{repo}/issues/{number}",
+        "owner/repo",
+        "issue:7",
+        strict_read=True,
+    )
+    deferred = GitHubRequestDeferred(context, reason, retry_at=time.time() + 20)
+    engine.github.get_issue_dispatch_snapshot_strict.side_effect = deferred
+
+    with patch.object(engine, "_process_single_candidate_reserved") as implementation:
+        result = engine._process_single_candidate_unified(
+            "owner/repo",
+            Candidate(type="issue", data=dict(issue), priority=0, issue_number=7),
+            engine.config,
+            origin="capacity-refill-intake",
+        )
+
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    obligation = store.get(identity)
+    assert result.success is False
+    assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+    assert result.refill_retry_required is True
+    assert obligation is not None
+    assert obligation.reason is PendingReason.ADMISSION_DEFERRED
+    assert obligation.not_before >= deferred.retry_at
+    assert obligation.unfinished_effects == (ISSUE_PROCESSING_REFRESH_EFFECT, ISSUE_PROCESSING_STAGE)
+    assert f"reason={reason}" in (result.target_reason or "")
+    assert "api_origin=https://api.github.com" in (result.target_reason or "")
+    engine.pending_work_scheduler.wake.assert_called_once_with()
+    implementation.assert_not_called()
+
+
+def test_initial_dispatch_snapshot_retains_real_governor_cooldown(tmp_path, monkeypatch):
+    """A wire-observed cooldown is retained at the real strict-reader boundary."""
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "Carried title",
+        "body": "## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    store = PendingWorkStore(tmp_path / "pending.db")
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda _repository: store)
+    governor = GitHubRequestGovernor(store_path=tmp_path / "governor.sqlite3", wait_budget=0)
+    sends: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sends.append(request.url.path)
+        return httpx.Response(429, headers={"Retry-After": "20"}, json={"message": "slow down"}, request=request)
+
+    def client(*_args, **_kwargs):
+        return httpx.Client(
+            transport=DiagnosticTransport(
+                httpx.MockTransport(handler),
+                admission_hook=governor.admit_blocking,
+                observation_hook=governor.observe,
+            )
+        )
+
+    monkeypatch.setattr("auto_coder.util.gh_cache.get_caching_client", client)
+    configure_github_request_boundary(governor.admit_blocking, governor.observe)
+    try:
+        cooldown_started_after = time.time()
+        with pytest.raises(GitHubRequestError) as throttled:
+            get_ghapi_client("token")("/seed")
+        assert throttled.value.outcome.classification is GitHubApiOutcome.SECONDARY_THROTTLED
+
+        GitHubClient.reset_singleton()
+        github = GitHubClient.get_instance("token")
+        engine = AutomationEngine(github, AutomationConfig())
+        # Engine construction installs its default hooks; restore the controlled
+        # production boundary whose prior response established the cooldown.
+        configure_github_request_boundary(governor.admit_blocking, governor.observe)
+        engine._is_issue_author_allowed = MagicMock(return_value=True)
+        engine.pending_work_scheduler = MagicMock()
+
+        with patch.object(engine, "_process_single_candidate_reserved") as implementation:
+            result = engine._process_single_candidate_unified(
+                "owner/repo",
+                Candidate(type="issue", data=dict(issue), priority=0, issue_number=7),
+                engine.config,
+                origin="capacity-refill-intake",
+            )
+
+        identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+        obligation = store.get(identity)
+        assert sends == ["/seed"]
+        assert result.success is False
+        assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+        assert result.refill_retry_required is True
+        assert obligation is not None
+        assert obligation.reason is PendingReason.ADMISSION_DEFERRED
+        assert obligation.not_before >= cooldown_started_after + 20
+        assert "reason=rate_limit_cooldown" in (result.target_reason or "")
+        engine.pending_work_scheduler.wake.assert_called_once_with()
+        implementation.assert_not_called()
+    finally:
+        configure_github_request_boundary()
+        governor.close()
+
+
+def test_initial_dispatch_snapshot_does_not_reclassify_unsupported_refusal(tmp_path, monkeypatch):
+    """An unusable Governor state remains a failure, not timed pending work."""
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "T",
+        "body": "## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    context = GitHubRequestContext(
+        "op",
+        "attempt",
+        "issue-dispatch-snapshot",
+        "https://api.github.com",
+        "GET",
+        "read",
+        "/repos/{repo}/issues/{number}",
+        "owner/repo",
+        "issue:7",
+        strict_read=True,
+    )
+    deferred = GitHubRequestDeferred(context, "governor_state_unavailable", retry_at=time.time() + 20)
+    engine.github.get_issue_dispatch_snapshot_strict.side_effect = deferred
+
+    with (
+        patch.object(engine, "_process_single_candidate_reserved") as implementation,
+        pytest.raises(GitHubRequestDeferred) as raised,
+    ):
+        engine._process_single_candidate_unified(
+            "owner/repo",
+            Candidate(type="issue", data=dict(issue), priority=0, issue_number=7),
+            engine.config,
+            origin="capacity-refill-intake",
+        )
+
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    assert raised.value is deferred
+    assert store.get(identity) is None
+    engine.pending_work_scheduler.wake.assert_not_called()
+    implementation.assert_not_called()
+
+
 def test_sibling_gate_retains_wrapped_admission_deferral(tmp_path, monkeypatch):
     issue = {
         "id": 70,
@@ -880,6 +1067,325 @@ def test_generation_serialized_reentry_retains_wrapped_native_parent_deferral(tm
     assert obligation.not_before >= deferred.retry_at
     engine.pending_work_scheduler.wake.assert_called_once_with()
     implementation.assert_not_called()
+
+
+def test_generation_serialized_snapshot_retains_bare_admission_deferral(tmp_path, monkeypatch):
+    """A later strict read under owner serialization uses durable retention."""
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "Carried title",
+        "body": "## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    owner = ImplementationOwner("issue", 7)
+    assert slots.reserve(owner) is True
+    engine.implementation_slots = slots
+    engine._get_implementation_slots = MagicMock(return_value=slots)
+    engine._get_authoritative_parent_number = MagicMock(return_value=None)
+    engine._standalone_relationship_is_current = MagicMock(return_value=True)
+    deferred = _admission_deferral()
+    engine.github.get_issue_dispatch_snapshot_strict.side_effect = [dict(issue), deferred]
+
+    with patch.object(engine, "_process_single_candidate_reserved") as implementation:
+        result = engine._process_single_candidate_unified(
+            "owner/repo",
+            Candidate(type="issue", data=dict(issue), priority=0, issue_number=7),
+            engine.config,
+            origin="capacity-refill-intake",
+        )
+
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    obligation = store.get(identity)
+    assert engine.github.get_issue_dispatch_snapshot_strict.call_count == 2
+    assert result.success is False
+    assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+    assert result.refill_retry_required is True
+    assert obligation is not None
+    assert obligation.reason is PendingReason.ADMISSION_DEFERRED
+    assert obligation.not_before >= deferred.retry_at
+    assert obligation.unfinished_effects == (ISSUE_PROCESSING_REFRESH_EFFECT, ISSUE_PROCESSING_STAGE)
+    assert "reason=request_in_flight" in (result.target_reason or "")
+    engine.pending_work_scheduler.wake.assert_called_once_with()
+    implementation.assert_not_called()
+
+
+@pytest.mark.parametrize("refused_read", ["current-admission", "final-dispatch"])
+def test_later_strict_snapshot_retains_bare_admission_deferral(tmp_path, monkeypatch, refused_read):
+    """Generic error handling cannot flatten later typed snapshot refusals."""
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "Carried title",
+        "body": "## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    engine._get_authoritative_parent_number = MagicMock(return_value=None)
+    engine._standalone_relationship_is_current = MagicMock(return_value=True)
+    engine._reconcile_sibling_dependencies = MagicMock(return_value=DependencySatisfaction.SATISFIED)
+    deferred = _admission_deferral()
+    refused_call = {"current-admission": 3, "final-dispatch": 4}[refused_read]
+    calls = 0
+
+    def strict_snapshot(_repo_name, _item_number):
+        nonlocal calls
+        calls += 1
+        if calls == refused_call:
+            raise deferred
+        return dict(issue)
+
+    engine.github.get_issue_dispatch_snapshot_strict.side_effect = strict_snapshot
+
+    with patch.object(engine, "_process_single_candidate_reserved") as implementation:
+        result = engine._process_single_candidate_unified(
+            "owner/repo",
+            Candidate(type="issue", data=dict(issue), priority=0, issue_number=7),
+            engine.config,
+            origin="capacity-refill-intake",
+        )
+
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    obligation = store.get(identity)
+    assert calls == refused_call
+    assert result.success is False
+    assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+    assert result.refill_retry_required is True
+    assert obligation is not None
+    assert obligation.reason is PendingReason.ADMISSION_DEFERRED
+    assert obligation.not_before >= deferred.retry_at
+    assert obligation.unfinished_effects == (ISSUE_PROCESSING_REFRESH_EFFECT, ISSUE_PROCESSING_STAGE)
+    assert "reason=request_in_flight" in (result.target_reason or "")
+    engine.pending_work_scheduler.wake.assert_called_once_with()
+    implementation.assert_not_called()
+
+
+def test_future_retained_deadline_blocks_duplicate_common_dispatch(tmp_path, monkeypatch):
+    """An automatic duplicate cannot refresh a retained target before its deadline."""
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "Carried title",
+        "body": "## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    retained = store.defer(identity, _admission_deferral(), (ISSUE_PROCESSING_REFRESH_EFFECT, ISSUE_PROCESSING_STAGE))
+
+    result = engine._process_single_candidate_unified(
+        "owner/repo",
+        Candidate(type="issue", data=dict(issue), priority=0, issue_number=7),
+        engine.config,
+        origin="worker",
+    )
+
+    unchanged = store.get(identity)
+    assert unchanged is not None
+    assert unchanged.not_before == retained.not_before
+    assert unchanged.unfinished_effects == retained.unfinished_effects
+    assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+    assert result.refill_retry_required is True
+    assert f"retry_at={retained.not_before}" in (result.target_reason or "")
+    engine.github.get_issue_dispatch_snapshot_strict.assert_not_called()
+
+    assert store.manual_retry(identity, now=time.time() - 1) is not None
+    engine.github.get_issue_dispatch_snapshot_strict.side_effect = _admission_deferral()
+    resumed = engine._process_single_candidate_unified(
+        "owner/repo",
+        Candidate(type="issue", data=dict(issue), priority=0, issue_number=7),
+        engine.config,
+        origin="worker",
+    )
+    assert resumed.target_outcome is ExplicitTargetOutcome.DEFERRED
+    engine.github.get_issue_dispatch_snapshot_strict.assert_called_once_with("owner/repo", 7)
+
+
+def test_future_retained_deadline_blocks_capacity_refill_before_strict_read(tmp_path, monkeypatch):
+    """An unrelated capacity wake cannot bypass the retained target deadline."""
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "Carried title",
+        "body": "## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    engine.github.get_open_entities_strict = MagicMock(return_value=OpenGitHubEntities(issues=[OpenGitHubIssue(7)]))
+    engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    engine._process_single_candidate = MagicMock()
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    retained = store.defer(identity, _admission_deferral(), (ISSUE_PROCESSING_REFRESH_EFFECT, ISSUE_PROCESSING_STAGE))
+
+    completed = asyncio.run(engine._refill_normal_implementation_slots("owner/repo"))
+
+    unchanged = store.get(identity)
+    assert completed is True
+    assert unchanged is not None
+    assert unchanged.not_before == retained.not_before
+    assert unchanged.unfinished_effects == retained.unfinished_effects
+    engine.github.get_issue_dispatch_snapshot_strict.assert_not_called()
+    engine._process_single_candidate.assert_not_called()
+
+
+def test_future_retained_deadline_blocks_invalidation_worker_before_strict_read(tmp_path, monkeypatch):
+    """A duplicate durable notification cannot bypass pending-work timing."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "Carried title",
+        "body": "## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    engine._defer_observed_dependency_wait = MagicMock(return_value=False)
+    engine._process_single_candidate = MagicMock()
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    retained = store.defer(identity, _admission_deferral(), (ISSUE_PROCESSING_REFRESH_EFFECT, ISSUE_PROCESSING_STAGE))
+
+    async def scenario():
+        await engine.invalidate_entity("owner/repo", "issue", 7)
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0, "issue"))
+        try:
+            for _ in range(200):
+                deferred = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "issue", 7))
+                if deferred is not None and engine.active_workers.get(0) is None:
+                    return deferred
+                await asyncio.sleep(0.01)
+            raise AssertionError("invalidation was not retained at the pending-work deadline")
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
+    invalidation = asyncio.run(scenario())
+    unchanged = store.get(identity)
+    assert unchanged is not None
+    assert unchanged.not_before == retained.not_before
+    assert unchanged.unfinished_effects == retained.unfinished_effects
+    assert invalidation.retry_not_before == retained.not_before
+    engine.github.get_issue_dispatch_snapshot_strict.assert_not_called()
+    engine._defer_observed_dependency_wait.assert_not_called()
+    engine._process_single_candidate.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("later_failure", "expected_reason"),
+    [
+        pytest.param(
+            _github_error(GitHubApiOutcome.AUTHENTICATION_FAILURE, status=401),
+            PendingReason.AUTHENTICATION,
+            id="authentication",
+        ),
+        pytest.param(ValueError("malformed Issue snapshot"), PendingReason.EVALUATION_FAILED, id="malformed-response"),
+    ],
+)
+def test_due_resumption_preserves_effects_after_later_snapshot_failure(tmp_path, monkeypatch, later_failure, expected_reason):
+    """A failed common evaluation is not an acknowledgement of retained effects."""
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "Carried title",
+        "body": "## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    engine._get_authoritative_parent_number = MagicMock(return_value=None)
+    engine._standalone_relationship_is_current = MagicMock(return_value=True)
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    retained = store.defer(identity, _admission_deferral(), (ISSUE_PROCESSING_REFRESH_EFFECT, ISSUE_PROCESSING_STAGE))
+    assert store.manual_retry(identity, now=time.time() - 1) is not None
+    calls = 0
+
+    def strict_snapshot(_repo_name, _item_number):
+        nonlocal calls
+        calls += 1
+        if calls == 4:
+            raise later_failure
+        return dict(issue)
+
+    engine.github.get_issue_dispatch_snapshot_strict.side_effect = strict_snapshot
+    handler = _IssueProcessingStageHandler(engine, "owner/repo")
+    scheduler = PendingWorkScheduler(store, repository="owner/repo")
+
+    with patch.object(engine, "_process_single_candidate_reserved") as implementation:
+        asyncio.run(scheduler._run_claimed(retained, handler.dispatch))
+
+    unfinished = store.get(identity)
+    assert calls == 4
+    assert unfinished is not None
+    assert unfinished.reason is expected_reason
+    assert unfinished.not_before == 0
+    assert unfinished.unfinished_effects == retained.unfinished_effects
+    assert unfinished.status == "waiting"
+    assert store.due(time.time() + 3600) == []
+    implementation.assert_not_called()
+
+
+def test_ordinary_worker_reports_retained_issue_as_deferred(tmp_path, monkeypatch):
+    """A successfully retained refusal is pending work, not a worker failure."""
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "Carried title",
+        "body": "## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    engine.config.jules_mode = False
+    deferred = _admission_deferral()
+    engine.github.get_issue_dispatch_snapshot_strict.side_effect = deferred
+    monkeypatch.setattr("auto_coder.automation_engine.is_item_closed_on_github", lambda *_args: False)
+    console = io.StringIO()
+    log_file = tmp_path / "worker.log"
+    setup_logger(log_level="INFO", log_file=str(log_file), stream=console)
+
+    async def scenario():
+        await engine.queue.put(Candidate(type="issue", data=dict(issue), priority=0, issue_number=7))
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0, "issue"))
+        try:
+            await asyncio.wait_for(engine.queue.join(), 5)
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
+    try:
+        with patch("auto_coder.automation_engine.get_trace_logger") as trace_logger:
+            asyncio.run(scenario())
+    finally:
+        setup_logger(log_level="INFO")
+
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    obligation = store.get(identity)
+    assert obligation is not None
+    for output in (console.getvalue(), log_file.read_text()):
+        assert "Worker 0 deferred issue #7" in output
+        assert "repository=owner/repo" in output
+        assert "stage=issue-processing" in output
+        assert "reason=request_in_flight" in output
+        assert "api_origin=https://api.github.com" in output
+        assert f"retry_at={obligation.not_before}" in output
+        assert "failed to process issue #7" not in output
+        assert "successfully processed issue #7" not in output
+    worker_events = [call for call in trace_logger.return_value.log.call_args_list if len(call.args) > 1 and call.args[1] == "Worker 0 deferred issue #7"]
+    assert len(worker_events) == 1
+    assert worker_events[0].kwargs["details"]["outcome"] == "deferred"
 
 
 def test_final_ownership_freshness_retains_native_parent_deferral(tmp_path, monkeypatch):

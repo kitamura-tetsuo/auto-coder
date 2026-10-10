@@ -638,7 +638,19 @@ class _IssueProcessingStageHandler:
             return StageOutcome(superseded=True)
         candidate = Candidate(type="issue", data=fresh_issue, priority=0, issue_number=issue_number)
         result = engine._process_single_candidate(self._repo_name, candidate, origin="issue-pending-work-resumption")
-        if result.target_outcome is ExplicitTargetOutcome.DEFERRED:
+        if result.target_outcome is ExplicitTargetOutcome.DEFERRED or result.error:
+            if result.error:
+                logger.warning(
+                    "Issue pending-work evaluation remains unfinished repository={} issue={} stage={} reason={}",
+                    self._repo_name,
+                    issue_number,
+                    ISSUE_PROCESSING_STAGE,
+                    result.error,
+                )
+            if isinstance(result.failure, GitHubRequestError):
+                return StageOutcome(error=result.failure)
+            if result.error:
+                return StageOutcome(blocked_reason=PendingReason.EVALUATION_FAILED, blocked_error=result.error)
             return StageOutcome()
         return StageOutcome(completed_effects=obligation.unfinished_effects)
 
@@ -3833,6 +3845,9 @@ class AutomationEngine:
                 candidates: List[Candidate] = []
                 open_issue_snapshots: List[Dict[str, Any]] = []
                 for observed in entities.issues:
+                    if self._future_issue_admission_deferral(repo_name, observed.number) is not None:
+                        blocked_issue_numbers.add(observed.number)
+                        continue
                     snapshot = await asyncio.to_thread(self.github.get_issue_dispatch_snapshot_strict, repo_name, observed.number)
                     if not isinstance(snapshot, dict) or snapshot.get("number") != observed.number:
                         raise RuntimeError(f"GitHub returned an ambiguous Issue snapshot for #{observed.number}")
@@ -4037,6 +4052,28 @@ class AutomationEngine:
                         )
                         if not await asyncio.to_thread(self.invalidations.begin_processing, invalidation_claim):
                             continue
+                        if candidate.type == "issue":
+                            pending_admission = await asyncio.to_thread(
+                                self._future_issue_admission_deferral,
+                                repo_name,
+                                int(item_number),
+                            )
+                            if pending_admission is not None:
+                                await asyncio.to_thread(
+                                    self.invalidations.defer,
+                                    invalidation_claim,
+                                    pending_admission.reason.value,
+                                    pending_admission.not_before,
+                                    "pending-work-admission-deadline",
+                                )
+                                deferral_committed = True
+                                logger.info(
+                                    "Worker {} retained issue #{} until pending admission deadline {}",
+                                    worker_id,
+                                    item_number,
+                                    pending_admission.not_before,
+                                )
+                                continue
                         if candidate.type == "dependency":
                             repo_job_scope = await self._expand_dependency_obligation(repo_name)
                             decision_completed = True
@@ -4231,7 +4268,17 @@ class AutomationEngine:
                         if self._invalidation_wake_event is not None:
                             self._invalidation_wake_event.set()
 
-                    if result.error:
+                    if candidate.type == "issue" and result.target_outcome is ExplicitTargetOutcome.DEFERRED:
+                        diagnostic = result.target_reason or "; ".join(result.actions) or result.error or "pending evaluation"
+                        logger.info("Worker {} deferred issue #{}: {}", worker_id, item_number, diagnostic)
+                        get_trace_logger().log(
+                            "Worker",
+                            f"Worker {worker_id} deferred issue #{item_number}",
+                            item_type="issue",
+                            item_number=item_number,
+                            details={"worker_id": worker_id, "outcome": ExplicitTargetOutcome.DEFERRED.value, "actions": result.actions},
+                        )
+                    elif result.error:
                         logger.error(f"Worker {worker_id} failed to process {candidate.type} #{item_number}: {result.error}")
                         get_trace_logger().log("Worker", f"Worker {worker_id} failed to process {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id, "error": result.error})
                     elif candidate.type == "pr" and result.outcome is PRProcessingOutcome.DEFERRED:
@@ -5631,6 +5678,20 @@ class AutomationEngine:
         def dispatch() -> CandidateProcessingResult:
             cache_issue = candidate.type == "issue" and isinstance(item_number, int) and not isinstance(item_number, bool) and not continue_execution and not retry
             if cache_issue:
+                retained = self._future_issue_admission_deferral(repo_name, cast(int, item_number))
+                if retained is not None:
+                    reason = f"Deferred evaluation for {repo_name} issue #{item_number}: " f"stage={ISSUE_PROCESSING_STAGE}; reason={retained.reason.value}; " f"retry_at={retained.not_before}"
+                    logger.info(reason)
+                    return CandidateProcessingResult(
+                        type="issue",
+                        number=cast(int, item_number),
+                        title=candidate.data.get("title"),
+                        error=reason,
+                        target_outcome=ExplicitTargetOutcome.DEFERRED,
+                        target_reason=reason,
+                        actions=[reason],
+                        refill_retry_required=True,
+                    )
                 observed = self.issue_admission_cache.observe(repo_name, candidate.data)
                 epoch = self.issue_admission_cache.epoch(repo_name)
                 policy = self._issue_refusal_policy(repo_name, config)
@@ -5640,6 +5701,26 @@ class AutomationEngine:
                     return refusal
             try:
                 result = self._process_single_candidate_unified_impl(*impl_args)
+            except GitHubRequestDeferred as exc:
+                # Strict Issue snapshots are repeated after owner/generation
+                # serialization and immediately before final dispatch. Keep
+                # every supported, definitely-unsent refusal on the same
+                # durable boundary as the initial admission read instead of
+                # allowing a later read to escape or become a plain error.
+                deferred = _reconciliation_admission_deferral(exc)
+                if candidate.type != "issue" or not isinstance(item_number, int) or isinstance(item_number, bool) or deferred is None:
+                    raise
+                result = self._defer_issue_evaluation(
+                    repo_name,
+                    item_number,
+                    candidate.data,
+                    deferred,
+                    CandidateProcessingResult(
+                        type="issue",
+                        number=item_number,
+                        title=candidate.data.get("title"),
+                    ),
+                )
             except ParentOperationalError as exc:
                 # Hierarchy rechecks can run before or after the inner admission
                 # handlers. Never let an unavailable relationship stop the worker.
@@ -5833,6 +5914,22 @@ class AutomationEngine:
                         invalidation_generation=candidate.invalidation_generation,
                         urgent_admission=candidate.urgent_admission,
                     )
+                except GitHubRequestDeferred as exc:
+                    # This first current-state read is also used by refill and
+                    # pending-work dispatch.  A governor refusal is ordinary
+                    # scheduling pressure, not a worker/daemon failure, but
+                    # only the explicitly supported, definitely-unsent typed
+                    # outcomes are safe to retain for automatic resumption.
+                    deferred = _reconciliation_admission_deferral(exc)
+                    if deferred is not None:
+                        return self._defer_issue_evaluation(
+                            repo_name,
+                            item_number,
+                            candidate.data,
+                            deferred,
+                            result,
+                        )
+                    raise
                 except ParentSpecificationError as exc:
                     result.error = f"Parent-Issue reconciliation blocked processing: {exc}"
                     result.target_outcome = ExplicitTargetOutcome.BLOCKED
@@ -6184,6 +6281,11 @@ class AutomationEngine:
                     item_number,
                     self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number),
                 )
+            except GitHubRequestDeferred as exc:
+                deferred = _reconciliation_admission_deferral(exc)
+                if deferred is None:
+                    raise
+                return self._defer_issue_evaluation(repo_name, item_number, candidate.data, deferred, result)
             except ParentSpecificationError as exc:
                 result.error = f"Parent-Issue reconciliation blocked processing: {exc}"
                 result.target_outcome = ExplicitTargetOutcome.BLOCKED
@@ -6201,6 +6303,7 @@ class AutomationEngine:
                 return result
             except Exception as exc:
                 result.error = str(exc)
+                result.failure = exc
                 result.refill_retry_required = True
                 return result
             if not isinstance(current_issue, dict) or current_issue.get("number") != item_number:
@@ -6503,8 +6606,14 @@ class AutomationEngine:
             # not transferable.
             try:
                 dispatch_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
+            except GitHubRequestDeferred as exc:
+                deferred = _reconciliation_admission_deferral(exc)
+                if deferred is None:
+                    raise
+                return self._defer_issue_evaluation(repo_name, item_number, candidate.data, deferred, result)
             except Exception as exc:
                 result.error = f"Cannot confirm validated Issue generation before dispatch: {exc}"
+                result.failure = exc
                 result.refill_retry_required = True
                 return result
             # Reconcile from the same cache-bypassing generation used for final
@@ -7646,6 +7755,15 @@ class AutomationEngine:
             jules_mode=jules_mode,
             origin=origin,
         )
+
+    def _future_issue_admission_deferral(self, repo_name: str, issue_number: int) -> PendingObligation | None:
+        """Return the target's retained admission deadline while it is closed."""
+        now = time.time()
+        entity = f"issue:{issue_number}"
+        for obligation in get_pending_work_store(repo_name).all_pending():
+            if obligation.identity.entity == entity and obligation.identity.stage == ISSUE_PROCESSING_STAGE and obligation.reason is PendingReason.ADMISSION_DEFERRED and obligation.not_before > now:
+                return obligation
+        return None
 
     def _pending_work_refusal(self, repo_name: str) -> Optional[str]:
         """Return a refusal message unless ``repo_name``'s pending-work storage is READY.

@@ -50,6 +50,7 @@ class PendingReason(str, Enum):
     FORBIDDEN = "forbidden"
     INDETERMINATE = "indeterminate_delivery"
     RETRIES_EXHAUSTED = "throttle_retries_exhausted"
+    EVALUATION_FAILED = "evaluation_failed"
 
 
 @dataclass(frozen=True)
@@ -508,6 +509,33 @@ class PendingWorkStore:
             logger.error("Could not persist GitHub pending obligation {}: {}", identity.key(), exc)
             raise PendingWorkPersistenceError("GitHub pending work could not be persisted") from exc
 
+    def block(self, identity: WorkIdentity, reason: PendingReason, error: str) -> PendingObligation:
+        """Preserve unfinished effects as a non-automatic operational block."""
+        self._require_owned(identity)
+        if reason in {PendingReason.THROTTLED, PendingReason.ADMISSION_DEFERRED}:
+            raise ValueError("An automatically retryable reason cannot be stored as an operational block")
+        try:
+            with _LOCK, self._connect() as connection:
+                self._require_stored_row_owned(connection, identity)
+                row = connection.execute(
+                    "SELECT unfinished_effects, throttle_attempts FROM github_pending_work WHERE work_key=?",
+                    (identity.key(),),
+                ).fetchone()
+                if row is None:
+                    raise PendingWorkPersistenceError(f"Pending obligation {identity.key()} does not exist")
+                effects = tuple(json.loads(row[0]))
+                attempts = int(row[1])
+                connection.execute(
+                    "UPDATE github_pending_work SET reason=?, not_before=0, last_error=?, status=?, updated_at=? WHERE work_key=?",
+                    (reason.value, error, ObligationStatus.WAITING.value, time.time(), identity.key()),
+                )
+                return PendingObligation(identity, reason, 0.0, effects, attempts, error, ObligationStatus.WAITING.value)
+        except PendingWorkPersistenceError:
+            raise
+        except Exception as exc:
+            logger.error("Could not block GitHub pending obligation {}: {}", identity.key(), exc)
+            raise PendingWorkPersistenceError("GitHub pending work could not be updated") from exc
+
     def due(self, now: float | None = None) -> list[PendingObligation]:
         """Obligations eligible for a fresh dispatch: waiting and past their deadline."""
         current_time = time.time() if now is None else now
@@ -917,6 +945,8 @@ class StageOutcome:
     error: GitHubRequestError | None = None
     superseded: bool = False
     governor_deadline: float | None = None
+    blocked_reason: PendingReason | None = None
+    blocked_error: str = ""
 
 
 class StageHandler(Protocol):
@@ -1151,7 +1181,9 @@ class PendingWorkScheduler:
             return
         for effect in outcome.completed_effects:
             self._store.complete_effect(identity, effect)
-        if outcome.error is not None:
+        if outcome.blocked_reason is not None:
+            self._store.block(identity, outcome.blocked_reason, outcome.blocked_error)
+        elif outcome.error is not None:
             current = self._store.get(identity)
             remaining = current.unfinished_effects if current is not None else ()
             self._store.defer(identity, outcome.error, remaining, governor_deadline=outcome.governor_deadline)

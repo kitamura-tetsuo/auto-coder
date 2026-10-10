@@ -1170,6 +1170,34 @@ ownership-freshness and retained-family boundaries. Each verifies durable
 deferral without implementation dispatch; the existing event schema remains
 unchanged.
 
+The initial strict target snapshot in common Issue dispatch now retains the same
+typed, definitely-not-sent Governor refusals before any implementation effect.
+This is observability-neutral: it reuses the existing `Deferred` disposition,
+`issue-processing` pending-work identity, and structured operational diagnostic
+without adding an origin, event field, or dashboard renderer. Runnable coverage
+in `tests/test_pending_work_resumption.py::test_initial_dispatch_snapshot_retains_supported_admission_deferral`
+asserts the diagnostic and durable handoff, while
+`test_initial_dispatch_snapshot_does_not_reclassify_unsupported_refusal` guards
+the failure/deferred distinction.
+The same existing diagnostic is retained when a generation-serialized strict
+snapshot refuses admission; `test_generation_serialized_snapshot_retains_bare_admission_deferral`
+drives common dispatch through the owner lock and verifies the durable Deferred
+result without adding a dashboard event shape.
+`test_later_strict_snapshot_retains_bare_admission_deferral` exercises both the
+current-admission and final pre-dispatch strict reads and verifies that neither
+generic error boundary flattens the same diagnostic or durable outcome.
+`test_future_retained_deadline_blocks_duplicate_common_dispatch` and
+`test_future_retained_deadline_blocks_capacity_refill_before_strict_read`
+verify that worker and refill wakes do not create an early strict-read trace or
+alter the durable deadline. `test_due_resumption_preserves_effects_after_later_snapshot_failure`
+keeps the pending effects visible under distinct non-automatic authentication
+and evaluation-failure blocks after a resumed-evaluation failure,
+and `test_ordinary_worker_reports_retained_issue_as_deferred` verifies the
+existing worker trace uses the deferred outcome instead of a generic failure.
+`test_future_retained_deadline_blocks_invalidation_worker_before_strict_read`
+drives durable-notification intake and verifies it is retained at the same
+deadline before target refresh, dependency evaluation, or stage routing.
+
 Shared-governor incarnation ownership changes the existing HTTP admission gate but is
 dashboard-observability neutral. Governor admission still occurs before an Issue or PR
 processing execution outcome becomes known, and the durable pending-work paths still

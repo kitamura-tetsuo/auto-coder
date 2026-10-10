@@ -434,7 +434,7 @@ def test_approval_receipt_before_ack_keeps_response_wait_reporting(tmp_path, mon
     _, log_file = sinks
     manager, gate, seen = _gated(tmp_path, monkeypatch, "approval-gap", interval=0.2, timeout=120, options=["--disable-approval"])
     call = _Call(manager)
-    _wait_for(lambda: seen.exists() and len(_heartbeats(log_file)) >= 2)
+    _wait_for(lambda: seen.exists() and len([beat for beat in _heartbeats(log_file) if beat["phase"] == "turn_submission"]) >= 2)
     beats = [beat for beat in _heartbeats(log_file) if beat["phase"] == "turn_submission"]
     assert len(beats) >= 2 and all(beat["wait"]["reason"] == "response_wait" for beat in beats[-2:])
     gate.write_text("go")
