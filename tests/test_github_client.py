@@ -338,6 +338,32 @@ class TestGitHubClient:
             result = client.find_pr_by_head_branch("test/repo", "non-existent")
             assert result is None
 
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
+    def test_strict_head_lookup_includes_closed_prs_and_propagates_failure(self, mock_get_client, mock_github_token):
+        client = GitHubClient.get_instance(mock_github_token)
+        closed = AttrDict(
+            {
+                "number": 321,
+                "title": "Retained attempt",
+                "head": AttrDict({"ref": "issue-47"}),
+                "base": AttrDict({"ref": "main"}),
+                "state": "closed",
+                "body": "Closes #47",
+            }
+        )
+        mock_get_client.return_value.pulls.list.return_value = [closed]
+
+        found = client.find_pr_by_head_branch_strict("test/repo", "issue-47")
+
+        assert found is not None
+        assert found["number"] == 321
+        assert found["state"] == "closed"
+        mock_get_client.return_value.pulls.list.assert_called_once_with("test", "repo", state="all", head="test:issue-47", per_page=100, page=1)
+
+        mock_get_client.return_value.pulls.list.side_effect = RuntimeError("GitHub unavailable")
+        with pytest.raises(RuntimeError, match="GitHub unavailable"):
+            client.find_pr_by_head_branch_strict("test/repo", "issue-47")
+
     def test_get_issue_details(self, mock_github_token):
         """Test issue details extraction."""
         client = GitHubClient.get_instance(mock_github_token)

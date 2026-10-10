@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Callable
 
 from .checkout_lock import checkout_lock
+from .implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from .local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobKind, LocalJobStore
 
 
@@ -58,9 +59,10 @@ def default_issue_job_workspace_root() -> Path:
 class IssueJobWorkspaceProducer:
     """Prepare, execute and checkpoint an accepted Issue job without a shared lease."""
 
-    def __init__(self, store: LocalJobStore, root: Path | None = None) -> None:
+    def __init__(self, store: LocalJobStore, root: Path | None = None, implementation_slots: ImplementationSlotRepository | None = None) -> None:
         self._store = store
         self._root = (root or default_issue_job_workspace_root()).resolve()
+        self._implementation_slots = implementation_slots
 
     @staticmethod
     def _git(cwd: Path, *args: str) -> str:
@@ -156,6 +158,9 @@ class IssueJobWorkspaceProducer:
                     raise IssueJobWorkspaceError(result.stderr.strip() or "private clone failed")
                 self._git(workspace, "checkout", "--detach", source.source_commit)
                 self._git(workspace, "switch", "-c", source.work_branch)
+                remote_result = subprocess.run(["git", "remote", "get-url", "origin"], cwd=repository, capture_output=True, text=True)
+                publication_remote = remote_result.stdout.strip() if remote_result.returncode == 0 else str(repository)
+                self._git(workspace, "remote", "set-url", "origin", publication_remote)
                 if staged_patch.stdout:
                     apply_index = subprocess.run(
                         ["git", "apply", "--cached", "--binary", "-"],
@@ -170,12 +175,18 @@ class IssueJobWorkspaceProducer:
                     raise IssueJobWorkspaceError("authorized source working state changed during capture")
                 if self._git(workspace, "rev-parse", "HEAD") != source.source_commit:
                     raise IssueJobWorkspaceError("private workspace source verification failed")
+            owner = ImplementationOwner("issue", record.target_number)
+            owner_incarnation = self._implementation_slots.owner_incarnation(owner) if self._implementation_slots is not None else None
+            owner_generation = self._implementation_slots.implementation_generation(owner) if self._implementation_slots is not None else None
             if not self._store.bind_workspace(
                 claim,
                 workspace_path=workspace,
                 source_commit=source.source_commit,
                 source_ref=source.source_ref,
                 work_branch=source.work_branch,
+                publication_remote=publication_remote,
+                owner_incarnation=owner_incarnation or "",
+                owner_generation=owner_generation,
             ):
                 raise IssueJobWorkspaceError("job authority changed before workspace binding")
         except Exception:
@@ -218,6 +229,7 @@ class IssueJobWorkspaceProducer:
                 "source_ref": source.source_ref,
                 "work_branch": source.work_branch,
                 "changed_files": changed_files,
+                "workspace_files": {name: {"checksum": identity.checksum, "mode": identity.mode, "symlink": identity.symlink} for name, identity in sorted(final_files.items())},
                 "output": output,
             },
             sort_keys=True,

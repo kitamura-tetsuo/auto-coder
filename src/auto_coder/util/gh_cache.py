@@ -1871,6 +1871,23 @@ class GitHubClient:
             logger.warning(f"Failed to search for PR with head branch '{branch_name}': {e}")
             return None
 
+    def find_pr_by_head_branch_strict(self, repo_name: str, branch_name: str) -> Optional[Dict[str, Any]]:
+        """Find an open or closed head-branch PR, propagating lookup failures."""
+        owner, repo = repo_name.split("/")
+        api = get_ghapi_client(self.token)
+        page = 1
+        while True:
+            prs = api.pulls.list(owner, repo, state="all", head=f"{owner}:{branch_name}", per_page=100, page=page)
+            if not prs:
+                return None
+            for pr in prs:
+                details = self.get_pr_details(pr)
+                if details.get("head", {}).get("ref") == branch_name:
+                    return details
+            if len(prs) < 100:
+                return None
+            page += 1
+
     def _get_issue_timeline(
         self,
         repo_name: str,

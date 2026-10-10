@@ -2915,13 +2915,13 @@ class AutomationEngine:
                 summary,
                 self.github,
                 self.config,
-                slots,
+                None,
             )
 
         finalizer = IssueJobFinalizer(
             LocalJobStore(),
             slots,
-            lambda repository, branch: self.github.find_pr_by_head_branch(repository, branch),
+            lambda repository, branch: self.github.find_pr_by_head_branch_strict(repository, branch),
             create_pr,
         )
         for result in finalizer.resume_all(repo_name):

@@ -83,6 +83,9 @@ class LocalJobRecord:
     source_commit: str = ""
     source_ref: str = ""
     work_branch: str = ""
+    publication_remote: str = ""
+    owner_incarnation: str = ""
+    owner_generation: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -132,13 +135,16 @@ class LocalJobStore:
                 diagnostic TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL,
                 updated_at REAL NOT NULL, workspace_path TEXT NOT NULL DEFAULT '',
                 source_commit TEXT NOT NULL DEFAULT '', source_ref TEXT NOT NULL DEFAULT '',
-                work_branch TEXT NOT NULL DEFAULT '',
+                work_branch TEXT NOT NULL DEFAULT '', publication_remote TEXT NOT NULL DEFAULT '',
+                owner_incarnation TEXT NOT NULL DEFAULT '', owner_generation TEXT,
                 UNIQUE(kind, repository, target_number, upstream_attempt))"""
             )
             columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(local_jobs)")}
-            for name in ("workspace_path", "source_commit", "source_ref", "work_branch"):
+            for name in ("workspace_path", "source_commit", "source_ref", "work_branch", "publication_remote", "owner_incarnation"):
                 if name not in columns:
                     connection.execute(f"ALTER TABLE local_jobs ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")  # nosec B608: fixed names
+            if "owner_generation" not in columns:
+                connection.execute("ALTER TABLE local_jobs ADD COLUMN owner_generation TEXT")
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS local_job_results (
                 artifact_id TEXT PRIMARY KEY, job_id TEXT NOT NULL,
@@ -184,6 +190,9 @@ class LocalJobStore:
             source_commit=str(row["source_commit"]),
             source_ref=str(row["source_ref"]),
             work_branch=str(row["work_branch"]),
+            publication_remote=str(row["publication_remote"]),
+            owner_incarnation=str(row["owner_incarnation"]),
+            owner_generation=str(row["owner_generation"]) if row["owner_generation"] is not None else None,
         )
 
     @staticmethod
@@ -382,15 +391,38 @@ class LocalJobStore:
         except (OSError, sqlite3.Error, ValueError):
             return None
 
-    def bind_workspace(self, claim: LocalJobClaim, *, workspace_path: Path, source_commit: str, source_ref: str, work_branch: str) -> bool:
+    def bind_workspace(
+        self,
+        claim: LocalJobClaim,
+        *,
+        workspace_path: Path,
+        source_commit: str,
+        source_ref: str,
+        work_branch: str,
+        publication_remote: str,
+        owner_incarnation: str,
+        owner_generation: Optional[str],
+    ) -> bool:
         """Fence a prepared full-job workspace to its exact running incarnation."""
-        if not claim.acquired or not workspace_path.is_absolute() or not source_commit or not source_ref or not work_branch:
+        if not claim.acquired or not workspace_path.is_absolute() or not source_commit or not source_ref or not work_branch or not publication_remote:
             return False
         try:
             with self._connect() as connection:
                 cursor = connection.execute(
-                    "UPDATE local_jobs SET workspace_path=?, source_commit=?, source_ref=?, work_branch=?, updated_at=? " "WHERE job_id=? AND state=? AND execution_incarnation=? AND workspace_path=''",
-                    (str(workspace_path), source_commit, source_ref, work_branch, time.time(), claim.record.job_id, LocalJobState.RUNNING.value, claim.record.execution_incarnation),
+                    "UPDATE local_jobs SET workspace_path=?, source_commit=?, source_ref=?, work_branch=?, " "publication_remote=?, owner_incarnation=?, owner_generation=?, updated_at=? " "WHERE job_id=? AND state=? AND execution_incarnation=? AND workspace_path=''",
+                    (
+                        str(workspace_path),
+                        source_commit,
+                        source_ref,
+                        work_branch,
+                        publication_remote,
+                        owner_incarnation,
+                        owner_generation,
+                        time.time(),
+                        claim.record.job_id,
+                        LocalJobState.RUNNING.value,
+                        claim.record.execution_incarnation,
+                    ),
                 )
             return cursor.rowcount == 1
         except (OSError, sqlite3.Error):

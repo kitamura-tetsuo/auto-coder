@@ -1018,6 +1018,30 @@ class ImplementationSlotRepository:
                 self._write(owners)
             return True
 
+    def record_implementation_pr_if_current(
+        self,
+        owner: ImplementationOwner,
+        pr_number: int,
+        incarnation: str,
+        generation: Optional[str],
+    ) -> bool:
+        """Associate a PR only with the exact retained owner generation."""
+        if isinstance(pr_number, bool) or not isinstance(pr_number, int) or not incarnation:
+            return False
+        with self._state_lock():
+            owners = self._read()
+            record = owners.get(owner.key)
+            if record is None or record.get("incarnation") != incarnation or record.get("implementation_generation") != generation:
+                return False
+            known_prs = record.setdefault("implementation_prs", [])
+            if not isinstance(known_prs, list):
+                raise ImplementationSlotUnavailable("Cannot safely parse implementation slot PR membership")
+            if pr_number not in known_prs:
+                known_prs.append(pr_number)
+                self._increment_activity_revision(record)
+                self._write(owners)
+            return True
+
     def record_provider_session(self, owner: ImplementationOwner, session_id: str) -> bool:
         """Persist a provider session as evidence of logical ownership."""
         if not isinstance(session_id, str) or not session_id.strip():

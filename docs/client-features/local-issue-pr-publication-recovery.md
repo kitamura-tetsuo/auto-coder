@@ -40,3 +40,16 @@ reserved for normal lifecycle recovery.
 
 Regression coverage for the asynchronous boundary is in
 `tests/test_issue_job_finalizer.py`.
+
+The workspace checkpoint also binds the exact implementation-owner incarnation
+and generation, the controller checkout's authoritative publication remote, and
+a complete filesystem identity (content, mode, and symlink state). Finalization
+refuses a replacement owner or any post-checkpoint workspace drift. A commit
+that completed immediately before a checkpointing crash is recovered only when
+it is the clean, direct child of the pinned source and still represents that
+complete filesystem identity.
+
+PR reconciliation uses a strict all-state head-branch lookup that propagates
+API failures. Once creation has been requested, a missing or unavailable lookup
+cannot authorize another create request; recovery waits until the original open
+or closed PR can be authoritatively identified.

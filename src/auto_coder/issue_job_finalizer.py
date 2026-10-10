@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,13 +101,39 @@ class IssueJobFinalizer:
                 return IssuePublicationResult(job_id, "pending", diagnostic="could not settle unsuccessful result")
             return IssuePublicationResult(job_id, record.invocation_outcome.value)
 
+        owner = ImplementationOwner("issue", record.target_number)
+        if not record.owner_incarnation or self._slots.owner_incarnation(owner) != record.owner_incarnation or self._slots.implementation_generation(owner) != record.owner_generation:
+            return IssuePublicationResult(job_id, "pending", diagnostic="exact implementation owner is no longer current")
+
         try:
             manifest = json.loads(artifact.output)
         except (TypeError, json.JSONDecodeError):
             return IssuePublicationResult(job_id, "pending", diagnostic="result manifest is unreadable")
         workspace = Path(record.workspace_path)
-        if not workspace.is_absolute() or str(manifest.get("workspace", "")) != str(workspace) or manifest.get("source_commit") != record.source_commit or manifest.get("work_branch") != record.work_branch or not isinstance(manifest.get("changed_files"), dict):
+        if (
+            not workspace.is_absolute()
+            or str(manifest.get("workspace", "")) != str(workspace)
+            or manifest.get("source_commit") != record.source_commit
+            or manifest.get("work_branch") != record.work_branch
+            or not isinstance(manifest.get("changed_files"), dict)
+            or not isinstance(manifest.get("workspace_files"), dict)
+        ):
             return IssuePublicationResult(job_id, "pending", diagnostic="result manifest contradicts job authority")
+        actual_files: dict[str, dict[str, object]] = {}
+        for current, names, filenames in os.walk(workspace, followlinks=False):
+            symlinked_directories = [name for name in names if (Path(current) / name).is_symlink()]
+            names[:] = [name for name in names if name != ".git" and name not in symlinked_directories]
+            for name in filenames + symlinked_directories:
+                path = Path(current) / name
+                relative = str(path.relative_to(workspace))
+                contents = os.fsencode(os.readlink(path)) if path.is_symlink() else path.read_bytes()
+                actual_files[relative] = {
+                    "checksum": hashlib.sha256(contents).hexdigest(),
+                    "mode": stat.S_IMODE(path.lstat().st_mode if path.is_symlink() else path.stat().st_mode),
+                    "symlink": path.is_symlink(),
+                }
+        if actual_files != manifest["workspace_files"]:
+            return IssuePublicationResult(job_id, "pending", diagnostic="retained workspace differs from the confirmed result")
         for relative, expected in manifest["changed_files"].items():
             if not isinstance(relative, str) or Path(relative).is_absolute() or ".." in Path(relative).parts:
                 return IssuePublicationResult(job_id, "pending", diagnostic="result manifest contains an unsafe path")
@@ -122,8 +149,9 @@ class IssueJobFinalizer:
                 return IssuePublicationResult(job_id, "pending", diagnostic="retained workspace differs from the confirmed result")
         branch = self._git(workspace, "branch", "--show-current")
         head = self._git(workspace, "rev-parse", "HEAD")
+        remote = self._git(workspace, "remote", "get-url", "origin")
         ancestry = self._git(workspace, "merge-base", "--is-ancestor", record.source_commit, "HEAD")
-        if branch.returncode or branch.stdout.strip() != record.work_branch or head.returncode or ancestry.returncode:
+        if branch.returncode or branch.stdout.strip() != record.work_branch or head.returncode or ancestry.returncode or remote.returncode or remote.stdout.strip() != record.publication_remote:
             return IssuePublicationResult(job_id, "pending", diagnostic="retained workspace no longer has the authorized branch history")
 
         if record.state is LocalJobState.RESULT_RECORDED:
@@ -145,18 +173,26 @@ class IssueJobFinalizer:
                 if not self._store.settle(claim, "no_change"):
                     return IssuePublicationResult(job_id, "pending", diagnostic="could not settle no-change result")
                 return IssuePublicationResult(job_id, "no_change")
-            add = self._git(workspace, "add", "-A")
-            if add.returncode:
-                return self._pending(claim, "commit", add.stderr or "git add failed")
-            committed = git_commit_with_retry(f"Auto-Coder: Address issue #{record.target_number}", cwd=str(workspace))
-            if not committed.success:
-                return self._pending(claim, "commit", committed.stderr or "commit failed", "failed")
-            head = self._git(workspace, "rev-parse", "HEAD")
-            if head.returncode or not head.stdout.strip() or head.stdout.strip() == record.source_commit:
-                return self._pending(claim, "commit", "commit did not produce a new exact head", "failed")
-            commit_sha = head.stdout.strip()
-            if not self._store.record_effect(claim, "commit", "completed", commit_sha):
-                return IssuePublicationResult(job_id, "pending", diagnostic="commit checkpoint failed")
+            if not status.stdout.strip() and head.stdout.strip() != record.source_commit:
+                parent = self._git(workspace, "rev-parse", "HEAD^")
+                if parent.returncode or parent.stdout.strip() != record.source_commit:
+                    return self._pending(claim, "commit", "existing commit is not the exact controller commit", "indeterminate")
+                commit_sha = head.stdout.strip()
+                if not self._store.record_effect(claim, "commit", "completed", commit_sha):
+                    return IssuePublicationResult(job_id, "pending", diagnostic="recovered commit checkpoint failed")
+            else:
+                add = self._git(workspace, "add", "-A")
+                if add.returncode:
+                    return self._pending(claim, "commit", add.stderr or "git add failed")
+                committed = git_commit_with_retry(f"Auto-Coder: Address issue #{record.target_number}", cwd=str(workspace))
+                if not committed.success:
+                    return self._pending(claim, "commit", committed.stderr or "commit failed", "failed")
+                head = self._git(workspace, "rev-parse", "HEAD")
+                if head.returncode or not head.stdout.strip() or head.stdout.strip() == record.source_commit:
+                    return self._pending(claim, "commit", "commit did not produce a new exact head", "failed")
+                commit_sha = head.stdout.strip()
+                if not self._store.record_effect(claim, "commit", "completed", commit_sha):
+                    return IssuePublicationResult(job_id, "pending", diagnostic="commit checkpoint failed")
 
         remote = self._git(workspace, "ls-remote", "--heads", "origin", f"refs/heads/{record.work_branch}")
         remote_sha = remote.stdout.split()[0] if remote.returncode == 0 and remote.stdout.strip() else ""
@@ -182,6 +218,9 @@ class IssueJobFinalizer:
         if existing is not None and pr_number is None:
             return self._pending(claim, "pr", "branch is associated with an unrelated or contradictory PR", "indeterminate")
         if pr_number is None:
+            prior_pr_effect = self._store.get_effect(record.job_id, record.execution_incarnation, "pr")
+            if prior_pr_effect is not None:
+                return self._pending(claim, "pr", "prior PR creation requires authoritative reconciliation", "indeterminate")
             self._store.record_effect(claim, "pr", "pending", "create requested")
             try:
                 self._create_pr(record, str(manifest.get("output", "")))
@@ -194,7 +233,7 @@ class IssueJobFinalizer:
             pr_number = self._attributable_pr(existing, record)
             if pr_number is None:
                 return self._pending(claim, "pr", "PR creation is not authoritatively confirmed", "indeterminate")
-        if not self._slots.record_implementation_pr(ImplementationOwner("issue", record.target_number), pr_number):
+        if not self._slots.record_implementation_pr_if_current(owner, pr_number, record.owner_incarnation, record.owner_generation):
             return self._pending(claim, "association", f"ownership association for PR #{pr_number} failed")
         self._store.record_effect(claim, "pr", "completed", str(pr_number))
         if not self._store.record_effect(claim, "association", "completed", str(pr_number)) or not self._store.settle(claim, f"pr:{pr_number}"):
