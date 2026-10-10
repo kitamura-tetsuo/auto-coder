@@ -2,6 +2,7 @@
 Unit and integration tests for backend_cloud and non-difficult cloud issue routing.
 """
 
+import sqlite3
 import threading
 import time
 from unittest.mock import ANY, MagicMock, call, patch
@@ -492,6 +493,8 @@ class TestNonDifficultCloudIssueRouting:
         assert refused.execution_incarnation == ""
         assert refused.result_reference == ""
         assert store.get_result_artifact(refused.result_reference) is None
+        with sqlite3.connect(store.path) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM local_job_results").fetchone() == (0,)
         build_backend.assert_not_called()
         runtime_backend._run_llm_cli.assert_not_called()
         assert github.get_issue_dispatch_snapshot_strict.call_args_list == [
