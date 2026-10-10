@@ -79,6 +79,8 @@ class LocalJobRecord:
     invocation_outcome: Optional[InvocationOutcome] = None
     result_reference: str = ""
     diagnostic: str = ""
+    provider_entered: bool = False
+    runner_owner: str = ""
     workspace_path: str = ""
     source_commit: str = ""
     source_ref: str = ""
@@ -133,13 +135,18 @@ class LocalJobStore:
                 state TEXT NOT NULL, execution_incarnation TEXT NOT NULL DEFAULT '',
                 invocation_outcome TEXT, result_reference TEXT NOT NULL DEFAULT '',
                 diagnostic TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL,
-                updated_at REAL NOT NULL, workspace_path TEXT NOT NULL DEFAULT '',
+                updated_at REAL NOT NULL, provider_entered INTEGER NOT NULL DEFAULT 0,
+                runner_owner TEXT NOT NULL DEFAULT '', workspace_path TEXT NOT NULL DEFAULT '',
                 source_commit TEXT NOT NULL DEFAULT '', source_ref TEXT NOT NULL DEFAULT '',
                 work_branch TEXT NOT NULL DEFAULT '', publication_remote TEXT NOT NULL DEFAULT '',
                 owner_incarnation TEXT NOT NULL DEFAULT '', owner_generation TEXT,
                 UNIQUE(kind, repository, target_number, upstream_attempt))"""
             )
             columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(local_jobs)")}
+            if "provider_entered" not in columns:
+                connection.execute("ALTER TABLE local_jobs ADD COLUMN provider_entered INTEGER NOT NULL DEFAULT 0")
+            if "runner_owner" not in columns:
+                connection.execute("ALTER TABLE local_jobs ADD COLUMN runner_owner TEXT NOT NULL DEFAULT ''")
             for name in ("workspace_path", "source_commit", "source_ref", "work_branch", "publication_remote", "owner_incarnation"):
                 if name not in columns:
                     connection.execute(f"ALTER TABLE local_jobs ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")  # nosec B608: fixed names
@@ -186,6 +193,8 @@ class LocalJobStore:
             invocation_outcome=InvocationOutcome(raw_outcome) if raw_outcome else None,
             result_reference=str(row["result_reference"]),
             diagnostic=str(row["diagnostic"]),
+            provider_entered=bool(row["provider_entered"]),
+            runner_owner=str(row["runner_owner"]),
             workspace_path=str(row["workspace_path"]),
             source_commit=str(row["source_commit"]),
             source_ref=str(row["source_ref"]),
@@ -216,9 +225,10 @@ class LocalJobStore:
     def _insert(connection: sqlite3.Connection, offer: LocalJobOffer, upstream_incarnation: str) -> None:
         now = time.time()
         connection.execute(
-            "INSERT INTO local_jobs (job_id, kind, repository, target_number, upstream_attempt, "
-            "upstream_incarnation, backend_name, input_identity, invocation_input, state, "
-            "execution_incarnation, invocation_outcome, result_reference, diagnostic, created_at, updated_at) "
+            "INSERT INTO local_jobs "
+            "(job_id, kind, repository, target_number, upstream_attempt, upstream_incarnation, "
+            "backend_name, input_identity, invocation_input, state, execution_incarnation, "
+            "invocation_outcome, result_reference, diagnostic, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', NULL, '', '', ?, ?)",
             (
                 offer.job_id,
@@ -346,14 +356,14 @@ class LocalJobStore:
         except (OSError, sqlite3.Error, ValueError):
             return ()
 
-    def claim(self, job_id: str) -> Optional[LocalJobClaim]:
+    def claim(self, job_id: str, runner_owner: str = "") -> Optional[LocalJobClaim]:
         incarnation = str(uuid.uuid4())
         try:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 cursor = connection.execute(
-                    "UPDATE local_jobs SET state=?, execution_incarnation=?, updated_at=? WHERE job_id=? AND state=? AND execution_incarnation=''",
-                    (LocalJobState.RUNNING.value, incarnation, time.time(), job_id, LocalJobState.PENDING.value),
+                    "UPDATE local_jobs SET state=?, execution_incarnation=?, runner_owner=?, updated_at=? WHERE job_id=? AND state=? AND execution_incarnation=''",
+                    (LocalJobState.RUNNING.value, incarnation, runner_owner, time.time(), job_id, LocalJobState.PENDING.value),
                 )
                 row = connection.execute("SELECT * FROM local_jobs WHERE job_id=?", (job_id,)).fetchone()
                 connection.commit()
@@ -361,9 +371,141 @@ class LocalJobStore:
         except (OSError, sqlite3.Error, ValueError):
             return None
 
+    def mark_provider_entered(self, claim: LocalJobClaim) -> bool:
+        """Durably fence the exact incarnation immediately before provider entry."""
+        if not claim.acquired:
+            return False
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    "UPDATE local_jobs SET provider_entered=1, updated_at=? WHERE job_id=? AND state=? " "AND execution_incarnation=? AND provider_entered=0",
+                    (time.time(), claim.record.job_id, LocalJobState.RUNNING.value, claim.record.execution_incarnation),
+                )
+            return cursor.rowcount == 1
+        except (OSError, sqlite3.Error):
+            return False
+
+    def record_runner_diagnostic(self, claim: LocalJobClaim, diagnostic: str) -> bool:
+        """Record a non-result runner failure without implying provider completion."""
+        if not claim.acquired:
+            return False
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    "UPDATE local_jobs SET diagnostic=?, updated_at=? WHERE job_id=? AND state=? AND execution_incarnation=?",
+                    (diagnostic, time.time(), claim.record.job_id, LocalJobState.RUNNING.value, claim.record.execution_incarnation),
+                )
+            return cursor.rowcount == 1
+        except (OSError, sqlite3.Error):
+            return False
+
+    def release_unentered_claim(self, claim: LocalJobClaim, diagnostic: str) -> bool:
+        """Return a positively unentered incarnation to pending for later retry."""
+        if not claim.acquired:
+            return False
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    "UPDATE local_jobs SET state=?, execution_incarnation='', runner_owner='', diagnostic=?, updated_at=? " "WHERE job_id=? AND state=? AND execution_incarnation=? AND provider_entered=0",
+                    (
+                        LocalJobState.PENDING.value,
+                        diagnostic,
+                        time.time(),
+                        claim.record.job_id,
+                        LocalJobState.RUNNING.value,
+                        claim.record.execution_incarnation,
+                    ),
+                )
+            return cursor.rowcount == 1
+        except (OSError, sqlite3.Error):
+            return False
+
+    def release_dead_owner_claim(self, record: LocalJobRecord, diagnostic: str) -> bool:
+        """Recover an exact unentered incarnation after its owner is proven dead."""
+        if record.state is not LocalJobState.RUNNING or record.provider_entered or not record.execution_incarnation or not record.runner_owner:
+            return False
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    "UPDATE local_jobs SET state=?, execution_incarnation='', runner_owner='', diagnostic=?, updated_at=? " "WHERE job_id=? AND state=? AND execution_incarnation=? AND runner_owner=? AND provider_entered=0",
+                    (
+                        LocalJobState.PENDING.value,
+                        diagnostic,
+                        time.time(),
+                        record.job_id,
+                        LocalJobState.RUNNING.value,
+                        record.execution_incarnation,
+                        record.runner_owner,
+                    ),
+                )
+            return cursor.rowcount == 1
+        except (OSError, sqlite3.Error):
+            return False
+
+    def recover_downstream_pending(self, record: LocalJobRecord) -> bool:
+        """Promote an exact committed result after validating its durable artifact."""
+        if record.state is not LocalJobState.RESULT_RECORDED or record.invocation_outcome is None or not record.result_reference:
+            return False
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                artifact = connection.execute(
+                    "SELECT 1 FROM local_job_results WHERE artifact_id=? AND job_id=? AND execution_incarnation=? AND outcome=?",
+                    (record.result_reference, record.job_id, record.execution_incarnation, record.invocation_outcome.value),
+                ).fetchone()
+                if artifact is None:
+                    connection.rollback()
+                    return False
+                cursor = connection.execute(
+                    "UPDATE local_jobs SET state=?, updated_at=? WHERE job_id=? AND state=? AND execution_incarnation=? AND result_reference=?",
+                    (
+                        LocalJobState.DOWNSTREAM_EFFECTS_PENDING.value,
+                        time.time(),
+                        record.job_id,
+                        LocalJobState.RESULT_RECORDED.value,
+                        record.execution_incarnation,
+                        record.result_reference,
+                    ),
+                )
+                connection.commit()
+            return cursor.rowcount == 1
+        except (OSError, sqlite3.Error):
+            return False
+
+    def recover_recorded_result(self, record: LocalJobRecord) -> bool:
+        """Checkpoint a previously persisted exact-incarnation provider result."""
+        if record.state is not LocalJobState.RUNNING or not record.provider_entered or not record.execution_incarnation:
+            return False
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                artifact = connection.execute(
+                    "SELECT artifact_id, outcome FROM local_job_results WHERE job_id=? AND execution_incarnation=?",
+                    (record.job_id, record.execution_incarnation),
+                ).fetchone()
+                if artifact is None:
+                    connection.rollback()
+                    return False
+                cursor = connection.execute(
+                    "UPDATE local_jobs SET state=?, invocation_outcome=?, result_reference=?, updated_at=? " "WHERE job_id=? AND state=? AND execution_incarnation=? AND provider_entered=1 AND result_reference=''",
+                    (
+                        LocalJobState.RESULT_RECORDED.value,
+                        str(artifact["outcome"]),
+                        str(artifact["artifact_id"]),
+                        time.time(),
+                        record.job_id,
+                        LocalJobState.RUNNING.value,
+                        record.execution_incarnation,
+                    ),
+                )
+                connection.commit()
+            return cursor.rowcount == 1
+        except (OSError, sqlite3.Error):
+            return False
+
     def persist_result_artifact(self, claim: LocalJobClaim, outcome: InvocationOutcome, output: str) -> Optional[LocalJobResultArtifact]:
         """Durably bind invocation output to the exact job and incarnation."""
-        if not claim.acquired or not output:
+        if not claim.acquired:
             return None
         artifact_id = hashlib.sha256(json.dumps([claim.record.job_id, claim.record.execution_incarnation, outcome.value, output], separators=(",", ":")).encode()).hexdigest()
         try:

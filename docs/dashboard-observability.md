@@ -2246,6 +2246,24 @@ artifacts, and the explicit separation between invocation evidence, downstream
 pending, and terminal settlement. Run `bash scripts/test.sh
 tests/test_local_job_handoff.py`.
 
+## Durable local runner execution
+
+`LocalJobRunner` adds durable provider-entry, runner-owner, actual-result, and
+downstream-eligibility evidence to the same repository-scoped local-job store.
+This is deliberately not presented as an existing `TraceCollector` completion:
+the separately owned Issue/PR downstream consumer has not yet published its
+domain outcome. The durable store is the truthful production observation at
+this boundary; `tests/test_local_job_runner.py` crosses the real runner thread
+and domain-adapter provider boundary, verifies finite capacity and drain
+admission, reopens the store to recover committed results and authoritatively
+dead pre-provider owners, suppresses ambiguous-owner replay, and verifies that
+blocking downstream callbacks never occupy the submitting worker. It also
+crosses the artifact-to-result crash window and verifies that same-process
+downstream recovery settles the original invocation admission handle. These
+recovery transitions retain the existing local-job schema and do not claim a
+domain completion trace. Run `bash
+scripts/test.sh tests/test_local_job_runner.py`.
+
 The full-job Issue workspace producer remains observability-neutral until its
 separate worker-route sibling connects it to production dispatch. It adds no
 processing origin, provider selection, admission rule, or dashboard event
