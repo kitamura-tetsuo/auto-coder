@@ -1176,6 +1176,13 @@ result without adding a dashboard event shape.
 `test_later_strict_snapshot_retains_bare_admission_deferral` exercises both the
 current-admission and final pre-dispatch strict reads and verifies that neither
 generic error boundary flattens the same diagnostic or durable outcome.
+`test_future_retained_deadline_blocks_duplicate_common_dispatch` and
+`test_future_retained_deadline_blocks_capacity_refill_before_strict_read`
+verify that worker and refill wakes do not create an early strict-read trace or
+alter the durable deadline. `test_due_resumption_preserves_effects_after_later_snapshot_failure`
+keeps the pending effects visible after a distinct resumed-evaluation failure,
+and `test_ordinary_worker_reports_retained_issue_as_deferred` verifies the
+existing worker trace uses the deferred outcome instead of a generic failure.
 
 Shared-governor incarnation ownership changes the existing HTTP admission gate but is
 dashboard-observability neutral. Governor admission still occurs before an Issue or PR

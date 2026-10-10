@@ -44,6 +44,13 @@ strict snapshots repeated under owner serialization and immediately before
 implementation dispatch. This prevents a later bare refusal from escaping the
 refill task or being flattened into a non-durable retry error.
 
+Automatic worker and capacity-refill intake consults a retained admission
+deadline before entering the target's strict reader. Duplicate notifications
+and unrelated capacity wakes therefore leave the retained deadline unchanged;
+once it is due, the pending-work handler performs the normal strict refresh and
+common admission path. An unsuccessful resumed evaluation does not acknowledge
+its unfinished effects merely because common processing returned a result.
+
 Durable-invalidation stage routing also recognizes an explicitly caused
 reconciliation deferral and stores its reason, API origin, and effective retry
 deadline on the invalidation record. Only explicit reconciliation cause chains
@@ -54,6 +61,9 @@ Deferral diagnostics identify the repository, Issue, interrupted stage, original
 reason, API origin, deadline, and delivery certainty at warning level. A durable
 write failure remains fatal to that evaluation and no dependent implementation
 or validation is authorized.
+Ordinary workers report a successfully retained refusal as a deferred Issue at
+info level and in the worker trace, rather than emitting the generic processing
+failure diagnostic.
 
 Typed GitHub transport failures in an explicit `ParentOperationalError` cause
 chain are also retained as unfinished Issue evaluation, with the original delivery
