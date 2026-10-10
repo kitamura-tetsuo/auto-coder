@@ -20,6 +20,15 @@ unsafe delegation or credentials, unsafe/reused invocation identity, failed poli
 installation, or failed owned launch returns `pre-start-unavailable` without an
 unowned fallback.
 
+Preparation tolerates a completed peer removing its cgroup between sibling
+enumeration and membership inspection. Only a positively absent sibling directory
+is ignored, and the current invocation's membership control must still exist.
+Other siblings are still checked; missing shared/current state, missing controls
+in surviving siblings, permission errors, and worker-writable membership controls
+continue to refuse startup. Deterministic unit tests emulate cgroupfs metadata to
+exercise these interleavings without requiring a privileged host; they do not
+replace the real cgroup runtime conformance checks.
+
 Writer state is controller-owned and progresses from `not-started` through
 `active` and `stopping` to either `positively-stopped` or `termination-unknown`.
 Positive completion is emitted only after the kernel's `cgroup.events` reports
