@@ -498,8 +498,8 @@ def test_publication_pending_resumes_without_rerunning_executor(tmp_path: Path, 
     assert retained is not None
     _git(repository, "push", "origin", f"{retained.result_sha}:refs/heads/repair-head")
     reconstructed = replace(request, head_sha=retained.result_sha, feedback_identities=("comment-1", "comment-2"))
-    with patch("auto_coder.local_review_repair.git_push") as recovery_push:
-        second = execute_local_review_repair(reconstructed, store=store, executor=executor)
+    with patch("auto_coder.local_review_repair.git_push") as recovery_push, patch("auto_coder.local_review_repair._prepare_default_executor") as prepare:
+        second = execute_local_review_repair(reconstructed, store=store)
 
     assert first.phase == "publication_pending"
     assert second.phase == "awaiting_validation"
@@ -507,6 +507,7 @@ def test_publication_pending_resumes_without_rerunning_executor(tmp_path: Path, 
     executor.assert_called_once()
     push.assert_called_once()
     recovery_push.assert_not_called()
+    prepare.assert_not_called()
 
 
 def test_unstaged_output_is_committed_and_published_to_existing_branch(tmp_path: Path, monkeypatch, _use_custom_subprocess_mock) -> None:

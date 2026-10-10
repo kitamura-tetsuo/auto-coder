@@ -497,11 +497,6 @@ def execute_local_review_repair(
     """Run one fenced correction in a detached exact-head checkout and publish it."""
     if request.head_repository != request.repository:
         return LocalReviewRepairOutcome("not_admitted", "foreign-head pull requests are not eligible")
-    if executor is None:
-        try:
-            executor = _prepare_default_executor(request)
-        except LocalBackendUnavailableError as exc:
-            return LocalReviewRepairOutcome("backend_unavailable", str(exc))
     store = store or LocalReviewRepairStore(local_review_repair_db_path(request.repository))
     claim = accepted_claim or store.admit(request)
     if not claim.admitted and accepted_claim is None:
@@ -513,6 +508,11 @@ def execute_local_review_repair(
                     allowance_authority.mark_completion(code_changed=True, evidence=f"local correction published as {record.result_sha}")
                 return outcome
         return LocalReviewRepairOutcome(claim.phase, f"retained local correction phase: {claim.phase}")
+    if executor is None:
+        try:
+            executor = _prepare_default_executor(request)
+        except LocalBackendUnavailableError as exc:
+            return LocalReviewRepairOutcome("backend_unavailable", str(exc))
 
     root = Path.cwd()
     worktree = tempfile.mkdtemp(prefix=f"auto_coder_review_{request.pr_number}_")
