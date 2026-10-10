@@ -1,6 +1,8 @@
 import asyncio
 import json
+import subprocess
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,7 +14,7 @@ from auto_coder.durable_repair_allowance import RepairAllowanceLedger
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobKind, LocalJobState, LocalJobStore
 from auto_coder.local_job_runner import LocalJobRunner
-from auto_coder.local_review_repair import LocalReviewRepairOutcome, LocalReviewRepairRequest, LocalReviewRepairStore, admit_local_repair_allowance
+from auto_coder.local_review_repair import LocalReviewRepairClaim, LocalReviewRepairOutcome, LocalReviewRepairRequest, LocalReviewRepairStore, admit_local_repair_allowance
 from auto_coder.pr_correction_job import PRCorrectionJobAdapter, offer_pr_correction_job, resume_pr_correction_publication
 from auto_coder.pr_processor import ReviewRepairRouteDecision, ReviewRepairRouteDisposition
 from auto_coder.util.gh_cache import PullRequestRoutingMetadata, ReviewThread, ReviewThreadComment
@@ -20,6 +22,26 @@ from auto_coder.util.gh_cache import PullRequestRoutingMetadata, ReviewThread, R
 
 def _request() -> LocalReviewRepairRequest:
     return LocalReviewRepairRequest("owner/repo", 42, "owner/repo", "repair", "head-1", ("root-1",), "bounded prompt")
+
+
+def _git_repository(tmp_path: Path) -> tuple[Path, str]:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init"], cwd=repository, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+    (repository / "tracked.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repository, check=True, capture_output=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository, check=True, capture_output=True, text=True).stdout.strip()
+    return repository, head
+
+
+def _wait_for(predicate, timeout: float = 5) -> None:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
 
 
 def test_offer_is_durable_and_replay_does_not_consume_another_generation(tmp_path: Path) -> None:
@@ -98,6 +120,169 @@ def test_publication_pending_result_resumes_without_another_model_invocation(tmp
         assert resume_pr_correction_publication(retained, jobs) == "awaiting_validation"
 
     assert "executor" not in resume.call_args.kwargs
+
+
+def test_authority_is_revalidated_after_worktree_preparation_before_model_entry(tmp_path: Path, monkeypatch) -> None:
+    repository, head = _git_repository(tmp_path)
+    monkeypatch.chdir(repository)
+    request = replace(_request(), head_sha=head)
+    jobs = LocalJobStore(tmp_path / "jobs.sqlite3")
+    repairs = LocalReviewRepairStore(tmp_path / "repairs.sqlite3")
+    ledger = RepairAllowanceLedger(tmp_path / "allowance.sqlite3")
+    assert admit_local_repair_allowance(request, ledger)[0] is not None
+    job = offer_pr_correction_job(request, "codex", store=jobs, repair_store=repairs, allowance_ledger=ledger)
+    assert job is not None
+    current = True
+    executor = MagicMock(return_value="ACTION_SUMMARY: changed")
+
+    class ChangingAuthorityAdapter(PRCorrectionJobAdapter):
+        def _authority_is_current(self, _job) -> bool:
+            return current
+
+    adapter = ChangingAuthorityAdapter(MagicMock(), MagicMock(return_value=executor), jobs)
+    real_run = subprocess.run
+
+    def change_after_preparation(command, **kwargs):
+        nonlocal current
+        result = real_run(command, **kwargs)
+        if command[:3] == ["git", "worktree", "add"]:
+            current = False
+        return result
+
+    runner = LocalJobRunner(jobs, InvocationAdmissionGate(), capacity=1, adapters={LocalJobKind.PR_REVIEW_CORRECTION: adapter})
+    with (
+        patch("auto_coder.pr_correction_job.LocalReviewRepairStore", return_value=repairs),
+        patch("auto_coder.pr_correction_job.RepairAllowanceLedger", return_value=ledger),
+        patch("auto_coder.local_review_repair.subprocess.run", side_effect=change_after_preparation),
+    ):
+        assert runner.poll() == 1
+        _wait_for(lambda: runner.active_count() == 0)
+
+    retained = jobs.get(job.job_id)
+    assert retained is not None and retained.state is LocalJobState.PENDING
+    assert retained.provider_entered is False
+    repair = repairs.get(request)
+    assert repair is not None and repair.phase == "not_started" and repair.invocation_entered is False
+    generation = ledger.get_snapshot("https://api.github.com", request.repository, request.pr_number).get_outstanding_generation()
+    assert generation is not None and generation.lifecycle_state.value == "RESERVED"
+    assert generation.delivery_attempts == ()
+    executor.assert_not_called()
+    runner.close()
+
+
+def test_worktree_preparation_failure_retries_same_job_and_invokes_model_once(tmp_path: Path, monkeypatch) -> None:
+    repository, head = _git_repository(tmp_path)
+    monkeypatch.chdir(repository)
+    request = replace(_request(), head_sha=head)
+    jobs = LocalJobStore(tmp_path / "jobs.sqlite3")
+    repairs = LocalReviewRepairStore(tmp_path / "repairs.sqlite3")
+    ledger = RepairAllowanceLedger(tmp_path / "allowance.sqlite3")
+    assert admit_local_repair_allowance(request, ledger)[0] is not None
+    job = offer_pr_correction_job(request, "codex", store=jobs, repair_store=repairs, allowance_ledger=ledger)
+    assert job is not None
+    executor = MagicMock(return_value="ACTION_SUMMARY: no change")
+
+    class CurrentAuthorityAdapter(PRCorrectionJobAdapter):
+        def _authority_is_current(self, _job) -> bool:
+            return True
+
+    adapter = CurrentAuthorityAdapter(MagicMock(), MagicMock(return_value=executor), jobs)
+    real_run = subprocess.run
+    failed_once = False
+
+    def fail_first_preparation(command, **kwargs):
+        nonlocal failed_once
+        if command[:3] == ["git", "worktree", "add"] and not failed_once:
+            failed_once = True
+            return subprocess.CompletedProcess(command, 1, "", "transient worktree failure")
+        return real_run(command, **kwargs)
+
+    runner = LocalJobRunner(jobs, InvocationAdmissionGate(), capacity=1, adapters={LocalJobKind.PR_REVIEW_CORRECTION: adapter})
+    with (
+        patch("auto_coder.pr_correction_job.LocalReviewRepairStore", return_value=repairs),
+        patch("auto_coder.pr_correction_job.RepairAllowanceLedger", return_value=ledger),
+        patch("auto_coder.local_review_repair.subprocess.run", side_effect=fail_first_preparation),
+    ):
+        assert runner.poll() == 1
+        _wait_for(lambda: runner.active_count() == 0)
+        first = jobs.get(job.job_id)
+        assert first is not None and first.state is LocalJobState.PENDING and not first.provider_entered
+        first_repair = repairs.get(request)
+        assert first_repair is not None and first_repair.phase == "not_started"
+        replay = offer_pr_correction_job(request, "codex", store=jobs, repair_store=repairs, allowance_ledger=ledger)
+        assert replay is not None and replay.job_id == job.job_id
+        assert repairs.get(request).incarnation == first_repair.incarnation  # type: ignore[union-attr]
+        assert runner.poll() == 1
+        _wait_for(lambda: runner.active_count() == 0)
+
+    completed = jobs.get(job.job_id)
+    assert completed is not None and completed.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+    assert completed.provider_entered is True
+    executor.assert_called_once()
+    assert completed.upstream_attempt == request.attempt_id
+    assert completed.owner_generation == job.owner_generation
+    runner.close()
+
+
+def test_restart_recovers_publication_checkpoint_before_runner_artifact(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    request = _request()
+    jobs = LocalJobStore(tmp_path / "jobs.sqlite3")
+    repairs = LocalReviewRepairStore(tmp_path / "repairs.sqlite3")
+    ledger = RepairAllowanceLedger(tmp_path / "allowance.sqlite3")
+    assert admit_local_repair_allowance(request, ledger)[0] is not None
+    job = offer_pr_correction_job(request, "codex", store=jobs, repair_store=repairs, allowance_ledger=ledger)
+    assert job is not None
+    claim = jobs.claim(job.job_id, "process:999999:1")
+    assert claim is not None and claim.acquired
+    assert jobs.mark_provider_entered(claim)
+    incarnation = int(job.upstream_incarnation.split(":", 1)[0])
+    repair_claim = LocalReviewRepairClaim(True, "executing", request.attempt_id, incarnation)
+    assert repairs.transition(request, repair_claim, "publication_pending", result_sha="commit-2", workspace_path="/retained")
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    loop_holder: dict[str, asyncio.AbstractEventLoop] = {}
+
+    def wake(completed) -> None:
+        future = asyncio.run_coroutine_threadsafe(engine.invalidate_entity(completed.repository, "pr", completed.target_number), loop_holder["loop"])
+        assert future.result(2)
+
+    adapter = PRCorrectionJobAdapter(MagicMock(), MagicMock(), jobs)
+    runner = LocalJobRunner(
+        jobs,
+        InvocationAdmissionGate(),
+        capacity=1,
+        adapters={LocalJobKind.PR_REVIEW_CORRECTION: adapter},
+        completion_wake=wake,
+    )
+    recovered = LocalReviewRepairOutcome("awaiting_validation", "published retained commit", executed=True, published=True)
+
+    async def scenario() -> None:
+        loop_holder["loop"] = asyncio.get_running_loop()
+        with (
+            patch("auto_coder.pr_correction_job.LocalReviewRepairStore", return_value=repairs),
+            patch("auto_coder.pr_correction_job.RepairAllowanceLedger", return_value=ledger),
+            patch("auto_coder.pr_correction_job.execute_local_review_repair", return_value=recovered) as resume,
+            patch("auto_coder.local_job_runner.runner_owner_alive", return_value=False),
+        ):
+            assert runner.poll() == 0
+            for _ in range(200):
+                if engine.invalidations.pending_count("owner/repo") == 1:
+                    break
+                await asyncio.sleep(0.01)
+            queued = await asyncio.wait_for(engine.queue.get_for_type("pr"), 1)
+            assert queued.data["number"] == request.pr_number
+            engine.queue.task_done()
+        resume.assert_called_once()
+        assert "executor" not in resume.call_args.kwargs
+
+    asyncio.run(scenario())
+
+    retained = jobs.get(job.job_id)
+    assert retained is not None and retained.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+    artifact = jobs.get_result_artifact(retained.result_reference)
+    assert artifact is not None and json.loads(artifact.output)["phase"] == "awaiting_validation"
+    assert engine.invalidations.pending_count("owner/repo") == 1
+    runner.close()
 
 
 def test_engine_completion_wake_invalidates_pr_before_settling_job(tmp_path: Path, monkeypatch) -> None:

@@ -2688,7 +2688,7 @@ class AutomationEngine:
             local_job_store,
             self.invocation_gate,
             capacity=max(1, concurrency),
-            adapters={LocalJobKind.PR_REVIEW_CORRECTION: PRCorrectionJobAdapter(self.github, build_captured_executor)},
+            adapters={LocalJobKind.PR_REVIEW_CORRECTION: PRCorrectionJobAdapter(self.github, build_captured_executor, local_job_store)},
             completion_wake=wake_pr_validation,
         )
 

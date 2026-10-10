@@ -22,6 +22,7 @@ class LocalJobExecutionResult:
     outcome: InvocationOutcome
     output: str
     diagnostic: str = ""
+    definitely_not_started: bool = False
 
 
 class LocalJobDomainAdapter(Protocol):
@@ -141,7 +142,7 @@ class LocalJobRunner:
         with self._lock:
             if self._closed:
                 return 0
-            eligible = [job for job in self.store.discover_unsettled() if job.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING and job.job_id not in self._notifying]
+            eligible = [job for job in self.store.discover_unsettled() if job.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING and job.kind in self.adapters and job.job_id not in self._notifying]
             for job in eligible:
                 self._notifying.add(job.job_id)
                 self._notification_executor.submit(self._notify_downstream, job)
@@ -169,12 +170,18 @@ class LocalJobRunner:
                 if active is not None and not active.done():
                     continue
             if job.state is LocalJobState.RUNNING and job.provider_entered:
-                if not self.store.recover_recorded_result(job):
+                if self.store.recover_recorded_result(job):
+                    refreshed = self.store.get(job.job_id)
+                    if refreshed is None:
+                        continue
+                    job = refreshed
+                elif runner_owner_alive(job.runner_owner) is False and self._recover_domain_checkpoint(job):
+                    refreshed = self.store.get(job.job_id)
+                    if refreshed is None:
+                        continue
+                    job = refreshed
+                else:
                     continue
-                refreshed = self.store.get(job.job_id)
-                if refreshed is None:
-                    continue
-                job = refreshed
             if job.state is LocalJobState.RESULT_RECORDED:
                 if self.store.recover_downstream_pending(job):
                     self._settle_recovered_handle(job)
@@ -219,7 +226,8 @@ class LocalJobRunner:
                 self.store.release_unentered_claim(claim, "authoritative provider-entry permission denied")
                 self._checkpoint_without_provider(handle, claim, "authorization_denied")
                 return
-            if not self.store.mark_provider_entered(claim):
+            deferred_entry = bool(getattr(adapter, "deferred_provider_entry", False))
+            if not deferred_entry and not self.store.mark_provider_entered(claim):
                 self.store.record_runner_diagnostic(claim, "provider-entry checkpoint failed")
                 self._checkpoint_without_provider(handle, claim, "entry_checkpoint_failed", settle=False)
                 return
@@ -230,6 +238,11 @@ class LocalJobRunner:
                 result = LocalJobExecutionResult(InvocationOutcome.FAILED, f"{type(exc).__name__}: {exc}", "provider raised")
             except BaseException as exc:
                 result = LocalJobExecutionResult(InvocationOutcome.INTERRUPTED, f"{type(exc).__name__}: {exc}", "provider interrupted")
+
+            if result.definitely_not_started:
+                self.store.release_unentered_claim(claim, result.diagnostic or result.output)
+                self._checkpoint_without_provider(handle, claim, "definitely_not_started")
+                return
 
             handle.begin_checkpointing(result.outcome.value)
             artifact = self.store.persist_result_artifact(claim, result.outcome, result.output)
@@ -247,6 +260,25 @@ class LocalJobRunner:
                 self.wake_downstream()
         finally:
             reset_invocation_gate(gate_token)
+
+    def _recover_domain_checkpoint(self, job: LocalJobRecord) -> bool:
+        """Let the owning adapter recover a post-entry domain checkpoint."""
+        adapter = self.adapters.get(job.kind)
+        recover = getattr(adapter, "recover_interrupted", None) if adapter is not None else None
+        if recover is None:
+            return False
+        try:
+            result = recover(job)
+        except Exception as exc:
+            logger.warning("Local job domain recovery failed for {}: {}", job.job_id, exc)
+            return False
+        if result is None or result.definitely_not_started:
+            return False
+        claim = LocalJobClaim(job, True)
+        artifact = self.store.persist_result_artifact(claim, result.outcome, result.output)
+        if artifact is None or not self.store.record_result(claim, result.outcome, artifact.artifact_id, result.diagnostic):
+            return False
+        return self.store.mark_downstream_pending(claim)
 
     @staticmethod
     def _checkpoint_without_provider(handle: InvocationHandle, claim: LocalJobClaim, outcome: str, *, settle: bool = True) -> None:

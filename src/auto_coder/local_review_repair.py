@@ -502,6 +502,8 @@ def execute_local_review_repair(
     allowance_authority: Optional[LocalRepairAllowanceAuthority] = None,
     accepted_claim: Optional[LocalReviewRepairClaim] = None,
     local_job_id: str = "",
+    provider_entry_authorizer: Optional[Callable[[], bool]] = None,
+    provider_entry_checkpoint: Optional[Callable[[], bool]] = None,
 ) -> LocalReviewRepairOutcome:
     """Run one fenced correction in a detached exact-head checkout and publish it."""
     if request.head_repository != request.repository:
@@ -544,6 +546,12 @@ def execute_local_review_repair(
             store.transition(request, claim, "not_started", reason=added.stderr.strip())
             return LocalReviewRepairOutcome("not_started", f"protected checkout failed: {added.stderr.strip()}")
         store.transition(request, claim, "executing", workspace_path=worktree)
+        if provider_entry_authorizer is not None and not provider_entry_authorizer():
+            store.transition(request, claim, "not_started", reason="provider-entry authority changed during preparation")
+            return LocalReviewRepairOutcome("not_started", "provider-entry authority changed during preparation")
+        if provider_entry_checkpoint is not None and not provider_entry_checkpoint():
+            preserve_worktree = True
+            return LocalReviewRepairOutcome("indeterminate", "durable provider-entry checkpoint failed")
         if not store.mark_invocation_entered(request, claim, local_job_id=local_job_id):
             preserve_worktree = True
             return LocalReviewRepairOutcome("deferred", "local execution ownership changed before backend entry")

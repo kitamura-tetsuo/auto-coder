@@ -2292,3 +2292,12 @@ its local phase while the durable local-job runner owns execution independently
 of the PR worker. Runner completion schedules a durable PR invalidation, so the
 ordinary current-head review and validation stages remain the authoritative
 observable outcome rather than treating job acceptance as correction success.
+Provider entry is recorded only after post-worktree authority revalidation;
+definitely unstarted retries therefore emit no false completion. Restart may
+recover a retained `publication_pending` controller checkpoint into the same
+downstream PR invalidation without model reentry. PR-only runners filter both
+execution and downstream discovery by job kind, so Issue finalization cannot
+be presented as PR validation. These changes add no event schema or renderer
+shape; `bash scripts/test.sh tests/test_pr_correction_job.py
+tests/test_local_job_runner.py` is the runnable production-to-durable-wake
+contract.

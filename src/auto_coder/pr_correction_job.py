@@ -8,7 +8,7 @@ from dataclasses import asdict
 from typing import Callable
 
 from .durable_repair_allowance import GenerationLifecycleState, RepairAllowanceLedger
-from .local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobRecord, LocalJobStore
+from .local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobKind, LocalJobOffer, LocalJobRecord, LocalJobState, LocalJobStore
 from .local_job_runner import LocalJobExecutionResult
 from .local_review_repair import (
     LocalRepairAllowanceAuthority,
@@ -86,6 +86,21 @@ def offer_pr_correction_job(
     store = store or LocalJobStore()
     repair_store = repair_store or LocalReviewRepairStore(local_review_repair_db_path(request.repository))
     allowance_ledger = allowance_ledger or RepairAllowanceLedger()
+    retained = repair_store.get(request)
+    if retained is not None and retained.phase == "not_started" and retained.local_job_id:
+        existing = store.get(retained.local_job_id)
+        snapshot = allowance_ledger.get_snapshot("https://api.github.com", request.repository, request.pr_number)
+        generation = snapshot.get_outstanding_generation()
+        if (
+            existing is not None
+            and existing.state is LocalJobState.PENDING
+            and existing.upstream_attempt == request.attempt_id
+            and existing.owner_incarnation == str(retained.incarnation)
+            and generation is not None
+            and generation.lifecycle_state is GenerationLifecycleState.RESERVED
+            and generation.generation_id == existing.owner_generation
+        ):
+            return existing
     claim = repair_store.admit(request)
     if not claim.admitted:
         retained = repair_store.get(request, claim.attempt_id)
@@ -98,9 +113,12 @@ def offer_pr_correction_job(
 class PRCorrectionJobAdapter:
     """Revalidate exact-head authority immediately before local model entry."""
 
-    def __init__(self, github_client: object, executor_factory: ExecutorFactory) -> None:
+    deferred_provider_entry = True
+
+    def __init__(self, github_client: object, executor_factory: ExecutorFactory, job_store: LocalJobStore | None = None) -> None:
         self.github_client = github_client
         self.executor_factory = executor_factory
+        self.job_store = job_store or LocalJobStore()
         self._executor_lock = threading.Lock()
         self._executors: dict[str, Callable[[LocalReviewRepairRequest, str], str]] = {}
 
@@ -113,6 +131,15 @@ class PRCorrectionJobAdapter:
     def authorize_provider_entry(self, job: LocalJobRecord) -> bool:
         with self._executor_lock:
             self._executors.pop(job.job_id, None)
+        authorized = self._authority_is_current(job)
+        if authorized:
+            request = self._request(job)
+            executor = self.executor_factory(job.backend_name, request)
+            with self._executor_lock:
+                self._executors[job.job_id] = executor
+        return authorized
+
+    def _authority_is_current(self, job: LocalJobRecord) -> bool:
         request = self._request(job)
         if job.kind is not LocalJobKind.PR_REVIEW_CORRECTION or request.attempt_id != job.upstream_attempt:
             return False
@@ -154,12 +181,7 @@ class PRCorrectionJobAdapter:
             return False
         repair = LocalReviewRepairStore(local_review_repair_db_path(request.repository)).get(request)
         generation = RepairAllowanceLedger().get_snapshot("https://api.github.com", request.repository, request.pr_number).get_outstanding_generation()
-        authorized = bool(repair and repair.local_job_id == job.job_id and not repair.invocation_entered and generation and generation.lifecycle_state is GenerationLifecycleState.RESERVED and generation.generation_id == job.owner_generation and generation.bundle_reference == request.attempt_id)
-        if authorized:
-            executor = self.executor_factory(job.backend_name, request)
-            with self._executor_lock:
-                self._executors[job.job_id] = executor
-        return authorized
+        return bool(repair and repair.local_job_id == job.job_id and not repair.invocation_entered and generation and generation.lifecycle_state is GenerationLifecycleState.RESERVED and generation.generation_id == job.owner_generation and generation.bundle_reference == request.attempt_id)
 
     def invoke(self, job: LocalJobRecord) -> LocalJobExecutionResult:
         request = self._request(job)
@@ -177,10 +199,36 @@ class PRCorrectionJobAdapter:
             allowance_authority=authority,
             accepted_claim=LocalReviewRepairClaim(True, "executing", request.attempt_id, incarnation),
             local_job_id=job.job_id,
+            provider_entry_authorizer=lambda: self._authority_is_current(job),
+            provider_entry_checkpoint=lambda: self.job_store.mark_provider_entered(LocalJobClaim(job, True)),
         )
         result = InvocationOutcome.COMPLETED
         if outcome.phase == "terminal_failure":
             result = InvocationOutcome.CANNOT_FIX
         elif outcome.phase in {"indeterminate", "publication_pending"}:
             result = InvocationOutcome.FAILED
+        return LocalJobExecutionResult(
+            result,
+            json.dumps(asdict(outcome), sort_keys=True),
+            outcome.reason,
+            definitely_not_started=outcome.phase == "not_started",
+        )
+
+    def recover_interrupted(self, job: LocalJobRecord) -> LocalJobExecutionResult | None:
+        """Resume a retained controller commit without entering the model again."""
+        request = self._request(job)
+        store = LocalReviewRepairStore(local_review_repair_db_path(request.repository))
+        retained = store.get(request)
+        if retained is None or retained.phase != "publication_pending" or retained.local_job_id != job.job_id:
+            return None
+        ledger = RepairAllowanceLedger()
+        snapshot = ledger.get_snapshot("https://api.github.com", request.repository, request.pr_number)
+        generation = snapshot.get_outstanding_generation()
+        if generation is None or generation.generation_id != job.owner_generation:
+            return None
+        authority = LocalRepairAllowanceAuthority(ledger, request, generation.generation_id, snapshot.epoch)
+        outcome = execute_local_review_repair(request, store=store, allowance_authority=authority)
+        if outcome.phase == "publication_pending":
+            return None
+        result = InvocationOutcome.FAILED if outcome.phase == "indeterminate" else InvocationOutcome.COMPLETED
         return LocalJobExecutionResult(result, json.dumps(asdict(outcome), sort_keys=True), outcome.reason)
