@@ -211,6 +211,64 @@ def test_capacity_fault_clears_only_after_valid_store_observation(monkeypatch, t
     assert engine.get_status()["refill_faults"] == []
 
 
+def test_refill_uses_validated_snapshot_instead_of_unsafe_capacity_precheck(monkeypatch, tmp_path):
+    """REQ-002: a legacy read failure cannot become a permanent control fault."""
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    engine.implementation_slots = slots
+    monkeypatch.setattr(
+        slots,
+        "available_normal_slots",
+        MagicMock(side_effect=ImplementationSlotUnavailable("temporary unreadable image")),
+    )
+    engine.github.get_open_entities_strict.return_value = OpenGitHubEntities()
+
+    assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is True
+    engine.github.get_open_entities_strict.assert_called_once_with("owner/repo")
+    assert engine.get_status()["refill_faults"] == []
+    slots.available_normal_slots.assert_not_called()
+
+
+def test_post_dispatch_capacity_failure_preserves_refill_opportunity(monkeypatch, tmp_path):
+    """REQ-003: recovery against an unchanged image performs a fresh pass."""
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    engine.implementation_slots = slots
+    snapshots = [
+        (0, (1, 1)),
+        (1, (2, 2)),
+        ImplementationSlotUnavailable("post-dispatch read failed"),
+        (1, (2, 2)),
+        (1, (2, 2)),
+    ]
+
+    def observe():
+        value = snapshots.pop(0) if snapshots else (1, (2, 2))
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    monkeypatch.setattr(slots, "normal_capacity_snapshot", observe)
+    refill = AsyncMock(return_value=True)
+    monkeypatch.setattr(engine, "_refill_normal_implementation_slots", refill)
+    monkeypatch.setattr("auto_coder.automation_engine.CAPACITY_STATE_CHECK_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr("auto_coder.automation_engine.REFILL_RETRY_INTERVAL_SECONDS", 1)
+
+    async def scenario():
+        task = asyncio.create_task(engine._capacity_refill_loop("owner/repo"))
+        for _ in range(300):
+            if refill.await_count == 2:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+    assert refill.await_count == 2
+    assert engine.get_status()["refill_faults"] == []
+
+
 def test_refill_initialization_fault_keeps_service_paused_until_cancel(monkeypatch):
     """REQ-001/002/009: unusable shared state pauses without ending the task."""
     engine = AutomationEngine(MagicMock(), AutomationConfig())

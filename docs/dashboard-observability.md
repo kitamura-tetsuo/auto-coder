@@ -11,6 +11,10 @@ repository-scoped `pending_work_persistence` intervention faults, while nested
 child failures preserve the innermost child target. Existing generic status consumers remain compatible
 because the field is additive; an unexpected refill fault is also emitted via
 the configured loguru ERROR sinks rather than represented as a successful trace.
+The production regressions also cover entry/per-candidate/post-dispatch capacity
+reads, refill-enumeration timed deferrals, unreadable pending-work enumeration,
+and pending-handler suppression before strict refresh. These use the same status
+schema and existing pending-work trace behavior; no new dashboard event is added.
 
 Explicit retries of completed failed local verification keep the existing
 `pr.repair-delegation` / `effect=local-validation-scoped` stage, generation and

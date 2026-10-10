@@ -625,6 +625,14 @@ class _IssueProcessingStageHandler:
         if issue_number is None:
             logger.warning("Malformed Issue pending-work identity {!r}; discarding obligation", entity)
             return StageOutcome(superseded=True)
+        if engine._refill_admission_paused(self._repo_name, issue_number, "issue"):
+            logger.info(
+                "Issue pending-work evaluation remains unfinished behind refill fault repository={} issue={} stage={}",
+                self._repo_name,
+                issue_number,
+                ISSUE_PROCESSING_STAGE,
+            )
+            return StageOutcome()
         try:
             fresh_issue = engine.github.get_issue_dispatch_snapshot_strict(self._repo_name, issue_number)
         except GitHubRequestError as exc:
@@ -3850,7 +3858,10 @@ class AutomationEngine:
         """
         async with self._refill_lock:
             slots = self._get_implementation_slots(repo_name)
-            if await asyncio.to_thread(slots.available_normal_slots) == 0:
+            entry_capacity = await self._observe_refill_capacity(repo_name, slots, "refill_entry_capacity_observation")
+            if entry_capacity is None:
+                return False
+            if entry_capacity[0] == 0:
                 return True
             blocked_issue_numbers: set[int] = set()
             reconciliation_retry_required = False
@@ -3862,7 +3873,26 @@ class AutomationEngine:
                     if self._future_issue_admission_deferral(repo_name, observed.number) is not None:
                         blocked_issue_numbers.add(observed.number)
                         continue
-                    snapshot = await asyncio.to_thread(self.github.get_issue_dispatch_snapshot_strict, repo_name, observed.number)
+                    try:
+                        snapshot = await asyncio.to_thread(
+                            self.github.get_issue_dispatch_snapshot_strict,
+                            repo_name,
+                            observed.number,
+                        )
+                    except GitHubRequestDeferred as exc:
+                        deferred = _reconciliation_admission_deferral(exc)
+                        if deferred is None:
+                            raise
+                        self._defer_issue_evaluation(
+                            repo_name,
+                            observed.number,
+                            {"number": observed.number},
+                            deferred,
+                            CandidateProcessingResult(type="issue", number=observed.number),
+                            revision_known=False,
+                        )
+                        blocked_issue_numbers.add(observed.number)
+                        continue
                     if not isinstance(snapshot, dict) or snapshot.get("number") != observed.number:
                         raise RuntimeError(f"GitHub returned an ambiguous Issue snapshot for #{observed.number}")
                     if "pull_request" in snapshot or not self._is_open_issue(snapshot):
@@ -3925,6 +3955,15 @@ class AutomationEngine:
                     candidate.data["refill_metadata_open_children"] = metadata_children
                     candidates.append(candidate)
                 candidates.sort(key=lambda value: (-value.priority, value.data.get("created_at", ""), value.issue_number or 0))
+            except PendingWorkPersistenceError as exc:
+                self._record_refill_fault(
+                    repo_name,
+                    None,
+                    "refill_enumeration_persistence",
+                    exc,
+                    "intervention_required",
+                )
+                return True
             except Exception as exc:
                 logger.warning(f"Authoritative Issue refill enumeration failed for {repo_name}; obligation remains pending: {exc}")
                 return False
@@ -3933,7 +3972,10 @@ class AutomationEngine:
             for candidate in candidates:
                 if self._refill_admission_paused(repo_name, candidate.issue_number, "issue"):
                     continue
-                if await asyncio.to_thread(slots.available_normal_slots) == 0:
+                candidate_capacity = await self._observe_refill_capacity(repo_name, slots, "candidate_capacity_observation")
+                if candidate_capacity is None:
+                    return False
+                if candidate_capacity[0] == 0:
                     break
                 # The common dispatch path repeats strict readiness, contract,
                 # hierarchy, ownership, authorization, duplicate and atomic
@@ -4106,6 +4148,7 @@ class AutomationEngine:
                     refill_pending = not await self._refill_normal_implementation_slots(repo_name)
                     current = await self._observe_refill_capacity(repo_name, slots, "post_dispatch_capacity_observation")
                     if current is None:
+                        refill_pending = True
                         await asyncio.sleep(max(1.0, min(60.0, REFILL_RETRY_INTERVAL_SECONDS)))
                         continue
                     current_count, current_identity = current
@@ -7418,6 +7461,8 @@ class AutomationEngine:
         issue_data: Dict[str, Any],
         error: GitHubRequestError,
         result: CandidateProcessingResult,
+        *,
+        revision_known: bool = True,
     ) -> CandidateProcessingResult:
         """Retain an Issue hierarchy/readiness evaluation interrupted by GitHub.
 
@@ -7427,7 +7472,10 @@ class AutomationEngine:
         being reported as an ordinary error, so a registered stage handler
         resumes it through current authoritative state (REQ-001, REQ-002).
         """
-        revision = _issue_content_revision(issue_data)
+        # Initial refill enumeration can be refused before a snapshot exists.
+        # Its empty revision requires a fresh strict read when due rather than
+        # pretending the number-only placeholder was authoritative content.
+        revision = _issue_content_revision(issue_data) if revision_known else ""
         identity = WorkIdentity(repo_name, f"issue:{item_number}", ISSUE_PROCESSING_STAGE, revision)
         obligation = get_pending_work_store(repo_name).defer(
             identity,
