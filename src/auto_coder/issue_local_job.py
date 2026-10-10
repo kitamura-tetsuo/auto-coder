@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
-import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,6 +12,7 @@ from .issue_dispatch import IssueAttemptIdentity, IssueDispatchGuard
 from .issue_job_workspace import IssueJobSource, IssueJobWorkspaceProducer
 from .local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobRecord, LocalJobStore
 from .local_job_runner import LocalJobExecutionResult
+from .utils import bind_command_execution_cwd, reset_command_execution_cwd
 
 if TYPE_CHECKING:
     from .automation_engine import AutomationEngine
@@ -21,8 +20,6 @@ if TYPE_CHECKING:
 
 class IssueLocalJobAdapter:
     """Revalidate an accepted Issue attempt and execute it in its private clone."""
-
-    _cwd_lock = threading.Lock()
 
     def __init__(
         self,
@@ -87,16 +84,14 @@ class IssueLocalJobAdapter:
             config = get_llm_config(repo_name=job.repository)
             model = config.get_model_for_backend(job.backend_name) or ""
             manager = build_backend_manager(selected_backends=[job.backend_name], primary_backend=job.backend_name, models={job.backend_name: model})
-            # Backend clients still resolve their caller root from cwd. Keep
-            # this compatibility boundary short; model execution itself owns
-            # only the private clone and never the shared checkout.
-            with self._cwd_lock:
-                previous = Path.cwd()
-                try:
-                    os.chdir(workspace)
-                    return manager._run_llm_cli(prompt)
-                finally:
-                    os.chdir(previous)
+            # Command execution uses a context-local root, so independent
+            # runner threads can enter separate private repositories without
+            # mutating or serializing on the process-wide working directory.
+            token = bind_command_execution_cwd(str(workspace))
+            try:
+                return manager._run_llm_cli(prompt)
+            finally:
+                reset_command_execution_cwd(token)
 
         checkpoint = producer.execute(claim, source, run, checkpoint_result=False)
         return LocalJobExecutionResult(InvocationOutcome.COMPLETED, checkpoint.result_reference)

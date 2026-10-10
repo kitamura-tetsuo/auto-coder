@@ -2,6 +2,8 @@
 Unit and integration tests for backend_cloud and non-difficult cloud issue routing.
 """
 
+import threading
+import time
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
@@ -28,6 +30,7 @@ from auto_coder.llm_backend_config import (
     is_jules_mode_enabled,
 )
 from auto_coder.local_job_handoff import LocalJobState, LocalJobStore
+from auto_coder.local_job_runner import LocalJobRunner
 from auto_coder.quota_selector import BackendQuotaEvaluation
 
 
@@ -300,7 +303,127 @@ class TestNonDifficultCloudIssueRouting:
         assert accepted.upstream_attempt == "4"
         assert accepted.backend_name == "local-team"
         assert "Implement the requirement" in accepted.invocation_input
-        backend.assert_not_called()
+        backend.assert_called_once_with(
+            selected_backends=["local-team"],
+            primary_backend="local-team",
+            models={"local-team": "test"},
+        )
+
+    def test_not_started_local_preparation_advances_ranked_pool(self, tmp_path, monkeypatch):
+        """Durable mode preserves confirmed-not-started fallback before acceptance."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        llm_config = LLMBackendConfiguration.load_from_dict(
+            {
+                "backends": {
+                    "broken-local": {"backend_type": "codex", "model": "broken"},
+                    "healthy-local": {"backend_type": "codex", "model": "healthy"},
+                }
+            }
+        )
+        store = LocalJobStore(tmp_path / "jobs.sqlite3")
+
+        from auto_coder.worktree_utils import LocalPreparationNotStartedError
+
+        with (
+            patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config),
+            patch("auto_coder.issue_processor.get_current_attempt", return_value=7),
+            patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+            patch(
+                "auto_coder.cli_helpers.build_backend_manager",
+                side_effect=[LocalPreparationNotStartedError("broken CLI is unavailable"), MagicMock()],
+            ) as prepare,
+        ):
+            execution = _dispatch_issue_candidates(
+                "owner/repo",
+                {"number": 2081, "title": "Fallback", "body": "Implement", "labels": []},
+                AutomationConfig(),
+                MagicMock(),
+                ["broken-local", "healthy-local"],
+                local_job_store=store,
+            )
+
+        assert execution.result.outcome is DispatchOutcome.LOCAL_ACCEPTED
+        assert execution.result.backend_name == "healthy-local"
+        assert prepare.call_count == 2
+        jobs = store.discover_unsettled()
+        assert len(jobs) == 1
+        assert jobs[0].backend_name == "healthy-local"
+
+    def test_two_durable_issue_jobs_enter_backends_concurrently(self, tmp_path, monkeypatch):
+        """The production dispatch/runner path never serializes private roots on cwd."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        llm_config = LLMBackendConfiguration.load_from_dict({"backends": {"local-team": {"backend_type": "codex", "model": "test"}}})
+        store = LocalJobStore(tmp_path / "jobs.sqlite3")
+        entered_a = threading.Event()
+        entered_b = threading.Event()
+        release_a = threading.Event()
+
+        class ConcurrentManager:
+            def _run_llm_cli(self, prompt):  # type: ignore[no-untyped-def]
+                if "Issue A" in prompt:
+                    entered_a.set()
+                    assert release_a.wait(5)
+                else:
+                    entered_b.set()
+                return "ACTION_SUMMARY: implemented"
+
+        manager = ConcurrentManager()
+        with (
+            patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config),
+            patch("auto_coder.issue_processor.get_current_attempt", side_effect=lambda _repo, number: number),
+            patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+            patch("auto_coder.cli_helpers.build_backend_manager", return_value=manager),
+        ):
+            for number, title in ((31, "Issue A"), (32, "Issue B")):
+                accepted = _dispatch_issue_candidates(
+                    "owner/repo",
+                    {"number": number, "title": title, "body": "Implement", "labels": []},
+                    AutomationConfig(),
+                    MagicMock(),
+                    ["local-team"],
+                    local_job_store=store,
+                )
+                assert accepted.result.outcome is DispatchOutcome.LOCAL_ACCEPTED
+
+            from auto_coder.invocation_admission import InvocationAdmissionGate
+            from auto_coder.issue_job_workspace import IssueJobCheckpoint
+            from auto_coder.issue_local_job import IssueLocalJobAdapter
+            from auto_coder.local_job_handoff import LocalJobKind
+
+            adapter = IssueLocalJobAdapter(MagicMock(), "owner/repo", store, MagicMock(), tmp_path)
+
+            def execute(_producer, claim, _source, invoke, *, checkpoint_result=True):  # type: ignore[no-untyped-def]
+                output = invoke(tmp_path, claim.record.invocation_input)
+                return IssueJobCheckpoint(claim.record.job_id, claim.record.execution_incarnation, tmp_path, "head", "branch", output, output)
+
+            completed = []
+            with (
+                patch.object(adapter, "authorize_provider_entry", return_value=True),
+                patch("auto_coder.issue_local_job.subprocess.run") as git,
+                patch("auto_coder.issue_job_workspace.IssueJobWorkspaceProducer.execute", new=execute),
+            ):
+                git.return_value.stdout = "refs/heads/main\n"
+                runner = LocalJobRunner(
+                    store,
+                    InvocationAdmissionGate(),
+                    capacity=2,
+                    adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
+                    completion_wake=lambda job: completed.append(job.job_id),
+                )
+                assert runner.poll() == 2
+                assert entered_a.wait(5)
+                assert entered_b.wait(5), "Issue B did not enter while Issue A remained blocked"
+                assert not release_a.is_set()
+                release_a.set()
+                deadline = time.monotonic() + 5
+                while runner.active_count() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert runner.active_count() == 0
+                runner.close(wait=True)
+
+        unsettled = store.discover_unsettled()
+        assert {job.job_id for job in unsettled} == set(completed)
+        assert {job.state for job in unsettled} == {LocalJobState.DOWNSTREAM_EFFECTS_PENDING}
 
     def test_jules_alias_uses_selected_credentials_and_tracking_identity(self, tmp_path, monkeypatch):
         """The selected Jules alias owns both transport credentials and binding attribution."""

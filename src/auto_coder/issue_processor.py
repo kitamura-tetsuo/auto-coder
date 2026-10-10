@@ -1413,6 +1413,15 @@ def _dispatch_issue_candidates(
                     **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
                 )
             elif backend_type in local_types:
+                model = llm_config.get_model_for_backend(candidate.backend_name) or ""
+                # Backend construction is the existing synchronous preparation
+                # boundary. A missing CLI/model is positively not started and
+                # must release this claim so the ranked successor can run.
+                manager = build_backend_manager(
+                    selected_backends=[candidate.backend_name],
+                    primary_backend=candidate.backend_name,
+                    models={candidate.backend_name: model},
+                )
                 if local_job_store is not None:
                     from .local_job_handoff import LocalJobKind, LocalJobOffer
 
@@ -1461,12 +1470,6 @@ def _dispatch_issue_candidates(
                         {"backend_name": candidate.backend_name, "job_id": accepted.job_id, "state": accepted.state.value},
                     )
                     return AdapterOutcome(DispatchOutcome.LOCAL_ACCEPTED, accepted.job_id)
-                model = llm_config.get_model_for_backend(candidate.backend_name) or ""
-                manager = build_backend_manager(
-                    selected_backends=[candidate.backend_name],
-                    primary_backend=candidate.backend_name,
-                    models={candidate.backend_name: model},
-                )
                 actions = _take_issue_actions(
                     repo_name,
                     issue_data,
