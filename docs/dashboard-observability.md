@@ -1169,6 +1169,10 @@ in `tests/test_pending_work_resumption.py::test_initial_dispatch_snapshot_retain
 asserts the diagnostic and durable handoff, while
 `test_initial_dispatch_snapshot_does_not_reclassify_unsupported_refusal` guards
 the failure/deferred distinction.
+The same existing diagnostic is retained when a generation-serialized strict
+snapshot refuses admission; `test_generation_serialized_snapshot_retains_bare_admission_deferral`
+drives common dispatch through the owner lock and verifies the durable Deferred
+result without adding a dashboard event shape.
 
 Shared-governor incarnation ownership changes the existing HTTP admission gate but is
 dashboard-observability neutral. Governor admission still occurs before an Issue or PR

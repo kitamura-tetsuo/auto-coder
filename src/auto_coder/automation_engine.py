@@ -5580,6 +5580,26 @@ class AutomationEngine:
                     return refusal
             try:
                 result = self._process_single_candidate_unified_impl(*impl_args)
+            except GitHubRequestDeferred as exc:
+                # Strict Issue snapshots are repeated after owner/generation
+                # serialization and immediately before final dispatch. Keep
+                # every supported, definitely-unsent refusal on the same
+                # durable boundary as the initial admission read instead of
+                # allowing a later read to escape or become a plain error.
+                deferred = _reconciliation_admission_deferral(exc)
+                if candidate.type != "issue" or not isinstance(item_number, int) or isinstance(item_number, bool) or deferred is None:
+                    raise
+                result = self._defer_issue_evaluation(
+                    repo_name,
+                    item_number,
+                    candidate.data,
+                    deferred,
+                    CandidateProcessingResult(
+                        type="issue",
+                        number=item_number,
+                        title=candidate.data.get("title"),
+                    ),
+                )
             except ParentOperationalError as exc:
                 # Hierarchy rechecks can run before or after the inner admission
                 # handlers. Never let an unavailable relationship stop the worker.

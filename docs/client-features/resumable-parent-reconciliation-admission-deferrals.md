@@ -39,6 +39,10 @@ The final relationship/generation freshness check before ownership admission
 and a retained owner's submitted-family recheck use this boundary as well, so
 neither can silently downgrade a refusal to stale evidence or lose the pending
 evaluation after earlier validation succeeds.
+The common dispatch wrapper provides the same typed retention fallback for
+strict snapshots repeated under owner serialization and immediately before
+implementation dispatch. This prevents a later bare refusal from escaping the
+refill task or being flattened into a non-durable retry error.
 
 Durable-invalidation stage routing also recognizes an explicitly caused
 reconciliation deferral and stores its reason, API origin, and effective retry
