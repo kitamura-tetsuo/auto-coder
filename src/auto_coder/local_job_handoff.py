@@ -472,6 +472,37 @@ class LocalJobStore:
         except (OSError, sqlite3.Error):
             return False
 
+    def recover_recorded_result(self, record: LocalJobRecord) -> bool:
+        """Checkpoint a previously persisted exact-incarnation provider result."""
+        if record.state is not LocalJobState.RUNNING or not record.provider_entered or not record.execution_incarnation:
+            return False
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                artifact = connection.execute(
+                    "SELECT artifact_id, outcome FROM local_job_results WHERE job_id=? AND execution_incarnation=?",
+                    (record.job_id, record.execution_incarnation),
+                ).fetchone()
+                if artifact is None:
+                    connection.rollback()
+                    return False
+                cursor = connection.execute(
+                    "UPDATE local_jobs SET state=?, invocation_outcome=?, result_reference=?, updated_at=? " "WHERE job_id=? AND state=? AND execution_incarnation=? AND provider_entered=1 AND result_reference=''",
+                    (
+                        LocalJobState.RESULT_RECORDED.value,
+                        str(artifact["outcome"]),
+                        str(artifact["artifact_id"]),
+                        time.time(),
+                        record.job_id,
+                        LocalJobState.RUNNING.value,
+                        record.execution_incarnation,
+                    ),
+                )
+                connection.commit()
+            return cursor.rowcount == 1
+        except (OSError, sqlite3.Error):
+            return False
+
     def persist_result_artifact(self, claim: LocalJobClaim, outcome: InvocationOutcome, output: str) -> Optional[LocalJobResultArtifact]:
         """Durably bind invocation output to the exact job and incarnation."""
         if not claim.acquired:

@@ -98,6 +98,7 @@ class LocalJobRunner:
         self._notification_executor = ThreadPoolExecutor(max_workers=capacity, thread_name_prefix="local-job-notification")
         self._lock = threading.Lock()
         self._active: dict[str, Future[None]] = {}
+        self._checkpoint_handles: dict[str, InvocationHandle] = {}
         self._notifying: set[str] = set()
         self._closed = False
 
@@ -129,6 +130,7 @@ class LocalJobRunner:
                     handle.begin_checkpointing("claim_lost")
                     handle.confirm_settled(f"claim-lost:{job.job_id}")
                     continue
+                self._checkpoint_handles[claim.record.execution_incarnation] = handle
                 future = self._executor.submit(self._execute, claim, handle)
                 self._active[job.job_id] = future
                 scheduled += 1
@@ -162,12 +164,30 @@ class LocalJobRunner:
 
     def _recover_unsettled(self) -> None:
         for job in self.store.discover_unsettled():
+            with self._lock:
+                active = self._active.get(job.job_id)
+                if active is not None and not active.done():
+                    continue
+            if job.state is LocalJobState.RUNNING and job.provider_entered:
+                if not self.store.recover_recorded_result(job):
+                    continue
+                refreshed = self.store.get(job.job_id)
+                if refreshed is None:
+                    continue
+                job = refreshed
             if job.state is LocalJobState.RESULT_RECORDED:
-                self.store.recover_downstream_pending(job)
+                if self.store.recover_downstream_pending(job):
+                    self._settle_recovered_handle(job)
             elif job.state is LocalJobState.RUNNING and not job.provider_entered:
                 alive = runner_owner_alive(job.runner_owner)
                 if alive is False:
                     self.store.release_dead_owner_claim(job, "previous runner owner is authoritatively dead")
+
+    def _settle_recovered_handle(self, job: LocalJobRecord) -> None:
+        with self._lock:
+            handle = self._checkpoint_handles.pop(job.execution_incarnation, None)
+        if handle is not None:
+            handle.confirm_settled(job.result_reference)
 
     def _notify_downstream(self, job: LocalJobRecord) -> None:
         try:
@@ -220,6 +240,8 @@ class LocalJobRunner:
                 handle.record_checkpoint_attempt_failed("downstream eligibility checkpoint failed")
                 return
             handle.confirm_settled(artifact.artifact_id)
+            with self._lock:
+                self._checkpoint_handles.pop(claim.record.execution_incarnation, None)
             current = self.store.get(claim.record.job_id)
             if current is not None and self.completion_wake is not None:
                 self.wake_downstream()

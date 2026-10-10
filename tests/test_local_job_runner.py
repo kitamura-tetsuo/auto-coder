@@ -173,6 +173,16 @@ class FailDownstreamOnceStore(LocalJobStore):
         return super().mark_downstream_pending(claim)
 
 
+class FailRecordOnceStore(LocalJobStore):
+    failed = False
+
+    def record_result(self, claim, outcome, result_reference, diagnostic=""):  # type: ignore[no-untyped-def]
+        if not self.failed:
+            self.failed = True
+            return False
+        return super().record_result(claim, outcome, result_reference, diagnostic)
+
+
 def test_restart_recovers_committed_result_without_reinvoking_provider(tmp_path: Path) -> None:
     accepted_store, job_id = _accepted(tmp_path, "attempt-1")
     failing_store = FailDownstreamOnceStore(accepted_store.path)
@@ -203,6 +213,70 @@ def test_restart_recovers_committed_result_without_reinvoking_provider(tmp_path:
     recovered = LocalJobStore(failing_store.path).get(job_id)
     assert recovered is not None and recovered.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
     assert LocalJobStore(failing_store.path).get_result_artifact(recovered.result_reference).output == "output:implement"  # type: ignore[union-attr]
+    assert adapter.calls == 1
+    restarted.close()
+
+
+def test_same_runner_recovery_settles_original_drain_handle(tmp_path: Path) -> None:
+    accepted_store, job_id = _accepted(tmp_path, "attempt-1")
+    store = FailDownstreamOnceStore(accepted_store.path)
+    gate = InvocationAdmissionGate()
+    adapter = BarrierAdapter()
+    adapter.release.set()
+    wakes: list[str] = []
+    runner = LocalJobRunner(
+        store,
+        gate,
+        capacity=1,
+        adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
+        completion_wake=lambda job: wakes.append(job.job_id),
+    )
+    assert runner.poll() == 1
+    assert adapter.entered.wait(5)
+    _wait(lambda: runner.active_count() == 0)
+    assert store.get(job_id).state is LocalJobState.RESULT_RECORDED  # type: ignore[union-attr]
+    assert len(gate.unsettled_snapshot()) == 1
+
+    assert runner.poll() == 0
+    _wait(lambda: wakes == [job_id])
+    gate.close_admission("regression drain")
+    assert gate.unsettled_snapshot() == []
+    assert gate.is_graceful_ready
+    assert store.get(job_id).state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING  # type: ignore[union-attr]
+    assert adapter.calls == 1
+    runner.close()
+
+
+def test_restart_recovers_persisted_artifact_after_result_checkpoint_failure(tmp_path: Path) -> None:
+    accepted_store, job_id = _accepted(tmp_path, "attempt-1")
+    store = FailRecordOnceStore(accepted_store.path)
+    adapter = BarrierAdapter()
+    adapter.release.set()
+    first = LocalJobRunner(store, InvocationAdmissionGate(), capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter})
+    assert first.poll() == 1
+    assert adapter.entered.wait(5)
+    _wait(lambda: first.active_count() == 0)
+    stranded = LocalJobStore(store.path).get(job_id)
+    assert stranded is not None and stranded.state is LocalJobState.RUNNING
+    assert stranded.provider_entered and stranded.result_reference == ""
+    first.close()
+
+    wakes: list[str] = []
+    restarted_store = LocalJobStore(store.path)
+    restarted = LocalJobRunner(
+        restarted_store,
+        InvocationAdmissionGate(),
+        capacity=1,
+        adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
+        completion_wake=lambda job: wakes.append(job.job_id),
+    )
+    assert restarted.poll() == 0
+    _wait(lambda: wakes == [job_id])
+    recovered = restarted_store.get(job_id)
+    assert recovered is not None and recovered.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+    artifact = restarted_store.get_result_artifact(recovered.result_reference)
+    assert artifact is not None and artifact.output == "output:implement"
+    assert artifact.execution_incarnation == recovered.execution_incarnation
     assert adapter.calls == 1
     restarted.close()
 

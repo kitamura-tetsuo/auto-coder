@@ -26,8 +26,13 @@ runner-owned notification executor, and every later `poll()` also schedules
 eligible notifications without running consumer callbacks on its caller. A
 persisted `result_recorded` incarnation is validated against its exact result
 artifact and advanced to downstream eligibility after restart, without provider
-re-entry. Empty provider output remains an actual checkpointed result; provider
-exceptions and interruptions are recorded as distinct outcomes.
+re-entry. A provider-entered running incarnation with a committed artifact is
+likewise reconstructed into its result checkpoint before the downstream
+transition. Same-process recovery retains and settles the original invocation
+admission handle only after downstream eligibility commits, so graceful drain
+does not wait on work whose minimal durable checkpoint is complete. Empty
+provider output remains an actual checkpointed result; provider exceptions and
+interruptions are recorded as distinct outcomes.
 
 The daemon's `InvocationAdmissionGate` is checked before a claim. Graceful
 drain therefore leaves queued work pending while protecting already-admitted

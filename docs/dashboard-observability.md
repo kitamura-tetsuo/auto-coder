@@ -2229,7 +2229,9 @@ this boundary; `tests/test_local_job_runner.py` crosses the real runner thread
 and domain-adapter provider boundary, verifies finite capacity and drain
 admission, reopens the store to recover committed results and authoritatively
 dead pre-provider owners, suppresses ambiguous-owner replay, and verifies that
-blocking downstream callbacks never occupy the submitting worker. These
+blocking downstream callbacks never occupy the submitting worker. It also
+crosses the artifact-to-result crash window and verifies that same-process
+downstream recovery settles the original invocation admission handle. These
 recovery transitions retain the existing local-job schema and do not claim a
 domain completion trace. Run `bash
 scripts/test.sh tests/test_local_job_runner.py`.
