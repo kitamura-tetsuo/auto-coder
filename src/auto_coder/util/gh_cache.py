@@ -257,7 +257,7 @@ class _GitHubCacheTransport(SyncCacheTransport):
             key = hashlib.sha256(str(request.url).encode("utf-8")).hexdigest()
             for entry in self.storage.get_entries(key):
                 self.storage.remove_entry(entry.id)
-        extensions = {key: request.extensions[key] for key in ("timeout", "auto_coder_operation_id") if key in request.extensions}
+        extensions: dict[str, object] = {key: request.extensions[key] for key in ("timeout", "auto_coder_operation_id") if key in request.extensions}
         token = _cache_request_extensions.set(extensions)
         try:
             return super().handle_request(request)
