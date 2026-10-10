@@ -40,6 +40,7 @@ from auto_coder.github_pending_work import (
     PendingObligation,
     PendingReason,
     PendingWorkOwnershipError,
+    PendingWorkPersistenceError,
     PendingWorkScheduler,
     PendingWorkStore,
     StageOutcome,
@@ -694,6 +695,208 @@ def _admitted_issue_engine(monkeypatch, tmp_path, issue):
     engine._get_decomposition_validator = MagicMock(return_value=decomposition_validator)
     engine.pending_work_scheduler = MagicMock()
     return engine, store
+
+
+def test_refill_deferral_persistence_failure_pauses_repository(tmp_path, monkeypatch):
+    """#2446 REQ-002/007: failed timed handoff is a repository fault."""
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "Faulted",
+        "body": "## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    sibling = {**issue, "id": 80, "number": 8, "title": "Sibling"}
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    engine.implementation_slots = ImplementationSlotRepository("owner/repo", 2, tmp_path / "slots.json")
+    retained_identity = WorkIdentity("owner/repo", "issue:99", ISSUE_PROCESSING_STAGE, "retained")
+    store.defer(
+        retained_identity,
+        _admission_deferral(),
+        (ISSUE_PROCESSING_REFRESH_EFFECT,),
+    )
+    deferred = _admission_deferral()
+    engine.github.get_open_entities_strict = MagicMock(return_value=OpenGitHubEntities(issues=[OpenGitHubIssue(7), OpenGitHubIssue(8)]))
+    engine.github.get_issue_details = MagicMock(side_effect=lambda value: value)
+    engine.github.get_parent_issue_number_strict = MagicMock(return_value=None)
+    engine.github.get_issue_dispatch_snapshot_strict.side_effect = [
+        dict(issue),
+        dict(sibling),
+        deferred,
+    ]
+    monkeypatch.setattr(
+        store,
+        "defer",
+        MagicMock(side_effect=PendingWorkPersistenceError("pending store is unwritable")),
+    )
+
+    with patch.object(engine, "_process_single_candidate_reserved") as implementation:
+        assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is True
+
+    assert implementation.call_count == 0
+    assert store.get(retained_identity) is not None
+    assert engine._refill_admission_paused("owner/repo", 8)
+    assert engine.get_status()["refill_faults"] == [
+        {
+            "repository": "owner/repo",
+            "target": None,
+            "phase": "pending_work_persistence",
+            "exception_class": "PendingWorkPersistenceError",
+            "disposition": "intervention_required",
+            "retry_not_before": None,
+        }
+    ]
+
+
+def test_refill_enumeration_persistence_read_failure_is_visible(tmp_path, monkeypatch):
+    """#2446 REQ-008: an unreadable admission store is an operational fault."""
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "Faulted",
+        "body": "## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    engine.github.get_open_entities_strict = MagicMock(return_value=OpenGitHubEntities(issues=[OpenGitHubIssue(7)]))
+    monkeypatch.setattr(
+        store,
+        "all_pending",
+        MagicMock(side_effect=PendingWorkPersistenceError("pending store unreadable")),
+    )
+
+    console = io.StringIO()
+    log_file = tmp_path / "refill-fault.log"
+    setup_logger(log_level="INFO", log_file=str(log_file), stream=console)
+    try:
+        assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is True
+    finally:
+        setup_logger(log_level="INFO")
+    assert engine.get_status()["refill_faults"] == [
+        {
+            "repository": "owner/repo",
+            "target": None,
+            "phase": "refill_enumeration_persistence",
+            "exception_class": "PendingWorkPersistenceError",
+            "disposition": "intervention_required",
+            "retry_not_before": None,
+        }
+    ]
+    for diagnostics in (console.getvalue(), log_file.read_text()):
+        assert "ERROR" in diagnostics
+        assert "PendingWorkPersistenceError" in diagnostics
+        assert "Traceback" in diagnostics
+
+
+def test_intervention_pause_keeps_changed_pending_issue_unfinished(tmp_path, monkeypatch):
+    """#2446 REQ-004: pending entry checks the pause before strict refresh."""
+    issue = {
+        "number": 7,
+        "title": "Original",
+        "body": "## Requirements\nREQ-001: Preserve behavior.",
+        "state": "open",
+        "labels": [{"name": "implementation-ready"}],
+    }
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    identity = WorkIdentity(
+        "owner/repo",
+        "issue:7",
+        ISSUE_PROCESSING_STAGE,
+        _issue_content_revision(issue),
+    )
+    obligation = store.defer(
+        identity,
+        _admission_deferral(),
+        (ISSUE_PROCESSING_REFRESH_EFFECT,),
+        governor_deadline=0,
+    )
+    engine._record_refill_fault(
+        "owner/repo",
+        7,
+        "candidate_dispatch",
+        RuntimeError("unknown effect"),
+        "intervention_required",
+    )
+    scheduler = PendingWorkScheduler(store, repository="owner/repo")
+    scheduler.register_handler(ISSUE_PROCESSING_STAGE, _IssueProcessingStageHandler(engine, "owner/repo"))
+    engine.github.get_issue_dispatch_snapshot_strict.reset_mock()
+
+    asyncio.run(scheduler._claim_and_run(obligation, scheduler._handlers[ISSUE_PROCESSING_STAGE].dispatch))
+
+    engine.github.get_issue_dispatch_snapshot_strict.assert_not_called()
+    retained = store.get(identity)
+    assert retained is not None
+    assert retained.unfinished_effects == (ISSUE_PROCESSING_REFRESH_EFFECT,)
+    assert engine._refill_admission_paused("owner/repo", 7)
+
+
+def test_refill_enumeration_deferral_resumes_only_at_durable_deadline(tmp_path, monkeypatch):
+    """#2446 REQ-007: initial refill refusal enters timed pending work."""
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "Deferred",
+        "body": "## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    engine.github.get_open_entities_strict = MagicMock(return_value=OpenGitHubEntities(issues=[OpenGitHubIssue(7)]))
+    engine.github.get_parent_issue_number_strict = MagicMock(return_value=None)
+    deadline = time.time() + 600
+    context = GitHubRequestContext(
+        "op",
+        "attempt",
+        "issue-dispatch-snapshot",
+        "https://api.github.com",
+        "GET",
+        "read",
+        "/repos/{repo}/issues/{number}",
+        "owner/repo",
+        "issue:7",
+        strict_read=True,
+    )
+    deferred = GitHubRequestDeferred(context, "request_in_flight", retry_at=deadline)
+    engine.github.get_issue_dispatch_snapshot_strict.side_effect = [
+        deferred,
+        dict(issue),
+    ]
+
+    assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is True
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, "")
+    obligation = store.get(identity)
+    assert obligation is not None
+    assert obligation.not_before >= deadline
+    assert engine.github.get_issue_dispatch_snapshot_strict.call_count == 1
+
+    # A duplicate refill opportunity consults the retained deadline before
+    # another strict target read.
+    assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is True
+    assert engine.github.get_issue_dispatch_snapshot_strict.call_count == 1
+
+    scheduler = PendingWorkScheduler(store, repository="owner/repo", clock=lambda: deadline + 1)
+    scheduler.register_handler(ISSUE_PROCESSING_STAGE, _IssueProcessingStageHandler(engine, "owner/repo"))
+    engine.pending_work_scheduler = scheduler
+    completed = CandidateProcessingResult(type="issue", number=7, success=True, target_outcome=ExplicitTargetOutcome.SUCCESS)
+    engine._process_single_candidate = MagicMock(return_value=completed)
+
+    async def resume():
+        await scheduler._dispatch_due()
+        if scheduler._tasks:
+            await asyncio.gather(*tuple(scheduler._tasks))
+
+    asyncio.run(resume())
+
+    assert engine.github.get_issue_dispatch_snapshot_strict.call_count == 2
+    engine._process_single_candidate.assert_called_once()
+    assert store.get(identity) is None
 
 
 @pytest.mark.parametrize(
