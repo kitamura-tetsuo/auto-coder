@@ -213,7 +213,7 @@ class IssueJobFinalizer:
         try:
             existing = self._lookup_pr(record.repository, record.work_branch)
         except Exception as exc:
-            return self._pending(claim, "pr", f"PR lookup unavailable: {exc}", "indeterminate")
+            return self._pending(claim, "pr_lookup", f"PR lookup unavailable: {exc}", "indeterminate")
         pr_number = self._attributable_pr(existing, record)
         if existing is not None and pr_number is None:
             return self._pending(claim, "pr", "branch is associated with an unrelated or contradictory PR", "indeterminate")

@@ -209,3 +209,55 @@ def test_unknown_pr_creation_is_reconciled_without_second_create(tmp_path: Path,
     assert creates == 1
     assert recovered.disposition == "published"
     assert recovered.pr_number == 93
+
+
+def test_pre_create_lookup_outage_does_not_permanently_fence_creation(tmp_path: Path, _use_real_commands) -> None:
+    _source, _remote, store, slots, checkpoint = _completed_job(tmp_path, 48)
+    creates = 0
+    created = False
+
+    def unavailable(*_args):
+        raise RuntimeError("GitHub unavailable before create")
+
+    first = IssueJobFinalizer(store, slots, unavailable, lambda *_: (_ for _ in ()).throw(AssertionError("create called without lookup authority"))).finalize(checkpoint.job_id)
+
+    def lookup(_repository: str, _branch: str):
+        if created:
+            return {"number": 94, "head": {"ref": checkpoint.work_branch}, "body": "Closes #48"}
+        return None
+
+    def create(*_args) -> None:
+        nonlocal creates, created
+        creates += 1
+        created = True
+
+    resumed = IssueJobFinalizer(LocalJobStore(store.path), slots, lookup, create).finalize(checkpoint.job_id)
+
+    assert first.disposition == "pending"
+    assert store.get_effect(checkpoint.job_id, checkpoint.execution_incarnation, "pr_lookup").state == "indeterminate"  # type: ignore[union-attr]
+    assert creates == 1
+    assert resumed.disposition == "published"
+
+
+def test_post_create_lookup_outage_fences_repeated_creation(tmp_path: Path, _use_real_commands) -> None:
+    _source, _remote, store, slots, checkpoint = _completed_job(tmp_path, 49)
+    creates = 0
+    lookup_calls = 0
+
+    def lookup(_repository: str, _branch: str):
+        nonlocal lookup_calls
+        lookup_calls += 1
+        if lookup_calls == 1:
+            return None
+        raise RuntimeError("response unavailable after create")
+
+    def create(*_args) -> None:
+        nonlocal creates
+        creates += 1
+
+    first = IssueJobFinalizer(store, slots, lookup, create).finalize(checkpoint.job_id)
+    second = IssueJobFinalizer(LocalJobStore(store.path), slots, lambda *_: None, create).finalize(checkpoint.job_id)
+
+    assert first.disposition == second.disposition == "pending"
+    assert creates == 1
+    assert store.get_effect(checkpoint.job_id, checkpoint.execution_incarnation, "pr").state == "indeterminate"  # type: ignore[union-attr]
