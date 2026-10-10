@@ -4404,6 +4404,29 @@ def _replay_saved_nonpass_review(
         if marker and _closure_review_due(repo_name, pr_number, head_sha, projection, marker):
             return [f"The corrective request for PR #{pr_number} completed ({marker.split(':')[0]}); independently reassessing the accepted finding"], True
     bodies, blocker_ids = _compose_actionable_feedback(github_client, repo_name, pr_number, records)
+    if not bodies and github_client is not None:
+        try:
+            replay_threads = github_client.get_pr_review_threads_strict(repo_name, pr_number)
+            reviewer_identity = resolve_reviewer_app_identity(repo_name)
+        except Exception as exc:
+            logger.warning(f"Could not read review threads to check replayability for PR #{pr_number}: {exc}")
+        else:
+            # A published review summarizes its findings and attaches them as threads, so
+            # report-text matching can miss them; reviewer-authored unresolved finding
+            # roots (not marked resolved/invalid by the report) are the feedback to deliver.
+            attached = tuple(
+                thread.comments[0].body
+                for thread in replay_threads
+                if not thread.is_resolved
+                and thread.comments
+                and thread.comments[0].body.startswith(_ADVERSARIAL_THREAD_HEADINGS)
+                and reviewer_identity.matches_login(thread.comments[0].author_login)
+                and (_adversarial_feedback_belongs_to_report(thread.comments[0].body, report, thread.id) or f"#### `{thread.id}`:" not in report)
+            )
+            if attached:
+                bodies = attached
+            else:
+                return [f"Saved non-passing review for PR #{pr_number} has no actionable unresolved feedback to deliver; revalidating the current head"], True
     result = _send_adversarial_validation_feedback_to_cloud_task(repo_name, pr_data, head_sha, report, github_client, bodies, config=config, canonical_blocker_ids=blocker_ids)
     _record_handoff_state(repo_name, pr_data, github_client, result)
     if projection is not None and records and getattr(result, "local_phase", "") == "completed_no_change" and _closure_review_due(repo_name, pr_number, head_sha, projection, "local:completed_no_change"):
