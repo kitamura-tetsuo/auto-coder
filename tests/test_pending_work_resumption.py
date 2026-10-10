@@ -17,6 +17,7 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ExplicitTargetOutcome
@@ -42,14 +43,15 @@ from auto_coder.github_pending_work import (
     StageOutcome,
     WorkIdentity,
 )
-from auto_coder.github_request_governor import GitHubRequestDeferred
+from auto_coder.github_request_governor import GitHubRequestDeferred, GitHubRequestGovernor
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.parent_issue_reconciliation import ParentOperationalError, ParentSpecificationError
 from auto_coder.pr_processor import PR_PROCESSING_STAGE
 from auto_coder.sibling_dependencies import DependencySatisfaction
-from auto_coder.util.gh_cache import GitHubClient, OpenGitHubEntities, OpenGitHubIssue
+from auto_coder.util.gh_cache import GitHubClient, OpenGitHubEntities, OpenGitHubIssue, get_ghapi_client
 from auto_coder.util.github_request_outcome import (
     DeliveryCertainty,
+    DiagnosticTransport,
     GitHubApiOutcome,
     GitHubRequestContext,
     GitHubRequestError,
@@ -57,6 +59,7 @@ from auto_coder.util.github_request_outcome import (
     GitHubRequestRefused,
     GitHubResponseMetadata,
     RequestProvenance,
+    configure_github_request_boundary,
 )
 
 
@@ -752,6 +755,77 @@ def test_initial_dispatch_snapshot_retains_supported_admission_deferral(tmp_path
     assert "api_origin=https://api.github.com" in (result.target_reason or "")
     engine.pending_work_scheduler.wake.assert_called_once_with()
     implementation.assert_not_called()
+
+
+def test_initial_dispatch_snapshot_retains_real_governor_cooldown(tmp_path, monkeypatch):
+    """A wire-observed cooldown is retained at the real strict-reader boundary."""
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "Carried title",
+        "body": "## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    store = PendingWorkStore(tmp_path / "pending.db")
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda _repository: store)
+    governor = GitHubRequestGovernor(store_path=tmp_path / "governor.sqlite3", wait_budget=0)
+    sends: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sends.append(request.url.path)
+        return httpx.Response(429, headers={"Retry-After": "20"}, json={"message": "slow down"}, request=request)
+
+    def client(*_args, **_kwargs):
+        return httpx.Client(
+            transport=DiagnosticTransport(
+                httpx.MockTransport(handler),
+                admission_hook=governor.admit_blocking,
+                observation_hook=governor.observe,
+            )
+        )
+
+    monkeypatch.setattr("auto_coder.util.gh_cache.get_caching_client", client)
+    configure_github_request_boundary(governor.admit_blocking, governor.observe)
+    try:
+        cooldown_started_after = time.time()
+        with pytest.raises(GitHubRequestError) as throttled:
+            get_ghapi_client("token")("/seed")
+        assert throttled.value.outcome.classification is GitHubApiOutcome.SECONDARY_THROTTLED
+
+        GitHubClient.reset_singleton()
+        github = GitHubClient.get_instance("token")
+        engine = AutomationEngine(github, AutomationConfig())
+        # Engine construction installs its default hooks; restore the controlled
+        # production boundary whose prior response established the cooldown.
+        configure_github_request_boundary(governor.admit_blocking, governor.observe)
+        engine._is_issue_author_allowed = MagicMock(return_value=True)
+        engine.pending_work_scheduler = MagicMock()
+
+        with patch.object(engine, "_process_single_candidate_reserved") as implementation:
+            result = engine._process_single_candidate_unified(
+                "owner/repo",
+                Candidate(type="issue", data=dict(issue), priority=0, issue_number=7),
+                engine.config,
+                origin="capacity-refill-intake",
+            )
+
+        identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+        obligation = store.get(identity)
+        assert sends == ["/seed"]
+        assert result.success is False
+        assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+        assert result.refill_retry_required is True
+        assert obligation is not None
+        assert obligation.reason is PendingReason.ADMISSION_DEFERRED
+        assert obligation.not_before >= cooldown_started_after + 20
+        assert "reason=rate_limit_cooldown" in (result.target_reason or "")
+        engine.pending_work_scheduler.wake.assert_called_once_with()
+        implementation.assert_not_called()
+    finally:
+        configure_github_request_boundary()
+        governor.close()
 
 
 def test_initial_dispatch_snapshot_does_not_reclassify_unsupported_refusal(tmp_path, monkeypatch):
