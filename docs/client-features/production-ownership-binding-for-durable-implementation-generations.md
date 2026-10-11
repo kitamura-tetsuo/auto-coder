@@ -43,3 +43,12 @@ invocation; a failure during result handoff remains indeterminate.
 The `issue.implementation-not-started` trace records the generation, reason and
 `provider_started=false`. Regression coverage lives in
 `tests/test_implementation_ownership.py` and `tests/test_ci_repair_bootstrap_exemption.py`.
+
+Accepted durable local Issue jobs retain their exact execution until domain
+settlement, even when the accepting process is authoritatively dead. Process
+reclamation must first rule out unsettled local-job responsibility. A lost,
+unretired completed-job owner can be reconstructed for publication only with its
+original incarnation and a freshly matching Issue/family generation; this does
+not create a new attempt or consume another provider call. Current replacement
+owners and valid retirement evidence remain fences. Coverage is in
+`tests/test_local_issue_owner_recovery.py`.

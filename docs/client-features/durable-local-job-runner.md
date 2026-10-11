@@ -43,3 +43,18 @@ result-artifact checkpoint remains running for reconciliation; forced shutdown
 does not manufacture completion.
 
 Regression coverage is in `tests/test_local_job_runner.py`.
+
+An optional immutable `job_ids` scope restricts execution, checkpoint recovery,
+and downstream notifications to those exact envelopes. Explicit single-Issue
+commands use this scope and wait for their runner before invoking the finalizer.
+`recover_unsettled()` reconciles checkpoints without scheduling provider calls.
+
+An unsettled Issue job retains its exact implementation execution independently
+of the accepting controller's PID. Stale-process reclamation strictly reads the
+durable job authority before removing an execution; an unavailable job database
+defers reclamation. A completed job whose unretired owner was lost can restore
+that same owner incarnation for publication after a fresh Issue/family contract
+matches its captured generation. Replacement owners, retired incarnations,
+changed contracts, or unavailable contract evidence cannot be overwritten.
+This recovery never admits another model invocation. Coverage is in
+`tests/test_local_issue_owner_recovery.py`.

@@ -23,7 +23,7 @@ from .utils import _COMMAND_EXECUTION_CWD, CommandExecutor, bind_command_executi
 
 logger = get_logger(__name__)
 
-_DISPOSABLE_DIRECTORY_NAMES = frozenset({".venv", "venv", ".agent-tmp", ".mypy_cache", ".pytest_cache", ".cache", "__pycache__", "node_modules", "coverage", "coverage-backups", "htmlcov", "playwright-report", "test-results"})
+DISPOSABLE_DIRECTORY_NAMES = frozenset({".venv", "venv", ".agent-tmp", ".mypy_cache", ".pytest_cache", ".cache", "__pycache__", "node_modules", "coverage", "coverage-backups", "htmlcov", "playwright-report", "test-results"})
 _WORKSPACE_FREE_RESERVE = 1024**3
 
 
@@ -213,7 +213,7 @@ def current_local_caller_checkpoint(binding: LocalWorkspaceBinding) -> str:
     ):
         raise WorkspaceHandoffError("caller Git identity changed; refusing continuation")
     tracked = _listed_paths(caller, "--cached")
-    untracked = tuple(path for path in _listed_paths(caller, "--others") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
+    untracked = tuple(path for path in _listed_paths(caller, "--others") if not any(part in DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
     checkpoint, _, _ = _source_token(caller, tracked, untracked)
     return checkpoint
 
@@ -248,7 +248,7 @@ def refresh_local_workspace_binding(binding: LocalWorkspaceBinding) -> LocalWork
     caller = binding.caller_root.resolve()
     workspace = binding.workspace.resolve()
     tracked = _listed_paths(caller, "--cached")
-    untracked = tuple(path for path in _listed_paths(caller, "--others") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
+    untracked = tuple(path for path in _listed_paths(caller, "--others") if not any(part in DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
     token, index_checksum, git_dir_text = _source_token(caller, tracked, untracked)
     # Compare the same source scope used by handoff. New ignored build output is
     # private runtime context, while baseline and privately tracked paths remain
@@ -419,7 +419,7 @@ def _capture_source(target: Path, workspace: Path, ownership: Optional[LocalWork
         raise WorkspacePreparationError("sparse checkouts are not supported")
 
     tracked = _listed_paths(root, "--cached")
-    untracked_paths = tuple(path for path in _listed_paths(root, "--others") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
+    untracked_paths = tuple(path for path in _listed_paths(root, "--others") if not any(part in DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
     token, index_digest, git_dir_text = _source_token(root, tracked, untracked_paths)
     commit = _git(root, "rev-parse", "HEAD").stdout.strip().decode()
     symbolic = subprocess.run(["git", "symbolic-ref", "-q", "HEAD"], cwd=root, capture_output=True, text=True)
@@ -446,7 +446,7 @@ def _capture_source(target: Path, workspace: Path, ownership: Optional[LocalWork
 
     directories: list[tuple[str, int]] = []
     for current, names, _ in os.walk(root, followlinks=False):
-        names[:] = [name for name in names if name != ".git" and name not in _DISPOSABLE_DIRECTORY_NAMES]
+        names[:] = [name for name in names if name != ".git" and name not in DISPOSABLE_DIRECTORY_NAMES]
         for name in names:
             path = Path(current) / name
             if not path.is_symlink():
@@ -463,7 +463,7 @@ def _capture_source(target: Path, workspace: Path, ownership: Optional[LocalWork
         file_snapshot_checksum=token,
         initial_files=_capture_file_states(
             root,
-            set(tracked) | {path for path in _listed_paths(root, "--others", "--exclude-standard") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts)},
+            set(tracked) | {path for path in _listed_paths(root, "--others", "--exclude-standard") if not any(part in DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts)},
         ),
         workspace=workspace,
         ownership=ownership or LocalWorkspaceOwnership(),
@@ -525,7 +525,7 @@ def _seed_private_repository(snapshot: _SourceSnapshot) -> None:
         _restore_path(destination, item)
 
     tracked = _listed_paths(root, "--cached")
-    untracked = tuple(path for path in _listed_paths(root, "--others") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
+    untracked = tuple(path for path in _listed_paths(root, "--others") if not any(part in DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
     current_token, _, _ = _source_token(root, tracked, untracked)
     if current_token != snapshot.consistency_token:
         raise WorkspacePreparationError("caller Git identity, index, or files changed during workspace preparation")
@@ -574,7 +574,7 @@ def _restore_path(path: Path, state: Optional[WorkspaceFileState]) -> None:
 def _result_file_paths(root: Path, binding: LocalWorkspaceBinding) -> set[str]:
     """Select tracked, non-ignored source and preserved baseline paths for handoff."""
     paths = set(_listed_paths(root, "--cached"))
-    paths.update(path for path in _listed_paths(root, "--others", "--exclude-standard") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
+    paths.update(path for path in _listed_paths(root, "--others", "--exclude-standard") if not any(part in DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
     paths.update(state.relative_path for state in binding.initial_files)
     return paths
 
@@ -617,7 +617,7 @@ def sync_worktree_changes_back(
 
     with _handoff_lock(target), tempfile.TemporaryDirectory(prefix="handoff-", dir=binding.workspace.parent) as rollback_directory:
         tracked = _listed_paths(target, "--cached")
-        context_untracked = tuple(path for path in _listed_paths(target, "--others") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
+        context_untracked = tuple(path for path in _listed_paths(target, "--others") if not any(part in DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
         current_token, _, current_git_dir = _source_token(target, tracked, context_untracked)
         current_common_dir = Path(_git(target, "rev-parse", "--git-common-dir").stdout.strip().decode())
         if not current_common_dir.is_absolute():

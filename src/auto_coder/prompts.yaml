@@ -1535,6 +1535,49 @@ issue:
     Lossless before/after delta for changed review inputs:
     $assessed_delta
 
+  local_implementation: |-
+    Implement the accepted local GitHub Issue in the provided private repository.
+    Complete implementation and verification in this single invocation.
+
+    Repository: $repo_name
+    Issue #$issue_number: $issue_title
+    Issue Labels: $issue_labels
+    Issue State: $issue_state
+    Created by: $issue_author
+
+    Current target Issue contract (preserve the supplied text):
+    $issue_body
+
+    Parent coordination context (scope evidence only; do not implement the parent):
+    $parent_issue_body
+
+    Commit history since $main_branch:
+    $commit_log
+
+    Implement only this target Issue's current explicit Requirements. Preserve
+    its Objective and existing behavior. Parent context and sibling Requirements
+    do not create additional implementation duties. If necessary information or
+    an independent prerequisite is missing, return CANNOT_FIX rather than
+    changing the Issue, creating children, or guessing a new contract.
+
+    Read AGENTS.md and the relevant feature documentation. Inspect the supplied
+    prerequisites and reuse their production services. Implement the code,
+    corresponding production-path regression tests and feature documentation.
+    Run tests through the target repository's scripts/test.sh, including focused
+    reruns. Verify every explicit Requirement and its acceptance scenarios;
+    helper-only or mocked success must not substitute for required real paths.
+
+    Auto-Coder owns repository and GitHub lifecycle operations after your result
+    is checkpointed. Edit and test files only in this private repository. Do not
+    change branches or HEAD, stage, commit, push, merge, rebase, create or close
+    Issues or PRs, edit Issue bodies, post comments, or resolve review threads.
+    Do not wait for remote CI or treat PR creation as your success criterion.
+
+    On verified success, return exactly one nonempty line:
+    ACTION_SUMMARY: <brief description of implementation and verification>
+    If you cannot implement and verify this Issue, return exactly CANNOT_FIX.
+    Do not return Markdown, analysis, review prose, or additional final lines.
+
   action: |-
     Analyze the following GitHub issue and take appropriate actions:
 

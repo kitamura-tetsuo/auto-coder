@@ -367,6 +367,15 @@ class LocalJobStore:
         except (OSError, sqlite3.Error, ValueError):
             return ()
 
+    def retained_issue_execution_ids(self, repository: str) -> frozenset[str]:
+        """Read durable execution responsibility strictly for slot reclamation."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT implementation_execution_id FROM local_jobs WHERE repository=? AND kind=? AND state<>? AND implementation_execution_id<>''",
+                (repository, LocalJobKind.ISSUE_IMPLEMENTATION.value, LocalJobState.SETTLED.value),
+            ).fetchall()
+        return frozenset(str(row[0]) for row in rows)
+
     def claim(self, job_id: str, runner_owner: str = "") -> Optional[LocalJobClaim]:
         incarnation = str(uuid.uuid4())
         try:

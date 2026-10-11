@@ -90,6 +90,7 @@ class LocalJobRunner:
         adapters: dict[LocalJobKind, LocalJobDomainAdapter],
         completion_wake: Optional[CompletionWake] = None,
         runner_id: str = "",
+        job_ids: Optional[frozenset[str]] = None,
     ) -> None:
         if capacity < 1:
             raise ValueError("local runner capacity must be at least one")
@@ -99,6 +100,7 @@ class LocalJobRunner:
         self.adapters = dict(adapters)
         self.completion_wake = completion_wake
         self.runner_id = runner_id or current_runner_owner()
+        self._job_ids = job_ids
         self._executor = ThreadPoolExecutor(max_workers=capacity, thread_name_prefix="local-job-runner")
         self._notification_executor = ThreadPoolExecutor(max_workers=capacity, thread_name_prefix="local-job-notification")
         self._lock = threading.Lock()
@@ -107,9 +109,12 @@ class LocalJobRunner:
         self._notifying: set[str] = set()
         self._closed = False
 
+    def _discover_unsettled(self) -> tuple[LocalJobRecord, ...]:
+        return tuple(job for job in self.store.discover_unsettled() if job.kind in self.adapters and (self._job_ids is None or job.job_id in self._job_ids))
+
     def poll(self) -> int:
         """Schedule as many pending envelopes as free runner slots permit."""
-        self._recover_unsettled()
+        self.recover_unsettled()
         self.wake_downstream()
         with self._lock:
             self._reap_locked()
@@ -118,7 +123,7 @@ class LocalJobRunner:
             free = self.capacity - len(self._active)
             if free <= 0:
                 return 0
-            pending = [job for job in self.store.discover_unsettled() if job.state is LocalJobState.PENDING and job.kind in self.adapters]
+            pending = [job for job in self._discover_unsettled() if job.state is LocalJobState.PENDING and job.kind in self.adapters]
             scheduled = 0
             for job in pending[:free]:
                 # Admission happens before claiming. A draining daemon leaves the
@@ -146,7 +151,7 @@ class LocalJobRunner:
         with self._lock:
             if self._closed:
                 return 0
-            eligible = [job for job in self.store.discover_unsettled() if job.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING and job.kind in self.adapters and job.job_id not in self._notifying]
+            eligible = [job for job in self._discover_unsettled() if job.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING and job.kind in self.adapters and job.job_id not in self._notifying]
             for job in eligible:
                 self._notifying.add(job.job_id)
                 self._notification_executor.submit(self._notify_downstream, job)
@@ -167,8 +172,9 @@ class LocalJobRunner:
     def _reap_locked(self) -> None:
         self._active = {job_id: future for job_id, future in self._active.items() if not future.done()}
 
-    def _recover_unsettled(self) -> None:
-        for job in self.store.discover_unsettled():
+    def recover_unsettled(self) -> None:
+        """Reconcile retained checkpoints without scheduling a new invocation."""
+        for job in self._discover_unsettled():
             with self._lock:
                 active = self._active.get(job.job_id)
                 if active is not None and not active.done():

@@ -2351,3 +2351,78 @@ the pending/running local-job record remain authoritative in-flight evidence.
 Final publication continues to emit
 `issue.local-publication-finalization`; only that separately owned finalizer
 may report publication or terminal no-change/cannot-fix settlement.
+
+## Explicit single-Issue local completion
+
+`process-issues --only` runs only the exact accepted local Issue job and waits
+through controller-owned publication. `issue.dispatch.local-job` still denotes
+ACCEPTED_HANDOFF. The finalizer emits `issue.local-publication-finalization`
+with origin `explicit-single-target` for command-owned completion (daemon
+recovery retains `startup-recovery`). Facts retain `job_id`, `disposition`,
+`pr_number`, `diagnostic`, and `owner_restored`; published/no-change dispositions emit COMPLETED,
+failed/interrupted/cannot-fix dispositions emit FAILED, and pending publication
+emits DEFERRED. No renderer or event schema changes are needed: existing stage
+results display these outcomes, while acceptance remains in-flight evidence.
+Run `bash scripts/test.sh tests/test_explicit_local_issue_completion.py
+tests/test_local_job_runner.py` to verify actual private-clone edits, confirmed
+local Git push, exact-job isolation, single invocation, command waiting, and
+finalization trace origins/outcomes including refusal and publication failure.
+
+The command-owned `issue.local-completion` execution binds finalization events
+to the requested Issue and reports its terminal outcome after the runner returns.
+CLI JSON response extraction changes no provider-entry event or schema: a
+confirmed summary authorizes result checkpointing, not publication by itself.
+Malformed/failed streams and `CANNOT_FIX` produce failed command completion;
+`tests/test_issue_job_workspace.py` supplies the invalid-stream negative controls.
+
+Refreshing the seeded private clone's Git index stat cache is observability-neutral:
+it preserves the caller's files and staged tree, changes no admission authority,
+and introduces no stage or event fields. The nested-workspace regression in
+`tests/test_issue_job_workspace.py` verifies that BackendManager preparation
+accepts the clone while preserving both staged and working changes.
+
+The explicit local completion regression also mounts the production dashboard
+Issue detail route and asserts that local completion, publication finalization,
+and their actual outcomes reach its diagram. Refused entry displays Deferred
+without a publication-finalization stage.
+
+Disposable-directory exclusion during Issue source capture is observability-neutral:
+no admission authority, provider routing, event schema or terminal-outcome rule
+changes. It prevents untracked cache writes from producing false preparation
+failures; tracked and other source changes retain their fail-closed verification.
+Run `bash scripts/test.sh tests/test_issue_job_workspace.py` for tracked-path,
+ignored-context, generated-result exclusion and concurrent-cache controls.
+The finalizer uses the same verified file scope and excludes untracked disposable
+output from staging. Cache-only activity keeps the existing no-change completion;
+actual source drift keeps the existing pending disposition. Explicit-completion
+and finalizer regressions verify these outcomes and confirmed remote Git contents.
+
+Tracked files covered by a later ignore rule remain publishable through the
+same finalization stage. `tests/test_issue_job_finalizer.py::test_tracked_ignored_context_is_published_without_ignored_runtime_output`
+verifies their remote contents and exclusion of ignored untracked output.
+Separating tracked updates from new-file staging changes no event schema,
+ownership, or origin; publication still emits COMPLETED only after its confirmed
+remote Git and PR effects.
+
+Unsettled local Issue jobs keep their implementation executions after the
+accepting controller exits. Publication recovery may restore only the same
+unretired owner incarnation after fresh Issue/family generation verification;
+it never invokes the provider again or replaces a newer owner. The existing
+`issue.local-publication-finalization` event reports `owner_restored=true` only
+for that verified reconstruction. Run
+`bash scripts/test.sh tests/test_local_issue_owner_recovery.py` for real durable
+job and Git publication coverage, including changed/unreadable contracts,
+replacement and retired owners, and unavailable job-authority negative controls.
+
+Settled-job replay reports the same terminal finalization outcome from exact
+artifacts and effect receipts, including after workspace disposal. A daemon
+winning publication no longer produces a later false DEFERRED command result.
+The real-Git replay in `tests/test_issue_job_finalizer.py` verifies that this
+emits no duplicate publication effects; stage IDs and origins stay unchanged.
+
+Local Issue prompt selection is observability-neutral: dispatch still emits
+ACCEPTED_HANDOFF and the existing local completion/finalization stages own the
+terminal outcome. The editing-only prompt changes neither admission nor provider
+routing, and a returned summary alone still cannot claim publication. The actual
+stored-input regression is `bash scripts/test.sh tests/test_cloud_backend.py`;
+explicit completion regressions verify the terminal production-to-view contract.

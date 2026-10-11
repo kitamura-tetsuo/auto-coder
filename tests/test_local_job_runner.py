@@ -194,7 +194,9 @@ def test_failed_completion_wake_replays_without_reinvoking_provider(tmp_path: Pa
 
     assert store.get(job_id).state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING  # type: ignore[union-attr]
     _wait(lambda: wake_attempts == [job_id])
-    assert runner.wake_downstream() == 1
+    # The callback records its attempt before the notification lane releases
+    # ownership. Retry once that asynchronous cleanup actually permits it.
+    _wait(lambda: runner.wake_downstream() == 1)
     _wait(lambda: wake_attempts == [job_id, job_id])
     assert adapter.calls == 1
     runner.close()

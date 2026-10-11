@@ -91,7 +91,7 @@ from .invocation_admission import GateSnapshot, GateState, InvocationAdmissionGa
 from .issue_admission_cache import IssueAdmissionCache
 from .issue_context import extract_associated_issue_numbers, get_linked_issues_context
 from .issue_implementation_worker import ImplementationLaneOutcome, IssueImplementationWorker
-from .issue_job_finalizer import IssueJobFinalizer
+from .issue_job_finalizer import IssueJobFinalizer, IssuePublicationResult
 from .issue_processor import create_feature_issues
 from .issue_review_rerun import IssueReviewRerunOperation, ReviewSubject, SubjectRerunStatus
 from .issue_review_service import (
@@ -120,7 +120,7 @@ from .jules_engine import check_and_resume_or_archive_sessions, check_and_start_
 from .label_manager import LabelManager
 from .llm_backend_config import active_repo_context, get_pr_review_allowlist_from_config, get_review_adjudicator_allowlist_from_config
 from .local_job_handoff import LocalJobClaim, LocalJobKind, LocalJobStore
-from .local_job_runner import LocalJobRunner
+from .local_job_runner import LocalJobRunner, runner_owner_alive
 from .logger_config import get_logger
 from .merge_operation_scheduler import get_merge_operation_scheduler
 from .merge_operation_state import MergeOperation
@@ -2831,12 +2831,16 @@ class AutomationEngine:
             from .issue_local_job import IssueLocalJobAdapter
 
             assert self.local_job_store is not None
+
+            def wake_issue_publication(_job: Any) -> None:
+                self._resume_local_issue_publications(repo_name, slot_repository)
+
             local_runner = LocalJobRunner(
                 self.local_job_store,
                 self.invocation_gate,
                 capacity=max(1, self.config.MAX_CONCURRENT_IMPLEMENTATIONS),
                 adapters={LocalJobKind.ISSUE_IMPLEMENTATION: IssueLocalJobAdapter(self, repo_name, self.local_job_store, slot_repository, Path.cwd())},
-                completion_wake=lambda _job: self._resume_local_issue_publications(repo_name, slot_repository),
+                completion_wake=wake_issue_publication,
             )
             local_runner_task = asyncio.create_task(self._local_job_runner_loop(local_runner), name="durable-local-job-runner")
 
@@ -2994,9 +2998,32 @@ class AutomationEngine:
         # source from which Review-only routing is reconstructed here.
         await asyncio.to_thread(self._recover_issue_review_reruns, repo_name)
 
-    def _resume_local_issue_publications(self, repo_name: str, slots: ImplementationSlotRepository) -> None:
+    def _resume_local_issue_publications(self, repo_name: str, slots: ImplementationSlotRepository, *, job_id: Optional[str] = None, origin: str = "startup-recovery") -> tuple[IssuePublicationResult, ...]:
         """Resume exact job-owned publication effects without model re-entry."""
         from .issue_processor import _create_pr_for_issue
+        from .local_job_handoff import InvocationOutcome, LocalJobState
+
+        store = self._get_local_job_store()
+        jobs = (store.get(job_id),) if job_id is not None else store.discover_unsettled()
+        restored_jobs: set[str] = set()
+        for job in jobs:
+            if job is None or job.repository != repo_name or job.kind is not LocalJobKind.ISSUE_IMPLEMENTATION or job.invocation_outcome is not InvocationOutcome.COMPLETED or job.state not in {LocalJobState.RESULT_RECORDED, LocalJobState.DOWNSTREAM_EFFECTS_PENDING}:
+                continue
+            owner = ImplementationOwner("issue", job.target_number)
+            try:
+                with slots.serialize(owner):
+                    if slots.owner_incarnation(owner) is not None:
+                        continue
+                    snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, job.target_number)
+                    if snapshot.get("state", "").lower() != "open" or not self._is_issue_author_allowed(snapshot):
+                        continue
+                    parent = self._get_authoritative_parent_number(repo_name, job.target_number, snapshot)
+                    family = self._fetch_authoritative_decomposition_set(repo_name, parent) if parent is not None else None
+                    generation = self._compute_implementation_generation(repo_name, snapshot, family)
+                    if slots.restore_local_issue_execution(job, generation):
+                        restored_jobs.add(job.job_id)
+            except Exception as exc:
+                logger.warning("Retaining local publication {} without owner restoration: {}", job.job_id, exc)
 
         def create_pr(record: Any, summary: str) -> object:
             issue = self.github.get_issue(repo_name, record.target_number)
@@ -3019,17 +3046,18 @@ class AutomationEngine:
             )
 
         finalizer = IssueJobFinalizer(
-            LocalJobStore(),
+            self._get_local_job_store(),
             slots,
             lambda repository, branch: self.github.find_pr_by_head_branch_strict(repository, branch),
             create_pr,
         )
-        for result in finalizer.resume_all(repo_name):
-            outcome = Outcome.COMPLETED if result.disposition in {"published", "no_change", "cannot_fix"} else Outcome.DEFERRED
+        results = (finalizer.finalize(job_id),) if job_id is not None else finalizer.resume_all(repo_name)
+        for result in results:
+            outcome = Outcome.COMPLETED if result.disposition in {"published", "no_change"} else Outcome.FAILED if result.disposition in {"cannot_fix", "failed", "interrupted"} else Outcome.DEFERRED
             get_trace_collector().record_event(
                 EventKind.STAGE_RESULT,
                 stage_id="issue.local-publication-finalization",
-                origin="startup-recovery",
+                origin=origin,
                 label=f"issue job {result.job_id} publication finalization",
                 outcome=outcome,
                 facts={
@@ -3037,8 +3065,75 @@ class AutomationEngine:
                     "disposition": result.disposition,
                     "pr_number": result.pr_number,
                     "diagnostic": result.diagnostic,
+                    "owner_restored": result.job_id in restored_jobs,
                 },
             )
+
+        return results
+
+    def _complete_explicit_local_issue(self, repo_name: str, result: CandidateProcessingResult) -> None:
+        """Keep target-scoped completion evidence after dispatch releases its scope."""
+        with get_trace_collector().start_execution(repository=repo_name, item_type="issue", item_number=cast(int, result.number), origin="explicit-single-target", stage_id="issue.local-completion", label=f"issue#{result.number} local completion") as handle:
+            self._run_explicit_local_issue(repo_name, result)
+            handle.set_outcome(_map_candidate_result_outcome(result))
+
+    def _run_explicit_local_issue(self, repo_name: str, result: CandidateProcessingResult) -> None:
+        """Drive only the accepted target through execution and publication."""
+        from .issue_local_job import IssueLocalJobAdapter
+        from .local_job_handoff import LocalJobState
+
+        dispatch = result.dispatch_result
+        assert dispatch is not None
+        store = self._get_local_job_store()
+        job_id = dispatch.provider_reference
+        job = store.get(job_id)
+        if job is None or job.repository != repo_name or job.kind is not LocalJobKind.ISSUE_IMPLEMENTATION or job.target_number != result.number or job.upstream_incarnation != dispatch.claim_incarnation:
+            raise RuntimeError("Accepted local implementation job does not match the explicit target")
+        slots = self._get_implementation_slots(repo_name)
+        runner = LocalJobRunner(
+            store,
+            self.invocation_gate,
+            capacity=1,
+            adapters={LocalJobKind.ISSUE_IMPLEMENTATION: IssueLocalJobAdapter(self, repo_name, store, slots, Path.cwd())},
+            job_ids=frozenset({job_id}),
+        )
+        try:
+            live_external_owner = job.runner_owner != runner.runner_id and job.state in {LocalJobState.RUNNING, LocalJobState.RESULT_RECORDED} and runner_owner_alive(job.runner_owner) is True
+            if not live_external_owner:
+                runner.poll()
+            while True:
+                if not runner.active_count():
+                    current = store.get(job_id)
+                    # Another live controller may win the durable claim before
+                    # this command polls. Wait for that exact owner as well,
+                    # without reclaiming or replaying its provider invocation.
+                    if current is None or current.state not in {LocalJobState.RUNNING, LocalJobState.RESULT_RECORDED} or current.runner_owner == runner.runner_id or runner_owner_alive(current.runner_owner) is not True:
+                        break
+                time.sleep(0.1)
+            # Recover a committed artifact/checkpoint without re-entering a
+            # provider whose call has already completed.
+            runner.recover_unsettled()
+        finally:
+            runner.close(wait=True)
+        job = store.get(job_id)
+        if job is None:
+            raise RuntimeError("Accepted local implementation job disappeared")
+        result.success = False
+        result.target_outcome = ExplicitTargetOutcome.DEFERRED
+        result.target_reason = f"Local implementation job {job_id} remains {job.state.value}: {job.diagnostic or 'execution requires reconciliation'}"
+        if job.state in {LocalJobState.RESULT_RECORDED, LocalJobState.DOWNSTREAM_EFFECTS_PENDING, LocalJobState.SETTLED}:
+            publication = self._resume_local_issue_publications(repo_name, slots, job_id=job_id, origin="explicit-single-target")[0]
+            if publication.disposition in {"published", "no_change"}:
+                result.success = True
+                result.target_outcome = ExplicitTargetOutcome.SUCCESS
+                result.target_reason = f"Published PR #{publication.pr_number} for issue #{result.number}" if publication.disposition == "published" else f"Local implementation completed with no changes for issue #{result.number}"
+            elif publication.disposition in {"cannot_fix", "failed", "interrupted"}:
+                result.target_outcome = ExplicitTargetOutcome.FAILED
+                result.target_reason = f"Local implementation {publication.disposition} for issue #{result.number}"
+            else:
+                result.target_reason = f"Local implementation publication deferred: {publication.diagnostic}"
+        result.actions.append(result.target_reason)
+        result.error = None if result.success else result.target_reason
 
     async def _reconcile_open_github_entities(self, repo_name: str) -> None:
         """One attempt at recovery through the normal invalidation path.
@@ -8357,6 +8452,11 @@ class AutomationEngine:
                         )
                     else:
                         processing_result = self._process_single_candidate_unified(*processing_args, origin="explicit-single-target")
+
+                    from .issue_dispatch import DispatchOutcome
+
+                    if explicit_only and candidate.type == processing_result.type == "issue" and processing_result.number == number and processing_result.dispatch_result is not None and processing_result.dispatch_result.outcome is DispatchOutcome.LOCAL_ACCEPTED:
+                        self._complete_explicit_local_issue(repo_name, processing_result)
 
                     if explicit_only:
                         result.target_actions = list(processing_result.actions)

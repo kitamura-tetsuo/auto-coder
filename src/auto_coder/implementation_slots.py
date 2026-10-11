@@ -14,7 +14,7 @@ import uuid
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterator, NoReturn, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterator, NoReturn, Optional
 
 from .cloud_manager import claude_session_alias
 from .issue_context import extract_lifecycle_branch_issue_number, extract_lifecycle_directive_issue_references
@@ -24,6 +24,9 @@ from .runtime_locks import LockAcquisitionTimeout, ensure_lock_directory, file_l
 from .util.github_request_outcome import GitHubRequestError
 
 logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from .local_job_handoff import LocalJobRecord
 
 
 @dataclass(frozen=True)
@@ -887,6 +890,12 @@ class ImplementationSlotRepository:
 
     def _execution_is_stale(self, execution: Dict[str, object]) -> bool:
         """Return true only when strong OS identity proves an execution is dead."""
+        local_job_id = execution.get("local_job_id")
+        if isinstance(local_job_id, str) and local_job_id:
+            from .local_job_handoff import LocalJobState, LocalJobStore
+
+            job = LocalJobStore().get(local_job_id)
+            return job is not None and job.repository == self.repo_name and job.implementation_execution_id == execution.get("id") and job.state is LocalJobState.SETTLED
         pid = execution.get("pid")
         boot_id = execution.get("boot_id")
         start_ticks = execution.get("process_start_ticks")
@@ -896,6 +905,15 @@ class ImplementationSlotRepository:
 
     def _remove_stale_executions(self, owners: Dict[str, Dict[str, object]]) -> tuple[str, ...]:
         """Remove only executions conclusively shown stale from locked state."""
+        from .local_job_handoff import LocalJobStore, default_local_job_db_path
+
+        configured_root = os.environ.get("AUTO_CODER_RUNTIME_ROOT")
+        default_root = Path(configured_root) / "state" if configured_root else Path.home() / ".auto-coder"
+        default_store = default_root / self.repo_name / "implementation_slots.json"
+        try:
+            retained = LocalJobStore().retained_issue_execution_ids(self.repo_name) if self.storage_path.resolve() == default_store.resolve() and any(record.get("executions") for record in owners.values()) and default_local_job_db_path().is_file() else frozenset()
+        except Exception as exc:
+            raise ImplementationSlotUnavailable(f"Cannot verify durable local execution responsibility: {exc}") from exc
         removed = []
         for owner_key, record in owners.items():
             executions = record.setdefault("executions", [])
@@ -903,7 +921,7 @@ class ImplementationSlotRepository:
                 raise ImplementationSlotUnavailable("Cannot safely parse active implementation executions")
             remaining = []
             for execution in executions:
-                if self._execution_is_stale(execution):
+                if execution["id"] not in retained and self._execution_is_stale(execution):
                     removed.append(str(execution["id"]))
                     logger.info(f"Reclaimed stale implementation execution {execution['id']} for {owner_key}")
                 else:
@@ -912,6 +930,40 @@ class ImplementationSlotRepository:
                 record["executions"] = remaining
                 self._increment_activity_revision(record)
         return tuple(removed)
+
+    def restore_local_issue_execution(self, job: "LocalJobRecord", current_generation: str) -> bool:
+        """Restore an exact unretired publication owner, without model admission."""
+        from .local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobState
+
+        if (
+            job.repository != self.repo_name
+            or job.kind is not LocalJobKind.ISSUE_IMPLEMENTATION
+            or job.state not in {LocalJobState.RESULT_RECORDED, LocalJobState.DOWNSTREAM_EFFECTS_PENDING}
+            or job.invocation_outcome is not InvocationOutcome.COMPLETED
+            or not job.owner_incarnation
+            or not job.implementation_execution_id
+            or not job.owner_generation
+            or current_generation != job.owner_generation
+        ):
+            return False
+        owner = ImplementationOwner("issue", job.target_number)
+        with self._state_lock():
+            owners = self._read()
+            if owner.key in owners or job.owner_incarnation in self._read_retired():
+                return False
+            owners[owner.key] = {
+                "kind": owner.kind,
+                "number": owner.number,
+                "incarnation": job.owner_incarnation,
+                "activity_revision": 1,
+                "implementation_generation": job.owner_generation,
+                "implementation_prs": [],
+                "provider_sessions": [],
+                "executions": [{"id": job.implementation_execution_id, "local_job_id": job.job_id}],
+                "emergency": False,
+            }
+            self._write(owners)
+        return True
 
     def reclaim_stale_executions(self) -> tuple[str, ...]:
         """Atomically reclaim executions whose strong process identity is dead."""

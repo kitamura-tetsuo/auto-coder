@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,8 +15,15 @@ from auto_coder.local_job_handoff import InvocationOutcome, LocalJobState, Local
 from .test_issue_job_workspace import claim, git, repository
 
 
-def _completed_job(tmp_path: Path, number: int = 41):
+def _completed_job(tmp_path: Path, number: int = 41, *, tracked_ignored: bool = False, change: bool = True):
     source, head = repository(tmp_path)
+    if tracked_ignored:
+        context = source / ".auto-coder" / "context.md"
+        context.parent.mkdir()
+        context.write_text("tracked context\n")
+        git(source, "add", ".auto-coder/context.md")
+        source.joinpath(".gitignore").write_text(".auto-coder/\n")
+        git(source, "add", ".gitignore")
     source.joinpath("baseline.txt").write_text("baseline\n", encoding="utf-8")
     git(source, "add", "baseline.txt")
     git(source, "commit", "-m", "add baseline")
@@ -32,11 +40,27 @@ def _completed_job(tmp_path: Path, number: int = 41):
     def edit(workspace: Path, _prompt: str) -> str:
         git(workspace, "config", "user.email", "test@example.com")
         git(workspace, "config", "user.name", "Test")
-        (workspace / "value.txt").write_text("implemented\n", encoding="utf-8")
+        if change:
+            (workspace / "value.txt").write_text("implemented\n", encoding="utf-8")
+        if tracked_ignored:
+            (workspace / ".auto-coder" / "context.md").write_text("updated tracked context\n")
+            (workspace / ".auto-coder" / "runtime.txt").write_text("ignored runtime output\n")
         return "ACTION_SUMMARY: implemented exact result"
 
     checkpoint = IssueJobWorkspaceProducer(store, tmp_path / "workspaces", slots).execute(acquired, IssueJobSource("owner/repo", source, "main", head, f"issue-{number}"), edit)
     return source, remote, store, slots, checkpoint
+
+
+def test_tracked_ignored_context_is_published_without_ignored_runtime_output(tmp_path: Path, _use_real_commands) -> None:
+    source, remote, store, slots, checkpoint = _completed_job(tmp_path, 46, tracked_ignored=True)
+    existing = {"number": 93, "head": {"ref": checkpoint.work_branch}, "body": "Closes #46"}
+    result = IssueJobFinalizer(store, slots, lambda *_: existing, lambda *_: None).finalize(checkpoint.job_id)
+
+    assert result.disposition == "published", result.diagnostic
+    assert git(remote, "show", "issue-46:.auto-coder/context.md") == "updated tracked context"
+    assert git(remote, "show", "issue-46:value.txt") == "implemented"
+    assert ".auto-coder/runtime.txt" not in git(remote, "ls-tree", "-r", "--name-only", "issue-46").splitlines()
+    assert (source / ".auto-coder" / "context.md").read_text() == "tracked context\n"
 
 
 def test_lost_pr_create_response_is_reconciled_without_duplicate(tmp_path: Path, _use_real_commands) -> None:
@@ -65,7 +89,44 @@ def test_lost_pr_create_response_is_reconciled_without_duplicate(tmp_path: Path,
     assert subprocess.run(["git", "rev-parse", "--verify", "issue-41"], cwd=source, capture_output=True).returncode != 0
     assert git(remote, "rev-parse", "issue-41") == git(checkpoint.workspace, "rev-parse", "HEAD")
     assert finalizer.resume_all("owner/repo") == ()
+    shutil.rmtree(checkpoint.workspace)
+    replay = finalizer.finalize(checkpoint.job_id)
+    assert replay.disposition == "published"
+    assert replay.pr_number == 91
     assert creates == 1
+
+
+def test_settled_no_change_replays_after_workspace_disposal(tmp_path: Path, _use_real_commands) -> None:
+    _source, remote, store, slots, checkpoint = _completed_job(tmp_path, 47, change=False)
+
+    def unexpected_publication(*_args):
+        raise AssertionError("No-change jobs must not publish")
+
+    finalizer = IssueJobFinalizer(store, slots, unexpected_publication, unexpected_publication)
+    assert finalizer.finalize(checkpoint.job_id).disposition == "no_change"
+    shutil.rmtree(checkpoint.workspace)
+    assert finalizer.finalize(checkpoint.job_id).disposition == "no_change"
+    assert git(remote, "branch", "--list", "issue-47") == ""
+    assert store.get_effect(checkpoint.job_id, checkpoint.execution_incarnation, "push") is None
+
+
+def test_settled_completed_job_without_publication_receipts_is_not_success(tmp_path: Path) -> None:
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    acquired = claim(store, 48)
+    artifact = store.persist_result_artifact(acquired, InvocationOutcome.COMPLETED, "ACTION_SUMMARY: implemented")
+    assert artifact is not None
+    assert store.record_result(acquired, InvocationOutcome.COMPLETED, artifact.artifact_id)
+    assert store.mark_downstream_pending(acquired)
+    assert store.settle(acquired, "pr:91")
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json", tmp_path / "retired.json")
+
+    def unexpected_publication(*_args):
+        raise AssertionError("Settled jobs must not repeat publication")
+
+    result = IssueJobFinalizer(store, slots, unexpected_publication, unexpected_publication).finalize(acquired.record.job_id)
+    assert result.disposition == "pending"
+    assert result.pr_number is None
+    assert result.diagnostic == "settled job has no confirmed publication receipt"
 
 
 def test_unconfirmed_push_stays_pending_and_replay_does_not_create_pr(tmp_path: Path, monkeypatch, _use_real_commands) -> None:
@@ -103,6 +164,7 @@ def test_cannot_fix_never_touches_git_or_publication(tmp_path: Path) -> None:
     result = finalizer.finalize(acquired.record.job_id)
 
     assert result.disposition == "cannot_fix"
+    assert finalizer.finalize(acquired.record.job_id).disposition == "cannot_fix"
     assert store.get(acquired.record.job_id).state.value == "settled"  # type: ignore[union-attr]
 
 
@@ -261,3 +323,19 @@ def test_post_create_lookup_outage_fences_repeated_creation(tmp_path: Path, _use
     assert first.disposition == second.disposition == "pending"
     assert creates == 1
     assert store.get_effect(checkpoint.job_id, checkpoint.execution_incarnation, "pr").state == "indeterminate"  # type: ignore[union-attr]
+
+
+def test_post_checkpoint_generated_cache_does_not_enter_publication(tmp_path: Path, _use_real_commands) -> None:
+    _source, remote, store, slots, checkpoint = _completed_job(tmp_path, 48)
+    generated = checkpoint.workspace / "node_modules" / "runtime.txt"
+    generated.parent.mkdir()
+    generated.write_text("unconfirmed generated output\n")
+    existing = {"number": 94, "head": {"ref": checkpoint.work_branch}, "body": "Closes #48"}
+
+    result = IssueJobFinalizer(store, slots, lambda *_: existing, lambda *_: None).finalize(checkpoint.job_id)
+
+    assert result.disposition == "published"
+    assert result.pr_number == 94
+    assert git(remote, "show", f"{checkpoint.work_branch}:value.txt") == "implemented"
+    assert "node_modules/runtime.txt" not in git(remote, "ls-tree", "-r", "--name-only", checkpoint.work_branch).splitlines()
+    assert store.get(checkpoint.job_id).state is LocalJobState.SETTLED

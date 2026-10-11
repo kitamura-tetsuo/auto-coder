@@ -39,3 +39,37 @@ in-flight implementation until finalization settles it.
 Regression coverage includes the durable dispatch boundary in
 `tests/test_cloud_backend.py` and the store, runner, workspace and finalizer
 suites.
+
+Explicit `process-issues --only` commands own a target-scoped runner after
+handoff and wait through execution and publication. They reuse the same adapter,
+private workspace, and finalizer as the daemon. The daemon remains nonblocking;
+only the explicit command waits, and it never drains other accepted jobs.
+
+The result producer unwraps Codex, Claude, and Muse CLI event streams using the
+same final-response parsers as adversarial validation. It validates the actual
+assistant result rather than treating JSON event lines as implementation prose.
+Malformed/failed envelopes and missing responses cannot authorize publication.
+`ACTION_SUMMARY:` remains the required single-line successful response; an exact
+`CANNOT_FIX` settles as cannot-fix without commit, push, or PR creation. Coverage
+is in `tests/test_explicit_local_issue_completion.py` and
+`tests/test_issue_job_workspace.py`. Repeated explicit commands observe settled
+results or resume missing publication effects without invoking the model again.
+
+After seeding a job clone, the controller refreshes only that clone's Git index
+stat cache before BackendManager takes its private-workspace snapshot. This
+prevents Git's own later index refresh from falsely reporting a concurrent caller
+change. The original checkout, HEAD, staged tree, working files, and strict
+source/result authority checks remain preserved. Real nested-clone and handoff
+regressions cover both clean sources and distinct staged/working versions in
+`tests/test_issue_job_workspace.py`.
+
+Durable local dispatch renders `issue.local_implementation`, retaining the full
+current Issue body and parent scope context. This editing-only template requires
+one verified `ACTION_SUMMARY:` line or `CANNOT_FIX` and delegates commit, push,
+PR creation and CI follow-up to Auto-Coder. Cloud lifecycle templates and
+label-selected cloud action templates cannot replace this local execution
+contract; labels remain supplied as context. The production dispatch regression
+in `tests/test_cloud_backend.py` verifies the actual stored invocation input,
+including mapped labels and Requirements beyond the former body truncation.
+Unconfirmed final prose remains a failure, with a bounded redacted response
+retained in the failure diagnostic for investigation.

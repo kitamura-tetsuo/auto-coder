@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +15,7 @@ from .checkout_lock import checkout_lock
 from .git_branch import git_commit_with_retry
 from .git_commit import git_push
 from .implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from .issue_job_workspace import IssueJobWorkspaceProducer
 from .local_job_handoff import (
     InvocationOutcome,
     LocalJobClaim,
@@ -76,7 +76,7 @@ class IssueJobFinalizer:
 
     def finalize(self, job_id: str) -> IssuePublicationResult:
         record = self._store.get(job_id)
-        if record is not None and record.workspace_path:
+        if record is not None and record.workspace_path and record.state is not LocalJobState.SETTLED:
             with checkout_lock(record.workspace_path):
                 return self._finalize_locked(job_id)
         return self._finalize_locked(job_id)
@@ -87,11 +87,23 @@ class IssueJobFinalizer:
         if record is None or record.kind is not LocalJobKind.ISSUE_IMPLEMENTATION:
             return IssuePublicationResult(job_id, "rejected", diagnostic="missing or non-Issue job")
         claim = self._claim(record)
-        if record.state not in {LocalJobState.RESULT_RECORDED, LocalJobState.DOWNSTREAM_EFFECTS_PENDING}:
+        if record.state not in {LocalJobState.RESULT_RECORDED, LocalJobState.DOWNSTREAM_EFFECTS_PENDING, LocalJobState.SETTLED}:
             return IssuePublicationResult(job_id, "pending", diagnostic=f"job state is {record.state.value}")
         artifact = self._store.get_result_artifact(record.result_reference)
-        if artifact is None or artifact.job_id != record.job_id or artifact.execution_incarnation != record.execution_incarnation or artifact.outcome != record.invocation_outcome:
+        if artifact is None or record.invocation_outcome is None or artifact.job_id != record.job_id or artifact.execution_incarnation != record.execution_incarnation or artifact.outcome != record.invocation_outcome:
             return IssuePublicationResult(job_id, "pending", diagnostic="exact result artifact is unavailable")
+
+        if record.state is LocalJobState.SETTLED:
+            if record.invocation_outcome is not InvocationOutcome.COMPLETED:
+                return IssuePublicationResult(job_id, record.invocation_outcome.value)
+            publication = self._store.get_effect(job_id, record.execution_incarnation, "publication")
+            if record.diagnostic == "no_change" and publication is not None and publication.state == "skipped":
+                return IssuePublicationResult(job_id, "no_change")
+            pr_reference = self._completed_evidence(record, "pr")
+            commit = self._completed_evidence(record, "commit")
+            if pr_reference.isdigit() and int(pr_reference) > 0 and record.diagnostic == f"pr:{pr_reference}" and self._completed_evidence(record, "association") == pr_reference and commit and self._completed_evidence(record, "push") == commit:
+                return IssuePublicationResult(job_id, "published", pr_number=int(pr_reference))
+            return IssuePublicationResult(job_id, "pending", diagnostic="settled job has no confirmed publication receipt")
 
         if record.invocation_outcome is not InvocationOutcome.COMPLETED:
             if record.state is LocalJobState.RESULT_RECORDED and not self._store.mark_downstream_pending(claim):
@@ -120,19 +132,10 @@ class IssueJobFinalizer:
             or not isinstance(manifest.get("workspace_files"), dict)
         ):
             return IssuePublicationResult(job_id, "pending", diagnostic="result manifest contradicts job authority")
-        actual_files: dict[str, dict[str, object]] = {}
-        for current, names, filenames in os.walk(workspace, followlinks=False):
-            symlinked_directories = [name for name in names if (Path(current) / name).is_symlink()]
-            names[:] = [name for name in names if name != ".git" and name not in symlinked_directories]
-            for name in filenames + symlinked_directories:
-                path = Path(current) / name
-                relative = str(path.relative_to(workspace))
-                contents = os.fsencode(os.readlink(path)) if path.is_symlink() else path.read_bytes()
-                actual_files[relative] = {
-                    "checksum": hashlib.sha256(contents).hexdigest(),
-                    "mode": stat.S_IMODE(path.lstat().st_mode if path.is_symlink() else path.stat().st_mode),
-                    "symlink": path.is_symlink(),
-                }
+        try:
+            actual_files = {relative: {"checksum": identity.checksum, "mode": identity.mode, "symlink": identity.symlink} for relative, identity in IssueJobWorkspaceProducer.working_file_identities(workspace).items()}
+        except (OSError, RuntimeError, subprocess.CalledProcessError):
+            return IssuePublicationResult(job_id, "pending", diagnostic="retained workspace cannot be verified")
         if actual_files != manifest["workspace_files"]:
             return IssuePublicationResult(job_id, "pending", diagnostic="retained workspace differs from the confirmed result")
         for relative, expected in manifest["changed_files"].items():
@@ -165,7 +168,20 @@ class IssueJobFinalizer:
         if commit_sha and head.stdout.strip() != commit_sha:
             return IssuePublicationResult(job_id, "pending", diagnostic="checkpointed commit is no longer the workspace HEAD")
         if not commit_sha:
-            status = self._git(workspace, "status", "--porcelain")
+            # Publish tracked paths and ordinary untracked source only. Cache
+            # output excluded from result verification cannot enter the commit.
+            tracked = self._git(workspace, "ls-files", "--cached", "-z")
+            untracked = self._git(workspace, "ls-files", "--others", "--exclude-standard", "-z")
+            if tracked.returncode or untracked.returncode:
+                return self._pending(claim, "commit", "publication paths could not be verified")
+            from .worktree_utils import DISPOSABLE_DIRECTORY_NAMES
+
+            tracked_paths = sorted({path for path in tracked.stdout.split("\0") if path})
+            untracked_paths = sorted({path for path in untracked.stdout.split("\0") if path and not any(part in DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts)})
+            paths = sorted(set(tracked_paths) | set(untracked_paths))
+            if not paths:
+                return self._pending(claim, "commit", "publication paths are unavailable")
+            status = self._git(workspace, "--literal-pathspecs", "status", "--porcelain", "--", *paths)
             if status.returncode:
                 return self._pending(claim, "commit", status.stderr or "git status failed")
             if not status.stdout.strip() and head.stdout.strip() == record.source_commit:
@@ -183,9 +199,14 @@ class IssueJobFinalizer:
                 if not self._store.record_effect(claim, "commit", "completed", commit_sha):
                     return IssuePublicationResult(job_id, "pending", diagnostic="recovered commit checkpoint failed")
             else:
-                add = self._git(workspace, "add", "-A")
-                if add.returncode:
-                    return self._pending(claim, "commit", add.stderr or "git add failed")
+                # Updating tracked paths respects their existing authority even
+                # when a later ignore rule excludes the containing directory.
+                for mode, candidates in (("-u", tracked_paths), ("-A", untracked_paths)):
+                    if not candidates:
+                        continue
+                    add = self._git(workspace, "--literal-pathspecs", "add", mode, "--", *candidates)
+                    if add.returncode:
+                        return self._pending(claim, "commit", add.stderr or "git add failed")
                 committed = git_commit_with_retry(f"Auto-Coder: Address issue #{record.target_number}", cwd=str(workspace))
                 if not committed.success:
                     return self._pending(claim, "commit", committed.stderr or "commit failed", "failed")

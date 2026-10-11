@@ -38,3 +38,23 @@ path alongside the existing interactive-refusal negative control.
 Run `bash scripts/test.sh tests/test_dashboard_observability.py tests/test_muse_msp.py`
 for production dispatch-to-mounted-view coverage, admission/preparation negative
 controls, interruption pairing, and executable Muse protocol coverage.
+
+Explicit single-Issue local execution waits through publication. Its finalizer
+emits `issue.local-publication-finalization` with origin `explicit-single-target`,
+the exact job ID, disposition, PR number, and diagnostic. Published/no-change
+results emit COMPLETED, unsuccessful terminal results emit FAILED, and pending
+publication emits DEFERRED. Job acceptance remains ACCEPTED_HANDOFF and cannot
+represent implementation completion. Run
+`bash scripts/test.sh tests/test_explicit_local_issue_completion.py` for this
+execution-to-finalization emission contract. The event schema and dashboard
+renderer remain unchanged.
+
+The `issue.local-completion` execution supplies the requested Issue identity for
+command-owned finalization events and closes after finalization with the actual
+Success, Failed, or Deferred outcome. It is separate from the dispatch scope that
+ends at acceptance.
+
+The explicit local completion regression also mounts the production dashboard
+Issue detail route and asserts that local completion, publication finalization,
+and their actual outcomes reach its diagram. Refused entry displays Deferred
+without a publication-finalization stage.

@@ -26,3 +26,24 @@ Workspaces are deliberately not deleted by the producer because later
 publication and retirement stages own consumption and cleanup.
 
 Regression coverage: `tests/test_issue_job_workspace.py`.
+
+Job snapshots omit untracked disposable cache, environment and test-output
+paths using the same directory-name policy as private local backend workspaces.
+Tracked files under those directories remain preserved and verified, and other
+ignored source/context files remain included. Concurrent cache writes therefore
+do not falsely invalidate source capture or enter publication manifests.
+
+Publication reuses the producer's file-identity scan and stages only tracked and
+non-ignored, non-disposable untracked paths using literal Git pathspecs. Cache-only
+activity is no-change; generated caches appearing during or after implementation
+neither block verified publication nor enter its commit. Other post-checkpoint
+source changes still refuse publication. Coverage includes
+`tests/test_issue_job_finalizer.py` and
+`tests/test_explicit_local_issue_completion.py`.
+
+Tracked paths are staged with `git add -u`; eligible new source paths are staged
+separately. A later ignore rule covering an already tracked directory therefore
+does not block publication or require forced staging. Ignored untracked runtime
+output stays excluded. The real-Git regression
+`test_tracked_ignored_context_is_published_without_ignored_runtime_output` in
+`tests/test_issue_job_finalizer.py` checks the confirmed remote commit.

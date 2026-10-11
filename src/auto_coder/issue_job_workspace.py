@@ -17,12 +17,19 @@ from pathlib import Path
 from typing import Callable
 
 from .checkout_lock import checkout_lock
+from .cli_event_stream import extract_cli_response
 from .implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from .local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobKind, LocalJobStore
+from .security_utils import redact_string
+from .worktree_utils import DISPOSABLE_DIRECTORY_NAMES
 
 
 class IssueJobWorkspaceError(RuntimeError):
     """The authorized source could not be prepared or safely checkpointed."""
+
+
+class IssueJobCannotFix(IssueJobWorkspaceError):
+    """The local provider positively returned the terminal cannot-fix result."""
 
 
 @dataclass(frozen=True)
@@ -72,15 +79,20 @@ class IssueJobWorkspaceProducer:
         return result.stdout.strip()
 
     @staticmethod
-    def _working_files(root: Path) -> dict[str, _FileIdentity]:
+    def working_file_identities(root: Path) -> dict[str, _FileIdentity]:
         """Read working files without trusting model-controlled Git index flags."""
+        tracked_result = subprocess.run(["git", "ls-files", "--cached", "-z"], cwd=root, capture_output=True, check=True)
+        tracked = {os.fsdecode(path) for path in tracked_result.stdout.split(b"\0") if path}
+        tracked_directories = {str(parent) for relative in tracked for parent in Path(relative).parents}
         files: dict[str, _FileIdentity] = {}
         for current, names, filenames in os.walk(root, followlinks=False):
             symlinked_directories = [name for name in names if (Path(current) / name).is_symlink()]
-            names[:] = [name for name in names if name != ".git" and name not in symlinked_directories]
+            names[:] = [name for name in names if name != ".git" and name not in symlinked_directories and (name not in DISPOSABLE_DIRECTORY_NAMES or str((Path(current) / name).relative_to(root)) in tracked_directories)]
             for name in filenames + symlinked_directories:
                 path = Path(current) / name
                 relative = str(path.relative_to(root))
+                if relative not in tracked and any(part in DISPOSABLE_DIRECTORY_NAMES for part in Path(relative).parts):
+                    continue
                 if path.is_symlink():
                     contents = os.fsencode(os.readlink(path))
                     mode = stat.S_IMODE(path.lstat().st_mode)
@@ -96,7 +108,7 @@ class IssueJobWorkspaceProducer:
 
     @classmethod
     def _copy_working_files(cls, source: Path, destination: Path, expected: dict[str, _FileIdentity]) -> None:
-        destination_files = cls._working_files(destination)
+        destination_files = cls.working_file_identities(destination)
         for relative in destination_files.keys() - expected.keys():
             (destination / relative).unlink()
         for relative, identity in expected.items():
@@ -144,7 +156,7 @@ class IssueJobWorkspaceProducer:
                 ).stdout.strip()
                 if source_symbolic_ref.startswith("refs/heads/") and checkout_symbolic_ref != source_symbolic_ref:
                     raise IssueJobWorkspaceError("shared checkout is not on the authorized source ref")
-                source_files = self._working_files(repository)
+                source_files = self.working_file_identities(repository)
                 source_index_tree = self._git(repository, "write-tree")
                 staged_patch = subprocess.run(
                     ["git", "diff", "--cached", "--binary", "--full-index", source.source_commit, "--"],
@@ -171,7 +183,11 @@ class IssueJobWorkspaceProducer:
                     if apply_index.returncode != 0:
                         raise IssueJobWorkspaceError("authorized source index could not be restored")
                 self._copy_working_files(repository, workspace, source_files)
-                if self._git(repository, "write-tree") != source_index_tree or self._git(workspace, "write-tree") != source_index_tree or self._working_files(repository) != source_files or self._working_files(workspace) != source_files:
+                # Copying files invalidates the clone's index stat cache. Refresh
+                # it before BackendManager captures its own immutable binding,
+                # so Git diff cannot look like a concurrent caller mutation.
+                self._git(workspace, "status", "--porcelain")
+                if self._git(repository, "write-tree") != source_index_tree or self._git(workspace, "write-tree") != source_index_tree or self.working_file_identities(repository) != source_files or self.working_file_identities(workspace) != source_files:
                     raise IssueJobWorkspaceError("authorized source working state changed during capture")
                 if self._git(workspace, "rev-parse", "HEAD") != source.source_commit:
                     raise IssueJobWorkspaceError("private workspace source verification failed")
@@ -206,23 +222,25 @@ class IssueJobWorkspaceProducer:
         """Run one invocation and retain its clone until downstream retirement."""
         record = claim.record
         workspace = self._prepare(claim, source)
-        initial_files = self._working_files(workspace)
+        initial_files = self.working_file_identities(workspace)
         try:
-            output = invoke(workspace, claim.record.invocation_input)
+            output = extract_cli_response(invoke(workspace, claim.record.invocation_input))
         except BaseException:
             # RUNNING plus its bound path is deliberately recoverable and cannot be
             # mistaken for a successful result.
             raise
         if not output:
             raise IssueJobWorkspaceError("local invocation returned no confirmed result")
+        if output.strip() == "CANNOT_FIX":
+            raise IssueJobCannotFix("local invocation returned CANNOT_FIX")
         lines = [line for line in output.strip().splitlines() if line.strip()]
         if len(lines) != 1 or not lines[0].startswith("ACTION_SUMMARY:") or not lines[0].removeprefix("ACTION_SUMMARY:").strip():
-            raise IssueJobWorkspaceError("local invocation did not return a confirmed implementation result")
+            raise IssueJobWorkspaceError("local invocation did not return a confirmed implementation result; response=" + redact_string(output.strip())[:2000])
 
         head = self._git(workspace, "rev-parse", "HEAD")
         if head != source.source_commit:
             raise IssueJobWorkspaceError("model changed private HEAD; refusing result checkpoint")
-        final_files = self._working_files(workspace)
+        final_files = self.working_file_identities(workspace)
         changed_files = {name: ({"checksum": final_state.checksum, "mode": final_state.mode, "symlink": final_state.symlink} if final_state is not None else None) for name in sorted(initial_files.keys() | final_files.keys()) if (final_state := final_files.get(name)) != initial_files.get(name)}
         manifest_json = json.dumps(
             {

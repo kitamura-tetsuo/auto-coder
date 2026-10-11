@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Callable
 from .attempt_manager import get_current_attempt
 from .implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from .issue_dispatch import IssueAttemptIdentity, IssueDispatchGuard
-from .issue_job_workspace import IssueJobSource, IssueJobWorkspaceProducer
+from .issue_job_workspace import IssueJobCannotFix, IssueJobSource, IssueJobWorkspaceProducer
 from .local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobRecord, LocalJobStore
 from .local_job_runner import LocalJobExecutionResult, LocalJobProviderEntryRefused
 from .utils import bind_command_execution_cwd, reset_command_execution_cwd
@@ -112,5 +112,8 @@ class IssueLocalJobAdapter:
             finally:
                 reset_command_execution_cwd(token)
 
-        checkpoint = producer.execute(claim, source, run, checkpoint_result=False)
+        try:
+            checkpoint = producer.execute(claim, source, run, checkpoint_result=False)
+        except IssueJobCannotFix:
+            return LocalJobExecutionResult(InvocationOutcome.CANNOT_FIX, "CANNOT_FIX")
         return LocalJobExecutionResult(InvocationOutcome.COMPLETED, checkpoint.result_reference)

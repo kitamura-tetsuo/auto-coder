@@ -267,11 +267,17 @@ class TestNonDifficultCloudIssueRouting:
         assert "local invocation failed after edit" in execution.result.diagnostic
         remote.assert_not_called()
 
-    def test_local_candidate_is_durably_accepted_without_entering_backend(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("mapped_label", [False, True])
+    def test_local_candidate_is_durably_accepted_without_entering_backend(self, tmp_path, monkeypatch, mapped_label):
         """A production handoff returns immediately and leaves the exact job pending."""
         monkeypatch.setenv("HOME", str(tmp_path))
         llm_config = LLMBackendConfiguration.load_from_dict({"backends": {"local-team": {"backend_type": "codex", "model": "test"}}})
         store = LocalJobStore(tmp_path / "jobs.sqlite3")
+        contract = "Implement the requirement\n" + "Full current context\n" * 600 + "REQ-001: Preserve the final requirement."
+        config = AutomationConfig()
+        config.label_prompt_mappings = {"bug": "issue.bug"}
+        config.label_priorities = ["bug"]
+        parent = "## Objective\nCoordinate the children without parent implementation duties."
 
         with (
             patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config),
@@ -284,12 +290,13 @@ class TestNonDifficultCloudIssueRouting:
                 {
                     "number": 2080,
                     "title": "Background work",
-                    "body": "Implement the requirement",
+                    "body": contract,
+                    "parent_issue_body": parent,
                     "state": "open",
-                    "labels": [],
+                    "labels": [{"name": "bug"}] if mapped_label else [],
                     "user": {"login": "allowed"},
                 },
-                AutomationConfig(),
+                config,
                 MagicMock(),
                 ["local-team"],
                 local_job_store=store,
@@ -303,7 +310,14 @@ class TestNonDifficultCloudIssueRouting:
         assert accepted.state is LocalJobState.PENDING
         assert accepted.upstream_attempt == "4"
         assert accepted.backend_name == "local-team"
-        assert "Implement the requirement" in accepted.invocation_input
+        assert contract in accepted.invocation_input
+        assert parent in accepted.invocation_input
+        assert "ACTION_SUMMARY: <brief description of implementation and verification>" in accepted.invocation_input
+        assert "Do not wait for remote CI" in accepted.invocation_input
+        assert "stage, commit, push, merge, rebase" in accepted.invocation_input
+        assert "Create pull request and link it to the issue." not in accepted.invocation_input
+        assert "After creating the pull request:" not in accepted.invocation_input
+        assert "After taking action, respond with a summary" not in accepted.invocation_input
         backend.assert_called_once_with(
             selected_backends=["local-team"],
             primary_backend="local-team",

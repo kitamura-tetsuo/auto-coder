@@ -20,6 +20,7 @@ _PROMPTS_CACHE: Dict[Path, Dict[str, Any]] = {}
 _ISSUE_POLICY_PROMPTS = frozenset(
     {
         "issue.action",
+        "issue.local_implementation",
         "issue.breaking_change",
         "issue.urgent",
         "issue.bug",

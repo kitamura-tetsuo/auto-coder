@@ -1427,21 +1427,16 @@ def _dispatch_issue_candidates(
 
                     issue_labels = filter_legacy_auto_coder_label(issue_data.get("labels", []))
                     prompt = render_prompt(
-                        "issue.action",
+                        "issue.local_implementation",
                         repo_name=repo_name,
                         issue_number=issue_number,
                         issue_title=issue_data.get("title", "Unknown"),
-                        issue_body=(issue_data.get("body") or "")[:10000],
+                        issue_body=issue_data.get("body") or "",
                         issue_labels=", ".join(issue_labels),
                         issue_state=issue_data.get("state", "open"),
                         issue_author=(issue_data.get("user") or {}).get("login", issue_data.get("author", "unknown")),
                         commit_log=get_commit_log(base_branch=config.MAIN_BRANCH) or "(No commit history)",
-                        labels=issue_labels,
-                        label_prompt_mappings=config.label_prompt_mappings,
-                        label_priorities=config.label_priorities,
                         parent_issue_body=issue_data.get("parent_issue_body", ""),
-                        has_sub_issues=False,
-                        sub_issues_summary="",
                         main_branch=config.MAIN_BRANCH,
                     )
                     accepted = local_job_store.offer_issue(

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
-from auto_coder.issue_job_workspace import IssueJobSource, IssueJobWorkspaceError, IssueJobWorkspaceProducer
+from auto_coder.issue_job_workspace import IssueJobCannotFix, IssueJobSource, IssueJobWorkspaceError, IssueJobWorkspaceProducer
 from auto_coder.local_job_handoff import LocalJobKind, LocalJobOffer, LocalJobStore
 
 
@@ -165,14 +165,22 @@ def test_index_flags_cannot_hide_working_file_result(tmp_path: Path, _use_real_c
     assert manifest["changed_files"]["value.txt"]["checksum"] == __import__("hashlib").sha256(b"actual result\n").hexdigest()
 
 
-@pytest.mark.parametrize("response", ["CANNOT_FIX", "implementation failed", "ACTION_SUMMARY:", "ACTION_SUMMARY: ok\nextra output"])
-def test_unconfirmed_response_never_records_completed_result(tmp_path: Path, _use_real_commands, response: str) -> None:
+@pytest.mark.parametrize(
+    ("response", "expected_error", "message"),
+    [
+        ("CANNOT_FIX", IssueJobCannotFix, "local invocation returned CANNOT_FIX"),
+        ("implementation failed", IssueJobWorkspaceError, "confirmed implementation result"),
+        ("ACTION_SUMMARY:", IssueJobWorkspaceError, "confirmed implementation result"),
+        ("ACTION_SUMMARY: ok\nextra output", IssueJobWorkspaceError, "confirmed implementation result"),
+    ],
+)
+def test_unconfirmed_response_never_records_completed_result(tmp_path: Path, _use_real_commands, response: str, expected_error, message: str) -> None:
     repo, head = repository(tmp_path)
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
     acquired = claim(store, 10 + len(response))
     producer = IssueJobWorkspaceProducer(store, tmp_path / "workspaces")
 
-    with pytest.raises(IssueJobWorkspaceError, match="confirmed implementation result"):
+    with pytest.raises(expected_error, match=message):
         producer.execute(acquired, IssueJobSource("owner/repo", repo, "main", head, f"issue-{10 + len(response)}"), lambda *_: response)
 
     reopened = LocalJobStore(store.path)
@@ -231,3 +239,100 @@ def test_distinct_head_index_and_worktree_versions_are_preserved(tmp_path: Path,
     )
     assert git(repo, "show", ":value.txt") == "staged version"
     assert (repo / "value.txt").read_text(encoding="utf-8") == "working version\n"
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        '{"type":"thread.started"}\n{"type":"turn.failed"}\n{"type":"item.completed","item":{"type":"agent_message","text":"ACTION_SUMMARY: false success"}}',
+        '{"type":"thread.started"}\nnot JSON\n{"type":"item.completed","item":{"type":"agent_message","text":"ACTION_SUMMARY: false success"}}',
+        '{"type":"thread.started"}\n{"type":"turn.completed"}',
+        '{"type":"system","subtype":"init"}\n{"type":"result","subtype":"error","result":"ACTION_SUMMARY: false success"}',
+        '{"record_type":"event","payload_type":"run.terminal.failed","payload":{"reason":"failed"}}',
+    ],
+)
+def test_unsuccessful_cli_stream_never_checkpoints_success(tmp_path: Path, _use_real_commands, output: str) -> None:
+    repo, head = repository(tmp_path)
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    acquired = claim(store, 99)
+    producer = IssueJobWorkspaceProducer(store, tmp_path / "workspaces")
+    with pytest.raises(ValueError):
+        producer.execute(acquired, IssueJobSource("owner/repo", repo, "main", head, "issue-99"), lambda *_: output)
+    record = store.get(acquired.record.job_id)
+    assert record is not None
+    assert record.result_reference == ""
+
+
+@pytest.mark.parametrize("modified", [False, True])
+def test_job_workspace_supports_backend_manager_private_clone(tmp_path: Path, _use_real_commands, modified: bool) -> None:
+    from auto_coder.worktree_utils import isolated_local_llm_worktree
+
+    repo, head = repository(tmp_path)
+    if modified:
+        (repo / "value.txt").write_text("staged\n")
+        git(repo, "add", "value.txt")
+        (repo / "value.txt").write_text("working\n")
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    acquired = claim(store, 101)
+    producer = IssueJobWorkspaceProducer(store, tmp_path / "workspaces")
+
+    def implement(workspace: Path, _prompt: str) -> str:
+        # Use the actual preparation and handoff path used by BackendManager;
+        # neither copying nor index-consistency checks are replaced.
+        with isolated_local_llm_worktree(workspace) as private:
+            private_path = Path(private)
+            assert private_path != workspace
+            assert git(private_path, "show", "HEAD:value.txt") == "original"
+            assert git(private_path, "show", ":value.txt") == ("staged" if modified else "original")
+            assert private_path.joinpath("value.txt").read_text() == ("working\n" if modified else "original\n")
+            private_path.joinpath("value.txt").write_text("implemented\n")
+        assert workspace.joinpath("value.txt").read_text() == "implemented\n"
+        return "ACTION_SUMMARY: implemented"
+
+    checkpoint = producer.execute(acquired, IssueJobSource("owner/repo", repo, "main", head, "issue-101"), implement)
+    assert checkpoint.workspace.joinpath("value.txt").read_text() == "implemented\n"
+    assert repo.joinpath("value.txt").read_text() == ("working\n" if modified else "original\n")
+    assert git(repo, "show", ":value.txt") == ("staged" if modified else "original")
+
+
+@pytest.mark.parametrize("directory", ["node_modules", ".cache", "__pycache__", ".agent-tmp"])
+def test_generated_files_do_not_invalidate_job_capture(tmp_path: Path, monkeypatch, _use_real_commands, directory: str) -> None:
+    repo, _ = repository(tmp_path)
+    generated = repo / "nested" / directory
+    generated.mkdir(parents=True)
+    (generated / "tracked.txt").write_text("tracked context\n")
+    git(repo, "add", f"nested/{directory}/tracked.txt")
+    git(repo, "commit", "-m", "tracked context in disposable directory")
+    (generated / "runtime.txt").write_text("before\n")
+    (repo / "local.env").write_text("preserved ignored context\n")
+    (repo / ".gitignore").write_text("local.env\n")
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    acquired = claim(store, 13)
+    producer = IssueJobWorkspaceProducer(store, tmp_path / "workspaces")
+    copy_files = producer._copy_working_files
+
+    def copy_with_runtime_update(source, destination, expected):
+        copy_files(source, destination, expected)
+        (generated / "runtime.txt").write_text("after\n")
+
+    monkeypatch.setattr(producer, "_copy_working_files", copy_with_runtime_update)
+
+    def implement(workspace, _prompt):
+        assert (workspace / "nested" / directory / "tracked.txt").read_text() == "tracked context\n"
+        assert not (workspace / "nested" / directory / "runtime.txt").exists()
+        assert (workspace / "local.env").read_text() == "preserved ignored context\n"
+        output = workspace / "nested" / directory / "new-runtime.txt"
+        output.write_text("generated by implementation\n")
+        (workspace / "value.txt").write_text("implemented\n")
+        return "ACTION_SUMMARY: implemented value.txt"
+
+    checkpoint = producer.execute(acquired, IssueJobSource("owner/repo", repo, "main", git(repo, "rev-parse", "HEAD"), "issue-13"), implement)
+    record = store.get(acquired.record.job_id)
+    artifact = store.get_result_artifact(checkpoint.result_reference)
+    assert record is not None and artifact is not None
+    manifest = json.loads(artifact.output)
+    assert set(manifest["changed_files"]) == {"value.txt"}
+    assert f"nested/{directory}/tracked.txt" in manifest["workspace_files"]
+    assert not any(name.endswith("runtime.txt") for name in manifest["workspace_files"])
+    assert (generated / "runtime.txt").read_text() == "after\n"
+    assert (repo / "value.txt").read_text() == "original\n"

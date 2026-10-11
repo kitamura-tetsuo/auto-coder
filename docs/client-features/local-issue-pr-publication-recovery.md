@@ -53,3 +53,11 @@ PR reconciliation uses a strict all-state head-branch lookup that propagates
 API failures. Once creation has been requested, a missing or unavailable lookup
 cannot authorize another create request; recovery waits until the original open
 or closed PR can be authoritatively identified.
+
+Finalizing an already settled job reads its exact result artifact and completed
+publication receipts, returning the confirmed terminal disposition without Git
+or GitHub effects. This remains valid after workspace disposal and prevents a
+competing daemon finalizer from making the waiting command report pending after
+publication has completed. Missing or contradictory receipts do not authorize
+success. Real-Git replay and terminal-failure coverage is in
+`tests/test_issue_job_finalizer.py`.
