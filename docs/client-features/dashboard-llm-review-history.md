@@ -11,6 +11,19 @@ not mean evidence is missing; unmatched or unverified entries still show a
 reconciliation wait. Repair dispatch, publication, independent verification,
 and confirmed merge remain separate history facts.
 
+An ordinary review can hand off a current demonstrated defect while older
+addressed findings await lifecycle closure. The correction history refers only
+to actionable feedback; pending closure remains unverified and cannot appear as
+approval or merge completion. Unchanged closure evidence waits without adding
+another ordinary reviewer invocation to history.
+
+Recovery of a previously published BLOCKED decision records reuse of its
+producing ordinary attempt. The repair-delegation event carries
+`effect=adversarial-feedback-replay`, `source_attempt_sequence` and
+`additional_model_execution=false`; confirmed delivery shows corrective
+handoff, while unsuccessful delivery remains a correction wait. Recovery does
+not create a new ordinary review or mark the pending closures complete.
+
 A canonical correction verified before its Strong lifecycle closes remains a
 reconciliation wait. Its recovery uses the existing ordinary-review and
 strong-audit stages; only accepted lifecycle closure and final merge produce

@@ -1,5 +1,28 @@
 # Dashboard observability verification
 
+Ordinary repairs proceed while independently addressed accepted findings await
+lifecycle closure. Production emits the existing `pr.repair-delegation` stage
+with `review_disposition=CORRECTIVE_HANDOFF` for confirmed delivery; pending
+closure alone emits a reconciliation wait and never review/merge completion.
+The durable pending-closure source list keeps replay scoped to actionable roots.
+No event schema or renderer changes are required. Run `bash scripts/test.sh
+tests/test_effective_review_decision.py tests/test_effective_decision_application.py
+tests/test_effective_decision_pr_flow.py tests/test_dashboard_observability.py`.
+`test_new_violation_is_handed_off_once_while_accepted_correction_awaits_closure`
+drives the real validator, effective decision, authenticated publication and
+local/cloud repair boundaries, asserts the production handoff event, and checks
+same-head replay without another reviewer or delivery. Its companion
+`test_missing_closure_assessment_waits_at_the_same_head_without_repeating_validation`
+checks deferred closure recovery and explicit-force eligibility.
+
+`test_saved_blocked_violation_recovers_to_repair_before_force_can_start_validation`
+exercises historical BLOCKED recovery with local/cloud origins and automatic/
+forced admission, including newer unpublished failed attempts. It uses the
+existing repair-delegation stage with `effect=adversarial-feedback-replay`,
+`source_attempt_sequence` and `additional_model_execution=false`. No new event
+schema or renderer is required: delivery uses the existing handoff/wait facts;
+reusing evidence cannot render closure or merge completion.
+
 Capacity-refill exception containment adds the engine-status `refill_faults`
 collection; no execution-trace stage, provider route, durable-resumption record,
 or dashboard event schema changes. The collection reports repository, actual

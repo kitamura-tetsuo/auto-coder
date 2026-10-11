@@ -78,6 +78,22 @@ def ordinary_pass_response(thread_id: str, status: str = "STILL_VALID", evidence
     )
 
 
+@pytest.mark.parametrize(
+    ("body", "matches"),
+    [
+        ("Exact finding", True),
+        ("Exact finding\n\nBlocker identity: `blk_123abc`", True),
+        ("Different finding\n\nBlocker identity: `blk_123abc`", False),
+        ("Exact finding\n\nBlocker identity: `unrecognized`", False),
+        ("Exact finding\n\nBlocker identity: `blk_123abc`\n\nAdditional request", False),
+    ],
+)
+def test_cloud_feedback_matches_only_exact_body_and_trailing_canonical_annotation(body: str, matches: bool) -> None:
+    from auto_coder.pr_processor import _adversarial_feedback_matches_request
+
+    assert _adversarial_feedback_matches_request(body, {"Exact finding"}) is matches
+
+
 # -- transport --------------------------------------------------------------
 
 
@@ -120,6 +136,9 @@ class RouterClient:
             return reply([{"filename": "src/state.py", "patch": "@@ -39,1 +39,2 @@\n state = True\n+guard = True"}])
         if method == "GET" and path.endswith("/reviews"):
             return reply(self.review_records)
+        if method == "GET" and "/reviews/" in path and not path.endswith("/comments"):
+            review_id = int(path.rsplit("/", 1)[-1])
+            return reply(next(review for review in self.review_records if review["id"] == review_id))
         if method == "GET" and path.endswith("/comments"):
             review_id = int(path.split("/")[-2]) if "/reviews/" in path else 0
             return reply(self.review_roots.get(review_id, []))
@@ -127,8 +146,9 @@ class RouterClient:
             if self.review_failure is not None:
                 raise self.review_failure
             review_id = 4242 + len(self.review_records)
-            self.review_records.append({"id": review_id, **payload, "user": {"login": "auto-coder-reviewer[bot]"}})
-            self.review_roots[review_id] = [{"id": self.next_root_id + index, "body": comment["body"], "user": {"login": "auto-coder-reviewer[bot]"}} for index, comment in enumerate(payload.get("comments", []))]
+            state = {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED", "COMMENT": "COMMENTED"}[payload["event"]]
+            self.review_records.append({"id": review_id, **payload, "state": state, "user": {"login": "auto-coder-reviewer[bot]"}})
+            self.review_roots[review_id] = [{"id": self.next_root_id + index, **comment, "pull_request_review_id": review_id, "user": {"login": "auto-coder-reviewer[bot]"}} for index, comment in enumerate(payload.get("comments", []))]
             self.next_root_id += len(self.review_roots[review_id])
             return reply({"id": review_id}, 200)
         return reply([])

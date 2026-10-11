@@ -326,12 +326,15 @@ class OrdinaryClosureEvidenceRepository:
         except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
             return EvidenceView(EvidenceState.UNAVAILABLE, None, f"retained closure evidence is unavailable: {exc}")
 
-    def pending_for_pr(self, pr_number: int) -> Tuple[ClosureEvidenceRecord, ...]:
-        """Return not-yet-applied sources for a PR, newest attempt first."""
+    def for_pr(self, pr_number: int) -> Tuple[ClosureEvidenceRecord, ...]:
+        """Return immutable ordinary sources, including non-authorizing closure assessments."""
         with self._locked():
             records = [_record_from_raw(raw) for raw in self._read()["records"].values()]
-        pending = [item for item in records if item.pr_number == pr_number and item.state is EvidenceState.RETAINED]
-        return tuple(sorted(pending, key=lambda item: item.attempt_sequence, reverse=True))
+        return tuple(sorted((item for item in records if item.pr_number == pr_number), key=lambda item: item.attempt_sequence, reverse=True))
+
+    def pending_for_pr(self, pr_number: int) -> Tuple[ClosureEvidenceRecord, ...]:
+        """Return not-yet-applied sources for a PR, newest attempt first."""
+        return tuple(item for item in self.for_pr(pr_number) if item.state is EvidenceState.RETAINED)
 
     def transition(self, source_id: str, state_value: EvidenceState, reason: str, closure_id: str = "", requires_strong_audit: bool = False) -> None:
         """Move one retained source to a new application state."""

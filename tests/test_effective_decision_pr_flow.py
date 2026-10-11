@@ -181,10 +181,17 @@ class Flow:
         self.gate_inputs = inputs
 
     def threads(self) -> tuple[ReviewThread, ...]:
+        retained_ids = {thread.comments[0].database_id for thread in self.extra_threads if thread.comments} | {self.root_id}
+        published = tuple(
+            ReviewThread(id=f"PRRT_new_{root['id']}", is_resolved=False, comments=[ReviewThreadComment(database_id=root["id"], author_login=REVIEWER_LOGIN, body=root["body"])])
+            for roots in (self.router.review_roots.values() if self.router is not None else ())
+            for root in roots
+            if root["id"] not in retained_ids
+        )
         if not self.root_body:
-            return self.extra_threads
+            return self.extra_threads + published
         resolved = self.thread_resolved or (self.resolve_on_approve and any(review["event"] == "APPROVE" for review in self.reviews))
-        return self.extra_threads + (ReviewThread(id=self.thread_id, is_resolved=resolved, comments=[ReviewThreadComment(database_id=self.root_id, author_login=REVIEWER_LOGIN, body=self.root_body)]),)
+        return self.extra_threads + published + (ReviewThread(id=self.thread_id, is_resolved=resolved, comments=[ReviewThreadComment(database_id=self.root_id, author_login=REVIEWER_LOGIN, body=self.root_body)]),)
 
     def pr_data(self) -> dict[str, Any]:
         body = "<!-- auto-coder:local-llm -->\nFixes #2401" if self.origin == "local" else "Fixes #2401"
@@ -622,6 +629,130 @@ def _repair_to(flow: Flow, label: str) -> str:
     flow.head = _commit(flow.env.worktree, label)
     flow.router.head_sha = flow.head  # type: ignore[union-attr]
     return flow.head
+
+
+@pytest.mark.parametrize("origin", ["cloud", "local"])
+@pytest.mark.parametrize("gap", [False, True])
+def test_new_violation_is_handed_off_once_while_accepted_correction_awaits_closure(flow_env: Env, monkeypatch: pytest.MonkeyPatch, origin: str, gap: bool) -> None:
+    from auto_coder import pr_processor
+    from tests.test_adversarial_validator import _demonstrated_finding_with_anchor
+
+    flow = make_flow(flow_env, monkeypatch, 5556, origin, saved_status=None, auto_status=True, provider_name="codex-cloud")
+    flow.accept_finding(gap=gap)
+    _repair_to(flow, "partial-enum-repair")
+    raw = json.loads(ordinary_response(flow.thread_id, status="ADDRESSED", result="NEEDS_FIX", evidence="src/state.py:40 now guards the original path"))
+    raw["summary"] = "The old counterexample is fixed, but a distinct reachable state-loss defect remains."
+    raw["requirement_coverage"][0]["status"] = "VIOLATED"
+    current_finding = _demonstrated_finding_with_anchor(40)
+    current_finding["requirement_id"] = "#2401/REQ-001"
+    raw["findings"] = [current_finding]
+    flow.model_responses = [json.dumps(raw)]
+    script = ClosureScript(omit_assessment=True)
+
+    with patch("auto_coder.pr_processor._record_pr_stage", wraps=pr_processor._record_pr_stage) as stages:
+        actions = flow.run(closure=script)
+
+    assert flow.model_calls == 1 and flow.handoffs == 1, "\n".join(actions)
+    assert [review["event"] for review in flow.reviews] == ["REQUEST_CHANGES"]
+    retained = flow.retained()
+    assert retained is not None and retained.status == "NEEDS_FIX" and retained.handoff == HANDOFF_DISPATCHED
+    assert retained.source_identities == [] and len(retained.pending_closure_source_identities) == 1
+    assert "State is discarded" in flow.handoff_text()
+    assert "Counterexample for finding-a" not in flow.handoff_text()
+    assert flow.merge.call_count == 0 and not flow.thread_resolved
+    assert [item.finding_id for item in flow_env.cycle.snapshot(flow.pr).open_findings] == ["finding-a"]
+    repair_events = [call.args for call in stages.call_args_list if call.args[1] == "pr.repair-delegation"]
+    assert len(repair_events) == 1
+    assert repair_events[0][4]["review_disposition"] == "CORRECTIVE_HANDOFF"
+
+    assert flow.router is not None
+    new_roots = flow.router.review_roots[max(flow.router.review_roots)]
+    flow.extra_threads = tuple(ReviewThread(id=f"PRRT_new_{root['id']}", is_resolved=False, comments=[ReviewThreadComment(database_id=root["id"], author_login=REVIEWER_LOGIN, body=root["body"])]) for root in new_roots)
+    again = flow.run(closure=script)
+    assert flow.model_calls == 1 and flow.handoffs == 1 and len(flow.reviews) == 1, again
+    assert flow.merge.call_count == 0 and not flow.thread_resolved
+
+
+def test_missing_closure_assessment_waits_at_the_same_head_without_repeating_validation(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    flow = make_flow(flow_env, monkeypatch, 5557, "cloud", saved_status=None, auto_status=True)
+    flow.accept_finding(gap=False)
+    _repair_to(flow, "fixed-with-missing-closure-assessment")
+    flow.model_responses = [ordinary_response(flow.thread_id, status="ADDRESSED")]
+    script = ClosureScript(omit_assessment=True)
+    actions = flow.run(closure=script)
+    retained = flow.retained()
+    assert retained is not None and retained.next_action == "CLOSURE_ACCEPTANCE", actions
+    assert retained.reconciliation_attempts == [retained.evidence_revision]
+
+    for _ in range(2):
+        waiting = flow.run(closure=script)
+        assert flow.model_calls == 1 and flow.handoffs == 0 and len(flow.reviews) == 1, waiting
+        assert any("waiting for reconciliation evidence" in action for action in waiting)
+    assert flow.merge.call_count == 0 and not flow.thread_resolved
+
+    flow.run(force=True, closure=script)
+    assert flow.model_calls == 2 and flow.handoffs == 0
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("origin", ["cloud", "local"])
+def test_saved_blocked_violation_recovers_to_repair_before_force_can_start_validation(flow_env: Env, monkeypatch: pytest.MonkeyPatch, force: bool, origin: str) -> None:
+    from auto_coder import pr_processor
+    from auto_coder.effective_decision_application import DecisionApplication
+    from auto_coder.effective_review_decision import EffectiveNextAction
+    from tests.test_adversarial_validator import _demonstrated_finding_with_anchor
+
+    flow = make_flow(flow_env, monkeypatch, 5556, origin, saved_status=None, auto_status=True, provider_name="codex-cloud")
+    flow.accept_finding(gap=False)
+    _repair_to(flow, "saved-partial-enum-repair")
+    payload = json.loads(ordinary_response(flow.thread_id, status="ADDRESSED", result="NEEDS_FIX"))
+    payload["requirement_coverage"][0]["status"] = "VIOLATED"
+    current = _demonstrated_finding_with_anchor(40)
+    current["requirement_id"] = "#2401/REQ-001"
+    payload["findings"] = [current]
+    native_thread_id = "PRRT_current_native_finding"
+    flow.extra_threads = (ReviewThread(id=native_thread_id, is_resolved=False, comments=[ReviewThreadComment(database_id=5391105999, author_login=REVIEWER_LOGIN, body="### Auto-Coder adversarial finding\n\nState is discarded in the existing native finding with different wording.")]),)
+    payload["thread_dispositions"].append({"thread_id": native_thread_id, "status": "STILL_VALID", "rationale": "The current finding remains valid.", "evidence": "src/state.py:40 still drops state."})
+    flow.model_responses = [json.dumps(payload)]
+    script = ClosureScript(finding_id="missing-exact-finding")
+    derive = pr_processor._derive_effective_application
+
+    def historical_closure_priority(*args: Any, **kwargs: Any) -> DecisionApplication:
+        application = derive(*args, **kwargs)
+        assert application is not None
+        return DecisionApplication(replace(application.result, result="BLOCKED"), replace(application.decision, status="BLOCKED", next_action=EffectiveNextAction.CLOSURE_ACCEPTANCE), application.projection)
+
+    with patch("auto_coder.pr_processor._derive_effective_application", side_effect=historical_closure_priority):
+        first = flow.run(closure=script)
+    assert flow.model_calls == 1 and flow.handoffs == 0, first
+    assert [review["event"] for review in flow.reviews] == ["COMMENT"]
+    original = flow.retained()
+    assert original is not None and original.status == "BLOCKED"
+    attempts = AdversarialValidationAttemptRepository(REPO)
+    failed = attempts.start(flow.pr, flow.head)
+    attempts.finish(failed.attempt_id, "ERROR")  # a forced retry failed without publishing or superseding the corrective evidence
+    sequence = attempts.latest_sequence(flow.pr, flow.head)
+    flow.model_responses = []  # no reviewer response exists: any invocation is a regression
+
+    with patch("auto_coder.pr_processor._dispatch_effective_correction", wraps=pr_processor._dispatch_effective_correction) as dispatch, patch("auto_coder.pr_processor._record_pr_stage", wraps=pr_processor._record_pr_stage) as stages:
+        recovered = flow.run(force=force, closure=script)
+
+    assert dispatch.call_count == 1
+    assert f"#### `{native_thread_id}`: STILL_VALID" in dispatch.call_args.args[4]
+    replay_stages = [call for call in stages.call_args_list if call.args[1] == "pr.repair-delegation" and call.args[4].get("effect") == "adversarial-feedback-replay"]
+    assert len(replay_stages) == 1
+    assert replay_stages[0].args[4]["additional_model_execution"] is False
+    assert replay_stages[0].args[4]["source_attempt_sequence"] == sequence - 1
+
+    assert flow.model_calls == 1 and flow.handoffs == 1, "\n".join(recovered)
+    assert any("no new adversarial validation was started" in action for action in recovered)
+    assert attempts.latest_sequence(flow.pr, flow.head) == sequence
+    assert len(flow.reviews) == 1 and flow.merge.call_count == 0 and not flow.thread_resolved
+    retained = flow.retained()
+    assert retained is not None and retained.status == "NEEDS_FIX" and retained.handoff == HANDOFF_DISPATCHED
+    assert "State is discarded" in flow.handoff_text() and "Counterexample for finding-a" not in flow.handoff_text()
+    flow.run(force=force, closure=script)
+    assert flow.model_calls == 1 and flow.handoffs == 1
 
 
 def test_ledger_ahead_reconciliation_resumes_independent_closure_without_approval_shortcut(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:

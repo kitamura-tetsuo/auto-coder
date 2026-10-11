@@ -68,6 +68,7 @@ class EffectiveDecisionBinding:
 class EffectiveReviewDecision:
     status: str = "BLOCKED"
     corrections: tuple[EffectiveCorrection, ...] = ()
+    pending_closures: tuple[EffectiveCorrection, ...] = ()
     reasons: tuple[str, ...] = ()
     binding: EffectiveDecisionBinding = field(default_factory=EffectiveDecisionBinding)
     approval_eligible: bool = False
@@ -118,6 +119,7 @@ def _decision(
     corrections: list[EffectiveCorrection],
     *,
     approve: bool = False,
+    pending_closures: list[EffectiveCorrection] | None = None,
 ) -> EffectiveReviewDecision:
     # Source identity is the lifecycle identity.  It prevents aliases or
     # repeated observations from duplicating a correction.
@@ -126,6 +128,7 @@ def _decision(
     return EffectiveReviewDecision(
         status=status,
         corrections=ordered,
+        pending_closures=tuple(sorted(pending_closures or [], key=lambda item: item.source_identity)),
         reasons=tuple(reasons),
         binding=_binding(result, projection),
         approval_eligible=approve,
@@ -197,19 +200,17 @@ def derive_effective_review_decision(
     if reconciliation:
         retained = [*reconciliation, *pending_closure, *repairs]
         return _decision(result, projection, "BLOCKED", EffectiveNextAction.RECONCILIATION, [item.reason for item in retained], retained)
-    if pending_closure:
-        retained = [*pending_closure, *repairs]
-        return _decision(result, projection, "BLOCKED", EffectiveNextAction.CLOSURE_ACCEPTANCE, [item.reason for item in retained], retained)
-
+    # Lifecycle closure cannot complete while another current violation remains.
+    # Dispatch the demonstrated correction without reintroducing addressed counterexamples.
     implementation = [item for item in repairs if item.category == CATEGORY_IMPLEMENTATION or item.source_identity in promoted_sources]
     tests = [item for item in repairs if item.category == CATEGORY_REGRESSION_GAP and item.source_identity not in promoted_sources]
     unknown = [item for item in repairs if item.category not in {CATEGORY_IMPLEMENTATION, CATEGORY_REGRESSION_GAP}]
     if unknown:
         return _decision(result, projection, "BLOCKED", EffectiveNextAction.RECONCILIATION, ["Accepted finding has an unsupported category"], unknown)
     if implementation:
-        return _decision(result, projection, "NEEDS_FIX", EffectiveNextAction.IMPLEMENTATION_REPAIR, [item.reason for item in repairs], repairs)
+        return _decision(result, projection, "NEEDS_FIX", EffectiveNextAction.IMPLEMENTATION_REPAIR, [item.reason for item in repairs], repairs, pending_closures=pending_closure)
     if tests:
-        return _decision(result, projection, "NEEDS_TESTS", EffectiveNextAction.FOCUSED_TEST_REPAIR, [item.reason for item in tests], tests)
+        return _decision(result, projection, "NEEDS_TESTS", EffectiveNextAction.FOCUSED_TEST_REPAIR, [item.reason for item in tests], tests, pending_closures=pending_closure)
 
     # A concrete violation is adjudicated evidence for repair, never approval.
     finding_requirements = {requirement_id for finding in result.findings for requirement_id in finding.all_requirement_ids}
@@ -217,9 +218,11 @@ def derive_effective_review_decision(
     if result.specification_gaps or result.unexplained_changes or not coverage_complete:
         return _decision(result, projection, "BLOCKED", EffectiveNextAction.RECONCILIATION, ["Specification, provenance, or required coverage remains unresolved"], [])
     if raw_status == "NEEDS_FIX":
-        return _decision(result, projection, "NEEDS_FIX", EffectiveNextAction.IMPLEMENTATION_REPAIR, ["Ordinary validation produced implementation findings"], [])
+        return _decision(result, projection, "NEEDS_FIX", EffectiveNextAction.IMPLEMENTATION_REPAIR, ["Ordinary validation produced implementation findings"], [], pending_closures=pending_closure)
     if raw_status == "NEEDS_TESTS":
-        return _decision(result, projection, "NEEDS_TESTS", EffectiveNextAction.FOCUSED_TEST_REPAIR, ["Ordinary validation produced a focused test gap"], [])
+        return _decision(result, projection, "NEEDS_TESTS", EffectiveNextAction.FOCUSED_TEST_REPAIR, ["Ordinary validation produced a focused test gap"], [], pending_closures=pending_closure)
+    if pending_closure:
+        return _decision(result, projection, "BLOCKED", EffectiveNextAction.CLOSURE_ACCEPTANCE, [item.reason for item in pending_closure], pending_closure)
     if raw_status == "PASS":
         return _decision(result, projection, "PASS", EffectiveNextAction.NONE, [], [], approve=True)
     return _decision(result, projection, "BLOCKED", EffectiveNextAction.RECONCILIATION, [f"Unsupported ordinary status {raw_status or '<empty>'}"], [])

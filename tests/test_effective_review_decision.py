@@ -162,17 +162,43 @@ def test_exact_closure_proposal_waits_for_owner_then_accepted_closure_passes() -
     assert closed.binding.association_revision == 10
 
 
-def test_pending_closure_precedes_repair_without_losing_other_obligation() -> None:
+@pytest.mark.parametrize(
+    ("category", "status", "action"),
+    [(CATEGORY_IMPLEMENTATION, "NEEDS_FIX", EffectiveNextAction.IMPLEMENTATION_REPAIR), (CATEGORY_REGRESSION_GAP, "NEEDS_TESTS", EffectiveNextAction.FOCUSED_TEST_REPAIR)],
+)
+def test_current_repair_precedes_pending_closure_without_repairing_the_closed_counterexample(category: str, status: str, action: EffectiveNextAction) -> None:
     closure = replace(
         finding("round:gap", "blocker-gap", CATEGORY_REGRESSION_GAP),
         current_observations=(DispositionOutcome(OUTCOME_CLOSURE_PROPOSAL_NOT_ACCEPTED, "round:gap", "ADDRESSED", "exact evidence"),),
     )
-    implementation = finding("round:implementation", "blocker-implementation", CATEGORY_IMPLEMENTATION)
+    implementation = finding("round:implementation", "blocker-implementation", category)
 
     decision = derive_effective_review_decision(result(), projection(closure, implementation))
 
-    assert (decision.status, decision.next_action) == ("BLOCKED", EffectiveNextAction.CLOSURE_ACCEPTANCE)
-    assert decision.blocker_ids == ("blocker-gap", "blocker-implementation")
+    assert (decision.status, decision.next_action, decision.approval_eligible) == (status, action, False)
+    assert decision.blocker_ids == ("blocker-implementation",)
+    assert tuple(item.source_identity for item in decision.pending_closures) == ("round:gap",)
+
+
+def test_new_ordinary_violation_dispatches_while_all_accepted_findings_await_closure() -> None:
+    closure = replace(
+        finding("round:implementation", "blocker-implementation", CATEGORY_IMPLEMENTATION),
+        current_observations=(DispositionOutcome(OUTCOME_CLOSURE_PROPOSAL_NOT_ACCEPTED, "round:implementation", "ADDRESSED", "exact evidence"),),
+    )
+    raw = result("NEEDS_FIX")
+    raw.requirement_coverage.append(RequirementCoverageEntry("#2402/REQ-004", "VIOLATED", "Grid mutation discards the dependency snapshot"))
+    raw.findings = [AdversarialValidationFinding(requirement_id="#2402/REQ-004", counterexample="A concurrent Table schema change permits a stale Grid query")]
+
+    decision = derive_effective_review_decision(raw, projection(closure))
+
+    assert (decision.status, decision.next_action, decision.approval_eligible) == ("NEEDS_FIX", EffectiveNextAction.IMPLEMENTATION_REPAIR, False)
+    assert decision.corrections == ()
+    assert tuple(item.source_identity for item in decision.pending_closures) == (closure.source_identity,)
+    assert decision.requirement_coverage == tuple(raw.requirement_coverage)
+
+    raw.requirement_coverage[-1].status = "UNVERIFIED"
+    blocked = derive_effective_review_decision(raw, projection(closure))
+    assert (blocked.status, blocked.next_action, blocked.approval_eligible) == ("BLOCKED", EffectiveNextAction.RECONCILIATION, False)
 
 
 def test_stale_accepted_closure_requires_reconciliation() -> None:

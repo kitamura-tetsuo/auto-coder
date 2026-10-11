@@ -105,6 +105,7 @@ class RetainedDecision:
     next_action: str = ""
     blocker_ids: list[str] = field(default_factory=list)
     source_identities: list[str] = field(default_factory=list)
+    pending_closure_source_identities: list[str] = field(default_factory=list)
     attempt_id: str = ""
     attempt_sequence: int = 0
     source_revision: int = -1
@@ -210,9 +211,10 @@ class EffectiveDecisionStore:
         """
         previous = self.load(record.pr_number)
         carried = record
+        waiting_actions = {EffectiveNextAction.RECONCILIATION.value, EffectiveNextAction.CLOSURE_ACCEPTANCE.value}
         if previous is not None and previous.head_sha == record.head_sha:
             attempts = list(previous.reconciliation_attempts)
-            if record.next_action == EffectiveNextAction.RECONCILIATION.value and record.evidence_revision not in attempts:
+            if record.next_action in waiting_actions and record.evidence_revision not in attempts:
                 attempts.append(record.evidence_revision)
             carried = replace(
                 record,
@@ -222,7 +224,7 @@ class EffectiveDecisionStore:
                 handoff_observation=previous.handoff_observation,
                 handoff=previous.handoff if previous.blocker_ids == record.blocker_ids and previous.handoff == HANDOFF_DISPATCHED and record.requires_handoff else record.handoff,
             )
-        elif record.next_action == EffectiveNextAction.RECONCILIATION.value:
+        elif record.next_action in waiting_actions:
             carried = replace(record, reconciliation_attempts=[record.evidence_revision])
         return self.save(carried)
 
@@ -317,6 +319,11 @@ def apply_effective_decision(
     status = decision.status
     findings = list(result.findings)
     gaps = [replace(gap) for gap in result.test_oracle_gaps]
+    if decision.pending_closures:
+        pending_sources = {item.source_identity for item in decision.pending_closures}
+        pending_ids = {identity for record in projection.records if record.source_identity in pending_sources for identity in (record.source_identity, record.known_gap_id) if identity}
+        findings = [finding for finding in findings if finding.finding_identity not in pending_ids]
+        gaps = [gap for gap in gaps if gap.gap_id not in pending_ids]
     if status in {"NEEDS_FIX", "NEEDS_TESTS"} and decision.corrections:
         by_source = {record.source_identity: record for record in projection.records}
         known_finding_ids = {finding.finding_identity for finding in findings}
@@ -361,6 +368,7 @@ def build_retained_record(decision: EffectiveReviewDecision, projection: Accepte
         next_action=decision.next_action.value,
         blocker_ids=sorted(decision.blocker_ids),
         source_identities=sorted(correction.source_identity for correction in decision.corrections),
+        pending_closure_source_identities=sorted(correction.source_identity for correction in decision.pending_closures),
         attempt_id=binding.validation_attempt_id,
         attempt_sequence=binding.validation_attempt_sequence,
         source_revision=binding.source_revision,

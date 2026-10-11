@@ -70,7 +70,34 @@ distinct wait reason (`ROUTE_UNAVAILABLE`, `QUOTA_DEFERRED`,
 `INDETERMINATE_DELIVERY`, `ALLOWANCE_EXHAUSTED`); a wait is never reported as
 delivered or complete, resets no allowance and borrows no other route.
 
+The retained decision records `pending_closure_source_identities` separately
+from the sources requiring correction. A current repair may proceed while other
+accepted findings await lifecycle closure. Fresh publication and saved-report
+replay exclude those pending-closure roots and gaps from the corrective bundle;
+the durable split allows same-head replay without requesting another review or
+resending previously delivered feedback. This never accepts their closure.
+Cloud feedback selection accepts the exact finding body with the reviewer-added
+trailing canonical `Blocker identity` annotation; that annotation does not make
+newly published findings disappear from the corrective handoff. Other body
+changes still require the existing report/replay evidence rather than fuzzy
+matching.
+
 ## Reconciliation
+
+A historical published BLOCKED decision may have retained a valid ordinary
+NEEDS_FIX/NEEDS_TESTS result alongside an incomplete closure assessment. Before
+reviewer admission, including `--force`, recover that result from the newest
+published attempt when its head, base, contract, policy, open epoch, accepted
+Strong round and finding revision still match. Newer unpublished failed attempts
+do not replace that evidence. Re-read accepted findings and native roots, then
+deliver only the independently actionable correction through the existing
+origin route and delivery deduplication. No review is republished and no model
+is invoked. This recovery grants neither closure nor approval; confirmed
+corrective completion can still admit its independent closure review.
+
+Cloud replay can use an explicitly identified STILL_VALID native thread in
+the retained report when its wording differs from the newly rendered finding.
+It cannot select other addressed threads merely because they remain unresolved.
 
 A reconciliation-required decision keeps the original known obligations, issues
 no speculative repair or REQUEST_CHANGES and publishes at most a non-approving
@@ -79,6 +106,12 @@ revisions; head-dependent adjudication is excluded) gets one focused attempt.
 Unchanged evidence waits explicitly without model or repair work; new exact
 association/authority evidence, a changed head or an explicit `--force` makes
 processing eligible again.
+
+A closure-acceptance wait also spends its focused attempt for the observed
+evidence revision. A missing or malformed closure assessment cannot repeatedly
+admit ordinary validation at the same head and unchanged authority/association
+state. New evidence, a changed head or explicit `--force` can admit recovery;
+retained valid closure evidence continues to resume without a model call.
 
 When independent local verification has already marked a canonical blocker
 `VERIFIED_CORRECTION` while its accepted Strong finding remains OPEN, the

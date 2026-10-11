@@ -1,5 +1,10 @@
 # Effective ordinary-review decisions
 
+Published BLOCKED results with retained actionable ordinary evidence resume
+correction before forced reviewer admission. Recovery requires the producing
+attempt and current review identities to match, keeps addressed findings in
+pending closure, and does not confer approval or closure authority.
+
 `effective_review_decision.py` derives one side-effect-free decision from the
 parsed ordinary validation result and the complete accepted-Strong-finding
 projection. The decision retains its target, validation-attempt, source,
@@ -23,6 +28,14 @@ later invocation. Incomplete, ambiguous, stale, or insufficiently
 adjudicated accepted-finding evidence requires reconciliation. An exact
 independent `ADDRESSED` proposal requests lifecycle-owner closure acceptance;
 the policy does not close findings itself.
+
+Pending closure acceptance does not suppress independently upheld repairs or
+new demonstrated ordinary violations with complete requirement coverage. The
+decision keeps pending closures separately from actionable corrections, so only
+the current defects reach the repair owner. Pending closures still block
+approval and remain OPEN until their lifecycle owner accepts them. Unavailable
+or ambiguous authority and unverified ordinary evidence still require
+reconciliation rather than speculative repair.
 
 Current independently upheld accepted implementation findings yield
 `NEEDS_FIX`; accepted regression/test-oracle findings yield `NEEDS_TESTS`.

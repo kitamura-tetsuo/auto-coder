@@ -711,6 +711,8 @@ def _resume_closure_before_admission(
         return None, True
     if inputs is None:
         return None, False
+    if _resume_saved_ordinary_correction(github_client, repo_name, ProcessedPRResult(pr_data=pr_data), inputs, actions, processing_status, config):
+        return None, True
     if _repair_strong_findings_before_validation(github_client, repo_name, pr_data, inputs, actions, processing_status, config):
         return None, True
     try:
@@ -728,6 +730,101 @@ def _resume_closure_before_admission(
             processing_status.retry_not_before = actions.retry_not_before  # type: ignore[attr-defined]
         return resumption, True
     return resumption, False
+
+
+def _resume_saved_ordinary_correction(
+    github_client: Any,
+    repo_name: str,
+    pr: ProcessedPRResult,
+    inputs: TwoTierGateInputs,
+    actions: List[str],
+    processing_status: Optional[ProcessedPRResult],
+    config: AutomationConfig,
+) -> bool:
+    """Recover an actionable ordinary result hidden by a published closure-only BLOCKED decision.
+
+    Only the newest published attempt at the unchanged head/base/contract/policy
+    can supply corrective evidence. An incomplete closure extension does not
+    erase that attempt's independently valid ordinary findings. This recovery
+    never authorizes approval or closure and never starts another reviewer.
+    """
+    pr_data = pr.pr_data
+    pr_number = int(pr_data["number"])
+    status, error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, inputs.head_sha)
+    if error or status != "BLOCKED":
+        return False
+    try:
+        evidence = inputs.gate.closure_evidence()
+        published_sequence = evidence.attempts.latest_published_sequence(pr_number, inputs.head_sha)
+        record = next((item for item in evidence.evidence.for_pr(pr_number) if item.attempt_sequence == published_sequence and item.head_sha == inputs.head_sha), None)
+        snapshot = inputs.gate.state.snapshot(pr_number)
+        strong = snapshot.accepted_strong_round
+        if record is None or strong is None or record.ordinary.result not in {"NEEDS_FIX", "NEEDS_TESTS"}:
+            return False
+        if (record.repository, record.base_sha, record.contract_identity, record.policy_identity, record.open_epoch, record.round_id, record.finding_set_revision) != (
+            repo_name,
+            inputs.base_sha,
+            inputs.contract.identity,
+            inputs.policy.identity,
+            snapshot.open_epoch,
+            strong.round_id,
+            snapshot.finding_set_revision,
+        ):
+            return False
+        registered = evidence.attempts.get(record.attempt_id)
+        if registered is None or (registered.sequence, registered.pr_number, registered.head_sha) != (record.attempt_sequence, pr_number, inputs.head_sha):
+            return False
+        raw = restore_ordinary_result(record)
+        state = _get_claimed_review_thread_state(github_client, repo_name, pr_number, config=config)
+        if state.lookup_error:
+            raise RuntimeError(state.lookup_error)
+        threads = _authentic_root_threads(repo_name, state)
+        bridge, target = _accepted_state_inputs(repo_name, pr_data, inputs.head_sha)
+        projection = project_accepted_findings(bridge, target, threads)
+        raw.accepted_finding_projection = project_accepted_findings(bridge, target, threads, accepted_finding_dispositions(raw, threads, projection, inputs.head_sha))
+        application = derive_application(raw, raw.accepted_finding_projection)
+        if application.decision.next_action not in {EffectiveNextAction.IMPLEMENTATION_REPAIR, EffectiveNextAction.FOCUSED_TEST_REPAIR}:
+            return False
+        completion = _corrective_completion_marker(repo_name, pr_data, inputs.head_sha, github_client)
+        if completion and _closure_review_due(repo_name, pr_number, inputs.head_sha, raw.accepted_finding_projection, completion):
+            return False
+        if github_client.get_pull_request_head_sha_strict(repo_name, pr_number) != inputs.head_sha:
+            raise RuntimeError("the PR head changed before saved correction recovery")
+        _retain_effective_decision(repo_name, pr_data, inputs.head_sha, application)
+        EffectiveDecisionStore(repo_name).update(pr_number, publication=PUBLICATION_CONFIRMED)
+    except Exception as exc:
+        _record_review_wait(repo_name, pr_number, inputs.head_sha, actions, processing_status, f"saved ordinary correction could not be recovered: {exc}")
+        return True
+    actions.append(f"Resuming {application.decision.status} correction for PR #{pr_number} from published ordinary attempt {record.attempt_sequence}; no new adversarial validation was started")
+    record_reused(
+        PrAdversarialReviewTarget(repository=repo_name, pr_number=pr_number, head_sha=inputs.head_sha),
+        policy_identity=_pr_adversarial_policy_identity(config, True),
+        source_review_id=None,
+        native_verdict=record.ordinary.result,
+        attempt_id=record.attempt_id,
+        attempt_sequence=record.attempt_sequence,
+    )
+    result = application.result
+    feedback, facts = _dispatch_effective_correction(
+        github_client,
+        repo_name,
+        pr_data,
+        inputs.head_sha,
+        format_adversarial_review_summary(result, inputs.head_sha, attached_finding_count=0, attached_test_oracle_gap_count=0),
+        result,
+        application,
+        config,
+        [format_adversarial_finding_comment(finding) for finding in result.findings] + [format_test_oracle_gap_comment(gap) for gap in result.open_test_oracle_gaps],
+    )
+    actions.extend(feedback)
+    _record_pr_stage(
+        pr_number,
+        "pr.repair-delegation",
+        f"pr#{pr_number} repair delegation",
+        _adversarial_repair_outcome(feedback, processing_status),
+        {"effect": "adversarial-feedback-replay", "examined_head": inputs.head_sha, "source_attempt_sequence": record.attempt_sequence, "additional_model_execution": False, **facts},
+    )
+    return True
 
 
 def _repair_strong_findings_before_validation(
@@ -4130,13 +4227,14 @@ def _accepted_state_inputs(repo_name: str, pr_data: Dict[str, Any], head_sha: st
 
 
 def _saved_repair_has_current_evidence(retained: Optional[RetainedDecision], head_sha: str, outstanding: Sequence[AcceptedFindingRecord]) -> bool:
-    """Whether a retained repair decision at this head covers every outstanding accepted finding.
+    """Whether a retained decision accounts for every outstanding accepted finding at this head.
 
     The effective decision derives a repair for an open accepted finding only from current-target
     evidence, so its retained record is the durable proof that a saved violation is current.
+    Addressed findings awaiting lifecycle closure are accounted for separately and are not repairs.
     """
     repair_actions = {EffectiveNextAction.IMPLEMENTATION_REPAIR.value, EffectiveNextAction.FOCUSED_TEST_REPAIR.value}
-    return retained is not None and retained.head_sha == head_sha and retained.next_action in repair_actions and {record.source_identity for record in outstanding} <= set(retained.source_identities)
+    return retained is not None and retained.head_sha == head_sha and retained.next_action in repair_actions and {record.source_identity for record in outstanding} <= set(retained.source_identities + retained.pending_closure_source_identities)
 
 
 def _assess_saved_review_state(
@@ -4165,7 +4263,7 @@ def _assess_saved_review_state(
     except DecisionRetentionError as exc:
         return SavedReviewAssessment(SAVED_REVIEW_WAIT, f"retained effective-decision state is unreadable: {exc}")
     revision = evidence_revision(projection)
-    resumable = retained is not None and retained.head_sha == head_sha and retained.next_action == EffectiveNextAction.RECONCILIATION.value
+    resumable = retained is not None and retained.head_sha == head_sha and retained.next_action in {EffectiveNextAction.RECONCILIATION.value, EffectiveNextAction.CLOSURE_ACCEPTANCE.value}
     if retained is not None and resumable and revision in retained.reconciliation_attempts and not force:
         return SavedReviewAssessment(SAVED_REVIEW_WAIT, "waiting for new authority or association evidence; the focused reconciliation for this evidence revision was already attempted", projection)
     if saved_status == "PASS" and not saved_pass_is_clearance(projection):
@@ -4403,6 +4501,10 @@ def _replay_saved_nonpass_review(
         marker = _corrective_completion_marker(repo_name, pr_data, head_sha, github_client)
         if marker and _closure_review_due(repo_name, pr_number, head_sha, projection, marker):
             return [f"The corrective request for PR #{pr_number} completed ({marker.split(':')[0]}); independently reassessing the accepted finding"], True
+    retained = EffectiveDecisionStore(repo_name).load(pr_number)
+    pending_sources = set(retained.pending_closure_source_identities) if retained is not None and retained.head_sha == head_sha else set()
+    pending_roots = {root for record in records if record.source_identity in pending_sources for root in record.root_comment_ids}
+    records = tuple(record for record in records if record.source_identity not in pending_sources)
     bodies, blocker_ids = _compose_actionable_feedback(github_client, repo_name, pr_number, records)
     if not bodies and github_client is not None:
         try:
@@ -4419,6 +4521,7 @@ def _replay_saved_nonpass_review(
                 for thread in replay_threads
                 if not thread.is_resolved
                 and thread.comments
+                and thread.comments[0].database_id not in pending_roots
                 and thread.comments[0].body.startswith(_ADVERSARIAL_THREAD_HEADINGS)
                 and reviewer_identity.matches_login(thread.comments[0].author_login)
                 and (_adversarial_feedback_belongs_to_report(thread.comments[0].body, report, thread.id) or f"#### `{thread.id}`:" not in report)
@@ -8216,6 +8319,12 @@ def _adversarial_feedback_belongs_to_report(body: str, validation_report: str, t
     return bool(substantive) and any(block in validation_report for block in substantive)
 
 
+def _adversarial_feedback_matches_request(body: str, requested_bodies: Set[str]) -> bool:
+    """Match exact feedback before or after the reviewer appends its canonical identity."""
+    original_body = re.sub(r"\n\nBlocker identity: `blk_[a-zA-Z0-9_-]+`$", "", body)
+    return body in requested_bodies or original_body in requested_bodies
+
+
 def _load_delivered_review_feedback(state_path: Path) -> set[str]:
     if not state_path.exists():
         return set()
@@ -9629,7 +9738,14 @@ def _send_adversarial_validation_feedback_to_cloud_task(
     matching_threads = [
         thread
         for thread in review_threads
-        if not thread.is_resolved and thread.comments and thread.comments[0].body.startswith(_ADVERSARIAL_THREAD_HEADINGS) and (thread.comments[0].body in requested_bodies if requested_bodies else _adversarial_feedback_belongs_to_report(thread.comments[0].body, source_validation_report, thread.id))
+        if not thread.is_resolved
+        and thread.comments
+        and thread.comments[0].body.startswith(_ADVERSARIAL_THREAD_HEADINGS)
+        and (
+            _adversarial_feedback_matches_request(thread.comments[0].body, requested_bodies) or (f"#### `{thread.id}`:" in source_validation_report and _adversarial_feedback_belongs_to_report(thread.comments[0].body, source_validation_report, thread.id))
+            if requested_bodies
+            else _adversarial_feedback_belongs_to_report(thread.comments[0].body, source_validation_report, thread.id)
+        )
     ]
     feedback_bodies = [(thread.comments[0].body, _review_feedback_identity(prefix, thread, 0)) for thread in matching_threads]
     if not feedback_bodies:
