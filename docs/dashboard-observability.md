@@ -642,7 +642,8 @@ provider liveness. Existing schema version 1, scope propagation, generic diagram
 and decision-log rendering, and the public API fact allowlist are preserved.
 
 Local Issue implementation start comments consume this same production start
-boundary through a context-bound side effect. They add durable GitHub delivery
+boundary through a context-bound side effect in both durable-runner and
+synchronous ordinary-Issue origins. They add durable GitHub delivery
 state but no processing origin, admission gate, provider route, outcome, trace
 event, event fact, dashboard projection, or public API field. Consequently the
 existing `llm.local-execution` production-to-view contract and its runnable

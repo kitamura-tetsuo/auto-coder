@@ -245,8 +245,8 @@ class LocalJobStore:
                 row = connection.execute("SELECT * FROM local_start_notifications WHERE job_id=?", (job_id,)).fetchone()
                 connection.commit()
             return self._start_notification(row) if cursor.rowcount == 1 and row is not None else None
-        except (OSError, sqlite3.Error, ValueError):
-            return None
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            raise RuntimeError(f"local start notification claim failed for {job_id}") from exc
 
     def set_start_notification_state(self, job_id: str, expected: StartNotificationState, state: StartNotificationState, diagnostic: str = "") -> bool:
         try:
@@ -256,8 +256,8 @@ class LocalJobStore:
                     (state.value, diagnostic[:1000], time.time(), job_id, expected.value),
                 )
             return cursor.rowcount == 1
-        except (OSError, sqlite3.Error):
-            return False
+        except (OSError, sqlite3.Error) as exc:
+            raise RuntimeError(f"local start notification state update failed for {job_id}") from exc
 
     def recoverable_start_notifications(self) -> tuple[LocalStartNotification, ...]:
         """Return notifications needing safe send or exact-marker reconciliation."""
@@ -268,8 +268,8 @@ class LocalJobStore:
                     (StartNotificationState.CONFIRMED.value,),
                 ).fetchall()
             return tuple(self._start_notification(row) for row in rows)
-        except (OSError, sqlite3.Error, ValueError):
-            return ()
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            raise RuntimeError("local start notification recovery enumeration failed") from exc
 
     def get_start_notification(self, job_id: str) -> Optional[LocalStartNotification]:
         try:

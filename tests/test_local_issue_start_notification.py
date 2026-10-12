@@ -1,18 +1,26 @@
 from __future__ import annotations
 
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
-from threading import Barrier, Event
+from threading import Barrier, Event, Thread
 from time import monotonic, sleep
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from auto_coder.attempt_manager import extract_attempt_number
+from auto_coder.automation_config import AutomationConfig
 from auto_coder.backend_manager import BackendManager
+from auto_coder.github_request_governor import GitHubRequestDeferred
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
 from auto_coder.issue_local_job import IssueLocalJobAdapter
-from auto_coder.local_issue_start_notification import LocalIssueStartNotifier, notification_body, notification_marker
+from auto_coder.issue_processor import _dispatch_issue_candidates
+from auto_coder.llm_backend_config import LLMBackendConfiguration
+from auto_coder.local_issue_start_notification import LocalIssueStartNotifier
+from auto_coder.local_issue_start_notification import logger as notification_logger
+from auto_coder.local_issue_start_notification import notification_body, notification_marker
 from auto_coder.local_job_handoff import (
     LocalJobKind,
     LocalJobOffer,
@@ -25,6 +33,7 @@ from auto_coder.local_job_runner import LocalJobRunner
 from auto_coder.local_llm_observability import bind_local_llm_start_callback
 from auto_coder.local_llm_observability import logger as observability_logger
 from auto_coder.local_llm_observability import observe_local_llm_call, reset_local_llm_start_callback
+from auto_coder.util.github_request_outcome import GitHubRequestContext
 from tests.test_issue_job_workspace import repository
 
 
@@ -368,3 +377,170 @@ def test_notification_store_and_github_failures_do_not_change_live_client_result
     retained = durable_store.get_start_notification("github-failure")
     assert retained is not None and retained.state is not StartNotificationState.CONFIRMED
     assert github.posts == 1
+
+
+def test_governor_deferral_is_retried_once_from_reopened_store(tmp_path: Path) -> None:
+    """REQ-005/006: production typed non-delivery remains safely retryable."""
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    context = GitHubRequestContext(
+        operation_id="comment",
+        attempt_id="delivery-1",
+        subsystem="controller",
+        api_origin="https://api.github.com",
+        method="POST",
+        kind="issue_comment",
+        endpoint_template="/repos/{owner}/{repo}/issues/{number}/comments",
+        repository="owner/repo",
+        item="issue#2471",
+    )
+    deferred = GitHubRequestDeferred(context, "mutation_spacing", 100.0)
+
+    class GovernorGitHub(RecordingGitHub):
+        blocked = True
+
+        def add_comment_to_issue(self, repository: str, issue_number: int, body: str) -> None:
+            if self.blocked:
+                raise deferred
+            super().add_comment_to_issue(repository, issue_number, body)
+
+    github = GovernorGitHub()
+
+    LocalIssueStartNotifier(store, github).observe_and_publish(_job("governor-deferred"), backend="codex", model="model")
+    _wait_for_state(store, "governor-deferred", StartNotificationState.DEFINITELY_UNSENT)
+    assert github.posts == 0
+    assert github.comments == []
+
+    github.blocked = False
+    LocalIssueStartNotifier(LocalJobStore(store.path), github).recover()
+
+    retained = LocalJobStore(store.path).get_start_notification("governor-deferred")
+    assert retained is not None and retained.state is StartNotificationState.CONFIRMED
+    assert github.posts == 1
+    assert len(github.comments) == 1
+
+
+def test_notification_state_failures_are_diagnostic_and_preserve_uncertainty(tmp_path: Path) -> None:
+    """REQ-007: claim, enumeration and receipt failures remain observable."""
+    base = LocalJobStore(tmp_path / "jobs.sqlite3")
+    job = _job("state-failure")
+    retained = base.observe_issue_start(job, backend_name="codex", model_name="model", marker=notification_marker(job.job_id))
+    assert retained is not None
+    github = RecordingGitHub()
+    diagnostics: list[str] = []
+    sink = notification_logger.add(lambda message: diagnostics.append(str(message)))
+
+    class SQLiteFailureStore(LocalJobStore):
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+        def _connect(self):  # type: ignore[no-untyped-def]
+            raise sqlite3.OperationalError("database remains locked")
+
+    try:
+        failing_store = SQLiteFailureStore(base.path)
+        LocalIssueStartNotifier(failing_store, github)._publish_if_safe(retained)
+        assert any("notification claim failed" in message for message in diagnostics)
+        assert base.get_start_notification(job.job_id).state is StartNotificationState.PENDING  # type: ignore[union-attr]
+
+        diagnostics.clear()
+
+        LocalIssueStartNotifier(failing_store, github).recover()
+        assert any("recovery enumeration failed" in message for message in diagnostics)
+        assert base.get_start_notification(job.job_id).state is StartNotificationState.PENDING  # type: ignore[union-attr]
+
+        claimed = base.claim_start_notification(job.job_id)
+        assert claimed is not None
+        github.comments.append({"body": notification_body(claimed)})
+        diagnostics.clear()
+
+        LocalIssueStartNotifier(failing_store, github)._reconcile(claimed)
+        assert any("reconciliation receipt write failed" in message for message in diagnostics)
+        assert base.get_start_notification(job.job_id).state is StartNotificationState.INDETERMINATE  # type: ignore[union-attr]
+    finally:
+        notification_logger.remove(sink)
+
+
+def test_synchronous_candidate_dispatch_binds_attempt_notification_before_return(tmp_path: Path, monkeypatch) -> None:
+    """REQ-001/008: the supported no-handoff route reaches the same boundary."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    entered = Event()
+    release = Event()
+    client = MagicMock()
+    client.config_backend = SimpleNamespace(backend_type="codex")
+    client.model_name = "sync-model"
+    client.use_noedit_options = False
+    client.get_last_session_id.return_value = None
+
+    def invoke_client(_prompt: str, *, is_noedit: bool = False) -> str:
+        assert is_noedit is False
+        entered.set()
+        assert release.wait(10)
+        return ""
+
+    client._run_llm_cli.side_effect = invoke_client
+    manager = BackendManager(
+        default_backend="sync-alias",
+        default_client=client,
+        factories={"sync-alias": lambda: client},
+        order=["sync-alias"],
+    )
+    manager._get_current_provider_name = lambda _backend: "local-provider"  # type: ignore[method-assign]
+    llm_config = LLMBackendConfiguration.load_from_dict({"backend": {"order": ["sync-alias"]}, "backends": {"sync-alias": {"backend_type": "codex", "model": "configured-model"}}})
+    github = RecordingGitHub()
+    github.get_all_sub_issues = MagicMock(return_value=[])
+    github.get_parent_issue_details = MagicMock(return_value=None)
+    github.get_open_sub_issues = MagicMock(return_value=[])
+
+    @contextmanager
+    def branch_manager(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        yield
+
+    @contextmanager
+    def label_manager(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        yield True
+
+    command = MagicMock(success=True, stdout="main", returncode=1)
+    result: list[object] = []
+
+    def dispatch() -> None:
+        result.append(
+            _dispatch_issue_candidates(
+                "owner/repo",
+                {"number": 2471, "title": "Synchronous", "body": "Implement", "labels": [], "state": "open", "author": "owner"},
+                AutomationConfig(),
+                github,  # type: ignore[arg-type]
+                ["sync-alias"],
+                local_job_store=None,
+            )
+        )
+
+    with (
+        patch("auto_coder.issue_processor.get_current_attempt", return_value=7),
+        patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config),
+        patch("auto_coder.cli_helpers.build_backend_manager", return_value=manager),
+        patch("auto_coder.issue_processor.cmd.run_command", return_value=command),
+        patch("auto_coder.issue_processor.get_current_branch", return_value="main"),
+        patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+        patch("auto_coder.issue_processor.BranchManager", branch_manager),
+        patch("auto_coder.issue_processor.LabelManager", label_manager),
+    ):
+        worker = Thread(target=dispatch)
+        worker.start()
+        assert entered.wait(10)
+        deadline = monotonic() + 5
+        while github.posts != 1 and monotonic() < deadline:
+            sleep(0.01)
+        assert github.posts == 1
+        assert worker.is_alive()
+        assert client._run_llm_cli.call_count == 1
+        comment = github.comments[0]
+        assert comment["repository"] == "owner/repo" and comment["number"] == "2471"
+        assert "Backend: `sync-alias`" in comment["body"]
+        assert "Model: `sync-model`" in comment["body"]
+        assert "Implementation attempt:" in comment["body"]
+        assert "auto-coder-local-implementation-start:" in comment["body"]
+        release.set()
+        worker.join(10)
+    assert not worker.is_alive()
+    assert len(result) == 1
+    manager.close()
