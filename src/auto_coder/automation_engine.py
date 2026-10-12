@@ -78,7 +78,7 @@ from .implementation_reclamation_scheduler import (
     run_due_reclamation_checks,
     schedule_reevaluation_for_pr_owner,
 )
-from .implementation_skip_diagnostic import explain_already_owned
+from .implementation_skip_diagnostic import duplicate_suppression_guidance, explain_already_owned
 from .implementation_slots import (
     ImplementationHierarchyConflict,
     ImplementationHierarchyUnavailable,
@@ -7270,7 +7270,8 @@ class AutomationEngine:
                 explanation = skip_diagnostic.message
             except Exception:
                 logger.opt(exception=True).debug("Duplicate-start diagnostic failed for issue#{}; preserving refusal", item_number)
-                explanation = "Skipped - duplicate automatic-start suppression: this Implementation generation already has a durable " "production start. A historical durable start is not proof of successful implementation. " "Supplementary outcome evidence is unavailable."
+                prefix, retry_guidance = duplicate_suppression_guidance(repo_name, item_number)
+                explanation = f"{prefix} Supplementary outcome evidence is unavailable. {retry_guidance}"
             result.actions = [explanation]
             _record_issue_stage_result(
                 item_number,

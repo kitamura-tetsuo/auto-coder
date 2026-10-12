@@ -20,12 +20,14 @@ class ImplementationEvidenceReader(Protocol):
     def issue_job_evidence(self, repository: str, issue_number: int) -> tuple[LocalIssueJobEvidence, ...]: ...
 
 
-_SECRET = re.compile(r"(?i)(token|password|secret|authorization|api[_-]?key)(\s*[:=]\s*)([^\s,;]+)")
+_LABELED_SECRET = re.compile(r"(?i)(token|password|secret|authorization|api[_-]?key)(\s*[:=]\s*)(?:bearer\s+)?([^\s,;]+)")
+_TOKEN_SHAPE = re.compile(r"(?i)\b(?:gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]{8,}|sk-[A-Za-z0-9_-]{12,})\b")
 
 
 def _bounded_reason(value: str) -> str:
     compact = " ".join(value.split())
-    return _SECRET.sub(r"\1\2[REDACTED]", compact)[:300]
+    labeled = _LABELED_SECRET.sub(r"\1\2[REDACTED]", compact)
+    return _TOKEN_SHAPE.sub("[REDACTED]", labeled)[:300]
 
 
 def _effect(evidence: LocalIssueJobEvidence, name: str) -> LocalJobEffect | None:
@@ -49,8 +51,12 @@ def _describe(evidence: LocalIssueJobEvidence) -> str:
 
     association = _effect(evidence, "association")
     publication = _effect(evidence, "pr")
-    if association is not None and association.state == "completed" and association.evidence.isdigit():
-        downstream = f"publication=confirmed PR #{association.evidence} (not proof of merge or validation)"
+    association_pr = int(association.evidence) if association is not None and association.state == "completed" and association.evidence.isdigit() else 0
+    publication_pr = int(publication.evidence) if publication is not None and publication.state == "completed" and publication.evidence.isdigit() else 0
+    if association is not None and association.state == "completed" and (association_pr <= 0 or (publication is not None and (publication_pr <= 0 or publication_pr != association_pr))):
+        downstream = "publication=inconsistent (PR and association receipts are contradictory or invalid)"
+    elif association_pr > 0:
+        downstream = f"publication=confirmed PR #{association_pr} (not proof of merge or validation)"
     elif association is not None and association.state == "completed":
         downstream = "publication=inconsistent (confirmed association has no valid PR identity)"
     elif publication is not None:
@@ -72,8 +78,7 @@ def explain_already_owned(
     current_execution_id: str = "",
 ) -> ImplementationSkipDiagnostic:
     """Explain a refusal without changing any admission or job authority."""
-    prefix = "Skipped - duplicate automatic-start suppression: this Implementation generation already has a durable " "production start. A historical durable start is not proof that code was implemented, tests passed, or a PR was published."
-    retry = f"To request a distinct attempt, use `auto-coder process-issues --only https://github.com/{repository}/issues/{issue_number} " "--force --retry`. This does not guarantee resumption of retained edits/session; readiness, authority, ownership, " "dependency, and provider gates still apply."
+    prefix, retry = duplicate_suppression_guidance(repository, issue_number)
     try:
         all_evidence = store.issue_job_evidence(repository, issue_number)
     except RuntimeError:
@@ -81,9 +86,6 @@ def explain_already_owned(
 
     attributable = tuple(item for item in all_evidence if item.job.owner_generation == generation or (current_execution_id and item.job.implementation_execution_id == current_execution_id))
     current = tuple(item for item in attributable if current_execution_id and item.job.implementation_execution_id == current_execution_id)
-    if len(current) != 1 and len(attributable) == 1:
-        current = attributable
-
     history = " ".join(f"History[{_describe(item)}]" for item in attributable)
     if len(current) == 1:
         current_text = f"Current[{_describe(current[0])}]"
@@ -105,3 +107,14 @@ def explain_already_owned(
     live = any(item.job.state in {LocalJobState.PENDING, LocalJobState.RUNNING, LocalJobState.RESULT_RECORDED, LocalJobState.DOWNSTREAM_EFFECTS_PENDING} for item in current)
     guidance = "Inspect and reconcile the live/pending owned work before considering a replacement. " if live else ""
     return ImplementationSkipDiagnostic(" ".join(part for part in (prefix, current_text, history, guidance + retry) if part), status, current_attempt)
+
+
+def duplicate_suppression_guidance(repository: str, issue_number: int) -> tuple[str, str]:
+    """Return guidance that remains available when the evidence store cannot open."""
+    prefix = "Skipped - duplicate automatic-start suppression: this Implementation generation already has a durable " "production start. A historical durable start is not proof that code was implemented, tests passed, or a PR was published."
+    retry = (
+        f"To request a distinct attempt, use `auto-coder process-issues --only https://github.com/{repository}/issues/{issue_number} "
+        "--force --retry`. This requests a distinct attempt and does not guarantee resumption of retained edits/session; readiness, authority, ownership, "
+        "dependency, and provider gates still apply. Inspect and reconcile unavailable or unresolved owned work before considering a replacement."
+    )
+    return prefix, retry

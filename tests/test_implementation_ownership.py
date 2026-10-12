@@ -240,6 +240,37 @@ def test_ordinary_duplicate_reports_honest_unknown_evidence_and_trace(tmp_path, 
     assert "historical durable start is not proof" in events[0].facts["explanation"]
 
 
+def test_duplicate_store_initialization_failure_keeps_retry_guidance(tmp_path, monkeypatch):
+    get_trace_collector().clear()
+    snapshot = _standalone_snapshot(1, (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat())
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _ready_engine(tmp_path, monkeypatch, {1: snapshot}, config)
+    github.get_issue_comments_strict.return_value = []
+    owner = ImplementationOwner("issue", 1)
+    generation = engine._compute_implementation_generation(REPO, snapshot, None)
+    execution = engine.implementation_slots.start_execution(owner, generation=generation)
+    assert execution is not None
+    engine.issue_stage_routing.record_implementation_owned(REPO, 1, generation)
+    engine.implementation_slots.finish_execution(owner, execution)
+    monkeypatch.setattr(engine, "_get_local_job_store", MagicMock(side_effect=RuntimeError("corrupt database")))
+
+    duplicate = engine._process_single_candidate_unified(REPO, Candidate("issue", dict(snapshot), 0), config, origin="worker")
+
+    assert duplicate.target_outcome is ExplicitTargetOutcome.SKIPPED
+    explanation = duplicate.actions[0]
+    assert "Supplementary outcome evidence is unavailable" in explanation
+    assert "--only https://github.com/owner/repo/issues/1 --force --retry" in explanation
+    assert "requests a distinct attempt" in explanation
+    assert "does not guarantee resumption" in explanation
+    assert "Inspect and reconcile" in explanation
+    trace = get_trace_collector().get_snapshot(repository=REPO, item_type="issue", item_number=1)
+    events = [event for event in trace.events if event.stage_id == "issue.implementation-duplicate-suppression"]
+    assert len(events) == 1
+    assert events[0].facts["explanation"] == explanation
+
+
 def test_failed_production_local_job_is_explained_on_ordinary_reprocessing(tmp_path, monkeypatch):
     """#2484 REQ-006: cross admission, durable handoff, provider, retirement, and duplicate diagnostics."""
     get_trace_collector().clear()
@@ -252,6 +283,7 @@ def test_failed_production_local_job_is_explained_on_ordinary_reprocessing(tmp_p
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
     engine.local_job_store = store
     llm_config = LLMBackendConfiguration.load_from_dict({"backends": {"controlled-local": {"backend_type": "codex", "model": "test"}}})
+
     backend_creation = MagicMock(return_value=MagicMock())
     monkeypatch.setattr("auto_coder.issue_processor._ordinary_issue_candidates", lambda _repo: ["controlled-local"])
     monkeypatch.setattr("auto_coder.llm_backend_config.get_llm_config", lambda **_kwargs: llm_config)
@@ -287,7 +319,11 @@ def test_failed_production_local_job_is_explained_on_ordinary_reprocessing(tmp_p
                 owner_incarnation=engine.implementation_slots.owner_incarnation(owner),
                 owner_generation=engine.implementation_slots.implementation_generation(owner),
             )
-            return LocalJobExecutionResult(InvocationOutcome.FAILED, "provider output", "transport failed token=private")
+            return LocalJobExecutionResult(
+                InvocationOutcome.FAILED,
+                "provider output",
+                "transport rejected Authorization: Bearer ghp_privatecredential; github_pat_123456789secret",
+            )
 
     adapter = ControlledFailureAdapter()
     runner = LocalJobRunner(
@@ -311,23 +347,32 @@ def test_failed_production_local_job_is_explained_on_ordinary_reprocessing(tmp_p
     assert executed is not None
     assert executed.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
     assert executed.invocation_outcome is InvocationOutcome.FAILED
+    assert executed.owner_generation is not None
+    executed_claim = LocalJobClaim(executed, True)
+    assert store.record_effect(executed_claim, "association", "completed", "77")
+    assert store.record_effect(executed_claim, "pr", "completed", "88")
     finalizer = IssueJobFinalizer(store, engine.implementation_slots, lambda *_args: None, lambda *_args: None)
     retired = finalizer.finalize(job_id)
     assert retired.disposition == "failed"
     assert store.get(job_id).state is LocalJobState.SETTLED  # type: ignore[union-attr]
 
     owner = ImplementationOwner("issue", 1)
-    engine.implementation_slots.finish_execution(owner, accepted.implementation_execution_id)
     assert engine.implementation_slots.release_unbound_idle_owner(owner)
     generation = engine._compute_implementation_generation(REPO, snapshot, None)
+    assert executed.owner_generation == generation
+    assert len(store.issue_job_evidence(REPO, 1)) == 1
     assert engine.issue_stage_routing.is_implementation_owned(REPO, 1, generation)
     duplicate = engine._process_single_candidate_unified(REPO, Candidate("issue", dict(snapshot), 0), config, origin="worker")
 
     assert duplicate.target_outcome is ExplicitTargetOutcome.SKIPPED
-    assert "attempt=0" in duplicate.actions[0]
+    assert "Current outcome=unknown" in duplicate.actions[0]
+    assert "History[attempt=0" in duplicate.actions[0]
     assert "invocation=failed" in duplicate.actions[0]
-    assert "transport failed token=[REDACTED]" in duplicate.actions[0]
-    assert "publication=unknown" in duplicate.actions[0]
+    assert "ghp_privatecredential" not in duplicate.actions[0]
+    assert "github_pat_123456789secret" not in duplicate.actions[0]
+    assert "Authorization: [REDACTED]" in duplicate.actions[0]
+    assert "publication=inconsistent" in duplicate.actions[0]
+    assert "publication=confirmed PR" not in duplicate.actions[0]
     assert adapter.calls == 1
     assert backend_creation.call_count == 1
     assert engine.issue_stage_routing.is_implementation_owned(REPO, 1, generation)
