@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import email.parser
+import importlib.util
 import os
 import sys
-import importlib.util
 from pathlib import Path
 
 from setuptools import build_meta as _setuptools
@@ -22,6 +23,15 @@ serialize_build_identity = _identity_module.serialize_build_identity
 deserialize_build_identity = _identity_module.deserialize_build_identity
 
 IDENTITY = ROOT / ".auto-coder-build-identity.json"
+PREPARED_IDENTITY = "auto-coder-build-identity.json"
+
+
+def _assert_metadata_version(record):
+    pkg_info = ROOT / "PKG-INFO"
+    if pkg_info.is_file():
+        message = email.parser.Parser().parsestr(pkg_info.read_text(encoding="utf-8"))
+        if message.get("Version") != record.version:
+            raise ValueError("Carried build identity disagrees with sdist PKG-INFO")
 
 
 def get_build_version():
@@ -29,6 +39,7 @@ def get_build_version():
     carried = Path(supplied) if supplied else IDENTITY
     if carried.is_file():
         record = deserialize_build_identity(carried.read_text(encoding="utf-8"))
+        _assert_metadata_version(record)
         # The backend-created carrier is deliberately untracked. Hide only that
         # file while independently observing the checkout so it cannot make an
         # otherwise clean source appear dirty or contradict its own record.
@@ -68,6 +79,10 @@ def build_sdist(sdist_directory, config_settings=None):
 
 
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
+    if metadata_directory:
+        captured = Path(metadata_directory) / PREPARED_IDENTITY
+        if not captured.is_file() or deserialize_build_identity(captured.read_text(encoding="utf-8")) != resolve_build_identity(ROOT):
+            raise ValueError("Source identity changed after metadata preparation")
     return _with_identity(_setuptools.build_wheel, wheel_directory, config_settings, metadata_directory)
 
 
@@ -76,7 +91,10 @@ def build_editable(wheel_directory, config_settings=None, metadata_directory=Non
 
 
 def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
-    return _with_identity(_setuptools.prepare_metadata_for_build_wheel, metadata_directory, config_settings)
+    result = _with_identity(_setuptools.prepare_metadata_for_build_wheel, metadata_directory, config_settings)
+    record = resolve_build_identity(ROOT)
+    (Path(metadata_directory) / PREPARED_IDENTITY).write_text(serialize_build_identity(record), encoding="utf-8")
+    return result
 
 
 def prepare_metadata_for_build_editable(metadata_directory, config_settings=None):

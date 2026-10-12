@@ -1,9 +1,11 @@
 FROM python:3.12-slim AS build
+ARG AUTO_CODER_BUILD_IDENTITY_B64
 WORKDIR /src
 COPY pyproject.toml README.md LICENSE MANIFEST.in ./
 COPY build_backend ./build_backend
 COPY src ./src
-RUN pip wheel --no-cache-dir --wheel-dir /wheels .
+RUN test -n "$AUTO_CODER_BUILD_IDENTITY_B64" && echo "$AUTO_CODER_BUILD_IDENTITY_B64" | base64 -d > .auto-coder-build-identity.json && \
+    AUTO_CODER_BUILD_IDENTITY_FILE=/src/.auto-coder-build-identity.json pip wheel --no-cache-dir --wheel-dir /wheels .
 
 ARG TARGETARCH
 ARG OPENCODE_VERSION=1.18.31

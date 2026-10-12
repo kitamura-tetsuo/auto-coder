@@ -9,6 +9,7 @@ to GitHub Actions environment variables and persistent log files.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import subprocess
@@ -17,6 +18,8 @@ import time
 from pathlib import Path
 
 from loguru import logger
+
+from auto_coder.build_identity import resolve_build_identity, serialize_build_identity
 
 
 def _init_logging(log_dir: Path) -> Path:
@@ -83,6 +86,13 @@ def prepare_image(log_dir: Path, custom_tag: str | None = None, github_env_file:
         return 1
 
     tag = custom_tag or f"auto-coder:opencode-{commit[:12]}"
+    identity = resolve_build_identity(Path.cwd())
+    if identity.state != "clean" or identity.source_revision != commit:
+        err = "OpenCode image builds require a clean, complete checkout identity"
+        logger.error(err)
+        _record_diagnostic(log_dir, status="failed", commit=commit, error=err, duration=time.monotonic() - started)
+        return 1
+    encoded_identity = base64.b64encode(serialize_build_identity(identity).encode()).decode()
     logger.info("Resolved checkout commit: {}", commit)
     logger.info("Target image tag: {}", tag)
 
@@ -92,6 +102,8 @@ def prepare_image(log_dir: Path, custom_tag: str | None = None, github_env_file:
         "build",
         "--build-arg",
         f"AUTO_CODER_SOURCE_REVISION={commit}",
+        "--build-arg",
+        f"AUTO_CODER_BUILD_IDENTITY_B64={encoded_identity}",
         "-t",
         tag,
         ".",
