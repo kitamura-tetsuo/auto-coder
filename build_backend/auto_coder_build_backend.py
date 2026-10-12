@@ -85,9 +85,11 @@ def build_sdist(sdist_directory, config_settings=None):
 
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     if metadata_directory:
-        captured = Path(metadata_directory) / PREPARED_IDENTITY
+        metadata_root = Path(metadata_directory)
+        candidates = [metadata_root / PREPARED_IDENTITY, *metadata_root.glob(f"*.dist-info/{PREPARED_IDENTITY}")]
+        captured = next((candidate for candidate in candidates if candidate.is_file()), None)
         current = _selected_identity()
-        if not captured.is_file() or deserialize_build_identity(captured.read_text(encoding="utf-8")) != current:
+        if captured is None or deserialize_build_identity(captured.read_text(encoding="utf-8")) != current:
             raise ValueError("Source identity changed after metadata preparation")
     return _with_identity(_setuptools.build_wheel, wheel_directory, config_settings, metadata_directory)
 
@@ -99,7 +101,7 @@ def build_editable(wheel_directory, config_settings=None, metadata_directory=Non
 def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
     result = _with_identity(_setuptools.prepare_metadata_for_build_wheel, metadata_directory, config_settings)
     record = _selected_identity()
-    (Path(metadata_directory) / PREPARED_IDENTITY).write_text(serialize_build_identity(record), encoding="utf-8")
+    (Path(metadata_directory) / result / PREPARED_IDENTITY).write_text(serialize_build_identity(record), encoding="utf-8")
     return result
 
 
