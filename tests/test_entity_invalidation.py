@@ -6,6 +6,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -2069,48 +2070,6 @@ def test_reopened_invalidation_does_not_consult_cached_closed_state(tmp_path: Pa
     github.get_issue.assert_not_called()
 
 
-def test_delayed_webhook_expires_through_consumer_and_fetches_final_state(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
-    engine = AutomationEngine(MagicMock(), AutomationConfig())
-    final_state = {"number": 200, "state": "open", "labels": ["implementation-ready"]}
-    fetched = []
-    processed = []
-
-    def fetch(*args):
-        fetched.append(args[2])
-        return Candidate(type="issue", data=final_state, priority=0)
-
-    monkeypatch.setattr(engine, "_create_candidate_from_single", fetch)
-    monkeypatch.setattr(
-        engine,
-        "_process_single_candidate",
-        lambda repo, candidate, **_kwargs: processed.append(candidate.data.copy()) or CandidateProcessingResult(type="issue", number=200, success=True),
-    )
-
-    async def scenario():
-        consumer = asyncio.create_task(engine._invalidation_loop("owner/repo"))
-        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
-        created_at = (datetime.now(timezone.utc) - timedelta(seconds=59.9)).isoformat()
-        await process_github_payload(
-            "issues",
-            {"action": "opened", "issue": {"number": 200, "created_at": created_at, "labels": []}},
-            engine,
-            "owner/repo",
-            "opened",
-        )
-        for _ in range(100):
-            if processed:
-                break
-            await asyncio.sleep(0.01)
-        consumer.cancel()
-        worker.cancel()
-        await asyncio.gather(consumer, worker, return_exceptions=True)
-
-    asyncio.run(scenario())
-    assert fetched == [200]
-    assert processed == [final_state]
-
-
 def test_urgent_label_transition_preserves_retryable_admission_obligation(tmp_path: Path, monkeypatch):
     """The webhook origin must survive the durable queue and a capacity defer."""
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
@@ -2167,16 +2126,30 @@ def test_urgent_label_transition_preserves_retryable_admission_obligation(tmp_pa
     assert engine.invalidations.pending_count("owner/repo") == 1
 
 
-def test_sentry_created_issue_waits_then_fetches_current_state(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("source", ["sentry", "github"])
+@pytest.mark.parametrize("dispatch_age", [60.0, 61.0], ids=["at-deadline", "after-deadline"])
+def test_sentry_created_issue_waits_then_fetches_current_state(tmp_path: Path, monkeypatch, source, dispatch_age):
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
-    created_at = (datetime.now(timezone.utc) - timedelta(seconds=59.5)).isoformat()
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    now = created.timestamp() + 59.5
+    # Replace only the durable queue's wall clock; asyncio's monotonic clock and
+    # unrelated modules keep their real clocks for synchronization timeouts.
+    monkeypatch.setattr("src.auto_coder.entity_invalidation.time", SimpleNamespace(time=lambda: now))
     github = MagicMock()
     github.create_issue.return_value = object()
-    github.get_issue_details.return_value = {"number": 200, "created_at": created_at, "state": "open"}
+    github.get_open_entities_strict.return_value = OpenGitHubEntities()
+    github.get_issue_details.return_value = {"number": 200, "created_at": created.isoformat(), "state": "open"}
     engine = AutomationEngine(github, AutomationConfig())
-    final_state = {"number": 200, "state": "open", "labels": ["implementation-ready"]}
+    current_state = {"number": 200, "state": "open", "labels": []}
+    fetched = []
     processed = []
-    monkeypatch.setattr(engine, "_create_candidate_from_single", lambda *args: Candidate(type="issue", data=final_state, priority=0))
+
+    def fetch(repo, entity_type, number, bypass_cache):
+        fetched.append((repo, entity_type, number, bypass_cache, now))
+        return Candidate(type="issue", data=current_state.copy(), priority=0)
+
+    monkeypatch.setattr(engine, "_create_candidate_from_single", fetch)
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda *_args: current_state.copy()
     monkeypatch.setattr(
         engine,
         "_process_single_candidate",
@@ -2184,21 +2157,74 @@ def test_sentry_created_issue_waits_then_fetches_current_state(tmp_path: Path, m
     )
 
     async def scenario():
+        if source == "sentry":
+            await process_sentry_payload(SentryWebhookPayload(message="failure"), engine, "owner/repo")
+        else:
+            await process_github_payload(
+                "issues",
+                {"action": "opened", "issue": {**current_state, "created_at": created.isoformat()}},
+                engine,
+                "owner/repo",
+                "opened",
+            )
+        # Intake itself attempts a real drain. It must retain the obligation.
+        assert engine.queue.empty()
+        assert engine.invalidations.pending_count("owner/repo") == (2 if source == "github" else 1)
+        assert engine.invalidations.seconds_until_next_ready("owner/repo") == 0.5
+        drained = asyncio.Queue()
+        resume = asyncio.Event()
+        enqueue = engine._enqueue_pending_invalidations
+
+        async def drain_and_pause(repo):
+            await enqueue(repo)
+            if asyncio.current_task() is consumer:
+                resume.clear()
+                drained.put_nowait(None)
+                await resume.wait()
+
+        monkeypatch.setattr(engine, "_enqueue_pending_invalidations", drain_and_pause)
         consumer = asyncio.create_task(engine._invalidation_loop("owner/repo"))
         worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
-        await process_sentry_payload(SentryWebhookPayload(message="failure"), engine, "owner/repo")
-        await asyncio.sleep(0.05)
-        assert processed == []
-        for _ in range(100):
-            if processed:
-                break
-            await asyncio.sleep(0.01)
-        consumer.cancel()
-        worker.cancel()
-        await asyncio.gather(consumer, worker, return_exceptions=True)
+
+        async def observe_drain():
+            # Completion barriers, not elapsed sleeps, prove the real consumer
+            # attempted admission and the worker finished any admitted work.
+            await asyncio.wait_for(drained.get(), timeout=10)
+            await asyncio.wait_for(engine.queue.join(), timeout=10)
+
+        def advance(age):
+            nonlocal now
+            now = created.timestamp() + age
+            assert engine._invalidation_wake_event is not None
+            engine._invalidation_wake_event.set()
+            resume.set()
+
+        try:
+            await observe_drain()
+            assert fetched == []
+            assert processed == []
+            advance(59.999)
+            await observe_drain()
+            assert fetched == []
+            assert processed == []
+            # The authoritative state changes while work is pending. Only the
+            # post-deadline fetch may supply the worker's decision snapshot.
+            current_state["labels"] = ["implementation-ready"]
+            advance(dispatch_age)
+            await observe_drain()
+            assert fetched == [("owner/repo", "issue", 200, True, created.timestamp() + dispatch_age)]
+            assert processed == [current_state]
+            assert engine.invalidations.pending_count("owner/repo") == 0
+            advance(120)
+            await observe_drain()
+            assert len(fetched) == 1
+            assert processed == [current_state]
+        finally:
+            consumer.cancel()
+            worker.cancel()
+            await asyncio.gather(consumer, worker, return_exceptions=True)
 
     asyncio.run(scenario())
-    assert processed == [final_state]
 
 
 def test_ci_watch_reconciliation_is_targeted_and_restart_durable(tmp_path: Path):
