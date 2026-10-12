@@ -1,5 +1,9 @@
 # Nonblocking explicit-local PR corrections
 
+The daemon's correction runner is bound to its repository as well as the PR
+correction job kind. Shared-store discovery, recovery, and completion wakes
+cannot change jobs owned by another repository's controller.
+
 Eligible `LOCAL_REQUIRED` PR review corrections are transferred to the durable
 local-job store after the exact head, same-repository branch, canonical feedback
 identities, bounded prompt, selected local backend, repair-store incarnation,

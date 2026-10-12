@@ -162,7 +162,7 @@ def test_authority_is_revalidated_after_worktree_preparation_before_model_entry(
             current = False
         return result
 
-    runner = LocalJobRunner(jobs, InvocationAdmissionGate(), capacity=1, adapters={LocalJobKind.PR_REVIEW_CORRECTION: adapter})
+    runner = LocalJobRunner(jobs, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.PR_REVIEW_CORRECTION: adapter})
     with (
         patch("auto_coder.pr_correction_job.LocalReviewRepairStore", return_value=repairs),
         patch("auto_coder.pr_correction_job.RepairAllowanceLedger", return_value=ledger),
@@ -206,7 +206,7 @@ def test_post_preparation_authority_exception_keeps_original_job_retryable(tmp_p
             return True
 
     adapter = TransientAuthorityAdapter(MagicMock(), MagicMock(return_value=executor), jobs)
-    runner = LocalJobRunner(jobs, InvocationAdmissionGate(), capacity=1, adapters={LocalJobKind.PR_REVIEW_CORRECTION: adapter})
+    runner = LocalJobRunner(jobs, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.PR_REVIEW_CORRECTION: adapter})
     with (
         patch("auto_coder.pr_correction_job.LocalReviewRepairStore", return_value=repairs),
         patch("auto_coder.pr_correction_job.RepairAllowanceLedger", return_value=ledger),
@@ -258,7 +258,7 @@ def test_worktree_preparation_failure_retries_same_job_and_invokes_model_once(tm
             return subprocess.CompletedProcess(command, 1, "", "transient worktree failure")
         return real_run(command, **kwargs)
 
-    runner = LocalJobRunner(jobs, InvocationAdmissionGate(), capacity=1, adapters={LocalJobKind.PR_REVIEW_CORRECTION: adapter})
+    runner = LocalJobRunner(jobs, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.PR_REVIEW_CORRECTION: adapter})
     with (
         patch("auto_coder.pr_correction_job.LocalReviewRepairStore", return_value=repairs),
         patch("auto_coder.pr_correction_job.RepairAllowanceLedger", return_value=ledger),
@@ -311,6 +311,7 @@ def test_restart_recovers_publication_checkpoint_before_runner_artifact(tmp_path
     runner = LocalJobRunner(
         jobs,
         InvocationAdmissionGate(),
+        repository="owner/repo",
         capacity=1,
         adapters={LocalJobKind.PR_REVIEW_CORRECTION: adapter},
         completion_wake=wake,
@@ -367,6 +368,7 @@ def test_restart_recovers_published_checkpoint_before_runner_artifact(tmp_path: 
     runner = LocalJobRunner(
         jobs,
         InvocationAdmissionGate(),
+        repository="owner/repo",
         capacity=1,
         adapters={LocalJobKind.PR_REVIEW_CORRECTION: adapter},
         completion_wake=wake,
@@ -428,6 +430,7 @@ def test_dead_submitter_replay_preserves_pending_job_ownership(tmp_path: Path) -
     runner = LocalJobRunner(
         jobs,
         InvocationAdmissionGate(),
+        repository="owner/repo",
         capacity=1,
         adapters={LocalJobKind.PR_REVIEW_CORRECTION: CurrentAuthorityAdapter(MagicMock(), MagicMock(return_value=MagicMock()), jobs)},
     )
@@ -473,6 +476,7 @@ def test_engine_completion_wake_invalidates_pr_before_settling_job(tmp_path: Pat
     class CapturingRunner:
         def __init__(self, store, gate, **kwargs):
             assert store is jobs
+            assert kwargs["repository"] == "owner/repo"
             captured["wake"] = kwargs["completion_wake"]
 
         def poll(self) -> int:
@@ -627,6 +631,7 @@ def test_single_pr_worker_hands_off_second_correction_while_first_backend_is_blo
     runner = LocalJobRunner(
         jobs,
         InvocationAdmissionGate(),
+        repository="owner/repo",
         capacity=1,
         adapters={LocalJobKind.PR_REVIEW_CORRECTION: BarrierAdapter(github, lambda *_args: barrier_executor)},
     )

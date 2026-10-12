@@ -86,6 +86,7 @@ class LocalJobRunner:
         store: LocalJobStore,
         admission_gate: InvocationAdmissionGate,
         *,
+        repository: str,
         capacity: int,
         adapters: dict[LocalJobKind, LocalJobDomainAdapter],
         completion_wake: Optional[CompletionWake] = None,
@@ -95,6 +96,7 @@ class LocalJobRunner:
         if capacity < 1:
             raise ValueError("local runner capacity must be at least one")
         self.store = store
+        self.repository = repository
         self.admission_gate = admission_gate
         self.capacity = capacity
         self.adapters = dict(adapters)
@@ -110,7 +112,7 @@ class LocalJobRunner:
         self._closed = False
 
     def _discover_unsettled(self) -> tuple[LocalJobRecord, ...]:
-        return tuple(job for job in self.store.discover_unsettled() if job.kind in self.adapters and (self._job_ids is None or job.job_id in self._job_ids))
+        return tuple(job for job in self.store.discover_unsettled() if job.repository == self.repository and job.kind in self.adapters and (self._job_ids is None or job.job_id in self._job_ids))
 
     def poll(self) -> int:
         """Schedule as many pending envelopes as free runner slots permit."""
@@ -123,7 +125,7 @@ class LocalJobRunner:
             free = self.capacity - len(self._active)
             if free <= 0:
                 return 0
-            pending = [job for job in self._discover_unsettled() if job.state is LocalJobState.PENDING and job.kind in self.adapters]
+            pending = [job for job in self._discover_unsettled() if job.state is LocalJobState.PENDING and job.job_id not in self._active]
             scheduled = 0
             for job in pending[:free]:
                 # Admission happens before claiming. A draining daemon leaves the

@@ -2711,6 +2711,7 @@ class AutomationEngine:
         local_job_runner = LocalJobRunner(
             local_job_store,
             self.invocation_gate,
+            repository=repo_name,
             capacity=max(1, concurrency),
             adapters={LocalJobKind.PR_REVIEW_CORRECTION: PRCorrectionJobAdapter(self.github, build_captured_executor, local_job_store)},
             completion_wake=wake_pr_validation,
@@ -2838,6 +2839,7 @@ class AutomationEngine:
             local_runner = LocalJobRunner(
                 self.local_job_store,
                 self.invocation_gate,
+                repository=repo_name,
                 capacity=max(1, self.config.MAX_CONCURRENT_IMPLEMENTATIONS),
                 adapters={LocalJobKind.ISSUE_IMPLEMENTATION: IssueLocalJobAdapter(self, repo_name, self.local_job_store, slot_repository, Path.cwd())},
                 completion_wake=wake_issue_publication,
@@ -3093,6 +3095,7 @@ class AutomationEngine:
         runner = LocalJobRunner(
             store,
             self.invocation_gate,
+            repository=repo_name,
             capacity=1,
             adapters={LocalJobKind.ISSUE_IMPLEMENTATION: IssueLocalJobAdapter(self, repo_name, store, slots, Path.cwd())},
             job_ids=frozenset({job_id}),

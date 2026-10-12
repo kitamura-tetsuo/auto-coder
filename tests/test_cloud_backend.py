@@ -421,6 +421,7 @@ class TestNonDifficultCloudIssueRouting:
                 runner = LocalJobRunner(
                     store,
                     InvocationAdmissionGate(),
+                    repository="owner/repo",
                     capacity=2,
                     adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
                     completion_wake=lambda job: completed.append(job.job_id),
@@ -488,6 +489,7 @@ class TestNonDifficultCloudIssueRouting:
             runner = LocalJobRunner(
                 store,
                 InvocationAdmissionGate(),
+                repository="owner/repo",
                 capacity=1,
                 adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
             )
