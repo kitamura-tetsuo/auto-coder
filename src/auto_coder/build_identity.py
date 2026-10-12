@@ -39,7 +39,15 @@ def _git_environment() -> dict[str, str]:
     environment = os.environ.copy()
     for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
         environment.pop(name, None)
-    environment.update({"GIT_NO_REPLACE_OBJECTS": "1", "LC_ALL": "C", "TZ": "UTC"})
+    environment.update(
+        {
+            "GIT_GRAFT_FILE": os.devnull,
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "LC_ALL": "C",
+            "TZ": "UTC",
+        }
+    )
     return environment
 
 
@@ -62,6 +70,38 @@ def _base_version(timestamp: int, count: int, revision: str) -> str:
     if date.year < 1:
         raise ValueError("committer timestamp has no positive UTC year")
     return f"{date.year}.{date.month}.{date.day}.{count}+g{revision}"
+
+
+def _hidden_tracked_change(repo: Path) -> bool:
+    """Check entries whose index flags suppress ordinary worktree inspection."""
+
+    root = Path(_git(repo, "rev-parse", "--show-toplevel").stdout.strip())
+    entries = _git(root, "ls-files", "-v", "-z").stdout.split("\0")
+    for entry in entries:
+        if not entry:
+            continue
+        marker, path = entry[0], entry[2:]
+        if not (marker.islower() or marker == "S"):
+            continue
+        staged = _git(root, "ls-files", "--stage", "-z", "--", path).stdout
+        metadata, separator, _ = staged.partition("\t")
+        fields = metadata.split()
+        if not separator or len(fields) != 3 or fields[2] != "0":
+            return True
+        mode, expected_hash, _stage = fields
+        candidate = root / path
+        if mode == "160000":
+            observed = _git(candidate, "rev-parse", "--verify", "HEAD", check=False)
+            if observed.returncode != 0 or observed.stdout.strip() != expected_hash:
+                return True
+            continue
+        observed = _git(root, "hash-object", f"--path={path}", "--", path, check=False)
+        if observed.returncode != 0 or observed.stdout.strip() != expected_hash:
+            return True
+        executable = bool(candidate.stat().st_mode & 0o111)
+        if (mode == "100755") != executable:
+            return True
+    return False
 
 
 def resolve_build_identity(source_checkout: str | Path) -> BuildIdentity:
@@ -100,7 +140,7 @@ def resolve_build_identity(source_checkout: str | Path) -> BuildIdentity:
         if count < 1:
             return _unknown("Selected commit has an invalid reachable revision count", revision, timestamp)
 
-        dirty = bool(_git(repo, "status", "--porcelain=v1", "--untracked-files=normal").stdout)
+        dirty = bool(_git(repo, "status", "--porcelain=v1", "--untracked-files=normal").stdout) or _hidden_tracked_change(repo)
         base = _base_version(timestamp, count, revision)
     except (FileNotFoundError, OSError, subprocess.SubprocessError, ValueError) as exc:
         detail = getattr(exc, "stderr", None) or str(exc)
@@ -181,6 +221,12 @@ def output_path_is_allowed(source_checkout: str | Path, destination: str | Path)
     output = Path(os.path.abspath(Path(destination).expanduser()))
     try:
         root = Path(_git(repo, "rev-parse", "--show-toplevel").stdout.strip()).resolve()
+        git_dir = Path(_git(repo, "rev-parse", "--absolute-git-dir").stdout.strip()).resolve()
+        common_text = _git(repo, "rev-parse", "--git-common-dir").stdout.strip()
+        common_dir = Path(common_text)
+        if not common_dir.is_absolute():
+            common_dir = repo / common_dir
+        common_dir = common_dir.resolve()
     except (FileNotFoundError, OSError, subprocess.SubprocessError, ValueError):
         try:
             output.resolve(strict=False).relative_to(repo.resolve())
@@ -189,6 +235,12 @@ def output_path_is_allowed(source_checkout: str | Path, destination: str | Path)
         return False
     candidates = {output, output.resolve(strict=False)}
     for candidate in candidates:
+        for metadata_root in (git_dir, common_dir):
+            try:
+                candidate.relative_to(metadata_root)
+            except ValueError:
+                continue
+            return False
         try:
             relative = candidate.relative_to(root)
         except ValueError:

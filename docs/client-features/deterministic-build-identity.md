@@ -21,6 +21,7 @@ and a nonzero command status. The resolver never fetches to complete history.
 `auto_coder.build_identity` exposes the resolver plus strict JSON serialization and
 validation APIs. The command writes only to an explicit destination outside the
 checkout or ignored by it; tracked and nonignored in-checkout destinations are
-rejected before being overwritten. It prints the record only after the output is
-successfully written. Clean and dirty results exit zero, unknown results exit one,
-and output failures exit two.
+rejected before being overwritten. Git metadata directories are always rejected,
+including common directories and external indexes used by linked worktrees. It
+prints the record only after the output is successfully written. Clean and dirty
+results exit zero, unknown results exit one, and output failures exit two.

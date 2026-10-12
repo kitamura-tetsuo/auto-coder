@@ -26,6 +26,11 @@ def git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
     return result.stdout.strip()
 
 
+def git_path(repo: Path, name: str) -> Path:
+    path = Path(git(repo, "rev-parse", "--git-path", name))
+    return path if path.is_absolute() else repo / path
+
+
 def commit(repo: Path, message: str, filename: str, *, date: str = "2020-01-01T00:00:00Z") -> str:
     (repo / filename).write_text(message, encoding="utf-8")
     git(repo, "add", filename)
@@ -97,6 +102,21 @@ def test_resolver_reports_dirty_tracked_and_untracked_changes(tmp_path: Path, ch
     assert record.reason is None
 
 
+def test_assume_unchanged_content_change_is_dirty_without_index_writeback(tmp_path: Path) -> None:
+    repo, revision = merge_repository(tmp_path)
+    git(repo, "update-index", "--assume-unchanged", "a.txt")
+    index = git_path(repo, "index")
+    before_index = index.read_bytes()
+    (repo / "a.txt").write_text("changed despite index flag", encoding="utf-8")
+
+    record = resolve_build_identity(repo)
+
+    assert record.state == "dirty"
+    assert record.version == f"2026.10.11.4+g{revision}.dirty"
+    assert index.read_bytes() == before_index
+    assert git(repo, "ls-files", "-v", "a.txt").startswith("h ")
+
+
 def test_ignored_files_tags_refs_and_abbreviation_do_not_change_identity(tmp_path: Path) -> None:
     repo, _ = merge_repository(tmp_path)
     (repo / ".gitignore").write_text("generated/\n", encoding="utf-8")
@@ -136,6 +156,26 @@ def test_replacement_graft_does_not_change_actual_object_identity(tmp_path: Path
 
     assert git(repo, "rev-list", "--count", revision) == "2"
     assert resolve_build_identity(repo) == expected
+
+
+def test_legacy_graft_does_not_change_actual_object_ancestry(tmp_path: Path) -> None:
+    repo = tmp_path / "history"
+    repo.mkdir()
+    git(repo, "init", "-b", "main")
+    git(repo, "config", "user.name", "Test User")
+    git(repo, "config", "user.email", "test@example.com")
+    commit(repo, "A", "a.txt")
+    revision = commit(repo, "S", "s.txt")
+    expected = resolve_build_identity(repo)
+    assert expected.revision_count == 2
+    graft = git_path(repo, "info/grafts")
+    graft.parent.mkdir(parents=True, exist_ok=True)
+    graft.write_text(f"{revision}\n", encoding="ascii")
+    before_graft = graft.read_bytes()
+
+    assert git(repo, "rev-list", "--count", revision) == "1"
+    assert resolve_build_identity(repo) == expected
+    assert graft.read_bytes() == before_graft
 
 
 def test_unknown_for_invalid_unborn_and_shallow_repositories(tmp_path: Path) -> None:
@@ -224,6 +264,42 @@ def test_command_output_policy_and_exit_status(tmp_path: Path) -> None:
     failed_write = subprocess.run([sys.executable, str(SCRIPT), "--repo", str(repo), "--output", str(output_directory)], capture_output=True, text=True)
     assert failed_write.returncode == 2
     assert failed_write.stdout == ""
+
+
+def test_linked_worktree_rejects_common_git_ref_and_external_index_outputs(tmp_path: Path) -> None:
+    repo, _ = merge_repository(tmp_path)
+    linked = tmp_path / "linked"
+    git(repo, "worktree", "add", "-b", "linked-branch", str(linked))
+    common_dir = Path(git(linked, "rev-parse", "--git-common-dir"))
+    if not common_dir.is_absolute():
+        common_dir = linked / common_dir
+    branch_ref = common_dir / "refs/heads/main"
+    linked_index = git_path(linked, "index")
+
+    for protected in (branch_ref, linked_index):
+        before = protected.read_bytes()
+        result = subprocess.run([sys.executable, str(SCRIPT), "--repo", str(linked), "--output", str(protected)], capture_output=True, text=True)
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert protected.read_bytes() == before
+
+
+def test_resolver_and_rejected_output_do_not_refresh_index_stat_cache(tmp_path: Path) -> None:
+    repo, _ = merge_repository(tmp_path)
+    git(repo, "update-index", "--refresh")
+    index = git_path(repo, "index")
+    before_index = index.read_bytes()
+    tracked = repo / "a.txt"
+    original_stat = tracked.stat()
+    os.utime(tracked, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns + 5_000_000_000))
+
+    assert resolve_build_identity(repo).state == "clean"
+    assert index.read_bytes() == before_index
+
+    rejected = subprocess.run([sys.executable, str(SCRIPT), "--repo", str(repo), "--output", str(repo / "not-ignored.json")], capture_output=True, text=True)
+    assert rejected.returncode == 2
+    assert rejected.stdout == ""
+    assert index.read_bytes() == before_index
 
 
 def test_command_writes_unknown_record_with_nonzero_status(tmp_path: Path) -> None:
