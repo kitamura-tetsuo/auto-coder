@@ -10,6 +10,7 @@ import pytest
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ExplicitTargetOutcome
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.execution_trace import get_trace_collector
+from auto_coder.implementation_skip_diagnostic import explain_already_owned
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.issue_dispatch import CandidateHandoff, DispatchOutcome, DispatchResult, IssueAttemptIdentity, IssueDispatchGuard
 from auto_coder.issue_local_job import IssueLocalJobAdapter
@@ -231,6 +232,37 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
         assert replay["target_outcome"] == expected
         assert calls == ["implement"]
         assert len(published) == (1 if behavior == "published" else 0)
+    if behavior == "published":
+        publication_diagnostic = explain_already_owned(store, "owner/repo", 41, "generation")
+        assert f"History[attempt={attempt}" in publication_diagnostic.message
+        assert "publication=confirmed PR #91 (not proof of merge or validation)" in publication_diagnostic.message
+    if behavior == "failed":
+        assert slots.release_unbound_idle_owner(owner)
+        engine.issue_stage_routing.record_implementation_owned("owner/repo", 41, "generation")
+        candidate.data.update(
+            {
+                "body": "## Objective\n\nImplement.\n\n## Requirements\n\nREQ-001: Implement.",
+                "state": "open",
+                "created_at": "2026-01-01T00:00:00Z",
+                "labels": [{"name": "implementation-ready"}],
+                "user": {"id": 1},
+            }
+        )
+        engine.config.issue_specification_validation = False
+        engine.config.issue_decomposition_validation = False
+        github.get_issue_dispatch_snapshot_strict.return_value = candidate.data
+        monkeypatch.setattr(engine, "_compute_implementation_generation", lambda *_args, **_kwargs: "generation")
+        engine._process_single_candidate_unified = AutomationEngine._process_single_candidate_unified.__get__(engine)
+
+        duplicate = engine._process_single_candidate_unified("owner/repo", candidate, engine.config, origin="worker")
+        retained = explain_already_owned(store, "owner/repo", 41, "generation")
+
+        assert duplicate.target_outcome is ExplicitTargetOutcome.SKIPPED, duplicate.error
+        assert "Current outcome=unknown" in retained.message
+        assert "History[attempt=0" in retained.message
+        assert "invocation=failed" in retained.message
+        assert "publication=unknown" in retained.message
+        assert calls == ["implement"]
 
 
 @pytest.mark.parametrize(("returned_type", "returned_number"), [("pr", 41), ("issue", 42)])

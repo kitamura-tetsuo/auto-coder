@@ -595,6 +595,16 @@ ambiguous/legacy bindings, and stale-provider-recovery continuation, live in
 `tests/test_implementation_ownership.py`; run
 `bash scripts/test.sh tests/test_implementation_ownership.py` for this boundary.
 
+Issue #2484 adds an `issue.implementation-duplicate-suppression` stage-result
+when the same owned semantic generation is refused. Its existing `SKIPPED`
+outcome is unchanged; the facts now carry the exact generation and the same
+read-only, attributable explanation shown by CLI and worker results. Local job
+invocation outcome and confirmed PR association remain separate evidence, and
+missing diagnostic evidence cannot change admission, acknowledgement, retry,
+or publication state. Run
+`bash scripts/test.sh tests/test_implementation_skip_diagnostic.py tests/test_implementation_ownership.py`
+for this production-to-view boundary.
+
 The detail view is a projection of **observed local evidence**. It does not query
 GitHub or a provider and it does not turn absent, unavailable, partial, throttled,
 or superseded evidence into a pass or failure. An accepted provider submission is

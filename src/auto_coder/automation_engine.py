@@ -78,6 +78,7 @@ from .implementation_reclamation_scheduler import (
     run_due_reclamation_checks,
     schedule_reevaluation_for_pr_owner,
 )
+from .implementation_skip_diagnostic import duplicate_suppression_guidance, explain_already_owned
 from .implementation_slots import (
     ImplementationHierarchyConflict,
     ImplementationHierarchyUnavailable,
@@ -4591,6 +4592,16 @@ class AutomationEngine:
                             item_number=item_number,
                             details={"worker_id": worker_id, "outcome": ExplicitTargetOutcome.DEFERRED.value, "actions": result.actions},
                         )
+                    elif candidate.type == "issue" and result.target_outcome is ExplicitTargetOutcome.SKIPPED:
+                        diagnostic = result.target_reason or "; ".join(result.actions) or "evaluation skipped"
+                        logger.info("Worker {} evaluated/skipped issue #{}: {}", worker_id, item_number, diagnostic)
+                        get_trace_logger().log(
+                            "Worker",
+                            f"Worker {worker_id} evaluated/skipped issue #{item_number}",
+                            item_type="issue",
+                            item_number=item_number,
+                            details={"worker_id": worker_id, "outcome": ExplicitTargetOutcome.SKIPPED.value, "actions": result.actions},
+                        )
                     elif result.error:
                         logger.error(f"Worker {worker_id} failed to process {candidate.type} #{item_number}: {result.error}")
                         get_trace_logger().log("Worker", f"Worker {worker_id} failed to process {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id, "error": result.error})
@@ -7247,7 +7258,28 @@ class AutomationEngine:
                 return result
         if already_owned:
             result.target_outcome = ExplicitTargetOutcome.SKIPPED
-            result.actions = ["Skipped - Implementation generation already has a durable production start"]
+            assert implementation_key is not None
+            try:
+                skip_diagnostic = explain_already_owned(
+                    self._get_local_job_store(),
+                    repo_name,
+                    item_number,
+                    implementation_key,
+                    slots.current_execution_id(owner) or "",
+                )
+                explanation = skip_diagnostic.message
+            except Exception:
+                logger.opt(exception=True).debug("Duplicate-start diagnostic failed for issue#{}; preserving refusal", item_number)
+                prefix, retry_guidance = duplicate_suppression_guidance(repo_name, item_number)
+                explanation = f"{prefix} Supplementary outcome evidence is unavailable. {retry_guidance}"
+            result.actions = [explanation]
+            _record_issue_stage_result(
+                item_number,
+                "issue.implementation-duplicate-suppression",
+                f"issue#{item_number} duplicate automatic-start suppression",
+                Outcome.SKIPPED,
+                {"generation": implementation_key, "explanation": explanation},
+            )
             return result
         if execution_id is None:
             reason = "active execution already exists" if slots.active_execution_ids(owner) else "logical implementation limit is occupied"
