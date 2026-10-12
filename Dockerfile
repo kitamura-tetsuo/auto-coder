@@ -1,6 +1,7 @@
 FROM python:3.12-slim AS build
 WORKDIR /src
 COPY pyproject.toml README.md LICENSE MANIFEST.in ./
+COPY build_backend ./build_backend
 COPY src ./src
 RUN pip wheel --no-cache-dir --wheel-dir /wheels .
 

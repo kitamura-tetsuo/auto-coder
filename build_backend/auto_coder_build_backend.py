@@ -9,7 +9,7 @@ from pathlib import Path
 
 from setuptools import build_meta as _setuptools
 
-ROOT = Path(os.environ.get("PWD", Path.cwd())).resolve()
+ROOT = Path.cwd().resolve()
 SOURCE = ROOT / "src"
 _spec = importlib.util.spec_from_file_location("_auto_coder_build_identity", SOURCE / "auto_coder" / "build_identity.py")
 if _spec is None or _spec.loader is None:
