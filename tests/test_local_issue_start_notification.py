@@ -243,6 +243,7 @@ def test_production_runner_posts_at_real_adapter_manager_boundary_after_false_st
     github = RecordingGitHub()
     engine = MagicMock()
     engine.github = github
+    engine.config.MAIN_BRANCH = "main"
     slots = MagicMock()
     slots.owner_incarnation.return_value = "owner-incarnation"
     slots.implementation_generation.return_value = "generation"

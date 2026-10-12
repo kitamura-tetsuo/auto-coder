@@ -36,7 +36,7 @@ def retained_result(tmp_path: Path, monkeypatch, _use_real_commands):
     source, head = repository(tmp_path)
     remote = tmp_path / "remote.git"
     git(tmp_path, "init", "--bare", str(remote))
-    git(source, "remote", "add", "origin", str(remote))
+    git(source, "remote", "set-url", "origin", str(remote))
     git(source, "push", "origin", "main")
     store = LocalJobStore()
     engine.local_job_store = store
@@ -52,7 +52,7 @@ def retained_result(tmp_path: Path, monkeypatch, _use_real_commands):
         (workspace / "value.txt").write_text("implemented\n")
         return "ACTION_SUMMARY: implemented and verified"
 
-    checkpoint = IssueJobWorkspaceProducer(store, tmp_path / "workspaces", slots).execute(claim, IssueJobSource("owner/repo", source, "main", head, "issue-61"), implement)
+    checkpoint = IssueJobWorkspaceProducer(store, tmp_path / "workspaces", slots).execute(claim, IssueJobSource("owner/repo", source, "main", "issue-61"), implement)
     return engine, slots, store, owner, execution, checkpoint, remote, snapshot
 
 

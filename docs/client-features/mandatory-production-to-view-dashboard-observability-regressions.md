@@ -143,3 +143,12 @@ workspace. `test_interrupted_local_repair_recovery_reaches_mounted_detail` in
 executor and generic mounted detail projection. It checks a real exited owner,
 exact event facts, and absence of a second recovery on completed replay. Recovery
 is admission evidence and does not imply correction or merge success.
+
+Local Issue workspace preparation fetches the configured remote base branch for
+new attempts and retries. The existing local completion and publication
+finalization stages retain their origins and outcome schema. The explicit-local
+completion regression now exercises stale shared HEAD, a retry attempt, and
+fetch failure through the production runner and mounted detail: failed fetch
+shows FAILED with no provider entry or publication, while successful publication
+is checked against the fetched remote parent commit. See the local Issue entries
+in `docs/dashboard-observability.md`; no renderer change is needed.

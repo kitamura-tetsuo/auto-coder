@@ -2328,16 +2328,15 @@ recovery transitions retain the existing local-job schema and do not claim a
 domain completion trace. Run `bash
 scripts/test.sh tests/test_local_job_runner.py`.
 
-The full-job Issue workspace producer remains observability-neutral until its
-separate worker-route sibling connects it to production dispatch. It adds no
-processing origin, provider selection, admission rule, or dashboard event
-schema: its persistent clone and result manifest refine the existing headless
-local-job evidence rather than claiming execution or downstream completion.
-`tests/test_issue_job_workspace.py` exercises the real Git boundary, concurrent
-model-entry barriers, pinned-source refusal, restart-readable results, and
-model-created-HEAD rejection. A future route must emit its own scoped start and
-outcome events when it begins invoking this producer. Run `bash scripts/test.sh
-tests/test_issue_job_workspace.py tests/test_local_job_handoff.py`.
+The full-job Issue workspace producer records the fetched source identity,
+private repository, and result manifest in durable local-job evidence. Its
+production adapter is covered by the worker-independent and explicit-local Issue
+routes below; preparation alone never claims provider entry or downstream
+completion. The producer adds no separate processing origin, provider selection,
+or event schema. `tests/test_issue_job_workspace.py` exercises the real Git
+boundary, concurrent model-entry barriers, fresh remote-source preparation,
+restart-readable results, and model-created-HEAD rejection. Run `bash
+scripts/test.sh tests/test_issue_job_workspace.py tests/test_local_job_handoff.py`.
 
 Terminal PR resumptions now emit `pr.pending-work-resume-refresh` or
 `pr.merge-operation-resume-refresh` with `SUPERSEDED`, `reason=PR is terminal`,
@@ -2400,23 +2399,35 @@ confirmed summary authorizes result checkpointing, not publication by itself.
 Malformed/failed streams and `CANNOT_FIX` produce failed command completion;
 `tests/test_issue_job_workspace.py` supplies the invalid-stream negative controls.
 
-Refreshing the seeded private clone's Git index stat cache is observability-neutral:
-it preserves the caller's files and staged tree, changes no admission authority,
-and introduces no stage or event fields. The nested-workspace regression in
-`tests/test_issue_job_workspace.py` verifies that BackendManager preparation
-accepts the clone while preserving both staged and working changes.
+New local Issue implementations and retries fetch `origin`'s configured base
+branch into an empty private repository and pin that fetched commit. This changes
+source selection without adding origins, providers, trace fields, or stages.
+`issue.dispatch.local-job` remains acceptance evidence; workspace preparation is
+still before provider entry. A missing remote branch or failed fetch records a
+failed local result with `provider_entered=false`; the existing
+`issue.local-publication-finalization` and command completion stages display
+FAILED without commit, push, PR creation, or a local LLM start event.
+Finalization releases only the transferred execution ID on pre-binding failure,
+so its implementation-slot projection no longer remains falsely active; a newer
+execution is preserved (`tests/test_issue_job_finalizer.py`). A successful
+fetch is preparation evidence, not implementation or publication success.
+`tests/test_explicit_local_issue_completion.py::test_explicit_issue_waits_for_local_execution_and_finalization`
+now covers stale shared HEAD, new retry identity, and failed fetch through the
+production adapter/runner/finalizer and mounted Issue detail, including confirmed
+remote commit ancestry. Run `bash scripts/test.sh
+tests/test_explicit_local_issue_completion.py tests/test_issue_job_workspace.py`.
 
 The explicit local completion regression also mounts the production dashboard
 Issue detail route and asserts that local completion, publication finalization,
 and their actual outcomes reach its diagram. Refused entry displays Deferred
 without a publication-finalization stage.
 
-Disposable-directory exclusion during Issue source capture is observability-neutral:
+Disposable-directory exclusion during Issue result capture is observability-neutral:
 no admission authority, provider routing, event schema or terminal-outcome rule
-changes. It prevents untracked cache writes from producing false preparation
-failures; tracked and other source changes retain their fail-closed verification.
+changes. Untracked cache writes stay outside result manifests; tracked and other
+result changes retain their fail-closed publication verification.
 Run `bash scripts/test.sh tests/test_issue_job_workspace.py` for tracked-path,
-ignored-context, generated-result exclusion and concurrent-cache controls.
+dirty-shared-context exclusion and generated-result controls.
 The finalizer uses the same verified file scope and excludes untracked disposable
 output from staging. Cache-only activity keeps the existing no-change completion;
 actual source drift keeps the existing pending disposition. Explicit-completion

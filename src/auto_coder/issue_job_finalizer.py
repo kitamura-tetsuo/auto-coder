@@ -269,6 +269,12 @@ class IssueJobFinalizer:
         if not record.implementation_execution_id:
             return
         owner = ImplementationOwner("issue", record.target_number)
+        if not record.owner_incarnation and not record.provider_entered:
+            # Preparation may fail before the workspace captures the owner.
+            # The transferred execution ID still identifies exactly what ended;
+            # finish_execution cannot remove a replacement execution with another ID.
+            self._slots.finish_execution(owner, record.implementation_execution_id)
+            return
         if self._slots.owner_incarnation(owner) == record.owner_incarnation and self._slots.implementation_generation(owner) == record.owner_generation:
             self._slots.finish_execution(owner, record.implementation_execution_id)
 

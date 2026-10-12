@@ -414,10 +414,8 @@ class TestNonDifficultCloudIssueRouting:
             completed = []
             with (
                 patch.object(adapter, "authorize_provider_entry", return_value=True),
-                patch("auto_coder.issue_local_job.subprocess.run") as git,
                 patch("auto_coder.issue_job_workspace.IssueJobWorkspaceProducer.execute", new=execute),
             ):
-                git.return_value.stdout = "refs/heads/main\n"
                 runner = LocalJobRunner(
                     store,
                     InvocationAdmissionGate(),

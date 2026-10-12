@@ -1,14 +1,20 @@
 # Asynchronous Issue Job Workspaces
 
 Accepted local Issue implementation jobs prepare a persistent, job-owned Git
-clone before model entry. The clone is bound to the durable job and execution
-incarnation, exact repository, pinned source ref and commit, and intended work
-branch. Preparation fails closed if the source ref has advanced or durable job
-authority changes, or if the shared checkout is not currently at that exact
-commit and branch. While holding the short preparation lease, it snapshots the
-accepted checkout's index separately from its tracked, unstaged, untracked, and
-ignored working files, preserving distinct staged and working-file versions in
-the clone; the lease is released before model entry.
+repository before model entry. For every new implementation attempt, including
+an explicit retry, preparation reads the controller checkout's `origin` URL,
+initializes an empty private Git repository, and fetches the configured
+`MAIN_BRANCH` (default `main`) directly from that remote. The fetched commit is
+pinned before creating the attempt branch, and the durable job records
+`refs/remotes/origin/<MAIN_BRANCH>`, the exact fetched commit, publication remote,
+and execution incarnation. Missing origin, failed fetch, or missing remote branch
+fails before model entry; there is no fallback to local HEAD or cached refs.
+
+The shared checkout's branch, HEAD, index, working files and remote-tracking refs
+remain unchanged. Its unrelated commits, staged edits, unstaged edits, untracked
+files and ignored local context are not implementation input. Each retry fetches
+again; retained result publication continues to use its already pinned workspace
+without another fetch or model invocation.
 
 The long-running invocation operates only in that clone and therefore does not
 retain or mutate the controller's shared checkout. Concurrent jobs for the same
@@ -27,11 +33,10 @@ publication and retirement stages own consumption and cleanup.
 
 Regression coverage: `tests/test_issue_job_workspace.py`.
 
-Job snapshots omit untracked disposable cache, environment and test-output
+Result snapshots omit untracked disposable cache, environment and test-output
 paths using the same directory-name policy as private local backend workspaces.
-Tracked files under those directories remain preserved and verified, and other
-ignored source/context files remain included. Concurrent cache writes therefore
-do not falsely invalidate source capture or enter publication manifests.
+Tracked files under those directories remain preserved and verified. Generated
+cache writes therefore do not enter publication manifests.
 
 Publication reuses the producer's file-identity scan and stages only tracked and
 non-ignored, non-disposable untracked paths using literal Git pathspecs. Cache-only

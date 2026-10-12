@@ -57,13 +57,17 @@ is in `tests/test_explicit_local_issue_completion.py` and
 `tests/test_issue_job_workspace.py`. Repeated explicit commands observe settled
 results or resume missing publication effects without invoking the model again.
 
-After seeding a job clone, the controller refreshes only that clone's Git index
-stat cache before BackendManager takes its private-workspace snapshot. This
-prevents Git's own later index refresh from falsely reporting a concurrent caller
-change. The original checkout, HEAD, staged tree, working files, and strict
-source/result authority checks remain preserved. Real nested-clone and handoff
-regressions cover both clean sources and distinct staged/working versions in
-`tests/test_issue_job_workspace.py`.
+Every new job workspace, including a retry, fetches the configured base branch
+from `origin` directly into its own repository. The adapter does not select the
+controller's current HEAD, even when it remains on an unrelated branch or is
+detached. The fetched commit and remote-tracking ref become the durable source
+identity. The shared checkout's index and working files are not copied.
+Preparation failure cannot invoke the model or publish a PR. Finalization releases
+only its transferred execution ID even when preparation failed before workspace
+ownership binding; a replacement execution remains active. Real-Git regressions
+cover stale local refs, remote advancement, retry attempts, dirty shared files,
+and nested BackendManager workspaces in `tests/test_issue_job_workspace.py` and
+`tests/test_explicit_local_issue_completion.py`.
 
 Durable local dispatch renders `issue.local_implementation`, retaining the full
 current Issue body and parent scope context. This editing-only template requires

@@ -8,9 +8,10 @@ from types import SimpleNamespace
 import pytest
 
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
 from auto_coder.issue_job_finalizer import IssueJobFinalizer
 from auto_coder.issue_job_workspace import IssueJobSource, IssueJobWorkspaceProducer
-from auto_coder.local_job_handoff import InvocationOutcome, LocalJobState, LocalJobStore
+from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore
 
 from .test_issue_job_workspace import claim, git, repository
 
@@ -30,7 +31,7 @@ def _completed_job(tmp_path: Path, number: int = 41, *, tracked_ignored: bool = 
     head = git(source, "rev-parse", "HEAD")
     remote = tmp_path / "publication.git"
     git(tmp_path, "init", "--bare", str(remote))
-    git(source, "remote", "add", "origin", str(remote))
+    git(source, "remote", "set-url", "origin", str(remote))
     git(source, "push", "origin", "main")
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
     acquired = claim(store, number)
@@ -47,7 +48,7 @@ def _completed_job(tmp_path: Path, number: int = 41, *, tracked_ignored: bool = 
             (workspace / ".auto-coder" / "runtime.txt").write_text("ignored runtime output\n")
         return "ACTION_SUMMARY: implemented exact result"
 
-    checkpoint = IssueJobWorkspaceProducer(store, tmp_path / "workspaces", slots).execute(acquired, IssueJobSource("owner/repo", source, "main", head, f"issue-{number}"), edit)
+    checkpoint = IssueJobWorkspaceProducer(store, tmp_path / "workspaces", slots).execute(acquired, IssueJobSource("owner/repo", source, "main", f"issue-{number}"), edit)
     return source, remote, store, slots, checkpoint
 
 
@@ -166,6 +167,43 @@ def test_cannot_fix_never_touches_git_or_publication(tmp_path: Path) -> None:
     assert result.disposition == "cannot_fix"
     assert finalizer.finalize(acquired.record.job_id).disposition == "cannot_fix"
     assert store.get(acquired.record.job_id).state.value == "settled"  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("replacement", [False, True])
+def test_failed_preparation_releases_only_transferred_execution(tmp_path: Path, replacement: bool) -> None:
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json", tmp_path / "retired.json")
+    owner = ImplementationOwner("issue", 49)
+    execution = slots.start_execution(owner, generation="generation")
+    assert execution
+    identity = IssueAttemptIdentity("owner", "repo", 49, "0")
+    guard = IssueDispatchGuard(tmp_path / "dispatch.sqlite3")
+    assert guard.reserve(identity, CandidateHandoff("codex", "local")).admitted
+    offered = store.offer_issue(LocalJobOffer(LocalJobKind.ISSUE_IMPLEMENTATION, "owner/repo", 49, "0", "codex", "implement", execution), identity, guard)
+    assert offered is not None
+    acquired = store.claim(offered.job_id)
+    assert acquired is not None
+    artifact = store.persist_result_artifact(acquired, InvocationOutcome.FAILED, "remote fetch failed")
+    assert artifact is not None
+    assert store.record_result(acquired, InvocationOutcome.FAILED, artifact.artifact_id)
+    current = execution
+    if replacement:
+        slots.release(owner)
+        current = slots.start_execution(owner, generation="replacement")
+        assert current and current != execution
+
+    def unexpected_publication(*_args):
+        raise AssertionError("Failed preparation must not publish")
+
+    result = IssueJobFinalizer(store, slots, unexpected_publication, unexpected_publication).finalize(offered.job_id)
+    assert result.disposition == "failed"
+    assert slots.active_execution_ids(owner) == ((current,) if replacement else ())
+    job = store.get(offered.job_id)
+    assert job is not None
+    assert job.state is LocalJobState.SETTLED
+    assert not job.provider_entered
+    assert job.workspace_path == job.owner_incarnation == ""
+    assert store.get_effect(job.job_id, job.execution_incarnation, "push") is None
 
 
 @pytest.mark.parametrize(("target", "closed_issue"), [(4, 41), (41, 4)])

@@ -26,13 +26,18 @@ def repository(tmp_path: Path) -> tuple[Path, str]:
     (repo / "value.txt").write_text("original\n", encoding="utf-8")
     git(repo, "add", "value.txt")
     git(repo, "commit", "-m", "initial")
+    remote = tmp_path / "origin.git"
+    git(tmp_path, "init", "--bare", str(remote))
+    git(repo, "remote", "add", "origin", str(remote))
+    git(repo, "push", "origin", "main")
     return repo, git(repo, "rev-parse", "HEAD")
 
 
-def claim(store: LocalJobStore, target: int):
-    offer = LocalJobOffer(LocalJobKind.ISSUE_IMPLEMENTATION, "owner/repo", target, f"attempt-{target}", "codex", f"prompt-{target}")
-    identity = IssueAttemptIdentity("owner", "repo", target, f"attempt-{target}")
-    guard = IssueDispatchGuard(store.path.with_name(f"dispatch-{target}.sqlite3"))
+def claim(store: LocalJobStore, target: int, *, attempt: str | None = None):
+    attempt = attempt or f"attempt-{target}"
+    offer = LocalJobOffer(LocalJobKind.ISSUE_IMPLEMENTATION, "owner/repo", target, attempt, "codex", f"prompt-{target}")
+    identity = IssueAttemptIdentity("owner", "repo", target, attempt)
+    guard = IssueDispatchGuard(store.path.with_name(f"dispatch-{target}-{attempt}.sqlite3"))
     dispatch = guard.reserve(identity, CandidateHandoff("codex", "local"))
     assert dispatch.admitted
     accepted = store.offer_issue(offer, identity, guard)
@@ -43,7 +48,7 @@ def claim(store: LocalJobStore, target: int):
 
 
 def test_concurrent_jobs_use_distinct_pinned_workspaces(tmp_path: Path, _use_real_commands) -> None:
-    repo, head = repository(tmp_path)
+    repo, _head = repository(tmp_path)
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
     producer = IssueJobWorkspaceProducer(store, tmp_path / "workspaces")
     claims = [claim(store, number) for number in (1, 2)]
@@ -52,7 +57,7 @@ def test_concurrent_jobs_use_distinct_pinned_workspaces(tmp_path: Path, _use_rea
     results = []
 
     def run(index: int) -> None:
-        source = IssueJobSource("owner/repo", repo, "main", head, f"issue-{index + 1}")
+        source = IssueJobSource("owner/repo", repo, "main", f"issue-{index + 1}")
 
         def invoke(workspace: Path, prompt: str) -> str:
             entered[index].set()
@@ -82,51 +87,103 @@ def test_concurrent_jobs_use_distinct_pinned_workspaces(tmp_path: Path, _use_rea
     assert all(Path(reopened.get(item.job_id).workspace_path).is_dir() for item in results)  # type: ignore[union-attr]
 
 
-def test_source_advance_does_not_replace_authorized_commit(tmp_path: Path, _use_real_commands) -> None:
-    repo, head = repository(tmp_path)
+def test_remote_advance_is_fetched_despite_stale_local_main(tmp_path: Path, _use_real_commands) -> None:
+    repo, old_head = repository(tmp_path)
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
     acquired = claim(store, 3)
-    (repo / "value.txt").write_text("later\n", encoding="utf-8")
-    git(repo, "commit", "-am", "later")
-    producer = IssueJobWorkspaceProducer(store, tmp_path / "workspaces")
+    (repo / "value.txt").write_text("latest remote main\n", encoding="utf-8")
+    git(repo, "commit", "-am", "remote advance after admission")
+    latest = git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "origin", "main")
+    git(repo, "reset", "--hard", old_head)
+    git(repo, "update-ref", "refs/remotes/origin/main", old_head)
 
-    with pytest.raises(IssueJobWorkspaceError, match="no longer identifies"):
-        producer.execute(acquired, IssueJobSource("owner/repo", repo, "main", head, "issue-3"), lambda *_: "ACTION_SUMMARY: done")
+    def inspect(workspace: Path, _prompt: str) -> str:
+        assert git(workspace, "rev-parse", "HEAD") == latest
+        assert (workspace / "value.txt").read_text() == "latest remote main\n"
+        assert git(workspace, "status", "--porcelain") == ""
+        return "ACTION_SUMMARY: verified current remote source"
 
-    record = store.get(acquired.record.job_id)
+    checkpoint = IssueJobWorkspaceProducer(store, tmp_path / "workspaces").execute(acquired, IssueJobSource("owner/repo", repo, "main", "issue-3"), inspect)
+    record = LocalJobStore(store.path).get(acquired.record.job_id)
     assert record is not None
-    assert record.result_reference == ""
-    assert record.workspace_path == ""
+    assert record.source_commit == checkpoint.source_commit == latest
+    assert record.source_ref == "refs/remotes/origin/main"
+    assert record.publication_remote == git(repo, "remote", "get-url", "origin")
+    assert git(repo, "rev-parse", "HEAD") == old_head
+    assert git(repo, "rev-parse", "origin/main") == old_head
 
 
-def test_unrelated_checked_out_branch_is_refused_before_invocation(tmp_path: Path, _use_real_commands) -> None:
+def test_retry_fetches_new_remote_commit_and_keeps_prior_result_pinned(tmp_path: Path, _use_real_commands) -> None:
     repo, head = repository(tmp_path)
-    git(repo, "switch", "-c", "peer")
-    (repo / "value.txt").write_text("peer content\n", encoding="utf-8")
-    git(repo, "commit", "-am", "peer")
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    producer = IssueJobWorkspaceProducer(store, tmp_path / "workspaces")
+    first = producer.execute(claim(store, 5574, attempt="0"), IssueJobSource("owner/repo", repo, "main", "issue-5574-attempt-0"), lambda *_: "ACTION_SUMMARY: first attempt")
+    (repo / "prerequisite.txt").write_text("new remote prerequisite\n")
+    git(repo, "add", "prerequisite.txt")
+    git(repo, "commit", "-m", "advance remote before retry")
+    latest = git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "origin", "main")
+    git(repo, "checkout", "--detach", head)
+    git(repo, "update-ref", "refs/remotes/origin/main", head)
+
+    def retry(workspace: Path, _prompt: str) -> str:
+        assert git(workspace, "rev-parse", "HEAD") == latest
+        assert (workspace / "prerequisite.txt").read_text() == "new remote prerequisite\n"
+        return "ACTION_SUMMARY: retry from current remote main"
+
+    second = producer.execute(claim(store, 5574, attempt="retry-id"), IssueJobSource("owner/repo", repo, "main", "issue-5574-attempt-retry-id"), retry)
+    assert first.job_id != second.job_id
+    assert first.workspace != second.workspace
+    assert first.source_commit == git(first.workspace, "rev-parse", "HEAD") == head
+    assert second.source_commit == latest
+    assert not (first.workspace / "prerequisite.txt").exists()
+    assert store.get(first.job_id).source_commit == head
+    assert store.get(second.job_id).source_commit == latest
+
+
+def test_configured_base_branch_is_used_instead_of_default_main(tmp_path: Path, _use_real_commands) -> None:
+    repo, head = repository(tmp_path)
+    git(repo, "switch", "-c", "release/current")
+    (repo / "value.txt").write_text("release baseline\n")
+    git(repo, "commit", "-am", "release baseline")
+    latest = git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "origin", "release/current")
+    git(repo, "switch", "main")
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    acquired = claim(store, 9)
+    checkpoint = IssueJobWorkspaceProducer(store, tmp_path / "workspaces").execute(acquired, IssueJobSource("owner/repo", repo, "release/current", "issue-9"), lambda *_: "ACTION_SUMMARY: release source")
+    assert checkpoint.source_commit == latest
+    assert (checkpoint.workspace / "value.txt").read_text() == "release baseline\n"
+    assert store.get(checkpoint.job_id).source_ref == "refs/remotes/origin/release/current"
+    assert git(repo, "rev-parse", "HEAD") == head
+
+
+@pytest.mark.parametrize("failure", ["missing_remote", "unreachable_remote", "missing_branch"])
+def test_remote_preparation_failure_never_invokes_or_binds(tmp_path: Path, _use_real_commands, failure: str) -> None:
+    repo, _head = repository(tmp_path)
+    if failure == "missing_remote":
+        git(repo, "remote", "remove", "origin")
+    elif failure == "unreachable_remote":
+        git(repo, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
+    else:
+        git(Path(git(repo, "remote", "get-url", "origin")), "update-ref", "-d", "refs/heads/main")
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
     acquired = claim(store, 7)
-    invoked = False
 
-    def invoke(*_args) -> str:
-        nonlocal invoked
-        invoked = True
-        return "ACTION_SUMMARY: should not run"
+    def unexpected_invocation(*_args) -> str:
+        raise AssertionError("Remote preparation failure must prevent provider entry")
 
-    with pytest.raises(IssueJobWorkspaceError, match="authorized source commit"):
-        IssueJobWorkspaceProducer(store, tmp_path / "workspaces").execute(
-            acquired,
-            IssueJobSource("owner/repo", repo, "main", head, "issue-7"),
-            invoke,
-        )
-
-    assert not invoked
+    with pytest.raises(IssueJobWorkspaceError):
+        IssueJobWorkspaceProducer(store, tmp_path / "workspaces").execute(acquired, IssueJobSource("owner/repo", repo, "main", "issue-7"), unexpected_invocation)
     record = LocalJobStore(store.path).get(acquired.record.job_id)
-    assert record is not None and record.result_reference == "" and record.workspace_path == ""
+    assert record is not None
+    assert record.result_reference == record.workspace_path == record.source_commit == record.source_ref == ""
+    assert not record.provider_entered
 
 
 def test_model_head_change_is_not_a_successful_checkpoint(tmp_path: Path, _use_real_commands) -> None:
-    repo, head = repository(tmp_path)
+    repo, _head = repository(tmp_path)
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
     acquired = claim(store, 4)
     producer = IssueJobWorkspaceProducer(store, tmp_path / "workspaces")
@@ -139,7 +196,7 @@ def test_model_head_change_is_not_a_successful_checkpoint(tmp_path: Path, _use_r
         return "ACTION_SUMMARY: done"
 
     with pytest.raises(IssueJobWorkspaceError, match="changed private HEAD"):
-        producer.execute(acquired, IssueJobSource("owner/repo", repo, "main", head, "issue-4"), commit)
+        producer.execute(acquired, IssueJobSource("owner/repo", repo, "main", "issue-4"), commit)
 
     record = store.get(acquired.record.job_id)
     assert record is not None and record.result_reference == ""
@@ -147,7 +204,7 @@ def test_model_head_change_is_not_a_successful_checkpoint(tmp_path: Path, _use_r
 
 
 def test_index_flags_cannot_hide_working_file_result(tmp_path: Path, _use_real_commands) -> None:
-    repo, head = repository(tmp_path)
+    repo, _head = repository(tmp_path)
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
     acquired = claim(store, 5)
     producer = IssueJobWorkspaceProducer(store, tmp_path / "workspaces")
@@ -158,7 +215,7 @@ def test_index_flags_cannot_hide_working_file_result(tmp_path: Path, _use_real_c
         assert git(workspace, "diff", "--", "value.txt") == ""
         return "ACTION_SUMMARY: changed value"
 
-    checkpoint = producer.execute(acquired, IssueJobSource("owner/repo", repo, "main", head, "issue-5"), edit_hidden_from_git)
+    checkpoint = producer.execute(acquired, IssueJobSource("owner/repo", repo, "main", "issue-5"), edit_hidden_from_git)
     artifact = LocalJobStore(store.path).get_result_artifact(checkpoint.result_reference)
     assert artifact is not None
     manifest = json.loads(artifact.output)
@@ -175,13 +232,13 @@ def test_index_flags_cannot_hide_working_file_result(tmp_path: Path, _use_real_c
     ],
 )
 def test_unconfirmed_response_never_records_completed_result(tmp_path: Path, _use_real_commands, response: str, expected_error, message: str) -> None:
-    repo, head = repository(tmp_path)
+    repo, _head = repository(tmp_path)
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
     acquired = claim(store, 10 + len(response))
     producer = IssueJobWorkspaceProducer(store, tmp_path / "workspaces")
 
     with pytest.raises(expected_error, match=message):
-        producer.execute(acquired, IssueJobSource("owner/repo", repo, "main", head, f"issue-{10 + len(response)}"), lambda *_: response)
+        producer.execute(acquired, IssueJobSource("owner/repo", repo, "main", f"issue-{10 + len(response)}"), lambda *_: response)
 
     reopened = LocalJobStore(store.path)
     record = reopened.get(acquired.record.job_id)
@@ -189,56 +246,43 @@ def test_unconfirmed_response_never_records_completed_result(tmp_path: Path, _us
     assert record.invocation_outcome is None
 
 
-def test_preparation_preserves_authorized_tracked_untracked_and_ignored_content(tmp_path: Path, _use_real_commands) -> None:
+@pytest.mark.parametrize("detached", [False, True])
+def test_shared_branch_and_dirty_files_cannot_enter_remote_workspace(tmp_path: Path, _use_real_commands, detached: bool) -> None:
     repo, head = repository(tmp_path)
-    (repo / ".gitignore").write_text("local.env\n", encoding="utf-8")
-    (repo / "tracked-context.txt").write_text("committed\n", encoding="utf-8")
-    git(repo, "add", ".gitignore", "tracked-context.txt")
-    git(repo, "commit", "-m", "context baseline")
-    head = git(repo, "rev-parse", "HEAD")
-    (repo / "tracked-context.txt").write_text("authorized modification\n", encoding="utf-8")
-    (repo / "staged-context.txt").write_text("authorized staged content\n", encoding="utf-8")
-    git(repo, "add", "staged-context.txt")
-    (repo / "untracked-context.txt").write_text("authorized untracked content\n", encoding="utf-8")
-    (repo / "local.env").write_text("TOKEN=accepted-input\n", encoding="utf-8")
+    git(repo, "switch", "-c", "dependabot/old")
+    (repo / "peer.txt").write_text("unrelated committed content\n")
+    git(repo, "add", "peer.txt")
+    git(repo, "commit", "-m", "unrelated WIP")
+    peer_head = git(repo, "rev-parse", "HEAD")
+    if detached:
+        git(repo, "checkout", "--detach")
+    (repo / "value.txt").write_text("staged version\n")
+    git(repo, "add", "value.txt")
+    (repo / "value.txt").write_text("working version\n")
+    (repo / "untracked.txt").write_text("untracked\n")
+    (repo / ".gitignore").write_text("local.env\n")
+    (repo / "local.env").write_text("ignored\n")
+    before = git(repo, "status", "--porcelain", "--ignored")
+    index = git(repo, "write-tree")
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
     acquired = claim(store, 6)
-    producer = IssueJobWorkspaceProducer(store, tmp_path / "workspaces")
-
-    def inspect(workspace: Path, prompt: str) -> str:
-        assert prompt == "prompt-6"
-        assert (workspace / "tracked-context.txt").read_text(encoding="utf-8") == "authorized modification\n"
-        assert (workspace / "staged-context.txt").read_text(encoding="utf-8") == "authorized staged content\n"
-        assert git(workspace, "show", ":staged-context.txt") == "authorized staged content"
-        assert (workspace / "untracked-context.txt").read_text(encoding="utf-8") == "authorized untracked content\n"
-        assert (workspace / "local.env").read_text(encoding="utf-8") == "TOKEN=accepted-input\n"
-        return "ACTION_SUMMARY: inspected retained context"
-
-    checkpoint = producer.execute(acquired, IssueJobSource("owner/repo", repo, "main", head, "issue-6"), inspect)
-    assert checkpoint.workspace.joinpath("local.env").read_text(encoding="utf-8") == "TOKEN=accepted-input\n"
-
-
-def test_distinct_head_index_and_worktree_versions_are_preserved(tmp_path: Path, _use_real_commands) -> None:
-    repo, head = repository(tmp_path)
-    (repo / "value.txt").write_text("staged version\n", encoding="utf-8")
-    git(repo, "add", "value.txt")
-    (repo / "value.txt").write_text("working version\n", encoding="utf-8")
-    store = LocalJobStore(tmp_path / "jobs.sqlite3")
-    acquired = claim(store, 8)
 
     def inspect(workspace: Path, _prompt: str) -> str:
-        assert git(workspace, "show", "HEAD:value.txt") == "original"
-        assert git(workspace, "show", ":value.txt") == "staged version"
-        assert (workspace / "value.txt").read_text(encoding="utf-8") == "working version\n"
-        return "ACTION_SUMMARY: preserved source layers"
+        assert git(workspace, "rev-parse", "HEAD") == head
+        assert git(workspace, "show", ":value.txt") == "original"
+        assert (workspace / "value.txt").read_text() == "original\n"
+        assert git(workspace, "status", "--porcelain", "--ignored") == ""
+        assert {p.name for p in workspace.iterdir()} == {".git", "value.txt"}
+        return "ACTION_SUMMARY: verified clean remote source"
 
-    IssueJobWorkspaceProducer(store, tmp_path / "workspaces").execute(
-        acquired,
-        IssueJobSource("owner/repo", repo, "main", head, "issue-8"),
-        inspect,
-    )
-    assert git(repo, "show", ":value.txt") == "staged version"
-    assert (repo / "value.txt").read_text(encoding="utf-8") == "working version\n"
+    IssueJobWorkspaceProducer(store, tmp_path / "workspaces").execute(acquired, IssueJobSource("owner/repo", repo, "main", "issue-6"), inspect)
+    assert git(repo, "rev-parse", "HEAD") == peer_head
+    assert git(repo, "branch", "--show-current") == ("" if detached else "dependabot/old")
+    assert git(repo, "write-tree") == index
+    assert git(repo, "status", "--porcelain", "--ignored") == before
+    assert (repo / "value.txt").read_text() == "working version\n"
+    assert (repo / "untracked.txt").read_text() == "untracked\n"
+    assert (repo / "local.env").read_text() == "ignored\n"
 
 
 @pytest.mark.parametrize(
@@ -252,12 +296,12 @@ def test_distinct_head_index_and_worktree_versions_are_preserved(tmp_path: Path,
     ],
 )
 def test_unsuccessful_cli_stream_never_checkpoints_success(tmp_path: Path, _use_real_commands, output: str) -> None:
-    repo, head = repository(tmp_path)
+    repo, _head = repository(tmp_path)
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
     acquired = claim(store, 99)
     producer = IssueJobWorkspaceProducer(store, tmp_path / "workspaces")
     with pytest.raises(ValueError):
-        producer.execute(acquired, IssueJobSource("owner/repo", repo, "main", head, "issue-99"), lambda *_: output)
+        producer.execute(acquired, IssueJobSource("owner/repo", repo, "main", "issue-99"), lambda *_: output)
     record = store.get(acquired.record.job_id)
     assert record is not None
     assert record.result_reference == ""
@@ -267,7 +311,7 @@ def test_unsuccessful_cli_stream_never_checkpoints_success(tmp_path: Path, _use_
 def test_job_workspace_supports_backend_manager_private_clone(tmp_path: Path, _use_real_commands, modified: bool) -> None:
     from auto_coder.worktree_utils import isolated_local_llm_worktree
 
-    repo, head = repository(tmp_path)
+    repo, _head = repository(tmp_path)
     if modified:
         (repo / "value.txt").write_text("staged\n")
         git(repo, "add", "value.txt")
@@ -283,56 +327,45 @@ def test_job_workspace_supports_backend_manager_private_clone(tmp_path: Path, _u
             private_path = Path(private)
             assert private_path != workspace
             assert git(private_path, "show", "HEAD:value.txt") == "original"
-            assert git(private_path, "show", ":value.txt") == ("staged" if modified else "original")
-            assert private_path.joinpath("value.txt").read_text() == ("working\n" if modified else "original\n")
+            assert git(private_path, "show", ":value.txt") == "original"
+            assert private_path.joinpath("value.txt").read_text() == "original\n"
             private_path.joinpath("value.txt").write_text("implemented\n")
         assert workspace.joinpath("value.txt").read_text() == "implemented\n"
         return "ACTION_SUMMARY: implemented"
 
-    checkpoint = producer.execute(acquired, IssueJobSource("owner/repo", repo, "main", head, "issue-101"), implement)
+    checkpoint = producer.execute(acquired, IssueJobSource("owner/repo", repo, "main", "issue-101"), implement)
     assert checkpoint.workspace.joinpath("value.txt").read_text() == "implemented\n"
     assert repo.joinpath("value.txt").read_text() == ("working\n" if modified else "original\n")
     assert git(repo, "show", ":value.txt") == ("staged" if modified else "original")
 
 
 @pytest.mark.parametrize("directory", ["node_modules", ".cache", "__pycache__", ".agent-tmp"])
-def test_generated_files_do_not_invalidate_job_capture(tmp_path: Path, monkeypatch, _use_real_commands, directory: str) -> None:
+def test_generated_files_do_not_enter_job_capture(tmp_path: Path, _use_real_commands, directory: str) -> None:
     repo, _ = repository(tmp_path)
     generated = repo / "nested" / directory
     generated.mkdir(parents=True)
     (generated / "tracked.txt").write_text("tracked context\n")
     git(repo, "add", f"nested/{directory}/tracked.txt")
     git(repo, "commit", "-m", "tracked context in disposable directory")
-    (generated / "runtime.txt").write_text("before\n")
-    (repo / "local.env").write_text("preserved ignored context\n")
-    (repo / ".gitignore").write_text("local.env\n")
+    git(repo, "push", "origin", "main")
+    (generated / "runtime.txt").write_text("local runtime\n")
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
     acquired = claim(store, 13)
-    producer = IssueJobWorkspaceProducer(store, tmp_path / "workspaces")
-    copy_files = producer._copy_working_files
-
-    def copy_with_runtime_update(source, destination, expected):
-        copy_files(source, destination, expected)
-        (generated / "runtime.txt").write_text("after\n")
-
-    monkeypatch.setattr(producer, "_copy_working_files", copy_with_runtime_update)
 
     def implement(workspace, _prompt):
         assert (workspace / "nested" / directory / "tracked.txt").read_text() == "tracked context\n"
         assert not (workspace / "nested" / directory / "runtime.txt").exists()
-        assert (workspace / "local.env").read_text() == "preserved ignored context\n"
         output = workspace / "nested" / directory / "new-runtime.txt"
         output.write_text("generated by implementation\n")
         (workspace / "value.txt").write_text("implemented\n")
         return "ACTION_SUMMARY: implemented value.txt"
 
-    checkpoint = producer.execute(acquired, IssueJobSource("owner/repo", repo, "main", git(repo, "rev-parse", "HEAD"), "issue-13"), implement)
-    record = store.get(acquired.record.job_id)
+    checkpoint = IssueJobWorkspaceProducer(store, tmp_path / "workspaces").execute(acquired, IssueJobSource("owner/repo", repo, "main", "issue-13"), implement)
     artifact = store.get_result_artifact(checkpoint.result_reference)
-    assert record is not None and artifact is not None
+    assert artifact is not None
     manifest = json.loads(artifact.output)
     assert set(manifest["changed_files"]) == {"value.txt"}
     assert f"nested/{directory}/tracked.txt" in manifest["workspace_files"]
     assert not any(name.endswith("runtime.txt") for name in manifest["workspace_files"])
-    assert (generated / "runtime.txt").read_text() == "after\n"
+    assert (generated / "runtime.txt").read_text() == "local runtime\n"
     assert (repo / "value.txt").read_text() == "original\n"

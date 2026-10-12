@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -88,13 +87,10 @@ class IssueLocalJobAdapter:
         # LocalJobRunner already owns this exact incarnation; the workspace
         # producer only needs the fenced identity for its durable writes.
         claim = LocalJobClaim(job, True)
-        source_commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self._repository_path, check=True, capture_output=True, text=True).stdout.strip()
-        source_ref = subprocess.run(["git", "symbolic-ref", "-q", "HEAD"], cwd=self._repository_path, check=True, capture_output=True, text=True).stdout.strip()
         source = IssueJobSource(
             job.repository,
             self._repository_path,
-            source_ref,
-            source_commit,
+            self._engine.config.MAIN_BRANCH,
             f"issue-{job.target_number}-attempt-{job.upstream_attempt}",
         )
         producer = IssueJobWorkspaceProducer(self._store, implementation_slots=self._slots)

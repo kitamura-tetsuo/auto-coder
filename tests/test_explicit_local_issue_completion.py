@@ -21,8 +21,11 @@ from .test_dashboard_observability import _assert_required_stage_visible, _mount
 from .test_issue_job_workspace import git, repository
 
 
-@pytest.mark.parametrize("behavior", ["published", "no_change", "failed", "refused", "publication_pending", "codex_json", "claude_json", "muse_json", "cannot_fix", "external_runner", "external_checkpoint", "generated_cache", "cache_no_change"])
+@pytest.mark.parametrize("behavior", ["published", "no_change", "failed", "refused", "publication_pending", "codex_json", "claude_json", "muse_json", "cannot_fix", "external_runner", "external_checkpoint", "generated_cache", "cache_no_change", "stale_main", "retry_latest_main", "fetch_failed"])
 def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, monkeypatch, _use_real_commands, _use_real_sleep, behavior):
+    fresh_source = behavior in {"stale_main", "retry_latest_main"}
+    attempt = "retry-new-attempt" if behavior == "retry_latest_main" else "0"
+    behavior = "published" if fresh_source else behavior
     generated_cache = behavior in {"generated_cache", "cache_no_change"}
     behavior = "no_change" if behavior == "cache_no_change" else "published" if generated_cache else behavior
     checkpoint_pause = behavior == "external_checkpoint"
@@ -33,8 +36,23 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
     source, _head = repository(tmp_path)
     remote = tmp_path / "remote.git"
     git(tmp_path, "init", "--bare", str(remote))
-    git(source, "remote", "add", "origin", str(remote))
+    git(source, "remote", "set-url", "origin", str(remote))
     git(source, "push", "origin", "main")
+    latest = _head
+    if fresh_source:
+        (source / "prerequisite.txt").write_text("latest prerequisite\n")
+        git(source, "add", "prerequisite.txt")
+        git(source, "commit", "-m", "current remote prerequisite")
+        latest = git(source, "rev-parse", "HEAD")
+        git(source, "push", "origin", "main")
+        git(source, "switch", "-c", "dependabot/old", _head)
+        (source / "unrelated.txt").write_text("WIP from unrelated branch\n")
+        git(source, "add", "unrelated.txt")
+        git(source, "commit", "-m", "unrelated WIP")
+        git(source, "update-ref", "refs/remotes/origin/main", _head)
+    elif behavior == "fetch_failed":
+        git(remote, "update-ref", "-d", "refs/heads/main")
+    shared_head = git(source, "rev-parse", "HEAD")
     monkeypatch.chdir(source)
     # Configure the controller-owned commits in the retained private clone.
     monkeypatch.setenv("GIT_AUTHOR_NAME", "Test")
@@ -47,9 +65,9 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
     owner = ImplementationOwner("issue", 41)
     execution = slots.start_execution(owner, generation="generation")
     assert execution
-    identity = IssueAttemptIdentity("owner", "repo", 41, "0")
+    identity = IssueAttemptIdentity("owner", "repo", 41, attempt)
     reserved = guard.reserve(identity, CandidateHandoff("codex", "local"))
-    offer = LocalJobOffer(LocalJobKind.ISSUE_IMPLEMENTATION, "owner/repo", 41, "0", "codex", "implement", execution)
+    offer = LocalJobOffer(LocalJobKind.ISSUE_IMPLEMENTATION, "owner/repo", 41, attempt, "codex", "implement", execution)
     accepted = store.offer_issue(offer, identity, guard)
     assert accepted
     # An unrelated earlier job must remain untouched by --only.
@@ -78,6 +96,12 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
 
     def implement(prompt):
         calls.append(prompt)
+        job_workspace = Path(store.get(accepted.job_id).workspace_path)
+        assert git(job_workspace, "rev-parse", "HEAD") == latest
+        assert git(job_workspace, "branch", "--show-current") == f"issue-41-attempt-{attempt}"
+        if fresh_source:
+            assert (job_workspace / "prerequisite.txt").read_text() == "latest prerequisite\n"
+            assert not (job_workspace / "unrelated.txt").exists()
         entered.set()
         assert release.wait(10)
         if behavior == "failed":
@@ -135,7 +159,7 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
     thread = Thread(target=lambda: results.append(engine.process_single("owner/repo", "issue", 41, explicit_only=True, force=True)))
     thread.start()
     try:
-        if behavior != "refused":
+        if behavior not in {"refused", "fetch_failed"}:
             assert entered.wait(10)
             thread.join(0.2)
             assert thread.is_alive()
@@ -151,23 +175,35 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
             external_runner.close(wait=True)
     assert not thread.is_alive()
     assert len(results) == 1
-    expected = "success" if behavior in {"published", "no_change"} else "failed" if behavior in {"failed", "cannot_fix"} else "deferred"
+    expected = "success" if behavior in {"published", "no_change"} else "failed" if behavior in {"failed", "cannot_fix", "fetch_failed"} else "deferred"
     assert results[0]["target_outcome"] == expected
     assert results[0]["target_type"] == "issue"
     assert results[0]["target_number"] == 41
-    assert calls == ([] if behavior == "refused" else ["implement"])
+    assert calls == ([] if behavior in {"refused", "fetch_failed"} else ["implement"])
     assert store.get(other.job_id).state is LocalJobState.PENDING
     assert source.joinpath("value.txt").read_text() == "original\n"
+    assert git(source, "rev-parse", "HEAD") == shared_head
     job = store.get(accepted.job_id)
     assert job
-    if behavior in {"published", "no_change", "failed", "cannot_fix"}:
+    if behavior in {"published", "no_change", "failed", "cannot_fix", "fetch_failed"}:
         assert job.state is LocalJobState.SETTLED
         assert slots.active_execution_ids(owner) == ()
     if behavior == "published":
         assert "Published PR #91" in results[0]["target_reason"]
         assert git(remote, "show", f"{job.work_branch}:value.txt") == "implemented"
         assert len(published) == 1
+        assert job.source_commit == latest
+        assert job.source_ref == "refs/remotes/origin/main"
+        assert git(remote, "rev-parse", f"{job.work_branch}^") == latest
+        if fresh_source:
+            assert git(remote, "show", f"{job.work_branch}:prerequisite.txt") == "latest prerequisite"
+            assert "unrelated.txt" not in git(remote, "ls-tree", "-r", "--name-only", job.work_branch).splitlines()
         assert "node_modules/runtime.txt" not in git(remote, "ls-tree", "-r", "--name-only", job.work_branch).splitlines()
+    elif behavior == "fetch_failed":
+        assert not job.provider_entered
+        assert job.workspace_path == job.source_commit == ""
+        assert store.get_effect(job.job_id, job.execution_incarnation, "push") is None
+        assert published == []
     elif behavior == "publication_pending":
         assert job.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
         assert "publication deferred" in results[0]["target_reason"]
@@ -182,8 +218,8 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
         assert len(finalizations) == 1
         assert finalizations[0].origin == "explicit-single-target"
         assert finalizations[0].facts["job_id"] == accepted.job_id
-        assert finalizations[0].facts["disposition"] == ("pending" if behavior == "publication_pending" else behavior)
-        assert finalizations[0].outcome == ("completed" if behavior in {"published", "no_change"} else "failed" if behavior in {"failed", "cannot_fix"} else "deferred")
+        assert finalizations[0].facts["disposition"] == ("pending" if behavior == "publication_pending" else "failed" if behavior == "fetch_failed" else behavior)
+        assert finalizations[0].outcome == ("completed" if behavior in {"published", "no_change"} else "failed" if behavior in {"failed", "cannot_fix", "fetch_failed"} else "deferred")
     with patch("auto_coder.dashboard.ui") as mock_ui:
         diagram = _mounted_detail(mock_ui, "issue", 41)
     _assert_required_stage_visible(diagram, "local completion")
