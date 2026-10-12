@@ -58,6 +58,8 @@ _TEST_EXECUTION_POLICY_PROMPTS = (
     | {
         "pr.existing_pr_repair",
         "codex_cloud.continuation",
+        "tests.workspace_fix",
+        "tests.test_stability_fix",
     }
 )
 

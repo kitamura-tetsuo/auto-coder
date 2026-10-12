@@ -2154,7 +2154,11 @@ tests:
      $test_command
 
     Now apply the fix directly in the repository.
-    Run tests again after applying the fix to verify that the fix resolves the issue.
+    Run only an explicit test file, case, or justified bounded affected-test
+    selection relevant to the failure after applying the fix. First establish that
+    the repository test wrapper honors that selection; if it does not, report the
+    focused verification as not run rather than running the complete suite, which
+    is owned by CI.
     Return a single concise line summarizing the change.
 
   test_stability_fix: |-
@@ -2204,7 +2208,10 @@ tests:
     - Use mocking/patching appropriately to isolate tests from external dependencies
 
     Now apply the fix directly in the repository.
-    Run the full test suite again after applying the fix to verify that the fix resolves the issue.
+    Re-run only the explicit failing test and the justified bounded tests needed to
+    exercise its isolation boundary. First establish that the repository test
+    wrapper honors that selection; never run the complete suite locally or recreate
+    it by iterating files, packages, or shards. CI owns complete-suite verification.
     Return a single concise line summarizing the change.
 
   commit_message: |-

@@ -22,6 +22,11 @@ assuming their original bootstrap included a later policy revision. Backend
 execution wrappers preserve the composed task, so configured aliases and fallback
 selection do not change the instruction.
 
+The automatic workspace-failure and test-stability repair prompts use the same
+composition path. Their task-specific instructions request only the explicit
+failing test and justified affected isolation boundaries; they never retain a
+conflicting directive to rerun the complete suite.
+
 This instruction does not grant execution authority. Explicit no-test, no-shell,
 or no-edit controls remain stricter, and controller-owned test scheduling, CI
 workflows, merge gates, retry authorization, provider lifetime, and timeouts are

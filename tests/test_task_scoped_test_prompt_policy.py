@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.fix_to_pass_tests_runner import apply_test_stability_fix, apply_workspace_test_fix
 from auto_coder.pr_repair import ExistingPrRepairTarget, build_existing_pr_repair_prompt
 from auto_coder.prompt_loader import DEFAULT_PROMPTS_PATH, render_prompt
 
@@ -40,6 +42,8 @@ def _issue_values() -> dict[str, object]:
         "pr.adversarial_validation_fix",
         "codex_cloud.initial_issue_implementation",
         "codex_cloud.continuation",
+        "tests.workspace_fix",
+        "tests.test_stability_fix",
     ],
 )
 def test_every_operation_prompt_carries_scoped_test_policy(key: str) -> None:
@@ -95,6 +99,57 @@ def test_existing_cloud_session_followup_receives_new_policy_directly() -> None:
     assert prompt.count(POLICY) == 1
     assert "Repair the bounded finding" in prompt
     assert "Do not create a new pull request." in prompt
+
+
+class _CapturingTestFixBackend:
+    """Production transport boundary double that records the final payload."""
+
+    def __init__(self) -> None:
+        self.prompts: list[tuple[str, str | None]] = []
+
+    def get_last_backend_and_provider_and_model(self) -> tuple[str, str, str]:
+        return ("qwen", "local", "qwen-test")
+
+    def run_test_fix_prompt(self, prompt: str, current_test_file: str | None = None) -> str:
+        self.prompts.append((prompt, current_test_file))
+        return "ACTION_SUMMARY: repaired"
+
+
+@pytest.mark.parametrize("repair_kind", ["workspace", "stability"])
+def test_automatic_test_repairs_send_scoped_policy_at_production_boundary(repair_kind: str) -> None:
+    backend = _CapturingTestFixBackend()
+    config = AutomationConfig(automatic_test_fix=True)
+
+    if repair_kind == "workspace":
+        apply_workspace_test_fix(
+            config,
+            {
+                "success": False,
+                "output": "FAILED tests/test_state.py::test_transition",
+                "errors": "AssertionError: state leaked",
+                "return_code": 1,
+                "command": "bash scripts/test.sh tests/test_state.py::test_transition",
+            },
+            backend,  # type: ignore[arg-type]
+            current_test_file="tests/test_state.py",
+        )
+    else:
+        apply_test_stability_fix(
+            config,
+            "tests/test_state.py",
+            {"errors": "failed in suite", "output": "state leaked"},
+            {"errors": "", "output": "1 passed"},
+            backend,  # type: ignore[arg-type]
+        )
+
+    assert len(backend.prompts) == 1
+    prompt, selected_file = backend.prompts[0]
+    assert prompt.count(POLICY) == 1
+    assert "The complete repository test suite is run by CI, not by the agent." in prompt
+    assert "runner or wrapper honors that selection" in prompt
+    assert "Run the full test suite again" not in prompt
+    assert "Run tests again after applying the fix" not in prompt
+    assert selected_file == "tests/test_state.py"
 
 
 def test_stricter_no_test_and_no_edit_controls_are_not_reversed() -> None:
