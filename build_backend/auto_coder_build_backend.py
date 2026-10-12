@@ -29,7 +29,18 @@ def get_build_version():
     carried = Path(supplied) if supplied else IDENTITY
     if carried.is_file():
         record = deserialize_build_identity(carried.read_text(encoding="utf-8"))
-        observed = resolve_build_identity(ROOT)
+        # The backend-created carrier is deliberately untracked. Hide only that
+        # file while independently observing the checkout so it cannot make an
+        # otherwise clean source appear dirty or contradict its own record.
+        if carried.resolve() == IDENTITY.resolve():
+            payload = IDENTITY.read_bytes()
+            IDENTITY.unlink()
+            try:
+                observed = resolve_build_identity(ROOT)
+            finally:
+                IDENTITY.write_bytes(payload)
+        else:
+            observed = resolve_build_identity(ROOT)
         if observed.state != "unknown" and observed != record:
             raise ValueError("Supplied build identity disagrees with the source checkout")
         return record.version
