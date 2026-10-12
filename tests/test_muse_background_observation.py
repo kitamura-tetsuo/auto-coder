@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from auto_coder.local_job_handoff import ContinuationState
@@ -53,6 +54,54 @@ def test_live_inventory_disappearance_does_not_manufacture_success() -> None:
     # A later task result cannot erase the observed view gap without an
     # authoritative snapshot/replay reconciliation.
     assert failed.readiness is MuseContinuationReadiness.RECONCILIATION_REQUIRED
+
+
+def test_unavailable_unrecognized_and_view_gap_retain_known_running_task() -> None:
+    def running_fold() -> MuseObservationFold:
+        fold = MuseObservationFold(_binding(), "turn-1", _support())
+        raw = json.dumps(
+            _event(
+                "item/updated",
+                item={
+                    "itemId": "task-1",
+                    "kind": "toolCall",
+                    "background": True,
+                    "turnId": "turn-1",
+                    "revision": 1,
+                    "status": "inProgress",
+                },
+                viewCursor="cursor-running",
+            )
+        ).encode()
+        fold.consume(decode_muse_msp_frame(raw))
+        return fold
+
+    folds = []
+    unavailable = running_fold()
+    unavailable.consume_task_inventory(None, "task-list-unavailable")
+    folds.append(unavailable)
+
+    unrecognized = running_fold()
+    unrecognized.consume_task_inventory([{"kind": "future-workload", "status": "inProgress"}], "task-list-malformed")
+    folds.append(unrecognized)
+
+    view_gap = running_fold()
+    raw_gap = json.dumps(_event("view/gap", reason="pagination gap", viewCursor="cursor-gap")).encode()
+    view_gap.consume(decode_muse_msp_frame(raw_gap))
+    folds.append(view_gap)
+
+    for fold in folds:
+        observation = fold.observation()
+        assert observation.readiness is MuseContinuationReadiness.RECONCILIATION_REQUIRED
+        assert observation.readiness is not MuseContinuationReadiness.CONTROLLER_READY
+        assert len(observation.tasks) == 1
+        retained = observation.tasks[0]
+        assert retained.task_id == "task-1"
+        assert retained.turn_id == "turn-1"
+        assert retained.state == "running"
+        assert retained.outcome is MuseTaskOutcome.UNKNOWN
+        assert retained.result_reference == ""
+        assert not retained.result_delivered
 
 
 def test_adverse_order_duplicate_foreign_and_native_continuation() -> None:
