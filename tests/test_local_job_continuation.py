@@ -5,10 +5,13 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
 
+import pytest
+
 from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
 from auto_coder.local_job_handoff import (
     ContinuationIntentState,
     ContinuationState,
+    InvocationOutcome,
     LocalJobKind,
     LocalJobOffer,
     LocalJobStore,
@@ -201,3 +204,190 @@ def test_failed_intent_commit_returns_no_authority_and_preserves_prior_evidence(
     )
     assert intent is not None
     assert intent.state is ContinuationIntentState.NOT_SUBMITTED
+
+
+def test_waiting_takeover_blocks_stale_completion_and_downstream_eligibility(tmp_path: Path) -> None:
+    store, offer, claim = _running_job(tmp_path)
+    assert store.bind_continuation(claim, "session-1", "executor-a") is not None
+    assert store.observe_continuation_task(offer.job_id, "executor-a", "background", "running") is not None
+    assert store.transition_continuation(
+        offer.job_id,
+        "executor-a",
+        ContinuationState.FOREGROUND,
+        ContinuationState.WAITING_BACKGROUND,
+    )
+    assert store.take_over_continuation(offer.job_id, "executor-a", "executor-b")
+
+    assert store.persist_result_artifact(claim, InvocationOutcome.COMPLETED, "foreground pause", executor_token="executor-a") is None
+    assert not store.record_result(claim, InvocationOutcome.COMPLETED, "missing", executor_token="executor-a")
+    assert not store.mark_downstream_pending(claim, executor_token="executor-a")
+
+    reopened = LocalJobStore(store.path)
+    job = reopened.get(offer.job_id)
+    continuation = reopened.get_continuation(offer.job_id)
+    assert job is not None
+    assert job.invocation_outcome is None
+    assert job.result_reference == ""
+    assert continuation is not None
+    assert continuation.state is ContinuationState.RECONCILIATION_REQUIRED
+    assert continuation.executor_token == "executor-b"
+    assert reopened.discover_pending_continuations() == (continuation,)
+
+
+def test_replaced_job_lineage_rejects_every_old_continuation_authority(tmp_path: Path) -> None:
+    store, offer, first_claim = _running_job(tmp_path)
+    assert store.bind_continuation(first_claim, "session-1", "executor-old") is not None
+    task = store.observe_continuation_task(
+        offer.job_id,
+        "executor-old",
+        "task-1",
+        "terminal",
+        terminal_outcome="completed",
+        result_reference="result-1",
+    )
+    assert task is not None
+    assert store.record_candidate_output(offer.job_id, "executor-old", task.sequence, "candidate")
+    intent = store.create_continuation_intent(offer.job_id, "executor-old", task.sequence, "continue")
+    assert intent is not None
+    assert store.release_unentered_claim(first_claim, "pre-entry retry")
+    second_claim = store.claim(offer.job_id)
+    assert second_claim is not None and second_claim.acquired
+    assert second_claim.record.execution_incarnation != first_claim.record.execution_incarnation
+
+    reopened = LocalJobStore(store.path)
+    assert reopened.observe_continuation_task(offer.job_id, "executor-old", "stale", "running") is None
+    assert reopened.create_continuation_intent(offer.job_id, "executor-old", task.sequence, "continue") is None
+    assert not reopened.record_candidate_output(offer.job_id, "executor-old", task.sequence, "replacement")
+    assert not reopened.confirm_final_output(offer.job_id, "executor-old", task.sequence)
+    assert not reopened.transition_continuation(
+        offer.job_id,
+        "executor-old",
+        ContinuationState.FOREGROUND,
+        ContinuationState.WAITING_BACKGROUND,
+    )
+    assert not reopened.transition_continuation_intent(
+        intent.intent_id,
+        "executor-old",
+        ContinuationIntentState.NOT_SUBMITTED,
+        ContinuationIntentState.ADMITTED,
+    )
+    assert not reopened.take_over_continuation(offer.job_id, "executor-old", "executor-new")
+
+
+@pytest.mark.parametrize("command_kind", ["controller", "native"])
+def test_admitted_continued_turn_invalidates_older_candidate_after_reopen(tmp_path: Path, command_kind: str) -> None:
+    store, offer, claim = _running_job(tmp_path)
+    assert store.bind_continuation(claim, "session-1", "executor") is not None
+    task = store.observe_continuation_task(
+        offer.job_id,
+        "executor",
+        "task-1",
+        "terminal",
+        terminal_outcome="completed",
+        result_reference="result-1",
+        provider_position="1",
+    )
+    assert task is not None
+    assert store.record_candidate_output(offer.job_id, "executor", task.sequence, "turn-1 output")
+    intent = store.create_continuation_intent(
+        offer.job_id,
+        "executor",
+        task.sequence,
+        "continue",
+        command_kind=command_kind,
+    )
+    assert intent is not None
+    assert store.transition_continuation_intent(
+        intent.intent_id,
+        "executor",
+        ContinuationIntentState.NOT_SUBMITTED,
+        ContinuationIntentState.ADMITTED,
+        provider_turn="turn-2",
+    )
+
+    reopened = LocalJobStore(store.path)
+    advanced = reopened.get_continuation(offer.job_id)
+    assert advanced is not None
+    assert advanced.frontier == task.sequence + 1
+    assert advanced.provider_position == "turn-2"
+    assert not reopened.confirm_final_output(offer.job_id, "executor", task.sequence)
+    assert reopened.record_candidate_output(offer.job_id, "executor", advanced.frontier, "turn-2 output")
+    assert reopened.confirm_final_output(offer.job_id, "executor", advanced.frontier)
+    assert reopened.get_continuation(offer.job_id).final_output == "turn-2 output"  # type: ignore[union-attr]
+    artifact = reopened.persist_result_artifact(
+        claim,
+        InvocationOutcome.COMPLETED,
+        "turn-2 output",
+        executor_token="executor",
+    )
+    assert artifact is not None
+    assert reopened.record_result(
+        claim,
+        InvocationOutcome.COMPLETED,
+        artifact.artifact_id,
+        executor_token="executor",
+    )
+    assert reopened.mark_downstream_pending(claim, executor_token="executor")
+
+
+def test_generic_transition_cannot_bypass_final_confirmation(tmp_path: Path) -> None:
+    store, offer, claim = _running_job(tmp_path)
+    assert store.bind_continuation(claim, "session-1", "executor") is not None
+    first = store.observe_continuation_task(offer.job_id, "executor", "task-1", "terminal", terminal_outcome="completed", result_reference="result-1")
+    assert first is not None
+    assert store.record_candidate_output(offer.job_id, "executor", first.sequence, "obsolete")
+    assert store.observe_continuation_task(offer.job_id, "executor", "task-2", "running") is not None
+    assert store.transition_continuation(
+        offer.job_id,
+        "executor",
+        ContinuationState.FOREGROUND,
+        ContinuationState.WAITING_BACKGROUND,
+    )
+    assert not store.transition_continuation(
+        offer.job_id,
+        "executor",
+        ContinuationState.WAITING_BACKGROUND,
+        ContinuationState.FINAL_CONFIRMED,
+    )
+
+    reopened = LocalJobStore(store.path)
+    retained = reopened.get_continuation(offer.job_id)
+    assert retained is not None
+    assert retained.state is ContinuationState.WAITING_BACKGROUND
+    assert retained.final_output == ""
+    assert reopened.discover_pending_continuations() == (retained,)
+
+
+def test_older_terminal_observation_cannot_replace_newer_provider_evidence(tmp_path: Path) -> None:
+    store, offer, claim = _running_job(tmp_path)
+    assert store.bind_continuation(claim, "session-1", "executor") is not None
+    newest = store.observe_continuation_task(
+        offer.job_id,
+        "executor",
+        "task-1",
+        "terminal",
+        terminal_outcome="completed",
+        result_reference="result-20",
+        provider_position="20",
+    )
+    assert newest is not None
+    replay = store.observe_continuation_task(
+        offer.job_id,
+        "executor",
+        "task-1",
+        "terminal",
+        terminal_outcome="failed",
+        result_reference="result-10",
+        provider_position="10",
+    )
+    assert replay == newest
+
+    reopened = LocalJobStore(store.path)
+    continuation = reopened.get_continuation(offer.job_id)
+    assert continuation is not None
+    assert continuation.frontier == newest.sequence
+    assert continuation.provider_position == "20"
+    assert reopened.create_continuation_intent(offer.job_id, "executor", newest.sequence + 1, "obsolete batch") is None
+    intent = reopened.create_continuation_intent(offer.job_id, "executor", newest.sequence, "accepted batch")
+    assert intent is not None
+    assert intent.causal_frontier == newest.sequence

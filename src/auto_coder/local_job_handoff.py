@@ -649,7 +649,7 @@ class LocalJobStore:
         except (OSError, sqlite3.Error):
             return False
 
-    def recover_downstream_pending(self, record: LocalJobRecord) -> bool:
+    def recover_downstream_pending(self, record: LocalJobRecord, *, executor_token: str = "") -> bool:
         """Promote an exact committed result after validating its durable artifact."""
         if record.state is not LocalJobState.RESULT_RECORDED or record.invocation_outcome is None or not record.result_reference:
             return False
@@ -664,7 +664,10 @@ class LocalJobStore:
                     connection.rollback()
                     return False
                 cursor = connection.execute(
-                    "UPDATE local_jobs SET state=?, updated_at=? WHERE job_id=? AND state=? AND execution_incarnation=? AND result_reference=?",
+                    "UPDATE local_jobs AS j SET state=?, updated_at=? WHERE job_id=? AND state=? "
+                    "AND execution_incarnation=? AND result_reference=? "
+                    "AND NOT EXISTS (SELECT 1 FROM local_job_continuations c WHERE c.job_id=j.job_id "
+                    "AND (c.execution_incarnation<>j.execution_incarnation OR c.executor_token<>? OR c.state<>?))",
                     (
                         LocalJobState.DOWNSTREAM_EFFECTS_PENDING.value,
                         time.time(),
@@ -672,6 +675,8 @@ class LocalJobStore:
                         LocalJobState.RESULT_RECORDED.value,
                         record.execution_incarnation,
                         record.result_reference,
+                        executor_token,
+                        ContinuationState.FINAL_CONFIRMED.value,
                     ),
                 )
                 connection.commit()
@@ -679,7 +684,7 @@ class LocalJobStore:
         except (OSError, sqlite3.Error):
             return False
 
-    def recover_recorded_result(self, record: LocalJobRecord) -> bool:
+    def recover_recorded_result(self, record: LocalJobRecord, *, executor_token: str = "") -> bool:
         """Checkpoint a previously persisted exact-incarnation provider result."""
         if record.state is not LocalJobState.RUNNING or not record.provider_entered or not record.execution_incarnation:
             return False
@@ -687,14 +692,18 @@ class LocalJobStore:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 artifact = connection.execute(
-                    "SELECT artifact_id, outcome FROM local_job_results WHERE job_id=? AND execution_incarnation=?",
+                    "SELECT artifact_id, outcome, output FROM local_job_results WHERE job_id=? AND execution_incarnation=?",
                     (record.job_id, record.execution_incarnation),
                 ).fetchone()
                 if artifact is None:
                     connection.rollback()
                     return False
                 cursor = connection.execute(
-                    "UPDATE local_jobs SET state=?, invocation_outcome=?, result_reference=?, updated_at=? " "WHERE job_id=? AND state=? AND execution_incarnation=? AND provider_entered=1 AND result_reference=''",
+                    "UPDATE local_jobs SET state=?, invocation_outcome=?, result_reference=?, updated_at=? "
+                    "WHERE job_id=? AND state=? AND execution_incarnation=? AND provider_entered=1 AND result_reference='' "
+                    "AND NOT EXISTS (SELECT 1 FROM local_job_continuations c WHERE c.job_id=local_jobs.job_id "
+                    "AND (c.execution_incarnation<>local_jobs.execution_incarnation OR c.executor_token<>? "
+                    "OR c.state<>? OR c.final_output<>?))",
                     (
                         LocalJobState.RESULT_RECORDED.value,
                         str(artifact["outcome"]),
@@ -703,6 +712,9 @@ class LocalJobStore:
                         record.job_id,
                         LocalJobState.RUNNING.value,
                         record.execution_incarnation,
+                        executor_token,
+                        ContinuationState.FINAL_CONFIRMED.value,
+                        str(artifact["output"]),
                     ),
                 )
                 connection.commit()
@@ -710,7 +722,14 @@ class LocalJobStore:
         except (OSError, sqlite3.Error):
             return False
 
-    def persist_result_artifact(self, claim: LocalJobClaim, outcome: InvocationOutcome, output: str) -> Optional[LocalJobResultArtifact]:
+    def persist_result_artifact(
+        self,
+        claim: LocalJobClaim,
+        outcome: InvocationOutcome,
+        output: str,
+        *,
+        executor_token: str = "",
+    ) -> Optional[LocalJobResultArtifact]:
         """Durably bind invocation output to the exact job and incarnation."""
         if not claim.acquired:
             return None
@@ -719,8 +738,19 @@ class LocalJobStore:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 current = connection.execute(
-                    "SELECT 1 FROM local_jobs WHERE job_id=? AND state=? AND execution_incarnation=?",
-                    (claim.record.job_id, LocalJobState.RUNNING.value, claim.record.execution_incarnation),
+                    "SELECT 1 FROM local_jobs j WHERE job_id=? AND state=? AND execution_incarnation=? "
+                    "AND NOT EXISTS (SELECT 1 FROM local_job_continuations c WHERE c.job_id=j.job_id "
+                    "AND (c.execution_incarnation<>j.execution_incarnation OR c.executor_token<>? "
+                    "OR (?=1 AND (c.state<>? OR c.final_output<>?))))",
+                    (
+                        claim.record.job_id,
+                        LocalJobState.RUNNING.value,
+                        claim.record.execution_incarnation,
+                        executor_token,
+                        int(outcome in {InvocationOutcome.COMPLETED, InvocationOutcome.CANNOT_FIX}),
+                        ContinuationState.FINAL_CONFIRMED.value,
+                        output,
+                    ),
                 ).fetchone()
                 if current is None:
                     connection.rollback()
@@ -797,7 +827,15 @@ class LocalJobStore:
         except (OSError, sqlite3.Error, ValueError):
             return None
 
-    def record_result(self, claim: LocalJobClaim, outcome: InvocationOutcome, result_reference: str, diagnostic: str = "") -> bool:
+    def record_result(
+        self,
+        claim: LocalJobClaim,
+        outcome: InvocationOutcome,
+        result_reference: str,
+        diagnostic: str = "",
+        *,
+        executor_token: str = "",
+    ) -> bool:
         """Checkpoint a result only from a verified exact-job artifact."""
         if not claim.acquired or not result_reference:
             return False
@@ -805,8 +843,21 @@ class LocalJobStore:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 evidence = connection.execute(
-                    "SELECT 1 FROM local_job_results WHERE artifact_id=? AND job_id=? " "AND execution_incarnation=? AND outcome=?",
-                    (result_reference, claim.record.job_id, claim.record.execution_incarnation, outcome.value),
+                    "SELECT 1 FROM local_job_results r JOIN local_jobs j ON j.job_id=r.job_id "
+                    "WHERE r.artifact_id=? AND r.job_id=? AND r.execution_incarnation=? AND r.outcome=? "
+                    "AND j.execution_incarnation=r.execution_incarnation "
+                    "AND NOT EXISTS (SELECT 1 FROM local_job_continuations c WHERE c.job_id=j.job_id "
+                    "AND (c.execution_incarnation<>j.execution_incarnation OR c.executor_token<>? "
+                    "OR (?=1 AND (c.state<>? OR c.final_output<>r.output))))",
+                    (
+                        result_reference,
+                        claim.record.job_id,
+                        claim.record.execution_incarnation,
+                        outcome.value,
+                        executor_token,
+                        int(outcome in {InvocationOutcome.COMPLETED, InvocationOutcome.CANNOT_FIX}),
+                        ContinuationState.FINAL_CONFIRMED.value,
+                    ),
                 ).fetchone()
                 if evidence is None:
                     connection.rollback()
@@ -829,8 +880,27 @@ class LocalJobStore:
         except (OSError, sqlite3.Error):
             return False
 
-    def mark_downstream_pending(self, claim: LocalJobClaim) -> bool:
-        return self._transition(claim, LocalJobState.RESULT_RECORDED, LocalJobState.DOWNSTREAM_EFFECTS_PENDING)
+    def mark_downstream_pending(self, claim: LocalJobClaim, *, executor_token: str = "") -> bool:
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    "UPDATE local_jobs AS j SET state=?, updated_at=? WHERE job_id=? AND state=? "
+                    "AND execution_incarnation=? AND NOT EXISTS (SELECT 1 FROM local_job_continuations c "
+                    "WHERE c.job_id=j.job_id AND (c.execution_incarnation<>j.execution_incarnation "
+                    "OR c.executor_token<>? OR c.state<>?))",
+                    (
+                        LocalJobState.DOWNSTREAM_EFFECTS_PENDING.value,
+                        time.time(),
+                        claim.record.job_id,
+                        LocalJobState.RESULT_RECORDED.value,
+                        claim.record.execution_incarnation,
+                        executor_token,
+                        ContinuationState.FINAL_CONFIRMED.value,
+                    ),
+                )
+            return cursor.rowcount == 1
+        except (OSError, sqlite3.Error):
+            return False
 
     def record_effect(self, claim: LocalJobClaim, name: str, state: str, evidence: str = "") -> bool:
         """Upsert fenced publication evidence for the exact result incarnation."""
@@ -953,15 +1023,22 @@ class LocalJobStore:
         provider_position: str = "",
     ) -> bool:
         """Apply an idempotent, executor-fenced progress transition."""
+        if target is ContinuationState.FINAL_CONFIRMED:
+            return False
         try:
             with self._connect() as connection:
                 cursor = connection.execute(
-                    "UPDATE local_job_continuations SET state=?, provider_position=CASE WHEN ?='' THEN provider_position ELSE ? END, updated_at=? " "WHERE job_id=? AND executor_token=? AND state=?",
-                    (target.value, provider_position, provider_position, time.time(), job_id, executor_token, expected.value),
+                    "UPDATE local_job_continuations AS c SET state=?, provider_position=CASE WHEN ?='' THEN provider_position ELSE ? END, updated_at=? "
+                    "WHERE job_id=? AND executor_token=? AND state=? AND EXISTS (SELECT 1 FROM local_jobs j WHERE j.job_id=c.job_id "
+                    "AND j.execution_incarnation=c.execution_incarnation AND j.state=?)",
+                    (target.value, provider_position, provider_position, time.time(), job_id, executor_token, expected.value, LocalJobState.RUNNING.value),
                 )
                 if cursor.rowcount == 1:
                     return True
-                row = connection.execute("SELECT state, executor_token, provider_position FROM local_job_continuations WHERE job_id=?", (job_id,)).fetchone()
+                row = connection.execute(
+                    "SELECT c.state, c.executor_token, c.provider_position FROM local_job_continuations c " "JOIN local_jobs j ON j.job_id=c.job_id AND j.execution_incarnation=c.execution_incarnation " "WHERE c.job_id=? AND j.state=?",
+                    (job_id, LocalJobState.RUNNING.value),
+                ).fetchone()
             return bool(row is not None and str(row["executor_token"]) == executor_token and str(row["state"]) == target.value and (not provider_position or str(row["provider_position"]) == provider_position))
         except (OSError, sqlite3.Error):
             return False
@@ -972,7 +1049,7 @@ class LocalJobStore:
             return False
         with self._connect() as connection:
             cursor = connection.execute(
-                "UPDATE local_job_continuations SET executor_token=?, state=?, updated_at=? " "WHERE job_id=? AND executor_token=? AND state NOT IN (?, ?, ?)",
+                "UPDATE local_job_continuations AS c SET executor_token=?, state=?, updated_at=? " "WHERE job_id=? AND executor_token=? AND state NOT IN (?, ?, ?) " "AND EXISTS (SELECT 1 FROM local_jobs j WHERE j.job_id=c.job_id " "AND j.execution_incarnation=c.execution_incarnation AND j.state=?)",
                 (
                     new_executor_token,
                     ContinuationState.RECONCILIATION_REQUIRED.value,
@@ -982,6 +1059,7 @@ class LocalJobStore:
                     ContinuationState.FINAL_CONFIRMED.value,
                     ContinuationState.INTERRUPTED.value,
                     ContinuationState.FAILED.value,
+                    LocalJobState.RUNNING.value,
                 ),
             )
         return cursor.rowcount == 1
@@ -1003,7 +1081,10 @@ class LocalJobStore:
         try:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
-                continuation = connection.execute("SELECT frontier FROM local_job_continuations WHERE job_id=? AND executor_token=?", (job_id, executor_token)).fetchone()
+                continuation = connection.execute(
+                    "SELECT c.frontier FROM local_job_continuations c JOIN local_jobs j ON j.job_id=c.job_id " "AND j.execution_incarnation=c.execution_incarnation WHERE c.job_id=? AND c.executor_token=? AND j.state=?",
+                    (job_id, executor_token, LocalJobState.RUNNING.value),
+                ).fetchone()
                 if continuation is None:
                     connection.rollback()
                     return None
@@ -1022,6 +1103,17 @@ class LocalJobStore:
                 if old is not None and str(old["lifecycle"]) == "terminal" and lifecycle != "terminal":
                     connection.commit()
                     return ContinuationTask(job_id, task_id, "terminal", str(old["terminal_outcome"]), str(old["result_reference"]), str(old["provider_position"]), int(old["sequence"]))
+                if old is not None and self._provider_position_is_older(provider_position, str(old["provider_position"])):
+                    connection.commit()
+                    return ContinuationTask(
+                        job_id,
+                        task_id,
+                        str(old["lifecycle"]),
+                        str(old["terminal_outcome"]),
+                        str(old["result_reference"]),
+                        str(old["provider_position"]),
+                        int(old["sequence"]),
+                    )
                 sequence = int(continuation["frontier"]) + 1
                 connection.execute(
                     "INSERT INTO local_continuation_tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
@@ -1038,13 +1130,23 @@ class LocalJobStore:
         except (OSError, sqlite3.Error):
             return None
 
+    @staticmethod
+    def _provider_position_is_older(candidate: str, accepted: str) -> bool:
+        """Compare provider sequence positions when both expose an integer order."""
+        if not candidate or not accepted or not candidate.isdecimal() or not accepted.isdecimal():
+            return False
+        return int(candidate) <= int(accepted)
+
     def record_candidate_output(self, job_id: str, executor_token: str, frontier: int, output: str) -> bool:
         if not output:
             return False
         with self._connect() as connection:
             cursor = connection.execute(
-                "UPDATE local_job_continuations SET candidate_frontier=?, candidate_output=?, updated_at=? " "WHERE job_id=? AND executor_token=? AND frontier=? AND state NOT IN (?, ?, ?)",
-                (frontier, output, time.time(), job_id, executor_token, frontier, ContinuationState.FINAL_CONFIRMED.value, ContinuationState.INTERRUPTED.value, ContinuationState.FAILED.value),
+                "UPDATE local_job_continuations AS c SET candidate_frontier=?, candidate_output=?, updated_at=? "
+                "WHERE job_id=? AND executor_token=? AND frontier=? AND state NOT IN (?, ?, ?) "
+                "AND EXISTS (SELECT 1 FROM local_jobs j WHERE j.job_id=c.job_id "
+                "AND j.execution_incarnation=c.execution_incarnation AND j.state=?)",
+                (frontier, output, time.time(), job_id, executor_token, frontier, ContinuationState.FINAL_CONFIRMED.value, ContinuationState.INTERRUPTED.value, ContinuationState.FAILED.value, LocalJobState.RUNNING.value),
             )
         return cursor.rowcount == 1
 
@@ -1058,8 +1160,11 @@ class LocalJobStore:
                     connection.rollback()
                     return False
                 cursor = connection.execute(
-                    "UPDATE local_job_continuations SET state=?, final_output=candidate_output, updated_at=? " "WHERE job_id=? AND executor_token=? AND frontier=? AND candidate_frontier=? AND candidate_output<>''",
-                    (ContinuationState.FINAL_CONFIRMED.value, time.time(), job_id, executor_token, frontier, frontier),
+                    "UPDATE local_job_continuations AS c SET state=?, final_output=candidate_output, updated_at=? "
+                    "WHERE job_id=? AND executor_token=? AND frontier=? AND candidate_frontier=? AND candidate_output<>'' "
+                    "AND EXISTS (SELECT 1 FROM local_jobs j WHERE j.job_id=c.job_id "
+                    "AND j.execution_incarnation=c.execution_incarnation AND j.state=?)",
+                    (ContinuationState.FINAL_CONFIRMED.value, time.time(), job_id, executor_token, frontier, frontier, LocalJobState.RUNNING.value),
                 )
                 connection.commit()
             return cursor.rowcount == 1
@@ -1084,7 +1189,10 @@ class LocalJobStore:
         try:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
-                continuation = connection.execute("SELECT provider_session, frontier FROM local_job_continuations WHERE job_id=? AND executor_token=?", (job_id, executor_token)).fetchone()
+                continuation = connection.execute(
+                    "SELECT c.provider_session, c.frontier FROM local_job_continuations c " "JOIN local_jobs j ON j.job_id=c.job_id AND j.execution_incarnation=c.execution_incarnation " "WHERE c.job_id=? AND c.executor_token=? AND j.state=?",
+                    (job_id, executor_token, LocalJobState.RUNNING.value),
+                ).fetchone()
                 if continuation is None or int(continuation["frontier"]) != causal_frontier:
                     connection.rollback()
                     return None
@@ -1118,12 +1226,38 @@ class LocalJobStore:
         }
         if target not in allowed.get(expected, set()):
             return False
-        with self._connect() as connection:
-            cursor = connection.execute(
-                "UPDATE local_continuation_intents SET state=?, provider_turn=CASE WHEN ?='' THEN provider_turn ELSE ? END, updated_at=? " "WHERE intent_id=? AND state=? AND EXISTS (SELECT 1 FROM local_job_continuations c " "WHERE c.job_id=local_continuation_intents.job_id AND c.executor_token=?)",
-                (target.value, provider_turn, provider_turn, time.time(), intent_id, expected.value, executor_token),
-            )
-        return cursor.rowcount == 1
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                intent = connection.execute(
+                    "SELECT i.job_id, i.causal_frontier FROM local_continuation_intents i "
+                    "JOIN local_job_continuations c ON c.job_id=i.job_id "
+                    "JOIN local_jobs j ON j.job_id=c.job_id AND j.execution_incarnation=c.execution_incarnation "
+                    "WHERE i.intent_id=? AND i.state=? AND c.executor_token=? AND j.state=?",
+                    (intent_id, expected.value, executor_token, LocalJobState.RUNNING.value),
+                ).fetchone()
+                if intent is None:
+                    connection.rollback()
+                    return False
+                cursor = connection.execute(
+                    "UPDATE local_continuation_intents SET state=?, provider_turn=CASE WHEN ?='' THEN provider_turn ELSE ? END, updated_at=? " "WHERE intent_id=? AND state=?",
+                    (target.value, provider_turn, provider_turn, time.time(), intent_id, expected.value),
+                )
+                if cursor.rowcount != 1:
+                    connection.rollback()
+                    return False
+                if target is ContinuationIntentState.ADMITTED:
+                    advanced = connection.execute(
+                        "UPDATE local_job_continuations SET frontier=frontier+1, provider_position=CASE WHEN ?='' THEN provider_position ELSE ? END, " "updated_at=? WHERE job_id=? AND executor_token=? AND frontier=?",
+                        (provider_turn, provider_turn, time.time(), str(intent["job_id"]), executor_token, int(intent["causal_frontier"])),
+                    )
+                    if advanced.rowcount != 1:
+                        connection.rollback()
+                        return False
+                connection.commit()
+            return True
+        except (OSError, sqlite3.Error):
+            return False
 
     def _transition(
         self,
