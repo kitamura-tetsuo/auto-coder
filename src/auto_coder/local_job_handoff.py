@@ -128,6 +128,14 @@ class LocalJobEffect:
 
 
 @dataclass(frozen=True)
+class LocalIssueJobEvidence:
+    """Read-only diagnostic projection of one attributable Issue job."""
+
+    job: LocalJobRecord
+    effects: tuple[LocalJobEffect, ...] = ()
+
+
+@dataclass(frozen=True)
 class LocalStartNotification:
     job_id: str
     repository: str
@@ -482,6 +490,41 @@ class LocalJobStore:
                 (repository, LocalJobKind.ISSUE_IMPLEMENTATION.value, LocalJobState.SETTLED.value),
             ).fetchall()
         return frozenset(str(row[0]) for row in rows)
+
+    def issue_job_evidence(self, repository: str, issue_number: int) -> tuple[LocalIssueJobEvidence, ...]:
+        """Read all retained jobs and effects for one exact repository/Issue.
+
+        Unlike recovery enumeration, diagnostic callers need to distinguish an
+        empty history from an unavailable store, so read errors are surfaced.
+        This method performs no lifecycle transitions.
+        """
+        try:
+            with self._connect() as connection:
+                rows = connection.execute(
+                    "SELECT * FROM local_jobs WHERE repository=? AND target_number=? AND kind=? ORDER BY created_at, job_id",
+                    (repository, issue_number, LocalJobKind.ISSUE_IMPLEMENTATION.value),
+                ).fetchall()
+                evidence = []
+                for row in rows:
+                    job = self._record(row)
+                    effect_rows = connection.execute(
+                        "SELECT job_id, execution_incarnation, name, state, evidence FROM local_job_effects " "WHERE job_id=? AND execution_incarnation=? ORDER BY name",
+                        (job.job_id, job.execution_incarnation),
+                    ).fetchall()
+                    effects = tuple(
+                        LocalJobEffect(
+                            str(effect["job_id"]),
+                            str(effect["execution_incarnation"]),
+                            str(effect["name"]),
+                            str(effect["state"]),
+                            str(effect["evidence"]),
+                        )
+                        for effect in effect_rows
+                    )
+                    evidence.append(LocalIssueJobEvidence(job, effects))
+            return tuple(evidence)
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            raise RuntimeError("local Issue job diagnostic read failed") from exc
 
     def claim(self, job_id: str, runner_owner: str = "") -> Optional[LocalJobClaim]:
         incarnation = str(uuid.uuid4())

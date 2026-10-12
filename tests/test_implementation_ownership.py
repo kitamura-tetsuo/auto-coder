@@ -201,6 +201,40 @@ def test_idle_bound_and_tombstoned_owner_refuses_duplicate_start(tmp_path):
     assert resumed_gate.decision is OwnershipStartDecision.CONTINUE
 
 
+def test_ordinary_duplicate_reports_honest_unknown_evidence_and_trace(tmp_path, monkeypatch):
+    """#2484 REQ-001/005: production admission stays skipped when details are absent."""
+    snapshot = _standalone_snapshot(1, (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat())
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _ready_engine(tmp_path, monkeypatch, {1: snapshot}, config)
+    github.get_issue_comments_strict.return_value = []
+    reserved = MagicMock(return_value=CandidateProcessingResult(type="issue", number=1, success=True, actions=["dispatched"]))
+    engine._process_single_candidate_reserved = reserved
+
+    owner = ImplementationOwner("issue", 1)
+    generation = engine._compute_implementation_generation(REPO, snapshot, None)
+    execution = engine.implementation_slots.start_execution(owner, generation=generation)
+    assert execution is not None
+    engine.issue_stage_routing.record_implementation_owned(REPO, 1, generation)
+    engine.implementation_slots.finish_execution(owner, execution)
+    assert engine.implementation_slots.active_execution_ids(owner) == ()
+
+    duplicate = engine._process_single_candidate_unified(REPO, Candidate("issue", dict(snapshot), 0), config, origin="worker")
+
+    assert duplicate.target_outcome is ExplicitTargetOutcome.SKIPPED
+    assert len(duplicate.actions) == 1
+    assert "duplicate automatic-start suppression" in duplicate.actions[0]
+    assert "Current outcome=unknown" in duplicate.actions[0]
+    assert "--only https://github.com/owner/repo/issues/1 --force --retry" in duplicate.actions[0]
+    assert reserved.call_count == 0
+    trace = get_trace_collector().get_snapshot(repository=REPO, item_type="issue", item_number=1)
+    events = [event for event in trace.events if event.stage_id == "issue.implementation-duplicate-suppression"]
+    assert len(events) == 1
+    assert events[0].outcome == Outcome.SKIPPED.value
+    assert "historical durable start is not proof" in events[0].facts["explanation"]
+
+
 def test_busy_with_different_generation_defers_without_owning_new_one(tmp_path):
     """REQ-006: retained evidence under an older generation defers a distinct new one."""
     slots, routing = _stores(tmp_path)

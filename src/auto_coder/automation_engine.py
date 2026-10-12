@@ -78,6 +78,7 @@ from .implementation_reclamation_scheduler import (
     run_due_reclamation_checks,
     schedule_reevaluation_for_pr_owner,
 )
+from .implementation_skip_diagnostic import explain_already_owned
 from .implementation_slots import (
     ImplementationHierarchyConflict,
     ImplementationHierarchyUnavailable,
@@ -7247,7 +7248,27 @@ class AutomationEngine:
                 return result
         if already_owned:
             result.target_outcome = ExplicitTargetOutcome.SKIPPED
-            result.actions = ["Skipped - Implementation generation already has a durable production start"]
+            assert implementation_key is not None
+            try:
+                skip_diagnostic = explain_already_owned(
+                    self._get_local_job_store(),
+                    repo_name,
+                    item_number,
+                    implementation_key,
+                    slots.current_execution_id(owner) or "",
+                )
+                explanation = skip_diagnostic.message
+            except Exception:
+                logger.opt(exception=True).debug("Duplicate-start diagnostic failed for issue#{}; preserving refusal", item_number)
+                explanation = "Skipped - duplicate automatic-start suppression: this Implementation generation already has a durable " "production start. A historical durable start is not proof of successful implementation. " "Supplementary outcome evidence is unavailable."
+            result.actions = [explanation]
+            _record_issue_stage_result(
+                item_number,
+                "issue.implementation-duplicate-suppression",
+                f"issue#{item_number} duplicate automatic-start suppression",
+                Outcome.SKIPPED,
+                {"generation": implementation_key, "explanation": explanation},
+            )
             return result
         if execution_id is None:
             reason = "active execution already exists" if slots.active_execution_ids(owner) else "logical implementation limit is occupied"
