@@ -53,6 +53,14 @@ policies:
     - Stop requesting further repair only when every applicable blocker is independently resolved or invalidated, affected requirements are revalidated, and unaffected coverage is validly carried forward; omitted unresolved blockers, insufficient evidence, or retry exhaustion must never be converted into PASS or permission to merge (REQ-007).
     - Ask for observable correction evidence and production-boundary coverage rather than pass-only/source-text/helper substitutes; test-oracle gaps must not demand unproved production changes, and unable implementation agents must report inability without fabricating coverage or resolving review threads (REQ-008).
 
+  task_scoped_test_execution: |-
+    TASK-SCOPED TEST EXECUTION POLICY:
+    - When this task permits test execution, run only tests relevant to the current implementation or correction scope. Relevant tests exercise the changed behavior, its directly affected integration or dependency boundaries, and the regression being implemented or repaired. Select explicit test files or cases, or use another justified bounded affected-test selection; relevance is behavioral and can include a focused integration or end-to-end test outside edited directories.
+    - Before running a selected command, establish that the repository runner or wrapper honors that selection. Do not run an unfiltered whole-repository, all-project, or all-suite command, and do not recreate a full-suite run by iterating every file, shard, package, or delegated agent. The complete repository test suite is run by CI, not by the agent.
+    - If the command cannot be scoped, its scope is unknown, or no relevant runnable tests can be identified, do not fall back to the full suite. Preserve required regression-test implementation work and report the specific verification that was not run and why. Never skip or delete required tests, weaken assertions, or claim coverage merely because execution is restricted.
+    - Report each selected command and scope truthfully with its observed passed, failed, interrupted, or not-run outcome, using the invocation's existing output contract. Do not present unexecuted full-suite tests as passed or fabricate success because CI owns full-suite execution.
+    - This policy overrides generic repository guidance to run all tests, but grants no new permission. Explicit no-test, no-shell, and no-edit constraints remain stricter. It does not alter controller-run tests, CI or merge gates, retries, provider lifetime or timeouts, and semantic prompt evaluation remains advisory rather than merge-blocking.
+
 muse:
   execution: |-
     Operate in $mode mode and complete this task in one execution:
