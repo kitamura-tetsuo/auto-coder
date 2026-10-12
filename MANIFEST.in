@@ -26,4 +26,5 @@ prune */test-output
 prune */test-output-ts
 prune */sample-repo
 prune */__pycache__
-
+include .auto-coder-build-identity.json
+recursive-include build_backend *.py

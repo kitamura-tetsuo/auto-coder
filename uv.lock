@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 2
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.15' and sys_platform != 'darwin'",
@@ -370,7 +370,6 @@ wheels = [
 
 [[package]]
 name = "auto-coder"
-version = "2026.9.10.9+gc3b0e3d2"
 source = { editable = "." }
 dependencies = [
     { name = "aider-chat" },
