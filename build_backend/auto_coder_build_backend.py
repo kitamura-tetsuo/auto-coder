@@ -26,6 +26,11 @@ IDENTITY = ROOT / ".auto-coder-build-identity.json"
 PREPARED_IDENTITY = "auto-coder-build-identity.json"
 
 
+def _selected_identity():
+    carried = Path(os.environ.get("AUTO_CODER_BUILD_IDENTITY_FILE", IDENTITY))
+    return deserialize_build_identity(carried.read_text(encoding="utf-8")) if carried.is_file() else resolve_build_identity(ROOT)
+
+
 def _assert_metadata_version(record):
     pkg_info = ROOT / "PKG-INFO"
     if pkg_info.is_file():
@@ -81,7 +86,8 @@ def build_sdist(sdist_directory, config_settings=None):
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     if metadata_directory:
         captured = Path(metadata_directory) / PREPARED_IDENTITY
-        if not captured.is_file() or deserialize_build_identity(captured.read_text(encoding="utf-8")) != resolve_build_identity(ROOT):
+        current = _selected_identity()
+        if not captured.is_file() or deserialize_build_identity(captured.read_text(encoding="utf-8")) != current:
             raise ValueError("Source identity changed after metadata preparation")
     return _with_identity(_setuptools.build_wheel, wheel_directory, config_settings, metadata_directory)
 
@@ -92,7 +98,7 @@ def build_editable(wheel_directory, config_settings=None, metadata_directory=Non
 
 def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
     result = _with_identity(_setuptools.prepare_metadata_for_build_wheel, metadata_directory, config_settings)
-    record = resolve_build_identity(ROOT)
+    record = _selected_identity()
     (Path(metadata_directory) / PREPARED_IDENTITY).write_text(serialize_build_identity(record), encoding="utf-8")
     return result
 
