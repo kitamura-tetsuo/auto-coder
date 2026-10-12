@@ -290,7 +290,17 @@ def test_prepare_image_records_provenance_and_exports_github_env(tmp_path):
     env_file = tmp_path / "github_env"
     env_file.touch()
 
-    with patch("subprocess.run") as mock_run, patch("subprocess.Popen") as mock_popen:
+    from auto_coder.build_identity import BuildIdentity
+
+    identity = BuildIdentity(
+        state="clean",
+        version=f"2026.10.12.1+g{'b' * 40}",
+        source_revision="b" * 40,
+        source_date_epoch=1791763200,
+        revision_count=1,
+        reason=None,
+    )
+    with patch("subprocess.run") as mock_run, patch("subprocess.Popen") as mock_popen, patch("scripts.prepare_opencode_image.resolve_build_identity", return_value=identity):
         # Mock git rev-parse HEAD
         def fake_run(cmd, *args, **kwargs):
             if cmd == ["docker", "info"]:
