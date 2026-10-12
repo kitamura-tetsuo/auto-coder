@@ -276,6 +276,7 @@ def test_production_runner_posts_at_real_adapter_manager_boundary_after_false_st
     runner = LocalJobRunner(
         store,
         InvocationAdmissionGate(),
+        repository="owner/repo",
         capacity=1,
         adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
         job_ids=frozenset({false_start.job_id, actual_start.job_id}),
