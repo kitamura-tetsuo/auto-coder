@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
@@ -36,8 +37,12 @@ from auto_coder.implementation_slots import (
     ImplementationSlotRepository,
     ImplementationSlotUnavailable,
 )
+from auto_coder.issue_job_finalizer import IssueJobFinalizer
 from auto_coder.issue_processor import handle_stale_jules_issue_sessions
 from auto_coder.issue_stage_routing import IssueStageRoutingStore
+from auto_coder.llm_backend_config import LLMBackendConfiguration
+from auto_coder.local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobKind, LocalJobState, LocalJobStore
+from auto_coder.local_job_runner import LocalJobExecutionResult, LocalJobRunner
 from auto_coder.specification_analyzer import SpecificationAnalysisResult
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
 from auto_coder.stale_jules_recovery import capture_stale_jules_recovery, find_pending_stale_jules_recovery
@@ -233,6 +238,104 @@ def test_ordinary_duplicate_reports_honest_unknown_evidence_and_trace(tmp_path, 
     assert len(events) == 1
     assert events[0].outcome == Outcome.SKIPPED.value
     assert "historical durable start is not proof" in events[0].facts["explanation"]
+
+
+def test_failed_production_local_job_is_explained_on_ordinary_reprocessing(tmp_path, monkeypatch):
+    """#2484 REQ-006: cross admission, durable handoff, provider, retirement, and duplicate diagnostics."""
+    get_trace_collector().clear()
+    snapshot = _standalone_snapshot(1, (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat())
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _ready_engine(tmp_path, monkeypatch, {1: snapshot}, config)
+    github.get_issue_comments_strict.return_value = []
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    engine.local_job_store = store
+    llm_config = LLMBackendConfiguration.load_from_dict({"backends": {"controlled-local": {"backend_type": "codex", "model": "test"}}})
+    backend_creation = MagicMock(return_value=MagicMock())
+    monkeypatch.setattr("auto_coder.issue_processor._ordinary_issue_candidates", lambda _repo: ["controlled-local"])
+    monkeypatch.setattr("auto_coder.llm_backend_config.get_llm_config", lambda **_kwargs: llm_config)
+    monkeypatch.setattr("auto_coder.cli_helpers.build_backend_manager", backend_creation)
+    monkeypatch.setattr("auto_coder.issue_processor.get_current_attempt", lambda *_args: 0)
+    monkeypatch.setattr("auto_coder.issue_processor.get_commit_log", lambda *_args, **_kwargs: "baseline")
+    monkeypatch.setattr("auto_coder.automation_engine.resolve_authoritative_item_type", lambda *_args: "issue")
+
+    admitted = engine._process_single_candidate_unified(REPO, Candidate("issue", dict(snapshot), 0), config, origin="worker")
+
+    assert admitted.dispatch_result is not None
+    assert admitted.dispatch_result.outcome.value == "local_accepted", admitted.dispatch_result
+    job_id = admitted.dispatch_result.provider_reference
+    accepted = store.get(job_id)
+    assert accepted is not None and accepted.state is LocalJobState.PENDING
+
+    class ControlledFailureAdapter:
+        calls = 0
+
+        def authorize_provider_entry(self, job):  # type: ignore[no-untyped-def]
+            return job.job_id == job_id
+
+        def invoke(self, job):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            owner = ImplementationOwner("issue", job.target_number)
+            assert store.bind_workspace(
+                LocalJobClaim(job, True),
+                workspace_path=tmp_path.resolve(),
+                source_commit="source",
+                source_ref="refs/remotes/origin/main",
+                work_branch="issue-1-attempt-0",
+                publication_remote="origin",
+                owner_incarnation=engine.implementation_slots.owner_incarnation(owner),
+                owner_generation=engine.implementation_slots.implementation_generation(owner),
+            )
+            return LocalJobExecutionResult(InvocationOutcome.FAILED, "provider output", "transport failed token=private")
+
+    adapter = ControlledFailureAdapter()
+    runner = LocalJobRunner(
+        store,
+        engine.invocation_gate,
+        repository=REPO,
+        capacity=1,
+        adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
+        job_ids=frozenset({job_id}),
+    )
+    try:
+        assert runner.poll() == 1
+        deadline = time.monotonic() + 5
+        while runner.active_count():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+    finally:
+        runner.close(wait=True)
+
+    executed = store.get(job_id)
+    assert executed is not None
+    assert executed.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+    assert executed.invocation_outcome is InvocationOutcome.FAILED
+    finalizer = IssueJobFinalizer(store, engine.implementation_slots, lambda *_args: None, lambda *_args: None)
+    retired = finalizer.finalize(job_id)
+    assert retired.disposition == "failed"
+    assert store.get(job_id).state is LocalJobState.SETTLED  # type: ignore[union-attr]
+
+    owner = ImplementationOwner("issue", 1)
+    engine.implementation_slots.finish_execution(owner, accepted.implementation_execution_id)
+    assert engine.implementation_slots.release_unbound_idle_owner(owner)
+    generation = engine._compute_implementation_generation(REPO, snapshot, None)
+    assert engine.issue_stage_routing.is_implementation_owned(REPO, 1, generation)
+    duplicate = engine._process_single_candidate_unified(REPO, Candidate("issue", dict(snapshot), 0), config, origin="worker")
+
+    assert duplicate.target_outcome is ExplicitTargetOutcome.SKIPPED
+    assert "attempt=0" in duplicate.actions[0]
+    assert "invocation=failed" in duplicate.actions[0]
+    assert "transport failed token=[REDACTED]" in duplicate.actions[0]
+    assert "publication=unknown" in duplicate.actions[0]
+    assert adapter.calls == 1
+    assert backend_creation.call_count == 1
+    assert engine.issue_stage_routing.is_implementation_owned(REPO, 1, generation)
+    trace = get_trace_collector().get_snapshot(repository=REPO, item_type="issue", item_number=1)
+    duplicate_events = [event for event in trace.events if event.stage_id == "issue.implementation-duplicate-suppression"]
+    assert len(duplicate_events) == 1
+    assert duplicate_events[0].outcome == Outcome.SKIPPED.value
+    assert duplicate_events[0].facts["explanation"] == duplicate.actions[0]
 
 
 def test_busy_with_different_generation_defers_without_owning_new_one(tmp_path):

@@ -109,7 +109,7 @@ class IssueJobFinalizer:
             if record.state is LocalJobState.RESULT_RECORDED and not self._store.mark_downstream_pending(claim):
                 return IssuePublicationResult(job_id, "pending", diagnostic="could not checkpoint disposition")
             refreshed = self._store.get(job_id)
-            if refreshed is None or not self._store.settle(self._claim(refreshed), record.invocation_outcome.value):
+            if refreshed is None or not self._store.settle(self._claim(refreshed), record.diagnostic or record.invocation_outcome.value):
                 return IssuePublicationResult(job_id, "pending", diagnostic="could not settle unsuccessful result")
             self._finish_execution(refreshed)
             return IssuePublicationResult(job_id, record.invocation_outcome.value)
