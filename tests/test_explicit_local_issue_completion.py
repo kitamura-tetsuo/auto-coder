@@ -125,7 +125,7 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
         monkeypatch.setattr(store, "record_result", checkpoint)
     if external:
         monkeypatch.setattr("auto_coder.automation_engine.runner_owner_alive", lambda owner: True if owner == "external-owner" else None)
-        external_runner = LocalJobRunner(store, engine.invocation_gate, capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: IssueLocalJobAdapter(engine, "owner/repo", store, slots, source)}, runner_id="external-owner", job_ids=frozenset({accepted.job_id}))
+        external_runner = LocalJobRunner(store, engine.invocation_gate, repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: IssueLocalJobAdapter(engine, "owner/repo", store, slots, source)}, runner_id="external-owner", job_ids=frozenset({accepted.job_id}))
         assert external_runner.poll() == 1
         assert entered.wait(10)
         if checkpoint_pause:

@@ -1,23 +1,27 @@
 from __future__ import annotations
 
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from multiprocessing import get_context
 from pathlib import Path
 from threading import Event, Lock, Thread
 
-from auto_coder.invocation_admission import InvocationAdmissionGate
+import pytest
+
+from auto_coder.invocation_admission import InvocationAdmissionGate, InvocationState
 from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
-from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore
+from auto_coder.local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobKind, LocalJobOffer, LocalJobRecord, LocalJobState, LocalJobStore
 from auto_coder.local_job_runner import LocalJobExecutionResult, LocalJobRunner
 
 
-def _accepted(tmp_path: Path, attempt: str, prompt: str = "implement") -> tuple[LocalJobStore, str]:
+def _accepted(tmp_path: Path, attempt: str, prompt: str = "implement", repository: str = "owner/repo") -> tuple[LocalJobStore, str]:
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
     guard = IssueDispatchGuard(tmp_path / f"{attempt}.sqlite3")
-    identity = IssueAttemptIdentity("owner", "repo", 42, attempt)
+    owner, repo = repository.split("/", 1)
+    identity = IssueAttemptIdentity(owner, repo, 42, attempt)
     assert guard.reserve(identity, CandidateHandoff("codex", "local")).admitted
-    offer = LocalJobOffer(LocalJobKind.ISSUE_IMPLEMENTATION, "owner/repo", 42, attempt, "codex", prompt)
+    offer = LocalJobOffer(LocalJobKind.ISSUE_IMPLEMENTATION, repository, 42, attempt, "codex", prompt)
     assert store.offer_issue(offer, identity, guard) is not None
     return store, offer.job_id
 
@@ -55,7 +59,7 @@ def test_runner_releases_submitter_and_checkpoints_real_output(tmp_path: Path) -
     store, job_id = _accepted(tmp_path, "attempt-1")
     adapter = BarrierAdapter()
     wakes: list[str] = []
-    runner = LocalJobRunner(store, InvocationAdmissionGate(), capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter}, completion_wake=lambda job: wakes.append(job.job_id))
+    runner = LocalJobRunner(store, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter}, completion_wake=lambda job: wakes.append(job.job_id))
 
     assert runner.poll() == 1
     assert adapter.entered.wait(5)
@@ -75,11 +79,122 @@ def test_runner_releases_submitter_and_checkpoints_real_output(tmp_path: Path) -
     runner.close()
 
 
+@pytest.mark.parametrize("foreign_phase", ["pending", "unentered", "artifact", "result_recorded", "downstream_pending"])
+def test_repository_scope_preserves_foreign_jobs_through_every_runner_phase(tmp_path: Path, foreign_phase: str) -> None:
+    store, foreign_id = _accepted(tmp_path, "foreign", repository="owner/other")
+    if foreign_phase != "pending":
+        claim = store.claim(foreign_id, "process:999999999:1")
+        assert claim is not None and claim.acquired
+        if foreign_phase != "unentered":
+            assert store.mark_provider_entered(claim)
+            artifact = store.persist_result_artifact(claim, InvocationOutcome.COMPLETED, "foreign output")
+            assert artifact is not None
+            if foreign_phase != "artifact":
+                assert store.record_result(claim, InvocationOutcome.COMPLETED, artifact.artifact_id)
+                if foreign_phase == "downstream_pending":
+                    assert store.mark_downstream_pending(claim)
+    with sqlite3.connect(store.path) as connection:
+        before = connection.execute("SELECT * FROM local_jobs WHERE job_id=?", (foreign_id,)).fetchone()
+    _, own_id = _accepted(tmp_path, "own")
+    adapter = BarrierAdapter()
+    adapter.release.set()
+    wakes: list[str] = []
+
+    def settle_own_job(job: LocalJobRecord) -> None:
+        assert job.job_id == own_id
+        assert store.settle(LocalJobClaim(job, True), "own publication completed")
+        wakes.append(job.job_id)
+
+    runner = LocalJobRunner(store, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter}, completion_wake=settle_own_job)
+    try:
+        assert runner.poll() == 1
+        assert adapter.entered.wait(5)
+        _wait(lambda: runner.active_count() == 0 and wakes == [own_id])
+        assert runner.poll() == 0
+        runner.recover_unsettled()
+        runner.wake_downstream()
+    finally:
+        runner.close(wait=True)
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute("SELECT * FROM local_jobs WHERE job_id=?", (foreign_id,)).fetchone() == before
+    assert adapter.calls == 1
+    assert wakes == [own_id]
+    own = store.get(own_id)
+    assert own is not None and own.state is LocalJobState.SETTLED
+
+
+class PreEntryBarrierAdapter(BarrierAdapter):
+    def authorize_provider_entry(self, job):  # type: ignore[no-untyped-def]
+        authorized = super().authorize_provider_entry(job)
+        self.entered.set()
+        assert self.release.wait(5)
+        return authorized
+
+
+def test_foreign_runner_cannot_reclaim_a_live_job_with_an_unresolvable_container_pid(tmp_path: Path) -> None:
+    store, job_id = _accepted(tmp_path, "live")
+    adapter = PreEntryBarrierAdapter()
+    # The owning process exists in another PID namespace from the observer.
+    owner = LocalJobRunner(store, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter}, runner_id="process:999999999:1")
+    observer = LocalJobRunner(store, InvocationAdmissionGate(), repository="owner/other", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: BarrierAdapter()}, job_ids=frozenset({job_id}))
+    try:
+        assert owner.poll() == 1
+        assert adapter.entered.wait(5)
+        running = store.get(job_id)
+        assert running is not None and running.state is LocalJobState.RUNNING
+        assert running.provider_entered is False
+        assert observer.poll() == 0
+        observer.recover_unsettled()
+        assert store.get(job_id) == running
+        adapter.release.set()
+        _wait(lambda: owner.active_count() == 0)
+        completed = store.get(job_id)
+        assert completed is not None and completed.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+        assert completed.execution_incarnation == running.execution_incarnation
+        assert adapter.calls == 1
+    finally:
+        adapter.release.set()
+        owner.close(wait=True)
+        observer.close(wait=True)
+
+
+def test_released_pending_row_cannot_enqueue_another_future_while_its_job_is_active(tmp_path: Path) -> None:
+    store, job_id = _accepted(tmp_path, "active")
+    adapter = PreEntryBarrierAdapter()
+    gate = InvocationAdmissionGate()
+    runner = LocalJobRunner(store, gate, repository="owner/repo", capacity=2, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter}, runner_id="process:999999999:1")
+    try:
+        assert runner.poll() == 1
+        assert adapter.entered.wait(5)
+        running = store.get(job_id)
+        assert running is not None and not running.provider_entered
+        assert store.release_dead_owner_claim(running, "external pre-entry recovery")
+        pending = store.get(job_id)
+        assert pending is not None and pending.state is LocalJobState.PENDING
+        assert len(gate.unsettled_snapshot()) == 1
+        invocation_id = gate.unsettled_snapshot()[0].invocation_id
+        assert runner.poll() == 0
+        assert store.get(job_id) == pending
+        assert len(gate.unsettled_snapshot()) == 1
+        assert runner.active_count() == 1
+        adapter.release.set()
+        _wait(lambda: runner.active_count() == 0)
+        assert adapter.calls == 0
+        unfinished = gate.unsettled_snapshot()
+        assert len(unfinished) == 1
+        assert unfinished[0].invocation_id == invocation_id
+        assert unfinished[0].state is InvocationState.CHECKPOINTING
+        assert unfinished[0].checkpoint_failure_count == 1
+    finally:
+        adapter.release.set()
+        runner.close(wait=True)
+
+
 def test_capacity_leaves_extra_job_pending_until_slot_frees(tmp_path: Path) -> None:
     store, first = _accepted(tmp_path, "attempt-1", "implement-one")
     _, second = _accepted(tmp_path, "attempt-2", "implement-two")
     adapter = BarrierAdapter()
-    runner = LocalJobRunner(store, InvocationAdmissionGate(), capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter})
+    runner = LocalJobRunner(store, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter})
 
     assert runner.poll() == 1
     assert adapter.entered.wait(5)
@@ -99,7 +214,7 @@ def test_capacity_leaves_extra_job_pending_until_slot_frees(tmp_path: Path) -> N
 def test_runner_ignores_job_kinds_without_a_registered_adapter(tmp_path: Path) -> None:
     store, issue_job = _accepted(tmp_path, "attempt-1")
     adapter = BarrierAdapter()
-    runner = LocalJobRunner(store, InvocationAdmissionGate(), capacity=1, adapters={LocalJobKind.PR_REVIEW_CORRECTION: adapter})
+    runner = LocalJobRunner(store, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.PR_REVIEW_CORRECTION: adapter})
 
     assert runner.poll() == 0
     assert store.get(issue_job).state is LocalJobState.PENDING  # type: ignore[union-attr]
@@ -120,6 +235,7 @@ def test_pr_only_runner_does_not_consume_issue_downstream_effects(tmp_path: Path
     runner = LocalJobRunner(
         store,
         InvocationAdmissionGate(),
+        repository="owner/repo",
         capacity=1,
         adapters={LocalJobKind.PR_REVIEW_CORRECTION: BarrierAdapter()},
         completion_wake=lambda job: wakes.append(job.job_id),
@@ -138,14 +254,14 @@ def test_closed_admission_and_denied_authority_never_enter_provider(tmp_path: Pa
     gate = InvocationAdmissionGate()
     gate.close_admission("test drain")
     adapter = BarrierAdapter(authorized=False)
-    runner = LocalJobRunner(store, gate, capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter})
+    runner = LocalJobRunner(store, gate, repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter})
     assert runner.poll() == 0
     assert store.get(job_id).state is LocalJobState.PENDING  # type: ignore[union-attr]
     assert adapter.calls == 0
     runner.close()
 
     open_gate = InvocationAdmissionGate()
-    runner = LocalJobRunner(store, open_gate, capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter})
+    runner = LocalJobRunner(store, open_gate, repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter})
     assert runner.poll() == 1
     _wait(lambda: runner.active_count() == 0)
     record = store.get(job_id)
@@ -158,8 +274,8 @@ def test_closed_admission_and_denied_authority_never_enter_provider(tmp_path: Pa
 def test_competing_runners_enter_provider_only_once(tmp_path: Path) -> None:
     store, job_id = _accepted(tmp_path, "attempt-1")
     adapter = BarrierAdapter()
-    first = LocalJobRunner(store, InvocationAdmissionGate(), capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter})
-    second = LocalJobRunner(LocalJobStore(store.path), InvocationAdmissionGate(), capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter})
+    first = LocalJobRunner(store, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter})
+    second = LocalJobRunner(LocalJobStore(store.path), InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter})
     assert first.poll() + second.poll() == 1
     assert adapter.entered.wait(5)
     adapter.release.set()
@@ -183,6 +299,7 @@ def test_failed_completion_wake_replays_without_reinvoking_provider(tmp_path: Pa
     runner = LocalJobRunner(
         store,
         InvocationAdmissionGate(),
+        repository="owner/repo",
         capacity=1,
         adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
         completion_wake=wake,
@@ -229,6 +346,7 @@ def test_restart_recovers_committed_result_without_reinvoking_provider(tmp_path:
     first = LocalJobRunner(
         failing_store,
         InvocationAdmissionGate(),
+        repository="owner/repo",
         capacity=1,
         adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
     )
@@ -243,6 +361,7 @@ def test_restart_recovers_committed_result_without_reinvoking_provider(tmp_path:
     restarted = LocalJobRunner(
         LocalJobStore(failing_store.path),
         InvocationAdmissionGate(),
+        repository="owner/repo",
         capacity=1,
         adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
         completion_wake=lambda job: wakes.append(job.job_id),
@@ -266,6 +385,7 @@ def test_same_runner_recovery_settles_original_drain_handle(tmp_path: Path) -> N
     runner = LocalJobRunner(
         store,
         gate,
+        repository="owner/repo",
         capacity=1,
         adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
         completion_wake=lambda job: wakes.append(job.job_id),
@@ -291,7 +411,7 @@ def test_restart_recovers_persisted_artifact_after_result_checkpoint_failure(tmp
     store = FailRecordOnceStore(accepted_store.path)
     adapter = BarrierAdapter()
     adapter.release.set()
-    first = LocalJobRunner(store, InvocationAdmissionGate(), capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter})
+    first = LocalJobRunner(store, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter})
     assert first.poll() == 1
     assert adapter.entered.wait(5)
     _wait(lambda: first.active_count() == 0)
@@ -305,6 +425,7 @@ def test_restart_recovers_persisted_artifact_after_result_checkpoint_failure(tmp
     restarted = LocalJobRunner(
         restarted_store,
         InvocationAdmissionGate(),
+        repository="owner/repo",
         capacity=1,
         adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
         completion_wake=lambda job: wakes.append(job.job_id),
@@ -323,7 +444,7 @@ def test_restart_recovers_persisted_artifact_after_result_checkpoint_failure(tmp
 def test_blocking_completion_notification_never_occupies_submitter_or_capacity(tmp_path: Path) -> None:
     store, completed_id = _accepted(tmp_path, "attempt-1", "implement-completed")
     first_adapter = BarrierAdapter()
-    runner = LocalJobRunner(store, InvocationAdmissionGate(), capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: first_adapter})
+    runner = LocalJobRunner(store, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: first_adapter})
     assert runner.poll() == 1
     assert first_adapter.entered.wait(5)
     first_adapter.release.set()
@@ -373,6 +494,7 @@ def _run_until_preentry_blocked(store_path: str, marker: str) -> None:
     runner = LocalJobRunner(
         LocalJobStore(Path(store_path)),
         InvocationAdmissionGate(),
+        repository="owner/repo",
         capacity=1,
         adapters={LocalJobKind.ISSUE_IMPLEMENTATION: PreentryProcessAdapter(marker)},
     )
@@ -396,7 +518,7 @@ def test_restart_recovers_dead_preentry_owner_but_suppresses_ambiguous_owner(tmp
 
     adapter = BarrierAdapter()
     adapter.release.set()
-    restarted = LocalJobRunner(store, InvocationAdmissionGate(), capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter})
+    restarted = LocalJobRunner(store, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter})
     assert restarted.poll() == 1
     assert adapter.entered.wait(5)
     _wait(lambda: restarted.active_count() == 0)
@@ -428,6 +550,7 @@ def test_empty_actual_output_is_still_durably_checkpointed(tmp_path: Path) -> No
     runner = LocalJobRunner(
         store,
         InvocationAdmissionGate(),
+        repository="owner/repo",
         capacity=1,
         adapters={LocalJobKind.ISSUE_IMPLEMENTATION: EmptyOutputAdapter()},
     )
@@ -454,6 +577,7 @@ def test_failed_result_checkpoint_never_signals_downstream_completion(tmp_path: 
     runner = LocalJobRunner(
         store,
         InvocationAdmissionGate(),
+        repository="owner/repo",
         capacity=1,
         adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
         completion_wake=lambda job: wakes.append(job.job_id),

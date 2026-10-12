@@ -2296,6 +2296,21 @@ tests/test_local_job_handoff.py`.
 
 ## Durable local runner execution
 
+Runner admission and recovery are now restricted to the explicitly supplied
+repository and registered job kinds, including exact-job command scopes. The
+durable job row remains the production evidence for pre-provider ownership;
+foreign controllers cannot change its state, execution incarnation, diagnostics,
+or completion notifications. This changes admission scope without adding event
+fields or claiming domain completion. Run `bash scripts/test.sh
+tests/test_local_job_runner.py` for
+`test_repository_scope_preserves_foreign_jobs_through_every_runner_phase` and
+`test_foreign_runner_cannot_reclaim_a_live_job_with_an_unresolvable_container_pid`:
+they cross the actual runner/SQLite boundary and assert preserved foreign rows,
+uninterrupted own-job execution, and repository-local completion wakes.
+`test_released_pending_row_cannot_enqueue_another_future_while_its_job_is_active`
+also verifies that an externally released pre-entry row cannot accumulate
+duplicate invocation-admission handles or hide the original active future.
+
 `LocalJobRunner` adds durable provider-entry, runner-owner, actual-result, and
 downstream-eligibility evidence to the same repository-scoped local-job store.
 This is deliberately not presented as an existing `TraceCollector` completion:

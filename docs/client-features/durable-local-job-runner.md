@@ -7,6 +7,16 @@ remain durably pending. `capacity` is mandatory and must be at least one.
 
 Each job kind has a registered domain adapter. The adapter rechecks current
 authoritative provider-entry permission for the exact claimed incarnation.
+Every runner requires an explicit repository. Discovery, claim selection,
+checkpoint recovery, dead-owner reclamation, and downstream notifications are
+restricted to that repository and its registered job kinds, intersected with
+any exact-job scope. Controllers sharing the local-job database therefore never
+claim or reclaim another repository's jobs, including when that controller's
+PID cannot be resolved from the observing container. An older foreign job cannot
+consume a runner slot or starve the repository's own pending work.
+If external recovery returns a row to pending while this runner's pre-entry
+future is still active, polling leaves it pending until that future exits.
+It never replaces the active future or creates duplicate admission handles.
 Missing, failing, or negative authorization returns a positively unentered job
 to pending and cannot invoke a provider. Before calling an authorized adapter,
 the runner durably records its owner and provider entry. A running record with
@@ -43,6 +53,10 @@ result-artifact checkpoint remains running for reconciliation; forced shutdown
 does not manufacture completion.
 
 Regression coverage is in `tests/test_local_job_runner.py`.
+Repository isolation regressions cover foreign pending jobs, pre-entry owners,
+result artifacts, result checkpoints, and downstream notifications, plus a live
+pre-entry authorization barrier whose owner PID is unavailable to a foreign
+repository runner.
 
 An optional immutable `job_ids` scope restricts execution, checkpoint recovery,
 and downstream notifications to those exact envelopes. Explicit single-Issue

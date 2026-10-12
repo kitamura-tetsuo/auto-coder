@@ -10,8 +10,10 @@ Daemon invalidations and explicit `process-issues --only` dispatch lazily open
 the same durable authority, so an explicit route does not fall back to a
 synchronous editing call merely because `start_automation` was not entered.
 
-The daemon polls the durable store on a runner-owned executor lane. Immediately
-before provider entry, the Issue adapter strictly refetches the open Issue,
+The daemon polls the durable store on a runner-owned executor lane.
+The lane is explicitly bound to the daemon's repository; it cannot claim,
+recover, or notify jobs belonging to another repository in the shared store.
+Immediately before provider entry, the Issue adapter strictly refetches the open Issue,
 reapplies the normal readiness, family, specification, dependency and author
 authority path, verifies the exact dispatch incarnation and attempt, and
 requires the original implementation owner to remain active. Refusal returns
