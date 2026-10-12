@@ -189,6 +189,7 @@ def _take_issue_actions(
     backend_manager: Optional[BackendManager] = None,
     implementation_slots: Optional[ImplementationSlotRepository] = None,
     retry_authority: Optional[ImplementationRetryRequest] = None,
+    implementation_attempt: Optional[str] = None,
     raise_on_failure: bool = False,
 ) -> List[str]:
     """Take actions on an issue using direct LLM CLI analysis and implementation.
@@ -251,13 +252,21 @@ def _take_issue_actions(
                 backend_manager = create_high_score_cloud_backend_manager() or create_high_score_backend_manager()
 
         # Ask LLM CLI to analyze the issue and take appropriate actions
-        if implementation_slots is None:
-            if raise_on_failure:
-                action_results = _apply_issue_actions_directly(repo_name, issue_data, config, github_client, backend_manager=backend_manager, raise_on_failure=True)
-            else:
-                action_results = _apply_issue_actions_directly(repo_name, issue_data, config, github_client, backend_manager=backend_manager)
-        else:
-            if raise_on_failure:
+        from .local_issue_start_notification import bind_synchronous_issue_start_notification
+
+        notification_attempt = retry_authority.request_id if retry_authority is not None else implementation_attempt or "legacy-synchronous"
+        with bind_synchronous_issue_start_notification(
+            repository=repo_name,
+            issue_number=issue_number,
+            implementation_attempt=notification_attempt,
+            github_client=github_client,
+        ):
+            if implementation_slots is None:
+                if raise_on_failure:
+                    action_results = _apply_issue_actions_directly(repo_name, issue_data, config, github_client, backend_manager=backend_manager, raise_on_failure=True)
+                else:
+                    action_results = _apply_issue_actions_directly(repo_name, issue_data, config, github_client, backend_manager=backend_manager)
+            elif raise_on_failure:
                 action_results = _apply_issue_actions_directly(repo_name, issue_data, config, github_client, backend_manager=backend_manager, implementation_slots=implementation_slots, raise_on_failure=True)
             else:
                 action_results = _apply_issue_actions_directly(repo_name, issue_data, config, github_client, backend_manager=backend_manager, implementation_slots=implementation_slots)
@@ -1472,6 +1481,7 @@ def _dispatch_issue_candidates(
                     github_client,
                     backend_manager=manager,
                     implementation_slots=implementation_slots,
+                    implementation_attempt=identity.implementation_attempt_id,
                     raise_on_failure=True,
                     **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
                 )

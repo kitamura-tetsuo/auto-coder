@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Iterator
+from contextvars import ContextVar, Token
+from dataclasses import dataclass
+from typing import Callable, Iterator
 
 from .execution_trace import EventKind, Outcome, current_scope, get_trace_collector
 from .logger_config import get_logger
@@ -11,9 +13,36 @@ from .logger_config import get_logger
 logger = get_logger(__name__)
 
 
+@dataclass(frozen=True)
+class LocalLLMCallStart:
+    backend: str
+    model: str
+
+
+LocalLLMStartCallback = Callable[[LocalLLMCallStart], None]
+_start_callback: ContextVar[LocalLLMStartCallback | None] = ContextVar("local_llm_start_callback", default=None)
+
+
+def bind_local_llm_start_callback(callback: LocalLLMStartCallback) -> Token[LocalLLMStartCallback | None]:
+    """Bind an Issue-owned side effect to the actual local client boundary."""
+    return _start_callback.set(callback)
+
+
+def reset_local_llm_start_callback(token: Token[LocalLLMStartCallback | None]) -> None:
+    _start_callback.reset(token)
+
+
 @contextmanager
 def observe_local_llm_call(*, backend: str, backend_type: str, provider: str | None, model: str | None, invocation_id: str, continuation: bool, is_noedit: bool) -> Iterator[None]:
     """Bracket the actual client call after workspace preparation and admission."""
+    callback = _start_callback.get()
+    if callback is not None and not is_noedit:
+        try:
+            callback(LocalLLMCallStart(backend=backend, model=model or "unknown"))
+        except Exception as exc:
+            # GitHub notification evidence is deliberately outside invocation
+            # authority. Even a durable-state failure cannot stop the client.
+            logger.warning("Local Issue start notification failed before client dispatch: {}", type(exc).__name__)
     collector = get_trace_collector()
     scope = current_scope()
     facts = {

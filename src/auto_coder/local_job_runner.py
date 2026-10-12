@@ -109,6 +109,7 @@ class LocalJobRunner:
         self._active: dict[str, Future[None]] = {}
         self._checkpoint_handles: dict[str, InvocationHandle] = {}
         self._notifying: set[str] = set()
+        self._recovering_start_notifications: set[int] = set()
         self._closed = False
 
     def _discover_unsettled(self) -> tuple[LocalJobRecord, ...]:
@@ -116,6 +117,14 @@ class LocalJobRunner:
 
     def poll(self) -> int:
         """Schedule as many pending envelopes as free runner slots permit."""
+        for adapter in self.adapters.values():
+            recover_notifications = getattr(adapter, "recover_start_notifications", None)
+            if callable(recover_notifications):
+                adapter_identity = id(adapter)
+                with self._lock:
+                    if adapter_identity not in self._recovering_start_notifications and not self._closed:
+                        self._recovering_start_notifications.add(adapter_identity)
+                        self._notification_executor.submit(self._recover_start_notifications, adapter_identity, recover_notifications)
         self.recover_unsettled()
         self.wake_downstream()
         with self._lock:
@@ -217,6 +226,15 @@ class LocalJobRunner:
         finally:
             with self._lock:
                 self._notifying.discard(job.job_id)
+
+    def _recover_start_notifications(self, adapter_identity: int, recover: Callable[[], None]) -> None:
+        try:
+            recover()
+        except Exception as exc:
+            logger.warning("Local start notification recovery failed: {}", type(exc).__name__)
+        finally:
+            with self._lock:
+                self._recovering_start_notifications.discard(adapter_identity)
 
     def _execute(self, claim: LocalJobClaim, handle: InvocationHandle) -> None:
         # Keep the same daemon admission gate visible at provider boundaries in

@@ -641,6 +641,16 @@ implementation, handoff, publication or merge. Start is dispatch evidence, not
 provider liveness. Existing schema version 1, scope propagation, generic diagram
 and decision-log rendering, and the public API fact allowlist are preserved.
 
+Local Issue implementation start comments consume this same production start
+boundary through a context-bound side effect in both durable-runner and
+synchronous ordinary-Issue origins. They add durable GitHub delivery
+state but no processing origin, admission gate, provider route, outcome, trace
+event, event fact, dashboard projection, or public API field. Consequently the
+existing `llm.local-execution` production-to-view contract and its runnable
+dashboard tests remain the authoritative visual observability coverage; focused
+comment/outbox regressions live in
+`tests/test_local_issue_start_notification.py`.
+
 `tests/test_dashboard_observability.py::test_local_llm_dispatch_reaches_mounted_detail_before_return`
 drives the real shared manager boundary with controlled client calls, asserts
 the start and log while the client is pending, exact caller attribution, fresh
