@@ -2295,6 +2295,19 @@ artifacts, and the explicit separation between invocation evidence, downstream
 pending, and terminal settlement. Run `bash scripts/test.sh
 tests/test_local_job_handoff.py`.
 
+## Durable local-job continuation evidence
+
+`LocalJobStore` now also persists executor-fenced provider-session, background
+task, result-frontier, candidate-output, and continuation-command evidence for an
+accepted local job. This is a durable resumption-path extension, but remains a
+headless evidence producer: it performs no provider dispatch and therefore adds
+no processing origin, trace event, outcome, or dashboard renderer. In particular,
+waiting, reconciliation, and command admission never reuse `LOCAL_COMPLETED` or
+make downstream effects eligible. `tests/test_local_job_continuation.py` crosses
+the real admission, claim, workspace-binding, SQLite reopen, stale-executor, task
+frontier, and ambiguous-command boundaries. Run `bash scripts/test.sh
+tests/test_local_job_continuation.py tests/test_local_job_handoff.py`.
+
 ## Durable local runner execution
 
 Runner admission and recovery are now restricted to the explicitly supplied
