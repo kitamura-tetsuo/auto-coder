@@ -113,6 +113,31 @@ def test_ignored_files_tags_refs_and_abbreviation_do_not_change_identity(tmp_pat
     assert resolve_build_identity(repo) == expected
 
 
+def test_unrelated_orphan_branch_growth_does_not_change_selected_identity(tmp_path: Path) -> None:
+    repo, revision = merge_repository(tmp_path)
+    expected = resolve_build_identity(repo)
+    assert expected.revision_count == 4
+
+    git(repo, "checkout", "--orphan", "unrelated")
+    git(repo, "rm", "-rf", ".")
+    commit(repo, "unrelated", "orphan.txt", date="2030-01-02T03:04:05Z")
+    git(repo, "checkout", "--detach", revision)
+
+    assert git(repo, "rev-list", "--count", "--all") == "5"
+    assert resolve_build_identity(repo) == expected
+
+
+def test_replacement_graft_does_not_change_actual_object_identity(tmp_path: Path) -> None:
+    repo, revision = merge_repository(tmp_path)
+    expected = resolve_build_identity(repo)
+    root = git(repo, "rev-list", "--max-parents=0", revision)
+
+    git(repo, "replace", "--graft", revision, root)
+
+    assert git(repo, "rev-list", "--count", revision) == "2"
+    assert resolve_build_identity(repo) == expected
+
+
 def test_unknown_for_invalid_unborn_and_shallow_repositories(tmp_path: Path) -> None:
     missing = resolve_build_identity(tmp_path / "missing")
     assert missing.state == "unknown" and missing.version == "0+unknown" and missing.reason
