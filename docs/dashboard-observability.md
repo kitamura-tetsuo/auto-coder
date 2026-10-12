@@ -2485,4 +2485,7 @@ existing local-job completion stages while task results remain outstanding.
 The later scheduler integration owns production resumption and any corresponding
 dashboard lifecycle.  Run `bash scripts/test.sh
 tests/test_muse_background_observation.py tests/test_local_job_continuation.py`
-to verify the current evidence boundary and durable fence.
+to verify the current evidence boundary and durable fence. The separately
+pinned real-host conformance in `tests/test_muse_background_live.py` earns the
+Muse runtime support claim but emits no Auto-Coder processing event, so it does
+not add a dashboard stage or change this observability-neutral assessment.

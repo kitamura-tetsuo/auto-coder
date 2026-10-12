@@ -23,6 +23,7 @@ from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .local_execution_boundary import get_current_local_execution_boundary
 from .logger_config import get_logger
+from .muse_background_observation import decode_muse_msp_frame
 from .muse_diagnostics import MuseInvocationObserver, TimedFrame
 from .prompt_loader import render_prompt
 from .usage_marker_utils import has_http_429_marker, has_usage_marker_match
@@ -691,13 +692,10 @@ class MuseClient(LLMClientBase):
                 raw = bytes(self._msp_stdout[:newline])
                 del self._msp_stdout[: newline + 1]
                 try:
-                    frame = json.loads(raw)
-                except json.JSONDecodeError as exc:
+                    frame = decode_muse_msp_frame(raw)
+                except ValueError as exc:
                     diag.failure_hint("invalid_frame")
                     raise RuntimeError("Muse MSP host emitted an invalid protocol frame") from exc
-                if not isinstance(frame, dict):
-                    diag.failure_hint("invalid_frame")
-                    raise RuntimeError("Muse MSP host emitted a non-object protocol frame")
                 decoded_at = diag.decoded_frame(frame) or time.monotonic()
                 if "method" in frame:
                     method = frame["method"]

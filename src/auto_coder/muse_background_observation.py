@@ -7,6 +7,7 @@ later; it never interprets silence or a missing live-task row as completion.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -49,6 +50,21 @@ class MuseRuntimeSupport:
 
 
 @dataclass(frozen=True)
+class MuseRuntimeConformanceEvidence:
+    """Facts observed from one real MSP host lifecycle.
+
+    These fields are deliberately not host-advertised capability flags.  A
+    caller may set them only after the named operation/event has crossed the
+    wire and the decoder has correlated it to the same session and task.
+    """
+
+    task_list_observed: bool = False
+    session_replay_observed: bool = False
+    task_result_delivery_observed: bool = False
+    continuation_ownership: str = ""
+
+
+@dataclass(frozen=True)
 class MuseTaskObservation:
     task_id: str
     turn_id: str
@@ -77,25 +93,40 @@ class MuseBackgroundObservation:
     provider_positions: tuple[str, ...] = ()
 
 
-def detect_muse_background_support(initialized: Mapping[str, object]) -> MuseRuntimeSupport:
-    """Earn support from advertised runtime capabilities, never a fingerprint.
+def decode_muse_msp_frame(raw: bytes) -> dict[str, object]:
+    """Decode one MSP JSON line for both production transport and replay tests."""
+    try:
+        frame = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError("Muse MSP host emitted an invalid protocol frame") from exc
+    if not isinstance(frame, dict):
+        raise ValueError("Muse MSP host emitted a non-object protocol frame")
+    return frame
 
-    Muse Code 1.4.1-R4503.1 is the first recorded positive Auto-Coder profile.
+
+def detect_muse_background_support(
+    initialized: Mapping[str, object],
+    evidence: MuseRuntimeConformanceEvidence,
+) -> MuseRuntimeSupport:
+    """Earn support from observed runtime behavior, never a fingerprint.
+
+    Muse Code 1.4.6-R6000.1 is the first recorded positive Auto-Coder profile.
     Additive schema fields and fingerprints are intentionally ignored.  Other
-    versions can qualify by advertising the same decisive capabilities.
+    versions can qualify by producing the same decisive observations.
     """
     server = initialized.get("serverInfo")
-    capabilities = initialized.get("backgroundObservationEvidence")
     version = server.get("version") if isinstance(server, Mapping) else None
-    if not isinstance(capabilities, Mapping):
-        return MuseRuntimeSupport(False, reason="runtime conformance evidence is unavailable")
-    required = ("taskListObserved", "sessionReplayObserved", "taskResultDeliveryObserved", "continuationOwnership")
-    missing = tuple(name for name in required if name not in capabilities)
+    observed = {
+        "task/list": evidence.task_list_observed,
+        "session replay": evidence.session_replay_observed,
+        "task-result delivery": evidence.task_result_delivery_observed,
+    }
+    missing = tuple(name for name, present in observed.items() if not present)
+    if not evidence.continuation_ownership:
+        missing += ("continuation ownership",)
     if missing:
-        return MuseRuntimeSupport(False, reason="missing capabilities: " + ", ".join(missing))
-    if any(capabilities[name] not in (True, "supported", "native", "controller") for name in required):
-        return MuseRuntimeSupport(False, reason="one or more decisive runtime observations are unavailable")
-    ownership = capabilities["continuationOwnership"]
+        return MuseRuntimeSupport(False, reason="missing conformance observations: " + ", ".join(missing))
+    ownership = evidence.continuation_ownership
     if ownership not in ("native", "controller"):
         return MuseRuntimeSupport(False, reason="continuation ownership is ambiguous")
     profile = f"Muse Code {version}" if isinstance(version, str) and version else "Muse MSP capability profile"
@@ -159,7 +190,21 @@ class MuseObservationFold:
         if not turn_id:
             self._gap = "result delivery omitted turn identity"
             return
-        self._incorporated.update(reference for reference in result_references if reference)
+        delivered = {reference for reference in result_references if reference}
+        self._incorporated.update(delivered)
+        for task_id, task in tuple(self._tasks.items()):
+            if task.result_reference in delivered and not task.result_delivered:
+                self._tasks[task_id] = MuseTaskObservation(
+                    task.task_id,
+                    task.turn_id,
+                    task.state,
+                    task.outcome,
+                    task.result_reference,
+                    True,
+                    task.revision,
+                    task.provenance,
+                    task.contradictory,
+                )
         if provenance and provenance not in self._positions:
             self._positions.append(provenance)
 
@@ -258,10 +303,18 @@ class MuseObservationFold:
         task = params.get("task") if isinstance(params.get("task"), Mapping) else params
         assert isinstance(task, Mapping)
         task_id = task.get("taskId", task.get("itemId", task.get("id")))
+        old = self._tasks.get(task_id) if isinstance(task_id, str) else None
         turn_id = task.get("turnId")
-        if not isinstance(task_id, str) or not task_id or not isinstance(turn_id, str) or not turn_id:
-            self._gap = "task evidence omitted task or turn identity"
+        if not isinstance(task_id, str) or not task_id:
+            self._gap = "task evidence omitted task identity"
             return
+        if not isinstance(turn_id, str) or not turn_id:
+            # Published task/list rows intentionally omit turn identity. Join a
+            # previously item-visible row; retain registry-only work with an
+            # explicit unknown lineage and keep it non-authorizing.
+            turn_id = old.turn_id if old is not None else "unknown"
+            if old is None:
+                self._gap = f"task {task_id} has no attributable turn identity"
         revision = task.get("revision", 0)
         if type(revision) is not int or revision < 0:
             self._gap = f"task {task_id} has invalid revision"
@@ -281,12 +334,13 @@ class MuseObservationFold:
         outcome = aliases.get(str(raw_outcome), MuseTaskOutcome.UNKNOWN) if terminal else MuseTaskOutcome.UNKNOWN
         result = task.get("resultReference", task.get("resultId", ""))
         result_reference = result if isinstance(result, str) else ""
+        if terminal and not result_reference:
+            result_reference = f"{task_id}@{revision}"
         delivered = bool(task.get("resultDelivered", False))
         key = (task_id, revision, provenance)
         if key in self._seen:
             return
         self._seen.add(key)
-        old = self._tasks.get(task_id)
         if old is not None and revision < old.revision:
             return
         contradictory = old.contradictory if old else False

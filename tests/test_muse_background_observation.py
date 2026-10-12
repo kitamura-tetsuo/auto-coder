@@ -6,8 +6,10 @@ from auto_coder.muse_background_observation import (
     MuseContinuationReadiness,
     MuseObservationBinding,
     MuseObservationFold,
+    MuseRuntimeConformanceEvidence,
     MuseRuntimeSupport,
     MuseTaskOutcome,
+    decode_muse_msp_frame,
     detect_muse_background_support,
     persist_muse_observation,
 )
@@ -96,18 +98,34 @@ def test_conflicting_terminal_evidence_is_non_authorizing() -> None:
     assert fold.observation().tasks[0].contradictory
 
 
-def test_capability_profile_accepts_additions_and_rejects_missing_decisive_fact() -> None:
-    initialized = {
-        "serverInfo": {"version": "1.4.1-R4503.1"},
-        "schema": {"version": 1, "fingerprint": "any-fingerprint", "additive": True},
-        "backgroundObservationEvidence": {"taskListObserved": True, "sessionReplayObserved": True, "taskResultDeliveryObserved": True, "continuationOwnership": "native", "futureField": True},
-    }
-    support = detect_muse_background_support(initialized)
-    assert support == MuseRuntimeSupport(True, "Muse Code 1.4.1-R4503.1", native_wake=True)
+def test_real_decoder_replay_preserves_adverse_notification_order() -> None:
+    transcript = Path("tests/fixtures/muse_background_adverse.ndjson")
+    frames = [decode_muse_msp_frame(line) for line in transcript.read_bytes().splitlines()]
+    fold = MuseObservationFold(_binding(), "turn-1", _support(native=True))
+    for frame in frames:
+        fold.consume(frame)
+    fold.consume_turn_admission({"turnId": "turn-2", "disposition": "queued"})
+    fold.consume_result_delivery("turn-2", ["result-1"], "cursor-3")
 
-    missing = detect_muse_background_support({**initialized, "backgroundObservationEvidence": {"taskListObserved": True}})
+    observation = fold.observation()
+    assert observation.tasks[0].task_id == "task-1"
+    assert observation.tasks[0].outcome is MuseTaskOutcome.SUCCESS
+    assert observation.active_turns == ("turn-2",)
+    assert observation.readiness is MuseContinuationReadiness.NATIVE_ACTIVE
+
+
+def test_capability_profile_requires_observed_conformance_and_accepts_additions() -> None:
+    initialized = {
+        "serverInfo": {"version": "1.4.6-R6000.1", "additive": True},
+        "schema": {"version": 1, "fingerprint": "any-fingerprint", "additive": True},
+    }
+    evidence = MuseRuntimeConformanceEvidence(True, True, True, "native")
+    support = detect_muse_background_support(initialized, evidence)
+    assert support == MuseRuntimeSupport(True, "Muse Code 1.4.6-R6000.1", native_wake=True)
+
+    missing = detect_muse_background_support(initialized, MuseRuntimeConformanceEvidence(task_list_observed=True))
     assert not missing.supported
-    assert missing.reason == "missing capabilities: sessionReplayObserved, taskResultDeliveryObserved, continuationOwnership"
+    assert missing.reason == "missing conformance observations: session replay, task-result delivery, continuation ownership"
 
 
 def test_persistence_requires_exact_fenced_job_binding(tmp_path: Path) -> None:

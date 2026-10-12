@@ -26,14 +26,18 @@ does not establish controller ownership.  Final assistant text retains its
 turn association and is withheld while work or result delivery is outstanding;
 failed and cancelled task history is retained for a later turn to interpret.
 
-Runtime support is capability-earned rather than fingerprint-allowlisted.  The
-recorded positive profile is Muse Code `1.4.1-R4503.1`, with conformance evidence
-from `task/list`, session view replay, task-result delivery, and unambiguous
-native or controller continuation ownership. Harmless additive fields do not invalidate
-that profile.  A host missing one of those decisive facts produces a precise
-unsupported reason and cannot authorize continuation.  This declaration must
-be corroborated for a deployed binary by replaying its real MSP initialization
-and background lifecycle; a version string alone is not authority.
+Runtime support is behavior-earned rather than fingerprint-allowlisted. The
+recorded positive profile is Muse Code `1.4.6-R6000.1` (MSP server `1.4.6`). Its
+dedicated live test starts that exact released binary against a loopback model
+transport, makes a real Bash tool wait on a gate, backgrounds it with
+`task/background`, observes it in `task/list`, lets the foreground turn finish,
+then releases the gate and observes the tool terminal, result delivery, native
+continuation turn, and `session/read` replay. The binary download is pinned by
+release and SHA-256 in `.github/workflows/muse-live-tests.yml`. Harmless additive
+fields do not invalidate a profile, but initialization metadata and a version
+string alone cannot earn support. A caller must supply all decisive facts from
+one correlated runtime lifecycle; missing facts produce a precise unsupported
+reason.
 
 `persist_muse_observation` writes normalized tasks and readiness only through
 the current `LocalJobStore` executor fence.  It rechecks session, backend,
@@ -42,6 +46,9 @@ It does not start or stop a host, submit a follow-up, recreate work, publish,
 or settle domain ownership.
 
 Run `bash scripts/test.sh tests/test_muse_background_observation.py
-tests/test_local_job_continuation.py` for adverse transcript ordering, missing
-inventory, contradictory terminals, native wake, capability compatibility,
-and exact fenced persistence coverage.
+tests/test_local_job_continuation.py` for adverse transcript ordering through
+the production decoder, missing inventory, contradictory terminals, native
+wake, compatibility, and exact fenced persistence coverage. With the pinned
+host installed, run `AUTOCODER_MUSE_CONFORMANCE_BIN=/path/to/muse bash
+scripts/test.sh -m muse_live tests/test_muse_background_live.py` for the
+executable positive profile.
