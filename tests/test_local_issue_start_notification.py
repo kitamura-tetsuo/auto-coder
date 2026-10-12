@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -537,8 +538,9 @@ def test_synchronous_candidate_dispatch_binds_attempt_notification_before_return
         assert comment["repository"] == "owner/repo" and comment["number"] == "2471"
         assert "Backend: `sync-alias`" in comment["body"]
         assert "Model: `sync-model`" in comment["body"]
-        assert "Implementation attempt:" in comment["body"]
-        assert "auto-coder-local-implementation-start:" in comment["body"]
+        synchronous_identity = hashlib.sha256(b"synchronous-local-issue:owner/repo:2471:7").hexdigest()
+        assert f"Implementation attempt: `{synchronous_identity}`" in comment["body"]
+        assert notification_marker(synchronous_identity) in comment["body"]
         release.set()
         worker.join(10)
     assert not worker.is_alive()
