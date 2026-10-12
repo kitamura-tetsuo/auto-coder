@@ -4592,6 +4592,16 @@ class AutomationEngine:
                             item_number=item_number,
                             details={"worker_id": worker_id, "outcome": ExplicitTargetOutcome.DEFERRED.value, "actions": result.actions},
                         )
+                    elif candidate.type == "issue" and result.target_outcome is ExplicitTargetOutcome.SKIPPED:
+                        diagnostic = result.target_reason or "; ".join(result.actions) or "evaluation skipped"
+                        logger.info("Worker {} evaluated/skipped issue #{}: {}", worker_id, item_number, diagnostic)
+                        get_trace_logger().log(
+                            "Worker",
+                            f"Worker {worker_id} evaluated/skipped issue #{item_number}",
+                            item_type="issue",
+                            item_number=item_number,
+                            details={"worker_id": worker_id, "outcome": ExplicitTargetOutcome.SKIPPED.value, "actions": result.actions},
+                        )
                     elif result.error:
                         logger.error(f"Worker {worker_id} failed to process {candidate.type} #{item_number}: {result.error}")
                         get_trace_logger().log("Worker", f"Worker {worker_id} failed to process {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id, "error": result.error})
