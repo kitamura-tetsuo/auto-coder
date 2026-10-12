@@ -40,8 +40,8 @@ def test_live_inventory_disappearance_does_not_manufacture_success() -> None:
 
     fold.consume(
         _event(
-            "task/completed",
-            task={"taskId": "task-1", "turnId": "turn-1", "revision": 2, "outcome": "failed", "resultId": "result-1", "resultDelivered": True},
+            "item/completed",
+            item={"itemId": "task-1", "kind": "toolCall", "background": True, "turnId": "turn-1", "revision": 2, "status": "failed", "resultId": "result-1", "resultDelivered": True},
             viewCursor="opaque-a",
         )
     )
@@ -56,19 +56,21 @@ def test_live_inventory_disappearance_does_not_manufacture_success() -> None:
 def test_adverse_order_duplicate_foreign_and_native_continuation() -> None:
     fold = MuseObservationFold(_binding(), "turn-1", _support(native=True))
     terminal = _event(
-        "task/completed",
-        task={"taskId": "task-1", "turnId": "turn-1", "revision": 2, "outcome": "completed", "resultId": "result-1", "resultDelivered": True},
+        "item/completed",
+        item={"itemId": "task-1", "kind": "toolCall", "background": True, "turnId": "turn-1", "revision": 2, "status": "completed", "resultId": "result-1", "resultDelivered": True},
         viewCursor="cursor-2",
     )
     fold.consume(terminal)  # notification before the command acknowledgement
     fold.consume(terminal)  # replay duplicate
-    fold.consume({"method": "task/completed", "params": {"sessionId": "foreign", "task": {"taskId": "task-x", "turnId": "turn-x"}}})
-    fold.consume(_event("turn/queued", turnId="turn-2", incorporatedResultIds=["result-1"], viewCursor="cursor-3"))
+    fold.consume({"method": "item/completed", "params": {"sessionId": "foreign", "item": {"itemId": "task-x", "kind": "toolCall", "background": True, "turnId": "turn-x"}}})
+    fold.consume_turn_admission({"turnId": "turn-2", "disposition": "queued"})
+    fold.consume(_event("turn/started", turnId="turn-2", viewCursor="cursor-3"))
+    fold.consume_result_delivery("turn-2", ["result-1"], "cursor-3")
     fold.consume(_event("turn/completed", turnId="turn-1", terminal="completed", viewCursor="cursor-4"))
 
     observation = fold.observation()
     assert [task.task_id for task in observation.tasks] == ["task-1"]
-    assert observation.queued_turns == ("turn-2",)
+    assert observation.active_turns == ("turn-2",)
     assert observation.incorporated_results == ("result-1",)
     assert observation.readiness is MuseContinuationReadiness.NATIVE_ACTIVE
 
@@ -76,8 +78,8 @@ def test_adverse_order_duplicate_foreign_and_native_continuation() -> None:
 def test_old_revision_and_old_summary_cannot_complete_new_work() -> None:
     fold = MuseObservationFold(_binding(), "turn-2", _support())
     fold.consume(_event("item/completed", item={"itemId": "old", "kind": "agentMessage", "turnId": "turn-1", "text": "old summary"}))
-    fold.consume(_event("task/started", task={"taskId": "task-2", "turnId": "turn-2", "revision": 4}))
-    fold.consume(_event("task/completed", task={"taskId": "task-2", "turnId": "turn-2", "revision": 3, "outcome": "completed", "resultDelivered": True}))
+    fold.consume(_event("item/updated", item={"itemId": "task-2", "kind": "toolCall", "background": True, "turnId": "turn-2", "revision": 4, "status": "inProgress"}))
+    fold.consume(_event("item/completed", item={"itemId": "task-2", "kind": "toolCall", "background": True, "turnId": "turn-2", "revision": 3, "status": "completed", "resultDelivered": True}))
     fold.consume(_event("turn/completed", turnId="turn-2", terminal="completed"))
 
     observation = fold.observation()
@@ -89,7 +91,7 @@ def test_old_revision_and_old_summary_cannot_complete_new_work() -> None:
 def test_conflicting_terminal_evidence_is_non_authorizing() -> None:
     fold = MuseObservationFold(_binding(), "turn-1", _support())
     for outcome in ("completed", "cancelled"):
-        fold.consume(_event("task/completed", task={"taskId": "task-1", "turnId": "turn-1", "revision": 2, "outcome": outcome, "resultDelivered": True}, viewCursor=outcome))
+        fold.consume(_event("item/completed", item={"itemId": "task-1", "kind": "toolCall", "background": True, "turnId": "turn-1", "revision": 2, "status": outcome, "resultDelivered": True}, viewCursor=outcome))
     assert fold.observation().readiness is MuseContinuationReadiness.RECONCILIATION_REQUIRED
     assert fold.observation().tasks[0].contradictory
 
@@ -98,14 +100,14 @@ def test_capability_profile_accepts_additions_and_rejects_missing_decisive_fact(
     initialized = {
         "serverInfo": {"version": "1.4.1-R4503.1"},
         "schema": {"version": 1, "fingerprint": "any-fingerprint", "additive": True},
-        "capabilities": {"taskList": True, "sessionView": True, "taskResultDelivery": True, "continuationOwnership": "native", "futureField": True},
+        "backgroundObservationEvidence": {"taskListObserved": True, "sessionReplayObserved": True, "taskResultDeliveryObserved": True, "continuationOwnership": "native", "futureField": True},
     }
     support = detect_muse_background_support(initialized)
     assert support == MuseRuntimeSupport(True, "Muse Code 1.4.1-R4503.1", native_wake=True)
 
-    missing = detect_muse_background_support({**initialized, "capabilities": {"taskList": True}})
+    missing = detect_muse_background_support({**initialized, "backgroundObservationEvidence": {"taskListObserved": True}})
     assert not missing.supported
-    assert missing.reason == "missing capabilities: sessionView, taskResultDelivery, continuationOwnership"
+    assert missing.reason == "missing capabilities: sessionReplayObserved, taskResultDeliveryObserved, continuationOwnership"
 
 
 def test_persistence_requires_exact_fenced_job_binding(tmp_path: Path) -> None:
@@ -114,8 +116,9 @@ def test_persistence_requires_exact_fenced_job_binding(tmp_path: Path) -> None:
     binding = MuseObservationBinding("codex", "session-1", claim.record.execution_incarnation, "attempt-1", tmp_path.resolve())
     fold = MuseObservationFold(binding, "turn-1", _support())
     fold.consume(_event("turn/completed", turnId="turn-1", terminal="completed"))
-    fold.consume(_event("task/completed", task={"taskId": "task-1", "turnId": "turn-1", "revision": 1, "outcome": "failed", "resultId": "result-1", "resultDelivered": True}))
-    fold.consume(_event("turn/started", turnId="turn-2", incorporatedResultIds=["result-1"]))
+    fold.consume(_event("item/completed", item={"itemId": "task-1", "kind": "toolCall", "background": True, "turnId": "turn-1", "revision": 1, "status": "failed", "resultId": "result-1", "resultDelivered": True}))
+    fold.consume(_event("turn/started", turnId="turn-2"))
+    fold.consume_result_delivery("turn-2", ["result-1"], "delivery-1")
     fold.consume(_event("turn/completed", turnId="turn-2", terminal="completed"))
     assert persist_muse_observation(store, offer.job_id, "executor", fold.observation())
     retained = store.get_continuation(offer.job_id)

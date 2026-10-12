@@ -27,9 +27,9 @@ turn association and is withheld while work or result delivery is outstanding;
 failed and cancelled task history is retained for a later turn to interpret.
 
 Runtime support is capability-earned rather than fingerprint-allowlisted.  The
-recorded positive profile is Muse Code `1.4.1-R4503.1`, with `taskList`,
-`sessionView`, `taskResultDelivery`, and an unambiguous native or controller
-`continuationOwnership` capability.  Harmless additive fields do not invalidate
+recorded positive profile is Muse Code `1.4.1-R4503.1`, with conformance evidence
+from `task/list`, session view replay, task-result delivery, and unambiguous
+native or controller continuation ownership. Harmless additive fields do not invalidate
 that profile.  A host missing one of those decisive facts produces a precise
 unsupported reason and cannot authorize continuation.  This declaration must
 be corroborated for a deployed binary by replaying its real MSP initialization

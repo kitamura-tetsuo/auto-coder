@@ -85,16 +85,16 @@ def detect_muse_background_support(initialized: Mapping[str, object]) -> MuseRun
     versions can qualify by advertising the same decisive capabilities.
     """
     server = initialized.get("serverInfo")
-    capabilities = initialized.get("capabilities")
+    capabilities = initialized.get("backgroundObservationEvidence")
     version = server.get("version") if isinstance(server, Mapping) else None
     if not isinstance(capabilities, Mapping):
-        return MuseRuntimeSupport(False, reason="initialize omitted capabilities")
-    required = ("taskList", "sessionView", "taskResultDelivery", "continuationOwnership")
+        return MuseRuntimeSupport(False, reason="runtime conformance evidence is unavailable")
+    required = ("taskListObserved", "sessionReplayObserved", "taskResultDeliveryObserved", "continuationOwnership")
     missing = tuple(name for name in required if name not in capabilities)
     if missing:
         return MuseRuntimeSupport(False, reason="missing capabilities: " + ", ".join(missing))
     if any(capabilities[name] not in (True, "supported", "native", "controller") for name in required):
-        return MuseRuntimeSupport(False, reason="one or more decisive capabilities are not supported")
+        return MuseRuntimeSupport(False, reason="one or more decisive runtime observations are unavailable")
     ownership = capabilities["continuationOwnership"]
     if ownership not in ("native", "controller"):
         return MuseRuntimeSupport(False, reason="continuation ownership is ambiguous")
@@ -133,16 +133,35 @@ class MuseObservationFold:
         position = str(cursor) if isinstance(cursor, (str, int)) else ""
         if position and position not in self._positions:
             self._positions.append(position)
-        if method in {"session/viewGap", "session/viewUnavailable"}:
+        if method in {"view/gap", "session/viewUnavailable"}:
             self._gap = str(params.get("reason") or method)
         elif method in {"turn/started", "turn/queued"}:
             self._observe_turn(method, params)
         elif method in {"turn/completed", "turn/unqueued"}:
             self._observe_turn_terminal(method, params)
-        elif method in {"task/started", "task/updated", "task/completed", "task/terminal"}:
-            self._observe_task(method, params, position)
         elif method in {"item/completed", "item/updated"}:
             self._observe_item(params, position)
+
+    def consume_turn_admission(self, result: Mapping[str, object]) -> None:
+        """Record a correlated ``turn/start`` acknowledgement as admission only."""
+        turn_id = result.get("turnId")
+        disposition = result.get("disposition")
+        if not isinstance(turn_id, str) or disposition not in {"started", "queued", "steered"}:
+            self._gap = "turn admission is invalid or unrecognized"
+            return
+        if disposition == "queued":
+            self._queued.add(turn_id)
+        elif disposition == "started":
+            self._active.add(turn_id)
+
+    def consume_result_delivery(self, turn_id: str, result_references: Iterable[str], provenance: str) -> None:
+        """Record result references proven present at a resumed turn frontier."""
+        if not turn_id:
+            self._gap = "result delivery omitted turn identity"
+            return
+        self._incorporated.update(reference for reference in result_references if reference)
+        if provenance and provenance not in self._positions:
+            self._positions.append(provenance)
 
     def consume_task_inventory(self, rows: Optional[Iterable[Mapping[str, object]]], provenance: str) -> None:
         """Fold live ``task/list`` rows; absence never terminalizes known work."""
@@ -224,9 +243,6 @@ class MuseObservationFold:
             self._queued.discard(turn_id)
         if turn_id == self.foreground_turn:
             self._foreground_state = "running"
-        incorporated = params.get("incorporatedResultIds")
-        if isinstance(incorporated, list):
-            self._incorporated.update(value for value in incorporated if isinstance(value, str))
 
     def _observe_turn_terminal(self, method: str, params: Mapping[str, object]) -> None:
         turn_id = params.get("turnId")
@@ -241,7 +257,7 @@ class MuseObservationFold:
     def _observe_task(self, method: str, params: Mapping[str, object], provenance: str) -> None:
         task = params.get("task") if isinstance(params.get("task"), Mapping) else params
         assert isinstance(task, Mapping)
-        task_id = task.get("taskId", task.get("id"))
+        task_id = task.get("taskId", task.get("itemId", task.get("id")))
         turn_id = task.get("turnId")
         if not isinstance(task_id, str) or not task_id or not isinstance(turn_id, str) or not turn_id:
             self._gap = "task evidence omitted task or turn identity"
@@ -251,7 +267,7 @@ class MuseObservationFold:
             self._gap = f"task {task_id} has invalid revision"
             return
         state_value = task.get("state", task.get("status", "running"))
-        terminal = method in {"task/completed", "task/terminal"} or state_value in {"completed", "failed", "cancelled", "interrupted"}
+        terminal = method in {"task/completed", "task/terminal", "item/completed"} or state_value not in {"inProgress", "running"}
         raw_outcome = task.get("outcome", state_value if terminal else "unknown")
         aliases = {
             "success": MuseTaskOutcome.SUCCESS,
@@ -286,8 +302,8 @@ class MuseObservationFold:
             return
         kind = item.get("kind")
         turn_id = item.get("turnId")
-        if kind in {"tool", "toolCall"}:
-            self._observe_task("task/updated", item, provenance)
+        if kind in {"tool", "toolCall"} and item.get("background") is True:
+            self._observe_task("item/completed" if params.get("item") is item and item.get("status") != "inProgress" else "item/updated", item, provenance)
         elif kind in {"message", "agentMessage"} and isinstance(turn_id, str) and isinstance(item.get("text"), str):
             self._final_assistant = str(item["text"])
             self._final_assistant_turn = turn_id
