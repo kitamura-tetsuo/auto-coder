@@ -91,6 +91,36 @@ def test_custom_label_template_receives_policy_when_it_maps_to_governed_key(tmp_
     assert prompt.count(POLICY) == 1
 
 
+def test_implementation_label_selection_cannot_bypass_policy_with_ungoverned_key(tmp_path: Path) -> None:
+    custom = tmp_path / "prompts.yaml"
+    custom.write_text(
+        """header: HEADER
+policies:
+  task_scoped_test_execution: |-
+    TASK-SCOPED TEST EXECUTION POLICY:
+    The complete repository test suite is run by CI, not by the agent.
+issue:
+  action: default
+custom:
+  test_permitting: Run tests while implementing $title.
+""",
+        encoding="utf-8",
+    )
+
+    prompt = render_prompt(
+        "issue.action",
+        path=str(custom),
+        labels=["custom"],
+        label_prompt_mappings={"custom": "custom.test_permitting"},
+        label_priorities=["custom"],
+        title="the change",
+    )
+
+    assert "Run tests while implementing the change." in prompt
+    assert prompt.count(POLICY) == 1
+    assert "The complete repository test suite is run by CI, not by the agent." in prompt
+
+
 def test_existing_cloud_session_followup_receives_new_policy_directly() -> None:
     target = ExistingPrRepairTarget("owner/repo", 52, "issue-52", "main", "abc123")
 

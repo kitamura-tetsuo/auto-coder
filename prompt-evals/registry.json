@@ -2,6 +2,21 @@
   "schema_version": 1,
   "targets": [
     {
+      "id": "task-scoped-test-execution",
+      "prompt_dependencies": [
+        {
+          "path": "src/auto_coder/prompts.yaml",
+          "keys": [
+            "policies.task_scoped_test_execution"
+          ]
+        }
+      ],
+      "config": "prompt-evals/targets/task-scoped-test-execution/promptfooconfig.yaml",
+      "cases": [
+        "prompt-evals/targets/task-scoped-test-execution/cases/*.yaml"
+      ]
+    },
+    {
       "id": "chatgpt-review-adjudication",
       "prompt_dependencies": [
         {

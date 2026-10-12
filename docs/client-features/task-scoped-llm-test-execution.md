@@ -22,6 +22,13 @@ assuming their original bootstrap included a later policy revision. Backend
 execution wrappers preserve the composed task, so configured aliases and fallback
 selection do not change the instruction.
 
+Label selection retains the policy of the originating operation even when a
+configured mapping selects a custom or otherwise non-governed template key. Jules
+pause recovery also attaches the current continuation policy immediately before
+the `sessions/:sendMessage` transport, so sessions created before a policy revision
+cannot resume under bootstrap guidance alone. Custom resume text is preserved and
+the current policy is appended.
+
 The automatic workspace-failure and test-stability repair prompts use the same
 composition path. Their task-specific instructions request only the explicit
 failing test and justified affected isolation boundaries; they never retain a
@@ -32,3 +39,6 @@ or no-edit controls remain stricter, and controller-owned test scheduling, CI
 workflows, merge gates, retry authorization, provider lifetime, and timeouts are
 unchanged. Semantic prompt evaluation is advisory; deterministic final-payload
 tests establish instruction delivery, not model compliance.
+The registered `task-scoped-test-execution` prompt-evaluation target separately
+exercises focused integration selection, forbidden suite reconstruction through
+shards, and an unscopable wrapper as advisory semantic evidence.

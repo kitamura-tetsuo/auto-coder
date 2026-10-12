@@ -388,6 +388,7 @@ def render_prompt(
     parent_issue_body: Optional[str] = None,
     is_jules: bool = False,
     include_header: bool = True,
+    _policy_key: Optional[str] = None,
     **kwargs: Any,
 ) -> str:
     """Render a prompt template identified by key with optional label-based selection.
@@ -446,6 +447,7 @@ def render_prompt(
                     parent_issue_body=parent_issue_body,
                     is_jules=is_jules,
                     include_header=include_header,
+                    _policy_key=_policy_key or key,
                     **kwargs,
                 )
                 return result  # type: ignore[no-any-return]
@@ -459,7 +461,7 @@ def render_prompt(
     # Fall back to original key-based rendering
     template_str = get_prompt_template(key, path=path)
     prompts = load_prompts(path)
-    template_str = _prepend_contract_policy(key, template_str, prompts)
+    template_str = _prepend_contract_policy(_policy_key or key, template_str, prompts)
     template = Template(template_str)
 
     params: Dict[str, Any] = {}

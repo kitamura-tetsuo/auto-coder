@@ -20,8 +20,19 @@ from urllib3.util.retry import Retry
 from .cloud_task_client_base import CloudTask, CloudTaskClientBase, CloudTaskState
 from .llm_backend_config import get_llm_config
 from .logger_config import get_logger
+from .prompt_loader import render_prompt
 
 logger = get_logger(__name__)
+
+
+def _build_jules_continuation_message(message: Optional[str]) -> str:
+    """Attach current continuation policy to legacy and custom session resumes."""
+    policy = render_prompt("jules.continuation", include_header=False).rstrip()
+    if not message:
+        return policy
+    if policy in message:
+        return message
+    return f"{message.rstrip()}\n\n{policy}"
 
 
 class JulesSessionRejectedError(RuntimeError):
@@ -840,19 +851,19 @@ class JulesClient(CloudTaskClientBase):
                 return self.approve_plan(task_id)
 
             if raw_state in ("AWAITING_USER_FEEDBACK", "AWAITING_COMMENT", "AWAITING_COMMENTS") or (isinstance(raw_state, str) and raw_state.startswith("AWAITING_")):
-                send_msg = message or "ok"
+                send_msg = _build_jules_continuation_message(message)
                 logger.info(f"Jules task {task_id} is {raw_state}; sending continuation message: {send_msg}")
                 self.send_message(task_id, send_msg)
                 return True
 
             if raw_state == "FAILED" or is_timeout:
-                send_msg = message or "ok"
+                send_msg = _build_jules_continuation_message(message)
                 logger.info(f"Jules task {task_id} is {raw_state} (timeout={is_timeout}); sending continuation message: {send_msg}")
                 self.send_message(task_id, send_msg)
                 return True
 
             if raw_state == "COMPLETED" and not pull_request:
-                send_msg = message or "ok"
+                send_msg = _build_jules_continuation_message(message)
                 logger.info(f"Jules task {task_id} is COMPLETED without PR; sending continuation message: {send_msg}")
                 self.send_message(task_id, send_msg)
                 return True

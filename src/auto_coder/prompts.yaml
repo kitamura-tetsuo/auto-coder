@@ -2406,6 +2406,14 @@ feature:
     ]
 
 jules:
+  continuation: |-
+    Continue the existing implementation session under the current task-scoped test
+    execution policy. Run only explicit tests relevant to the changed behavior, its
+    directly affected integration or dependency boundaries, and the regression being
+    implemented or repaired. Before execution, establish that the repository wrapper
+    honors the bounded selection. Never run or reconstruct the complete repository
+    suite; CI owns complete-suite execution. If focused verification cannot be scoped,
+    report the specific check as not run and why instead of falling back to the suite.
   pr:
     action: |-
       STRICT DIRECTIVES (follow exactly):
