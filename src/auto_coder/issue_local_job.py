@@ -10,8 +10,10 @@ from .attempt_manager import get_current_attempt
 from .implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from .issue_dispatch import IssueAttemptIdentity, IssueDispatchGuard
 from .issue_job_workspace import IssueJobCannotFix, IssueJobSource, IssueJobWorkspaceProducer
+from .local_issue_start_notification import LocalIssueStartNotifier
 from .local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobRecord, LocalJobStore
 from .local_job_runner import LocalJobExecutionResult, LocalJobProviderEntryRefused
+from .local_llm_observability import bind_local_llm_start_callback, reset_local_llm_start_callback
 from .utils import bind_command_execution_cwd, reset_command_execution_cwd
 
 if TYPE_CHECKING:
@@ -34,6 +36,11 @@ class IssueLocalJobAdapter:
         self._store = store
         self._slots = slots
         self._repository_path = repository_path.resolve()
+        self._start_notifier = LocalIssueStartNotifier(store, engine.github)
+
+    def recover_start_notifications(self) -> None:
+        """Recover notification effects independently of invocation settlement."""
+        self._start_notifier.recover()
 
     def authorize_provider_entry(self, job: LocalJobRecord) -> bool:
         if job.repository != self._repository:
@@ -107,9 +114,11 @@ class IssueLocalJobAdapter:
             # runner threads can enter separate private repositories without
             # mutating or serializing on the process-wide working directory.
             token = bind_command_execution_cwd(str(workspace))
+            notification_token = bind_local_llm_start_callback(lambda start: self._start_notifier.observe_and_publish(job, backend=start.backend, model=start.model))
             try:
                 return manager._run_llm_cli(prompt)
             finally:
+                reset_local_llm_start_callback(notification_token)
                 reset_command_execution_cwd(token)
 
         try:

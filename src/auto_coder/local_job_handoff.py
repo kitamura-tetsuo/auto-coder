@@ -41,6 +41,15 @@ class InvocationOutcome(str, Enum):
     INTERRUPTED = "interrupted"
 
 
+class StartNotificationState(str, Enum):
+    """Durable delivery knowledge for a local Issue start notification."""
+
+    PENDING = "pending"
+    INDETERMINATE = "indeterminate"
+    DEFINITELY_UNSENT = "definitely_unsent"
+    CONFIRMED = "confirmed"
+
+
 @dataclass(frozen=True)
 class LocalJobOffer:
     kind: LocalJobKind
@@ -118,6 +127,18 @@ class LocalJobEffect:
     evidence: str = ""
 
 
+@dataclass(frozen=True)
+class LocalStartNotification:
+    job_id: str
+    repository: str
+    issue_number: int
+    backend_name: str
+    model_name: str
+    marker: str
+    state: StartNotificationState
+    diagnostic: str = ""
+
+
 def default_local_job_db_path() -> Path:
     return Path.home() / ".auto-coder" / "local_jobs.sqlite3"
 
@@ -171,6 +192,92 @@ class LocalJobStore:
                 updated_at REAL NOT NULL,
                 PRIMARY KEY(job_id, execution_incarnation, name))"""
             )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS local_start_notifications (
+                job_id TEXT PRIMARY KEY, repository TEXT NOT NULL,
+                issue_number INTEGER NOT NULL, backend_name TEXT NOT NULL,
+                model_name TEXT NOT NULL, marker TEXT NOT NULL UNIQUE,
+                state TEXT NOT NULL, diagnostic TEXT NOT NULL DEFAULT '',
+                updated_at REAL NOT NULL)"""
+            )
+
+    @staticmethod
+    def _start_notification(row: sqlite3.Row) -> LocalStartNotification:
+        return LocalStartNotification(
+            job_id=str(row["job_id"]),
+            repository=str(row["repository"]),
+            issue_number=int(row["issue_number"]),
+            backend_name=str(row["backend_name"]),
+            model_name=str(row["model_name"]),
+            marker=str(row["marker"]),
+            state=StartNotificationState(str(row["state"])),
+            diagnostic=str(row["diagnostic"]),
+        )
+
+    def observe_issue_start(self, job: LocalJobRecord, *, backend_name: str, model_name: str, marker: str) -> Optional[LocalStartNotification]:
+        """Persist the actual client-dispatch fact without depending on job settlement."""
+        if job.kind is not LocalJobKind.ISSUE_IMPLEMENTATION or not marker:
+            return None
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    "INSERT OR IGNORE INTO local_start_notifications " "(job_id, repository, issue_number, backend_name, model_name, marker, state, diagnostic, updated_at) " "VALUES (?, ?, ?, ?, ?, ?, ?, '', ?)",
+                    (job.job_id, job.repository, job.target_number, backend_name, model_name or "unknown", marker, StartNotificationState.PENDING.value, time.time()),
+                )
+                row = connection.execute("SELECT * FROM local_start_notifications WHERE job_id=?", (job.job_id,)).fetchone()
+                connection.commit()
+            if row is None or str(row["marker"]) != marker:
+                return None
+            return self._start_notification(row)
+        except (OSError, sqlite3.Error, ValueError):
+            return None
+
+    def claim_start_notification(self, job_id: str) -> Optional[LocalStartNotification]:
+        """Atomically claim a notification that is authoritatively safe to POST."""
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                cursor = connection.execute(
+                    "UPDATE local_start_notifications SET state=?, diagnostic='', updated_at=? " "WHERE job_id=? AND state IN (?, ?)",
+                    (StartNotificationState.INDETERMINATE.value, time.time(), job_id, StartNotificationState.PENDING.value, StartNotificationState.DEFINITELY_UNSENT.value),
+                )
+                row = connection.execute("SELECT * FROM local_start_notifications WHERE job_id=?", (job_id,)).fetchone()
+                connection.commit()
+            return self._start_notification(row) if cursor.rowcount == 1 and row is not None else None
+        except (OSError, sqlite3.Error, ValueError):
+            return None
+
+    def set_start_notification_state(self, job_id: str, expected: StartNotificationState, state: StartNotificationState, diagnostic: str = "") -> bool:
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    "UPDATE local_start_notifications SET state=?, diagnostic=?, updated_at=? WHERE job_id=? AND state=?",
+                    (state.value, diagnostic[:1000], time.time(), job_id, expected.value),
+                )
+            return cursor.rowcount == 1
+        except (OSError, sqlite3.Error):
+            return False
+
+    def recoverable_start_notifications(self) -> tuple[LocalStartNotification, ...]:
+        """Return notifications needing safe send or exact-marker reconciliation."""
+        try:
+            with self._connect() as connection:
+                rows = connection.execute(
+                    "SELECT * FROM local_start_notifications WHERE state != ? ORDER BY updated_at",
+                    (StartNotificationState.CONFIRMED.value,),
+                ).fetchall()
+            return tuple(self._start_notification(row) for row in rows)
+        except (OSError, sqlite3.Error, ValueError):
+            return ()
+
+    def get_start_notification(self, job_id: str) -> Optional[LocalStartNotification]:
+        try:
+            with self._connect() as connection:
+                row = connection.execute("SELECT * FROM local_start_notifications WHERE job_id=?", (job_id,)).fetchone()
+            return self._start_notification(row) if row is not None else None
+        except (OSError, sqlite3.Error, ValueError):
+            return None
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
