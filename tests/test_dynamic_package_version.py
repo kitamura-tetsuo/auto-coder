@@ -66,3 +66,7 @@ def test_editable_build_rejects_source_changed_after_metadata(tmp_path, monkeypa
     with pytest.raises(backend._identity_module.BuildIdentityError, match="Malformed"):
         backend._with_identity(operation)
     assert called is False
+
+    monkeypatch.delenv("AUTO_CODER_BUILD_IDENTITY_FILE")
+    monkeypatch.setattr(backend._identity_module, "_git", lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError("git")))
+    assert backend._project_identity().version == "0+unknown"

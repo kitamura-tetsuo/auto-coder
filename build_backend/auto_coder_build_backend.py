@@ -29,7 +29,10 @@ PREPARED_IDENTITY = "auto-coder-build-identity.json"
 def _project_identity():
     """Resolve Git only when ROOT is itself the selected checkout root."""
 
-    top = _identity_module._git(ROOT, "rev-parse", "--show-toplevel", check=False)
+    try:
+        top = _identity_module._git(ROOT, "rev-parse", "--show-toplevel", check=False)
+    except OSError:
+        return _identity_module.BuildIdentity(reason="Git is unavailable at the project root")
     if top.returncode != 0 or Path(top.stdout.strip()).resolve() != ROOT:
         return _identity_module.BuildIdentity(reason="project root is not a Git worktree root")
     return resolve_build_identity(ROOT)
