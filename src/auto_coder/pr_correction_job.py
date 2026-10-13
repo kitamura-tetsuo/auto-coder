@@ -19,6 +19,7 @@ from .local_review_repair import (
     LocalReviewRepairStore,
     execute_local_review_repair,
     local_review_repair_db_path,
+    recover_confirmed_local_review_repair,
 )
 from .muse_background_observation import bind_muse_job_observation
 
@@ -147,7 +148,7 @@ class PRCorrectionJobAdapter:
                 self._executors[job.job_id] = executor
         return authorized
 
-    def _authority_is_current(self, job: LocalJobRecord) -> bool:
+    def _authority_is_current(self, job: LocalJobRecord, *, admitted_recovery: bool = False) -> bool:
         request = self._request(job)
         if job.kind is not LocalJobKind.PR_REVIEW_CORRECTION or request.attempt_id != job.upstream_attempt:
             return False
@@ -189,7 +190,44 @@ class PRCorrectionJobAdapter:
             return False
         repair = LocalReviewRepairStore(local_review_repair_db_path(request.repository)).get(request)
         generation = RepairAllowanceLedger().get_snapshot("https://api.github.com", request.repository, request.pr_number).get_outstanding_generation()
-        return bool(repair and repair.local_job_id == job.job_id and not repair.invocation_entered and generation and generation.lifecycle_state is GenerationLifecycleState.RESERVED and generation.generation_id == job.owner_generation and generation.bundle_reference == request.attempt_id)
+        invocation_matches = bool(repair and repair.local_job_id == job.job_id and (repair.invocation_entered if admitted_recovery else not repair.invocation_entered))
+        return bool(invocation_matches and generation and generation.lifecycle_state is GenerationLifecycleState.RESERVED and generation.generation_id == job.owner_generation and generation.bundle_reference == request.attempt_id)
+
+    def authorize_recovery(self, job: LocalJobRecord) -> bool:
+        """Authorize the already-entered correction, never a fresh allowance."""
+        return self._authority_is_current(job, admitted_recovery=True)
+
+    def recover_continuation(
+        self,
+        job: LocalJobRecord,
+        provider_session: str,
+        remaining_seconds: float,
+    ) -> LocalJobExecutionResult | None:
+        """Reuse a retained correction result when it reached publication."""
+        del provider_session, remaining_seconds
+        downstream = self.recover_interrupted(job)
+        if downstream is not None:
+            return downstream
+        continuation = self.job_store.get_continuation(job.job_id)
+        if continuation is None or not continuation.final_output:
+            return None
+        request = self._request(job)
+        ledger = RepairAllowanceLedger()
+        snapshot = ledger.get_snapshot("https://api.github.com", request.repository, request.pr_number)
+        generation = snapshot.get_outstanding_generation()
+        if generation is None or generation.generation_id != job.owner_generation:
+            return None
+        authority = LocalRepairAllowanceAuthority(ledger, request, generation.generation_id, snapshot.epoch)
+        outcome = recover_confirmed_local_review_repair(
+            request,
+            continuation.final_output,
+            store=LocalReviewRepairStore(local_review_repair_db_path(request.repository)),
+            allowance_authority=authority,
+        )
+        if outcome.phase in {"indeterminate", "publication_pending"}:
+            return None
+        result = InvocationOutcome.CANNOT_FIX if outcome.phase == "terminal_failure" else InvocationOutcome.COMPLETED
+        return LocalJobExecutionResult(result, json.dumps(asdict(outcome), sort_keys=True), outcome.reason)
 
     def invoke(self, job: LocalJobRecord) -> LocalJobExecutionResult:
         """Invoke directly while preserving the durable entry checkpoint."""

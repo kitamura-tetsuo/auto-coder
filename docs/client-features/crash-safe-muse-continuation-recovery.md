@@ -13,7 +13,12 @@ adapter's recovery-specific predicate, and atomically replaces the executor
 token. The replacement token fences delayed writes from the old executor and
 ensures two recovering controllers cannot both advance the session.
 
-Provider reconciliation is an optional domain-adapter boundary. It receives
+Provider reconciliation is a domain-adapter boundary. Missing production
+support is retained as an explicit reconciliation reason rather than leaving a
+RUNNING job without a diagnostic. The Issue adapter can promote an exact Muse
+output that was confirmed after writer settlement by rebuilding the ordinary
+workspace manifest from the retained source commit and workspace; it never
+creates another clone or invokes the implementation backend. The boundary receives
 the exact retained provider session and only the remaining original budget.
 The adapter must observe or resume that session and confirm its current result
 frontier before a successful result can cross the existing artifact and

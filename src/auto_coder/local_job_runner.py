@@ -235,6 +235,11 @@ class LocalJobRunner:
         recover = getattr(adapter, "recover_continuation", None) if adapter is not None else None
         authorize = getattr(adapter, "authorize_recovery", None) if adapter is not None else None
         if not callable(recover) or not callable(authorize):
+            self.store.retain_reconciliation_reason(
+                job.job_id,
+                continuation.executor_token,
+                "domain adapter does not support retained continuation recovery",
+            )
             return False
         if not job.workspace_path or not Path(job.workspace_path).is_dir():
             self.store.retain_reconciliation_reason(job.job_id, continuation.executor_token, "retained workspace is unavailable")

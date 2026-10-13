@@ -207,3 +207,74 @@ class IssueJobWorkspaceProducer:
         ):
             raise IssueJobWorkspaceError("successful workspace result could not be durably checkpointed")
         return IssueJobCheckpoint(record.job_id, record.execution_incarnation, workspace, source_commit, source.work_branch, artifact.artifact_id, output)
+
+    def recover_confirmed_output(self, claim: LocalJobClaim, output: str) -> IssueJobCheckpoint:
+        """Checkpoint a confirmed provider output in an already-bound workspace.
+
+        Recovery deliberately does not prepare another clone or invoke the model.  The
+        source tree is reconstructed from the retained source commit so the resulting
+        manifest has the same meaning as one produced by :meth:`execute`.
+        """
+        record = claim.record
+        workspace = Path(record.workspace_path).resolve()
+        if not workspace.is_dir() or not record.source_commit or not record.source_ref:
+            raise IssueJobWorkspaceError("retained Issue workspace binding is incomplete")
+        lines = [line for line in output.strip().splitlines() if line.strip()]
+        if len(lines) != 1 or not lines[0].startswith("ACTION_SUMMARY:") or not lines[0].removeprefix("ACTION_SUMMARY:").strip():
+            raise IssueJobWorkspaceError("recovered invocation did not return a confirmed implementation result")
+        if self._git(workspace, "rev-parse", "HEAD") != record.source_commit:
+            raise IssueJobWorkspaceError("retained workspace HEAD no longer matches its source")
+
+        final_files = self.working_file_identities(workspace)
+        source_names = {line for line in self._git(workspace, "ls-tree", "-r", "--name-only", record.source_commit).splitlines() if line}
+        changed_names = set(final_files) - source_names
+        for name in source_names & set(final_files):
+            source = subprocess.run(
+                ["git", "show", f"{record.source_commit}:{name}"],
+                cwd=workspace,
+                capture_output=True,
+                check=True,
+            ).stdout
+            if hashlib.sha256(source).hexdigest() != final_files[name].checksum:
+                changed_names.add(name)
+        changed_names.update(source_names - set(final_files))
+        changed_files = {
+            name: (
+                {
+                    "checksum": final_files[name].checksum,
+                    "mode": final_files[name].mode,
+                    "symlink": final_files[name].symlink,
+                }
+                if name in final_files
+                else None
+            )
+            for name in sorted(changed_names)
+        }
+        manifest_json = json.dumps(
+            {
+                "workspace": str(workspace),
+                "source_commit": record.source_commit,
+                "source_ref": record.source_ref,
+                "work_branch": record.work_branch,
+                "changed_files": changed_files,
+                "workspace_files": {
+                    name: {
+                        "checksum": identity.checksum,
+                        "mode": identity.mode,
+                        "symlink": identity.symlink,
+                    }
+                    for name, identity in sorted(final_files.items())
+                },
+                "output": output,
+            },
+            sort_keys=True,
+        )
+        return IssueJobCheckpoint(
+            record.job_id,
+            record.execution_incarnation,
+            workspace,
+            record.source_commit,
+            record.work_branch,
+            manifest_json,
+            output,
+        )
