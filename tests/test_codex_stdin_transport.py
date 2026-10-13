@@ -13,6 +13,7 @@ import pytest
 from src.auto_coder.codex_client import CodexClient
 from src.auto_coder.codex_mcp_client import CodexMCPClient
 from src.auto_coder.llm_backend_config import BackendConfig
+from src.auto_coder.prompt_loader import render_prompt
 
 pytestmark = pytest.mark.usefixtures("_use_real_commands")
 
@@ -94,6 +95,39 @@ def test_codex_explicit_resume_keeps_id_separate_from_stdin(codex_path: Path) ->
     assert result["argv"][:3] == ["exec", "resume", "session-123"]
     assert result["argv"][-1] == "-"
     assert result["digest"] == hashlib.sha256(b"follow \\@up").hexdigest()
+
+
+def test_label_selected_implementation_policy_reaches_local_codex_stdin(codex_path: Path, tmp_path: Path) -> None:
+    prompts = tmp_path / "prompts.yaml"
+    prompts.write_text(
+        """policies:
+  task_scoped_test_execution: |-
+    TASK-SCOPED TEST EXECUTION POLICY:
+    The complete repository test suite is run by CI, not by the agent.
+issue:
+  action: default
+custom:
+  implementation: Implement and run tests for $title.
+""",
+        encoding="utf-8",
+    )
+    prompt = render_prompt(
+        "issue.action",
+        path=str(prompts),
+        labels=["custom"],
+        label_prompt_mappings={"custom": "custom.implementation"},
+        label_priorities=["custom"],
+        title="state transitions",
+    )
+    prepared = prompt.replace("@", "\\@").strip()
+    config = type("Config", (), {"get_backend_config": lambda self, name: _backend()})()
+
+    with patch("src.auto_coder.codex_client.get_llm_config", return_value=config):
+        result = json.loads(CodexClient(backend_name="codex")._run_llm_cli(prompt))
+
+    assert "TASK-SCOPED TEST EXECUTION POLICY:" in prompt
+    assert result["digest"] == hashlib.sha256(prepared.encode("utf-8")).hexdigest()
+    assert result["bytes"] == len(prepared.encode("utf-8"))
 
 
 def test_conflicting_configured_input_fails_before_launch(codex_path: Path, tmp_path: Path) -> None:

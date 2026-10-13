@@ -42,6 +42,8 @@ _PR_CONTRACT_POLICY_PROMPTS = frozenset(
         "pr.github_actions_fix",
         "pr.github_actions_fix_direct",
         "pr.local_test_fix",
+        "pr.local_review_correction",
+        "pr.local_repair_verification",
         "pr.merge_conflict_resolution",
         "pr.adversarial_validation",
         "pr.adversarial_validation_initial_review",
@@ -50,14 +52,16 @@ _PR_CONTRACT_POLICY_PROMPTS = frozenset(
         "pr.adversarial_validation_fix",
     }
 )
-# "pr.existing_pr_repair" is deliberately excluded: it is rendered exclusively
-# by pr_repair.build_existing_pr_repair_prompt(), whose only production
-# callers have already resolved an existing cloud implementation session
-# (task/session identity) and deliver via that session's follow-up/continuation
-# transport. That session already received the shared bootstrap policies on
-# its initial dispatch, so re-injecting them here would replay, not deliver,
-# them. Fresh/stateless PR prompts (review, github_actions_fix, local_test_fix,
-# merge_conflict_resolution, adversarial_validation*) stay in the set above.
+_TEST_EXECUTION_POLICY_PROMPTS = (
+    _ISSUE_POLICY_PROMPTS
+    | _PR_CONTRACT_POLICY_PROMPTS
+    | {
+        "pr.existing_pr_repair",
+        "codex_cloud.continuation",
+        "tests.workspace_fix",
+        "tests.test_stability_fix",
+    }
+)
 
 
 def _prepend_contract_policy(key: str, template: str, prompts: Dict[str, Any]) -> str:
@@ -86,6 +90,10 @@ def _prepend_contract_policy(key: str, template: str, prompts: Dict[str, Any]) -
         bounded_boundary = policies.get("bounded_correction_contract")
         if isinstance(bounded_boundary, str) and bounded_boundary.rstrip() not in template:
             fragments.append(bounded_boundary.rstrip())
+    if key in _TEST_EXECUTION_POLICY_PROMPTS:
+        test_execution = policies.get("task_scoped_test_execution")
+        if isinstance(test_execution, str) and test_execution.rstrip() not in template:
+            fragments.append(test_execution.rstrip())
     if not fragments:
         return template
     return "\n\n".join([*fragments, template])
@@ -380,6 +388,7 @@ def render_prompt(
     parent_issue_body: Optional[str] = None,
     is_jules: bool = False,
     include_header: bool = True,
+    _policy_key: Optional[str] = None,
     **kwargs: Any,
 ) -> str:
     """Render a prompt template identified by key with optional label-based selection.
@@ -438,6 +447,7 @@ def render_prompt(
                     parent_issue_body=parent_issue_body,
                     is_jules=is_jules,
                     include_header=include_header,
+                    _policy_key=_policy_key or key,
                     **kwargs,
                 )
                 return result  # type: ignore[no-any-return]
@@ -451,7 +461,7 @@ def render_prompt(
     # Fall back to original key-based rendering
     template_str = get_prompt_template(key, path=path)
     prompts = load_prompts(path)
-    template_str = _prepend_contract_policy(key, template_str, prompts)
+    template_str = _prepend_contract_policy(_policy_key or key, template_str, prompts)
     template = Template(template_str)
 
     params: Dict[str, Any] = {}

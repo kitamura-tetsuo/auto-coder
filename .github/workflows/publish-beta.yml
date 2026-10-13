@@ -20,7 +20,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --dev --extra test
-      - run: bash scripts/test.sh -m "not opencode_live"
+      - run: bash scripts/test.sh -m "not opencode_live and not muse_live"
       - name: Establish clean build identity
         run: |
           uv run python -c 'from auto_coder.build_identity import resolve_build_identity,serialize_build_identity; from pathlib import Path; r=resolve_build_identity("."); assert r.state == "clean" and r.source_revision == "${{ github.sha }}"; Path(".agent-tmp/build-identity.json").write_text(serialize_build_identity(r))'

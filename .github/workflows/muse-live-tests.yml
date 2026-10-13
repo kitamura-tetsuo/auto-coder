@@ -1,0 +1,43 @@
+name: Muse Live Tests
+
+'on':
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  muse-live-tests:
+    name: Muse Live Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Sync dependencies with uv
+        run: uv sync --dev --extra test
+
+      - name: Install pinned Muse Code host
+        run: |
+          curl --fail --location --retry 3 \
+            'https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.6-R6000.1&file=muse-x86-linux' \
+            --output "$RUNNER_TEMP/muse"
+          echo '82a495542965a5b6256f7acdb81693451c28640a419d5528ad8340ea93f36f6f  '"$RUNNER_TEMP/muse" | sha256sum --check
+          chmod +x "$RUNNER_TEMP/muse"
+
+      - name: Run real-host conformance
+        env:
+          AUTOCODER_MUSE_CONFORMANCE_BIN: ${{ runner.temp }}/muse
+        run: uv run pytest -m muse_live -vv tests/test_muse_background_live.py

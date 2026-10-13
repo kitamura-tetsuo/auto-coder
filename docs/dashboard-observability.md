@@ -595,6 +595,16 @@ ambiguous/legacy bindings, and stale-provider-recovery continuation, live in
 `tests/test_implementation_ownership.py`; run
 `bash scripts/test.sh tests/test_implementation_ownership.py` for this boundary.
 
+Issue #2484 adds an `issue.implementation-duplicate-suppression` stage-result
+when the same owned semantic generation is refused. Its existing `SKIPPED`
+outcome is unchanged; the facts now carry the exact generation and the same
+read-only, attributable explanation shown by CLI and worker results. Local job
+invocation outcome and confirmed PR association remain separate evidence, and
+missing diagnostic evidence cannot change admission, acknowledgement, retry,
+or publication state. Run
+`bash scripts/test.sh tests/test_implementation_skip_diagnostic.py tests/test_implementation_ownership.py`
+for this production-to-view boundary.
+
 The detail view is a projection of **observed local evidence**. It does not query
 GitHub or a provider and it does not turn absent, unavailable, partial, throttled,
 or superseded evidence into a pass or failure. An accepted provider submission is
@@ -2295,6 +2305,19 @@ artifacts, and the explicit separation between invocation evidence, downstream
 pending, and terminal settlement. Run `bash scripts/test.sh
 tests/test_local_job_handoff.py`.
 
+## Durable local-job continuation evidence
+
+`LocalJobStore` now also persists executor-fenced provider-session, background
+task, result-frontier, candidate-output, and continuation-command evidence for an
+accepted local job. This is a durable resumption-path extension, but remains a
+headless evidence producer: it performs no provider dispatch and therefore adds
+no processing origin, trace event, outcome, or dashboard renderer. In particular,
+waiting, reconciliation, and command admission never reuse `LOCAL_COMPLETED` or
+make downstream effects eligible. `tests/test_local_job_continuation.py` crosses
+the real admission, claim, workspace-binding, SQLite reopen, stale-executor, task
+frontier, and ambiguous-command boundaries. Run `bash scripts/test.sh
+tests/test_local_job_continuation.py tests/test_local_job_handoff.py`.
+
 ## Durable local runner execution
 
 Runner admission and recovery are now restricted to the explicitly supplied
@@ -2462,3 +2485,19 @@ terminal outcome. The editing-only prompt changes neither admission nor provider
 routing, and a returned summary alone still cannot claim publication. The actual
 stored-input regression is `bash scripts/test.sh tests/test_cloud_backend.py`;
 explicit completion regressions verify the terminal production-to-view contract.
+
+Muse background observation is also observability-neutral at this producer
+stage. The accepted local-job runner now binds the production Muse transport to
+its fenced job identity, and the client durably records provider-local
+task/result and continuation snapshots. These snapshots are recovery evidence,
+not processing events: they do not add a processing origin, admission gate,
+terminal domain outcome, structured trace event, or dashboard renderer. In particular,
+foreground `turn/completed` and a candidate assistant item do not change the
+existing local-job completion stages while task results remain outstanding.
+The later scheduler integration owns production resumption and any corresponding
+dashboard lifecycle.  Run `bash scripts/test.sh
+tests/test_muse_background_observation.py tests/test_local_job_continuation.py`
+to verify the current evidence boundary and durable fence. The separately
+pinned real-host conformance in `tests/test_muse_background_live.py` earns the
+Muse runtime support claim but emits no Auto-Coder processing event, so it does
+not add a dashboard stage or change this observability-neutral assessment.

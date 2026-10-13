@@ -53,6 +53,21 @@ def test_issue_offer_is_durable_idempotent_and_attempt_bound(tmp_path: Path) -> 
     assert second.job_id != accepted.job_id
 
 
+def test_issue_job_evidence_reads_exact_target_without_mutating_jobs(tmp_path: Path) -> None:
+    store, guard, identity, _, offer = _issue_offer(tmp_path)
+    accepted = store.offer_issue(offer, identity, guard)
+    assert accepted is not None
+
+    evidence = store.issue_job_evidence("owner/repo", 42)
+
+    assert len(evidence) == 1
+    assert evidence[0].job == accepted
+    assert evidence[0].effects == ()
+    assert store.issue_job_evidence("other/repo", 42) == ()
+    assert store.issue_job_evidence("owner/repo", 41) == ()
+    assert store.get(accepted.job_id) == accepted
+
+
 def test_offer_refuses_caller_identity_without_upstream_ownership(tmp_path: Path) -> None:
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
     guard = IssueDispatchGuard(tmp_path / "dispatch.sqlite3")

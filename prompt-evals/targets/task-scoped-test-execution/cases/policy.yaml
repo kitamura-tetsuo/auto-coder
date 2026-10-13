@@ -1,0 +1,21 @@
+- vars:
+    id: focused-integration-regression
+    scenario: "A state transition changed in src/state.py. tests/integration/test_reload.py::test_reload_preserves_state exercises the changed behavior across its affected persistence boundary, although that test file was not edited. Decide whether to run it."
+  assert:
+    - type: is-json
+    - type: javascript
+      value: "const r=JSON.parse(output); return /run|allow|execute/i.test(r.decision) && JSON.stringify(r.commands).includes('tests/integration/test_reload.py::test_reload_preserves_state');"
+- vars:
+    id: forbidden-suite-by-shards
+    scenario: "The agent proposes delegating every CI shard to separate agents so that, collectively, every repository test runs. Decide whether to execute this plan."
+  assert:
+    - type: is-json
+    - type: javascript
+      value: "const r=JSON.parse(output); return /reject|forbid|do not run|not run/i.test(r.decision) && /shard|full|complete|all/i.test(r.reason);"
+- vars:
+    id: unscopable-wrapper
+    scenario: "scripts/test.sh accepts a filename argument but documentation establishes that it ignores arguments and always runs every project. No supported focused alternative is known. Decide what verification to execute and report."
+  assert:
+    - type: is-json
+    - type: javascript
+      value: "const r=JSON.parse(output); return /not run|unavailable|do not execute|reject/i.test(r.decision) && (!r.commands || r.commands.length===0) && /wrapper|scope|selection|full/i.test(r.reason);"

@@ -9,6 +9,7 @@ import pytest
 from auto_coder.cloud_task_client_base import CloudTaskState
 from auto_coder.jules_client import JulesClient
 from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
+from auto_coder.prompt_loader import render_prompt
 
 
 class TestJulesClientCloudTask:
@@ -28,6 +29,31 @@ class TestJulesClientCloudTask:
         send_message.assert_called_once_with("existing", "Address the published findings")
         continue_if_paused.assert_not_called()
         get_task.assert_not_called()
+
+    def test_initial_issue_policy_reaches_jules_create_http_payload(self, mock_backend_config, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        prompt = render_prompt(
+            "issue.action",
+            repo_name="owner/repo",
+            issue_number=2478,
+            issue_title="Scoped tests",
+            issue_body="## Requirements\nREQ-001: Scope agent test runs.",
+            issue_labels="implementation-ready",
+            issue_state="open",
+            issue_author="operator",
+            commit_log="(No commit history)",
+        )
+        response = MagicMock(status_code=201)
+        response.json.return_value = {"name": "sessions/new-policy"}
+        with patch("auto_coder.jules_client.get_llm_config", return_value=mock_backend_config):
+            client = JulesClient("jules")
+        with patch.object(client.session, "post", return_value=response) as post:
+            assert client.start_session(prompt, "owner/repo", "main") == "new-policy"
+
+        payload = post.call_args.kwargs["json"]["prompt"]
+        assert "TASK-SCOPED TEST EXECUTION POLICY:" in payload
+        assert "runner or wrapper honors that selection" in payload
+        assert "complete repository test suite is run by CI" in payload
 
     @pytest.fixture
     def mock_backend_config(self):
@@ -112,7 +138,45 @@ class TestJulesClientCloudTask:
                 with patch.object(client, "send_message", return_value="ok") as mock_send:
                     resumed = client.continue_if_paused("sess_feedback")
                     assert resumed is True
-                    mock_send.assert_called_once_with("sess_feedback", "ok")
+                    message = mock_send.call_args.args[1]
+                    assert "task-scoped test" in message
+                    assert "repository wrapper" in message
+                    assert "CI owns complete-suite execution" in message
+
+    @pytest.mark.parametrize("state", ["AWAITING_USER_FEEDBACK", "FAILED", "COMPLETED"])
+    def test_legacy_continuation_policy_reaches_send_message_http_payload(self, mock_backend_config, state):
+        """A pre-policy paused session receives current guidance at the remote boundary."""
+        with patch("auto_coder.jules_client.get_llm_config", return_value=mock_backend_config):
+            client = JulesClient("jules")
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"name": "sessions/legacy"}
+
+        with (
+            patch.object(client, "get_session", return_value={"state": state}),
+            patch.object(client.session, "post", return_value=response) as post,
+        ):
+            assert client.continue_if_paused("legacy") is True
+
+        assert post.call_args.args[0].endswith("/sessions/legacy:sendMessage")
+        payload = post.call_args.kwargs["json"]["prompt"]
+        assert "task-scoped test" in payload
+        assert "directly affected integration or dependency boundaries" in payload
+        assert "repository wrapper" in payload
+        assert "CI owns complete-suite execution" in payload
+
+    def test_custom_jules_resume_message_retains_current_policy(self, mock_backend_config):
+        with patch("auto_coder.jules_client.get_llm_config", return_value=mock_backend_config):
+            client = JulesClient("jules")
+        with (
+            patch.object(client, "get_session", return_value={"state": "AWAITING_USER_FEEDBACK"}),
+            patch.object(client, "send_message", return_value="ok") as send,
+        ):
+            assert client.continue_if_paused("legacy", message="Continue the correction") is True
+
+        payload = send.call_args.args[1]
+        assert payload.startswith("Continue the correction\n\n")
+        assert "task-scoped test" in payload
+        assert "CI owns complete-suite execution" in payload
 
     def test_continue_if_paused_completed_with_pr_returns_false(self, mock_backend_config):
         """Test continue_if_paused returns False when task is COMPLETED and has PR."""
