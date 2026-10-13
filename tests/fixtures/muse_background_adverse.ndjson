@@ -1,5 +1,5 @@
-{"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"session-1","viewCursor":"cursor-2","item":{"itemId":"task-1","kind":"toolCall","background":true,"turnId":"turn-1","revision":2,"status":"completed","resultId":"result-1","resultDelivered":true}}}
-{"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"session-1","viewCursor":"cursor-2","item":{"itemId":"task-1","kind":"toolCall","background":true,"turnId":"turn-1","revision":2,"status":"completed","resultId":"result-1","resultDelivered":true}}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"session-1","viewCursor":"cursor-2","item":{"itemId":"task-1","kind":"toolCall","background":true,"turnId":"turn-1","revision":2,"status":"completed","exitCode":0,"resultId":"result-1","resultDelivered":true}}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"session-1","viewCursor":"cursor-2","item":{"itemId":"task-1","kind":"toolCall","background":true,"turnId":"turn-1","revision":2,"status":"completed","exitCode":0,"resultId":"result-1","resultDelivered":true}}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"foreign","item":{"itemId":"task-x","kind":"toolCall","background":true,"turnId":"turn-x"}}}
 {"jsonrpc":"2.0","method":"turn/started","params":{"sessionId":"session-1","turnId":"turn-2","viewCursor":"cursor-3"}}
 {"jsonrpc":"2.0","method":"turn/completed","params":{"sessionId":"session-1","turnId":"turn-1","terminal":"completed","viewCursor":"cursor-4"}}

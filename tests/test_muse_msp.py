@@ -14,8 +14,11 @@ import pytest
 from src.auto_coder.cli_helpers import build_backend_manager
 from src.auto_coder.exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from src.auto_coder.execution_trace import EventKind, Outcome, get_trace_collector
+from src.auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
+from src.auto_coder.local_job_handoff import LocalJobKind, LocalJobOffer, LocalJobStore
 from src.auto_coder.local_session_continuation import LocalContinuationError
+from src.auto_coder.muse_background_observation import bind_muse_job_observation, recover_muse_observation
 from tests.utils.workspace import write_target_test_script
 
 
@@ -51,6 +54,8 @@ log = Path(os.environ["MSP_LOG"])
 def emit(value):
     print(json.dumps(value), flush=True)
 effective_mode = None
+last_session = None
+last_turn = None
 for line in sys.stdin:
     frame = json.loads(line)
     with log.open("a") as output:
@@ -108,6 +113,7 @@ for line in sys.stdin:
         if os.environ.get("MSP_REPORTED_APPROVAL_MODE"):
             session["approvalMode"] = {"mode":os.environ["MSP_REPORTED_APPROVAL_MODE"]}
         effective_mode = session.get("approvalMode", {}).get("mode")
+        last_session = sid
         pending = [{"kind":"approval","approvalId":"pending-1","viewCursor":"cursor-1"}] if method == "session/resume" and os.environ.get("MSP_PENDING_RESUME") else []
         emit({"jsonrpc":"2.0","id":frame["id"],"result":{"session":session,"pendingRequests":pending}})
         if os.environ.get("MSP_STOP_READING"):
@@ -127,6 +133,16 @@ for line in sys.stdin:
             ack["effectiveMode"] = {"mode":"allowAll" if frame["params"]["mode"] == "denyUnmatched" else "denyUnmatched"}
         emit({"jsonrpc":"2.0","id":frame["id"],"result":ack})
         effective_mode = ack.get("effectiveMode", {}).get("mode")
+    elif method == "task/list":
+        emit({"jsonrpc":"2.0","id":frame["id"],"result":{"tasks":[{"taskId":"background-task","kind":"tool","status":"inProgress","tool":"bash"}]}})
+        if os.environ.get("MSP_BACKGROUND_ITEM"):
+            emit({"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":last_session,"item":{"itemId":"background-task","kind":"toolCall","background":True,"revision":2,"status":"failed","turnId":last_turn,"tool":"bash"}}})
+            native = "native-continuation"
+            emit({"jsonrpc":"2.0","method":"turn/started","params":{"sessionId":last_session,"turnId":native,"viewCursor":"native-1","resultReferences":["background-task@2"]}})
+            emit({"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":last_session,"item":{"itemId":"native-answer","kind":"agentMessage","revision":1,"status":"completed","turnId":native,"text":"answer:native"}}})
+            emit({"jsonrpc":"2.0","method":"turn/completed","params":{"sessionId":last_session,"turnId":native,"terminal":"completed"}})
+    elif method == "session/read":
+        emit({"jsonrpc":"2.0","id":frame["id"],"result":{"session":{"sessionId":last_session},"viewCursor":"replay-1","history":{"mode":"inline","items":[]},"lastTurn":{"turnId":"native-continuation","terminal":"completed"}}})
     elif method == "turn/start":
         if os.environ.get("MSP_CHILD_WRITER"):
             subprocess.Popen([sys.executable, "-c", "import os,time; from pathlib import Path; time.sleep(1); Path(os.environ['MSP_CHILD_SENTINEL']).write_text('late write')"])
@@ -153,6 +169,7 @@ for line in sys.stdin:
         if os.environ.get("MSP_SLEEP"):
             time.sleep(float(os.environ["MSP_SLEEP"]))
         turn = "turn-" + frame["params"]["commandId"]
+        last_turn = turn
         ack = {"commandId":frame["params"]["commandId"],"status":"accepted","turnId":turn,"startedNewTurn":True,"disposition":"started"}
         if os.environ.get("MSP_BAD_TURN_ACK"):
             ack[os.environ["MSP_BAD_TURN_ACK"]] = None
@@ -169,6 +186,8 @@ for line in sys.stdin:
         item_method = "item/updated" if os.environ.get("MSP_UNFINISHED_ITEM") else "item/completed"
         item_status = "inProgress" if os.environ.get("MSP_UNFINISHED_ITEM") else "completed"
         item_kind = os.environ.get("MSP_ITEM_KIND", "message")
+        if os.environ.get("MSP_BACKGROUND_ITEM"):
+            emit({"jsonrpc":"2.0","method":"item/updated","params":{"sessionId":event_session,"item":{"itemId":"background-task","kind":"toolCall","background":True,"revision":1,"status":"inProgress","turnId":turn,"tool":"bash"}}})
         item = {"itemId":"answer","kind":item_kind,"revision":1,"status":item_status,"turnId":turn,"text":"answer:" + ("second" if "second" in frame["params"]["input"][0]["text"] else "first")}
         if item_kind == "message":
             item["role"] = "assistant"
@@ -431,6 +450,51 @@ def test_muse_msp_fresh_then_exact_resume(tmp_path, monkeypatch, _use_real_comma
     assert turns[1]["argv"] == ["serve", "--disable-write"]
     assert turns[1]["frame"]["params"]["input"][0]["type"] == "text"
     assert (repo / "tracked.txt").read_text() == "unchanged\n"
+
+
+def test_accepted_job_production_transport_persists_background_frontier(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    monkeypatch.setenv("MSP_SERVER_VERSION", "1.4.6")
+    monkeypatch.setenv("MSP_BACKGROUND_ITEM", "1")
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    guard = IssueDispatchGuard(tmp_path / "dispatch.sqlite3")
+    identity = IssueAttemptIdentity("owner", "repo", 42, "attempt-1")
+    guard.reserve(identity, CandidateHandoff("muse", "local"))
+    offer = LocalJobOffer(LocalJobKind.ISSUE_IMPLEMENTATION, "owner/repo", 42, "attempt-1", "muse", "implement")
+    assert store.offer_issue(offer, identity, guard) is not None
+    claim = store.claim(offer.job_id, "test-runner")
+    assert claim is not None and claim.acquired
+    assert store.bind_workspace(
+        claim,
+        workspace_path=repo,
+        source_commit="a" * 40,
+        source_ref="main",
+        work_branch="work",
+        publication_remote="origin",
+        owner_incarnation="owner",
+        owner_generation=None,
+    )
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config)
+    bound_job = store.get(offer.job_id)
+    assert bound_job is not None
+
+    with bind_muse_job_observation(store, bound_job, bound_job.runner_owner):
+        assert manager._run_llm_cli("background", is_noedit=True) == "answer:native"
+
+    observation = recover_muse_observation(store, offer.job_id)
+    assert observation is not None
+    assert observation.binding.provider_session == "opaque/provider/session"
+    assert observation.tasks[0].task_id == "background-task"
+    assert observation.tasks[0].result_delivered
+    assert observation.incorporated_results == ("background-task@2",)
+    assert observation.final_assistant == "answer:native"
+    assert observation.final_assistant_turn == "native-continuation"
 
 
 def test_muse_msp_named_backend_uses_protocol_client_name(tmp_path, monkeypatch, _use_real_commands):

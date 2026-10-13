@@ -2477,9 +2477,11 @@ stored-input regression is `bash scripts/test.sh tests/test_cloud_backend.py`;
 explicit completion regressions verify the terminal production-to-view contract.
 
 Muse background observation is also observability-neutral at this producer
-stage.  It adds provider-local, executor-fenced task/result and continuation
-evidence but does not add a processing origin, admission gate, terminal domain
-outcome, structured trace event, or dashboard renderer.  In particular,
+stage. The accepted local-job runner now binds the production Muse transport to
+its fenced job identity, and the client durably records provider-local
+task/result and continuation snapshots. These snapshots are recovery evidence,
+not processing events: they do not add a processing origin, admission gate,
+terminal domain outcome, structured trace event, or dashboard renderer. In particular,
 foreground `turn/completed` and a candidate assistant item do not change the
 existing local-job completion stages while task results remain outstanding.
 The later scheduler integration owns production resumption and any corresponding

@@ -13,6 +13,7 @@ from .local_issue_start_notification import LocalIssueStartNotifier
 from .local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobRecord, LocalJobStore
 from .local_job_runner import LocalJobExecutionResult, LocalJobProviderEntryRefused
 from .local_llm_observability import bind_local_llm_start_callback, reset_local_llm_start_callback
+from .muse_background_observation import bind_muse_job_observation
 from .utils import bind_command_execution_cwd, reset_command_execution_cwd
 
 if TYPE_CHECKING:
@@ -112,7 +113,9 @@ class IssueLocalJobAdapter:
             token = bind_command_execution_cwd(str(workspace))
             notification_token = bind_local_llm_start_callback(lambda start: self._start_notifier.observe_and_publish(job, backend=start.backend, model=start.model))
             try:
-                return manager._run_llm_cli(prompt)
+                observed_job = self._store.get(job.job_id) or job
+                with bind_muse_job_observation(self._store, observed_job, observed_job.runner_owner):
+                    return manager._run_llm_cli(prompt)
             finally:
                 reset_local_llm_start_callback(notification_token)
                 reset_command_execution_cwd(token)

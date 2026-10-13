@@ -22,9 +22,12 @@ Continuation readiness distinguishes an already queued or running native turn
 from controller readiness.  Controller readiness is possible only after all
 known task results are delivered, foreground work is terminal, no view gap is
 open, and the runtime positively advertises controller ownership.  Silence
-does not establish controller ownership.  Final assistant text retains its
-turn association and is withheld while work or result delivery is outstanding;
-failed and cancelled task history is retained for a later turn to interpret.
+does not establish controller ownership. Final assistant text retains its turn
+association and the exact result frontier incorporated by that turn. A
+foreground summary cannot inherit results delivered only to a later native
+continuation, and is withheld while work or its own result delivery is
+outstanding; failed and cancelled task history is retained for a later turn to
+interpret.
 
 Runtime support is behavior-earned rather than fingerprint-allowlisted. The
 recorded positive profile is Muse Code `1.4.6-R6000.1` (MSP server `1.4.6`). Its
@@ -42,8 +45,20 @@ reason.
 `persist_muse_observation` writes normalized tasks and readiness only through
 the current `LocalJobStore` executor fence.  It rechecks session, backend,
 execution lineage, upstream attempt, and workspace before accepting anything.
+The durable snapshot preserves native-active versus controller-ready authority,
+turn identities, revisions, delivery associations, incorporated-result IDs,
+and unresolved evidence so restart recovery cannot flatten those states.
 It does not start or stop a host, submit a follow-up, recreate work, publish,
 or settle domain ownership.
+
+Accepted local Issue jobs install that fence around the normal Muse client.
+The production MSP consumer folds and checkpoints notifications, reads the live
+`task/list`, waits for attributable native result delivery when background work
+exists, and reconciles the released host's inline `session/read` history before
+returning a candidate output. Late acknowledgements and duplicate starts cannot
+resurrect a terminal continuation turn. A tool transport status of `completed`
+remains an unknown domain outcome unless attributable exit evidence proves
+success or failure.
 
 Run `bash scripts/test.sh tests/test_muse_background_observation.py
 tests/test_local_job_continuation.py` for adverse transcript ordering through

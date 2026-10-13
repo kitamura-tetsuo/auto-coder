@@ -7,13 +7,15 @@ later; it never interprets silence or a missing live-task row as completion.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Iterable, Mapping, Optional
 
-from .local_job_handoff import ContinuationState, LocalJobStore
+from .local_job_handoff import ContinuationState, LocalJobClaim, LocalJobRecord, LocalJobStore
 
 
 class MuseTaskOutcome(str, Enum):
@@ -93,6 +95,30 @@ class MuseBackgroundObservation:
     provider_positions: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class MuseJobObservationContext:
+    store: LocalJobStore
+    job: LocalJobRecord
+    executor_token: str
+
+
+_CURRENT_MUSE_JOB: contextvars.ContextVar[Optional[MuseJobObservationContext]] = contextvars.ContextVar("auto_coder_muse_job_observation", default=None)
+
+
+@contextlib.contextmanager
+def bind_muse_job_observation(store: LocalJobStore, job: LocalJobRecord, executor_token: str):
+    """Bind the accepted durable job whose Muse transport may emit evidence."""
+    token = _CURRENT_MUSE_JOB.set(MuseJobObservationContext(store, job, executor_token))
+    try:
+        yield
+    finally:
+        _CURRENT_MUSE_JOB.reset(token)
+
+
+def current_muse_job_observation() -> Optional[MuseJobObservationContext]:
+    return _CURRENT_MUSE_JOB.get()
+
+
 def decode_muse_msp_frame(raw: bytes) -> dict[str, object]:
     """Decode one MSP JSON line for both production transport and replay tests."""
     try:
@@ -145,10 +171,13 @@ class MuseObservationFold:
     _positions: list[str] = field(default_factory=list)
     _queued: set[str] = field(default_factory=set)
     _active: set[str] = field(default_factory=set)
+    _terminal_turns: set[str] = field(default_factory=set)
+    _known_turns: set[str] = field(default_factory=set)
     _incorporated: set[str] = field(default_factory=set)
+    _turn_incorporated: dict[str, set[str]] = field(default_factory=dict)
     _foreground_state: str = "running"
-    _final_assistant: str = ""
-    _final_assistant_turn: str = ""
+    _assistant_candidates: dict[str, str] = field(default_factory=dict)
+    _candidate_order: list[str] = field(default_factory=list)
     _gap: str = ""
 
     def consume(self, frame: Mapping[str, object]) -> None:
@@ -181,9 +210,12 @@ class MuseObservationFold:
             self._gap = "turn admission is invalid or unrecognized"
             return
         if disposition == "queued":
-            self._queued.add(turn_id)
+            if turn_id not in self._terminal_turns:
+                self._queued.add(turn_id)
         elif disposition == "started":
-            self._active.add(turn_id)
+            if turn_id not in self._terminal_turns:
+                self._active.add(turn_id)
+        self._known_turns.add(turn_id)
 
     def consume_result_delivery(self, turn_id: str, result_references: Iterable[str], provenance: str) -> None:
         """Record result references proven present at a resumed turn frontier."""
@@ -192,6 +224,8 @@ class MuseObservationFold:
             return
         delivered = {reference for reference in result_references if reference}
         self._incorporated.update(delivered)
+        self._turn_incorporated.setdefault(turn_id, set()).update(delivered)
+        self._known_turns.add(turn_id)
         for task_id, task in tuple(self._tasks.items()):
             if task.result_reference in delivered and not task.result_delivered:
                 self._tasks[task_id] = MuseTaskObservation(
@@ -226,7 +260,9 @@ class MuseObservationFold:
             self._gap = "live task disappeared without attributable terminal evidence: " + ", ".join(sorted(missing))
 
     def consume_session_snapshot(self, snapshot: Mapping[str, object], provenance: str) -> None:
-        if snapshot.get("sessionId") != self.binding.provider_session:
+        session = snapshot.get("session")
+        session_id = session.get("sessionId") if isinstance(session, Mapping) else snapshot.get("sessionId")
+        if session_id != self.binding.provider_session:
             self._gap = "snapshot identity mismatch"
             return
         if snapshot.get("gap"):
@@ -237,6 +273,24 @@ class MuseObservationFold:
             if isinstance(turn, Mapping):
                 state = turn.get("state")
                 self.consume({"method": f"turn/{'started' if state == 'running' else state}", "params": {**turn, "sessionId": self.binding.provider_session, "viewCursor": provenance}})
+        history = snapshot.get("history")
+        if isinstance(history, Mapping) and history.get("mode") == "inline":
+            items = history.get("items")
+            if not isinstance(items, list):
+                self._gap = "inline session replay omitted items"
+                return
+            for item in items:
+                if isinstance(item, Mapping):
+                    self._observe_item({"item": item}, provenance)
+            last_turn = snapshot.get("lastTurn")
+            if isinstance(last_turn, Mapping) and isinstance(last_turn.get("turnId"), str):
+                self._observe_turn_terminal("turn/completed", last_turn)
+            # An inline read without a continuation cursor is an authoritative
+            # complete view. Overlapping items are revision-deduplicated.
+            if snapshot.get("nextCursor") in (None, ""):
+                self._gap = ""
+        if provenance and provenance not in self._positions:
+            self._positions.append(provenance)
 
     def observation(self) -> MuseBackgroundObservation:
         tasks = tuple(sorted(self._tasks.values(), key=lambda task: task.task_id))
@@ -260,9 +314,12 @@ class MuseObservationFold:
         else:
             readiness = MuseContinuationReadiness.NOT_READY
             reason = "native runtime owns continuation"
-        final = self._final_assistant
-        if outstanding or self._gap or self._final_assistant_turn not in ({self.foreground_turn} | self._active | self._queued):
-            final = ""
+        final = ""
+        final_turn = self._candidate_order[-1] if self._candidate_order else ""
+        required_results = {task.result_reference for task in tasks if task.result_reference}
+        candidate_frontier = self._turn_incorporated.get(final_turn, set())
+        if not outstanding and not self._gap and final_turn in self._known_turns and required_results <= candidate_frontier:
+            final = self._assistant_candidates.get(final_turn, "")
         return MuseBackgroundObservation(
             self.binding,
             self.foreground_turn,
@@ -272,7 +329,7 @@ class MuseObservationFold:
             tuple(sorted(self._active)),
             tuple(sorted(self._incorporated)),
             final,
-            self._final_assistant_turn,
+            final_turn,
             readiness,
             reason,
             tuple(self._positions),
@@ -282,6 +339,9 @@ class MuseObservationFold:
         turn_id = params.get("turnId")
         if not isinstance(turn_id, str) or not turn_id:
             self._gap = "turn event omitted identity"
+            return
+        self._known_turns.add(turn_id)
+        if turn_id in self._terminal_turns:
             return
         (self._queued if method == "turn/queued" else self._active).add(turn_id)
         if method == "turn/started":
@@ -296,6 +356,8 @@ class MuseObservationFold:
             return
         self._active.discard(turn_id)
         self._queued.discard(turn_id)
+        self._known_turns.add(turn_id)
+        self._terminal_turns.add(turn_id)
         if turn_id == self.foreground_turn:
             self._foreground_state = str(params.get("terminal") or ("unqueued" if method == "turn/unqueued" else "unknown"))
 
@@ -324,7 +386,6 @@ class MuseObservationFold:
         raw_outcome = task.get("outcome", state_value if terminal else "unknown")
         aliases = {
             "success": MuseTaskOutcome.SUCCESS,
-            "completed": MuseTaskOutcome.SUCCESS,
             "succeeded": MuseTaskOutcome.SUCCESS,
             "failure": MuseTaskOutcome.FAILURE,
             "failed": MuseTaskOutcome.FAILURE,
@@ -332,6 +393,20 @@ class MuseObservationFold:
             "interrupted": MuseTaskOutcome.INTERRUPTED,
         }
         outcome = aliases.get(str(raw_outcome), MuseTaskOutcome.UNKNOWN) if terminal else MuseTaskOutcome.UNKNOWN
+        if terminal and str(raw_outcome) == "completed":
+            exit_code = task.get("exitCode")
+            result_payload = task.get("result")
+            if not isinstance(exit_code, int) and isinstance(result_payload, Mapping):
+                exit_code = result_payload.get("exitCode")
+            if not isinstance(exit_code, int) and isinstance(task.get("visibleOutput"), str):
+                try:
+                    output_payload = json.loads(str(task["visibleOutput"]))
+                    if isinstance(output_payload, Mapping):
+                        exit_code = output_payload.get("exit_code")
+                except json.JSONDecodeError:
+                    pass
+            if isinstance(exit_code, int):
+                outcome = MuseTaskOutcome.SUCCESS if exit_code == 0 else MuseTaskOutcome.FAILURE
         result = task.get("resultReference", task.get("resultId", ""))
         result_reference = result if isinstance(result, str) else ""
         if terminal and not result_reference:
@@ -359,8 +434,11 @@ class MuseObservationFold:
         if kind in {"tool", "toolCall"} and item.get("background") is True:
             self._observe_task("item/completed" if params.get("item") is item and item.get("status") != "inProgress" else "item/updated", item, provenance)
         elif kind in {"message", "agentMessage"} and isinstance(turn_id, str) and isinstance(item.get("text"), str):
-            self._final_assistant = str(item["text"])
-            self._final_assistant_turn = turn_id
+            self._known_turns.add(turn_id)
+            self._assistant_candidates[turn_id] = str(item["text"])
+            if turn_id in self._candidate_order:
+                self._candidate_order.remove(turn_id)
+            self._candidate_order.append(turn_id)
 
 
 def persist_muse_observation(
@@ -400,8 +478,8 @@ def persist_muse_observation(
     if current is None:
         return False
     desired = {
-        MuseContinuationReadiness.NATIVE_ACTIVE: ContinuationState.CONTINUATION_PENDING,
-        MuseContinuationReadiness.CONTROLLER_READY: ContinuationState.CONTINUATION_PENDING,
+        MuseContinuationReadiness.NATIVE_ACTIVE: ContinuationState.NATIVE_CONTINUATION_ACTIVE,
+        MuseContinuationReadiness.CONTROLLER_READY: ContinuationState.CONTROLLER_READY,
         MuseContinuationReadiness.NOT_READY: ContinuationState.WAITING_BACKGROUND,
         MuseContinuationReadiness.RECONCILIATION_REQUIRED: ContinuationState.RECONCILIATION_REQUIRED,
         MuseContinuationReadiness.UNSUPPORTED: ContinuationState.RECONCILIATION_REQUIRED,
@@ -414,4 +492,85 @@ def persist_muse_observation(
         provider_position=observation.provider_positions[-1] if observation.provider_positions else "",
     ):
         return False
-    return True
+    payload = json.dumps(
+        {
+            "binding": {
+                "backend_name": binding.backend_name,
+                "provider_session": binding.provider_session,
+                "execution_incarnation": binding.execution_incarnation,
+                "upstream_attempt": binding.upstream_attempt,
+                "workspace": str(binding.workspace),
+            },
+            "foreground_turn": observation.foreground_turn,
+            "foreground_state": observation.foreground_state,
+            "tasks": [
+                {
+                    "task_id": task.task_id,
+                    "turn_id": task.turn_id,
+                    "state": task.state,
+                    "outcome": task.outcome.value,
+                    "result_reference": task.result_reference,
+                    "result_delivered": task.result_delivered,
+                    "revision": task.revision,
+                    "provenance": task.provenance,
+                    "contradictory": task.contradictory,
+                }
+                for task in observation.tasks
+            ],
+            "queued_turns": observation.queued_turns,
+            "active_turns": observation.active_turns,
+            "incorporated_results": observation.incorporated_results,
+            "final_assistant": observation.final_assistant,
+            "final_assistant_turn": observation.final_assistant_turn,
+            "readiness": observation.readiness.value,
+            "reconciliation_reason": observation.reconciliation_reason,
+            "provider_positions": observation.provider_positions,
+        },
+        sort_keys=True,
+    )
+    return store.persist_continuation_observation(job_id, executor_token, payload)
+
+
+def recover_muse_observation(store: LocalJobStore, job_id: str) -> Optional[MuseBackgroundObservation]:
+    """Recover the exact normalized Muse evidence persisted for a continuation."""
+    payload = store.get_continuation_observation(job_id)
+    if not payload:
+        return None
+    try:
+        raw = json.loads(payload)
+        binding = raw["binding"]
+        return MuseBackgroundObservation(
+            MuseObservationBinding(
+                str(binding["backend_name"]),
+                str(binding["provider_session"]),
+                str(binding["execution_incarnation"]),
+                str(binding["upstream_attempt"]),
+                Path(str(binding["workspace"])),
+            ),
+            str(raw["foreground_turn"]),
+            str(raw["foreground_state"]),
+            tuple(
+                MuseTaskObservation(
+                    str(task["task_id"]),
+                    str(task["turn_id"]),
+                    str(task["state"]),
+                    MuseTaskOutcome(str(task["outcome"])),
+                    str(task["result_reference"]),
+                    bool(task["result_delivered"]),
+                    int(task["revision"]),
+                    str(task["provenance"]),
+                    bool(task["contradictory"]),
+                )
+                for task in raw["tasks"]
+            ),
+            tuple(str(value) for value in raw["queued_turns"]),
+            tuple(str(value) for value in raw["active_turns"]),
+            tuple(str(value) for value in raw["incorporated_results"]),
+            str(raw["final_assistant"]),
+            str(raw["final_assistant_turn"]),
+            MuseContinuationReadiness(str(raw["readiness"])),
+            str(raw["reconciliation_reason"]),
+            tuple(str(value) for value in raw["provider_positions"]),
+        )
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
