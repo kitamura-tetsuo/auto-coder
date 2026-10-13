@@ -38,3 +38,7 @@ additionally starts at accepted Issue-job admission and crosses the production
 adapter, private workspace, runner, Muse transport, durable wait, final artifact,
 and downstream wake. Its adverse variant emits post-snapshot activity and proves
 that the same production route does not promote the stale result.
+`test_pr_correction_adapter_runner_delivers_gate_controlled_muse_background_result`
+starts at correction allowance and job admission, then crosses the production PR
+adapter, exact-head worktree, Muse transport, runner checkpoint, correction outcome,
+and existing validation wake without consuming another allowance.

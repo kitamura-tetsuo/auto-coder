@@ -2520,3 +2520,6 @@ new trace event or dashboard state.
 `tests/test_muse_msp.py::test_issue_adapter_runner_delivers_gate_controlled_muse_background_result`
 crosses accepted Issue admission through the real production adapter and runner for
 both successful completion and late-activity suppression.
+`test_pr_correction_adapter_runner_delivers_gate_controlled_muse_background_result`
+crosses the corresponding admitted correction, exact-head workspace, production
+adapter, runner, and validation wake while retaining the same trace schema.
