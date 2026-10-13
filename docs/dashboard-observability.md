@@ -2517,3 +2517,6 @@ continuation fence.
 Late same-session activity observed during host shutdown is folded into that same
 durable snapshot. It suppresses the existing terminal outcome rather than adding a
 new trace event or dashboard state.
+`tests/test_muse_msp.py::test_issue_adapter_runner_delivers_gate_controlled_muse_background_result`
+crosses accepted Issue admission through the real production adapter and runner for
+both successful completion and late-activity suppression.

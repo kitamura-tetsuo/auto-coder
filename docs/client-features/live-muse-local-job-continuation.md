@@ -32,3 +32,9 @@ allowance or creating a second implementation attempt.
 Run `bash scripts/test.sh tests/test_muse_msp.py tests/test_local_job_runner.py
 tests/test_pr_correction_job.py` for the executable transport, fencing, runner, and
 both domain-adapter regressions.
+
+`test_issue_adapter_runner_delivers_gate_controlled_muse_background_result`
+additionally starts at accepted Issue-job admission and crosses the production
+adapter, private workspace, runner, Muse transport, durable wait, final artifact,
+and downstream wake. Its adverse variant emits post-snapshot activity and proves
+that the same production route does not promote the stale result.
