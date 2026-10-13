@@ -53,3 +53,16 @@ def test_editable_build_rejects_source_changed_after_metadata(tmp_path, monkeypa
 
     with pytest.raises(ValueError, match="Source identity changed"):
         backend.build_editable(str(tmp_path / "wheel"), metadata_directory=str(tmp_path / "metadata"))
+
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text("not json", encoding="utf-8")
+    monkeypatch.setenv("AUTO_CODER_BUILD_IDENTITY_FILE", str(malformed))
+    called = False
+
+    def operation():
+        nonlocal called
+        called = True
+
+    with pytest.raises(backend._identity_module.BuildIdentityError, match="Malformed"):
+        backend._with_identity(operation)
+    assert called is False

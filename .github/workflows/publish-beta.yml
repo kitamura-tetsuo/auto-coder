@@ -47,5 +47,9 @@ jobs:
           IMAGE=ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
           EXPECTED=$(uv run python -c 'import json; print(json.load(open(".agent-tmp/build-identity.json"))["version"])')
           test "$(docker run --rm --entrypoint python "$IMAGE" -c 'import importlib.metadata; print(importlib.metadata.version("auto-coder"))')" = "$EXPECTED"
+          test "$(docker run --rm "$IMAGE" --version | sed -n 's/^auto-coder, version //p')" = "$EXPECTED"
+          OBSERVATION=$(docker run --rm --entrypoint python "$IMAGE" -m auto_coder.build_provenance)
+          test "$(echo "$OBSERVATION" | jq -r '.distribution_version.value')" = "$EXPECTED"
+          test "$(echo "$OBSERVATION" | jq -r '.source_revision.value')" = "${{ github.sha }}"
           test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE")" = "${{ github.sha }}"
           docker push "$IMAGE"

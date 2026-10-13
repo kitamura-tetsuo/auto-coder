@@ -64,6 +64,12 @@ def get_build_version():
 
 
 def _with_identity(operation, *args, **kwargs):
+    supplied = os.environ.get("AUTO_CODER_BUILD_IDENTITY_FILE")
+    if supplied:
+        # Validate the caller-selected record (including checkout agreement)
+        # without replacing its path with a generated carrier.
+        get_build_version()
+        return operation(*args, **kwargs)
     existed = IDENTITY.exists()
     previous = IDENTITY.read_bytes() if existed else None
     if not existed:
