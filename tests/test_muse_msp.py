@@ -16,7 +16,7 @@ from src.auto_coder.exceptions import AutoCoderTimeoutError, AutoCoderUsageLimit
 from src.auto_coder.execution_trace import EventKind, Outcome, get_trace_collector
 from src.auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
-from src.auto_coder.local_job_handoff import LocalJobKind, LocalJobOffer, LocalJobStore
+from src.auto_coder.local_job_handoff import ContinuationState, LocalJobKind, LocalJobOffer, LocalJobStore
 from src.auto_coder.local_session_continuation import LocalContinuationError
 from src.auto_coder.muse_background_observation import bind_muse_job_observation, recover_muse_observation
 from tests.utils.workspace import write_target_test_script
@@ -495,6 +495,10 @@ def test_accepted_job_production_transport_persists_background_frontier(tmp_path
     assert observation.incorporated_results == ("background-task@2",)
     assert observation.final_assistant == "answer:native"
     assert observation.final_assistant_turn == "native-continuation"
+    continuation = store.get_continuation(offer.job_id)
+    assert continuation is not None
+    assert continuation.state is ContinuationState.FINAL_CONFIRMED
+    assert continuation.final_output == "answer:native"
 
 
 def test_muse_msp_named_backend_uses_protocol_client_name(tmp_path, monkeypatch, _use_real_commands):

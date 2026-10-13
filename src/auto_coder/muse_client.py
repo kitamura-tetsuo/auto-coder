@@ -1154,6 +1154,7 @@ class MuseClient(LLMClientBase):
 
         completed_session_id: Optional[str] = None
         final_output: Optional[str] = None
+        final_continuation_frontier: Optional[int] = None
         invocation_error: Optional[BaseException] = None
         try:
             logger.warning("LLM invocation: Muse Code MSP host is being called. Keep LLM calls minimized.")
@@ -1383,6 +1384,8 @@ class MuseClient(LLMClientBase):
                 observation_fold.support = detect_muse_background_support(initialized, conformance_evidence)
                 self._last_background_observation = observation_fold.observation()
                 persist_muse_observation(job_observer.store, job_observer.job.job_id, job_observer.executor_token, self._last_background_observation)
+                if self._last_background_observation.tasks and not observation_fold.support.supported:
+                    raise RuntimeError("Muse background completion is not supported by this observed runtime: " + observation_fold.support.reason)
             # A single-turn host remains open waiting for more input. Close our
             # input after completion, then consume every remaining notification
             # through host EOF so a later contradictory terminal cannot escape
@@ -1433,6 +1436,16 @@ class MuseClient(LLMClientBase):
             completed_session_id = canonical_id
             observed_output = self._last_background_observation.final_assistant if self._last_background_observation is not None else ""
             final_output = observed_output or answers[-1]
+            if job_observer is not None:
+                continuation = job_observer.store.get_continuation(job_observer.job.job_id)
+                if continuation is None or not job_observer.store.record_candidate_output(
+                    job_observer.job.job_id,
+                    job_observer.executor_token,
+                    continuation.frontier,
+                    final_output,
+                ):
+                    raise RuntimeError("Muse final output could not be fenced to the observed result frontier")
+                final_continuation_frontier = continuation.frontier
         except subprocess.TimeoutExpired as exc:
             invocation_error = AutoCoderTimeoutError(f"Muse MSP invocation timed out after {self.timeout} seconds")
             invocation_error.__cause__ = exc
@@ -1503,6 +1516,14 @@ class MuseClient(LLMClientBase):
         if completed_session_id is None or final_output is None:
             self._last_session_id = None
             raise RuntimeError("Muse MSP invocation ended without a completed result")
+        if job_observer is not None:
+            if final_continuation_frontier is None or not job_observer.store.confirm_final_output(
+                job_observer.job.job_id,
+                job_observer.executor_token,
+                final_continuation_frontier,
+            ):
+                self._last_session_id = None
+                raise RuntimeError("Muse final output changed or remained unresolved before writer settlement")
         self._last_session_id = completed_session_id
         if boundary is not None:
             boundary.record_violation_observation(boundary.binding.invocation_id)

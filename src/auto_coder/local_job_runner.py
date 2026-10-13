@@ -282,7 +282,13 @@ class LocalJobRunner:
 
             handle.begin_checkpointing(result.outcome.value)
             artifact = self.store.persist_result_artifact(claim, result.outcome, result.output)
-            if artifact is None or not self.store.record_result(claim, result.outcome, artifact.artifact_id, result.diagnostic):
+            if artifact is None or not self.store.record_result(
+                claim,
+                result.outcome,
+                artifact.artifact_id,
+                result.diagnostic,
+                executor_token=claim.record.runner_owner,
+            ):
                 handle.record_checkpoint_attempt_failed("local job result checkpoint failed")
                 return
             if not self.store.mark_downstream_pending(claim):

@@ -2501,3 +2501,13 @@ to verify the current evidence boundary and durable fence. The separately
 pinned real-host conformance in `tests/test_muse_background_live.py` earns the
 Muse runtime support claim but emits no Auto-Coder processing event, so it does
 not add a dashboard stage or change this observability-neutral assessment.
+
+Live continuation now composes that evidence with both production local-job
+adapters. The existing backend interaction remains open across the background wait
+and native continuation, while the durable local job remains running until the
+frontier-bound final output and writer settlement are confirmed. Therefore no new
+processing origin, admission outcome, structured event, or dashboard renderer is
+introduced: premature completion is suppressed rather than represented by a new
+terminal state. `tests/test_muse_msp.py`, `tests/test_local_job_runner.py`, and
+`tests/test_pr_correction_job.py` exercise the transport-to-runner handoff and the
+Issue/PR-correction bindings.
