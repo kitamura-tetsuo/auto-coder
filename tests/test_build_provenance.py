@@ -50,6 +50,7 @@ def built_wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
     for name in ("pyproject.toml", "README.md", "LICENSE", "MANIFEST.in"):
         shutil.copy(REPO_ROOT / name, src / name)
     shutil.copytree(REPO_ROOT / "src", src / "src", ignore=shutil.ignore_patterns("__pycache__", "build_provenance.json"))
+    shutil.copytree(REPO_ROOT / "build_backend", src / "build_backend")
     result = subprocess.run([_uv(), "build", "--wheel", "--out-dir", str(out), str(src)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     return next(out.glob("auto_coder-*.whl"))

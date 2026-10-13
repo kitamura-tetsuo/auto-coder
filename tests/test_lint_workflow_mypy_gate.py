@@ -183,6 +183,7 @@ def _seed_lint_fixture_repo(repo: Path) -> None:
     git(repo, "config", "user.email", "test@example.com")
 
     shutil.copy2(PYPROJECT, repo / "pyproject.toml")
+    shutil.copytree(ROOT / "build_backend", repo / "build_backend")
     shutil.copy2(FLAKE8_CONFIG, repo / ".flake8")
     shutil.copy2(ROOT / "uv.lock", repo / "uv.lock")
     shutil.copy2(ROOT / ".python-version", repo / ".python-version")

@@ -160,6 +160,8 @@ def _seed_fixture_repo(repo: Path, cache_dir: Path) -> None:
     shutil.copy2(ROOT / "uv.lock", repo / "uv.lock")
     shutil.copy2(ROOT / ".python-version", repo / ".python-version")
     (repo / "src/auto_coder").mkdir(parents=True)
+    shutil.copytree(ROOT / "build_backend", repo / "build_backend")
+    shutil.copy2(ROOT / "src/auto_coder/build_identity.py", repo / "src/auto_coder/build_identity.py")
     _write(repo, "src/auto_coder/__init__.py", '"""Slim auto_coder package subset for scripts/test.sh fixtures."""\n')
     for name in _SLIM_PACKAGE_FILES:
         shutil.copy2(ROOT / "src/auto_coder" / name, repo / "src/auto_coder" / name)

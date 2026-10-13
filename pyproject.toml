@@ -1,10 +1,11 @@
 [build-system]
 requires = ["setuptools>=84.0.0", "wheel"]
-build-backend = "setuptools.build_meta"
+build-backend = "auto_coder_build_backend"
+backend-path = ["build_backend"]
 
 [project]
 name = "auto-coder"
-version = "2026.9.10.9+gc3b0e3d2"
+dynamic = ["version"]
 description = "Automated application development using Gemini CLI and GitHub integration"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -87,6 +88,12 @@ auto-coder = "auto_coder.cli:main"
 # Include package data files
 [tool.setuptools.package-data]
 auto_coder = ["prompts.yaml", "*.yml", "*.yaml", "*.json"]
+
+[tool.setuptools.dynamic]
+version = {attr = "auto_coder_build_backend.get_build_version"}
+
+[tool.uv]
+cache-keys = [{ git = { commit = true } }, { file = "**/*.py" }, { file = "pyproject.toml" }]
 
 [tool.pyright]
 # Python version

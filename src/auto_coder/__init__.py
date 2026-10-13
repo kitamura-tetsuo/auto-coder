@@ -2,7 +2,12 @@
 Auto-Coder: Automated application development using Antigravity CLI and GitHub integration.
 """
 
-__version__ = "2026.9.10.9+gc3b0e3d2"
+try:
+    from importlib.metadata import PackageNotFoundError, version
+
+    __version__ = version("auto-coder")
+except PackageNotFoundError:
+    __version__ = "0+unknown"
 __author__ = "Auto-Coder Team"
 __description__ = "Automated application development using Antigravity CLI and GitHub integration"
 
