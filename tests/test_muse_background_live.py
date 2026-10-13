@@ -356,7 +356,9 @@ def test_released_muse_host_background_result_and_native_continuation(tmp_path: 
         result_reference = f"{task_id}@{terminal_item['revision']}"
         fold.consume_result_delivery(native_turn, [result_reference], str(replay["viewCursor"]))
         observation = fold.observation()
-        assert observation.tasks[0].outcome is MuseTaskOutcome.SUCCESS
+        # This released profile exposes transport completion and output, but no
+        # authoritative command exit discriminator in the MSP item.
+        assert observation.tasks[0].outcome is MuseTaskOutcome.UNKNOWN
         assert observation.tasks[0].result_delivered
         assert observation.incorporated_results == (result_reference,)
         assert observation.readiness is MuseContinuationReadiness.NOT_READY
