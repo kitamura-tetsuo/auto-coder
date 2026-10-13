@@ -79,6 +79,65 @@ def test_runner_releases_submitter_and_checkpoints_real_output(tmp_path: Path) -
     runner.close()
 
 
+def test_runner_promotes_transformed_domain_result_under_muse_continuation_fence(tmp_path: Path) -> None:
+    """A confirmed provider summary may be wrapped by the domain handoff."""
+    store, job_id = _accepted(tmp_path, "muse-domain-result")
+    workspace = (tmp_path / "workspace").resolve()
+    workspace.mkdir()
+    raw_output = "ACTION_SUMMARY: fixed the background failure"
+    domain_output = '{"output":"ACTION_SUMMARY: fixed the background failure","workspace":"/bound"}'
+
+    class ConfirmingAdapter:
+        calls = 0
+
+        def authorize_provider_entry(self, _job):  # type: ignore[no-untyped-def]
+            return True
+
+        def invoke(self, job):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            claim = LocalJobClaim(job, True)
+            assert store.bind_workspace(
+                claim,
+                workspace_path=workspace,
+                source_commit="a" * 40,
+                source_ref="main",
+                work_branch="issue-42",
+                publication_remote="origin",
+                owner_incarnation="owner-1",
+                owner_generation=None,
+            )
+            assert store.bind_continuation(claim, "muse/session-1", job.runner_owner) is not None
+            continuation = store.get_continuation(job.job_id)
+            assert continuation is not None
+            assert store.record_candidate_output(job.job_id, job.runner_owner, continuation.frontier, raw_output)
+            assert store.confirm_final_output(job.job_id, job.runner_owner, continuation.frontier)
+            return LocalJobExecutionResult(InvocationOutcome.COMPLETED, domain_output)
+
+    adapter = ConfirmingAdapter()
+    wakes: list[str] = []
+    runner = LocalJobRunner(
+        store,
+        InvocationAdmissionGate(),
+        repository="owner/repo",
+        capacity=1,
+        adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
+        completion_wake=lambda job: wakes.append(job.job_id),
+    )
+
+    assert runner.poll() == 1
+    _wait(lambda: runner.active_count() == 0)
+    completed = store.get(job_id)
+    assert completed is not None
+    assert completed.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+    artifact = store.get_result_artifact(completed.result_reference)
+    assert artifact is not None and artifact.output == domain_output
+    continuation = store.get_continuation(job_id)
+    assert continuation is not None and continuation.final_output == raw_output
+    _wait(lambda: wakes == [job_id])
+    assert adapter.calls == 1
+    runner.close()
+
+
 @pytest.mark.parametrize("foreign_phase", ["pending", "unentered", "artifact", "result_recorded", "downstream_pending"])
 def test_repository_scope_preserves_foreign_jobs_through_every_runner_phase(tmp_path: Path, foreign_phase: str) -> None:
     store, foreign_id = _accepted(tmp_path, "foreign", repository="owner/other")

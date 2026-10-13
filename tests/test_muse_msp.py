@@ -7,18 +7,27 @@ import os
 import subprocess
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from src.auto_coder.cli_helpers import build_backend_manager
+from src.auto_coder.durable_repair_allowance import RepairAllowanceLedger
 from src.auto_coder.exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from src.auto_coder.execution_trace import EventKind, Outcome, get_trace_collector
+from src.auto_coder.implementation_slots import ImplementationSlotRepository
+from src.auto_coder.invocation_admission import InvocationAdmissionGate
 from src.auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
+from src.auto_coder.issue_local_job import IssueLocalJobAdapter
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
-from src.auto_coder.local_job_handoff import LocalJobKind, LocalJobOffer, LocalJobStore
+from src.auto_coder.local_job_handoff import ContinuationState, LocalJobKind, LocalJobOffer, LocalJobStore
+from src.auto_coder.local_job_runner import LocalJobRunner
+from src.auto_coder.local_review_repair import LocalReviewRepairRequest, LocalReviewRepairStore, admit_local_repair_allowance
 from src.auto_coder.local_session_continuation import LocalContinuationError
 from src.auto_coder.muse_background_observation import bind_muse_job_observation, recover_muse_observation
+from src.auto_coder.pr_correction_job import PRCorrectionJobAdapter, offer_pr_correction_job
+from src.auto_coder.utils import bind_command_execution_cwd, reset_command_execution_cwd
 from tests.utils.workspace import write_target_test_script
 
 
@@ -136,13 +145,19 @@ for line in sys.stdin:
     elif method == "task/list":
         emit({"jsonrpc":"2.0","id":frame["id"],"result":{"tasks":[{"taskId":"background-task","kind":"tool","status":"inProgress","tool":"bash"}]}})
         if os.environ.get("MSP_BACKGROUND_ITEM"):
+            gate = os.environ.get("MSP_BACKGROUND_GATE")
+            while gate and not Path(gate).exists():
+                time.sleep(0.01)
             emit({"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":last_session,"item":{"itemId":"background-task","kind":"toolCall","background":True,"revision":2,"status":"failed","turnId":last_turn,"tool":"bash"}}})
             native = "native-continuation"
             emit({"jsonrpc":"2.0","method":"turn/started","params":{"sessionId":last_session,"turnId":native,"viewCursor":"native-1","resultReferences":["background-task@2"]}})
-            emit({"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":last_session,"item":{"itemId":"native-answer","kind":"agentMessage","revision":1,"status":"completed","turnId":native,"text":"answer:native"}}})
+            emit({"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":last_session,"item":{"itemId":"native-answer","kind":"agentMessage","revision":1,"status":"completed","turnId":native,"text":os.environ.get("MSP_NATIVE_ANSWER", "answer:native")}}})
             emit({"jsonrpc":"2.0","method":"turn/completed","params":{"sessionId":last_session,"turnId":native,"terminal":"completed"}})
     elif method == "session/read":
         emit({"jsonrpc":"2.0","id":frame["id"],"result":{"session":{"sessionId":last_session},"viewCursor":"replay-1","history":{"mode":"inline","items":[]},"lastTurn":{"turnId":"native-continuation","terminal":"completed"}}})
+        if os.environ.get("MSP_LATE_BACKGROUND_ACTIVITY"):
+            emit({"jsonrpc":"2.0","method":"turn/started","params":{"sessionId":last_session,"turnId":"late-turn","viewCursor":"late-1"}})
+            emit({"jsonrpc":"2.0","method":"item/updated","params":{"sessionId":last_session,"viewCursor":"late-2","item":{"itemId":"late-background-task","kind":"toolCall","background":True,"revision":1,"status":"inProgress","turnId":"late-turn","tool":"bash"}}})
     elif method == "turn/start":
         if os.environ.get("MSP_CHILD_WRITER"):
             subprocess.Popen([sys.executable, "-c", "import os,time; from pathlib import Path; time.sleep(1); Path(os.environ['MSP_CHILD_SENTINEL']).write_text('late write')"])
@@ -495,6 +510,236 @@ def test_accepted_job_production_transport_persists_background_frontier(tmp_path
     assert observation.incorporated_results == ("background-task@2",)
     assert observation.final_assistant == "answer:native"
     assert observation.final_assistant_turn == "native-continuation"
+    continuation = store.get_continuation(offer.job_id)
+    assert continuation is not None
+    assert continuation.state is ContinuationState.FINAL_CONFIRMED
+    assert continuation.final_output == "answer:native"
+
+
+def test_bound_job_rejects_final_output_when_shutdown_drain_observes_new_work(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
+    monkeypatch.setenv("MSP_SERVER_VERSION", "1.4.6")
+    monkeypatch.setenv("MSP_BACKGROUND_ITEM", "1")
+    monkeypatch.setenv("MSP_LATE_BACKGROUND_ACTIVITY", "1")
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    guard = IssueDispatchGuard(tmp_path / "dispatch.sqlite3")
+    identity = IssueAttemptIdentity("owner", "repo", 42, "attempt-late")
+    guard.reserve(identity, CandidateHandoff("muse", "local"))
+    offer = LocalJobOffer(LocalJobKind.ISSUE_IMPLEMENTATION, "owner/repo", 42, "attempt-late", "muse", "implement")
+    assert store.offer_issue(offer, identity, guard) is not None
+    claim = store.claim(offer.job_id, "test-runner")
+    assert claim is not None and claim.acquired
+    assert store.bind_workspace(
+        claim,
+        workspace_path=repo,
+        source_commit="a" * 40,
+        source_ref="main",
+        work_branch="work",
+        publication_remote="origin",
+        owner_incarnation="owner",
+        owner_generation=None,
+    )
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    bound_job = store.get(offer.job_id)
+    assert bound_job is not None
+
+    with bind_muse_job_observation(store, bound_job, bound_job.runner_owner):
+        with pytest.raises(RuntimeError, match="final output became stale"):
+            _manager(config)._run_llm_cli("background", is_noedit=True)
+
+    observation = recover_muse_observation(store, offer.job_id)
+    assert observation is not None
+    assert observation.final_assistant == ""
+    assert observation.active_turns == ("late-turn",)
+    assert [(task.task_id, task.state) for task in observation.tasks] == [
+        ("background-task", "terminal"),
+        ("late-background-task", "running"),
+    ]
+    continuation = store.get_continuation(offer.job_id)
+    assert continuation is not None
+    assert continuation.state is not ContinuationState.FINAL_CONFIRMED
+    assert continuation.final_output == ""
+
+
+@pytest.mark.parametrize("late_activity", [False, True])
+def test_issue_adapter_runner_delivers_gate_controlled_muse_background_result(tmp_path, monkeypatch, _use_real_commands, late_activity):
+    """Cross admission, private workspace, Muse, runner, and downstream wake."""
+    source = _repository(tmp_path)
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=source, check=True)
+    subprocess.run(["git", "branch", "-M", "main"], cwd=source, check=True)
+    subprocess.run(["git", "push", "origin", "main"], cwd=source, check=True, capture_output=True)
+    host = _host(tmp_path)
+    gate = tmp_path / "release-background"
+    monkeypatch.chdir(source)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
+    monkeypatch.setenv("MSP_SERVER_VERSION", "1.4.6")
+    monkeypatch.setenv("MSP_BACKGROUND_ITEM", "1")
+    monkeypatch.setenv("MSP_BACKGROUND_GATE", str(gate))
+    monkeypatch.setenv("MSP_NATIVE_ANSWER", "ACTION_SUMMARY: completed after background result")
+    if late_activity:
+        monkeypatch.setenv("MSP_LATE_BACKGROUND_ACTIVITY", "1")
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    guard = IssueDispatchGuard(tmp_path / "dispatch.sqlite3")
+    identity = IssueAttemptIdentity("owner", "repo", 73, "attempt-production")
+    reserved = guard.reserve(identity, CandidateHandoff("muse", "local"))
+    assert reserved.admitted
+    offer = LocalJobOffer(LocalJobKind.ISSUE_IMPLEMENTATION, "owner/repo", 73, "attempt-production", "muse", "implement")
+    accepted = store.offer_issue(offer, identity, guard)
+    assert accepted is not None
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3", timeout=10)})
+    manager = _manager(config)
+    monkeypatch.setattr("auto_coder.cli_helpers.build_backend_manager", lambda **_kwargs: manager)
+    engine = SimpleNamespace(config=SimpleNamespace(MAIN_BRANCH="main"), github=SimpleNamespace())
+    slots = ImplementationSlotRepository("owner/repo", 2, tmp_path / "slots.json", tmp_path / "retired.json")
+    adapter = IssueLocalJobAdapter(engine, "owner/repo", store, slots, source)
+    monkeypatch.setattr(adapter, "authorize_provider_entry", lambda _job: True)
+    monkeypatch.setattr(adapter._start_notifier, "observe_and_publish", lambda *_args, **_kwargs: None)
+    wakes: list[str] = []
+    runner = LocalJobRunner(
+        store,
+        InvocationAdmissionGate(),
+        repository="owner/repo",
+        capacity=2,
+        adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
+        completion_wake=lambda job: wakes.append(job.job_id),
+    )
+
+    assert runner.poll() == 1
+    deadline = time.monotonic() + 10
+    while True:
+        continuation = store.get_continuation(offer.job_id)
+        observation = recover_muse_observation(store, offer.job_id)
+        if continuation is not None and observation is not None and any(task.state == "running" for task in observation.tasks):
+            break
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    waiting = store.get(offer.job_id)
+    assert waiting is not None and waiting.workspace_path and waiting.state.value == "running"
+    assert wakes == []
+    gate.touch()
+    while runner.active_count():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    completed = store.get(offer.job_id)
+    continuation = store.get_continuation(offer.job_id)
+    assert continuation is not None and continuation.provider_session == "opaque/provider/session"
+    if late_activity:
+        assert completed is not None and completed.state.value == "result_recorded"
+        assert continuation.state is not ContinuationState.FINAL_CONFIRMED
+        assert continuation.final_output == ""
+        assert wakes == []
+        runner.close(wait=True)
+        return
+    assert completed is not None and completed.state.value == "downstream_effects_pending"
+    artifact = store.get_result_artifact(completed.result_reference)
+    assert artifact is not None
+    manifest = json.loads(artifact.output)
+    assert manifest["output"] == "ACTION_SUMMARY: completed after background result"
+    while not wakes:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert wakes == [offer.job_id]
+    assert continuation.state is ContinuationState.FINAL_CONFIRMED
+    runner.close(wait=True)
+
+
+def test_pr_correction_adapter_runner_delivers_gate_controlled_muse_background_result(tmp_path, monkeypatch, _use_real_commands):
+    """Cross PR admission, exact-head worktree, Muse, runner, and validation wake."""
+    source = _repository(tmp_path)
+    remote = tmp_path / "pr-remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=source, check=True)
+    subprocess.run(["git", "branch", "-M", "repair"], cwd=source, check=True)
+    subprocess.run(["git", "push", "origin", "repair"], cwd=source, check=True, capture_output=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=source, check=True, capture_output=True, text=True).stdout.strip()
+    host = _host(tmp_path)
+    gate = tmp_path / "release-pr-background"
+    monkeypatch.chdir(source)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "pr-msp.jsonl"))
+    monkeypatch.setenv("MSP_SERVER_VERSION", "1.4.6")
+    monkeypatch.setenv("MSP_BACKGROUND_ITEM", "1")
+    monkeypatch.setenv("MSP_BACKGROUND_GATE", str(gate))
+    monkeypatch.setenv("MSP_NATIVE_ANSWER", "ACTION_SUMMARY: corrected after background result")
+    jobs = LocalJobStore(tmp_path / "pr-jobs.sqlite3")
+    repairs = LocalReviewRepairStore(tmp_path / "repairs.sqlite3")
+    ledger = RepairAllowanceLedger(tmp_path / "allowance.sqlite3")
+    request = LocalReviewRepairRequest("owner/repo", 91, "owner/repo", "repair", head, ("finding-1",), "correct the finding")
+    authority, reason = admit_local_repair_allowance(request, ledger)
+    assert authority is not None, reason
+    accepted = offer_pr_correction_job(request, "muse", store=jobs, repair_store=repairs, allowance_ledger=ledger)
+    assert accepted is not None
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3", timeout=10)})
+    manager = _manager(config)
+
+    def executor_factory(_backend_name, _request):  # type: ignore[no-untyped-def]
+        def execute(_current_request, worktree):  # type: ignore[no-untyped-def]
+            token = bind_command_execution_cwd(worktree)
+            try:
+                return manager._run_llm_cli(_current_request.prompt)
+            finally:
+                reset_command_execution_cwd(token)
+
+        return execute
+
+    class CurrentPRAdapter(PRCorrectionJobAdapter):
+        def _authority_is_current(self, _job):  # type: ignore[no-untyped-def]
+            return True
+
+    adapter = CurrentPRAdapter(SimpleNamespace(), executor_factory, jobs)
+    wakes: list[str] = []
+    runner = LocalJobRunner(
+        jobs,
+        InvocationAdmissionGate(),
+        repository="owner/repo",
+        capacity=2,
+        adapters={LocalJobKind.PR_REVIEW_CORRECTION: adapter},
+        completion_wake=lambda job: wakes.append(job.job_id),
+    )
+    with (
+        patch("src.auto_coder.pr_correction_job.LocalReviewRepairStore", return_value=repairs),
+        patch("src.auto_coder.pr_correction_job.RepairAllowanceLedger", return_value=ledger),
+        patch("src.auto_coder.llm_backend_config.get_llm_config", return_value=config),
+    ):
+        assert runner.poll() == 1
+        deadline = time.monotonic() + 10
+        while True:
+            observation = recover_muse_observation(jobs, accepted.job_id)
+            if observation is not None and any(task.state == "running" for task in observation.tasks):
+                break
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        waiting = jobs.get(accepted.job_id)
+        assert waiting is not None and waiting.workspace_path and waiting.state.value == "running"
+        assert wakes == []
+        gate.touch()
+        while runner.active_count():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+    completed = jobs.get(accepted.job_id)
+    assert completed is not None and completed.state.value == "downstream_effects_pending"
+    artifact = jobs.get_result_artifact(completed.result_reference)
+    assert artifact is not None
+    outcome = json.loads(artifact.output)
+    assert outcome["phase"] == "completed_no_change"
+    continuation = jobs.get_continuation(accepted.job_id)
+    assert continuation is not None
+    assert continuation.provider_session == "opaque/provider/session"
+    assert continuation.state is ContinuationState.FINAL_CONFIRMED
+    while not wakes:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert wakes == [accepted.job_id]
+    retained = repairs.get(request)
+    assert retained is not None and retained.invocation_entered
+    runner.close(wait=True)
 
 
 def test_muse_msp_named_backend_uses_protocol_client_name(tmp_path, monkeypatch, _use_real_commands):

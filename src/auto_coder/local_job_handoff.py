@@ -751,7 +751,7 @@ class LocalJobStore:
                     "WHERE job_id=? AND state=? AND execution_incarnation=? AND provider_entered=1 AND result_reference='' "
                     "AND NOT EXISTS (SELECT 1 FROM local_job_continuations c WHERE c.job_id=local_jobs.job_id "
                     "AND (c.execution_incarnation<>local_jobs.execution_incarnation OR c.executor_token<>? "
-                    "OR c.state<>? OR c.final_output<>?))",
+                    "OR c.state<>?))",
                     (
                         LocalJobState.RESULT_RECORDED.value,
                         str(artifact["outcome"]),
@@ -762,7 +762,6 @@ class LocalJobStore:
                         record.execution_incarnation,
                         executor_token,
                         ContinuationState.FINAL_CONFIRMED.value,
-                        str(artifact["output"]),
                     ),
                 )
                 connection.commit()
@@ -786,10 +785,7 @@ class LocalJobStore:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 current = connection.execute(
-                    "SELECT 1 FROM local_jobs j WHERE job_id=? AND state=? AND execution_incarnation=? "
-                    "AND NOT EXISTS (SELECT 1 FROM local_job_continuations c WHERE c.job_id=j.job_id "
-                    "AND (c.execution_incarnation<>j.execution_incarnation OR c.executor_token<>? "
-                    "OR (?=1 AND (c.state<>? OR c.final_output<>?))))",
+                    "SELECT 1 FROM local_jobs j WHERE job_id=? AND state=? AND execution_incarnation=? " "AND NOT EXISTS (SELECT 1 FROM local_job_continuations c WHERE c.job_id=j.job_id " "AND (c.execution_incarnation<>j.execution_incarnation OR c.executor_token<>? " "OR (?=1 AND c.state<>?)))",
                     (
                         claim.record.job_id,
                         LocalJobState.RUNNING.value,
@@ -797,7 +793,6 @@ class LocalJobStore:
                         executor_token,
                         int(outcome in {InvocationOutcome.COMPLETED, InvocationOutcome.CANNOT_FIX}),
                         ContinuationState.FINAL_CONFIRMED.value,
-                        output,
                     ),
                 ).fetchone()
                 if current is None:
@@ -896,7 +891,7 @@ class LocalJobStore:
                     "AND j.execution_incarnation=r.execution_incarnation "
                     "AND NOT EXISTS (SELECT 1 FROM local_job_continuations c WHERE c.job_id=j.job_id "
                     "AND (c.execution_incarnation<>j.execution_incarnation OR c.executor_token<>? "
-                    "OR (?=1 AND (c.state<>? OR c.final_output<>r.output))))",
+                    "OR (?=1 AND c.state<>?)))",
                     (
                         result_reference,
                         claim.record.job_id,

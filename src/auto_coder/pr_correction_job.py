@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 from dataclasses import asdict
+from pathlib import Path
 from typing import Callable
 
 from .durable_repair_allowance import GenerationLifecycleState, RepairAllowanceLedger
@@ -19,6 +20,7 @@ from .local_review_repair import (
     execute_local_review_repair,
     local_review_repair_db_path,
 )
+from .muse_background_observation import bind_muse_job_observation
 
 ExecutorFactory = Callable[[str, LocalReviewRepairRequest], Callable[[LocalReviewRepairRequest, str], str]]
 
@@ -203,10 +205,35 @@ class PRCorrectionJobAdapter:
         ledger = RepairAllowanceLedger()
         snapshot = ledger.get_snapshot("https://api.github.com", request.repository, request.pr_number)
         authority = LocalRepairAllowanceAuthority(ledger, request, job.owner_generation or "", snapshot.epoch)
+
+        from .llm_backend_config import get_llm_config
+
+        is_muse = get_llm_config(repo_name=job.repository).resolve_backend_type(job.backend_name) == "muse"
+
+        def observed_executor(current_request: LocalReviewRepairRequest, worktree: str) -> str:
+            workspace = Path(worktree).resolve()
+            claim = LocalJobClaim(job, True)
+            if not self.job_store.bind_workspace(
+                claim,
+                workspace_path=workspace,
+                source_commit=current_request.head_sha,
+                source_ref=current_request.head_ref,
+                work_branch=current_request.head_ref,
+                publication_remote="origin",
+                owner_incarnation=job.upstream_incarnation,
+                owner_generation=job.owner_generation,
+            ):
+                raise RuntimeError("PR correction workspace could not be bound to its local job")
+            observed_job = self.job_store.get(job.job_id)
+            if observed_job is None:
+                raise RuntimeError("PR correction local job disappeared before provider entry")
+            with bind_muse_job_observation(self.job_store, observed_job, observed_job.runner_owner):
+                return executor(current_request, worktree)
+
         outcome = execute_local_review_repair(
             request,
             store=store,
-            executor=executor,
+            executor=observed_executor if is_muse else executor,
             allowance_authority=authority,
             accepted_claim=LocalReviewRepairClaim(True, "executing", request.attempt_id, incarnation),
             local_job_id=job.job_id,
