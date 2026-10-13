@@ -106,7 +106,10 @@ class IssueJobFinalizer:
             return IssuePublicationResult(job_id, "pending", diagnostic="settled job has no confirmed publication receipt")
 
         if record.invocation_outcome is not InvocationOutcome.COMPLETED:
-            if record.state is LocalJobState.RESULT_RECORDED and not self._store.mark_downstream_pending(claim):
+            if record.state is LocalJobState.RESULT_RECORDED and not self._store.mark_downstream_pending(
+                claim,
+                executor_token=record.runner_owner,
+            ):
                 return IssuePublicationResult(job_id, "pending", diagnostic="could not checkpoint disposition")
             refreshed = self._store.get(job_id)
             if refreshed is None or not self._store.settle(self._claim(refreshed), record.diagnostic or record.invocation_outcome.value):
@@ -159,7 +162,7 @@ class IssueJobFinalizer:
             return IssuePublicationResult(job_id, "pending", diagnostic="retained workspace no longer has the authorized branch history")
 
         if record.state is LocalJobState.RESULT_RECORDED:
-            if not self._store.mark_downstream_pending(claim):
+            if not self._store.mark_downstream_pending(claim, executor_token=record.runner_owner):
                 return IssuePublicationResult(job_id, "pending", diagnostic="could not transfer result to finalization")
             record = self._store.get(job_id) or record
             claim = self._claim(record)

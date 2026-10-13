@@ -193,7 +193,17 @@ class IssueJobWorkspaceProducer:
         )
         if not checkpoint_result:
             return IssueJobCheckpoint(record.job_id, record.execution_incarnation, workspace, source_commit, source.work_branch, manifest_json, output)
-        artifact = self._store.persist_result_artifact(claim, InvocationOutcome.COMPLETED, manifest_json)
-        if artifact is None or not self._store.record_result(claim, InvocationOutcome.COMPLETED, artifact.artifact_id):
+        artifact = self._store.persist_result_artifact(
+            claim,
+            InvocationOutcome.COMPLETED,
+            manifest_json,
+            executor_token=claim.record.runner_owner,
+        )
+        if artifact is None or not self._store.record_result(
+            claim,
+            InvocationOutcome.COMPLETED,
+            artifact.artifact_id,
+            executor_token=claim.record.runner_owner,
+        ):
             raise IssueJobWorkspaceError("successful workspace result could not be durably checkpointed")
         return IssueJobCheckpoint(record.job_id, record.execution_incarnation, workspace, source_commit, source.work_branch, artifact.artifact_id, output)

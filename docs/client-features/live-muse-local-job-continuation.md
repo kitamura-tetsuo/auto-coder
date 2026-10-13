@@ -11,7 +11,10 @@ The final output is recorded against the current durable frontier before host
 shutdown and confirmed only after the invocation-owned writer process group settles.
 The local runner supplies the same executor fence when recording its result, so an
 intermediate message cannot make downstream Issue publication or PR validation
-eligible. Unsupported or ambiguous background semantics, stale frontiers, missing
+eligible. The domain result may wrap that confirmed output in an Issue workspace
+manifest or PR correction outcome; promotion validates the continuation lineage and
+confirmed state rather than incorrectly requiring that domain artifact to equal the
+raw assistant line. Unsupported or ambiguous background semantics, stale frontiers, missing
 result delivery, timeout, cancellation, and unknown settlement remain failures or
 reconciliation work. Ordinary non-Muse and single-turn Muse calls retain their
 existing behavior.

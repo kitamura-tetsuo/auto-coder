@@ -191,7 +191,7 @@ class LocalJobRunner:
                 if active is not None and not active.done():
                     continue
             if job.state is LocalJobState.RUNNING and job.provider_entered:
-                if self.store.recover_recorded_result(job):
+                if self.store.recover_recorded_result(job, executor_token=job.runner_owner):
                     refreshed = self.store.get(job.job_id)
                     if refreshed is None:
                         continue
@@ -281,7 +281,12 @@ class LocalJobRunner:
                 return
 
             handle.begin_checkpointing(result.outcome.value)
-            artifact = self.store.persist_result_artifact(claim, result.outcome, result.output)
+            artifact = self.store.persist_result_artifact(
+                claim,
+                result.outcome,
+                result.output,
+                executor_token=claim.record.runner_owner,
+            )
             if artifact is None or not self.store.record_result(
                 claim,
                 result.outcome,
@@ -291,7 +296,7 @@ class LocalJobRunner:
             ):
                 handle.record_checkpoint_attempt_failed("local job result checkpoint failed")
                 return
-            if not self.store.mark_downstream_pending(claim):
+            if not self.store.mark_downstream_pending(claim, executor_token=claim.record.runner_owner):
                 handle.record_checkpoint_attempt_failed("downstream eligibility checkpoint failed")
                 return
             handle.confirm_settled(artifact.artifact_id)
@@ -317,10 +322,16 @@ class LocalJobRunner:
         if result is None or result.definitely_not_started:
             return False
         claim = LocalJobClaim(job, True)
-        artifact = self.store.persist_result_artifact(claim, result.outcome, result.output)
-        if artifact is None or not self.store.record_result(claim, result.outcome, artifact.artifact_id, result.diagnostic):
+        artifact = self.store.persist_result_artifact(claim, result.outcome, result.output, executor_token=job.runner_owner)
+        if artifact is None or not self.store.record_result(
+            claim,
+            result.outcome,
+            artifact.artifact_id,
+            result.diagnostic,
+            executor_token=job.runner_owner,
+        ):
             return False
-        return self.store.mark_downstream_pending(claim)
+        return self.store.mark_downstream_pending(claim, executor_token=job.runner_owner)
 
     @staticmethod
     def _checkpoint_without_provider(handle: InvocationHandle, claim: LocalJobClaim, outcome: str, *, settle: bool = True) -> None:

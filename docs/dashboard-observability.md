@@ -2510,4 +2510,7 @@ processing origin, admission outcome, structured event, or dashboard renderer is
 introduced: premature completion is suppressed rather than represented by a new
 terminal state. `tests/test_muse_msp.py`, `tests/test_local_job_runner.py`, and
 `tests/test_pr_correction_job.py` exercise the transport-to-runner handoff and the
-Issue/PR-correction bindings.
+Issue/PR-correction bindings. Runner artifact persistence, result recording,
+recovery, and downstream promotion all carry the same executor token; transformed
+domain manifests remain distinct from the provider output retained by the
+continuation fence.
