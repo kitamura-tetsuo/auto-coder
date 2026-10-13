@@ -102,7 +102,7 @@ def test_publish_beta_selection_excludes_all_live_tests_from_actual_collection()
     beta_names = {node_id.split("::")[-1] for node_id in beta_ids}
 
     live_collect = subprocess.run(
-        [sys.executable, "-m", "pytest", *targets, "-m", "opencode_live or muse_live", "--collect-only", "-q"],
+        [sys.executable, "-m", "pytest", *targets, "-m", "opencode_live", "--collect-only", "-q"],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -203,7 +203,7 @@ class TestClassLevelLive:
     assert beta_collect.returncode == 0, beta_collect.stdout + beta_collect.stderr
     beta_names = {line.strip().split("::")[-1] for line in beta_collect.stdout.splitlines() if "::" in line}
 
-    assert beta_names == {"test_browser_only_probe", "test_ordinary_probe"}
+    assert beta_names == {"test_browser_only_probe", "test_muse_live_probe", "test_ordinary_probe"}
 
 
 def test_local_default_and_explicit_live_invocations_are_unaffected():
