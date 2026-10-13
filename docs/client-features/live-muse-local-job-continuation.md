@@ -19,6 +19,11 @@ result delivery, timeout, cancellation, and unknown settlement remain failures o
 reconciliation work. Ordinary non-Muse and single-turn Muse calls retain their
 existing behavior.
 
+Notifications received with or after the final session snapshot remain authoritative.
+The shutdown drain folds and persists them before candidate confirmation, so a newer
+turn or background task invalidates an older assistant candidate instead of being
+terminated and published as if the older frontier were still current.
+
 PR corrections bind the detached exact-head worktree to the accepted local job
 before entering Muse. This extends the same continuation evidence boundary to the
 existing correction allowance and publication lifecycle without reserving another

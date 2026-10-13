@@ -2514,3 +2514,6 @@ Issue/PR-correction bindings. Runner artifact persistence, result recording,
 recovery, and downstream promotion all carry the same executor token; transformed
 domain manifests remain distinct from the provider output retained by the
 continuation fence.
+Late same-session activity observed during host shutdown is folded into that same
+durable snapshot. It suppresses the existing terminal outcome rather than adding a
+new trace event or dashboard state.

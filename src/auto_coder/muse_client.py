@@ -1395,16 +1395,42 @@ class MuseClient(LLMClientBase):
                 process.stdin.close()
                 diag.stdin_closed()
             host_wait = diag.begin_operation("host_exit_wait")
+            # ``session/read`` may be decoded in the same read as notifications
+            # that follow its response. Start at the last event consumed by the
+            # foreground/native loop, not at the current list length.
+            drain_cursor = notification_cursor
+
+            def persist_drained_observations() -> None:
+                nonlocal drain_cursor
+                if observation_fold is None or job_observer is None:
+                    drain_cursor = len(notifications)
+                    return
+                for drained_event in notifications[drain_cursor:]:
+                    observation_fold.consume(drained_event)
+                    self._last_background_observation = observation_fold.observation()
+                    if not persist_muse_observation(
+                        job_observer.store,
+                        job_observer.job.job_id,
+                        job_observer.executor_token,
+                        self._last_background_observation,
+                    ):
+                        raise RuntimeError("Muse shutdown activity could not be fenced to the local job")
+                drain_cursor = len(notifications)
+
             try:
-                while process.poll() is None:
+                while True:
                     poll_deadline = min(deadline, time.monotonic() + 0.05)
                     try:
                         self._msp_wait(process, -1, poll_deadline, notifications, clean_eof=True)
                     except AutoCoderTimeoutError:
+                        if process.poll() is not None:
+                            break
                         if time.monotonic() >= deadline:
                             raise
+                    finally:
+                        persist_drained_observations()
             except _MspEndOfStream:
-                pass
+                persist_drained_observations()
             finally:
                 diag.end_operation(host_wait)
             diag.enter_phase("result_validation")
@@ -1435,6 +1461,8 @@ class MuseClient(LLMClientBase):
                 raise RuntimeError("Muse MSP turn completed without final assistant text")
             completed_session_id = canonical_id
             observed_output = self._last_background_observation.final_assistant if self._last_background_observation is not None else ""
+            if observation_fold is not None and not observed_output:
+                raise RuntimeError("Muse final output became stale while newer session activity remained unresolved")
             final_output = observed_output or answers[-1]
             if job_observer is not None:
                 continuation = job_observer.store.get_continuation(job_observer.job.job_id)

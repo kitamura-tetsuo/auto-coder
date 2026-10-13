@@ -143,6 +143,9 @@ for line in sys.stdin:
             emit({"jsonrpc":"2.0","method":"turn/completed","params":{"sessionId":last_session,"turnId":native,"terminal":"completed"}})
     elif method == "session/read":
         emit({"jsonrpc":"2.0","id":frame["id"],"result":{"session":{"sessionId":last_session},"viewCursor":"replay-1","history":{"mode":"inline","items":[]},"lastTurn":{"turnId":"native-continuation","terminal":"completed"}}})
+        if os.environ.get("MSP_LATE_BACKGROUND_ACTIVITY"):
+            emit({"jsonrpc":"2.0","method":"turn/started","params":{"sessionId":last_session,"turnId":"late-turn","viewCursor":"late-1"}})
+            emit({"jsonrpc":"2.0","method":"item/updated","params":{"sessionId":last_session,"viewCursor":"late-2","item":{"itemId":"late-background-task","kind":"toolCall","background":True,"revision":1,"status":"inProgress","turnId":"late-turn","tool":"bash"}}})
     elif method == "turn/start":
         if os.environ.get("MSP_CHILD_WRITER"):
             subprocess.Popen([sys.executable, "-c", "import os,time; from pathlib import Path; time.sleep(1); Path(os.environ['MSP_CHILD_SENTINEL']).write_text('late write')"])
@@ -499,6 +502,55 @@ def test_accepted_job_production_transport_persists_background_frontier(tmp_path
     assert continuation is not None
     assert continuation.state is ContinuationState.FINAL_CONFIRMED
     assert continuation.final_output == "answer:native"
+
+
+def test_bound_job_rejects_final_output_when_shutdown_drain_observes_new_work(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
+    monkeypatch.setenv("MSP_SERVER_VERSION", "1.4.6")
+    monkeypatch.setenv("MSP_BACKGROUND_ITEM", "1")
+    monkeypatch.setenv("MSP_LATE_BACKGROUND_ACTIVITY", "1")
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    guard = IssueDispatchGuard(tmp_path / "dispatch.sqlite3")
+    identity = IssueAttemptIdentity("owner", "repo", 42, "attempt-late")
+    guard.reserve(identity, CandidateHandoff("muse", "local"))
+    offer = LocalJobOffer(LocalJobKind.ISSUE_IMPLEMENTATION, "owner/repo", 42, "attempt-late", "muse", "implement")
+    assert store.offer_issue(offer, identity, guard) is not None
+    claim = store.claim(offer.job_id, "test-runner")
+    assert claim is not None and claim.acquired
+    assert store.bind_workspace(
+        claim,
+        workspace_path=repo,
+        source_commit="a" * 40,
+        source_ref="main",
+        work_branch="work",
+        publication_remote="origin",
+        owner_incarnation="owner",
+        owner_generation=None,
+    )
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    bound_job = store.get(offer.job_id)
+    assert bound_job is not None
+
+    with bind_muse_job_observation(store, bound_job, bound_job.runner_owner):
+        with pytest.raises(RuntimeError, match="final output became stale"):
+            _manager(config)._run_llm_cli("background", is_noedit=True)
+
+    observation = recover_muse_observation(store, offer.job_id)
+    assert observation is not None
+    assert observation.final_assistant == ""
+    assert observation.active_turns == ("late-turn",)
+    assert [(task.task_id, task.state) for task in observation.tasks] == [
+        ("background-task", "terminal"),
+        ("late-background-task", "running"),
+    ]
+    continuation = store.get_continuation(offer.job_id)
+    assert continuation is not None
+    assert continuation.state is not ContinuationState.FINAL_CONFIRMED
+    assert continuation.final_output == ""
 
 
 def test_muse_msp_named_backend_uses_protocol_client_name(tmp_path, monkeypatch, _use_real_commands):
