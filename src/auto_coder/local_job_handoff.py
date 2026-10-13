@@ -83,6 +83,8 @@ class LocalJobContinuation:
     candidate_output: str = ""
     final_output: str = ""
     provider_position: str = ""
+    deadline_at: Optional[float] = None
+    reconciliation_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -278,6 +280,10 @@ class LocalJobStore:
             columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(local_job_continuations)")}
             if "observation_json" not in columns:
                 connection.execute("ALTER TABLE local_job_continuations ADD COLUMN observation_json TEXT NOT NULL DEFAULT ''")
+            if "deadline_at" not in columns:
+                connection.execute("ALTER TABLE local_job_continuations ADD COLUMN deadline_at REAL")
+            if "reconciliation_reason" not in columns:
+                connection.execute("ALTER TABLE local_job_continuations ADD COLUMN reconciliation_reason TEXT NOT NULL DEFAULT ''")
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS local_continuation_tasks (
                 job_id TEXT NOT NULL, task_id TEXT NOT NULL, lifecycle TEXT NOT NULL,
@@ -1013,9 +1019,18 @@ class LocalJobStore:
             candidate_output=str(row["candidate_output"]),
             final_output=str(row["final_output"]),
             provider_position=str(row["provider_position"]),
+            deadline_at=float(row["deadline_at"]) if row["deadline_at"] is not None else None,
+            reconciliation_reason=str(row["reconciliation_reason"]),
         )
 
-    def bind_continuation(self, claim: LocalJobClaim, provider_session: str, executor_token: str) -> Optional[LocalJobContinuation]:
+    def bind_continuation(
+        self,
+        claim: LocalJobClaim,
+        provider_session: str,
+        executor_token: str,
+        *,
+        deadline_at: Optional[float] = None,
+    ) -> Optional[LocalJobContinuation]:
         """Bind a provider session once to the exact accepted execution and workspace."""
         if not claim.acquired or not provider_session or not executor_token:
             return None
@@ -1030,8 +1045,8 @@ class LocalJobStore:
                     connection.rollback()
                     return None
                 connection.execute(
-                    "INSERT OR IGNORE INTO local_job_continuations " "(job_id, execution_incarnation, executor_token, provider_session, state, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    (claim.record.job_id, claim.record.execution_incarnation, executor_token, provider_session, ContinuationState.FOREGROUND.value, time.time()),
+                    "INSERT OR IGNORE INTO local_job_continuations " "(job_id, execution_incarnation, executor_token, provider_session, state, deadline_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (claim.record.job_id, claim.record.execution_incarnation, executor_token, provider_session, ContinuationState.FOREGROUND.value, deadline_at, time.time()),
                 )
                 row = connection.execute("SELECT * FROM local_job_continuations WHERE job_id=?", (claim.record.job_id,)).fetchone()
                 connection.commit()
@@ -1126,6 +1141,33 @@ class LocalJobStore:
                 ),
             )
         return cursor.rowcount == 1
+
+    def retain_reconciliation_reason(self, job_id: str, executor_token: str, reason: str) -> bool:
+        """Retain why recovery cannot currently authorize provider activity."""
+        if not reason:
+            return False
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    "UPDATE local_job_continuations AS c SET state=?, reconciliation_reason=?, updated_at=? "
+                    "WHERE job_id=? AND executor_token=? AND state NOT IN (?, ?, ?) "
+                    "AND EXISTS (SELECT 1 FROM local_jobs j WHERE j.job_id=c.job_id "
+                    "AND j.execution_incarnation=c.execution_incarnation AND j.state=?)",
+                    (
+                        ContinuationState.RECONCILIATION_REQUIRED.value,
+                        reason[:2000],
+                        time.time(),
+                        job_id,
+                        executor_token,
+                        ContinuationState.FINAL_CONFIRMED.value,
+                        ContinuationState.INTERRUPTED.value,
+                        ContinuationState.FAILED.value,
+                        LocalJobState.RUNNING.value,
+                    ),
+                )
+            return cursor.rowcount == 1
+        except (OSError, sqlite3.Error):
+            return False
 
     def observe_continuation_task(
         self,

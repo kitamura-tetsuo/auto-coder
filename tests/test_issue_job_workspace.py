@@ -9,7 +9,7 @@ import pytest
 
 from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
 from auto_coder.issue_job_workspace import IssueJobCannotFix, IssueJobSource, IssueJobWorkspaceError, IssueJobWorkspaceProducer
-from auto_coder.local_job_handoff import LocalJobKind, LocalJobOffer, LocalJobStore
+from auto_coder.local_job_handoff import LocalJobClaim, LocalJobKind, LocalJobOffer, LocalJobStore
 
 
 def git(path: Path, *args: str) -> str:
@@ -85,6 +85,35 @@ def test_concurrent_jobs_use_distinct_pinned_workspaces(tmp_path: Path, _use_rea
     reopened = LocalJobStore(tmp_path / "jobs.sqlite3")
     assert all(reopened.get(item.job_id).result_reference == item.result_reference for item in results)  # type: ignore[union-attr]
     assert all(Path(reopened.get(item.job_id).workspace_path).is_dir() for item in results)  # type: ignore[union-attr]
+
+
+def test_recovery_checkpoints_confirmed_output_from_retained_workspace(tmp_path: Path, _use_real_commands) -> None:
+    repo, _head = repository(tmp_path)
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    acquired = claim(store, 2483)
+    producer = IssueJobWorkspaceProducer(store, tmp_path / "workspaces")
+
+    def interrupted_after_provider(workspace: Path, _prompt: str) -> str:
+        (workspace / "value.txt").write_text("recovered\n", encoding="utf-8")
+        (workspace / "new.txt").write_text("new\n", encoding="utf-8")
+        return "ACTION_SUMMARY: retained result"
+
+    initial = producer.execute(
+        acquired,
+        IssueJobSource("owner/repo", repo, "main", "issue-2483"),
+        interrupted_after_provider,
+        checkpoint_result=False,
+    )
+    retained = store.get(acquired.record.job_id)
+    assert retained is not None
+
+    recovered = producer.recover_confirmed_output(LocalJobClaim(retained, True), initial.output)
+    manifest = json.loads(recovered.result_reference)
+
+    assert recovered.workspace == initial.workspace
+    assert manifest["output"] == "ACTION_SUMMARY: retained result"
+    assert set(manifest["changed_files"]) == {"new.txt", "value.txt"}
+    assert manifest["changed_files"]["value.txt"]["checksum"] != manifest["workspace_files"]["new.txt"]["checksum"]
 
 
 def test_remote_advance_is_fetched_despite_stale_local_main(tmp_path: Path, _use_real_commands) -> None:

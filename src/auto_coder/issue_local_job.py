@@ -77,6 +77,27 @@ class IssueLocalJobAdapter:
         except Exception:
             return False
 
+    def authorize_recovery(self, job: LocalJobRecord) -> bool:
+        """Revalidate the same accepted attempt without fresh admission."""
+        return self.authorize_provider_entry(job)
+
+    def recover_continuation(
+        self,
+        job: LocalJobRecord,
+        provider_session: str,
+        remaining_seconds: float,
+    ) -> LocalJobExecutionResult | None:
+        """Promote only an exact output already confirmed by Muse settlement."""
+        del provider_session, remaining_seconds
+        continuation = self._store.get_continuation(job.job_id)
+        if continuation is None or not continuation.final_output:
+            return None
+        checkpoint = IssueJobWorkspaceProducer(
+            self._store,
+            implementation_slots=self._slots,
+        ).recover_confirmed_output(LocalJobClaim(job, True), continuation.final_output)
+        return LocalJobExecutionResult(InvocationOutcome.COMPLETED, checkpoint.result_reference)
+
     def invoke(self, job: LocalJobRecord) -> LocalJobExecutionResult:
         return self.invoke_at_provider_entry(job, lambda: True)
 

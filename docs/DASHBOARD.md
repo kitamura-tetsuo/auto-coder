@@ -440,3 +440,12 @@ knowledge of the configured account-scoped operator secret; it is not proof of a
 particular human's physical presence. Sessions are repository-scoped, expire
 within 30 minutes, and are invalidated by logout, restart, secret changes, or
 disablement.
+## Retained Muse recovery
+
+Muse jobs interrupted after provider entry remain visible through their
+existing local-job lifecycle. Recovery does not create a new Issue admission
+or implementation attempt. The durable continuation owns an absolute deadline,
+an executor fence, and (when progress is unsafe) a reconciliation reason; only
+a confirmed recovered result advances to the existing downstream state. No new
+dashboard event is synthesized for startup discovery because recovery may run
+without the original execution trace scope.

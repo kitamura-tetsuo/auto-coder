@@ -2329,6 +2329,18 @@ the real admission, claim, workspace-binding, SQLite reopen, stale-executor, tas
 frontier, and ambiguous-command boundaries. Run `bash scripts/test.sh
 tests/test_local_job_continuation.py tests/test_local_job_handoff.py`.
 
+Recovery of a retained Muse continuation remains on this durable evidence
+boundary. The store now exposes the original absolute invocation deadline and a
+specific reconciliation reason, while executor-token replacement identifies
+the sole recovery writer. These are durable diagnostic fields rather than a
+new structured dashboard event: detached recovery can run without an active
+execution trace scope, and emitting a scoped success event would incorrectly
+attribute an old accepted job to the startup poll that found it. Existing
+local-job admission and downstream completion events remain unchanged. Run
+`bash scripts/test.sh tests/test_local_job_runner.py
+tests/test_local_job_continuation.py` to exercise the production recovery
+entry, contested fencing, deadline refusal, and recovered downstream boundary.
+
 ## Durable local runner execution
 
 Runner admission and recovery are now restricted to the explicitly supplied

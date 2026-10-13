@@ -619,3 +619,70 @@ def execute_local_review_repair(
                 os.rmdir(worktree)
             except OSError:
                 pass
+
+
+def recover_confirmed_local_review_repair(
+    request: LocalReviewRepairRequest,
+    response: str,
+    *,
+    store: LocalReviewRepairStore,
+    allowance_authority: LocalRepairAllowanceAuthority,
+) -> LocalReviewRepairOutcome:
+    """Finish an entered correction from its settled Muse result and worktree."""
+    record = store.get(request)
+    if record is None or record.phase != "executing" or not record.invocation_entered or not record.workspace_path:
+        return LocalReviewRepairOutcome("indeterminate", "retained correction execution is unavailable")
+    worktree = Path(record.workspace_path)
+    if not worktree.is_dir():
+        return LocalReviewRepairOutcome("indeterminate", "retained correction workspace is unavailable")
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=str(worktree),
+        capture_output=True,
+        text=True,
+    )
+    if status.returncode != 0:
+        return LocalReviewRepairOutcome("indeterminate", "could not inspect retained corrective output")
+    claim = LocalReviewRepairClaim(True, record.phase, record.attempt_id, record.incarnation)
+    if response.strip() == "CANNOT_FIX":
+        store.transition(request, claim, "terminal_failure", reason="local backend returned CANNOT_FIX")
+        allowance_authority.mark_completion(code_changed=False, evidence="local backend returned CANNOT_FIX")
+        return LocalReviewRepairOutcome("terminal_failure", "local backend could not correct the finding", executed=True)
+    if not status.stdout.strip():
+        store.transition(request, claim, "completed_no_change", result_sha=request.head_sha)
+        allowance_authority.mark_completion(code_changed=False, evidence="local correction completed with no change")
+        return LocalReviewRepairOutcome(
+            "completed_no_change",
+            "local correction completed with no change; independent validation is required",
+            executed=True,
+        )
+    stage = subprocess.run(["git", "add", "-A"], cwd=worktree, capture_output=True, text=True)
+    if stage.returncode != 0:
+        return LocalReviewRepairOutcome("indeterminate", f"corrective output could not be staged: {stage.stderr}")
+    commit = git_commit_with_retry(f"Fix unresolved review findings for PR #{request.pr_number}", cwd=str(worktree))
+    if not commit.success:
+        return LocalReviewRepairOutcome("indeterminate", f"corrective commit failed after recovery: {commit.stderr}")
+    result_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(worktree),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    store.transition(request, claim, "publication_pending", result_sha=result_sha)
+    push = git_push(
+        cwd=str(worktree),
+        remote="origin",
+        branch=f"HEAD:{request.head_ref}",
+        expected_remote_sha=request.head_sha,
+    )
+    if not push.success:
+        return LocalReviewRepairOutcome("publication_pending", f"publication incomplete: {push.stderr}", executed=True)
+    store.transition(request, claim, "awaiting_validation", result_sha=result_sha)
+    allowance_authority.mark_completion(code_changed=True, evidence=f"local correction published as {result_sha}")
+    return LocalReviewRepairOutcome(
+        "awaiting_validation",
+        f"published {result_sha} to {request.head_ref}; independent validation is required",
+        executed=True,
+        published=True,
+    )

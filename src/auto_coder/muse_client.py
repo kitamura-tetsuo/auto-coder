@@ -1222,7 +1222,12 @@ class MuseClient(LLMClientBase):
             diag.session_confirmed(canonical_id)
             job_observer = current_muse_job_observation()
             if job_observer is not None:
-                job_observer.store.bind_continuation(LocalJobClaim(job_observer.job, True), canonical_id, job_observer.executor_token)
+                job_observer.store.bind_continuation(
+                    LocalJobClaim(job_observer.job, True),
+                    canonical_id,
+                    job_observer.executor_token,
+                    deadline_at=time.time() + self.timeout,
+                )
             workspace = metadata.get("workspaceRoot")
             if not isinstance(workspace, str) or workspace != str(cwd):
                 raise RuntimeError("Muse MSP session belongs to an incompatible workspace")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,16 @@ class LocalJobDomainAdapter(Protocol):
 
     def invoke(self, job: LocalJobRecord) -> LocalJobExecutionResult:
         """Invoke the captured backend in the captured repository context."""
+
+
+class LocalJobContinuationRecoveryAdapter(Protocol):
+    """Optional adapter boundary for reattaching a retained provider session."""
+
+    def authorize_recovery(self, job: LocalJobRecord) -> bool:
+        """Confirm authority for the already-entered attempt, not fresh entry."""
+
+    def recover_continuation(self, job: LocalJobRecord, provider_session: str, remaining_seconds: float) -> LocalJobExecutionResult | None:
+        """Observe or resume the retained session without a fresh implementation."""
 
 
 CompletionWake = Callable[[LocalJobRecord], None]
@@ -196,6 +207,11 @@ class LocalJobRunner:
                     if refreshed is None:
                         continue
                     job = refreshed
+                elif runner_owner_alive(job.runner_owner) is False and self._recover_continuation(job):
+                    refreshed = self.store.get(job.job_id)
+                    if refreshed is None:
+                        continue
+                    job = refreshed
                 elif runner_owner_alive(job.runner_owner) is False and self._recover_domain_checkpoint(job):
                     refreshed = self.store.get(job.job_id)
                     if refreshed is None:
@@ -210,6 +226,53 @@ class LocalJobRunner:
                 alive = runner_owner_alive(job.runner_owner)
                 if alive is False:
                     self.store.release_dead_owner_claim(job, "previous runner owner is authoritatively dead")
+
+    def _recover_continuation(self, job: LocalJobRecord) -> bool:
+        continuation = self.store.get_continuation(job.job_id)
+        if continuation is None:
+            return False
+        adapter = self.adapters.get(job.kind)
+        recover = getattr(adapter, "recover_continuation", None) if adapter is not None else None
+        authorize = getattr(adapter, "authorize_recovery", None) if adapter is not None else None
+        if not callable(recover) or not callable(authorize):
+            self.store.retain_reconciliation_reason(
+                job.job_id,
+                continuation.executor_token,
+                "domain adapter does not support retained continuation recovery",
+            )
+            return False
+        if not job.workspace_path or not Path(job.workspace_path).is_dir():
+            self.store.retain_reconciliation_reason(job.job_id, continuation.executor_token, "retained workspace is unavailable")
+            return False
+        if continuation.deadline_at is None:
+            self.store.retain_reconciliation_reason(job.job_id, continuation.executor_token, "legacy continuation has no trustworthy invocation deadline")
+            return False
+        remaining = continuation.deadline_at - time.time()
+        if remaining <= 0:
+            self.store.retain_reconciliation_reason(job.job_id, continuation.executor_token, "logical invocation deadline expired")
+            return False
+        if not authorize(job):
+            self.store.retain_reconciliation_reason(job.job_id, continuation.executor_token, "retained upstream authority is unavailable or superseded")
+            return False
+        new_token = f"{self.runner_id}:recovery:{job.execution_incarnation}"
+        if not self.store.take_over_continuation(job.job_id, continuation.executor_token, new_token):
+            return False
+        claimed = self.store.get_continuation(job.job_id)
+        if claimed is None or claimed.executor_token != new_token:
+            return False
+        try:
+            result = recover(job, claimed.provider_session, remaining)
+        except Exception as exc:
+            self.store.retain_reconciliation_reason(job.job_id, new_token, f"provider reconciliation failed: {type(exc).__name__}: {exc}")
+            return False
+        if result is None or result.definitely_not_started:
+            self.store.retain_reconciliation_reason(job.job_id, new_token, "provider session remains unresolved")
+            return False
+        claim = LocalJobClaim(job, True)
+        artifact = self.store.persist_result_artifact(claim, result.outcome, result.output, executor_token=new_token)
+        if artifact is None or not self.store.record_result(claim, result.outcome, artifact.artifact_id, result.diagnostic, executor_token=new_token):
+            return False
+        return self.store.mark_downstream_pending(claim, executor_token=new_token)
 
     def _settle_recovered_handle(self, job: LocalJobRecord) -> None:
         with self._lock:

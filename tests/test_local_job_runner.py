@@ -11,7 +11,7 @@ import pytest
 
 from auto_coder.invocation_admission import InvocationAdmissionGate, InvocationState
 from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
-from auto_coder.local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobKind, LocalJobOffer, LocalJobRecord, LocalJobState, LocalJobStore
+from auto_coder.local_job_handoff import ContinuationState, InvocationOutcome, LocalJobClaim, LocalJobKind, LocalJobOffer, LocalJobRecord, LocalJobState, LocalJobStore
 from auto_coder.local_job_runner import LocalJobExecutionResult, LocalJobRunner
 
 
@@ -135,6 +135,166 @@ def test_runner_promotes_transformed_domain_result_under_muse_continuation_fence
     assert continuation is not None and continuation.final_output == raw_output
     _wait(lambda: wakes == [job_id])
     assert adapter.calls == 1
+    runner.close()
+
+
+def test_dead_owner_recovery_reuses_retained_session_and_original_deadline(tmp_path: Path) -> None:
+    store, job_id = _accepted(tmp_path, "recover-muse")
+    workspace = (tmp_path / "retained-workspace").resolve()
+    workspace.mkdir()
+    dead_owner = "process:999999999:1"
+    claim = store.claim(job_id, dead_owner)
+    assert claim is not None and claim.acquired
+    assert store.mark_provider_entered(claim)
+    assert store.bind_workspace(
+        claim,
+        workspace_path=workspace,
+        source_commit="a" * 40,
+        source_ref="main",
+        work_branch="issue-42",
+        publication_remote="origin",
+        owner_incarnation="owner-1",
+        owner_generation=None,
+    )
+    deadline = time.time() + 120
+    assert store.bind_continuation(claim, "muse/session-retained", dead_owner, deadline_at=deadline)
+
+    class RecoveryAdapter(BarrierAdapter):
+        recovered_session = ""
+        remaining = 0.0
+
+        def authorize_recovery(self, job):  # type: ignore[no-untyped-def]
+            return job.job_id == job_id
+
+        def recover_continuation(self, job, provider_session, remaining_seconds):  # type: ignore[no-untyped-def]
+            self.recovered_session = provider_session
+            self.remaining = remaining_seconds
+            retained = store.get_continuation(job.job_id)
+            assert retained is not None
+            assert store.record_candidate_output(job.job_id, retained.executor_token, retained.frontier, "ACTION_SUMMARY: recovered")
+            assert store.confirm_final_output(job.job_id, retained.executor_token, retained.frontier)
+            return LocalJobExecutionResult(InvocationOutcome.COMPLETED, "domain:recovered")
+
+    adapter = RecoveryAdapter()
+    runner = LocalJobRunner(store, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter})
+    runner.recover_unsettled()
+
+    recovered = store.get(job_id)
+    continuation = store.get_continuation(job_id)
+    assert recovered is not None and recovered.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+    assert continuation is not None and continuation.state is ContinuationState.FINAL_CONFIRMED
+    assert continuation.executor_token.startswith(f"{runner.runner_id}:recovery:")
+    assert adapter.recovered_session == "muse/session-retained"
+    assert 0 < adapter.remaining <= 120
+    assert adapter.calls == 0
+    assert not store.record_candidate_output(job_id, dead_owner, continuation.frontier, "ACTION_SUMMARY: stale")
+    assert not store.confirm_final_output(job_id, dead_owner, continuation.frontier)
+
+    contender_adapter = RecoveryAdapter()
+    contender = LocalJobRunner(
+        LocalJobStore(store.path),
+        InvocationAdmissionGate(),
+        repository="owner/repo",
+        capacity=1,
+        adapters={LocalJobKind.ISSUE_IMPLEMENTATION: contender_adapter},
+    )
+    contender.recover_unsettled()
+    after_contender = store.get_continuation(job_id)
+    assert after_contender == continuation
+    assert contender_adapter.recovered_session == ""
+    contender.close()
+    runner.close()
+
+
+@pytest.mark.parametrize(
+    ("deadline", "reason"),
+    [
+        (None, "legacy continuation has no trustworthy invocation deadline"),
+        (0.0, "logical invocation deadline expired"),
+    ],
+)
+def test_recovery_without_live_budget_stays_non_authorizing(tmp_path: Path, deadline: float | None, reason: str) -> None:
+    store, job_id = _accepted(tmp_path, "legacy-muse")
+    workspace = (tmp_path / "legacy-workspace").resolve()
+    workspace.mkdir()
+    claim = store.claim(job_id, "process:999999999:1")
+    assert claim is not None and claim.acquired
+    assert store.mark_provider_entered(claim)
+    assert store.bind_workspace(
+        claim,
+        workspace_path=workspace,
+        source_commit="a" * 40,
+        source_ref="main",
+        work_branch="issue-42",
+        publication_remote="origin",
+        owner_incarnation="owner-1",
+        owner_generation=None,
+    )
+    assert store.bind_continuation(
+        claim,
+        "muse/legacy",
+        claim.record.runner_owner,
+        deadline_at=deadline,
+    )
+
+    class RefusingAdapter(BarrierAdapter):
+        recovery_calls = 0
+
+        def authorize_recovery(self, _job):  # type: ignore[no-untyped-def]
+            return True
+
+        def recover_continuation(self, *_args):  # type: ignore[no-untyped-def]
+            self.recovery_calls += 1
+            raise AssertionError("legacy recovery must not enter the provider")
+
+    adapter = RefusingAdapter()
+    runner = LocalJobRunner(store, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter})
+    runner.recover_unsettled()
+
+    retained = store.get_continuation(job_id)
+    assert retained is not None
+    assert retained.state is ContinuationState.RECONCILIATION_REQUIRED
+    assert retained.reconciliation_reason == reason
+    assert adapter.recovery_calls == 0
+    runner.close()
+
+
+def test_missing_production_recovery_boundary_retains_diagnostic(tmp_path: Path) -> None:
+    store, job_id = _accepted(tmp_path, "missing-recovery-boundary")
+    workspace = (tmp_path / "retained-workspace").resolve()
+    workspace.mkdir()
+    claim = store.claim(job_id, "process:999999999:1")
+    assert claim is not None and claim.acquired
+    assert store.mark_provider_entered(claim)
+    assert store.bind_workspace(
+        claim,
+        workspace_path=workspace,
+        source_commit="a" * 40,
+        source_ref="main",
+        work_branch="issue-42",
+        publication_remote="origin",
+        owner_incarnation="owner-1",
+        owner_generation=None,
+    )
+    assert store.bind_continuation(
+        claim,
+        "muse/no-adapter",
+        claim.record.runner_owner,
+        deadline_at=time.time() + 30,
+    )
+    runner = LocalJobRunner(
+        store,
+        InvocationAdmissionGate(),
+        repository="owner/repo",
+        capacity=1,
+        adapters={LocalJobKind.ISSUE_IMPLEMENTATION: BarrierAdapter()},
+    )
+
+    runner.recover_unsettled()
+
+    retained = store.get_continuation(job_id)
+    assert retained is not None
+    assert retained.reconciliation_reason == ("domain adapter does not support retained continuation recovery")
     runner.close()
 
 
