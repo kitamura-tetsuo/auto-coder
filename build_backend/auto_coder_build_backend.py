@@ -26,9 +26,18 @@ IDENTITY = ROOT / ".auto-coder-build-identity.json"
 PREPARED_IDENTITY = "auto-coder-build-identity.json"
 
 
+def _project_identity():
+    """Resolve Git only when ROOT is itself the selected checkout root."""
+
+    top = _identity_module._git(ROOT, "rev-parse", "--show-toplevel", check=False)
+    if top.returncode != 0 or Path(top.stdout.strip()).resolve() != ROOT:
+        return _identity_module.BuildIdentity(reason="project root is not a Git worktree root")
+    return resolve_build_identity(ROOT)
+
+
 def _selected_identity():
     carried = Path(os.environ.get("AUTO_CODER_BUILD_IDENTITY_FILE", IDENTITY))
-    return deserialize_build_identity(carried.read_text(encoding="utf-8")) if carried.is_file() else resolve_build_identity(ROOT)
+    return deserialize_build_identity(carried.read_text(encoding="utf-8")) if carried.is_file() else _project_identity()
 
 
 def _assert_metadata_version(record):
@@ -52,15 +61,15 @@ def get_build_version():
             payload = IDENTITY.read_bytes()
             IDENTITY.unlink()
             try:
-                observed = resolve_build_identity(ROOT)
+                observed = _project_identity()
             finally:
                 IDENTITY.write_bytes(payload)
         else:
-            observed = resolve_build_identity(ROOT)
+            observed = _project_identity()
         if observed.state != "unknown" and observed != record:
             raise ValueError("Supplied build identity disagrees with the source checkout")
         return record.version
-    return resolve_build_identity(ROOT).version
+    return _project_identity().version
 
 
 def _with_identity(operation, *args, **kwargs):
@@ -73,7 +82,7 @@ def _with_identity(operation, *args, **kwargs):
     existed = IDENTITY.exists()
     previous = IDENTITY.read_bytes() if existed else None
     if not existed:
-        IDENTITY.write_text(serialize_build_identity(resolve_build_identity(ROOT)), encoding="utf-8")
+        IDENTITY.write_text(serialize_build_identity(_project_identity()), encoding="utf-8")
     os.environ["AUTO_CODER_BUILD_IDENTITY_FILE"] = str(IDENTITY)
     try:
         return operation(*args, **kwargs)

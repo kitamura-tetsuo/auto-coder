@@ -49,7 +49,7 @@ def test_publish_beta_invokes_test_sh_with_all_live_exclusions_only():
 
     assert "bash scripts/test.sh" in run_step
     forwarded_args = _extract_pytest_marker_args(run_step)
-    assert forwarded_args == ["-m", "not opencode_live and not muse_live"], forwarded_args
+    assert forwarded_args == ["-m", "not opencode_live"], forwarded_args
 
     # Must not accidentally reuse the PR-shard expression, which would also drop
     # browser-only tests from the publication gate.
@@ -82,7 +82,7 @@ def test_publish_beta_selection_excludes_all_live_tests_from_actual_collection()
     job = workflow["jobs"]["build-tested-artifact"]
     run_step = _extract_test_sh_run_step(job)
     marker_expr = _extract_pytest_marker_args(run_step)[1]
-    assert marker_expr == "not opencode_live and not muse_live"
+    assert marker_expr == "not opencode_live"
 
     targets = [
         "tests/test_opencode_container_runtime.py",
@@ -191,7 +191,7 @@ class TestClassLevelLive:
             str(ROOT / "pyproject.toml"),
             str(probe),
             "-m",
-            "not opencode_live and not muse_live",
+            "not opencode_live",
             "--collect-only",
             "-q",
         ],
