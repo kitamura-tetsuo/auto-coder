@@ -4,9 +4,11 @@ from auto_coder.cloud_run import CloudRun, CloudRunRepository
 from auto_coder.codex_cloud_client import CodexCloudClient
 from auto_coder.codex_pr_recovery import CodexPRRecoveryStore, RecoveryOutcome
 from auto_coder.codex_wham_client import FollowUpDeliveryOutcome, FollowUpDeliveryResult
-from auto_coder.codex_work_accounting import CodexWorkOperation, CodexWorkPhase
+from auto_coder.codex_work_accounting import CodexWorkAccounting, CodexWorkOperation, CodexWorkPhase, WorkAccountingStatus
 from auto_coder.codex_work_reconstruction import REQUIRED_CODEX_SOURCES, CodexSourceSnapshot, CodexWorkReconstructor, production_codex_reconstructor, reconstruct_active_codex_work
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from auto_coder.issue_stage_routing import ImplementationRetryRequest
+from auto_coder.retry_dispatch import RetryDispatchRepository
 
 
 def _operation(operation_id: str) -> CodexWorkOperation:
@@ -99,13 +101,27 @@ def test_startup_reconstruction_does_not_add_codex_accounting_to_non_codex_owner
     assert "codex_work_accounting" not in record
 
 
-def test_production_followup_is_registered_before_wham_post(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("retry", (False, True))
+def test_production_followup_is_registered_before_wham_post(tmp_path, monkeypatch, retry) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     repository = "owner/repo"
     owner = ImplementationOwner("issue", 2334)
     slots = ImplementationSlotRepository(repository, 1)
     assert slots.reserve(owner)
     task = "task_e_6a26c19ac8a88326af83ebfb44b89fe2"
+    if retry:
+        dispatch = RetryDispatchRepository(repository)
+        authority = ImplementationRetryRequest(request_id="retry-request", repository=repository, target_number=2334, generation="generation-1", attempt_id="attempt-0", status="owned", ownership_reference="execution-1")
+        _, may_create = dispatch.claim(authority, "codex-cloud", "codex-cloud", {})
+        assert may_create is True
+        reconstruct_active_codex_work(repository, slots)
+        incarnation = slots.owner_incarnation(owner)
+        assert incarnation is not None
+        before = CodexWorkAccounting(slots).snapshot(owner, incarnation)
+        assert len(before.operations) == 1
+        assert before.operations[0].task_id is None
+        assert before.operations[0].phase is CodexWorkPhase.RESERVED
+        dispatch.record_outcome("retry-request", "accepted", external_id=task)
     CloudRunRepository(repository).save(CloudRun(repository, 2334, 0, "codex-cloud", task, "codex-cloud", "env", "main", launch_identity="attempt-0"))
 
     class Wham:
@@ -129,3 +145,15 @@ def test_production_followup_is_registered_before_wham_post(tmp_path, monkeypatc
     client.active_tasks = {}
 
     assert client.send_followup(task, "Repair the pull request", ("repair-generation-1",)) is True
+    if retry:
+        # A fresh process sees the accepted binding without losing obligations.
+        restarted_slots = ImplementationSlotRepository(repository, 1)
+        reconstruct_active_codex_work(repository, restarted_slots)
+        reconstructor = production_codex_reconstructor(repository, 2334)
+        snapshot = CodexWorkAccounting(restarted_slots, reconstructor.consistency_ids).snapshot(owner, incarnation)
+        assert snapshot.accounting_status is WorkAccountingStatus.COMPLETE
+        retry_operation = next(operation for operation in snapshot.operations if operation.kind == "retry")
+        assert retry_operation.task_id == task
+        assert retry_operation.phase is CodexWorkPhase.ACCEPTED
+        assert retry_operation.accepted is True
+        assert snapshot.releasable is False

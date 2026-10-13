@@ -348,6 +348,30 @@ def test_reconstruction_receipt_preserves_unsettled_correlated_operation(tmp_pat
     assert snapshot.releasable is False
 
 
+@pytest.mark.parametrize("old_task,new_task,accepted,settled", [(None, "task-a", True, False), ("task-a", "task-b", True, False), ("task-a", None, False, False), (None, "task-a", False, False), (None, "task-a", True, True)])
+def test_reconstruction_binds_only_accepted_unbound_work(tmp_path: Path, old_task, new_task, accepted, settled) -> None:
+    slots, incarnation = _reservation(tmp_path)
+    accounting = CodexWorkAccounting(slots)
+    accounting.initialize_fresh(OWNER, incarnation)
+    accounting.register(OWNER, incarnation, logical_operation_id="retry", kind="retry", source_request_id="request", task_id=old_task)
+    if settled:
+        accounting.transition(OWNER, incarnation, "retry", CodexWorkPhase.SETTLED, evidence_id="not-sent", evidence_source_request_id="request", definite_non_delivery=True)
+    before = accounting.snapshot(OWNER, incarnation)
+    operation = replace(before.operations[0], task_id=new_task, accepted=accepted, phase=CodexWorkPhase.ACCEPTED)
+    receipt = ReconstructionReceipt("receipt", ("retry",), ("retry",), (("retry", ("retry",)),), (operation,), (("retry", "v1"),))
+
+    if old_task is None and accepted and not settled:
+        recovered = accounting.reconcile_from_receipt(OWNER, incarnation, receipt)
+        assert recovered.operations == (operation,)
+        assert recovered.accounting_status is WorkAccountingStatus.COMPLETE
+        assert recovered.releasable is False
+        assert accounting.reconcile_from_receipt(OWNER, incarnation, receipt).operations == recovered.operations
+    else:
+        with pytest.raises(ImplementationSlotUnavailable, match="Reconstruction conflicts"):
+            accounting.reconcile_from_receipt(OWNER, incarnation, receipt)
+        assert accounting.snapshot(OWNER, incarnation) == before
+
+
 def test_retirement_guard_rejects_foreign_repository_snapshot(tmp_path: Path) -> None:
     slots, incarnation = _reservation(tmp_path)
     accounting = CodexWorkAccounting(slots)

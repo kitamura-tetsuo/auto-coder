@@ -2054,6 +2054,17 @@ before the recovery loop starts. These paths retain their existing stage and
 outcome emissions; accounting refusal is reported through the existing
 deferred/unknown diagnostics rather than a new dashboard event.
 
+Accepted retry receipts can now bind a previously unbound accounted retry during
+reconstruction. This removes a false continuation admission refusal while retaining
+the same provider route and success-only `Codex Cloud Feedback` emission; task
+binding itself emits no delivery success and never settles execution. No trace
+schema or dashboard projection changes are required.
+`tests/test_codex_work_reconstruction.py::test_production_followup_is_registered_before_wham_post`
+covers the production retry claim, accepted receipt, fenced WHAM delivery, and
+restart reconstruction. `tests/test_codex_cloud_pr_ci_flow.py` covers the existing
+delivery-success and deferred-failure trace boundary. Run
+`bash scripts/test.sh tests/test_codex_work_accounting.py tests/test_codex_work_reconstruction.py tests/test_codex_cloud_pr_ci_flow.py`.
+
 Normal and startup reclamation now consume that same reconstructed accounting,
 fresh Codex/PR observations, and guarded settlement certificates before removing
 active capacity. This is observability-neutral: it introduces no processing

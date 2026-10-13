@@ -169,9 +169,18 @@ class CodexWorkAccounting:
                     existing = operations.get(operation.logical_operation_id)
                     if existing is None:
                         operations[operation.logical_operation_id] = encoded
-                    elif not isinstance(existing, dict) or any(existing.get(field) != encoded[field] for field in ("kind", "source_request_id", "causal_baseline", "task_id")):
+                    elif not isinstance(existing, dict) or any(existing.get(field) != encoded[field] for field in ("kind", "source_request_id", "causal_baseline")):
                         raise ImplementationSlotUnavailable("Reconstruction conflicts with accounted Codex work")
                     else:
+                        if existing.get("task_id") != encoded["task_id"]:
+                            # A pre-send reservation has no task yet. A durable
+                            # accepted receipt may bind it after provider creation,
+                            # including recovery after a process restart.
+                            if existing.get("task_id") is not None or encoded["task_id"] is None or not operation.accepted or existing.get("definite_non_delivery") is True or existing.get("phase") == CodexWorkPhase.SETTLED.value:
+                                raise ImplementationSlotUnavailable("Reconstruction conflicts with accounted Codex work")
+                            existing["task_id"] = encoded["task_id"]
+                            existing["accepted"] = True
+                            existing["phase"] = CodexWorkPhase.ACCEPTED.value
                         # Reconstruction may recover completion facts that were
                         # durably committed after the original admission. These
                         # fields are monotonic and do not by themselves settle

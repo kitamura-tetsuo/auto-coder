@@ -61,3 +61,12 @@ identities for SQLite sources, while file journals use content identities. The
 same production readers are invoked before later sends and retirement reads,
 so a restart or material source mutation cannot silently preserve a stale
 complete receipt.
+
+Reconstruction may bind an unbound pre-send operation to the task ID in its
+durable accepted receipt. This recovers retry dispatch acceptance after startup
+accounted for the claim but before the provider returned its task ID. The source
+request, kind, and causal baseline must still match. An existing task ID cannot
+be replaced or removed, and settled or definitely unsent operations cannot gain
+a task binding. Binding records acceptance without settling execution or handoff
+obligations, so subsequent CI continuations can pass the normal fence without
+making the Issue reservation releasable.

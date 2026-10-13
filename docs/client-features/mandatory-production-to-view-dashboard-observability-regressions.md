@@ -1,5 +1,12 @@
 # Mandatory production-to-view dashboard observability regressions
 
+Codex retry receipt reconstruction can bind an accepted task to its pre-send
+reservation before CI repair delivery. Binding does not emit success; the existing
+`Codex Cloud Feedback` trace remains conditional on confirmed delivery, and
+rejected identities retain deferred diagnostics. The production reconstruction
+and CI delivery regressions and runnable command are recorded in
+`docs/dashboard-observability.md`; no renderer or trace schema changes are needed.
+
 Automatic submitted-parent processing emits `issue.hierarchy-admission` as
 `deferred` after persisting independent open-child obligations. Its facts list
 `child_issue_numbers` and `authorizes_execution=false`; it establishes queue
