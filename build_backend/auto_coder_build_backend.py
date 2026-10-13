@@ -84,29 +84,38 @@ def build_sdist(sdist_directory, config_settings=None):
 
 
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
-    if metadata_directory:
-        metadata_root = Path(metadata_directory)
-        candidates = [metadata_root / PREPARED_IDENTITY, *metadata_root.glob(f"*.dist-info/{PREPARED_IDENTITY}")]
-        captured = next((candidate for candidate in candidates if candidate.is_file()), None)
-        current = _selected_identity()
-        if captured is None or deserialize_build_identity(captured.read_text(encoding="utf-8")) != current:
-            raise ValueError("Source identity changed after metadata preparation")
+    _assert_prepared_identity(metadata_directory)
     return _with_identity(_setuptools.build_wheel, wheel_directory, config_settings, metadata_directory)
 
 
 def build_editable(wheel_directory, config_settings=None, metadata_directory=None):
+    _assert_prepared_identity(metadata_directory)
     return _with_identity(_setuptools.build_editable, wheel_directory, config_settings, metadata_directory)
 
 
-def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
-    result = _with_identity(_setuptools.prepare_metadata_for_build_wheel, metadata_directory, config_settings)
+def _assert_prepared_identity(metadata_directory):
+    if not metadata_directory:
+        return
+    metadata_root = Path(metadata_directory)
+    candidates = [metadata_root / PREPARED_IDENTITY, *metadata_root.glob(f"*.dist-info/{PREPARED_IDENTITY}")]
+    captured = next((candidate for candidate in candidates if candidate.is_file()), None)
+    if captured is None or deserialize_build_identity(captured.read_text(encoding="utf-8")) != _selected_identity():
+        raise ValueError("Source identity changed after metadata preparation")
+
+
+def _prepare_metadata(operation, metadata_directory, config_settings):
+    result = _with_identity(operation, metadata_directory, config_settings)
     record = _selected_identity()
     (Path(metadata_directory) / result / PREPARED_IDENTITY).write_text(serialize_build_identity(record), encoding="utf-8")
     return result
 
 
+def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
+    return _prepare_metadata(_setuptools.prepare_metadata_for_build_wheel, metadata_directory, config_settings)
+
+
 def prepare_metadata_for_build_editable(metadata_directory, config_settings=None):
-    return _with_identity(_setuptools.prepare_metadata_for_build_editable, metadata_directory, config_settings)
+    return _prepare_metadata(_setuptools.prepare_metadata_for_build_editable, metadata_directory, config_settings)
 
 
 def get_requires_for_build_wheel(config_settings=None):
