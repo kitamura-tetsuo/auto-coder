@@ -187,6 +187,22 @@ def test_dead_owner_recovery_reuses_retained_session_and_original_deadline(tmp_p
     assert adapter.recovered_session == "muse/session-retained"
     assert 0 < adapter.remaining <= 120
     assert adapter.calls == 0
+    assert not store.record_candidate_output(job_id, dead_owner, continuation.frontier, "ACTION_SUMMARY: stale")
+    assert not store.confirm_final_output(job_id, dead_owner, continuation.frontier)
+
+    contender_adapter = RecoveryAdapter()
+    contender = LocalJobRunner(
+        LocalJobStore(store.path),
+        InvocationAdmissionGate(),
+        repository="owner/repo",
+        capacity=1,
+        adapters={LocalJobKind.ISSUE_IMPLEMENTATION: contender_adapter},
+    )
+    contender.recover_unsettled()
+    after_contender = store.get_continuation(job_id)
+    assert after_contender == continuation
+    assert contender_adapter.recovered_session == ""
+    contender.close()
     runner.close()
 
 
