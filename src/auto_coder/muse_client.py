@@ -22,7 +22,19 @@ from .execution_trace import EventKind, Outcome, current_scope, get_trace_collec
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .local_execution_boundary import get_current_local_execution_boundary
+from .local_job_handoff import LocalJobClaim
 from .logger_config import get_logger
+from .muse_background_observation import (
+    MuseBackgroundObservation,
+    MuseObservationBinding,
+    MuseObservationFold,
+    MuseRuntimeConformanceEvidence,
+    MuseRuntimeSupport,
+    current_muse_job_observation,
+    decode_muse_msp_frame,
+    detect_muse_background_support,
+    persist_muse_observation,
+)
 from .muse_diagnostics import MuseInvocationObserver, TimedFrame
 from .prompt_loader import render_prompt
 from .usage_marker_utils import has_http_429_marker, has_usage_marker_match
@@ -216,6 +228,7 @@ class MuseClient(LLMClientBase):
         self._approvals = _ApprovalState()
         self._diag = MuseInvocationObserver(enabled=False)
         self._cli_version: Optional[str] = None
+        self._last_background_observation: Optional[MuseBackgroundObservation] = None
 
         override = os.environ.get("AUTOCODER_MUSE_CLI")
         command = shlex.split(override) if override else ["muse"]
@@ -691,13 +704,10 @@ class MuseClient(LLMClientBase):
                 raw = bytes(self._msp_stdout[:newline])
                 del self._msp_stdout[: newline + 1]
                 try:
-                    frame = json.loads(raw)
-                except json.JSONDecodeError as exc:
+                    frame = decode_muse_msp_frame(raw)
+                except ValueError as exc:
                     diag.failure_hint("invalid_frame")
                     raise RuntimeError("Muse MSP host emitted an invalid protocol frame") from exc
-                if not isinstance(frame, dict):
-                    diag.failure_hint("invalid_frame")
-                    raise RuntimeError("Muse MSP host emitted a non-object protocol frame")
                 decoded_at = diag.decoded_frame(frame) or time.monotonic()
                 if "method" in frame:
                     method = frame["method"]
@@ -1092,6 +1102,7 @@ class MuseClient(LLMClientBase):
         # Clear before snapshot/configuration/rendering so any pre-host failure
         # cannot expose a previous invocation's session as its own result.
         self._last_session_id = None
+        self._last_background_observation = None
         effective_noedit = is_noedit or self.use_noedit_options
         cwd = self._execution_cwd().resolve()
         msp_options = self._msp_options(effective_noedit)
@@ -1208,6 +1219,9 @@ class MuseClient(LLMClientBase):
             if session_id is not None and canonical_id != session_id:
                 raise RuntimeError("Muse MSP resumed a different session identity")
             diag.session_confirmed(canonical_id)
+            job_observer = current_muse_job_observation()
+            if job_observer is not None:
+                job_observer.store.bind_continuation(LocalJobClaim(job_observer.job, True), canonical_id, job_observer.executor_token)
             workspace = metadata.get("workspaceRoot")
             if not isinstance(workspace, str) or workspace != str(cwd):
                 raise RuntimeError("Muse MSP session belongs to an incompatible workspace")
@@ -1271,6 +1285,20 @@ class MuseClient(LLMClientBase):
             if not isinstance(turn_id, str) or not turn_id or type(turn_ack.get("startedNewTurn")) is not bool or not isinstance(turn_ack.get("disposition"), str) or not turn_ack.get("disposition"):
                 raise RuntimeError("Muse MSP did not acknowledge the submitted turn")
             self._bind_admitted_turn(turn_id)
+            observation_fold: Optional[MuseObservationFold] = None
+            conformance_evidence = MuseRuntimeConformanceEvidence()
+            if job_observer is not None:
+                observation_fold = MuseObservationFold(
+                    MuseObservationBinding(
+                        job_observer.job.backend_name,
+                        canonical_id,
+                        job_observer.job.execution_incarnation,
+                        job_observer.job.upstream_attempt,
+                        Path(job_observer.job.workspace_path),
+                    ),
+                    turn_id,
+                    MuseRuntimeSupport(False, reason="runtime conformance observations are incomplete"),
+                )
             diag.turn_acknowledged(turn_id, notifications)
             diag.enter_phase("turn_terminal_wait")
             terminal: Optional[dict[str, object]] = None
@@ -1281,6 +1309,16 @@ class MuseClient(LLMClientBase):
                     self._msp_wait(process, -1, deadline, notifications)
                 for event in notifications[notification_cursor:]:
                     notification_cursor += 1
+                    if observation_fold is not None:
+                        observation_fold.consume(event)
+                        self._last_background_observation = observation_fold.observation()
+                        assert job_observer is not None
+                        persist_muse_observation(
+                            job_observer.store,
+                            job_observer.job.job_id,
+                            job_observer.executor_token,
+                            self._last_background_observation,
+                        )
                     params_obj = event.get("params")
                     if event.get("method") != "turn/completed":
                         continue
@@ -1294,6 +1332,57 @@ class MuseClient(LLMClientBase):
                 self._raise_msp_failure("Muse MSP turn did not complete successfully", terminal)
             # A resolution arriving after completion cannot rescue an unresolved approval.
             self._assert_approvals_settled()
+            if observation_fold is not None and job_observer is not None:
+                self._msp_send(
+                    process,
+                    {"jsonrpc": "2.0", "id": 5, "method": "task/list", "params": {"sessionId": canonical_id}},
+                    deadline,
+                )
+                inventory = self._msp_wait(process, 5, deadline, notifications)
+                rows = inventory.get("tasks")
+                observation_fold.consume_task_inventory(rows if isinstance(rows, list) else None, "task/list:5")
+                conformance_evidence = MuseRuntimeConformanceEvidence(task_list_observed=isinstance(rows, list))
+                current_observation = observation_fold.observation()
+                self._last_background_observation = current_observation
+                persist_muse_observation(job_observer.store, job_observer.job.job_id, job_observer.executor_token, current_observation)
+                while current_observation.tasks and not current_observation.final_assistant:
+                    if notification_cursor == len(notifications):
+                        self._msp_wait(process, -1, deadline, notifications)
+                    for event in notifications[notification_cursor:]:
+                        notification_cursor += 1
+                        observation_fold.consume(event)
+                        params_obj = event.get("params")
+                        if event.get("method") == "turn/started" and isinstance(params_obj, dict):
+                            continuation_turn = params_obj.get("turnId")
+                            if isinstance(continuation_turn, str) and continuation_turn != turn_id:
+                                raw_references = params_obj.get("resultReferences")
+                                references = [reference for reference in raw_references if isinstance(reference, str) and reference] if isinstance(raw_references, list) else []
+                                observation_fold.consume_result_delivery(continuation_turn, references, str(params_obj.get("viewCursor", "")))
+                                conformance_evidence = MuseRuntimeConformanceEvidence(
+                                    task_list_observed=conformance_evidence.task_list_observed,
+                                    task_result_delivery_observed=bool(references),
+                                    continuation_ownership="native",
+                                )
+                        current_observation = observation_fold.observation()
+                        self._last_background_observation = current_observation
+                        persist_muse_observation(job_observer.store, job_observer.job.job_id, job_observer.executor_token, current_observation)
+                self._msp_send(
+                    process,
+                    {"jsonrpc": "2.0", "id": 6, "method": "session/read", "params": {"sessionId": canonical_id, "excludeItems": False}},
+                    deadline,
+                )
+                replay = self._msp_wait(process, 6, deadline, notifications)
+                observation_fold.consume_session_snapshot(replay, str(replay.get("viewCursor", "session/read:6")))
+                history = replay.get("history")
+                conformance_evidence = MuseRuntimeConformanceEvidence(
+                    task_list_observed=conformance_evidence.task_list_observed,
+                    session_replay_observed=isinstance(history, dict) and history.get("mode") == "inline",
+                    task_result_delivery_observed=conformance_evidence.task_result_delivery_observed,
+                    continuation_ownership=conformance_evidence.continuation_ownership,
+                )
+                observation_fold.support = detect_muse_background_support(initialized, conformance_evidence)
+                self._last_background_observation = observation_fold.observation()
+                persist_muse_observation(job_observer.store, job_observer.job.job_id, job_observer.executor_token, self._last_background_observation)
             # A single-turn host remains open waiting for more input. Close our
             # input after completion, then consume every remaining notification
             # through host EOF so a later contradictory terminal cannot escape
@@ -1321,6 +1410,8 @@ class MuseClient(LLMClientBase):
                 if event.get("method") != "turn/completed":
                     continue
                 if not isinstance(params_obj, dict) or params_obj.get("turnId") != turn_id:
+                    if observation_fold is not None and isinstance(params_obj, dict):
+                        continue
                     raise RuntimeError("Muse MSP terminal belongs to an incompatible turn")
                 if params_obj.get("sessionId") != canonical_id:
                     raise RuntimeError("Muse MSP terminal belongs to an incompatible session")
@@ -1340,7 +1431,8 @@ class MuseClient(LLMClientBase):
             if not answers:
                 raise RuntimeError("Muse MSP turn completed without final assistant text")
             completed_session_id = canonical_id
-            final_output = answers[-1]
+            observed_output = self._last_background_observation.final_assistant if self._last_background_observation is not None else ""
+            final_output = observed_output or answers[-1]
         except subprocess.TimeoutExpired as exc:
             invocation_error = AutoCoderTimeoutError(f"Muse MSP invocation timed out after {self.timeout} seconds")
             invocation_error.__cause__ = exc
@@ -1424,6 +1516,9 @@ class MuseClient(LLMClientBase):
 
     def get_last_session_id(self) -> Optional[str]:
         return self._last_session_id
+
+    def get_last_background_observation(self) -> Optional[MuseBackgroundObservation]:
+        return self._last_background_observation
 
     def check_mcp_server_configured(self, server_name: str) -> bool:
         return False

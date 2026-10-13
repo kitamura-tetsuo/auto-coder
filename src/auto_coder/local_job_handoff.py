@@ -56,6 +56,8 @@ class ContinuationState(str, Enum):
     FOREGROUND = "foreground"
     WAITING_BACKGROUND = "waiting_background"
     CONTINUATION_PENDING = "continuation_pending"
+    NATIVE_CONTINUATION_ACTIVE = "native_continuation_active"
+    CONTROLLER_READY = "controller_ready"
     RECONCILIATION_REQUIRED = "reconciliation_required"
     FINAL_CONFIRMED = "final_confirmed"
     INTERRUPTED = "interrupted"
@@ -271,8 +273,11 @@ class LocalJobStore:
                 state TEXT NOT NULL, frontier INTEGER NOT NULL DEFAULT 0,
                 candidate_frontier INTEGER, candidate_output TEXT NOT NULL DEFAULT '',
                 final_output TEXT NOT NULL DEFAULT '', provider_position TEXT NOT NULL DEFAULT '',
-                updated_at REAL NOT NULL)"""
+                observation_json TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL)"""
             )
+            columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(local_job_continuations)")}
+            if "observation_json" not in columns:
+                connection.execute("ALTER TABLE local_job_continuations ADD COLUMN observation_json TEXT NOT NULL DEFAULT ''")
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS local_continuation_tasks (
                 job_id TEXT NOT NULL, task_id TEXT NOT NULL, lifecycle TEXT NOT NULL,
@@ -1048,6 +1053,26 @@ class LocalJobStore:
             return self._continuation(row) if row is not None else None
         except (OSError, sqlite3.Error, ValueError):
             return None
+
+    def persist_continuation_observation(self, job_id: str, executor_token: str, payload: str) -> bool:
+        """Persist provider-specific normalized evidence under the executor fence."""
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    "UPDATE local_job_continuations AS c SET observation_json=?, updated_at=? " "WHERE job_id=? AND executor_token=? AND EXISTS (SELECT 1 FROM local_jobs j WHERE j.job_id=c.job_id " "AND j.execution_incarnation=c.execution_incarnation AND j.state=?)",
+                    (payload, time.time(), job_id, executor_token, LocalJobState.RUNNING.value),
+                )
+            return cursor.rowcount == 1
+        except (OSError, sqlite3.Error):
+            return False
+
+    def get_continuation_observation(self, job_id: str) -> str:
+        try:
+            with self._connect() as connection:
+                row = connection.execute("SELECT observation_json FROM local_job_continuations WHERE job_id=?", (job_id,)).fetchone()
+            return str(row["observation_json"]) if row is not None else ""
+        except (OSError, sqlite3.Error):
+            return ""
 
     def discover_pending_continuations(self) -> tuple[LocalJobContinuation, ...]:
         """Discover continuation work independently of ordinary intake eligibility."""

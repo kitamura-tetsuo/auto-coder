@@ -1,5 +1,7 @@
-"""Regression coverage for Issue #2169: `Publish Beta` excludes `opencode_live`-marked
-tests from its test gate without weakening publication or the dedicated live workflow.
+"""Regression coverage for Publish Beta's dedicated-live test exclusions.
+
+The publication gate excludes real-host suites without weakening publication,
+browser coverage, or either dedicated live workflow.
 """
 
 from __future__ import annotations
@@ -37,9 +39,9 @@ def _extract_pytest_marker_args(test_sh_invocation: str) -> list[str]:
     return tokens[2:]
 
 
-def test_publish_beta_invokes_test_sh_with_opencode_live_exclusion_only():
-    """REQ-001, REQ-006: The workflow-level command excludes only opencode_live, unlike
-    the PR-shard selector which also excludes browser tests.
+def test_publish_beta_invokes_test_sh_with_all_live_exclusions_only():
+    """The publication gate excludes dedicated live suites, unlike the PR-shard
+    selector which also excludes browser tests.
     """
     workflow = _workflow(PUBLISH_BETA_WORKFLOW)
     job = workflow["jobs"]["build-tested-artifact"]
@@ -47,7 +49,7 @@ def test_publish_beta_invokes_test_sh_with_opencode_live_exclusion_only():
 
     assert "bash scripts/test.sh" in run_step
     forwarded_args = _extract_pytest_marker_args(run_step)
-    assert forwarded_args == ["-m", "not opencode_live"], forwarded_args
+    assert forwarded_args == ["-m", "not opencode_live and not muse_live"], forwarded_args
 
     # Must not accidentally reuse the PR-shard expression, which would also drop
     # browser-only tests from the publication gate.
@@ -72,20 +74,20 @@ def test_publish_beta_gate_runs_before_docker_build_push():
     assert "AUTO_CODER_SOURCE_REVISION=${{ github.sha }}" in build_step["with"]["build-args"]
 
 
-def test_publish_beta_selection_excludes_only_live_tests_from_actual_collection():
-    """AS-001: Using the exact marker expression extracted from the workflow, the
-    effective selection on real test modules excludes opencode_live items while
-    retaining static OpenCode tests and browser-only tests.
+def test_publish_beta_selection_excludes_all_live_tests_from_actual_collection():
+    """Using the workflow's exact expression excludes both dedicated live suites
+    while retaining static OpenCode tests and browser-only tests.
     """
     workflow = _workflow(PUBLISH_BETA_WORKFLOW)
     job = workflow["jobs"]["build-tested-artifact"]
     run_step = _extract_test_sh_run_step(job)
     marker_expr = _extract_pytest_marker_args(run_step)[1]
-    assert marker_expr == "not opencode_live"
+    assert marker_expr == "not opencode_live and not muse_live"
 
     targets = [
         "tests/test_opencode_container_runtime.py",
         "tests/test_opencode_noedit_live.py",
+        "tests/test_muse_background_live.py",
     ]
 
     beta_collect = subprocess.run(
@@ -100,7 +102,7 @@ def test_publish_beta_selection_excludes_only_live_tests_from_actual_collection(
     beta_names = {node_id.split("::")[-1] for node_id in beta_ids}
 
     live_collect = subprocess.run(
-        [sys.executable, "-m", "pytest", *targets, "-m", "opencode_live", "--collect-only", "-q"],
+        [sys.executable, "-m", "pytest", *targets, "-m", "opencode_live or muse_live", "--collect-only", "-q"],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -136,10 +138,8 @@ def test_publish_beta_selection_excludes_only_live_tests_from_actual_collection(
 
 
 def test_publish_beta_selection_conserves_dynamically_added_live_and_browser_probes(tmp_path):
-    """AS-001: A newly introduced opencode_live probe (function-level, module-level,
-    and mixed with a browser marker) is excluded from the Beta selection without any
-    selector update, while an ordinary/browser-only probe in the same file remains
-    selected.
+    """New dedicated-live probes are excluded while ordinary/browser-only probes
+    in the same file remain selected.
     """
     probe = tmp_path / "test_unrelated_publish_beta_probe.py"
     probe.write_text(
@@ -160,6 +160,11 @@ def test_browser_and_live_probe():
 
 @pytest.mark.browser
 def test_browser_only_probe():
+    assert True
+
+
+@pytest.mark.muse_live
+def test_muse_live_probe():
     assert True
 
 
@@ -186,7 +191,7 @@ class TestClassLevelLive:
             str(ROOT / "pyproject.toml"),
             str(probe),
             "-m",
-            "not opencode_live",
+            "not opencode_live and not muse_live",
             "--collect-only",
             "-q",
         ],
@@ -202,9 +207,8 @@ class TestClassLevelLive:
 
 
 def test_local_default_and_explicit_live_invocations_are_unaffected():
-    """REQ-006: A bare local scripts/test.sh call keeps default discovery (both
-    categories); an explicit local `-m opencode_live` call still selects live items.
-    Only the Publish Beta workflow-level invocation applies the new exclusion.
+    """A bare local scripts/test.sh keeps default discovery; explicit marker
+    selection remains caller-owned. Only workflow invocations apply exclusions.
     """
     script = (ROOT / "scripts/test.sh").read_text(encoding="utf-8")
     # The script itself must not hardcode any marker filtering; it only forwards

@@ -2485,3 +2485,19 @@ terminal outcome. The editing-only prompt changes neither admission nor provider
 routing, and a returned summary alone still cannot claim publication. The actual
 stored-input regression is `bash scripts/test.sh tests/test_cloud_backend.py`;
 explicit completion regressions verify the terminal production-to-view contract.
+
+Muse background observation is also observability-neutral at this producer
+stage. The accepted local-job runner now binds the production Muse transport to
+its fenced job identity, and the client durably records provider-local
+task/result and continuation snapshots. These snapshots are recovery evidence,
+not processing events: they do not add a processing origin, admission gate,
+terminal domain outcome, structured trace event, or dashboard renderer. In particular,
+foreground `turn/completed` and a candidate assistant item do not change the
+existing local-job completion stages while task results remain outstanding.
+The later scheduler integration owns production resumption and any corresponding
+dashboard lifecycle.  Run `bash scripts/test.sh
+tests/test_muse_background_observation.py tests/test_local_job_continuation.py`
+to verify the current evidence boundary and durable fence. The separately
+pinned real-host conformance in `tests/test_muse_background_live.py` earns the
+Muse runtime support claim but emits no Auto-Coder processing event, so it does
+not add a dashboard stage or change this observability-neutral assessment.
