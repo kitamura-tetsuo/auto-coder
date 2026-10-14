@@ -42,3 +42,7 @@ that the same production route does not promote the stale result.
 starts at correction allowance and job admission, then crosses the production PR
 adapter, exact-head worktree, Muse transport, runner checkpoint, correction outcome,
 and existing validation wake without consuming another allowance.
+
+Both gate-controlled adapter regressions use the real-sleep fixture so their
+polling yields to the runner and notification threads within the bounded wait.
+The global sleep stub must not turn these asynchronous waits into busy loops.

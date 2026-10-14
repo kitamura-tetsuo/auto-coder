@@ -566,7 +566,7 @@ def test_bound_job_rejects_final_output_when_shutdown_drain_observes_new_work(tm
 
 
 @pytest.mark.parametrize("late_activity", [False, True])
-def test_issue_adapter_runner_delivers_gate_controlled_muse_background_result(tmp_path, monkeypatch, _use_real_commands, late_activity):
+def test_issue_adapter_runner_delivers_gate_controlled_muse_background_result(tmp_path, monkeypatch, _use_real_commands, _use_real_sleep, late_activity):
     """Cross admission, private workspace, Muse, runner, and downstream wake."""
     source = _repository(tmp_path)
     remote = tmp_path / "remote.git"
@@ -650,7 +650,7 @@ def test_issue_adapter_runner_delivers_gate_controlled_muse_background_result(tm
     runner.close(wait=True)
 
 
-def test_pr_correction_adapter_runner_delivers_gate_controlled_muse_background_result(tmp_path, monkeypatch, _use_real_commands):
+def test_pr_correction_adapter_runner_delivers_gate_controlled_muse_background_result(tmp_path, monkeypatch, _use_real_commands, _use_real_sleep):
     """Cross PR admission, exact-head worktree, Muse, runner, and validation wake."""
     source = _repository(tmp_path)
     remote = tmp_path / "pr-remote.git"
