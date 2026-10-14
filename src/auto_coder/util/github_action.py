@@ -2054,7 +2054,6 @@ def check_github_actions_and_exit_if_in_progress(
     switch_branch_on_in_progress: bool = True,
     item_number: Optional[int] = None,
     item_type: str = "PR",
-    github_checks: Optional[GitHubActionsStatusResult] = None,
 ) -> bool:
     """
     Check GitHub Actions status and exit if checks are still in progress.
@@ -2081,7 +2080,7 @@ def check_github_actions_and_exit_if_in_progress(
             return True
 
         # Check GitHub Actions status
-        github_checks = github_checks or _check_github_actions_status(repo_name, pr_data, config, github_client)
+        github_checks = _check_github_actions_status(repo_name, pr_data, config, github_client)
         # Optimized: Use the in_progress status from the summary check instead of fetching detailed checks.
         # _check_github_actions_status already correctly identifies in-progress runs from check-runs or workflow runs.
         # This avoids N+1 API calls (one per workflow run) incurred by get_detailed_checks_from_history.

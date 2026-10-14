@@ -5607,7 +5607,6 @@ class AutomationEngine:
                 # Calculate GitHub Actions status for the PR
                 # check_github_actions_and_exit_if_in_progress returns True if we should continue (not in progress)
                 # and False if we should stop/skip (in progress)
-                checks = _check_github_actions_status(repo_name, pr_data, self.config)
                 should_continue = check_github_actions_and_exit_if_in_progress(
                     repo_name,
                     pr_data,
@@ -5615,16 +5614,22 @@ class AutomationEngine:
                     self.github,
                     switch_branch_on_in_progress=False,
                     item_type="pr",
-                    github_checks=checks,
                 )
 
                 if not should_continue:
+                    if pr_data.get("mergeable") is not False or not self.config.ENABLE_MERGEABILITY_REMEDIATION:
+                        logger.debug(f"Skipping PR #{pr_number} - CI checks are in progress")
+                        continue
                     head_sha = str(pr_data.get("head", {}).get("sha") or "")
-                    known_empty_conflict = pr_data.get("mergeable") is False and self.config.ENABLE_MERGEABILITY_REMEDIATION and is_exact_head_known_empty_ci(checks, repo_name, pr_number, head_sha)
-                    if not known_empty_conflict:
+                    checks = _check_github_actions_status(repo_name, pr_data, self.config, self.github)
+                    if not is_exact_head_known_empty_ci(checks, repo_name, pr_number, head_sha):
                         logger.debug(f"Skipping PR #{pr_number} - CI checks are in progress")
                         continue
                     logger.info(f"PR #{pr_number} has no current CI observations; retaining conflicting PR for mergeability remediation")
+                else:
+                    # Preserve the established three-argument evaluator call
+                    # contract used by candidate collection and its adapters.
+                    checks = _check_github_actions_status(repo_name, pr_data, self.config)
 
                 # Check if we should skip this PR because it's waiting for Jules.
                 # ``checks`` is this same current-head CI observation, so a
