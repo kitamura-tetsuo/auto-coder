@@ -1126,10 +1126,14 @@ pr:
     Current head: $current_head_sha
 
     Perform incremental requirement-coverage validation of the current PR head
-    against the original issue specification. Use the previous review response
-    in this persistent session, including its per-requirement coverage, as
-    historical evidence rather than discarding it and starting a full review
-    from scratch.
+    against the original issue specification. This request is self-contained:
+    use the current Requirements manifest, current patch and test evidence,
+    previous/current heads, Persisted Material Test-Oracle Gap Registry, and
+    Accepted Strong Audit Findings supplied below. Do not rely on access to a
+    previous provider conversation. If prior requirement-coverage evidence is
+    not explicitly supplied in this request, establish coverage from the
+    current evidence while retaining these incremental discovery limits; never
+    invent or assume a previous coverage conclusion.
 
     Previous findings and conclusions are context only, not the correctness oracle.
     The original Issue Requirements remain the source of truth throughout every
