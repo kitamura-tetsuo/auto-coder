@@ -142,7 +142,10 @@ def test_incremental_rereview_semantic_cases_use_production_prompt_and_record_ex
     record = json.loads((target / "execution-record.json").read_text())
     assert record["local_real_model_executed"] is False
     assert record["local_outcome"] == "NOT_RUN"
-    assert "did not execute a real semantic model" in record["reason"]
+    assert "did not execute a real semantic model" in record["local_reason"]
+    assert record["observed_ci_execution"]["real_model_executed"] is True
+    assert record["observed_ci_execution"]["executed_cases"] == 3
+    assert set(record["observed_ci_execution"]["observations"]) == set(case["vars"]["id"] for case in cases)
 
 
 def test_prompt_key_and_shared_dependencies_select_only_affected_targets(tmp_path: Path) -> None:
