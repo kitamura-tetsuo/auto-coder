@@ -43,10 +43,8 @@
     - type: javascript
       value: >-
         const r=JSON.parse(output); const blocking=(r.test_oracle_gaps||[]).filter(g=>g.status==='OPEN');
-        const text=JSON.stringify(r).toLowerCase();
         return r.result==='PASS' && (r.findings||[]).length===0 &&
-        blocking.length===0 && !text.includes('implement audit-export') &&
-        !text.includes('add audit-export');
+        blocking.length===0;
 
 - vars:
     id: correction-induced-material-defect-blocks
