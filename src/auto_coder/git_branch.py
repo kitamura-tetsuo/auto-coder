@@ -223,6 +223,10 @@ def git_commit_with_retry(commit_message: str, cwd: Optional[str] = None, max_re
                     llm_success = try_llm_dprint_fallback(commit_message, fmt_result.stderr)
                     if llm_success:
                         logger.info("LLM successfully resolved formatter failure")
+                        # Stage formatted/repaired files before retrying commit
+                        add_result = cmd.run_command(["git", "add", "-A"], cwd=cwd)
+                        if not add_result.success:
+                            logger.warning(f"Failed to stage files after LLM intervention: {add_result.stderr}")
                         # Retry the commit after LLM intervention
                         retry_result = cmd.run_command(["git", "commit", "-m", commit_message], cwd=cwd)
                         if retry_result.success:
@@ -242,6 +246,10 @@ def git_commit_with_retry(commit_message: str, cwd: Optional[str] = None, max_re
                 # Backward compatibility if verify_push param is not available
                 llm_success = try_llm_commit_push(commit_message, error_output)  # type: ignore
             if llm_success:
+                # Stage files repaired by LLM before retrying commit
+                add_result = cmd.run_command(["git", "add", "-A"], cwd=cwd)
+                if not add_result.success:
+                    logger.warning(f"Failed to stage files after LLM intervention: {add_result.stderr}")
                 # After LLM intervention, try committing again
                 retry_result = cmd.run_command(["git", "commit", "-m", commit_message], cwd=cwd)
                 if retry_result.success:

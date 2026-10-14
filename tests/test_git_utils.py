@@ -127,16 +127,21 @@ class TestGitCommitWithRetry:
                     stderr="pre-commit hook failed",
                     returncode=1,
                 ),
-                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git add -A
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # retry commit
             ]
 
             result = git_commit_with_retry("Test commit message")
 
             assert result.success is True
             assert mock_llm.call_count == 1
-            assert mock_cmd.run_command.call_count == 2
-            # second call should be retry commit
+            assert mock_cmd.run_command.call_count == 3
             assert mock_cmd.run_command.call_args_list[1][0][0] == [
+                "git",
+                "add",
+                "-A",
+            ]
+            assert mock_cmd.run_command.call_args_list[2][0][0] == [
                 "git",
                 "commit",
                 "-m",
@@ -151,12 +156,13 @@ class TestGitCommitWithRetry:
             mock_llm.return_value = True
             mock_cmd.run_command.side_effect = [
                 CommandResult(success=False, stdout="", stderr="some unknown error", returncode=1),
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git add -A
                 CommandResult(
                     success=False,
                     stdout="",
                     stderr="nothing to commit, working tree clean",
                     returncode=1,
-                ),
+                ),  # retry commit fails because nothing to commit
                 CommandResult(success=True, stdout="", stderr="", returncode=0),  # git status --porcelain -> clean
             ]
 
@@ -164,12 +170,44 @@ class TestGitCommitWithRetry:
 
             assert result.success is True
             assert mock_llm.call_count == 1
-            assert mock_cmd.run_command.call_count == 3
-            assert mock_cmd.run_command.call_args_list[2][0][0] == [
+            assert mock_cmd.run_command.call_count == 4
+            assert mock_cmd.run_command.call_args_list[1][0][0] == [
+                "git",
+                "add",
+                "-A",
+            ]
+            assert mock_cmd.run_command.call_args_list[3][0][0] == [
                 "git",
                 "status",
                 "--porcelain",
             ]
+
+    def test_commit_with_dprint_error_fmt_fails_llm_fallback_and_retry_success(self):
+        """Dprint format failure triggers LLM fallback, staging, and successful commit retry."""
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor, patch("src.auto_coder.git_branch.try_llm_dprint_fallback") as mock_llm:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_llm.return_value = True
+            mock_cmd.run_command.side_effect = [
+                CommandResult(
+                    success=False,
+                    stdout="",
+                    stderr="Formatting issues detected. Run 'npx dprint fmt' to fix.",
+                    returncode=1,
+                ),
+                CommandResult(success=False, stdout="", stderr="dprint command not found", returncode=1),  # npx dprint fmt
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git add -A
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # retry commit
+            ]
+
+            result = git_commit_with_retry("Test commit message")
+
+            assert result.success is True
+            assert mock_llm.call_count == 1
+            assert mock_cmd.run_command.call_count == 4
+            assert mock_cmd.run_command.call_args_list[1][0][0] == ["npx", "dprint", "fmt"]
+            assert mock_cmd.run_command.call_args_list[2][0][0] == ["git", "add", "-A"]
+            assert mock_cmd.run_command.call_args_list[3][0][0] == ["git", "commit", "-m", "Test commit message"]
 
     def test_commit_with_cwd(self):
         """Test commit with custom working directory."""
