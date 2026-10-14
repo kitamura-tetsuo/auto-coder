@@ -3858,7 +3858,10 @@ def run_adversarial_validation(
     accepted_gap_ids = frozenset(gap.gap_id for gap in accepted_known_gaps)
     context.accepted_known_gap_ids = accepted_gap_ids
     lifecycle_session = _lifecycle_session_with_accepted_gaps(lifecycle_session, stored_session, accepted_known_gaps, repo_name, pr_number, accepted_projection.records[0].originating_head_sha if accepted_projection.records else "")
-    if lifecycle_session is not None and can_continue_stored_session:
+    # The accepted review lifecycle selects review policy. Provider-session
+    # resumability only selects the transport used below; a fresh invocation
+    # must still adjudicate the same recorded obligations incrementally.
+    if lifecycle_session is not None:
         review_policy = render_prompt(
             "pr.adversarial_validation_rereview",
             previous_head_sha=lifecycle_session.last_head_sha,

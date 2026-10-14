@@ -2658,6 +2658,12 @@ class TestRunAdversarialValidation:
         assert result.is_pass
         manager.continue_session.assert_not_called()
         mock_run_prompt.assert_called_once()
+        prompt = mock_run_prompt.call_args.args[0]
+        assert "incremental requirement-coverage validation" in prompt
+        assert "Previous reviewed head: previous-head" in prompt
+        assert "Current head: current-head" in prompt
+        assert "Do not rely on access to a previous provider conversation" in " ".join(prompt.split())
+        assert "Your mission: Falsify the implementation" not in prompt
 
     @pytest.mark.parametrize("backend_type", ["muse", "codex", "opencode", "claude", "gemini", "qwen"])
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
@@ -2712,8 +2718,12 @@ class TestRunAdversarialValidation:
         assert result.reviewer_session_checkpoint is not None
         assert result.reviewer_session_checkpoint.session_id == "session-in-current-worktree"
         assert result.reviewer_session_checkpoint.last_head_sha == "current-head"
-        assert "Your mission: Falsify the implementation" in mock_run_prompt.call_args.args[0]
-        assert "Use the previous review response in this persistent session" not in mock_run_prompt.call_args.args[0]
+        prompt = mock_run_prompt.call_args.args[0]
+        assert "incremental requirement-coverage validation" in prompt
+        assert "Previous reviewed head: previous-head" in prompt
+        assert "Current head: current-head" in prompt
+        assert "Do not rely on access to a previous provider conversation" in " ".join(prompt.split())
+        assert "Your mission: Falsify the implementation" not in prompt
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
