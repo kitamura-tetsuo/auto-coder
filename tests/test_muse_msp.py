@@ -65,6 +65,12 @@ def emit(value):
 effective_mode = None
 last_session = None
 last_turn = None
+def retain(payload):
+    journal = os.environ.get("MSP_RETAINED_JOURNAL")
+    if journal:
+        stamp = time.time_ns() // 1000
+        with Path(journal).open("a") as stream:
+            stream.write(json.dumps({"id":str(stamp),"recorded_at":stamp,"payload":payload}) + "\n")
 for line in sys.stdin:
     frame = json.loads(line)
     with log.open("a") as output:
@@ -143,7 +149,8 @@ for line in sys.stdin:
         emit({"jsonrpc":"2.0","id":frame["id"],"result":ack})
         effective_mode = ack.get("effectiveMode", {}).get("mode")
     elif method == "task/list":
-        emit({"jsonrpc":"2.0","id":frame["id"],"result":{"tasks":[{"taskId":"background-task","kind":"tool","status":"inProgress","tool":"bash"}]}})
+        tasks = [] if os.environ.get("MSP_EMPTY_INVENTORY") else [{"taskId":"background-task","kind":"tool","status":"inProgress","tool":"bash"}]
+        emit({"jsonrpc":"2.0","id":frame["id"],"result":{"tasks":tasks}})
         if os.environ.get("MSP_BACKGROUND_ITEM"):
             gate = os.environ.get("MSP_BACKGROUND_GATE")
             while gate and not Path(gate).exists():
@@ -185,6 +192,7 @@ for line in sys.stdin:
             time.sleep(float(os.environ["MSP_SLEEP"]))
         turn = "turn-" + frame["params"]["commandId"]
         last_turn = turn
+        retain({"kind":"run","run_id":turn,"event":{"kind":"started"}})
         ack = {"commandId":frame["params"]["commandId"],"status":"accepted","turnId":turn,"startedNewTurn":True,"disposition":"started"}
         if os.environ.get("MSP_BAD_TURN_ACK"):
             ack[os.environ["MSP_BAD_TURN_ACK"]] = None
@@ -203,7 +211,8 @@ for line in sys.stdin:
         item_kind = os.environ.get("MSP_ITEM_KIND", "message")
         if os.environ.get("MSP_BACKGROUND_ITEM"):
             emit({"jsonrpc":"2.0","method":"item/updated","params":{"sessionId":event_session,"item":{"itemId":"background-task","kind":"toolCall","background":True,"revision":1,"status":"inProgress","turnId":turn,"tool":"bash"}}})
-        item = {"itemId":"answer","kind":item_kind,"revision":1,"status":item_status,"turnId":turn,"text":"answer:" + ("second" if "second" in frame["params"]["input"][0]["text"] else "first")}
+        item = {"itemId":"answer","kind":item_kind,"revision":1,"status":item_status,"turnId":turn,"text":os.environ.get("MSP_ANSWER", "answer:" + ("second" if "second" in frame["params"]["input"][0]["text"] else "first"))}
+        retain({"kind":"run","run_id":turn,"event":{"kind":"assistant_message_committed","text":item["text"]}})
         if item_kind == "message":
             item["role"] = "assistant"
         emit({"jsonrpc":"2.0","method":item_method,"params":{"sessionId":event_session,"item":item}})
@@ -214,6 +223,7 @@ for line in sys.stdin:
         if os.environ.get("MSP_WRONG_TERMINAL_TURN"):
             terminal_params["turnId"] = "wrong-turn"
         emit({"jsonrpc":"2.0","method":"turn/completed","params":terminal_params})
+        retain({"kind":"run","run_id":turn,"event":{"kind":"terminal","terminal":terminal}})
         extra_terminal_mismatch = os.environ.get("MSP_EXTRA_TERMINAL_MISMATCH")
         if extra_terminal_mismatch and not os.environ.get("MSP_EXTRA_TERMINAL_AFTER_ACK"):
             extra_terminal_params = dict(terminal_params)
@@ -238,6 +248,7 @@ for line in sys.stdin:
             emit({"jsonrpc":"2.0","method":"turn/completed","params":extra_terminal_params})
         if os.environ.get("MSP_WRONG_TERMINAL_TURN"):
             time.sleep(10)
+retain({"kind":"session_end","record":{"session_id":last_session,"exit_reason":"clean"}})
 if os.environ.get("MSP_EXIT_NONZERO"):
     raise SystemExit(7)
 """

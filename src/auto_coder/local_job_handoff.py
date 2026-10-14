@@ -85,6 +85,8 @@ class LocalJobContinuation:
     provider_position: str = ""
     deadline_at: Optional[float] = None
     reconciliation_reason: str = ""
+    provider_workspace: str = ""
+    writer_owner: str = ""
 
 
 @dataclass(frozen=True)
@@ -282,6 +284,9 @@ class LocalJobStore:
                 connection.execute("ALTER TABLE local_job_continuations ADD COLUMN observation_json TEXT NOT NULL DEFAULT ''")
             if "deadline_at" not in columns:
                 connection.execute("ALTER TABLE local_job_continuations ADD COLUMN deadline_at REAL")
+            for column in ("provider_workspace", "writer_owner"):
+                if column not in columns:
+                    connection.execute(f"ALTER TABLE local_job_continuations ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
             if "reconciliation_reason" not in columns:
                 connection.execute("ALTER TABLE local_job_continuations ADD COLUMN reconciliation_reason TEXT NOT NULL DEFAULT ''")
             connection.execute(
@@ -1021,6 +1026,8 @@ class LocalJobStore:
             provider_position=str(row["provider_position"]),
             deadline_at=float(row["deadline_at"]) if row["deadline_at"] is not None else None,
             reconciliation_reason=str(row["reconciliation_reason"]),
+            provider_workspace=str(row["provider_workspace"]),
+            writer_owner=str(row["writer_owner"]),
         )
 
     def bind_continuation(
@@ -1055,6 +1062,34 @@ class LocalJobStore:
             return self._continuation(row)
         except (OSError, sqlite3.Error, ValueError):
             return None
+
+    def bind_continuation_writer(self, job_id: str, executor_token: str, workspace: Path, writer_owner: str, *, deadline_at: Optional[float] = None) -> bool:
+        """Retain the actual provider root and process lifetime for explicit resumption."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE local_job_continuations SET provider_workspace=?, writer_owner=?, deadline_at=COALESCE(?, deadline_at) WHERE job_id=? AND executor_token=?",
+                (str(workspace.resolve()), writer_owner, deadline_at, job_id, executor_token),
+            )
+        return cursor.rowcount == 1
+
+    def claim_explicit_resume(self, job: LocalJobRecord, continuation: LocalJobContinuation, runner_owner: str, executor_token: str) -> bool:
+        """Fence one operator continuation without changing the attempt or workspace."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "UPDATE local_jobs SET runner_owner=? WHERE job_id=? AND execution_incarnation=? AND runner_owner=? AND state=? AND provider_entered=1 "
+                "AND EXISTS (SELECT 1 FROM local_job_continuations c WHERE c.job_id=local_jobs.job_id AND c.execution_incarnation=local_jobs.execution_incarnation AND c.executor_token=? AND c.state<>?)",
+                (runner_owner, job.job_id, job.execution_incarnation, job.runner_owner, LocalJobState.RUNNING.value, continuation.executor_token, ContinuationState.FINAL_CONFIRMED.value),
+            )
+            if cursor.rowcount != 1:
+                connection.rollback()
+                return False
+            connection.execute(
+                "UPDATE local_job_continuations SET executor_token=?, state=?, frontier=frontier+1, candidate_frontier=NULL, candidate_output='', final_output='', reconciliation_reason='', updated_at=? WHERE job_id=?",
+                (executor_token, ContinuationState.FOREGROUND.value, time.time(), job.job_id),
+            )
+            connection.commit()
+        return True
 
     def get_continuation(self, job_id: str) -> Optional[LocalJobContinuation]:
         try:
@@ -1121,13 +1156,16 @@ class LocalJobStore:
         except (OSError, sqlite3.Error):
             return False
 
-    def take_over_continuation(self, job_id: str, expected_executor_token: str, new_executor_token: str) -> bool:
+    def take_over_continuation(self, job_id: str, expected_executor_token: str, new_executor_token: str, *, expected_runner_owner: str) -> bool:
         """Explicitly replace recovery ownership; elapsed time grants no authority."""
         if not expected_executor_token or not new_executor_token or expected_executor_token == new_executor_token:
             return False
         with self._connect() as connection:
             cursor = connection.execute(
-                "UPDATE local_job_continuations AS c SET executor_token=?, state=?, updated_at=? " "WHERE job_id=? AND executor_token=? AND state NOT IN (?, ?, ?) " "AND EXISTS (SELECT 1 FROM local_jobs j WHERE j.job_id=c.job_id " "AND j.execution_incarnation=c.execution_incarnation AND j.state=?)",
+                "UPDATE local_job_continuations AS c SET executor_token=?, state=?, updated_at=? "
+                "WHERE job_id=? AND executor_token=? AND state NOT IN (?, ?, ?) "
+                "AND EXISTS (SELECT 1 FROM local_jobs j WHERE j.job_id=c.job_id "
+                "AND j.execution_incarnation=c.execution_incarnation AND j.state=? AND j.runner_owner=?)",
                 (
                     new_executor_token,
                     ContinuationState.RECONCILIATION_REQUIRED.value,
@@ -1138,6 +1176,7 @@ class LocalJobStore:
                     ContinuationState.INTERRUPTED.value,
                     ContinuationState.FAILED.value,
                     LocalJobState.RUNNING.value,
+                    expected_runner_owner,
                 ),
             )
         return cursor.rowcount == 1
@@ -1275,6 +1314,39 @@ class LocalJobStore:
             return cursor.rowcount == 1
         except (OSError, sqlite3.Error):
             return False
+
+    def unresolved_continuation_tasks(self, job_id: str) -> tuple[ContinuationTask, ...]:
+        """Read pending evidence without interpreting a missing live inventory."""
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM local_continuation_tasks WHERE job_id=? AND lifecycle!='terminal' ORDER BY task_id", (job_id,)).fetchall()
+        return tuple(ContinuationTask(job_id, str(row["task_id"]), str(row["lifecycle"]), str(row["terminal_outcome"]), str(row["result_reference"]), str(row["provider_position"]), int(row["sequence"])) for row in rows)
+
+    def confirm_retained_task_result(self, job_id: str, executor_token: str, frontier: int, output: str, terminals: tuple[ContinuationTask, ...]) -> bool:
+        """Atomically reconcile proven predecessor terminals and their later result."""
+        if not output or not terminals or any(task.job_id != job_id or task.lifecycle != "terminal" or not task.terminal_outcome or not task.provider_position for task in terminals):
+            return False
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                "SELECT 1 FROM local_job_continuations c JOIN local_jobs j ON j.job_id=c.job_id AND j.execution_incarnation=c.execution_incarnation "
+                "WHERE c.job_id=? AND c.executor_token=? AND c.frontier=? AND c.candidate_frontier=? AND c.candidate_output=? AND c.state NOT IN (?, ?, ?) AND j.state=?",
+                (job_id, executor_token, frontier, frontier, output, ContinuationState.FINAL_CONFIRMED.value, ContinuationState.INTERRUPTED.value, ContinuationState.FAILED.value, LocalJobState.RUNNING.value),
+            ).fetchone()
+            pending = connection.execute("SELECT task_id, sequence FROM local_continuation_tasks WHERE job_id=? AND lifecycle!='terminal'", (job_id,)).fetchall()
+            expected = {(task.task_id, task.sequence) for task in terminals}
+            if current is None or len(expected) != len(terminals) or expected != {(str(row["task_id"]), int(row["sequence"])) for row in pending}:
+                connection.rollback()
+                return False
+            for index, task in enumerate(terminals, start=1):
+                connection.execute(
+                    "UPDATE local_continuation_tasks SET lifecycle='terminal', terminal_outcome=?, result_reference=?, provider_position=?, sequence=?, updated_at=? WHERE job_id=? AND task_id=?",
+                    (task.terminal_outcome, task.result_reference, task.provider_position, frontier + index, time.time(), job_id, task.task_id),
+                )
+            connection.execute(
+                "UPDATE local_job_continuations SET state=?, frontier=?, candidate_frontier=?, final_output=candidate_output, reconciliation_reason='', updated_at=? WHERE job_id=?", (ContinuationState.FINAL_CONFIRMED.value, frontier + len(terminals), frontier + len(terminals), time.time(), job_id)
+            )
+            connection.commit()
+        return True
 
     def create_continuation_intent(
         self,

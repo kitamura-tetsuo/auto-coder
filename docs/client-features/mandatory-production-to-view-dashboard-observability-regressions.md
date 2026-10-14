@@ -1,5 +1,21 @@
 # Mandatory production-to-view dashboard observability regressions
 
+`tests/test_muse_retained_result.py` recovers a retained candidate through the
+production Issue resume route without another editing-model call and verifies
+that `llm.muse-retained-task-reconciliation` reaches the mounted Issue detail
+view. Its live MSP counterpart covers writer settlement and the result checkpoint;
+the mounted-view route includes 174 predecessors and a native omitted-output
+marker, while the durable-positive fixture includes all 375 markers from #5629.
+missing/contradictory predecessor evidence remains non-authorizing. Run
+`bash scripts/test.sh tests/test_muse_retained_result.py`.
+
+Explicit Issue session resumption emits `issue.local-session-resume` within the
+requested Issue execution. `tests/test_explicit_issue_resume.py` drives the
+production Muse continuation and verifies that its completion reaches the
+mounted Issue detail view; refusal and publication-only replay retain their
+actual outcomes without a fresh dispatch event. Run `bash scripts/test.sh
+tests/test_explicit_issue_resume.py` for this boundary.
+
 Codex retry receipt reconstruction can bind an accepted task to its pre-send
 reservation before CI repair delivery. Binding does not emit success; the existing
 `Codex Cloud Feedback` trace remains conditional on confirmed delivery, and

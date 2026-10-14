@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -10,7 +11,7 @@ from .implementation_slots import ImplementationOwner, ImplementationSlotReposit
 from .issue_dispatch import IssueAttemptIdentity, IssueDispatchGuard
 from .issue_job_workspace import IssueJobCannotFix, IssueJobSource, IssueJobWorkspaceProducer
 from .local_issue_start_notification import LocalIssueStartNotifier
-from .local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobRecord, LocalJobStore
+from .local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobContinuation, LocalJobRecord, LocalJobStore
 from .local_job_runner import LocalJobExecutionResult, LocalJobProviderEntryRefused
 from .local_llm_observability import bind_local_llm_start_callback, reset_local_llm_start_callback
 from .muse_background_observation import bind_muse_job_observation
@@ -100,6 +101,94 @@ class IssueLocalJobAdapter:
 
     def invoke(self, job: LocalJobRecord) -> LocalJobExecutionResult:
         return self.invoke_at_provider_entry(job, lambda: True)
+
+    def recover_resume_result(self, job: LocalJobRecord) -> LocalJobExecutionResult | None:
+        """Recover settled provider edits that may not yet have reached handoff."""
+        from .worktree_utils import bind_existing_local_workspace, sync_worktree_changes_back
+
+        continuation = self._store.get_continuation(job.job_id)
+        if continuation is None or not continuation.final_output:
+            return None
+        self.validate_resume(job, continuation)
+        with bind_existing_local_workspace(Path(continuation.provider_workspace), Path(job.workspace_path)) as binding:
+            sync_worktree_changes_back(binding.workspace, binding.caller_root, binding)
+        if continuation.final_output.strip() == "CANNOT_FIX":
+            return LocalJobExecutionResult(InvocationOutcome.CANNOT_FIX, "CANNOT_FIX")
+        return self.recover_continuation(job, continuation.provider_session, 0.0)
+
+    def recover_pending_result(self, job: LocalJobRecord) -> LocalJobExecutionResult | None:
+        """Recover a settled candidate held only by proven predecessor task history."""
+        from .muse_retained_result import confirm_muse_retained_result
+
+        continuation = self._store.get_continuation(job.job_id)
+        if continuation is None or not continuation.candidate_output:
+            return None
+        self.validate_resume(job, continuation)
+        if not confirm_muse_retained_result(self._store, job):
+            return None
+        return self.recover_resume_result(job)
+
+    def validate_resume(self, job: LocalJobRecord, continuation: LocalJobContinuation) -> None:
+        """Refuse reuse until both the controller and every old writer are gone."""
+        from .llm_backend_config import get_llm_config
+        from .local_job_runner import runner_owner_alive
+
+        if get_llm_config(repo_name=job.repository).resolve_backend_type(job.backend_name) != "muse":
+            raise RuntimeError("Explicit session resumption currently supports Muse only")
+        if continuation.execution_incarnation != job.execution_incarnation or not continuation.provider_workspace or not continuation.writer_owner:
+            raise RuntimeError("Retained session lacks its provider workspace or writer identity")
+        if runner_owner_alive(continuation.writer_owner) is not False:
+            raise RuntimeError("Previous Muse host is live or its liveness is unknown")
+        # The host starts a new process group; a dead leader does not prove that
+        # background shell tools have stopped writing the retained repository.
+        group = continuation.writer_owner.split(":")[1]
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                stat = (entry / "stat").read_text()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise RuntimeError("Previous Muse writer settlement cannot be verified") from exc
+            fields = stat[stat.rindex(")") + 2 :].split()
+            if fields[2] == group and fields[0] != "Z":
+                raise RuntimeError("Previous Muse process group still has live writers")
+        workspace = Path(continuation.provider_workspace)
+        producer = IssueJobWorkspaceProducer(self._store)
+        if not workspace.is_dir() or not Path(job.workspace_path).is_dir():
+            raise RuntimeError("Retained workspace is unavailable")
+        if producer._git(workspace, "rev-parse", "HEAD") != job.source_commit or producer._git(Path(job.workspace_path), "rev-parse", "HEAD") != job.source_commit:
+            raise RuntimeError("Retained workspace HEAD no longer matches the accepted source")
+
+    def resume_continuation(self, job: LocalJobRecord, provider_session: str, executor_token: str) -> LocalJobExecutionResult:
+        """Submit a follow-up in the original Muse root and checkpoint its handoff."""
+        from .local_execution_boundary import bind_local_execution_boundary
+        from .muse_client import MuseClient
+        from .prompt_loader import render_prompt
+        from .worktree_utils import bind_existing_local_workspace, sync_worktree_changes_back
+
+        continuation = self._store.get_continuation(job.job_id)
+        if continuation is None or continuation.executor_token != executor_token or continuation.provider_session != provider_session:
+            raise RuntimeError("Retained session binding changed before resume")
+        client = MuseClient(backend_name=job.backend_name)
+        if not self._store.bind_continuation_writer(job.job_id, executor_token, Path(continuation.provider_workspace), continuation.writer_owner, deadline_at=time.time() + client.timeout):
+            raise RuntimeError("Explicit continuation budget could not be retained")
+        prompt = render_prompt("issue.local_resume", task_prompt=job.invocation_input)
+        with bind_existing_local_workspace(Path(continuation.provider_workspace), Path(job.workspace_path)) as binding:
+            with bind_local_execution_boundary(binding, backend_type="muse", editable=True) as boundary:
+                if not self.authorize_recovery(job):
+                    raise RuntimeError("Retained authority changed before Muse continuation")
+                with bind_muse_job_observation(self._store, job, executor_token):
+                    output = client.continue_session(provider_session, prompt)
+                boundary.record_backend_success(binding.invocation_id)
+                if not boundary.evidence().handoff_authorized:
+                    raise RuntimeError("Resumed Muse writers did not settle")
+                sync_worktree_changes_back(binding.workspace, binding.caller_root, binding)
+        if output.strip() == "CANNOT_FIX":
+            return LocalJobExecutionResult(InvocationOutcome.CANNOT_FIX, "CANNOT_FIX")
+        checkpoint = IssueJobWorkspaceProducer(self._store, implementation_slots=self._slots).recover_confirmed_output(LocalJobClaim(job, True), output)
+        return LocalJobExecutionResult(InvocationOutcome.COMPLETED, checkpoint.result_reference)
 
     def invoke_at_provider_entry(
         self,

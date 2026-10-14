@@ -76,7 +76,7 @@ def test_task_and_final_frontier_are_monotonic_and_executor_fenced(tmp_path: Pat
     terminal = store.observe_continuation_task(offer.job_id, "old", "task-2", "terminal", terminal_outcome="completed", result_reference="result-2")
     assert terminal is not None
     assert store.observe_continuation_task(offer.job_id, "old", "task-2", "running") == terminal
-    assert store.take_over_continuation(offer.job_id, "old", "new")
+    assert store.take_over_continuation(offer.job_id, "old", "new", expected_runner_owner=claim.record.runner_owner)
     assert not store.transition_continuation(offer.job_id, "old", ContinuationState.RECONCILIATION_REQUIRED, ContinuationState.CONTINUATION_PENDING)
 
 
@@ -116,7 +116,7 @@ def test_executor_takeover_contention_has_one_owner_and_fences_stale_writer(tmp_
     def contend(new_executor: str) -> bool:
         contender = LocalJobStore(store.path)
         reached_transition.wait(timeout=10)
-        return contender.take_over_continuation(offer.job_id, "original", new_executor)
+        return contender.take_over_continuation(offer.job_id, "original", new_executor, expected_runner_owner=claim.record.runner_owner)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [pool.submit(contend, executor) for executor in ("executor-a", "executor-b")]
@@ -216,7 +216,7 @@ def test_waiting_takeover_blocks_stale_completion_and_downstream_eligibility(tmp
         ContinuationState.FOREGROUND,
         ContinuationState.WAITING_BACKGROUND,
     )
-    assert store.take_over_continuation(offer.job_id, "executor-a", "executor-b")
+    assert store.take_over_continuation(offer.job_id, "executor-a", "executor-b", expected_runner_owner=claim.record.runner_owner)
 
     assert store.persist_result_artifact(claim, InvocationOutcome.COMPLETED, "foreground pause", executor_token="executor-a") is None
     assert not store.record_result(claim, InvocationOutcome.COMPLETED, "missing", executor_token="executor-a")
@@ -271,7 +271,7 @@ def test_replaced_job_lineage_rejects_every_old_continuation_authority(tmp_path:
         ContinuationIntentState.NOT_SUBMITTED,
         ContinuationIntentState.ADMITTED,
     )
-    assert not reopened.take_over_continuation(offer.job_id, "executor-old", "executor-new")
+    assert not reopened.take_over_continuation(offer.job_id, "executor-old", "executor-new", expected_runner_owner=first_claim.record.runner_owner)
 
 
 @pytest.mark.parametrize("command_kind", ["controller", "native"])

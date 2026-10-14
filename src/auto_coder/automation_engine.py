@@ -3074,13 +3074,54 @@ class AutomationEngine:
 
         return results
 
+    def _resume_explicit_issue(self, repo_name: str, number: int) -> CandidateProcessingResult:
+        """Resolve retained ownership directly, without admitting a new implementation."""
+        from .issue_dispatch import DispatchOutcome, DispatchResult, IssueAttemptIdentity
+        from .security_utils import redact_string
+
+        result = CandidateProcessingResult(type="issue", number=number, success=False, target_outcome=ExplicitTargetOutcome.DEFERRED)
+        with get_trace_collector().start_execution(repository=repo_name, item_type="issue", item_number=number, origin="explicit-single-target", stage_id="issue.local-session-resume", label=f"issue#{number} session resume") as handle:
+            try:
+                store = self._get_local_job_store()
+                slots = self._get_implementation_slots(repo_name)
+                active_ids = slots.active_execution_ids(ImplementationOwner("issue", number))
+                evidence = store.issue_job_evidence(repo_name, number)
+                bound = [entry.job for entry in evidence if entry.job.implementation_execution_id in active_ids]
+                if not bound and len(evidence) == 1:
+                    bound = [evidence[0].job]
+                if len(bound) != 1:
+                    raise RuntimeError("No unambiguous retained local job exists for this Issue")
+                job = bound[0]
+                from .local_job_handoff import LocalJobState
+
+                if job.state is LocalJobState.PENDING or (job.state is LocalJobState.RUNNING and not job.provider_entered):
+                    raise RuntimeError("Retained job has not entered a provider; use ordinary processing")
+                repo_owner, repo_name_part = repo_name.split("/", 1)
+                identity = IssueAttemptIdentity(repo_owner, repo_name_part, number, job.upstream_attempt)
+                result.dispatch_result = DispatchResult(identity, DispatchOutcome.LOCAL_ACCEPTED, job.backend_name, "local", job.job_id, claim_incarnation=job.upstream_incarnation)
+                self._run_explicit_local_issue(repo_name, result, resume=True)
+            except Exception as exc:
+                result.target_reason = redact_string(f"Cannot resume Issue #{number}: {exc}")[:2000]
+                result.error = result.target_reason
+                result.actions.append(result.target_reason)
+            get_trace_collector().record_event(
+                EventKind.STAGE_RESULT,
+                stage_id="issue.local-session-resume",
+                origin="explicit-single-target",
+                label="Retained Issue session resume",
+                outcome=_map_candidate_result_outcome(result),
+                facts={"job_id": result.dispatch_result.provider_reference if result.dispatch_result else "", "backend": result.dispatch_result.backend_name if result.dispatch_result else "", "reason": result.target_reason or ""},
+            )
+            handle.set_outcome(_map_candidate_result_outcome(result))
+        return result
+
     def _complete_explicit_local_issue(self, repo_name: str, result: CandidateProcessingResult) -> None:
         """Keep target-scoped completion evidence after dispatch releases its scope."""
         with get_trace_collector().start_execution(repository=repo_name, item_type="issue", item_number=cast(int, result.number), origin="explicit-single-target", stage_id="issue.local-completion", label=f"issue#{result.number} local completion") as handle:
             self._run_explicit_local_issue(repo_name, result)
             handle.set_outcome(_map_candidate_result_outcome(result))
 
-    def _run_explicit_local_issue(self, repo_name: str, result: CandidateProcessingResult) -> None:
+    def _run_explicit_local_issue(self, repo_name: str, result: CandidateProcessingResult, *, resume: bool = False) -> None:
         """Drive only the accepted target through execution and publication."""
         from .issue_local_job import IssueLocalJobAdapter
         from .local_job_handoff import LocalJobState
@@ -3103,7 +3144,9 @@ class AutomationEngine:
         )
         try:
             live_external_owner = job.runner_owner != runner.runner_id and job.state in {LocalJobState.RUNNING, LocalJobState.RESULT_RECORDED} and runner_owner_alive(job.runner_owner) is True
-            if not live_external_owner:
+            if resume and job.state is LocalJobState.RUNNING and not job.result_reference:
+                runner.resume(job_id)
+            elif not live_external_owner:
                 runner.poll()
             while True:
                 if not runner.active_count():
@@ -8316,6 +8359,7 @@ class AutomationEngine:
         explicit_only: bool = False,
         force: bool = False,
         retry: bool = False,
+        resume: bool = False,
     ) -> Dict[str, Any]:
         """Process a single issue or PR by number.
 
@@ -8330,6 +8374,8 @@ class AutomationEngine:
         """
         if retry and not (explicit_only and force):
             raise ValueError("retry requires explicit_only and force")
+        if resume and (not explicit_only or retry):
+            raise ValueError("resume requires explicit_only and cannot be combined with retry")
         refusal = self._pending_work_refusal(repo_name)
         if refusal is not None:
             refused: Dict[str, Any] = {
@@ -8361,7 +8407,7 @@ class AutomationEngine:
 
             with ProgressStage("Processing single PR/IS"):
                 # Check if current branch corresponds to a closed PR/Issue
-                if not self._check_and_handle_closed_branch(repo_name):
+                if not resume and not self._check_and_handle_closed_branch(repo_name):
                     # check_and_handle_closed_state will handle branch switching and exit
                     # This line should not be reached, but just in case
                     closed_result: Dict[str, Any] = {
@@ -8418,6 +8464,19 @@ class AutomationEngine:
 
                     if explicit_only:
                         result.target_type = candidate.type if candidate.type in {"issue", "pr"} else None
+
+                    if resume:
+                        if candidate.type != "issue":
+                            raise ValueError("--resume supports Issue targets only")
+                        resumed = self._resume_explicit_issue(repo_name, number)
+                        result.target_outcome = resumed.target_outcome.value if resumed.target_outcome else ExplicitTargetOutcome.FAILED.value
+                        result.target_reason = resumed.target_reason or resumed.error
+                        result.target_actions = list(resumed.actions)
+                        if resumed.success:
+                            result.issues_processed.append({"issue_data": candidate.data, "actions_taken": resumed.actions})
+                        elif resumed.error:
+                            result.errors.append(resumed.error)
+                        return explicit_result()
 
                     if explicit_only and candidate.type == "issue":
                         try:

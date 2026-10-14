@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 import threading
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Generator, Optional, Union
 
@@ -216,6 +216,16 @@ def current_local_caller_checkpoint(binding: LocalWorkspaceBinding) -> str:
     untracked = tuple(path for path in _listed_paths(caller, "--others") if not any(part in DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
     checkpoint, _, _ = _source_token(caller, tracked, untracked)
     return checkpoint
+
+
+@contextlib.contextmanager
+def bind_existing_local_workspace(workspace: Path, caller: Path) -> Generator[LocalWorkspaceBinding, None, None]:
+    """Capture a handoff baseline while retaining the provider's exact repository."""
+    with tempfile.TemporaryDirectory(prefix="auto_coder_resume_") as temporary:
+        snapshot = _capture_source(caller.resolve(), Path(temporary) / "repository")
+        binding = replace(snapshot.binding, workspace=workspace.resolve())
+        with bind_retained_local_workspace(binding, is_noedit=False):
+            yield binding
 
 
 @contextlib.contextmanager

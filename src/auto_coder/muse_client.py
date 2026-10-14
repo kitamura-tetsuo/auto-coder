@@ -1159,7 +1159,16 @@ class MuseClient(LLMClientBase):
         try:
             logger.warning("LLM invocation: Muse Code MSP host is being called. Keep LLM calls minimized.")
             diag.enter_phase("host_startup")
+            retained_observer = current_muse_job_observation()
+            if retained_observer is not None and session_id is not None:
+                if not retained_observer.store.bind_continuation_writer(retained_observer.job.job_id, retained_observer.executor_token, cwd, "ambiguous:host-launch"):
+                    raise RuntimeError("Muse resumed host launch could not be fenced")
             process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=os.name == "posix", bufsize=0)
+            if retained_observer is not None and retained_observer.store.get_continuation(retained_observer.job.job_id) is not None:
+                from .local_job_runner import process_owner
+
+                if not retained_observer.store.bind_continuation_writer(retained_observer.job.job_id, retained_observer.executor_token, cwd, process_owner(process.pid)):
+                    raise RuntimeError("Muse resumed host ownership could not be retained")
             diag.host_started(process)
             self._msp_stdout.clear()
             self._msp_stderr.clear()
@@ -1231,6 +1240,11 @@ class MuseClient(LLMClientBase):
             workspace = metadata.get("workspaceRoot")
             if not isinstance(workspace, str) or workspace != str(cwd):
                 raise RuntimeError("Muse MSP session belongs to an incompatible workspace")
+            if job_observer is not None:
+                from .local_job_runner import process_owner
+
+                if not job_observer.store.bind_continuation_writer(job_observer.job.job_id, job_observer.executor_token, cwd, process_owner(process.pid)):
+                    raise RuntimeError("Muse provider workspace and writer binding could not be retained")
             effective_model = metadata.get("modelId")
             model_matches = effective_model == self.model_name
             resolved_model = _MUSE_141_MODEL_ALIASES.get(self.model_name)
@@ -1550,11 +1564,16 @@ class MuseClient(LLMClientBase):
             self._last_session_id = None
             raise RuntimeError("Muse MSP invocation ended without a completed result")
         if job_observer is not None:
-            if final_continuation_frontier is None or not job_observer.store.confirm_final_output(
+            confirmed = final_continuation_frontier is not None and job_observer.store.confirm_final_output(
                 job_observer.job.job_id,
                 job_observer.executor_token,
                 final_continuation_frontier,
-            ):
+            )
+            if not confirmed and session_id is not None:
+                from .muse_retained_result import confirm_muse_retained_result
+
+                confirmed = confirm_muse_retained_result(job_observer.store, job_observer.job)
+            if not confirmed:
                 self._last_session_id = None
                 raise RuntimeError("Muse final output changed or remained unresolved before writer settlement")
         self._last_session_id = completed_session_id

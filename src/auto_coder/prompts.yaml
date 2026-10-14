@@ -1409,6 +1409,16 @@ pr:
     $actionable_feedback
 
 issue:
+  local_resume: |-
+    Continue the interrupted implementation in this retained session and workspace.
+    Inspect the existing edits and completed work before proceeding. Complete the
+    original task, run the relevant tests, and preserve all controller-owned Git
+    and GitHub lifecycle boundaries. Do not stage, commit, push, change HEAD or
+    branches, or create a PR. Return only one verified ACTION_SUMMARY: line on
+    success, or CANNOT_FIX if the task cannot be completed.
+
+    Original task:
+    $task_prompt
   adversarial_decomposition_analysis: |-
     Evaluate whether the supplied parent Issue and complete direct-child set form a sufficient contract for sequential child implementation and container-parent completion.
 

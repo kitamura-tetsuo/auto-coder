@@ -6,6 +6,10 @@ original invocation budget instead of granting another full timeout. Legacy
 continuations without a trustworthy deadline remain reconciliation work and
 cannot be resumed by inventing one.
 
+An operator may separately authorize a new continuation turn with `--only
+--resume`; see [explicit Issue resumption](explicit-local-issue-session-resume.md).
+This is a new explicit turn budget, not an automatic extension of crash recovery.
+
 `LocalJobRunner` discovers this work from the continuation store rather than
 ordinary Issue admission. It first proves the recorded process owner is dead,
 checks the retained workspace and upstream authority through the domain

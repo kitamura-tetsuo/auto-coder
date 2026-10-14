@@ -140,6 +140,7 @@ async def _run_process_issues_daemon(
     is_flag=True,
     help="Authorize one durable, request-scoped Issue implementation attempt; requires --only and --force and preserves existing safety gates.",
 )
+@click.option("--resume", is_flag=True, help="Continue the retained local Issue job and provider session; requires --only and cannot be combined with --retry.")
 @click.option(
     "--log-level",
     default="INFO",
@@ -178,6 +179,7 @@ def process_issues(
     sentry_webhook_secret: Optional[str],
     retry: bool = False,
     jules_mode: Optional[bool] = None,
+    resume: bool = False,
 ) -> None:
     """Process GitHub issues and PRs using AI CLI (codex or gemini)."""
 
@@ -186,6 +188,8 @@ def process_issues(
 
     if retry and not (only_target and operator_force):
         raise click.UsageError("--retry requires --only and --force")
+    if resume and (not only_target or retry):
+        raise click.UsageError("--resume requires --only and cannot be combined with --retry")
 
     # Get repository name (from parameter, auto-detect, or --only URL)
     repo_name = get_repo_or_detect(repo, fallback_url=only_target)
@@ -201,9 +205,9 @@ def process_issues(
         configured_cloud_mode = is_jules_mode_enabled(repo_name=repo_name)
 
     selected_backends = [name for group in config.get_ordinary_priority_groups() for name in group]
-    if not selected_backends:
+    if not selected_backends and not resume:
         raise click.ClickException("The ordinary backend candidate pool is empty")
-    primary_backend = selected_backends[0]
+    primary_backend = selected_backends[0] if selected_backends else ""
     models = build_models_map()
     primary_model = models.get(primary_backend)
 
@@ -234,8 +238,9 @@ def process_issues(
     # Startup validates only the candidate that can be attempted first. Later
     # fallbacks validate their own prerequisites when selected, so an unused
     # local executable or workspace does not block an earlier remote handoff.
-    check_backend_prerequisites([primary_backend])
-    if config.resolve_backend_type(primary_backend) not in TASK_ONLY_BACKEND_TYPES:
+    if not resume:
+        check_backend_prerequisites([primary_backend])
+    if resume or config.resolve_backend_type(primary_backend) not in TASK_ONLY_BACKEND_TYPES:
         ensure_test_script_or_fail()
 
     backend_list_str = ", ".join(selected_backends)
@@ -302,7 +307,7 @@ def process_issues(
     # than aborting startup: an earlier remote candidate (e.g. Jules) that the
     # ordinary policy would actually select must not be blocked merely
     # because a later, unused local fallback's prerequisites are missing.
-    synchronous_backends = [name for name in selected_backends if config.resolve_backend_type(name) not in TASK_ONLY_BACKEND_TYPES]
+    synchronous_backends = [] if resume else [name for name in selected_backends if config.resolve_backend_type(name) not in TASK_ONLY_BACKEND_TYPES]
     manager = None
 
     # Initialize LLM backend manager singleton
@@ -339,7 +344,7 @@ def process_issues(
         logger.info("Ordinary backend pool has no synchronous candidate; the general LLM manager stays uninitialized until a synchronous operation needs one.")
 
     message_manager = None
-    if config.get_active_noedit_backends():
+    if not resume and config.get_active_noedit_backends():
         try:
             message_manager = build_message_backend_manager(models=models)
         except Exception as exc:
@@ -455,9 +460,9 @@ def process_issues(
             if target_type is None:
                 # Auto-detect the type; process_single reports failures in its result
                 # instead of raising, so the detection happens while building the candidate.
-                result = automation_engine.process_single(repo_name, "auto", number, jules_mode=configured_cloud_mode, explicit_only=True, force=operator_force, **({"retry": True} if retry else {}))
+                result = automation_engine.process_single(repo_name, "auto", number, jules_mode=configured_cloud_mode, explicit_only=True, force=operator_force, **({"retry": True} if retry else {}), **({"resume": True} if resume else {}))
             else:
-                result = automation_engine.process_single(repo_name, target_type, number, jules_mode=configured_cloud_mode, explicit_only=True, force=operator_force, **({"retry": True} if retry else {}))
+                result = automation_engine.process_single(repo_name, target_type, number, jules_mode=configured_cloud_mode, explicit_only=True, force=operator_force, **({"retry": True} if retry else {}), **({"resume": True} if resume else {}))
 
             diagnostics = list(result.get("errors") or [])
             resolved_type = result.get("target_type")

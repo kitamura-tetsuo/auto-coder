@@ -9,6 +9,12 @@ returns only assistant output that incorporates the completed result frontier.
 
 The final output is recorded against the current durable frontier before host
 shutdown and confirmed only after the invocation-owned writer process group settles.
+For explicit continuation, positively completed inventory-only predecessor tasks
+may be reconciled from the exact native retained journal after settlement; their
+terminal records must predate the current candidate's turn. Empty inventory still
+does not clear unresolved work. See
+[explicit Issue resumption](explicit-local-issue-session-resume.md) and run
+`bash scripts/test.sh tests/test_muse_retained_result.py` for the result boundary.
 The local runner supplies the same executor fence when recording its result, so an
 intermediate message cannot make downstream Issue publication or PR validation
 eligible. The domain result may wrap that confirmed output in an Issue workspace

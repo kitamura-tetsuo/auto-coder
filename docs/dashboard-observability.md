@@ -2435,6 +2435,32 @@ may report publication or terminal no-change/cannot-fix settlement.
 
 ## Explicit single-Issue local completion
 
+Positive predecessor-terminal reconciliation emits
+`llm.muse-retained-task-reconciliation` (`COMPLETED`, label `Retained Muse
+predecessor reconciliation`) inside the live or resumed Issue execution, with
+the task count, durable job identity, and native-journal evidence source.
+It does not mean the PR was published. `bash scripts/test.sh
+tests/test_muse_retained_result.py` exercises both the real MSP result boundary
+and the production explicit recovery route, including the mounted Issue detail
+stage in `test_issue_resume_recovers_retained_candidate_without_model_call`.
+That mounted-view regression also traverses validated native omitted-tool-delta
+markers and 174 retained predecessors. The event and publication semantics are
+unchanged: only positively retained terminals authorize reconciliation; omitted
+output deltas cannot manufacture completion.
+
+Explicit `--only --resume` emits `issue.local-session-resume` under the exact
+requested Issue with origin `explicit-single-target`. A completed outcome follows
+confirmed session output and controller publication; an unsafe, missing, stale,
+or unresolved continuation is deferred. It bypasses fresh Issue dispatch, so no
+new `issue.dispatch.local-job` acceptance is emitted. The existing finalizer emits
+`issue.local-publication-finalization` within this execution. The runnable
+production-to-view regression is
+`bash scripts/test.sh tests/test_explicit_issue_resume.py`, including
+`test_only_resume_uses_retained_muse_session_and_publishes`, which starts with a
+retained interrupted job, drives the actual MSP host, checkpoints its edits,
+and mounts the Issue detail diagram. Publication replay and refusal controls
+must not appear as successful provider re-entry.
+
 `process-issues --only` runs only the exact accepted local Issue job and waits
 through controller-owned publication. `issue.dispatch.local-job` still denotes
 ACCEPTED_HANDOFF. The finalizer emits `issue.local-publication-finalization`

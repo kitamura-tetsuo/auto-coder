@@ -47,8 +47,10 @@ def test_process_issues_only_rejects_real_disabled_only_pool_before_prerequisite
     build_manager.assert_not_called()
 
 
-@pytest.mark.parametrize("retry", [False, True])
-def test_process_issues_only_passes_configured_cloud_mode(retry):
+@pytest.mark.parametrize("mode", ["ordinary", "retry", "resume"])
+def test_process_issues_only_passes_configured_cloud_mode(mode):
+    retry = mode == "retry"
+    resume = mode == "resume"
     parent = click.Context(click.Command("auto-coder"))
     parent.params["force"] = retry
     repo_name = "owner/repo"
@@ -56,7 +58,7 @@ def test_process_issues_only_passes_configured_cloud_mode(retry):
     llm_config.get_active_backends.return_value = ["codex-cloud-spark"]
     llm_config.backend_order = ["codex-cloud-spark"]
     llm_config.default_backend = "codex-cloud-spark"
-    llm_config.get_ordinary_priority_groups.return_value = [["codex-cloud-spark", "codex"]]
+    llm_config.get_ordinary_priority_groups.return_value = [] if resume else [["codex-cloud-spark", "codex"]]
     llm_config.resolve_backend_type.return_value = "codex-cloud"
 
     backend_manager = MagicMock()
@@ -97,6 +99,7 @@ def test_process_issues_only_passes_configured_cloud_mode(retry):
             process_issues,
             [
                 *(["--retry"] if retry else []),
+                *(["--resume"] if resume else []),
                 "--repo",
                 repo_name,
                 "--github-token",
@@ -110,8 +113,12 @@ def test_process_issues_only_passes_configured_cloud_mode(retry):
 
     assert result.exit_code == 0
     cloud_mode.assert_called_once_with(repo_name=repo_name)
-    prerequisites.assert_called_once_with(["codex-cloud-spark"])
-    test_script.assert_not_called()
+    if resume:
+        prerequisites.assert_not_called()
+        test_script.assert_called_once_with()
+    else:
+        prerequisites.assert_called_once_with(["codex-cloud-spark"])
+        test_script.assert_not_called()
     engine.process_single.assert_called_once_with(
         repo_name,
         "issue",
@@ -120,6 +127,7 @@ def test_process_issues_only_passes_configured_cloud_mode(retry):
         explicit_only=True,
         force=retry,
         **({"retry": True} if retry else {}),
+        **({"resume": True} if resume else {}),
     )
 
 
