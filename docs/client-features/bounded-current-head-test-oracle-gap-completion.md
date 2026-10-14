@@ -27,9 +27,10 @@ never closed by this completion.
 
 Local completion continues a provider session only when the manager can prove its
 retained workspace binding; otherwise the self-contained prompt uses the supported
-fresh no-edit route. Terminal RESOLVED evidence must identify a committed test and
-the recorded boundary, while INVALID evidence must identify the failed material-
-gap criterion. Generic all-VERIFIED or green-CI prose is non-authorizing.
+fresh no-edit route. Terminal RESOLVED evidence must identify committed assertions
+at the recorded boundary that protect the original invariant, while INVALID
+evidence must state how a necessary material-gap criterion fails rather than merely
+name that criterion. Generic all-VERIFIED or green-CI prose is non-authorizing.
 
 The four advisory Promptfoo cases under
 `prompt-evals/targets/test-oracle-gap-completion/` evaluate genuine protection,

@@ -1123,6 +1123,54 @@ def test_gap_completion_preserves_direct_current_head_progress_for_another_gap(t
     }
 
 
+def test_gap_completion_preserves_current_open_over_historical_terminal(tmp_path) -> None:
+    regressed = parsed_result(gap_payload()).test_oracle_gaps[0]
+    regressed.status = "RESOLVED"
+    regressed.resolution_evidence = "H1 committed regression evidence."
+    regressed.resolution_head_sha = "sha-h1"
+    omitted = parsed_result(gap_payload(boundary="AuditMutation.commit")).test_oracle_gaps[0]
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    session = prior_session(regressed, "sha-h1")
+    session.test_oracle_gaps.append(omitted)
+    registry.save(session)
+    validation_context = context()
+    validation_context.issue_context = "Linked Issue requires independent server validation."
+    validation_context.validation_snapshot = "snapshot-h2"
+    reopened = {"gap_id": regressed.gap_id, "status": "OPEN", "resolution_evidence": ""}
+    resolved = {
+        "gap_id": omitted.gap_id,
+        "status": "RESOLVED",
+        "resolution_evidence": "tests/test_audit.py exercises AuditMutation.commit and asserts the recorded invariant at sha-h2.",
+    }
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+    manager._last_session_id = "session-1"
+    manager.continue_session.side_effect = [validation_response(reopened, "NEEDS_TESTS"), validation_response(resolved)]
+
+    with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-h2"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+        )
+
+    saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
+    assert manager.continue_session.call_count == 2
+    completion_prompt = manager.continue_session.call_args_list[1].args[1]
+    assert omitted.gap_id in completion_prompt
+    assert f'Exact gap IDs requiring a current-target decision: ["{regressed.gap_id}"]' not in completion_prompt
+    assert result.result == "NEEDS_TESTS"
+    assert [gap.gap_id for gap in result.open_test_oracle_gaps] == [regressed.gap_id]
+    assert saved is not None
+    by_id = {gap.gap_id: gap for gap in saved.test_oracle_gaps}
+    assert by_id[regressed.gap_id].status == "OPEN"
+    assert by_id[regressed.gap_id].historical_resolution_head_sha == "sha-h1"
+    assert by_id[omitted.gap_id].status == "RESOLVED"
+    assert by_id[omitted.gap_id].resolution_head_sha == "sha-h2"
+
+
 @pytest.mark.parametrize(
     ("completion_response", "missing_fragment"),
     [
@@ -1273,7 +1321,7 @@ def test_gap_completion_cannot_override_unverified_requirement_evidence(tmp_path
             "evidence_recovery": [{"path": "artifacts/audit.json", "source": "repository inspection", "status": "UNAVAILABLE", "evidence": "The artifact is absent.", "requirement_ids": ["REQ-002"]}],
         }
     )
-    resolution = gap_payload(status="RESOLVED", phase="REREVIEW", resolution_evidence="tests/test_grid.py executes GridMutation.apply_candidate and asserts the invariant at sha-h2.")
+    resolution = gap_payload(status="RESOLVED", phase="REREVIEW", resolution_evidence="tests/test_grid.py executes GridMutation.apply_candidate and asserts rejected candidates preserve stored state and revision at sha-h2.")
     completion = json.loads(validation_response(resolution))
     completion["requirement_coverage"].append({"requirement_id": "REQ-002", "status": "VERIFIED", "evidence": "All requirements pass."})
     manager = MagicMock()
@@ -1307,7 +1355,7 @@ def test_fresh_only_local_reviewer_uses_fresh_gap_completion(tmp_path) -> None:
     validation_context.issue_context = "Linked Issue requires independent server validation."
     validation_context.validation_snapshot = "snapshot-h2"
     omitted = json.dumps({"result": "PASS", "summary": "Coverage complete.", "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Implementation inspected."}], "findings": [], "test_oracle_gaps": []})
-    resolution = gap_payload(status="RESOLVED", phase="REREVIEW", resolution_evidence="tests/test_grid.py executes GridMutation.apply_candidate and asserts the invariant at sha-h2.")
+    resolution = gap_payload(status="RESOLVED", phase="REREVIEW", resolution_evidence="tests/test_grid.py executes GridMutation.apply_candidate and asserts rejected candidates preserve stored state and revision at sha-h2.")
     client = FreshOnlyReviewerClient([omitted, validation_response(resolution)])
     with patch("pathlib.Path.home", return_value=tmp_path):
         manager = BackendManager(default_backend="reviewer", default_client=client, factories={"reviewer": lambda: client}, order=["reviewer"], automatic_session_resume=False)
@@ -1330,8 +1378,16 @@ def test_fresh_only_local_reviewer_uses_fresh_gap_completion(tmp_path) -> None:
     assert saved.test_oracle_gaps[0].resolution_head_sha == "sha-h2"
 
 
-@pytest.mark.parametrize("status", ["RESOLVED", "INVALID"])
-def test_gap_completion_rejects_generic_terminal_evidence(status, tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("status", "evidence"),
+    [
+        ("RESOLVED", "All requirements pass and generic CI is green."),
+        ("INVALID", "All requirements pass and generic CI is green."),
+        ("RESOLVED", "tests/test_grid.py names apply_candidate"),
+        ("INVALID", "The authoritative boundary exists and remains reachable."),
+    ],
+)
+def test_gap_completion_rejects_generic_terminal_evidence(status, evidence, tmp_path) -> None:
     gap = parsed_result(gap_payload()).test_oracle_gaps[0]
     gap.status = "RESOLVED"
     gap.resolution_evidence = "Historical H1 evidence."
@@ -1341,7 +1397,7 @@ def test_gap_completion_rejects_generic_terminal_evidence(status, tmp_path) -> N
     validation_context = context()
     validation_context.issue_context = "Linked Issue requires independent server validation."
     validation_context.validation_snapshot = "snapshot-h2"
-    generic = {"gap_id": gap.gap_id, "status": status, "resolution_evidence": "All requirements pass and generic CI is green."}
+    generic = {"gap_id": gap.gap_id, "status": status, "resolution_evidence": evidence}
     manager = MagicMock()
     manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
     manager._last_session_id = "session-1"

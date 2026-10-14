@@ -2550,18 +2550,22 @@ def _valid_focused_terminal_gap_evidence(gap: TestOracleGap) -> bool:
     evidence = gap.resolution_evidence.strip().lower()
     if gap.status == "RESOLVED":
         boundary_name = gap.authoritative_boundary.rsplit(".", 1)[-1].lower()
-        return is_valid_test_oracle_resolution_evidence(evidence) and "test" in evidence and boundary_name in evidence
+        assertion_cues = ("assert", "verif", "prov", "exercis", "checks that", "expects")
+        invariant_terms = {term for term in re.findall(r"[a-z][a-z0-9_]+", gap.invariant.lower()) if len(term) >= 5}
+        return is_valid_test_oracle_resolution_evidence(evidence) and "test" in evidence and boundary_name in evidence and any(cue in evidence for cue in assertion_cues) and ("recorded invariant" in evidence or bool(invariant_terms.intersection(re.findall(r"[a-z][a-z0-9_]+", evidence))))
     if gap.status == "INVALID":
-        criterion_cues = (
-            "explicit requirement",
-            "outside the requirement",
-            "not reachable",
-            "authoritative boundary",
-            "plausible incorrect",
-            "material consequence",
-            "focused regression",
+        failed_criterion_cues = (
+            "outside every explicit requirement",
+            "outside the explicit requirement",
+            "no connection to an explicit requirement",
+            "unreachable authoritative boundary",
+            "authoritative boundary is not reachable",
+            "no plausible incorrect implementation",
+            "no material consequence",
+            "no focused regression oracle",
+            "fails the material-gap criterion",
         )
-        return any(cue in evidence for cue in criterion_cues)
+        return any(cue in evidence for cue in failed_criterion_cues)
     return gap.status == "OPEN"
 
 
@@ -4315,7 +4319,7 @@ def run_adversarial_validation(
             invalid_evidence = sorted(gap.gap_id for gap in completion.test_oracle_gaps if gap.gap_id in completion_gap_ids and not _valid_focused_terminal_gap_evidence(gap))
             completion_parse_failed = completion.result == "ERROR"
             completion_returned_ids = {gap.gap_id for gap in completion.test_oracle_gaps}
-            completion.test_oracle_gaps.extend(gap for gap in result.test_oracle_gaps if gap.gap_id not in completion_returned_ids and gap.status in {"RESOLVED", "INVALID"} and gap.resolution_head_sha == head_sha)
+            completion.test_oracle_gaps.extend(gap for gap in result.test_oracle_gaps if gap.gap_id not in completion_returned_ids and (gap.gap_id in current_gap_decision_ids or (gap.status in {"RESOLVED", "INVALID"} and gap.resolution_head_sha == head_sha)))
             completion = _reconcile_test_oracle_gap_lifecycle(
                 completion,
                 effective_lifecycle_session,
