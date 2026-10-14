@@ -6,4 +6,5 @@ providers:
       model_reasoning_effort: high
 prompts:
   - file://prompt.py:render
-tests: file://cases/*.yaml
+tests:
+  - file://cases.py:generate_tests

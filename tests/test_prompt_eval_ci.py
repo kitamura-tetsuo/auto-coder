@@ -108,6 +108,8 @@ def test_incremental_rereview_semantic_cases_use_production_prompt_and_record_ex
             ],
         }
     ]
+    config = yaml.safe_load((target / "promptfooconfig.yaml").read_text())
+    assert config["tests"] == ["file://cases.py:generate_tests"]
     spec = importlib.util.spec_from_file_location("incremental_pr_rereview_prompt", target / "prompt.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -120,6 +122,11 @@ def test_incremental_rereview_semantic_cases_use_production_prompt_and_record_ex
     case_document = yaml.safe_load((target / "cases/policy.yaml").read_text())
     cases = case_document["tests"]
     assert len(cases) == 3
+    case_spec = importlib.util.spec_from_file_location("incremental_pr_rereview_cases", target / "cases.py")
+    assert case_spec is not None and case_spec.loader is not None
+    case_module = importlib.util.module_from_spec(case_spec)
+    case_spec.loader.exec_module(case_module)
+    assert case_module.generate_tests() == cases
     assert [case["vars"]["id"] for case in cases] == [
         "fixed-original-oracle-converges",
         "unrelated-variant-and-parent-demand-are-not-blockers",
