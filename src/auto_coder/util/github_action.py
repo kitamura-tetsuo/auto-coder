@@ -541,6 +541,22 @@ def is_ci_observation_recovered(github_checks: Optional[GitHubActionsStatusResul
     return observation.availability is ObservationAvailability.KNOWN
 
 
+def is_exact_head_known_empty_ci(
+    github_checks: Optional[GitHubActionsStatusResult],
+    repo_name: str,
+    pr_number: int,
+    head_sha: str,
+) -> bool:
+    """Return whether a complete observation proves this PR head has no CI facts."""
+    if github_checks is None or not head_sha:
+        return False
+    observation = github_checks.observation
+    if observation is None or not observation.complete:
+        return False
+    subject = observation.subject
+    return observation.availability is ObservationAvailability.KNOWN_EMPTY and subject.repository == repo_name and subject.pr_number == pr_number and subject.head_sha == head_sha
+
+
 # --- Common helpers for historical GitHub Actions processing ---
 
 
@@ -2038,6 +2054,7 @@ def check_github_actions_and_exit_if_in_progress(
     switch_branch_on_in_progress: bool = True,
     item_number: Optional[int] = None,
     item_type: str = "PR",
+    github_checks: Optional[GitHubActionsStatusResult] = None,
 ) -> bool:
     """
     Check GitHub Actions status and exit if checks are still in progress.
@@ -2064,7 +2081,7 @@ def check_github_actions_and_exit_if_in_progress(
             return True
 
         # Check GitHub Actions status
-        github_checks = _check_github_actions_status(repo_name, pr_data, config, github_client)
+        github_checks = github_checks or _check_github_actions_status(repo_name, pr_data, config, github_client)
         # Optimized: Use the in_progress status from the summary check instead of fetching detailed checks.
         # _check_github_actions_status already correctly identifies in-progress runs from check-runs or workflow runs.
         # This avoids N+1 API calls (one per workflow run) incurred by get_detailed_checks_from_history.
