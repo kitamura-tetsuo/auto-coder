@@ -22,3 +22,10 @@ single opportunity and returns a diagnostic BLOCKED result naming the target and
 remaining IDs; it never manufactures a production repair or retries again during
 the invocation. Accepted Strong findings remain owned by their separate store and
 are never closed by this completion.
+
+The four advisory Promptfoo cases under
+`prompt-evals/targets/test-oracle-gap-completion/` evaluate genuine protection,
+misleading all-VERIFIED/green-CI evidence, an out-of-scope variant, and a real
+regression. They execute a real model only when the selective prompt-evaluation
+workflow is explicitly run; no real model was executed while authoring the
+fixture cases.

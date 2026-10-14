@@ -2526,6 +2526,8 @@ def _merge_gap_completion(
     completion: AdversarialValidationResult,
 ) -> AdversarialValidationResult:
     """Keep independently established blockers when applying focused gap facts."""
+    completion_gap_ids = {gap.gap_id for gap in completion.test_oracle_gaps}
+    completion.test_oracle_gaps.extend(gap for gap in prior.test_oracle_gaps if gap.gap_id not in completion_gap_ids)
     finding_keys = {(finding.finding_identity, tuple(finding.requirement_ids)) for finding in completion.findings}
     completion.findings.extend(finding for finding in prior.findings if (finding.finding_identity, tuple(finding.requirement_ids)) not in finding_keys)
     if prior.specification_gaps and not completion.specification_gaps:
