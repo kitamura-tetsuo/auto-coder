@@ -16,8 +16,8 @@ tests:
     review_demand: (No claimed-addressed review threads for this run.)
   assert:
   - type: javascript
-    value: const r=JSON.parse(output); const gaps=r.test_oracle_gaps||[]; return r.result==='PASS' && (r.findings||[]).length===0
-      && gaps.length===1 && gaps[0].gap_id==='TOG-original-oracle' && gaps[0].status==='RESOLVED' && Boolean(gaps[0].resolution_evidence);
+    value: ((r)=>{const gaps=r.test_oracle_gaps||[]; return r.result==='PASS' && (r.findings||[]).length===0 && gaps.length===1
+      && gaps[0].gap_id==='TOG-original-oracle' && gaps[0].status==='RESOLVED' && Boolean(gaps[0].resolution_evidence);})(JSON.parse(output))
 - vars:
     id: unrelated-variant-and-parent-demand-are-not-blockers
     title: Unrelated reviewer expansion after the original oracle was fixed
@@ -40,8 +40,8 @@ tests:
       '
   assert:
   - type: javascript
-    value: const r=JSON.parse(output); const blocking=(r.test_oracle_gaps||[]).filter(g=>g.status==='OPEN'); return r.result==='PASS'
-      && (r.findings||[]).length===0 && blocking.length===0;
+    value: ((r)=>{const blocking=(r.test_oracle_gaps||[]).filter(g=>g.status==='OPEN'); return r.result==='PASS' && (r.findings||[]).length===0
+      && blocking.length===0;})(JSON.parse(output))
 - vars:
     id: correction-induced-material-defect-blocks
     title: Corrective diff removes the required production guard
@@ -60,5 +60,5 @@ tests:
     review_demand: (No claimed-addressed review threads for this run.)
   assert:
   - type: javascript
-    value: const r=JSON.parse(output); const findings=r.findings||[]; return r.result==='NEEDS_FIX' && findings.length>0 &&
-      findings.some(f=>(f.requirement_ids||[f.requirement_id]).some(id=>id==='REQ-001'||id.endsWith('/REQ-001')) && /authorization|unauthorized/i.test(JSON.stringify(f)));
+    value: ((r)=>{const findings=r.findings||[]; return r.result==='NEEDS_FIX' && findings.length>0 && findings.some(f=>(f.requirement_ids||[f.requirement_id]).some(id=>id==='REQ-001'||id.endsWith('/REQ-001'))
+      && /authorization|unauthorized/i.test(JSON.stringify(f)));})(JSON.parse(output))
