@@ -1,0 +1,45 @@
+# Advisory semantic cases. A real model runs only in the selective Promptfoo
+# workflow; no real model was executed to author or validate these fixtures.
+- vars:
+    id: genuine-original-protection
+    recorded_gap: '{"gap_id":"TOG-example","requirement_id":"REQ-001","authoritative_boundary":"GridMutation.apply","invariant":"Rejected input preserves stored state","status":"OPEN"}'
+    scenario: The committed test calls GridMutation.apply with rejected input and asserts the exact stored state and revision are unchanged.
+    changed_tests: tests/test_grid.py contains those executable assertions.
+    ci_evidence: The exact-head focused test passed.
+  assert:
+    - type: is-json
+    - type: javascript
+      value: "const r=JSON.parse(output); const g=r.test_oracle_gaps.find(x=>x.gap_id==='TOG-example'); return g && g.status==='RESOLVED' && /test_grid|GridMutation/i.test(g.resolution_evidence||'');"
+
+- vars:
+    id: misleading-green-summary
+    recorded_gap: '{"gap_id":"TOG-example","requirement_id":"REQ-001","authoritative_boundary":"GridMutation.apply","invariant":"Rejected input preserves stored state","status":"OPEN"}'
+    scenario: Every Requirement is labeled VERIFIED, but no evidence identifies an executable assertion at GridMutation.apply.
+    changed_tests: tests were only listed with --collect-only.
+    ci_evidence: Generic CI is green.
+  assert:
+    - type: is-json
+    - type: javascript
+      value: "const r=JSON.parse(output); const g=r.test_oracle_gaps.find(x=>x.gap_id==='TOG-example'); return g && g.status==='OPEN';"
+
+- vars:
+    id: out-of-scope-additional-variant
+    recorded_gap: '{"gap_id":"TOG-example","requirement_id":"REQ-001","authoritative_boundary":"GridMutation.apply","invariant":"Rejected input preserves stored state","status":"OPEN"}'
+    scenario: The original boundary is protected. A reviewer suggests additionally testing unrelated CSV imports, which are outside the recorded scope.
+    changed_tests: tests/test_grid.py protects only the exact recorded boundary and invariant.
+    ci_evidence: The exact-head focused test passed.
+  assert:
+    - type: is-json
+    - type: javascript
+      value: "const r=JSON.parse(output); return r.test_oracle_gaps.length===1 && r.test_oracle_gaps[0].gap_id==='TOG-example' && r.test_oracle_gaps[0].status==='RESOLVED';"
+
+- vars:
+    id: genuine-regression
+    recorded_gap: '{"gap_id":"TOG-example","requirement_id":"REQ-001","authoritative_boundary":"GridMutation.apply","invariant":"Rejected input preserves stored state","status":"RESOLVED"}'
+    scenario: The current diff skips the exact regression test and removes its unchanged-revision assertion.
+    changed_tests: tests/test_grid.py now marks the case skipped and checks only an error message.
+    ci_evidence: Generic CI is green because the focused test was skipped.
+  assert:
+    - type: is-json
+    - type: javascript
+      value: "const r=JSON.parse(output); const g=r.test_oracle_gaps.find(x=>x.gap_id==='TOG-example'); return g && g.status==='OPEN';"

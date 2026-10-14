@@ -105,6 +105,21 @@
       ]
     },
     {
+      "id": "test-oracle-gap-completion",
+      "prompt_dependencies": [
+        {
+          "path": "src/auto_coder/prompts.yaml",
+          "keys": [
+            "pr.adversarial_validation_gap_completion"
+          ]
+        }
+      ],
+      "config": "prompt-evals/targets/test-oracle-gap-completion/promptfooconfig.yaml",
+      "cases": [
+        "prompt-evals/targets/test-oracle-gap-completion/cases/*.yaml"
+      ]
+    },
+    {
       "id": "incremental-pr-rereview",
       "prompt_dependencies": [
         {
