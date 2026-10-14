@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import os
 import subprocess
@@ -83,6 +84,56 @@ def test_prompt_regression_workflow_is_active_and_advisory() -> None:
             "model_reasoning_effort": "high",
         },
     }
+
+
+def test_incremental_rereview_semantic_cases_use_production_prompt_and_record_execution() -> None:
+    from auto_coder.prompt_loader import get_prompt_template
+
+    target = REPOSITORY_ROOT / "prompt-evals/targets/incremental-pr-rereview"
+    registry = json.loads((REPOSITORY_ROOT / "prompt-evals/registry.json").read_text())
+    registered = next(item for item in registry["targets"] if item["id"] == "incremental-pr-rereview")
+    assert registered["config"] == "prompt-evals/targets/incremental-pr-rereview/promptfooconfig.yaml"
+    assert registered["cases"] == ["prompt-evals/targets/incremental-pr-rereview/cases/*.yaml"]
+    assert registered["prompt_dependencies"] == [
+        {
+            "path": "src/auto_coder/prompts.yaml",
+            "keys": [
+                "pr.adversarial_validation",
+                "pr.adversarial_validation_rereview",
+                "policies.objective_requirements_boundary",
+                "policies.parent_child_contract_boundary",
+                "policies.pr_validation_contract_boundary",
+                "policies.bounded_correction_contract",
+                "policies.task_scoped_test_execution",
+            ],
+        }
+    ]
+    spec = importlib.util.spec_from_file_location("incremental_pr_rereview_prompt", target / "prompt.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    prompts = yaml.safe_load((REPOSITORY_ROOT / "src/auto_coder/prompts.yaml").read_text())
+    assert module._production_template(prompts, prompts["pr"]["adversarial_validation"]) == get_prompt_template("pr.adversarial_validation")
+    assert module._production_template(prompts, prompts["pr"]["adversarial_validation_rereview"]) == get_prompt_template("pr.adversarial_validation_rereview")
+
+    cases = yaml.safe_load((target / "cases/policy.yaml").read_text())
+    assert [case["vars"]["id"] for case in cases] == [
+        "fixed-original-oracle-converges",
+        "unrelated-variant-and-parent-demand-are-not-blockers",
+        "correction-induced-material-defect-blocks",
+    ]
+    rendered = module.render({"vars": cases[0]["vars"]})
+    assert "Previous reviewed head: accepted-head" in rendered
+    assert "Current head: current-head" in rendered
+    assert "TOG-original-oracle" in rendered
+    assert "Stable Issue Requirement Manifest:\nManifest mode: explicit\n- REQ-001:" in rendered
+    assert "Do not rely on access to a previous provider conversation" in " ".join(rendered.split())
+
+    record = json.loads((target / "execution-record.json").read_text())
+    assert record["local_real_model_executed"] is False
+    assert record["local_outcome"] == "NOT_RUN"
+    assert "did not execute a real semantic model" in record["reason"]
 
 
 def test_prompt_key_and_shared_dependencies_select_only_affected_targets(tmp_path: Path) -> None:

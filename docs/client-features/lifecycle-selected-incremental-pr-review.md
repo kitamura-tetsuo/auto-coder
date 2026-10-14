@@ -19,3 +19,13 @@ findings. It does not assume access to an earlier conversation or invent prior
 requirement-coverage conclusions. When reusable coverage evidence is not
 explicitly available, the reviewer establishes coverage from current evidence
 while retaining incremental discovery and canonical gap-closure limits.
+
+The advisory `incremental-pr-rereview` Promptfoo target evaluates the shipped,
+production-composed incremental prompt against three distinct semantic cases:
+convergence after the exact original oracle is protected, rejection of an
+unrelated variant and parent-only demand as blockers, and detection of a
+correction-induced material violation of an exact current Requirement. These
+live-model observations remain separate from deterministic routing and parser
+tests. The target's committed execution record truthfully records when no local
+real-model evaluation occurred; CI records any later execution in its immutable
+Prompt Regression advisory report.

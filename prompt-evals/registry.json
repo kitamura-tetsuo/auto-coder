@@ -103,6 +103,27 @@
       "cases": [
         "prompt-evals/targets/jules-autonomy-checkpoint-recovery/cases/*.yaml"
       ]
+    },
+    {
+      "id": "incremental-pr-rereview",
+      "prompt_dependencies": [
+        {
+          "path": "src/auto_coder/prompts.yaml",
+          "keys": [
+            "pr.adversarial_validation",
+            "pr.adversarial_validation_rereview",
+            "policies.objective_requirements_boundary",
+            "policies.parent_child_contract_boundary",
+            "policies.pr_validation_contract_boundary",
+            "policies.bounded_correction_contract",
+            "policies.task_scoped_test_execution"
+          ]
+        }
+      ],
+      "config": "prompt-evals/targets/incremental-pr-rereview/promptfooconfig.yaml",
+      "cases": [
+        "prompt-evals/targets/incremental-pr-rereview/cases/*.yaml"
+      ]
     }
   ]
 }

@@ -1,0 +1,6 @@
+{
+  "recorded_at": "2026-10-14",
+  "local_real_model_executed": false,
+  "local_outcome": "NOT_RUN",
+  "reason": "The correction environment did not execute a real semantic model. Deterministic tests validate rendering and case registration only; Prompt Regression (Advisory) records any later real-model execution separately in its immutable per-attempt report."
+}
