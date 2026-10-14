@@ -25,6 +25,15 @@ jobs:
         run: |
           uv run python -c 'from auto_coder.build_identity import resolve_build_identity,serialize_build_identity; from pathlib import Path; r=resolve_build_identity("."); assert r.state == "clean" and r.source_revision == "${{ github.sha }}"; Path(".agent-tmp/build-identity.json").write_text(serialize_build_identity(r))'
           echo "BUILD_IDENTITY_B64=$(base64 -w0 .agent-tmp/build-identity.json)" >> "$GITHUB_ENV"
+      - name: Enable containerd image store
+        uses: docker/setup-docker-action@v5
+        with:
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
