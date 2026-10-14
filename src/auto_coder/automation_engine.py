@@ -5607,7 +5607,7 @@ class AutomationEngine:
                 # Calculate GitHub Actions status for the PR
                 # check_github_actions_and_exit_if_in_progress returns True if we should continue (not in progress)
                 # and False if we should stop/skip (in progress)
-                checks = _check_github_actions_status(repo_name, pr_data, self.config, self.github)
+                checks = _check_github_actions_status(repo_name, pr_data, self.config)
                 should_continue = check_github_actions_and_exit_if_in_progress(
                     repo_name,
                     pr_data,
