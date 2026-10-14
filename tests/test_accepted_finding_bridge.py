@@ -341,6 +341,10 @@ def test_session_change_and_reconstruction_preserve_identity_without_new_audit(e
     record = _only(result.accepted_finding_projection, "finding-a")
     assert (record.canonical_blocker_id, record.root_comment_ids, record.original_scope) == (first.canonical_blocker_id, (4242,), first.original_scope)
     assert first.source_identity in prompt and [gap.gap_id for gap in result.open_test_oracle_gaps] == [first.known_gap_id]
+    assert "incremental requirement-coverage validation" in prompt
+    assert f"Previous reviewed head: {env.head}" in prompt
+    assert "Do not rely on access to a previous provider conversation" in " ".join(prompt.split())
+    assert "Your mission: Falsify the implementation" not in prompt
     assert len(fresh.cycle.snapshot(pr).strong_rounds) == 1
     assert len(fresh.ledger.get_snapshot("https://api.github.com", REPO, pr).blockers) == 1
 

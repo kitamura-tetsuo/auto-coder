@@ -1,0 +1,20 @@
+{
+  "recorded_at": "2026-10-14",
+  "local_real_model_executed": false,
+  "local_outcome": "NOT_RUN",
+  "local_reason": "The correction environment did not execute a real semantic model. Deterministic tests validate rendering and case registration only.",
+  "observed_ci_execution": {
+    "run_id": 38514412226,
+    "head_sha": "d22f11013e30c60b076be6c05345b1b92a3a8238",
+    "real_model_executed": true,
+    "executed_cases": 3,
+    "reported_outcome": "MISMATCH",
+    "observations": {
+      "fixed-original-oracle-converges": "PASS with the original gap RESOLVED",
+      "unrelated-variant-and-parent-demand-are-not-blockers": "PASS with no findings or open gaps",
+      "correction-induced-material-defect-blocks": "NEEDS_FIX with a demonstrated authorization finding associated with REQ-001"
+    },
+    "note": "All three model judgments matched the required semantics; the advisory runner reported MISMATCH because the original assertion encoding rejected the JSON responses. The assertions were corrected without changing the expected judgments."
+  },
+  "future_execution_record": "Prompt Regression (Advisory) records subsequent real-model execution separately in its immutable per-attempt report."
+}
