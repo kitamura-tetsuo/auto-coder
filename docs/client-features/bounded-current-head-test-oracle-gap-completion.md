@@ -19,9 +19,17 @@ reviewer-session checkpoint. Independently established findings, specification
 gaps, provenance blockers, and thread dispositions survive the focused response.
 A malformed response, an omitted requested ID, or execution failure consumes the
 single opportunity and returns a diagnostic BLOCKED result naming the target and
-remaining IDs; it never manufactures a production repair or retries again during
-the invocation. Accepted Strong findings remain owned by their separate store and
-are never closed by this completion.
+remaining IDs. Qualifying transitions for other IDs are still checkpointed before
+that non-pass result. Completion never replaces unrelated Requirement coverage or
+evidence blockers, manufactures a production repair, or retries again during the
+invocation. Accepted Strong findings remain owned by their separate store and are
+never closed by this completion.
+
+Local completion continues a provider session only when the manager can prove its
+retained workspace binding; otherwise the self-contained prompt uses the supported
+fresh no-edit route. Terminal RESOLVED evidence must identify a committed test and
+the recorded boundary, while INVALID evidence must identify the failed material-
+gap criterion. Generic all-VERIFIED or green-CI prose is non-authorizing.
 
 The four advisory Promptfoo cases under
 `prompt-evals/targets/test-oracle-gap-completion/` evaluate genuine protection,

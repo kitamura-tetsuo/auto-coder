@@ -2526,19 +2526,43 @@ def _merge_gap_completion(
     completion: AdversarialValidationResult,
 ) -> AdversarialValidationResult:
     """Keep independently established blockers when applying focused gap facts."""
-    completion_gap_ids = {gap.gap_id for gap in completion.test_oracle_gaps}
-    completion.test_oracle_gaps.extend(gap for gap in prior.test_oracle_gaps if gap.gap_id not in completion_gap_ids)
-    finding_keys = {(finding.finding_identity, tuple(finding.requirement_ids)) for finding in completion.findings}
-    completion.findings.extend(finding for finding in prior.findings if (finding.finding_identity, tuple(finding.requirement_ids)) not in finding_keys)
-    if prior.specification_gaps and not completion.specification_gaps:
-        completion.specification_gaps = prior.specification_gaps
-    if prior.unexplained_changes and not completion.unexplained_changes:
-        completion.unexplained_changes = prior.unexplained_changes
-    if prior.decision_critical_evidence_gaps and not completion.decision_critical_evidence_gaps:
-        completion.decision_critical_evidence_gaps = prior.decision_critical_evidence_gaps
-    if prior.thread_dispositions and not completion.thread_dispositions:
-        completion.thread_dispositions = prior.thread_dispositions
-    return completion
+    updates = {gap.gap_id: gap for gap in completion.test_oracle_gaps}
+    prior.test_oracle_gaps = [updates.pop(gap.gap_id, gap) for gap in prior.test_oracle_gaps] + list(updates.values())
+    if prior.result == "NEEDS_TESTS" and not prior.open_test_oracle_gaps:
+        prior.result = "PASS"
+    finding_keys = {(finding.finding_identity, tuple(finding.requirement_ids)) for finding in prior.findings}
+    prior.findings.extend(finding for finding in completion.findings if (finding.finding_identity, tuple(finding.requirement_ids)) not in finding_keys)
+    if completion.specification_gaps:
+        prior.specification_gaps.extend(gap for gap in completion.specification_gaps if gap not in prior.specification_gaps)
+    if completion.unexplained_changes:
+        prior.unexplained_changes.extend(item for item in completion.unexplained_changes if item not in prior.unexplained_changes)
+    if completion.thread_dispositions:
+        prior.thread_dispositions = completion.thread_dispositions
+    if prior.diagnostic_category == "test_oracle_gap_current_head_evidence_missing":
+        prior.result = "INCONCLUSIVE" if any(entry.status == "UNVERIFIED" for entry in prior.requirement_coverage) else "PASS"
+        prior.diagnostic_category = None
+        prior.diagnostic_reason = None
+    return prior
+
+
+def _valid_focused_terminal_gap_evidence(gap: TestOracleGap) -> bool:
+    """Require completion terminal evidence to identify the exact required proof."""
+    evidence = gap.resolution_evidence.strip().lower()
+    if gap.status == "RESOLVED":
+        boundary_name = gap.authoritative_boundary.rsplit(".", 1)[-1].lower()
+        return is_valid_test_oracle_resolution_evidence(evidence) and "test" in evidence and boundary_name in evidence
+    if gap.status == "INVALID":
+        criterion_cues = (
+            "explicit requirement",
+            "outside the requirement",
+            "not reachable",
+            "authoritative boundary",
+            "plausible incorrect",
+            "material consequence",
+            "focused regression",
+        )
+        return any(cue in evidence for cue in criterion_cues)
+    return gap.status == "OPEN"
 
 
 def _dispositioned_test_oracle_gap_ids(
@@ -4266,7 +4290,9 @@ def run_adversarial_validation(
         try:
             verify_execution_target("test-oracle gap completion")
             completion_session_id = getattr(backend_manager, "_last_session_id", None)
-            if isinstance(completion_session_id, str) and completion_session_id:
+            can_continue_completion = isinstance(completion_session_id, str) and bool(completion_session_id) and (used_type.lower() in CLOUD_BACKEND_TYPES or backend_manager.has_retained_local_session(completion_session_id))
+            if can_continue_completion:
+                assert isinstance(completion_session_id, str)
                 completion_response = backend_manager.continue_session(completion_session_id, completion_prompt, is_noedit=True)
             else:
                 completion_response = run_llm_prompt(completion_prompt, backend_manager=backend_manager, is_noedit=True)
@@ -4283,24 +4309,33 @@ def run_adversarial_validation(
             _log_contextual_parse_diagnostics(completion, completion_response, backend_manager, pr_number, "test_oracle_gap_completion")
             returned_ids = frozenset(gap.gap_id for gap in completion.test_oracle_gaps)
             omitted = sorted(set(completion_gap_ids) - returned_ids)
-            if completion.result == "ERROR" or omitted:
+            invalid_evidence = sorted(gap.gap_id for gap in completion.test_oracle_gaps if gap.gap_id in completion_gap_ids and not _valid_focused_terminal_gap_evidence(gap))
+            completion_parse_failed = completion.result == "ERROR"
+            completion_returned_ids = {gap.gap_id for gap in completion.test_oracle_gaps}
+            completion.test_oracle_gaps.extend(gap for gap in result.test_oracle_gaps if gap.gap_id not in completion_returned_ids and gap.status in {"RESOLVED", "INVALID"} and gap.resolution_head_sha == head_sha)
+            completion = _reconcile_test_oracle_gap_lifecycle(
+                completion,
+                effective_lifecycle_session,
+                head_sha,
+                _addressed_test_oracle_gap_evidence(
+                    completion,
+                    claimed_review_threads,
+                    canonical_recorded_gaps,
+                ),
+                accepted_gap_ids,
+            )
+            result = _merge_gap_completion(result, completion)
+            if completion_parse_failed or omitted or invalid_evidence:
                 result.result = "BLOCKED"
                 result.diagnostic_category = "test_oracle_gap_completion_failed"
-                result.diagnostic_reason = f"Current-head completion for {repo_name}#{pr_number} at {head_sha} " f"did not decide: {', '.join(omitted or completion_gap_ids)}"
-            else:
-                completion = _merge_gap_completion(result, completion)
-                completion = _reconcile_test_oracle_gap_lifecycle(
-                    completion,
-                    effective_lifecycle_session,
-                    head_sha,
-                    _addressed_test_oracle_gap_evidence(
-                        completion,
-                        claimed_review_threads,
-                        canonical_recorded_gaps,
-                    ),
-                    accepted_gap_ids,
-                )
-                result = completion
+                if invalid_evidence:
+                    for gap in result.test_oracle_gaps:
+                        if gap.gap_id in invalid_evidence:
+                            gap.status = "OPEN"
+                            gap.resolution_evidence = ""
+                            gap.resolution_head_sha = ""
+                failures = omitted or invalid_evidence or list(completion_gap_ids)
+                result.diagnostic_reason = f"Current-head completion for {repo_name}#{pr_number} at {head_sha} did not provide qualifying evidence for: " f"{', '.join(failures)}"
         except Exception as exc:
             result.result = "BLOCKED"
             result.diagnostic_category = "test_oracle_gap_completion_failed"

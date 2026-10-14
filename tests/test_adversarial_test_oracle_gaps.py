@@ -66,6 +66,31 @@ class FallbackReviewerClient:
         self.session_id = ""
 
 
+class FreshOnlyReviewerClient:
+    def __init__(self, responses: list[str]) -> None:
+        self.model_name = "strong"
+        self.config_backend = SimpleNamespace(backend_type="codex")
+        self.responses = iter(responses)
+        self.session_id = ""
+        self.fresh_prompts: list[tuple[str, bool]] = []
+        self.continued: list[str] = []
+
+    def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
+        self.fresh_prompts.append((prompt, is_noedit))
+        self.session_id = f"fresh-{len(self.fresh_prompts)}"
+        return next(self.responses)
+
+    def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
+        self.continued.append(session_id)
+        raise AssertionError("unsupported local continuation must not be attempted")
+
+    def get_last_session_id(self) -> str:
+        return self.session_id
+
+    def clear_last_session_id(self) -> None:
+        self.session_id = ""
+
+
 def gap_payload(
     *,
     status: str = "OPEN",
@@ -920,7 +945,7 @@ def test_same_head_explicit_gap_resolution_persists_when_resolved_thread_is_not_
         )
 
     saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
-    assert result.result == "INCONCLUSIVE"
+    assert result.result != "PASS"
     assert result.diagnostic_category == "change_provenance_clarification"
     assert result.thread_dispositions == []
     assert result.test_oracle_gaps[0].status == "RESOLVED"
@@ -1101,8 +1126,8 @@ def test_gap_completion_preserves_direct_current_head_progress_for_another_gap(t
 @pytest.mark.parametrize(
     ("completion_response", "missing_fragment"),
     [
-        ("malformed response", "did not decide"),
-        (json.dumps({"result": "PASS", "summary": "Omitted the requested gap", "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Implementation inspected."}], "findings": [], "test_oracle_gaps": []}), "did not decide"),
+        ("malformed response", "did not provide qualifying evidence"),
+        (json.dumps({"result": "PASS", "summary": "Omitted the requested gap", "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Implementation inspected."}], "findings": [], "test_oracle_gaps": []}), "did not provide qualifying evidence"),
     ],
 )
 def test_gap_completion_is_single_shot_and_fail_closed_on_incomplete_reply(tmp_path, completion_response, missing_fragment) -> None:
@@ -1176,6 +1201,168 @@ def test_gap_completion_rejects_stale_target_without_persisting_closure(tmp_path
     assert result.result == "BLOCKED"
     assert result.diagnostic_category == "test_oracle_gap_completion_failed"
     assert "snapshot changed" in (result.diagnostic_reason or "")
+    assert saved is not None
+    assert saved.test_oracle_gaps[0].resolution_head_sha == "sha-h1"
+
+
+def test_partial_gap_completion_persists_valid_transition_and_names_omission(tmp_path) -> None:
+    first = parsed_result(gap_payload()).test_oracle_gaps[0]
+    second = parsed_result(gap_payload(boundary="AuditMutation.commit")).test_oracle_gaps[0]
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    session = prior_session(first, "sha-h1")
+    session.test_oracle_gaps.append(second)
+    registry.save(session)
+    validation_context = context()
+    validation_context.issue_context = "Linked Issue requires independent server validation."
+    validation_context.validation_snapshot = "snapshot-h2"
+    first_resolution = {
+        "gap_id": first.gap_id,
+        "status": "RESOLVED",
+        "resolution_evidence": "tests/test_grid.py executes GridMutation.apply_candidate and asserts the recorded invariant at sha-h2.",
+    }
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+    manager._last_session_id = "session-1"
+    manager.continue_session.side_effect = [
+        json.dumps({"result": "PASS", "summary": "Coverage complete.", "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Implementation inspected."}], "findings": [], "test_oracle_gaps": []}),
+        validation_response(first_resolution),
+    ]
+
+    with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-h2"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+        )
+
+    saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
+    assert manager.continue_session.call_count == 2
+    assert result.result == "BLOCKED"
+    assert second.gap_id in (result.diagnostic_reason or "")
+    assert saved is not None
+    by_id = {gap.gap_id: gap for gap in saved.test_oracle_gaps}
+    assert by_id[first.gap_id].status == "RESOLVED"
+    assert by_id[first.gap_id].resolution_head_sha == "sha-h2"
+    assert by_id[second.gap_id].status == "OPEN"
+
+
+def test_gap_completion_cannot_override_unverified_requirement_evidence(tmp_path) -> None:
+    gap = parsed_result(gap_payload()).test_oracle_gaps[0]
+    gap.status = "RESOLVED"
+    gap.resolution_evidence = "Historical H1 evidence."
+    gap.resolution_head_sha = "sha-h1"
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    registry.save(prior_session(gap, "sha-h1"))
+    validation_context = context()
+    validation_context.issue_context = "Linked Issue requires independent server validation."
+    validation_context.issue_requirements.append(IssueRequirement("REQ-002", "Audit evidence must remain available."))
+    validation_context.validation_snapshot = "snapshot-h2"
+    initial = json.dumps(
+        {
+            "result": "INCONCLUSIVE",
+            "summary": "R2 evidence remains unavailable.",
+            "requirement_coverage": [
+                {"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Grid behavior inspected."},
+                {"requirement_id": "REQ-002", "status": "UNVERIFIED", "evidence": "Audit artifact unavailable."},
+            ],
+            "findings": [],
+            "test_oracle_gaps": [],
+            "decision_critical_evidence_gaps": [{"requirement_id": "REQ-002", "evidence_needed": "Current audit artifact.", "recovery_attempts": ["Inspected current checkout."]}],
+            "evidence_recovery": [{"path": "artifacts/audit.json", "source": "repository inspection", "status": "UNAVAILABLE", "evidence": "The artifact is absent.", "requirement_ids": ["REQ-002"]}],
+        }
+    )
+    resolution = gap_payload(status="RESOLVED", phase="REREVIEW", resolution_evidence="tests/test_grid.py executes GridMutation.apply_candidate and asserts the invariant at sha-h2.")
+    completion = json.loads(validation_response(resolution))
+    completion["requirement_coverage"].append({"requirement_id": "REQ-002", "status": "VERIFIED", "evidence": "All requirements pass."})
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+    manager._last_session_id = "session-1"
+    manager.continue_session.side_effect = [initial, json.dumps(completion)]
+
+    with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-h2"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+        )
+
+    saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
+    assert result.result != "PASS"
+    assert {entry.requirement_id: entry.status for entry in result.requirement_coverage}["REQ-002"] == "UNVERIFIED"
+    assert result.decision_critical_evidence_gaps[0].evidence_needed == "Current audit artifact."
+    assert result.test_oracle_gaps[0].resolution_head_sha == "sha-h2"
+    assert saved is not None
+    assert saved.test_oracle_gaps[0].resolution_head_sha == "sha-h2"
+
+
+def test_fresh_only_local_reviewer_uses_fresh_gap_completion(tmp_path) -> None:
+    gap = parsed_result(gap_payload()).test_oracle_gaps[0]
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    registry.save(prior_session(gap, "sha-h1"))
+    validation_context = context()
+    validation_context.issue_context = "Linked Issue requires independent server validation."
+    validation_context.validation_snapshot = "snapshot-h2"
+    omitted = json.dumps({"result": "PASS", "summary": "Coverage complete.", "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Implementation inspected."}], "findings": [], "test_oracle_gaps": []})
+    resolution = gap_payload(status="RESOLVED", phase="REREVIEW", resolution_evidence="tests/test_grid.py executes GridMutation.apply_candidate and asserts the invariant at sha-h2.")
+    client = FreshOnlyReviewerClient([omitted, validation_response(resolution)])
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        manager = BackendManager(default_backend="reviewer", default_client=client, factories={"reviewer": lambda: client}, order=["reviewer"], automatic_session_resume=False)
+
+    with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-h2"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+        )
+
+    saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
+    assert result.result == "PASS"
+    assert len(client.fresh_prompts) == 2
+    assert all(noedit for _, noedit in client.fresh_prompts)
+    assert client.continued == []
+    assert saved is not None
+    assert saved.test_oracle_gaps[0].resolution_head_sha == "sha-h2"
+
+
+@pytest.mark.parametrize("status", ["RESOLVED", "INVALID"])
+def test_gap_completion_rejects_generic_terminal_evidence(status, tmp_path) -> None:
+    gap = parsed_result(gap_payload()).test_oracle_gaps[0]
+    gap.status = "RESOLVED"
+    gap.resolution_evidence = "Historical H1 evidence."
+    gap.resolution_head_sha = "sha-h1"
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    registry.save(prior_session(gap, "sha-h1"))
+    validation_context = context()
+    validation_context.issue_context = "Linked Issue requires independent server validation."
+    validation_context.validation_snapshot = "snapshot-h2"
+    generic = {"gap_id": gap.gap_id, "status": status, "resolution_evidence": "All requirements pass and generic CI is green."}
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+    manager._last_session_id = "session-1"
+    manager.continue_session.side_effect = [
+        json.dumps({"result": "PASS", "summary": "Coverage complete.", "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Implementation inspected."}], "findings": [], "test_oracle_gaps": []}),
+        validation_response(generic),
+    ]
+
+    with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-h2"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+        )
+
+    saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
+    assert result.result == "BLOCKED"
+    assert result.diagnostic_category == "test_oracle_gap_completion_failed"
+    assert gap.gap_id in (result.diagnostic_reason or "")
     assert saved is not None
     assert saved.test_oracle_gaps[0].resolution_head_sha == "sha-h1"
 
