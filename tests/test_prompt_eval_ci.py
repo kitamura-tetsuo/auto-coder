@@ -117,7 +117,9 @@ def test_incremental_rereview_semantic_cases_use_production_prompt_and_record_ex
     assert module._production_template(prompts, prompts["pr"]["adversarial_validation"]) == get_prompt_template("pr.adversarial_validation")
     assert module._production_template(prompts, prompts["pr"]["adversarial_validation_rereview"]) == get_prompt_template("pr.adversarial_validation_rereview")
 
-    cases = yaml.safe_load((target / "cases/policy.yaml").read_text())
+    case_document = yaml.safe_load((target / "cases/policy.yaml").read_text())
+    cases = case_document["tests"]
+    assert len(cases) == 3
     assert [case["vars"]["id"] for case in cases] == [
         "fixed-original-oracle-converges",
         "unrelated-variant-and-parent-demand-are-not-blockers",
