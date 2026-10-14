@@ -2727,6 +2727,82 @@ class TestRunAdversarialValidation:
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_conversation_resumability_changes_transport_not_incremental_request(self, mock_run_prompt, mock_build_ctx, tmp_path):
+        """The same accepted lifecycle must produce the same review authority."""
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=5419,
+            pr_title="Transport-independent rereview",
+            pr_diff="diff --git a/feature.py b/feature.py\n+fixed = True",
+            all_changed_files=["feature.py"],
+            changed_tests=["tests/test_feature.py"],
+            issue_context="Issue requires a working feature.",
+            issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="The feature works.")],
+        )
+        response = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Current evidence verifies the requirement",
+                "requirement_coverage": [
+                    {
+                        "requirement_id": "REQ-001",
+                        "status": "VERIFIED",
+                        "evidence": "Current patch and regression test establish the behavior",
+                    }
+                ],
+                "findings": [],
+            }
+        )
+        prompts = []
+
+        for can_resume in (True, False):
+            registry = ReviewerSessionRegistry(tmp_path / f"reviewer-sessions-{can_resume}.json")
+            registry.save(
+                ReviewerSession(
+                    repository="owner/repo",
+                    pr_number=5419,
+                    backend_name="reviewer",
+                    backend_type="muse",
+                    model_name="review-model",
+                    session_id="accepted-session",
+                    last_head_sha="previous-head",
+                )
+            )
+            manager = MagicMock()
+            manager.get_current_backend_identity.return_value = ("reviewer", "muse", "review-model")
+            manager.has_retained_local_session.return_value = can_resume
+            manager._last_session_id = "current-session"
+            manager._last_continue_session_resumed = can_resume
+            manager.continue_session.return_value = response
+            mock_run_prompt.return_value = response
+            mock_run_prompt.reset_mock()
+
+            result = run_adversarial_validation(
+                "owner/repo",
+                {"number": 5419, "head": {"sha": "current-head"}},
+                AutomationConfig(),
+                backend_manager=manager,
+                session_registry=registry,
+            )
+
+            assert result.result == "PASS"
+            manager.has_retained_local_session.assert_called_once_with("accepted-session")
+            if can_resume:
+                manager.continue_session.assert_called_once()
+                mock_run_prompt.assert_not_called()
+                prompts.append(manager.continue_session.call_args.args[1])
+            else:
+                manager.continue_session.assert_not_called()
+                mock_run_prompt.assert_called_once()
+                prompts.append(mock_run_prompt.call_args.args[0])
+
+        assert prompts[0] == prompts[1]
+        assert "incremental requirement-coverage validation" in prompts[0]
+        assert "Previous reviewed head: previous-head" in prompts[0]
+        assert "Current head: current-head" in prompts[0]
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
     def test_run_adversarial_validation_pass(self, mock_run_prompt, mock_build_ctx):
         mock_build_ctx.return_value = AdversarialValidationContext(
             repo_name="owner/repo",
