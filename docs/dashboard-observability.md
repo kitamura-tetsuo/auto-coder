@@ -1,5 +1,16 @@
 # Dashboard observability verification
 
+Current-head ordinary test-oracle-gap completion adds a bounded reviewer round
+inside the existing adversarial-validation invocation. It does not introduce a
+new processing origin, structured trace schema, durable resume path, or dashboard
+outcome: the final result continues through the existing `Adversarial Validation
+Result` trace and reviewer-session checkpoint, while failures are visible as the
+ordinary BLOCKED diagnostic `test_oracle_gap_completion_failed`. The focused
+production regression is
+`tests/test_adversarial_test_oracle_gaps.py::test_current_gap_closure_persists_while_historical_gap_blocks_new_head`;
+run it with
+`bash scripts/test.sh tests/test_adversarial_test_oracle_gaps.py -k current_gap_closure_persists_while_historical_gap_blocks_new_head`.
+
 Ordinary repairs proceed while independently addressed accepted findings await
 lifecycle closure. Production emits the existing `pr.repair-delegation` stage
 with `review_disposition=CORRECTIVE_HANDOFF` for confirmed delivery; pending

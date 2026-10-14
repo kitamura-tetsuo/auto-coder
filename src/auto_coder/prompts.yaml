@@ -1240,6 +1240,39 @@ pr:
     test-oracle gap. Preserve prior decisions unless the supplied evidence
     demonstrates that they must change.
 
+  adversarial_validation_gap_completion: |-
+    Perform one focused completion of already-recorded material test-oracle-gap
+    decisions. This is not a new review and must not discover new gap variants.
+
+    Repository/PR: $repo_name#$pr_number
+    Current head: $head_sha
+    Current base: $base_sha
+    Validation snapshot: $validation_snapshot
+    Current Issue Requirement manifest:
+    $requirement_manifest
+
+    Exact gap IDs requiring a current-target decision: $completion_gap_ids
+    Canonical original gap scope and historical evidence:
+    $completion_gaps
+
+    Prior adjudication (context only; do not infer decisions from coverage counts):
+    $prior_adjudication
+
+    Current changed tests: $changed_tests
+    Current changed files: $changed_files
+    Current authoritative CI execution evidence: $ci_execution_evidence
+
+    Return the complete adversarial JSON schema, with one compact OPEN,
+    RESOLVED, or INVALID `test_oracle_gaps` update for every requested exact ID.
+    Preserve its requirement association and original scope; an update may omit
+    the scope prose because the controller supplies it. RESOLVED requires
+    independent current-head evidence naming committed assertions that exercise
+    the original production boundary and invariant. INVALID must identify the
+    exact material-gap criterion the original report fails. Green CI, all-
+    VERIFIED prose, a filename, test discovery, an author claim, or a manually
+    resolved thread is not decisive evidence. Keep a valid current OPEN gap
+    actionable. Preserve independently demonstrated findings and other blockers.
+
   adversarial_validation_followup: |-
     You are an expert adversarial software correctness reviewer.
     You previously evaluated PR #$pr_number in $repo_name and requested a focused dynamic check: '$check_target'.

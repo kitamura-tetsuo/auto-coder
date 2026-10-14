@@ -2496,6 +2496,49 @@ def _reconcile_test_oracle_gap_lifecycle(
     return result
 
 
+def _ordinary_gap_completion_ids(
+    recorded_gaps: Sequence[TestOracleGap],
+    result: AdversarialValidationResult,
+    current_decision_ids: frozenset[str],
+    accepted_gap_ids: frozenset[str],
+    head_sha: str,
+) -> tuple[str, ...]:
+    """Return recorded ordinary gaps still missing a decision for this target.
+
+    The reviewer must explicitly adjudicate a recorded gap on every changed
+    target.  Reconciled historical state is deliberately not treated as a
+    current decision, while an explicit current OPEN decision is.
+    """
+    resulting = {gap.gap_id: gap for gap in result.test_oracle_gaps}
+    missing: list[str] = []
+    for recorded in recorded_gaps:
+        if recorded.gap_id in accepted_gap_ids or recorded.gap_id in current_decision_ids:
+            continue
+        current = resulting.get(recorded.gap_id)
+        if current is not None and current.status in {"RESOLVED", "INVALID"} and current.resolution_head_sha == head_sha:
+            continue
+        missing.append(recorded.gap_id)
+    return tuple(missing)
+
+
+def _merge_gap_completion(
+    prior: AdversarialValidationResult,
+    completion: AdversarialValidationResult,
+) -> AdversarialValidationResult:
+    """Keep independently established blockers when applying focused gap facts."""
+    finding_keys = {(finding.finding_identity, tuple(finding.requirement_ids)) for finding in completion.findings}
+    completion.findings.extend(finding for finding in prior.findings if (finding.finding_identity, tuple(finding.requirement_ids)) not in finding_keys)
+    if prior.specification_gaps and not completion.specification_gaps:
+        completion.specification_gaps = prior.specification_gaps
+    if prior.unexplained_changes and not completion.unexplained_changes:
+        completion.unexplained_changes = prior.unexplained_changes
+    if prior.decision_critical_evidence_gaps and not completion.decision_critical_evidence_gaps:
+        completion.decision_critical_evidence_gaps = prior.decision_critical_evidence_gaps
+    if prior.thread_dispositions and not completion.thread_dispositions:
+        completion.thread_dispositions = prior.thread_dispositions
+    return completion
+
+
 def _dispositioned_test_oracle_gap_ids(
     result: AdversarialValidationResult,
     claimed_review_threads: Sequence["ClaimedReviewThread"],
@@ -3924,6 +3967,7 @@ def run_adversarial_validation(
     canonical_recorded_gaps = effective_lifecycle_session.test_oracle_gaps if effective_lifecycle_session else ()
     reviewer_provenance = "/".join(part for part in (used_backend, used_type, used_model) if part) or "unavailable"
     result = _parse_reviewer_response("initial", response, canonical_recorded_gaps, closure_input, reviewer_provenance)
+    current_gap_decision_ids = frozenset(gap.gap_id for gap in result.test_oracle_gaps)
     _log_contextual_parse_diagnostics(result, response, backend_manager, pr_number, "initial")
     result = _reconcile_reusable_recovered_evidence(result, effective_stored_session, context, head_sha)
     context.accepted_upheld_gap_ids = accepted_gap_ids & _upheld_test_oracle_gap_ids(result, claimed_review_threads, canonical_recorded_gaps, accepted_projection)
@@ -3991,6 +4035,7 @@ def run_adversarial_validation(
                 if refresh_ci_status is not None:
                     ci_status = refresh_ci_status()
                 result = _parse_reviewer_response("target_correction", correction_response, result.test_oracle_gaps, closure_input, reviewer_provenance)
+                current_gap_decision_ids = frozenset(gap.gap_id for gap in result.test_oracle_gaps)
                 _log_contextual_parse_diagnostics(result, correction_response, backend_manager, pr_number, "target_correction")
                 corrected_target = (result.dynamic_check_requested or "").strip()
                 repeated_error = validate_dynamic_check_target(corrected_target, Path(execution_cwd).resolve()) if corrected_target and execution_cwd else None
@@ -4051,6 +4096,7 @@ def run_adversarial_validation(
                     if refresh_ci_status is not None:
                         ci_status = refresh_ci_status()
                     result = _parse_reviewer_response("target_selection_correction", correction_response, result.test_oracle_gaps, closure_input, reviewer_provenance)
+                    current_gap_decision_ids = frozenset(gap.gap_id for gap in result.test_oracle_gaps)
                     _log_contextual_parse_diagnostics(result, correction_response, backend_manager, pr_number, "target_selection_correction")
                     corrected_target = (result.dynamic_check_requested or "").strip()
                     if not corrected_target:
@@ -4142,6 +4188,7 @@ def run_adversarial_validation(
                             # expose an ID cannot safely retain dynamic-check context.
                             raise RuntimeError("Reviewer provider did not return an explicit session ID for dynamic follow-up")
                     result = _parse_reviewer_response("dynamic_check_followup", followup_response, result.test_oracle_gaps, closure_input, reviewer_provenance)
+                    current_gap_decision_ids = frozenset(gap.gap_id for gap in result.test_oracle_gaps)
                     _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
                     result = _reconcile_reusable_recovered_evidence(result, effective_stored_session, context, head_sha)
                     result = _carry_forward_current_run_recovered_evidence(result, current_run_recovered_evidence)
@@ -4181,6 +4228,81 @@ def run_adversarial_validation(
                     # stays unresolved (REQ-006, REQ-008).
                     logger.warning(f"Dynamic re-adjudication failed for PR #{pr_number}; discarding {len(initial_thread_dispositions)} initial thread disposition(s)")
                     result.thread_dispositions = []
+
+    # A replacement response can omit a recorded lifecycle entry even though
+    # its Requirement coverage is otherwise complete. Give all such ordinary
+    # gaps one bounded, known-scope completion opportunity before finalizing.
+    completion_gap_ids = (
+        _ordinary_gap_completion_ids(
+            canonical_recorded_gaps,
+            result,
+            current_gap_decision_ids,
+            accepted_gap_ids,
+            head_sha,
+        )
+        if result.result not in {"ERROR", "EXHAUSTED"}
+        else ()
+    )
+    if completion_gap_ids:
+        completion_gaps = [gap for gap in canonical_recorded_gaps if gap.gap_id in completion_gap_ids]
+        completion_prompt = render_prompt(
+            "pr.adversarial_validation_gap_completion",
+            repo_name=repo_name,
+            pr_number=pr_number,
+            head_sha=head_sha,
+            base_sha=projection_target.base_sha,
+            validation_snapshot=context.validation_snapshot,
+            requirement_manifest=requirement_manifest,
+            completion_gap_ids=json.dumps(completion_gap_ids),
+            completion_gaps=json.dumps([gap.__dict__ for gap in completion_gaps], indent=2, sort_keys=True),
+            prior_adjudication=result.raw_response,
+            changed_tests=changed_tests_str,
+            changed_files=changed_files_str,
+            ci_execution_evidence=format_ci_execution_evidence(ci_status),
+        )
+        validation_evidence.observe_prompt("test_oracle_gap_completion", completion_prompt, _manifest_input(context))
+        try:
+            verify_execution_target("test-oracle gap completion")
+            completion_session_id = getattr(backend_manager, "_last_session_id", None)
+            if isinstance(completion_session_id, str) and completion_session_id:
+                completion_response = backend_manager.continue_session(completion_session_id, completion_prompt, is_noedit=True)
+            else:
+                completion_response = run_llm_prompt(completion_prompt, backend_manager=backend_manager, is_noedit=True)
+            verify_execution_target("test-oracle gap completion response")
+            if not validation_snapshot_is_current(repo_name, pr_data, config, github_client, context.validation_snapshot):
+                raise RuntimeError("repository/PR/head/base/Requirements snapshot changed or could not be reconfirmed")
+            completion = _parse_reviewer_response(
+                "test_oracle_gap_completion",
+                completion_response,
+                canonical_recorded_gaps,
+                closure_input,
+                reviewer_provenance,
+            )
+            _log_contextual_parse_diagnostics(completion, completion_response, backend_manager, pr_number, "test_oracle_gap_completion")
+            returned_ids = frozenset(gap.gap_id for gap in completion.test_oracle_gaps)
+            omitted = sorted(set(completion_gap_ids) - returned_ids)
+            if completion.result == "ERROR" or omitted:
+                result.result = "BLOCKED"
+                result.diagnostic_category = "test_oracle_gap_completion_failed"
+                result.diagnostic_reason = f"Current-head completion for {repo_name}#{pr_number} at {head_sha} " f"did not decide: {', '.join(omitted or completion_gap_ids)}"
+            else:
+                completion = _merge_gap_completion(result, completion)
+                completion = _reconcile_test_oracle_gap_lifecycle(
+                    completion,
+                    effective_lifecycle_session,
+                    head_sha,
+                    _addressed_test_oracle_gap_evidence(
+                        completion,
+                        claimed_review_threads,
+                        canonical_recorded_gaps,
+                    ),
+                    accepted_gap_ids,
+                )
+                result = completion
+        except Exception as exc:
+            result.result = "BLOCKED"
+            result.diagnostic_category = "test_oracle_gap_completion_failed"
+            result.diagnostic_reason = f"Current-head completion for {repo_name}#{pr_number} at {head_sha} failed for " f"{', '.join(completion_gap_ids)}: {exc}"
 
     # Recovery installation, reuse consumption, invalidation, and the final
     # adjudication share one target snapshot. This check is intentionally after

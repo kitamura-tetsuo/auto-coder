@@ -976,6 +976,7 @@ def test_current_gap_closure_persists_while_historical_gap_blocks_new_head(tmp_p
     registry.save(session)
     validation_context = context()
     validation_context.issue_context = "Linked Issue requires independent server validation."
+    validation_context.validation_snapshot = "snapshot-h2"
     root = format_test_oracle_gap_comment(first)
     classification = classify_review_threads(
         (
@@ -997,23 +998,35 @@ def test_current_gap_closure_persists_while_historical_gap_blocks_new_head(tmp_p
     manager = MagicMock()
     manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
     manager._last_session_id = "session-1"
-    manager.continue_session.return_value = json.dumps(
-        {
-            "result": "PASS",
-            "summary": "The first regression is proven; current audit protection is unavailable.",
-            "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Current implementation behavior is verified."}],
-            "findings": [],
-            "test_oracle_gaps": [],
-            "thread_dispositions": [
-                {
-                    "thread_id": "thread-first",
-                    "status": "ADDRESSED",
-                    "rationale": "The exact requested first-gap invariant is covered.",
-                    "evidence": "tests/test_grid.py exercises the authoritative boundary on sha-h2.",
-                }
-            ],
-        }
-    )
+    initial_response = {
+        "result": "PASS",
+        "summary": "The first regression is proven; current audit protection is unavailable.",
+        "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Current implementation behavior is verified."}],
+        "findings": [],
+        "test_oracle_gaps": [],
+        "thread_dispositions": [
+            {
+                "thread_id": "thread-first",
+                "status": "ADDRESSED",
+                "rationale": "The exact requested first-gap invariant is covered.",
+                "evidence": "tests/test_grid.py exercises the authoritative boundary on sha-h2.",
+            }
+        ],
+    }
+    completion_response = {
+        **initial_response,
+        "summary": "Both recorded gaps have current-head adjudications.",
+        "test_oracle_gaps": [
+            gap_payload(
+                status="RESOLVED",
+                phase="REREVIEW",
+                boundary="AuditMutation.commit",
+                resolution_evidence="tests/test_audit.py exercises AuditMutation.commit and verifies the recorded invariant on sha-h2.",
+            )
+        ],
+        "thread_dispositions": [],
+    }
+    manager.continue_session.side_effect = [json.dumps(initial_response), json.dumps(completion_response)]
 
     with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
         result = run_adversarial_validation(
@@ -1027,13 +1040,14 @@ def test_current_gap_closure_persists_while_historical_gap_blocks_new_head(tmp_p
         )
 
     saved = ReviewerSessionRegistry(registry.path).get("owner/repo", 1, "reviewer", "codex", "strong")
-    assert result.result == "BLOCKED"
-    assert result.diagnostic_category == "test_oracle_gap_current_head_evidence_missing"
+    assert result.result == "PASS"
+    assert result.diagnostic_category != "test_oracle_gap_current_head_evidence_missing"
+    assert manager.continue_session.call_count == 2
     assert saved is not None
     saved_by_id = {gap.gap_id: gap for gap in saved.test_oracle_gaps}
     assert saved_by_id[first.gap_id].status == "RESOLVED"
     assert saved_by_id[first.gap_id].resolution_head_sha == "sha-h2"
-    assert saved_by_id[historical.gap_id].resolution_head_sha == "sha-h1"
+    assert saved_by_id[historical.gap_id].resolution_head_sha == "sha-h2"
     assert saved_by_id[historical.gap_id].historical_resolution_head_sha == "sha-h1"
 
 
