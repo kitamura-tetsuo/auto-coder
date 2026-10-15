@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import threading
 from typing import Dict, List, Optional
@@ -628,7 +629,14 @@ def _scenario_outcome(tmp_path, monkeypatch, store, *, kind: str):
     github_calls = [call[0] for call in scenario.client.method_calls]
     # Each run builds its own checkout, so only the head SHA legitimately differs.
     normalized_actions = [action.replace(scenario.head_sha[:8], "<head>") for action in actions]
-    prompts = [prompt.replace(scenario.head_sha, "<head>") for prompt in scenario.reviewer.prompts]
+    prompts = [
+        re.sub(
+            r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+            "<uuid>",
+            prompt.replace(scenario.head_sha, "<head>"),
+        )
+        for prompt in scenario.reviewer.prompts
+    ]
     return scenario, (normalized_actions, prompts, list(scenario.reviewer.calls), evaluation.native_verdict, evaluation.native_report["diagnostic_category"], evaluation.execution_mode, github_calls)
 
 

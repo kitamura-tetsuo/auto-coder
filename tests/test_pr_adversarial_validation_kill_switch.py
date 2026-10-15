@@ -314,7 +314,7 @@ class TestAS002ExistingVerdictDoesNotBlockOrDeprioritize:
         mock_github_client.has_linked_pr.return_value = False
         mock_github_client.get_issue.return_value = {"number": 42, "title": "Spec", "body": ""}
         mock_github_client.get_pr_reviews_strict.return_value = [_adversarial_review(head_sha, "NEEDS_FIX")]
-        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[1])
 
         engine = AutomationEngine(mock_github_client)
         engine.config = AutomationConfig(pr_adversarial_validation=False)
@@ -590,7 +590,7 @@ class TestAS006AndAS007ReEnablingSemantics:
         mock_github_client.has_linked_pr.return_value = False
         mock_github_client.get_issue.return_value = {"number": 42, "title": "Spec", "body": ""}
         mock_github_client.get_pr_reviews_strict.return_value = [_adversarial_review(head_sha, "NEEDS_FIX")]
-        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[1])
 
         engine = AutomationEngine(mock_github_client)
 
@@ -621,7 +621,7 @@ class TestAS006AndAS007ReEnablingSemantics:
         mock_github_client.get_issue.return_value = {"number": 42, "title": "Spec", "body": ""}
         # Review only on old_sha
         mock_github_client.get_pr_reviews_strict.return_value = [_adversarial_review(old_sha, "NEEDS_FIX")]
-        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[1])
 
         engine = AutomationEngine(mock_github_client)
         engine.config = AutomationConfig(pr_adversarial_validation=True)
