@@ -62,7 +62,7 @@ class PRRepairResult:
     disposition: RepairDisposition
     actions: tuple[str, ...] = ()
     reason: str = ""
-    attempt_started: bool = False
+    attempt_started: bool | None = None
     receipt_state: RepairFactState = RepairFactState.UNKNOWN
     receipt: str = ""
     resulting_head_state: RepairFactState = RepairFactState.UNKNOWN

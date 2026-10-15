@@ -71,6 +71,33 @@ def test_codex_ci_adapter_does_not_turn_refusal_into_acceptance(monkeypatch: pyt
     producer.assert_called_once()
 
 
+def test_codex_ci_adapter_preserves_authority_deferral_and_unknown_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
+    from auto_coder import pr_processor
+
+    origin = pr_processor.CloudTaskOrigin("codex-cloud", "task_e_owner", MagicMock())
+    monkeypatch.setattr(
+        pr_processor,
+        "_resolve_cloud_task_origin",
+        MagicMock(return_value=pr_processor.CloudTaskOriginResolution(origin)),
+    )
+    producer = MagicMock(
+        side_effect=[
+            pr_processor.CodexCloudFeedbackResult(False, True, ("head changed",), deferred=True),
+            pr_processor.CodexCloudFeedbackResult(True, False, ("already delivered",)),
+        ]
+    )
+    monkeypatch.setattr(pr_processor, "_send_codex_cloud_error_feedback", producer)
+    pr_data = {"number": 12, "head": {"sha": "H1"}}
+
+    deferred = pr_processor._dispatch_codex_ci_failure_repair("owner/repo", pr_data, [{"name": "tests"}], AutomationConfig(), MagicMock(), force=False)
+    replay = pr_processor._dispatch_codex_ci_failure_repair("owner/repo", pr_data, [{"name": "tests"}], AutomationConfig(), MagicMock(), force=False)
+
+    assert deferred.disposition is RepairDisposition.DEFERRED
+    assert deferred.attempt_started is None
+    assert replay.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN
+    assert replay.attempt_started is None
+
+
 def test_cloud_conflict_adapter_preserves_deferred_retry(monkeypatch: pytest.MonkeyPatch) -> None:
     from auto_coder import pr_processor
 

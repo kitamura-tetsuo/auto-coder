@@ -27,6 +27,7 @@ from src.auto_coder.pr_processor import (
     _start_mergeability_remediation,
     _update_with_base_branch,
 )
+from src.auto_coder.pr_repair_dispatch import RepairDisposition, RepairOrigin
 from src.auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
 from src.auto_coder.utils import CommandResult
 
@@ -714,3 +715,39 @@ def test_local_conflict_repair_emits_confirmed_remediation_outcome(tmp_path, res
     assert len(events) == 1
     assert events[0].outcome == ("completed" if resolved else "failed")
     assert events[0].facts["result"] == ("success" if resolved else "failed")
+
+
+def test_jules_conflict_enters_typed_dispatch_with_existing_guard_and_session() -> None:
+    """REQ-001: the production base-update route retains Jules ownership."""
+    pull_request = pr_data()
+    pull_request["body"] = "Session ID: session_jules_conflict"
+    pull_request["user"] = {"login": "google-labs-jules[bot]"}
+    requests = []
+
+    def capture_dispatch(request, operation):
+        requests.append(request)
+        return operation(request)
+
+    commands = [
+        CommandResult(True, "", "", 0),
+        CommandResult(True, "2\n", "", 0),
+        CommandResult(False, "", "conflict", 1),
+    ]
+    with (
+        patch("src.auto_coder.pr_processor.cmd") as command_executor,
+        patch("src.auto_coder.pr_processor._is_jules_pr", return_value=True),
+        patch("src.auto_coder.pr_processor._guard_outbound_jules_send", return_value=True) as guard,
+        patch("src.auto_coder.pr_processor.dispatch_pr_repair", side_effect=capture_dispatch),
+        patch("auto_coder.jules_client.JulesClient") as jules_type,
+    ):
+        command_executor.run_command.side_effect = commands
+        actions = _update_with_base_branch("owner/repo", pull_request, AutomationConfig())
+
+    assert len(requests) == 1
+    assert requests[0].origin is RepairOrigin.JULES
+    assert requests[0].owner_identity == "session_jules_conflict"
+    assert requests[0].kind.value == "merge_conflict"
+    guard.assert_called_once()
+    jules_type.return_value.send_message.assert_called_once()
+    assert actions.repair_result is not None
+    assert actions.repair_result.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN

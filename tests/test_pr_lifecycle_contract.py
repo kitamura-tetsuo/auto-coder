@@ -40,7 +40,7 @@ from auto_coder.pr_processor import (
     TwoTierGateInputs,
     _handle_pr_merge,
 )
-from auto_coder.pr_repair_dispatch import RepairDisposition, RepairFactState, RepairOrigin
+from auto_coder.pr_repair_dispatch import PRRepairResult, RepairDisposition, RepairFactState, RepairOrigin
 from auto_coder.pr_review_cycle import VERDICT_FINDINGS, ContractSnapshot, Finding, PrReviewCycleRepository, RoundProvenance, StrongPolicyIdentity
 from auto_coder.two_tier_pr_gate import TwoTierPrGate
 from auto_coder.util.gh_cache import PullRequestRepairMetadata, ReviewThread, ReviewThreadComment
@@ -203,6 +203,7 @@ def test_direct_processing_routes_conflicts_only_to_authorized_effect_boundary(t
     exhaustion = SimpleNamespace(is_exhausted=True, exhausted_blocker_ids=("conflict",)) if exhausted else None
     client = MagicMock()
 
+    remediation_actions = PRActionList(("controlled repair boundary",))
     with (
         patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as unsafe,
         patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False),
@@ -210,13 +211,59 @@ def test_direct_processing_routes_conflicts_only_to_authorized_effect_boundary(t
         patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": False, "merge_state_status": "dirty"}),
         patch("auto_coder.pr_processor.check_pr_repair_exhaustion", return_value=exhaustion),
         patch("auto_coder.pr_processor.publish_exhaustion_comment_deduped"),
-        patch("auto_coder.pr_processor._start_mergeability_remediation", return_value=["controlled repair boundary"]) as repair,
+        patch("auto_coder.pr_processor._start_mergeability_remediation", return_value=remediation_actions) as repair,
     ):
         unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
         actions = _handle_pr_merge(client, REPOSITORY, pr_data, config, {})
 
     assert repair.call_count == expected_calls
     assert any(expected_text in action for action in actions)
+
+
+@pytest.mark.parametrize(
+    ("disposition", "expected_outcome", "retry_not_before"),
+    [
+        (RepairDisposition.FAILED, PRProcessingOutcome.FAILED, None),
+        (RepairDisposition.DEFERRED, PRProcessingOutcome.DEFERRED, 4321.0),
+    ],
+)
+def test_public_conflict_facade_preserves_typed_remediation_result(
+    tmp_path,
+    monkeypatch,
+    disposition,
+    expected_outcome,
+    retry_not_before,
+):
+    """REQ-006: diagnostic wording cannot replace the typed conflict outcome."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    config = AutomationConfig()
+    config.ENABLE_MERGEABILITY_REMEDIATION = True
+    pr_data = {"number": PR_NUMBER, "body": "Closes #2501", "labels": [], "head": {"ref": "issue-2501", "sha": H1}}
+    client = MagicMock()
+    result = PRRepairResult(disposition, ("wording intentionally unrelated",), reason="typed reason", retry_not_before=retry_not_before)
+    remediation = PRActionList(("arbitrary diagnostic",))
+    remediation.repair_result = result
+    remediation.quota_deferred = disposition is RepairDisposition.DEFERRED
+    remediation.retry_not_before = retry_not_before
+    status = ProcessedPRResult(pr_data=pr_data, actions_taken=[], priority="fix", analysis=None)
+
+    with (
+        patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as unsafe,
+        patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False),
+        patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+        patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": False, "merge_state_status": "dirty"}),
+        patch("auto_coder.pr_processor.check_pr_repair_exhaustion", return_value=None),
+        patch("auto_coder.pr_processor._start_mergeability_remediation", return_value=remediation),
+        patch("auto_coder.pr_processor._merge_pr") as merge,
+    ):
+        unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
+        actions = _handle_pr_merge(client, REPOSITORY, pr_data, config, {}, status)
+
+    assert actions.repair_result is result
+    assert status.outcome is expected_outcome
+    assert status.retry_not_before == retry_not_before
+    assert status.error == ("typed reason" if disposition is RepairDisposition.FAILED else None)
+    merge.assert_not_called()
 
 
 def _run_ci_consumer(snapshot, *, remote_head=H1, thread_state=None, body="Fixes #99", ledger=None):
@@ -653,6 +700,100 @@ def test_terminal_ci_failure_retains_cloud_owner_without_local_repair(tmp_path, 
     assert any("GitHub Actions checks failed" in action for action in actions)
     assert "controlled cloud CI continuation" in actions
     assert any("Codex Cloud will handle fixing" in action for action in actions)
+
+
+def test_terminal_ci_head_change_defers_codex_dispatch_without_provider_effect(tmp_path, monkeypatch):
+    """REQ-003: exact-head authority loss is a wait, not an execution failure."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    failed = _snapshot(ObservationAvailability.KNOWN, CIConclusion.FAILURE)
+    config = AutomationConfig()
+    pr_data = {
+        "number": PR_NUMBER,
+        "body": "Fixes #2501\nhttps://chatgpt.com/codex/tasks/task_e_ci_owner",
+        "labels": [],
+        "user": {"login": "chatgpt-codex-connector[bot]"},
+        "head": {"ref": "cloud/feature", "sha": H1},
+        "base": {"ref": "main", "sha": "base-1"},
+    }
+    github = MagicMock(token="controlled-token")
+    provider = MagicMock()
+    origin = CloudTaskOrigin("codex-cloud", "task_e_ci_owner", provider)
+    dispatched = []
+
+    def capture_dispatch(request, operation):
+        result = operation(request)
+        dispatched.append(result)
+        return result
+
+    status = ProcessedPRResult(pr_data=pr_data, actions_taken=[], priority="fix", analysis=None)
+    denied = SimpleNamespace(allowed=False, reason="current PR head changed to H2", failure_identities=())
+    with (
+        patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=False, ids=[701], observation=failed)),
+        patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+        patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as unsafe,
+        patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False),
+        patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+        patch("auto_coder.pr_processor.get_detailed_checks_from_history", return_value=SimpleNamespace(failed_checks=[{"name": "PR Tests"}])),
+        patch("auto_coder.pr_processor._resolve_cloud_task_origin", return_value=CloudTaskOriginResolution(origin)),
+        patch("auto_coder.pr_processor.current_ci_failure_authority", return_value=nullcontext(denied)),
+        patch("auto_coder.pr_processor.dispatch_pr_repair", side_effect=capture_dispatch),
+        patch("auto_coder.pr_processor._merge_pr") as merge,
+    ):
+        unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
+        _handle_pr_merge(github, REPOSITORY, pr_data, config, {}, status)
+
+    assert len(dispatched) == 1
+    assert dispatched[0].disposition is RepairDisposition.DEFERRED
+    assert dispatched[0].attempt_started is None
+    assert status.outcome is PRProcessingOutcome.DEFERRED
+    provider.continue_if_paused.assert_not_called()
+    merge.assert_not_called()
+
+
+def test_terminal_ci_jules_owner_enters_typed_dispatch_once(tmp_path, monkeypatch):
+    """REQ-001: public Jules CI repair preserves its existing session owner."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    failed = _snapshot(ObservationAvailability.KNOWN, CIConclusion.FAILURE)
+    config = AutomationConfig()
+    pr_data = {
+        "number": PR_NUMBER,
+        "body": "Jules session: session_jules_ci",
+        "_jules_session_id": "session_jules_ci",
+        "labels": [],
+        "user": {"login": "google-labs-jules[bot]"},
+        "head": {"ref": "jules/feature", "sha": H1},
+        "base": {"ref": "main", "sha": "base-1"},
+    }
+    github = MagicMock(token="controlled-token")
+    requests = []
+
+    def capture_dispatch(request, operation):
+        requests.append(request)
+        return operation(request)
+
+    with (
+        patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=False, ids=[701], observation=failed)),
+        patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+        patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as unsafe,
+        patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False),
+        patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+        patch("auto_coder.pr_processor.get_detailed_checks_from_history", return_value=SimpleNamespace(failed_checks=[{"name": "PR Tests"}])),
+        patch("auto_coder.pr_processor._is_codex_pr", return_value=False),
+        patch("auto_coder.pr_processor._is_jules_pr", return_value=True),
+        patch("auto_coder.pr_processor.cmd.run_command", return_value=CommandResult(True, "main\n", "", 0)),
+        patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=SimpleNamespace(closed=False, actions=[])),
+        patch("auto_coder.pr_processor._send_jules_error_feedback", return_value=["existing Jules helper sent feedback"]) as producer,
+        patch("auto_coder.pr_processor.dispatch_pr_repair", side_effect=capture_dispatch),
+    ):
+        unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
+        actions = _handle_pr_merge(github, REPOSITORY, pr_data, config, {})
+
+    producer.assert_called_once()
+    assert len(requests) == 1
+    assert requests[0].origin is RepairOrigin.JULES
+    assert requests[0].owner_identity == "session_jules_ci"
+    assert requests[0].kind.value == "ci_failure"
+    assert "existing Jules helper sent feedback" in actions
 
 
 def test_terminal_ci_failure_enters_typed_synchronous_local_repair(tmp_path, monkeypatch):

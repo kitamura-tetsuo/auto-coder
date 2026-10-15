@@ -1234,6 +1234,7 @@ class CodexCloudFeedbackResult:
     delivered: bool = False
     retryable: bool = False
     actions: Tuple[str, ...] = ()
+    deferred: bool = False
 
 
 @dataclass(frozen=True)
@@ -1300,8 +1301,9 @@ def _dispatch_codex_ci_failure_repair(
             return PRRepairResult(
                 RepairDisposition.ACCEPTED_OR_UNCERTAIN,
                 produced.actions,
-                attempt_started=True,
             )
+        if produced.deferred:
+            return PRRepairResult(RepairDisposition.DEFERRED, produced.actions, reason=produced.actions[-1] if produced.actions else "repair was deferred")
         disposition = RepairDisposition.FAILED if produced.retryable else RepairDisposition.REFUSED
         return PRRepairResult(disposition, produced.actions, reason=produced.actions[-1] if produced.actions else "repair was not started")
 
@@ -1346,6 +1348,24 @@ def _dispatch_local_repair(
     operation: Callable[[], PRRepairResult],
 ) -> PRRepairResult:
     """Run one existing synchronous local producer through the typed boundary."""
+    return dispatch_pr_repair(request, lambda _request: operation())
+
+
+def _dispatch_jules_repair(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    kind: RepairKind,
+    session_id: str,
+    operation: Callable[[], PRRepairResult],
+) -> PRRepairResult:
+    request = _repair_request(
+        repo_name,
+        pr_data,
+        kind,
+        RepairOrigin.JULES if session_id else RepairOrigin.UNKNOWN,
+        owner_identity=session_id,
+    )
+
     return dispatch_pr_repair(request, lambda _request: operation())
 
 
@@ -1468,6 +1488,7 @@ class PRActionList(list[str]):
         self.repair_attempt_started = False
         self.resulting_head = ""
         self.synchronized: Optional[bool] = None
+        self.repair_result: Optional[PRRepairResult] = None
 
 
 @dataclass(frozen=True)
@@ -3479,7 +3500,7 @@ def _get_mergeable_state(
     return {"mergeable": mergeable, "merge_state_status": merge_state_status}
 
 
-def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional[str], repo_name: str = "") -> List[str]:
+def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional[str], repo_name: str = "") -> PRActionList:
     """Implement mergeability remediation flow for non-mergeable PRs.
 
     This function handles the end-to-end flow for non-mergeable PRs:
@@ -3497,7 +3518,7 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
     Returns:
         List of action strings describing what was done
     """
-    actions = []
+    actions = PRActionList()
     state_text = merge_state_status or "unknown"
 
     if repo_name:
@@ -3573,6 +3594,9 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
             remediation_pr_data["base_branch"] = base_branch
             update_actions = _update_with_base_branch(repo_name, remediation_pr_data, AutomationConfig())
             actions.extend(update_actions)
+            actions.repair_result = update_actions.repair_result
+            actions.quota_deferred = update_actions.quota_deferred
+            actions.retry_not_before = update_actions.retry_not_before
 
             # Step 4: Check for degrading merge detection
         if "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" in update_actions:
@@ -3605,21 +3629,22 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
 
         # Step 5: Verify successful remediation
         # If push succeeded, the action flag will be set
-        if any("Delegated merge-conflict repair" in action for action in update_actions):
+        repair_result = update_actions.repair_result
+        if repair_result is not None and repair_result.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN:
             actions.append(f"Mergeability remediation delegated for PR #{pr_number}; deferring until a later pass observes a new head")
             actions.append("ACTION_FLAG:SKIP_ANALYSIS")
             get_trace_logger().log("Remediation", f"Remediation delegated for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "delegated"})
             _record_pr_stage(pr_number, "pr.mergeability-remediation", f"pr#{pr_number} mergeability remediation", Outcome.ACCEPTED_HANDOFF, {"result": "delegated", "state": state_text})
-        elif any("Pushed updated branch" in action for action in update_actions):
+        elif (repair_result is not None and repair_result.disposition is RepairDisposition.APPLIED) or (repair_result is None and any("Pushed updated branch" in action for action in update_actions)):
             actions.append(f"Mergeability remediation completed for PR #{pr_number}")
             actions.append("ACTION_FLAG:SKIP_ANALYSIS")
             get_trace_logger().log("Remediation", f"Remediation success for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "success"})
             _record_pr_stage(pr_number, "pr.mergeability-remediation", f"pr#{pr_number} mergeability remediation", Outcome.COMPLETED, {"result": "success", "state": state_text})
-        elif "ACTION_FLAG:SKIP_ANALYSIS" in update_actions:
+        elif (repair_result is not None and repair_result.disposition in {RepairDisposition.DEFERRED, RepairDisposition.REFUSED}) or (repair_result is None and "ACTION_FLAG:SKIP_ANALYSIS" in update_actions):
             actions.append(f"Mergeability remediation deferred for PR #{pr_number}; no repair was confirmed")
             actions.append("ACTION_FLAG:SKIP_ANALYSIS")
             _record_pr_stage(pr_number, "pr.mergeability-remediation", f"pr#{pr_number} mergeability remediation", Outcome.DEFERRED, {"result": "unconfirmed", "state": state_text})
-        elif "Failed" in str(update_actions):
+        elif (repair_result is not None and repair_result.disposition is RepairDisposition.FAILED) or (repair_result is None and "Failed" in str(update_actions)):
             # Remediation attempted but failed
             actions.append(f"Mergeability remediation failed for PR #{pr_number}")
             get_trace_logger().log("Remediation", f"Remediation failed for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "failed"})
@@ -6532,7 +6557,19 @@ def _handle_pr_merge(
             return actions
 
         if progress.route is ProgressRoute.REMEDIATE_CONFLICT:
-            actions.extend(_start_mergeability_remediation(pr_number, merge_state_status, repo_name))
+            remediation = _start_mergeability_remediation(pr_number, merge_state_status, repo_name)
+            actions.extend(remediation)
+            actions.repair_result = remediation.repair_result
+            actions.quota_deferred = remediation.quota_deferred
+            actions.retry_not_before = remediation.retry_not_before
+            if processing_status is not None and remediation.repair_result is not None:
+                if remediation.repair_result.disposition is RepairDisposition.FAILED:
+                    processing_status.outcome = PRProcessingOutcome.FAILED
+                    processing_status.error = remediation.repair_result.reason or f"Mergeability remediation failed for PR #{pr_number}"
+                elif remediation.repair_result.disposition is RepairDisposition.DEFERRED:
+                    processing_status.outcome = PRProcessingOutcome.DEFERRED
+                    processing_status.error = None
+                    processing_status.retry_not_before = remediation.repair_result.retry_not_before
             return actions
 
         if mergeable_flag is False and not config.ENABLE_MERGEABILITY_REMEDIATION:
@@ -6669,11 +6706,14 @@ def _handle_pr_merge(
                 if codex_dispatch_result.disposition is RepairDisposition.FAILED and processing_status is not None:
                     processing_status.outcome = PRProcessingOutcome.FAILED
                     processing_status.error = codex_dispatch_result.reason or f"Codex Cloud CI repair failed for PR #{pr_number}"
+                elif codex_dispatch_result.disposition is RepairDisposition.DEFERRED and processing_status is not None:
+                    processing_status.outcome = PRProcessingOutcome.DEFERRED
+                    processing_status.error = None
             _record_pr_stage(
                 pr_number,
                 "pr.repair-delegation",
                 f"pr#{pr_number} repair delegation",
-                Outcome.ACCEPTED_HANDOFF if codex_dispatch_result.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN else Outcome.FAILED,
+                Outcome.ACCEPTED_HANDOFF if codex_dispatch_result.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN else Outcome.DEFERRED if codex_dispatch_result.disposition is RepairDisposition.DEFERRED else Outcome.FAILED,
                 {"effect": "ci-failure-repair", "backend": "codex-cloud", "disposition": codex_dispatch_result.disposition.value},
             )
             return actions
@@ -6703,9 +6743,18 @@ def _handle_pr_merge(
                 return actions
 
             actions.append(f"PR #{pr_number} is a Jules-created PR, sending error logs to Jules session")
-            # Send error logs to Jules and skip local fixing - let Jules handle it
-            jules_feedback_actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
-            actions.extend(jules_feedback_actions)
+            session_id = str(pr_data.get("_jules_session_id") or _extract_session_id_from_pr_body(pr_data.get("body", "")) or "")
+
+            def send_jules_ci() -> PRRepairResult:
+                produced_actions = tuple(_send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client))
+                return PRRepairResult(
+                    RepairDisposition.ACCEPTED_OR_UNCERTAIN,
+                    produced_actions,
+                    reason="Jules producer does not expose delivery certainty",
+                )
+
+            jules_feedback = _dispatch_jules_repair(repo_name, pr_data, RepairKind.CI_FAILURE, session_id, send_jules_ci)
+            actions.extend(jules_feedback.actions)
             actions.append(f"Jules will handle fixing PR #{pr_number}, skipping local fixes")
             _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.ACCEPTED_HANDOFF, {"effect": "ci-failure-repair", "backend": "jules"})
             return actions
@@ -7084,16 +7133,24 @@ def _update_with_base_branch(
                     jules_client = JulesClient()
                     session_id = _extract_session_id_from_pr_body(pr_data.get("body", ""))
                     if session_id:
-                        # REQ-007/REQ-009 (Issue #2147): guard + durably admit
-                        # this outbound mutation to an existing Jules session
-                        # before sending it.
-                        if not _guard_outbound_jules_send(repo_name, config, session_id):
-                            actions.append(f"Blocked merge-conflict resolution request for PR #{pr_number}: session '{session_id}' " "belongs to a durably retired implementation slot (REQ-009)")
-                            actions.append("ACTION_FLAG:SKIP_ANALYSIS")
-                            return actions
-                        prompt = render_prompt("pr.jules_merge_conflict_resolution")
-                        jules_client.send_message(session_id, prompt)
-                        actions.append(f"Requested Jules to resolve merge conflict in session {session_id}")
+
+                        def send_jules_conflict() -> PRRepairResult:
+                            # Keep the existing retirement admission immediately
+                            # before the provider mutation.
+                            if not _guard_outbound_jules_send(repo_name, config, session_id):
+                                reason = f"Blocked merge-conflict resolution request for PR #{pr_number}: session '{session_id}' belongs to a durably retired implementation slot (REQ-009)"
+                                return PRRepairResult(RepairDisposition.REFUSED, (reason,), reason=reason)
+                            prompt = render_prompt("pr.jules_merge_conflict_resolution")
+                            jules_client.send_message(session_id, prompt)
+                            return PRRepairResult(
+                                RepairDisposition.ACCEPTED_OR_UNCERTAIN,
+                                (f"Requested Jules to resolve merge conflict in session {session_id}",),
+                                attempt_started=True,
+                            )
+
+                        jules_repair = _dispatch_jules_repair(repo_name, pr_data, RepairKind.MERGE_CONFLICT, session_id, send_jules_conflict)
+                        actions.extend(jules_repair.actions)
+                        actions.repair_result = jules_repair
                         # We return here so we don't proceed with LLM fixing this PR right now
                         actions.append("ACTION_FLAG:SKIP_ANALYSIS")
                         return actions
@@ -7121,10 +7178,12 @@ def _update_with_base_branch(
                 actions.append(f"DEFERRED Claude merge-conflict repair for PR #{pr_number}: {cloud_repair.reason}")
                 actions.quota_deferred = True
                 actions.retry_not_before = cloud_repair.retry_not_before
+                actions.repair_result = cloud_repair
                 cmd.run_command(["git", "merge", "--abort"])
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
                 return actions
             if cloud_repair.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN:
+                actions.repair_result = cloud_repair
                 cmd.run_command(["git", "merge", "--abort"])
                 actions.extend(cloud_repair.actions)
                 actions.append(f"Delegated merge-conflict repair for PR #{pr_number} to its existing cloud session")
@@ -7132,6 +7191,7 @@ def _update_with_base_branch(
                 return actions
 
             if not _is_local_llm_pr(pr_data):
+                actions.repair_result = cloud_repair
                 actions.append(f"Cloud merge-conflict repair could not be delegated for PR #{pr_number}: " f"{cloud_repair.reason}; deferring conflict resolution.")
                 cmd.run_command(["git", "merge", "--abort"])
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
@@ -7151,6 +7211,7 @@ def _update_with_base_branch(
                     repo_name,
                 ),
             )
+            actions.repair_result = local_conflict_repair
 
             if local_conflict_repair.disposition is RepairDisposition.APPLIED:
                 actions.append(f"Successfully resolved merge conflicts for PR #{pr_number}")
@@ -9869,7 +9930,7 @@ def _send_codex_cloud_error_feedback(
         target = resolve_existing_pr_repair_target(repo_name, pr_data)
         if not new_work_allowed():
             actions.append(f"Deferred Codex Cloud continuation for PR #{pr_number}: graceful shutdown is draining")
-            return CodexCloudFeedbackResult(retryable=True, actions=tuple(actions))
+            return CodexCloudFeedbackResult(retryable=True, actions=tuple(actions), deferred=True)
         prompt = None
         if target:
             details = get_prompt_template("codex_cloud.ci_review_repair_details")
@@ -9878,12 +9939,12 @@ def _send_codex_cloud_error_feedback(
         with current_ci_failure_authority(github_client, repo_name, pr_number, expected_head) as authority:
             if not authority.allowed:
                 actions.append(f"Deferred Codex Cloud continuation for PR #{pr_number}: {authority.reason}")
-                return CodexCloudFeedbackResult(retryable=True, actions=tuple(actions))
+                return CodexCloudFeedbackResult(retryable=True, actions=tuple(actions), deferred=True)
             logger.info(f"Initiating Codex Cloud CI repair for PR #{pr_number}; " f"head={expected_head} failures={authority.failure_identities}")
             attribution_error = _revalidate_cloud_origin(repo_name, pr_number, selected_origin)
             if attribution_error:
                 actions.append(f"Deferred Codex Cloud continuation for PR #{pr_number}: {attribution_error}")
-                return CodexCloudFeedbackResult(retryable=True, actions=tuple(actions))
+                return CodexCloudFeedbackResult(retryable=True, actions=tuple(actions), deferred=True)
             kwargs: dict[str, Any] = {}
             if prompt is not None:
                 kwargs["prompt"] = prompt
