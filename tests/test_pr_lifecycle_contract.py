@@ -298,7 +298,8 @@ def test_known_empty_handler_preserves_ci_wait_without_dispatch(tmp_path, monkey
         unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
         actions = _handle_pr_merge(client, REPOSITORY, pr_data, config, {})
 
-    assert any(f"GitHub Actions checks are still in progress for PR #{PR_NUMBER}" in action for action in actions)
+    assert any(f"No current CI observations are available for PR #{PR_NUMBER}" in action for action in actions)
+    assert not any("checks are still in progress" in action for action in actions)
     claim_store.assert_not_called()
     dispatch.assert_not_called()
     merge.assert_not_called()
@@ -307,6 +308,16 @@ def test_known_empty_handler_preserves_ci_wait_without_dispatch(tmp_path, monkey
 
     queue = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
     assert queue.seconds_until_next_ci(REPOSITORY) is not None
+
+
+def test_genuine_pending_handler_reports_executing_ci():
+    """REQ-006: an actual pending workflow retains the executing diagnostic."""
+    actions, merge, failure_consumer, _ = _run_ci_consumer(_snapshot(ObservationAvailability.KNOWN, CIConclusion.PENDING))
+
+    assert any(f"GitHub Actions checks are still in progress for PR #{PR_NUMBER}" in action for action in actions)
+    assert not any("No current CI observations" in action for action in actions)
+    merge.assert_not_called()
+    failure_consumer.assert_not_called()
 
 
 def test_green_ci_reaches_merge_but_h1_to_h2_change_fails_closed():

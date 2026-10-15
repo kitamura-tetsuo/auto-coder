@@ -2583,3 +2583,22 @@ both successful completion and late-activity suppression.
 `test_pr_correction_adapter_runner_delivers_gate_controlled_muse_background_result`
 crosses the corresponding admitted correction, exact-head workspace, production
 adapter, runner, and validation wake while retaining the same trace schema.
+
+The Issue #2506 scheduler adoption is observability-neutral. Candidate
+collection now consumes the typed PR progress-policy route from the same single
+current-head CI observation passed to the existing deployment-approval owner;
+it removes a duplicate decision/read rather than adding a processing origin,
+admission outcome, durable-resumption stage, provider route, structured event,
+or dashboard rendering state. The existing `pr.ci-observation`, CI-watch, and
+selected-candidate handler events remain the production-to-view contract.
+`bash scripts/test.sh tests/test_known_empty_ci_conflict_admission.py
+tests/test_pr_progress_policy.py tests/test_pr_lifecycle_contract.py` exercises
+the real decoder, collector projection, handler projection, and retained
+durable-watch boundary.
+
+Issue #2506's diagnostic correction changes only human-readable log/action
+wording: `KNOWN_EMPTY` now reports absent observations, while genuine pending
+CI retains the executing-check wording and collector logs separately identify
+route exclusion or retention. It adds no structured event field, outcome,
+stage, origin, or dashboard renderer; existing CI availability and policy-route
+evidence remain authoritative rather than the diagnostic text.
