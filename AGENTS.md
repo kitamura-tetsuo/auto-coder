@@ -1,5 +1,13 @@
 # Auto-Coder Agent Guidelines
 
+## Temporary issue-2500 CI maintenance exception
+
+While `.github/ci-maintenance.json` is active, only same-repository pull requests
+explicitly associated with Issues #2503, #2504, #2505, or #2506 may skip the
+ordinary coverage shards under that policy. Issue #2507 and all other work must
+run normal CI; #2507 must deactivate and remove this exception after a successful
+full run. Publish Beta must not test, build, or publish while the policy is active.
+
 ## Project Overview
 
 This project is a Python application that automates application development using an AI CLI backend (default: `codex`, switchable to `gemini` or `qwen` via `--backend`).
