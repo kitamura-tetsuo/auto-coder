@@ -27,6 +27,7 @@ from auto_coder.ci_observation import (
 )
 from auto_coder.cloud_manager import CloudTaskBinding
 from auto_coder.durable_repair_allowance import RepairAllowanceLedger
+from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.local_review_repair import LocalReviewRepairRequest, admit_local_repair_allowance
 from auto_coder.pr_processor import ClaimedReviewThreadGateState, CodexCloudFeedbackResult, TwoTierGateInputs, _handle_pr_merge
 from auto_coder.pr_review_cycle import VERDICT_FINDINGS, ContractSnapshot, Finding, PrReviewCycleRepository, RoundProvenance, StrongPolicyIdentity
@@ -123,6 +124,52 @@ def test_real_ci_interpreter_uses_only_newest_workflow_attempt():
     assert result.ids == [701]
 
 
+@pytest.mark.parametrize("obsolete", [CIConclusion.FAILURE, CIConclusion.PENDING])
+def test_handler_preserves_real_interpreter_newest_attempt_semantics(tmp_path, monkeypatch, obsolete):
+    """REQ-005: obsolete attempts cannot override the interpreted green route."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    old = WorkflowObservation(
+        WorkflowExecutionIdentity("pr-tests", "701", 1),
+        obsolete,
+        "PR Tests",
+        workflow_path=".github/workflows/pr-tests.yml",
+    )
+    newest = WorkflowObservation(
+        WorkflowExecutionIdentity("pr-tests", "701", 2),
+        CIConclusion.SUCCESS,
+        "PR Tests",
+        workflow_path=".github/workflows/pr-tests.yml",
+    )
+    snapshot = CIObservationSnapshot(
+        ObservationSubject("https://api.github.test", REPOSITORY, PR_NUMBER, H1),
+        ObservationRequest("github-actions", "checks+workflows"),
+        "cycle-newest-attempt",
+        0,
+        ObservationAvailability.KNOWN,
+        (old, newest),
+    )
+    config = AutomationConfig()
+    config.AUTO_MERGE = False
+    pr_data = {"number": PR_NUMBER, "body": "Fixes #2503", "labels": [], "head": {"ref": "feature", "sha": H1}}
+    client = MagicMock(token="controlled-token")
+
+    with (
+        patch("auto_coder.util.github_action.get_ghapi_client", return_value=MagicMock()),
+        patch("auto_coder.util.github_action.observe_ci", return_value=snapshot),
+        patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as unsafe,
+        patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False),
+        patch("auto_coder.util.github_action.GitHubClient.get_instance", return_value=client),
+        patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+        patch("auto_coder.pr_processor.get_detailed_checks_from_history") as failure_repair,
+    ):
+        unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
+        actions = _handle_pr_merge(client, REPOSITORY, pr_data, config, {})
+
+    assert f"All GitHub Actions checks passed for PR #{PR_NUMBER}" in actions
+    assert not any("still in progress" in action for action in actions)
+    failure_repair.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ("enabled", "exhausted", "expected_calls", "expected_text"),
     [
@@ -212,6 +259,48 @@ def test_non_authorizing_ci_reaches_consumer_without_merge_or_failure_repair(sna
     _, merge, failure_consumer, _ = _run_ci_consumer(snapshot)
     merge.assert_not_called()
     failure_consumer.assert_not_called()
+
+
+def test_known_empty_handler_preserves_ci_wait_without_dispatch(tmp_path, monkeypatch):
+    """REQ-005: real empty CI decoding retains the handler's wait/recheck."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    config = AutomationConfig()
+    pr_data = {
+        "number": PR_NUMBER,
+        "body": "Fixes #2503",
+        "labels": [],
+        "head": {"ref": "issue-2503", "sha": H1},
+    }
+    client = MagicMock(token="controlled-token")
+    api = MagicMock()
+    api.headers = {}
+    api.checks.list_for_ref.return_value = {"check_runs": []}
+    api.actions.list_workflow_runs_for_repo.return_value = {"workflow_runs": []}
+
+    with (
+        patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as unsafe,
+        patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False),
+        patch("auto_coder.util.github_action.GitHubClient.get_instance", return_value=client),
+        patch("auto_coder.util.github_action.get_ghapi_client", return_value=api),
+        patch("auto_coder.pr_processor.get_ghapi_client", return_value=api),
+        patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+        patch("auto_coder.pr_processor.get_dispatch_claim_store") as claim_store,
+        patch("auto_coder.util.github_action.trigger_workflow_dispatch") as dispatch,
+        patch("auto_coder.pr_processor._merge_pr") as merge,
+        patch("auto_coder.pr_processor.get_detailed_checks_from_history") as failure_repair,
+    ):
+        unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
+        actions = _handle_pr_merge(client, REPOSITORY, pr_data, config, {})
+
+    assert any(f"GitHub Actions checks are still in progress for PR #{PR_NUMBER}" in action for action in actions)
+    claim_store.assert_not_called()
+    dispatch.assert_not_called()
+    merge.assert_not_called()
+    failure_repair.assert_not_called()
+    from auto_coder.entity_invalidation import DurableInvalidationQueue
+
+    queue = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
+    assert queue.seconds_until_next_ci(REPOSITORY) is not None
 
 
 def test_green_ci_reaches_merge_but_h1_to_h2_change_fails_closed():
@@ -445,7 +534,18 @@ def test_final_attempt_admission_serializes_newer_and_current_work(tmp_path, reg
     result = AdversarialValidationResult(result="PASS", summary="current gates passed")
 
     outcome = []
-    ci_status = SimpleNamespace(success=True, ids=[701], in_progress=False, error=None, observation=None)
+    ci_reads = iter(range(20))
+
+    def current_ci_status(*_args, **_kwargs):
+        snapshot = _snapshot(ObservationAvailability.KNOWN, CIConclusion.SUCCESS)
+        return SimpleNamespace(
+            success=True,
+            ids=[701],
+            in_progress=False,
+            error=None,
+            observation=replace(snapshot, cycle_id=f"{snapshot.cycle_id}-{next(ci_reads)}"),
+        )
+
     with (
         patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as unsafe,
         patch("auto_coder.pr_processor._is_pr_adversarial_validation_enabled", return_value=True),
@@ -453,9 +553,14 @@ def test_final_attempt_admission_serializes_newer_and_current_work(tmp_path, reg
         patch("auto_coder.pr_processor.AdversarialValidationAttemptRepository", return_value=checkpoint_repository),
         patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
         patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-        patch("auto_coder.pr_processor._check_github_actions_status", return_value=ci_status),
+        patch("auto_coder.pr_processor._check_github_actions_status", side_effect=current_ci_status),
         patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False),
         patch("auto_coder.pr_processor.run_adversarial_validation", return_value=result),
+        patch(
+            "auto_coder.pr_processor.publish_adversarial_review",
+            return_value=ReviewPublicationResult(True, "APPROVE", ""),
+        ),
+        patch("auto_coder.pr_processor.ci_observation_merge_authority", return_value=nullcontext(True)),
         patch("auto_coder.pr_processor.isolated_pr_head_worktree", return_value=nullcontext(tmp_path)),
         patch("auto_coder.pr_processor._merge_pr", return_value=True) as merge,
     ):
@@ -474,7 +579,7 @@ def test_final_attempt_admission_serializes_newer_and_current_work(tmp_path, reg
         merge.assert_not_called()
         assert any("newer adversarial-validation attempt is applicable" in action for action in outcome), outcome
     else:
-        merge.assert_called_once()
+        assert merge.call_count == 1, outcome
         assert any("Successfully merged" in action for action in outcome)
 
 

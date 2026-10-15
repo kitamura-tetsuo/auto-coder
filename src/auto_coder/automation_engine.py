@@ -5452,10 +5452,10 @@ class AutomationEngine:
             _reject_unsafe_codex_cloud_pr,
             is_current_head_adversarial_review_blocked,
         )
+        from .pr_progress_policy import ProgressPhase, ProgressRoute, PRProgressInputs, PRProgressScope, select_pr_progress
         from .util.github_action import (
             _check_github_actions_status,
             check_github_actions_and_exit_if_in_progress,
-            is_exact_head_known_empty_ci,
         )
 
         candidates: List[Candidate] = []
@@ -5616,20 +5616,29 @@ class AutomationEngine:
                     item_type="pr",
                 )
 
+                # Preserve observation-side effects in the helper above, but do
+                # not use its aggregate Boolean as route authority.
+                checks = _check_github_actions_status(repo_name, pr_data, self.config, self.github)
+                head_sha = str(pr_data.get("head", {}).get("sha") or "")
+                if not head_sha:
+                    logger.debug(f"Skipping PR #{pr_number} - current head is unavailable")
+                    continue
+                progress = select_pr_progress(
+                    PRProgressInputs(
+                        scope=PRProgressScope(repo_name, pr_number, head_sha),
+                        phase=ProgressPhase.CANDIDATE_COLLECTION,
+                        ci=checks.observation,
+                        mergeable=pr_data.get("mergeable") if isinstance(pr_data.get("mergeable"), bool) else None,
+                        remediation_enabled=self.config.ENABLE_MERGEABILITY_REMEDIATION,
+                        ci_success=checks.success,
+                        ci_pending=checks.in_progress,
+                    )
+                )
+                if progress.route is ProgressRoute.EXCLUDE_CANDIDATE:
+                    logger.debug(f"Skipping PR #{pr_number} at progress policy: {progress.reason} ({progress.ci_state.value})")
+                    continue
                 if not should_continue:
-                    if pr_data.get("mergeable") is not False or not self.config.ENABLE_MERGEABILITY_REMEDIATION:
-                        logger.debug(f"Skipping PR #{pr_number} - CI checks are in progress")
-                        continue
-                    head_sha = str(pr_data.get("head", {}).get("sha") or "")
-                    checks = _check_github_actions_status(repo_name, pr_data, self.config, self.github)
-                    if not is_exact_head_known_empty_ci(checks, repo_name, pr_number, head_sha):
-                        logger.debug(f"Skipping PR #{pr_number} - CI checks are in progress")
-                        continue
-                    logger.info(f"PR #{pr_number} has no current CI observations; retaining conflicting PR for mergeability remediation")
-                else:
-                    # Preserve the established three-argument evaluator call
-                    # contract used by candidate collection and its adapters.
-                    checks = _check_github_actions_status(repo_name, pr_data, self.config)
+                    logger.info(f"PR #{pr_number} retained by candidate progress policy ({progress.reason})")
 
                 # Check if we should skip this PR because it's waiting for Jules.
                 # ``checks`` is this same current-head CI observation, so a
