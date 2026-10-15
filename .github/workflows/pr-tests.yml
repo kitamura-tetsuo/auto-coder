@@ -9,18 +9,6 @@ permissions:
   contents: read
 
 jobs:
-  maintenance:
-    name: CI Maintenance Selection
-    runs-on: ubuntu-latest
-    outputs:
-      mode: ${{ steps.select.outputs.mode }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-      - name: Select exact maintenance scope
-        id: select
-        run: python scripts/ci_maintenance.py select-pr --event "$GITHUB_EVENT_PATH"
-
   lint:
     name: Lint & Type Check
     runs-on: ubuntu-latest
@@ -52,8 +40,6 @@ jobs:
 
   tests-shard:
     name: Tests with Coverage (${{ matrix.group }}/4)
-    needs: maintenance
-    if: needs.maintenance.outputs.mode == 'NORMAL'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -131,9 +117,9 @@ jobs:
 
   tests:
     name: Tests with Coverage
-    needs: [maintenance, tests-shard]
+    needs: tests-shard
     runs-on: ubuntu-latest
-    if: always() && needs.maintenance.outputs.mode == 'NORMAL'
+    if: always()
     steps:
       - name: Check shard results
         run: |
@@ -142,24 +128,3 @@ jobs:
             exit 1
           fi
           echo "All test shards passed."
-
-  retained-checks:
-    name: Retained CI Checks
-    needs: maintenance
-    if: needs.maintenance.outputs.mode == 'PAUSED'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-      - name: Setup Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-      - name: Install package and test dependencies
-        run: uv sync --dev --extra test
-      - name: Test CLI entry point
-        run: uv run auto-coder --help | grep -q 'Auto-Coder'
-      - name: Run PR lifecycle contract
-        run: bash scripts/test.sh -m pr_lifecycle_contract tests/test_pr_lifecycle_contract.py
