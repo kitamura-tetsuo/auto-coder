@@ -10,8 +10,7 @@ Candidate collection and direct handler entry intentionally have different
 projections. In particular, candidate collection admits known-empty evidence
 only for an affirmatively conflicting PR whose remediation is enabled. An
 otherwise eligible known-empty PR retains the existing CI wait and durable
-recheck at collection; direct handler entry selects the existing durable
-dispatch owner so a PR with no checks can make progress. An enabled,
+recheck rather than expanding manual-dispatch admission. An enabled,
 non-exhausted affirmative conflict selects
 the existing remediation owner before a CI wait; unknown mergeability never
 does so.
@@ -37,6 +36,5 @@ Diagnostics preserve the evidence distinction as well as the route. A
 `KNOWN_EMPTY` snapshot is reported as having no current CI observations, never
 as an executing workflow. The collector then separately reports whether its
 typed route excluded or retained the candidate; genuine pending evidence keeps
-the existing in-progress wording. Direct handler entry describes the absent
-observation accurately and enters the existing claim-protected workflow
-dispatch effect.
+the existing in-progress wording. Direct handler entry likewise retains its
+durable CI wait while describing the absent observation accurately.

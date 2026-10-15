@@ -3004,7 +3004,7 @@ class TestAdversarialValidationPRFlow:
             claimed_review_threads=(),
             execution_cwd=mock_worktree.return_value.__enter__.return_value,
             defer_session_persistence=True,
-            ci_status=mock_checks.return_value,
+            ci_status=ANY,
             refresh_ci_status=ANY,
             closure_input=None,
         )
@@ -3027,13 +3027,19 @@ class TestAdversarialValidationPRFlow:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        green = GitHubActionsStatusResult(success=True, ids=[10])
-        pending = GitHubActionsStatusResult(success=False, ids=[10, 11], in_progress=True)
-        mock_checks.side_effect = [green, pending, pending]
+        calls = 0
+
+        def ci_status(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            configured = authoritative_ci_status(success=calls == 1, ids=[10], in_progress=calls > 1)
+            return configured(*args, **kwargs)
+
+        mock_checks.side_effect = ci_status
 
         def validation_with_refresh(*args, **kwargs):
             accepted = kwargs["refresh_ci_status"]()
-            assert accepted is pending
+            assert accepted.success is False and accepted.in_progress is True
             return AdversarialValidationResult(result="PASS", summary="Dynamic evidence passed")
 
         mock_run_validation.side_effect = validation_with_refresh
@@ -3101,7 +3107,7 @@ class TestAdversarialValidationPRFlow:
             nonlocal calls
             calls += 1
             if calls == 1:
-                return green
+                return authoritative_ci_status(success=True, ids=[10])(*args, **kwargs)
             if calls == 2 or replacement != "pending":
                 snapshot = observe_ci(api, "credential", "owner/repo", 100, "current-head")
                 if calls == 3 and replacement == "invalidated":
@@ -3180,7 +3186,7 @@ class TestAdversarialValidationPRFlow:
 
         def ci_status(*args, **kwargs):
             if mock_checks.call_count == 1:
-                return green
+                return authoritative_ci_status(success=True, ids=[10])(*args, **kwargs)
             snapshot = observe_ci(api, "credential", "owner/repo", 100, "current-head")
             return GitHubActionsStatusResult(success=True, ids=[10], observation=snapshot)
 

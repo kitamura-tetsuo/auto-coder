@@ -30,7 +30,7 @@ def test_non_mergeable_detection_is_reported(mock_check_progress):
     """Ensure non-mergeable PRs surface a detection action."""
     mock_check_progress.return_value = False
     config = AutomationConfig()
-    pr_data = {"number": 42, "head": {"ref": "feature-42"}, "mergeable": False}
+    pr_data = {"number": 42, "head": {"ref": "feature-42", "sha": "head-42"}, "mergeable": False}
 
     actions = _handle_pr_merge(_client(), "owner/repo", pr_data, config, {})
 
@@ -57,7 +57,7 @@ def test_mergeability_remediation_flow_invoked(mock_github_client, mock_get_ghap
 
     config = AutomationConfig()
     config.ENABLE_MERGEABILITY_REMEDIATION = True
-    pr_data = {"number": 99, "head": {"ref": "feature-99"}, "mergeable": False}
+    pr_data = {"number": 99, "head": {"ref": "feature-99", "sha": "head-99"}, "mergeable": False}
 
     actions = _handle_pr_merge(_client(), "owner/repo", pr_data, config, {})
 
@@ -144,7 +144,7 @@ def test_mergeability_remediation_success_path(mock_github_client, mock_get_ghap
 
     config = AutomationConfig()
     config.ENABLE_MERGEABILITY_REMEDIATION = True
-    pr_data = {"number": 100, "head": {"ref": "feature-100"}, "mergeable": False}
+    pr_data = {"number": 100, "head": {"ref": "feature-100", "sha": "head-100"}, "mergeable": False}
 
     actions = _handle_pr_merge(_client(), "owner/repo", pr_data, config, {})
 
@@ -172,7 +172,7 @@ def test_mergeability_remediation_checkout_fails(mock_github_client, mock_get_gh
 
     config = AutomationConfig()
     config.ENABLE_MERGEABILITY_REMEDIATION = True
-    pr_data = {"number": 101, "head": {"ref": "feature-101"}, "mergeable": False}
+    pr_data = {"number": 101, "head": {"ref": "feature-101", "sha": "head-101"}, "mergeable": False}
 
     actions = _handle_pr_merge(_client(), "owner/repo", pr_data, config, {})
 
@@ -203,7 +203,7 @@ def test_mergeability_remediation_update_fails(mock_github_client, mock_get_ghap
 
     config = AutomationConfig()
     config.ENABLE_MERGEABILITY_REMEDIATION = True
-    pr_data = {"number": 102, "head": {"ref": "feature-102"}, "mergeable": False}
+    pr_data = {"number": 102, "head": {"ref": "feature-102", "sha": "head-102"}, "mergeable": False}
 
     actions = _handle_pr_merge(_client(), "owner/repo", pr_data, config, {})
 

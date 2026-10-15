@@ -47,7 +47,7 @@ def _snapshot(availability: ObservationAvailability, conclusion: CIConclusion | 
         (_snapshot(ObservationAvailability.KNOWN, CIConclusion.SUCCESS), ProgressRoute.ENTER_REVIEW, CIEvidenceState.PASSING),
         (_snapshot(ObservationAvailability.KNOWN, CIConclusion.PENDING), ProgressRoute.WAIT_FOR_CI, CIEvidenceState.PENDING),
         (_snapshot(ObservationAvailability.KNOWN, CIConclusion.FAILURE), ProgressRoute.REPAIR_FAILED_CI, CIEvidenceState.FAILING),
-        (_snapshot(ObservationAvailability.KNOWN_EMPTY), ProgressRoute.DISPATCH_CI, CIEvidenceState.KNOWN_EMPTY),
+        (_snapshot(ObservationAvailability.KNOWN_EMPTY), ProgressRoute.WAIT_FOR_CI, CIEvidenceState.KNOWN_EMPTY),
         (_snapshot(ObservationAvailability.UNAVAILABLE), ProgressRoute.REPORT_CI_UNAVAILABLE, CIEvidenceState.UNAVAILABLE),
         (_snapshot(ObservationAvailability.PARTIAL), ProgressRoute.REPORT_CI_UNAVAILABLE, CIEvidenceState.UNAVAILABLE),
         (_snapshot(ObservationAvailability.SUPERSEDED), ProgressRoute.REPORT_CI_UNAVAILABLE, CIEvidenceState.UNAVAILABLE),
@@ -103,7 +103,7 @@ def test_candidate_and_handler_keep_distinct_known_empty_projection():
     conflicting_candidate = select_pr_progress(PRProgressInputs(SCOPE, ProgressPhase.CANDIDATE_COLLECTION, empty, False, True))
 
     assert candidate.route is ProgressRoute.EXCLUDE_CANDIDATE
-    assert handler.route is ProgressRoute.DISPATCH_CI
+    assert handler.route is ProgressRoute.WAIT_FOR_CI
     assert conflicting_candidate.route is ProgressRoute.ADMIT_CANDIDATE
 
 
