@@ -25,7 +25,10 @@ from auto_coder.ci_observation import (
     WorkflowExecutionIdentity,
     WorkflowObservation,
 )
-from auto_coder.pr_processor import _delegate_cloud_merge_conflict_repair_result, _handle_pr_merge
+from auto_coder.durable_repair_allowance import RepairAllowanceLedger
+from auto_coder.local_review_repair import LocalReviewRepairRequest, admit_local_repair_allowance
+from auto_coder.pr_processor import ClaimedReviewThreadGateState, _delegate_cloud_merge_conflict_repair_result, _handle_pr_merge
+from auto_coder.util.gh_cache import ReviewThread
 from auto_coder.util.github_action import _check_github_actions_status
 
 pytestmark = pytest.mark.pr_lifecycle_contract
@@ -154,14 +157,14 @@ def test_direct_processing_routes_conflicts_only_to_authorized_effect_boundary(t
     assert any(expected_text in action for action in actions)
 
 
-def _run_ci_consumer(snapshot, *, remote_head=H1):
+def _run_ci_consumer(snapshot, *, remote_head=H1, thread_state=None, body="Fixes #99", ledger=None):
     """Enter the merge route while controlling only provider/effect boundaries."""
     config = AutomationConfig()
     config.AUTO_MERGE = True
-    config.ENABLE_ADVERSARIAL_VALIDATION = False
-    config.pr_adversarial_validation = False
-    config.pr_review_thread_gate = False
-    pr_data = {"number": PR_NUMBER, "body": "Fixes #99", "labels": [], "head": {"ref": "feature", "sha": H1}}
+    config.ENABLE_ADVERSARIAL_VALIDATION = ledger is not None
+    config.pr_adversarial_validation = ledger is not None
+    config.pr_review_thread_gate = thread_state is not None
+    pr_data = {"number": PR_NUMBER, "body": body, "labels": [], "head": {"ref": "feature", "sha": H1}}
     client = MagicMock(token="controlled-token")
     client.get_pull_request.return_value = {"head": {"sha": remote_head}}
     cycles = iter(range(20))
@@ -175,8 +178,11 @@ def _run_ci_consumer(snapshot, *, remote_head=H1):
         patch("auto_coder.util.github_action.observe_ci", side_effect=observe),
         patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as unsafe,
         patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-        patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False),
-        patch("auto_coder.pr_processor._is_pr_adversarial_validation_enabled", return_value=False),
+        patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=thread_state is not None),
+        patch("auto_coder.pr_processor._is_pr_adversarial_validation_enabled", return_value=ledger is not None),
+        patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=thread_state or ClaimedReviewThreadGateState()),
+        patch("auto_coder.durable_repair_allowance.RepairAllowanceLedger", return_value=ledger),
+        patch("auto_coder.pr_processor._verify_pending_local_correction") as local_verification,
         patch("auto_coder.pr_processor.check_pr_repair_exhaustion", return_value=None),
         patch("auto_coder.pr_processor.ci_observation_merge_authority", return_value=nullcontext(True)),
         patch("auto_coder.pr_processor._merge_pr", return_value=True) as merge,
@@ -184,7 +190,7 @@ def _run_ci_consumer(snapshot, *, remote_head=H1):
     ):
         unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
         actions = _handle_pr_merge(client, REPOSITORY, pr_data, config, {})
-    return actions, merge, failure_consumer
+    return actions, merge, failure_consumer, local_verification
 
 
 @pytest.mark.parametrize(
@@ -199,7 +205,7 @@ def _run_ci_consumer(snapshot, *, remote_head=H1):
 )
 def test_non_authorizing_ci_reaches_consumer_without_merge_or_failure_repair(snapshot):
     """REQ-002/003: incomplete evidence is deferral, never merge or repair."""
-    _, merge, failure_consumer = _run_ci_consumer(snapshot)
+    _, merge, failure_consumer, _ = _run_ci_consumer(snapshot)
     merge.assert_not_called()
     failure_consumer.assert_not_called()
 
@@ -207,8 +213,8 @@ def test_non_authorizing_ci_reaches_consumer_without_merge_or_failure_repair(sna
 def test_green_ci_reaches_merge_but_h1_to_h2_change_fails_closed():
     """REQ-002/004: current green reaches merge; a changed remote head does not."""
     green = _snapshot(ObservationAvailability.KNOWN, CIConclusion.SUCCESS)
-    current_actions, current_merge, current_failure = _run_ci_consumer(green)
-    stale_actions, stale_merge, stale_failure = _run_ci_consumer(green, remote_head=H2)
+    current_actions, current_merge, current_failure, _ = _run_ci_consumer(green)
+    stale_actions, stale_merge, stale_failure, _ = _run_ci_consumer(green, remote_head=H2)
 
     current_merge.assert_called_once()
     assert any("Successfully merged" in action for action in current_actions)
@@ -216,6 +222,53 @@ def test_green_ci_reaches_merge_but_h1_to_h2_change_fails_closed():
     assert any("head SHA changed" in action for action in stale_actions)
     current_failure.assert_not_called()
     stale_failure.assert_not_called()
+
+
+def test_green_ci_with_blocking_review_thread_never_becomes_ci_failure_repair():
+    """REQ-003: a review-gate deferral retains its route under green CI."""
+    state = ClaimedReviewThreadGateState(
+        blocking_unresolved=(ReviewThread(id="blocking-thread"),),
+        has_blocking_unresolved=True,
+    )
+
+    actions, merge, failure_consumer, _ = _run_ci_consumer(
+        _snapshot(ObservationAvailability.KNOWN, CIConclusion.SUCCESS),
+        thread_state=state,
+    )
+
+    merge.assert_not_called()
+    failure_consumer.assert_not_called()
+    assert any("unresolved review threads" in action for action in actions)
+
+
+def test_settled_local_job_waits_for_independent_validation_at_green_ci(tmp_path):
+    """REQ-003: local completion alone is never final merge authority."""
+    ledger = RepairAllowanceLedger(tmp_path / "allowance.sqlite3")
+    request = LocalReviewRepairRequest(
+        repository=REPOSITORY,
+        pr_number=PR_NUMBER,
+        head_repository=REPOSITORY,
+        head_ref="feature",
+        head_sha=H1,
+        feedback_identities=("blocking-thread",),
+        prompt="repair the bounded finding",
+    )
+    authority, reason = admit_local_repair_allowance(request, ledger)
+    assert reason == ""
+    assert authority is not None
+    authority.mark_invocation()
+    authority.mark_completion(code_changed=True, evidence="published local correction")
+
+    actions, merge, failure_consumer, local_verification = _run_ci_consumer(
+        _snapshot(ObservationAvailability.KNOWN, CIConclusion.SUCCESS),
+        body="<!-- auto-coder:local-llm -->\nFixes #99",
+        ledger=ledger,
+    )
+
+    local_verification.assert_called_once()
+    merge.assert_not_called()
+    failure_consumer.assert_not_called()
+    assert not any("Successfully merged" in action for action in actions)
 
 
 def test_head_change_crosses_observable_final_boundary_before_merge():
@@ -315,7 +368,7 @@ def test_newer_attempt_registered_before_validation_release_fences_merge(tmp_pat
 
 
 def test_durable_cloud_conflict_receipt_governs_replay_without_local_substitute(tmp_path):
-    """REQ-003: replay retains cloud ownership and deduplicates its effect."""
+    """REQ-003: PR-entry replay retains cloud ownership and deduplicates its effect."""
 
     class ControlledCloudClient:
         def __init__(self):
@@ -335,17 +388,29 @@ def test_durable_cloud_conflict_receipt_governs_replay_without_local_substitute(
     }
     github = MagicMock()
     github.get_pr_comments.return_value = []
+    config = AutomationConfig()
+
+    def conflict_effect(_number, _state, _repository):
+        result = _delegate_cloud_merge_conflict_repair_result(REPOSITORY, pr_data, github)
+        return [result.accepted_action or result.reason]
 
     with (
+        patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as unsafe,
+        patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False),
+        patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+        patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": False, "merge_state_status": "dirty"}),
+        patch("auto_coder.pr_processor.check_pr_repair_exhaustion", return_value=None),
+        patch("auto_coder.pr_processor._start_mergeability_remediation", side_effect=conflict_effect),
         patch("auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=(cloud, "task-existing")),
         patch("auto_coder.pr_processor._cloud_conflict_state_path", return_value=state_path),
         patch("auto_coder.pr_processor._resolve_pr_merge_conflicts") as local_repair,
     ):
-        first = _delegate_cloud_merge_conflict_repair_result(REPOSITORY, pr_data, github)
-        replay = _delegate_cloud_merge_conflict_repair_result(REPOSITORY, pr_data, github)
+        unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
+        first = _handle_pr_merge(github, REPOSITORY, pr_data, config, {})
+        replay = _handle_pr_merge(github, REPOSITORY, pr_data, config, {})
 
-    assert first.delegated is True
-    assert replay.delegated is True
+    assert any("accepted merge-conflict-repair" in action for action in first)
+    assert any("accepted merge-conflict-repair" in action for action in replay)
     assert len(cloud.messages) == 1
     local_repair.assert_not_called()
     assert state_path.exists()

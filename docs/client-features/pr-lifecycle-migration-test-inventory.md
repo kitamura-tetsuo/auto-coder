@@ -28,7 +28,10 @@ It enters `_handle_pr_merge` for enabled, disabled, and exhausted conflict
 remediation. It also carries those CI observations into the merge consumer,
 uses explicit checkpoints to order a remote H1-to-H2 change and a durable newer
 validation attempt before the merge effect, proves the unchanged-head positive
-case reaches that effect, and replays a real temporary cloud-repair receipt.
+case reaches that effect, and replays a real temporary cloud-repair receipt
+through `_handle_pr_merge`. Green-CI cases additionally retain review-thread
+blocking and a completed local correction awaiting independent validation as
+deferrals; neither is reinterpreted as CI failure or merge authority.
 Only `observe_ci` and service construction are controlled for CI;
 the resulting `GitHubActionsStatusResult` is produced by production code. The
 conflict cases control the GitHub/Git repair effect at
