@@ -13,7 +13,8 @@ from pathlib import Path
 
 POLICY_PATH = Path(".github/ci-maintenance.json")
 CLOSING_REFERENCE = re.compile(
-    r"(?im)(?:^|\s)(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?:https://github\.com/([^/\s]+)/([^/\s]+)/issues/|#)(\d+)\b"
+    r"(?im)(?:^|\s)(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+"
+    r"(?:(?:https://github\.com/)?([\w.-]+)/([\w.-]+)(?:/issues/|#)|#)(\d+)\b"
 )
 
 
@@ -52,7 +53,7 @@ def _closing_issues(body: str, repository: str) -> set[int]:
     result: set[int] = set()
     for match in CLOSING_REFERENCE.finditer(body):
         reference_owner, reference_repo, number = match.groups()
-        if reference_owner is None or (reference_owner == owner and reference_repo == repo):
+        if reference_owner is None or (reference_owner.lower() == owner.lower() and reference_repo.lower() == repo.lower()):
             result.add(int(number))
     return result
 
