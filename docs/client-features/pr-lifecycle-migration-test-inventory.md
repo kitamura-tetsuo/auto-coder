@@ -31,7 +31,10 @@ validation attempt before the merge effect, proves the unchanged-head positive
 case reaches that effect, and replays a real temporary cloud-repair receipt
 through `_handle_pr_merge`. Green-CI cases additionally retain review-thread
 blocking and a completed local correction awaiting independent validation as
-deferrals; neither is reinterpreted as CI failure or merge authority.
+deferrals; neither is reinterpreted as CI failure or merge authority. A green
+review-repair case enters the same PR boundary twice with a temporary durable
+receipt store, proving replay retains the cloud owner without redelivery or a
+local substitute.
 Only `observe_ci` and service construction are controlled for CI;
 the resulting `GitHubActionsStatusResult` is produced by production code. The
 conflict cases control the GitHub/Git repair effect at
@@ -59,9 +62,9 @@ the merge effect. The maintained group therefore keeps a production CI
 interpreter boundary and an actual `_handle_pr_merge` route boundary available
 independently of those historical patch sites.
 
-At correction, both commands above completed successfully. No test was
-skipped or xfailed, no paid provider was contacted, and ordinary CI remained
-unchanged. This test-only characterization changes no processing origin,
+At correction, the maintained group completed with 20 passing tests. No test
+was skipped or xfailed, no paid provider was contacted, and ordinary CI
+remained unchanged. This test-only characterization changes no processing origin,
 admission rule, route, outcome, durable resumption path, or trace schema, so the
 dashboard production-to-view contract and `docs/dashboard-observability.md`
 require no update.

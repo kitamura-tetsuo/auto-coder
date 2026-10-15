@@ -25,10 +25,11 @@ from auto_coder.ci_observation import (
     WorkflowExecutionIdentity,
     WorkflowObservation,
 )
+from auto_coder.cloud_manager import CloudTaskBinding
 from auto_coder.durable_repair_allowance import RepairAllowanceLedger
 from auto_coder.local_review_repair import LocalReviewRepairRequest, admit_local_repair_allowance
 from auto_coder.pr_processor import ClaimedReviewThreadGateState, _delegate_cloud_merge_conflict_repair_result, _handle_pr_merge
-from auto_coder.util.gh_cache import ReviewThread
+from auto_coder.util.gh_cache import PullRequestRepairMetadata, ReviewThread, ReviewThreadComment
 from auto_coder.util.github_action import _check_github_actions_status
 
 pytestmark = pytest.mark.pr_lifecycle_contract
@@ -414,3 +415,62 @@ def test_durable_cloud_conflict_receipt_governs_replay_without_local_substitute(
     assert len(cloud.messages) == 1
     local_repair.assert_not_called()
     assert state_path.exists()
+
+
+def test_durable_review_repair_receipt_replays_through_pr_entry_without_local_effect(tmp_path, monkeypatch):
+    """REQ-003: supported replay retains its cloud owner and receipt."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    state_path = tmp_path / "review-repairs.json"
+    green = _snapshot(ObservationAvailability.KNOWN, CIConclusion.SUCCESS)
+    thread = ReviewThread(
+        id="PRRT_repair",
+        is_resolved=False,
+        comments=[ReviewThreadComment(database_id=201, body="Repair this finding", author_login="reviewer")],
+    )
+    state = ClaimedReviewThreadGateState(
+        unresolved=(thread,),
+        blocking_unresolved=(thread,),
+        has_blocking_unresolved=True,
+    )
+    config = AutomationConfig()
+    config.AUTO_MERGE = True
+    config.ENABLE_ADVERSARIAL_VALIDATION = False
+    pr_data = {
+        "number": PR_NUMBER,
+        "body": "Fixes #99\nhttps://chatgpt.com/codex/tasks/task-contract",
+        "labels": [],
+        "head": {"ref": "cloud/feature", "sha": H1},
+        "base": {"ref": "main", "sha": "base-1"},
+    }
+    client = MagicMock(token="controlled-token")
+    client.get_pull_request_repair_metadata_strict.return_value = PullRequestRepairMetadata(head_ref="cloud/feature", head_sha=H1, base_ref="main")
+    provider = MagicMock()
+    provider.send_followup.return_value = True
+
+    with (
+        patch("auto_coder.util.github_action.get_ghapi_client", return_value=MagicMock()),
+        patch("auto_coder.util.github_action.observe_ci", return_value=green),
+        patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as unsafe,
+        patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=()),
+        patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+        patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=True),
+        patch("auto_coder.pr_processor._is_pr_adversarial_validation_enabled", return_value=False),
+        patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=state),
+        patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
+        patch("auto_coder.pr_processor.CloudManager.get_binding", return_value=CloudTaskBinding(provider="codex-cloud", task_id="task-contract")),
+        patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", return_value=provider),
+        patch("auto_coder.pr_processor._revalidate_local_review_repair_route") as local_effect,
+        patch("auto_coder.pr_processor._merge_pr") as merge,
+        patch("auto_coder.pr_processor.get_detailed_checks_from_history") as failure_consumer,
+    ):
+        unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
+        first = _handle_pr_merge(client, REPOSITORY, pr_data, config, {})
+        replay = _handle_pr_merge(client, REPOSITORY, pr_data, config, {})
+
+    assert any("All GitHub Actions checks passed" in action for action in first)
+    assert any("All GitHub Actions checks passed" in action for action in replay)
+    provider.send_followup.assert_called_once()
+    assert state_path.exists()
+    local_effect.assert_not_called()
+    merge.assert_not_called()
+    failure_consumer.assert_not_called()
