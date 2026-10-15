@@ -11,7 +11,7 @@ from auto_coder.util.github_action import GitHubActionsStatusResult
 
 
 class _Checks:
-    def __init__(self, status: str, conclusion: str | None, identifier: int | None) -> None:
+    def __init__(self, status: str, conclusion: str | None, identifier: int | None, unavailable: bool) -> None:
         self._run = {
             "id": identifier,
             "name": "PR Tests",
@@ -19,8 +19,11 @@ class _Checks:
             "conclusion": conclusion,
             "details_url": f"https://github.test/actions/runs/{identifier}",
         }
+        self._unavailable = unavailable
 
     def list_for_ref(self, _owner: str, _repo: str, *, ref: str, **_kwargs: object) -> dict[str, object]:
+        if self._unavailable:
+            raise ValueError("controlled CI observation unavailable")
         if self._run["id"] is None:
             return {"check_runs": []}
         return {"check_runs": [{**self._run, "head_sha": ref, "app": {"id": 1}}]}
@@ -49,7 +52,10 @@ def authoritative_ci_status(
         effective_success = success and error is None
         conclusion = CIConclusion.PENDING if in_progress else (CIConclusion.SUCCESS if effective_success else CIConclusion.FAILURE)
         status = "in_progress" if conclusion is CIConclusion.PENDING else "completed"
-        api = SimpleNamespace(checks=_Checks(status, None if in_progress else conclusion.value, identifier), actions=_Actions())
+        api = SimpleNamespace(
+            checks=_Checks(status, None if in_progress else conclusion.value, identifier, error is not None),
+            actions=_Actions(),
+        )
         snapshot = observe_ci(api, "controlled-token", repository, pr_number, head, api_origin="https://api.github.test")
         return GitHubActionsStatusResult(
             success=effective_success,

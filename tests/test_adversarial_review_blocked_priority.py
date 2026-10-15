@@ -18,6 +18,7 @@ from auto_coder.automation_config import AutomationConfig
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.pr_processor import is_current_head_adversarial_review_blocked
 from auto_coder.util.github_action import GitHubActionsStatusResult
+from tests.ci_observation_fakes import authoritative_ci_status
 
 # Matches the autouse `_stub_reviewer_app_identity` fixture in tests/conftest.py.
 REVIEWER_LOGIN = "auto-coder-reviewer[bot]"
@@ -162,7 +163,7 @@ class TestAdversarialReviewBlockedPriorityIntegration:
         mock_github_client.get_issue.return_value = {"number": 42, "title": "Spec", "body": ""}
         mock_github_client.get_pr_reviews_strict.return_value = [_adversarial_review(head_sha, "NEEDS_FIX")]
 
-        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[1])
 
         candidates = engine._get_candidates(test_repo_name, max_items=10)
 
@@ -193,7 +194,7 @@ class TestAdversarialReviewBlockedPriorityIntegration:
         # Only the old HEAD's blocking review exists; nothing published for new_sha yet.
         mock_github_client.get_pr_reviews_strict.return_value = [_adversarial_review(old_sha, "NEEDS_FIX")]
 
-        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[1])
 
         candidates = engine._get_candidates(test_repo_name, max_items=10)
 
@@ -216,7 +217,7 @@ class TestAdversarialReviewBlockedPriorityIntegration:
         mock_github_client.get_issue.return_value = {"number": 42, "title": "Spec", "body": ""}
         mock_github_client.get_pr_reviews_strict.return_value = [_adversarial_review(head_sha, "NEEDS_FIX")]
 
-        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[1])
 
         candidates = engine._get_candidates(test_repo_name, max_items=10)
 
@@ -239,7 +240,7 @@ class TestAdversarialReviewBlockedPriorityIntegration:
         mock_github_client.get_issue.return_value = {"number": 42, "title": "Spec", "body": ""}
         mock_github_client.get_pr_reviews_strict.return_value = [_adversarial_review(head_sha, "NEEDS_FIX")]
 
-        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[1])
 
         candidates = engine._get_candidates(test_repo_name, max_items=10)
 
@@ -262,7 +263,7 @@ class TestAdversarialReviewBlockedPriorityIntegration:
         mock_github_client.get_issue.return_value = {"number": 42, "title": "Spec", "body": ""}
         mock_github_client.get_pr_reviews_strict.return_value = [_adversarial_review(head_sha, "NEEDS_FIX")]
 
-        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[1])
 
         candidates = engine._get_candidates(test_repo_name, max_items=10)
 
@@ -285,7 +286,7 @@ class TestAdversarialReviewBlockedPriorityIntegration:
         mock_github_client.get_issue.return_value = {"number": 42, "title": "Spec", "body": ""}
         mock_github_client.get_pr_reviews_strict.return_value = [_adversarial_review(head_sha, "ERROR", state="COMMENTED")]
 
-        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[1])
 
         candidates = engine._get_candidates(test_repo_name, max_items=10)
 
@@ -310,7 +311,7 @@ class TestAdversarialReviewBlockedPriorityIntegration:
             {"id": 1, "state": "CHANGES_REQUESTED", "body": "This needs work.", "user": {"login": "some-human-reviewer"}},
         ]
 
-        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[1])
 
         candidates = engine._get_candidates(test_repo_name, max_items=10)
 

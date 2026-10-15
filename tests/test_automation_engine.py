@@ -1055,7 +1055,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
                 "number": 108,
                 "title": "Implementation",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "issue-100-work"},
+                "head": {"ref": "issue-100-work", "sha": "a" * 40},
             },
             priority=0,
         )
@@ -1115,7 +1115,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
                         "number": 108,
                         "title": "Implementation",
                         "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                        "head": {"ref": "issue-100-work"},
+                        "head": {"ref": "issue-100-work", "sha": "a" * 40},
                     }
                 ]
 
@@ -1380,7 +1380,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
     def test_process_single_propagates_remote_head_verification_failure(self, mock_github_client):
         """A nested caught merge-stage exception must reach top-level errors."""
         engine = AutomationEngine(mock_github_client, config=AutomationConfig())
-        candidate = Candidate(type="pr", data={"number": 5266, "title": "PR", "head": {"ref": "feature-5266"}}, priority=1)
+        candidate = Candidate(type="pr", data={"number": 5266, "title": "PR", "head": {"ref": "feature-5266", "sha": "a" * 40}}, priority=1)
         diagnostic = "Failed to verify remote head SHA for PR #5266: GitHub API rate limited; merge aborted."
         engine._check_and_handle_closed_branch = Mock(return_value=True)
         engine._create_candidate_from_single = Mock(return_value=candidate)
@@ -1766,7 +1766,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             "number": 123,
             "title": "Test PR",
             "body": "Test description",
-            "head": {"ref": "test-branch"},
+            "head": {"ref": "test-branch", "sha": "a" * 40},
             "base": {"ref": "main"},
             "mergeable": True,
             "draft": False,
@@ -1809,7 +1809,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             "number": 123,
             "title": "Test PR",
             "body": "Test description",
-            "head": {"ref": "test-branch"},
+            "head": {"ref": "test-branch", "sha": "a" * 40},
             "base": {"ref": "main"},
             "mergeable": True,
             "draft": False,
@@ -1854,7 +1854,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             "number": 123,
             "title": "Test PR with conflicts",
             "body": "Test description",
-            "head": {"ref": "test-branch"},
+            "head": {"ref": "test-branch", "sha": "a" * 40},
             "base": {"ref": "main"},
             "mergeable": False,  # Simulate merge conflicts
             "draft": False,
@@ -2405,7 +2405,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
 
         from auto_coder import pr_processor
 
-        pr_data = {"number": 123, "head": {"ref": "test-branch"}}
+        pr_data = {"number": 123, "head": {"ref": "test-branch", "sha": "a" * 40}}
 
         # Execute
         result = pr_processor._checkout_pr_branch("test/repo", pr_data, AutomationConfig())
@@ -2628,7 +2628,7 @@ class TestAutomationEngineExtended:
         config = AutomationConfig()
         # Enable force clean before checkout
         config.FORCE_CLEAN_BEFORE_CHECKOUT = True
-        pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "test-branch"}}
+        pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "test-branch", "sha": "a" * 40}}
 
         # We need to mock cmd.run_command (for git commands) and gh_logger (for gh commands)
         # Use patch.object to mock the method on the cmd instance
@@ -2659,7 +2659,7 @@ class TestAutomationEngineExtended:
         config = AutomationConfig()
         # Explicitly set to False (default)
         config.FORCE_CLEAN_BEFORE_CHECKOUT = False
-        pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "test-branch"}}
+        pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "test-branch", "sha": "a" * 40}}
 
         # Mock cmd.run_command (invoked by pr_processor.cmd)
         # Use patch.object to mock the method on the cmd instance
@@ -3043,7 +3043,7 @@ class TestGetCandidates:
                 "number": 1,
                 "title": "PR needing fix",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "pr-1"},
+                "head": {"ref": "pr-1", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": True,  # Mergeable but failing checks
                 "created_at": "2024-01-01T00:00:00Z",
@@ -3052,7 +3052,7 @@ class TestGetCandidates:
                 "number": 2,
                 "title": "PR ready for merge",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "pr-2"},
+                "head": {"ref": "pr-2", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": True,
                 "created_at": "2024-01-02T00:00:00Z",
@@ -3061,7 +3061,7 @@ class TestGetCandidates:
                 "number": 3,
                 "title": "Urgent unmergeable PR",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "pr-3"},
+                "head": {"ref": "pr-3", "sha": "a" * 40},
                 "labels": ["urgent"],
                 "mergeable": False,  # Not mergeable
                 "created_at": "2024-01-03T00:00:00Z",
@@ -3079,23 +3079,24 @@ class TestGetCandidates:
         mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
 
         # Mock GitHub Actions checks
-        def check_actions_side_effect(repo_name, pr_data, config):
+        def check_actions_side_effect(repo_name, pr_data, config, github_client=None):
             if pr_data["number"] == 1:
                 # PR needing fix - failing checks but mergeable
-                return GitHubActionsStatusResult(success=False, ids=[])
+                return authoritative_ci_status(success=False, ids=[1])(repo_name, pr_data)
             elif pr_data["number"] == 2:
                 # Ready to merge PR
-                return GitHubActionsStatusResult(success=True, ids=[])
+                return authoritative_ci_status(success=True, ids=[1])(repo_name, pr_data)
             elif pr_data["number"] == 3:
                 # Urgent unmergeable PR with passing checks
-                return GitHubActionsStatusResult(success=True, ids=[])
-            return GitHubActionsStatusResult(success=True, ids=[])
+                return authoritative_ci_status(success=True, ids=[1])(repo_name, pr_data)
+            return authoritative_ci_status(success=True, ids=[1])(repo_name, pr_data)
 
         mock_check_actions.side_effect = check_actions_side_effect
 
         mock_extract_issues.return_value = []
         mock_github_client.get_open_sub_issues.return_value = []
         mock_github_client.has_linked_pr.return_value = False
+        mock_github_client.get_pr_reviews_strict.return_value = []
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -3148,7 +3149,7 @@ class TestGetCandidates:
                 "number": 1,
                 "title": "Unmergeable PR (older)",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "pr-1"},
+                "head": {"ref": "pr-1", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": False,  # Not mergeable (has conflicts)
                 "created_at": "2024-01-01T00:00:00Z",
@@ -3157,7 +3158,7 @@ class TestGetCandidates:
                 "number": 2,
                 "title": "Failing checks but mergeable PR",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "pr-2"},
+                "head": {"ref": "pr-2", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": True,  # Mergeable but failing checks
                 "created_at": "2024-01-02T00:00:00Z",
@@ -3166,7 +3167,7 @@ class TestGetCandidates:
                 "number": 3,
                 "title": "Unmergeable PR (younger)",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "pr-3"},
+                "head": {"ref": "pr-3", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": False,  # Not mergeable (has conflicts)
                 "created_at": "2024-01-03T00:00:00Z",
@@ -3184,14 +3185,15 @@ class TestGetCandidates:
         mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
 
         # Mock GitHub Actions checks - all failing
-        def check_actions_side_effect(repo_name, pr_data, config):
-            return GitHubActionsStatusResult(success=False, ids=[])
+        def check_actions_side_effect(repo_name, pr_data, config, github_client=None):
+            return authoritative_ci_status(success=False, ids=[1])(repo_name, pr_data)
 
         mock_check_actions.side_effect = check_actions_side_effect
 
         mock_extract_issues.return_value = []
         mock_github_client.get_open_sub_issues.return_value = []
         mock_github_client.has_linked_pr.return_value = False
+        mock_github_client.get_pr_reviews_strict.return_value = []
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -3241,7 +3243,7 @@ class TestGetCandidates:
                 "number": 1,
                 "title": "Urgent unmergeable PR",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "pr-1"},
+                "head": {"ref": "pr-1", "sha": "a" * 40},
                 "labels": ["urgent"],
                 "mergeable": False,
                 "created_at": "2024-01-01T00:00:00Z",
@@ -3250,7 +3252,7 @@ class TestGetCandidates:
                 "number": 2,
                 "title": "Urgent mergeable PR",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "pr-2"},
+                "head": {"ref": "pr-2", "sha": "a" * 40},
                 "labels": ["urgent"],
                 "mergeable": True,
                 "created_at": "2024-01-02T00:00:00Z",
@@ -3259,7 +3261,7 @@ class TestGetCandidates:
                 "number": 3,
                 "title": "Regular unmergeable PR",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "pr-3"},
+                "head": {"ref": "pr-3", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": False,
                 "created_at": "2024-01-03T00:00:00Z",
@@ -3268,7 +3270,7 @@ class TestGetCandidates:
                 "number": 4,
                 "title": "Regular mergeable PR",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "pr-4"},
+                "head": {"ref": "pr-4", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": True,
                 "created_at": "2024-01-04T00:00:00Z",
@@ -3286,18 +3288,19 @@ class TestGetCandidates:
         mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
 
         # Mock GitHub Actions checks
-        def check_actions_side_effect(repo_name, pr_data, config):
+        def check_actions_side_effect(repo_name, pr_data, config, github_client=None):
             if pr_data["number"] == 2:
-                return GitHubActionsStatusResult(success=False, ids=[])
+                return authoritative_ci_status(success=False, ids=[1])(repo_name, pr_data)
             elif pr_data["number"] == 4:
-                return GitHubActionsStatusResult(success=True, ids=[])
-            return GitHubActionsStatusResult(success=False, ids=[])
+                return authoritative_ci_status(success=True, ids=[1])(repo_name, pr_data)
+            return authoritative_ci_status(success=False, ids=[1])(repo_name, pr_data)
 
         mock_check_actions.side_effect = check_actions_side_effect
 
         mock_extract_issues.return_value = []
         mock_github_client.get_open_sub_issues.return_value = []
         mock_github_client.has_linked_pr.return_value = False
+        mock_github_client.get_pr_reviews_strict.return_value = []
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -3344,7 +3347,7 @@ class TestGetCandidates:
                 "number": 1,
                 "title": "Dependabot green PR",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "bot-pr-1"},
+                "head": {"ref": "bot-pr-1", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": True,
                 "created_at": "2024-01-01T00:00:00Z",
@@ -3355,7 +3358,7 @@ class TestGetCandidates:
                 "number": 2,
                 "title": "Dependabot non-ready PR",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "bot-pr-2"},
+                "head": {"ref": "bot-pr-2", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": False,
                 "created_at": "2024-01-02T00:00:00Z",
@@ -3374,12 +3377,12 @@ class TestGetCandidates:
         # Mock get_open_prs_json to return the list of PR data
         mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
 
-        def check_actions_side_effect(repo_name, pr_details, config_obj):
+        def check_actions_side_effect(repo_name, pr_details, config_obj, github_client=None):
             if pr_details["number"] == 1:
-                return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+                return authoritative_ci_status(success=True, ids=[1], in_progress=False)(repo_name, pr_details)
             if pr_details["number"] == 2:
-                return GitHubActionsStatusResult(success=False, ids=[], in_progress=False)
-            return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+                return authoritative_ci_status(success=False, ids=[1], in_progress=False)(repo_name, pr_details)
+            return authoritative_ci_status(success=True, ids=[1], in_progress=False)(repo_name, pr_details)
 
         mock_check_actions.side_effect = check_actions_side_effect
 
@@ -3422,7 +3425,7 @@ class TestGetCandidates:
                 "number": 1,
                 "title": "Renovate green PR",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "bot-pr-1"},
+                "head": {"ref": "bot-pr-1", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": True,
                 "created_at": "2024-01-01T00:00:00Z",
@@ -3433,7 +3436,7 @@ class TestGetCandidates:
                 "number": 2,
                 "title": "Renovate PR needing fixes",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "bot-pr-2"},
+                "head": {"ref": "bot-pr-2", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": False,
                 "created_at": "2024-01-02T00:00:00Z",
@@ -3452,12 +3455,12 @@ class TestGetCandidates:
         # Mock get_open_prs_json to return the list of PR data
         mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
 
-        def check_actions_side_effect(repo_name, pr_details, config_obj):
+        def check_actions_side_effect(repo_name, pr_details, config_obj, github_client=None):
             if pr_details["number"] == 1:
-                return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+                return authoritative_ci_status(success=True, ids=[1], in_progress=False)(repo_name, pr_details)
             if pr_details["number"] == 2:
-                return GitHubActionsStatusResult(success=False, ids=[], in_progress=False)
-            return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+                return authoritative_ci_status(success=False, ids=[1], in_progress=False)(repo_name, pr_details)
+            return authoritative_ci_status(success=True, ids=[1], in_progress=False)(repo_name, pr_details)
 
         mock_check_actions.side_effect = check_actions_side_effect
 
@@ -3504,7 +3507,7 @@ class TestGetCandidates:
                 "number": 1,
                 "title": "Dependabot green PR",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "bot-pr-1"},
+                "head": {"ref": "bot-pr-1", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": True,
                 "created_at": "2024-01-01T00:00:00Z",
@@ -3514,7 +3517,7 @@ class TestGetCandidates:
                 "number": 2,
                 "title": "Dependabot non-ready PR",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "bot-pr-2"},
+                "head": {"ref": "bot-pr-2", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": False,
                 "created_at": "2024-01-02T00:00:00Z",
@@ -3532,12 +3535,12 @@ class TestGetCandidates:
         # Mock get_open_prs_json to return the list of PR data
         mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
 
-        def check_actions_side_effect(repo_name, pr_details, config_obj):
+        def check_actions_side_effect(repo_name, pr_details, config_obj, github_client=None):
             if pr_details["number"] == 1:
-                return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+                return authoritative_ci_status(success=True, ids=[1], in_progress=False)(repo_name, pr_details)
             if pr_details["number"] == 2:
-                return GitHubActionsStatusResult(success=False, ids=[], in_progress=False)
-            return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+                return authoritative_ci_status(success=False, ids=[1], in_progress=False)(repo_name, pr_details)
+            return authoritative_ci_status(success=True, ids=[1], in_progress=False)(repo_name, pr_details)
 
         mock_check_actions.side_effect = check_actions_side_effect
 
@@ -3582,7 +3585,7 @@ class TestGetCandidates:
                 "number": 1,
                 "title": "Dependabot passing PR",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "bot-pr-1"},
+                "head": {"ref": "bot-pr-1", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": True,
                 "created_at": "2024-01-01T00:00:00Z",
@@ -3601,8 +3604,8 @@ class TestGetCandidates:
         # Mock get_open_prs_json to return the list of PR data
         mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
 
-        def check_actions_side_effect(repo_name, pr_details, config_obj):
-            return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+        def check_actions_side_effect(repo_name, pr_details, config_obj, github_client=None):
+            return authoritative_ci_status(success=True, ids=[1], in_progress=False)(repo_name, pr_details)
 
         mock_check_actions.side_effect = check_actions_side_effect
 
@@ -3645,7 +3648,7 @@ class TestGetCandidates:
                 "number": 1,
                 "title": "Dependabot failing PR",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "bot-pr-1"},
+                "head": {"ref": "bot-pr-1", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": False,
                 "created_at": "2024-01-01T00:00:00Z",
@@ -3664,8 +3667,8 @@ class TestGetCandidates:
         # Mock get_open_prs_json to return the list of PR data
         mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
 
-        def check_actions_side_effect(repo_name, pr_details, config_obj):
-            return GitHubActionsStatusResult(success=False, ids=[], in_progress=False)
+        def check_actions_side_effect(repo_name, pr_details, config_obj, github_client=None):
+            return authoritative_ci_status(success=False, ids=[1], in_progress=False)(repo_name, pr_details)
 
         mock_check_actions.side_effect = check_actions_side_effect
 
@@ -3707,7 +3710,7 @@ class TestGetCandidates:
                 "number": 1,
                 "title": "Dependabot failing PR",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "bot-pr-1"},
+                "head": {"ref": "bot-pr-1", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": False,
                 "created_at": "2024-01-01T00:00:00Z",
@@ -3725,8 +3728,8 @@ class TestGetCandidates:
         # Mock get_open_prs_json to return the list of PR data
         mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
 
-        def check_actions_side_effect(repo_name, pr_details, config_obj):
-            return GitHubActionsStatusResult(success=False, ids=[], in_progress=False)
+        def check_actions_side_effect(repo_name, pr_details, config_obj, github_client=None):
+            return authoritative_ci_status(success=False, ids=[1], in_progress=False)(repo_name, pr_details)
 
         mock_check_actions.side_effect = check_actions_side_effect
 
@@ -3771,7 +3774,7 @@ class TestGetCandidates:
                 "number": 1,
                 "title": "Dependabot green PR",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "bot-pr-1"},
+                "head": {"ref": "bot-pr-1", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": True,
                 "created_at": "2024-01-01T00:00:00Z",
@@ -3781,7 +3784,7 @@ class TestGetCandidates:
                 "number": 2,
                 "title": "Dependabot failing PR",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "bot-pr-2"},
+                "head": {"ref": "bot-pr-2", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": True,
                 "created_at": "2024-01-02T00:00:00Z",
@@ -3791,7 +3794,7 @@ class TestGetCandidates:
                 "number": 3,
                 "title": "Dependabot unmergeable PR",
                 "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-                "head": {"ref": "bot-pr-3"},
+                "head": {"ref": "bot-pr-3", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": False,
                 "created_at": "2024-01-03T00:00:00Z",
@@ -3806,14 +3809,14 @@ class TestGetCandidates:
         mock_github_client.get_pr_comments.return_value = []
         mock_github_client.get_pr_commits.return_value = []
 
-        def check_actions_side_effect(repo_name, pr_details, config_obj):
+        def check_actions_side_effect(repo_name, pr_details, config_obj, github_client=None):
             if pr_details["number"] == 1:
-                return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+                return authoritative_ci_status(success=True, ids=[1], in_progress=False)(repo_name, pr_details)
             if pr_details["number"] == 2:
-                return GitHubActionsStatusResult(success=False, ids=[], in_progress=False)
+                return authoritative_ci_status(success=False, ids=[1], in_progress=False)(repo_name, pr_details)
             if pr_details["number"] == 3:
-                return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
-            return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+                return authoritative_ci_status(success=True, ids=[1], in_progress=False)(repo_name, pr_details)
+            return authoritative_ci_status(success=True, ids=[1], in_progress=False)(repo_name, pr_details)
 
         mock_check_actions.side_effect = check_actions_side_effect
 
@@ -3879,7 +3882,7 @@ class TestGetCandidates:
             "number": 1,
             "title": "PR",
             "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
-            "head": {"ref": "pr-1"},
+            "head": {"ref": "pr-1", "sha": "a" * 40},
             "labels": ["@auto-coder"],  # Has @auto-coder label - should skip
             "mergeable": True,
             "created_at": "2024-01-01T00:00:00Z",
@@ -4018,7 +4021,7 @@ class TestGetCandidates:
             "number": 1,
             "title": "PR",
             "body": "This PR fixes #10 and #20",
-            "head": {"ref": "pr-1"},
+            "head": {"ref": "pr-1", "sha": "a" * 40},
             "labels": [],
             "mergeable": True,
             "created_at": "2024-01-01T00:00:00Z",
@@ -4027,10 +4030,11 @@ class TestGetCandidates:
         # Mock get_open_prs_json to return the list of PR data
         mock_github_client.get_open_prs_json.return_value = [pr_details]
 
-        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[1])
         mock_extract_issues.return_value = [10, 20]  # Extracted from PR body
         mock_github_client.get_open_sub_issues.return_value = []
         mock_github_client.has_linked_pr.return_value = False
+        mock_github_client.get_pr_reviews_strict.return_value = []
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -5239,7 +5243,7 @@ class TestCheckAndHandleClosedBranch:
         mock_github_client.get_pr_details.return_value = {
             "number": 704,
             "title": "Fix TOML dotted key parsing",
-            "head": {"ref": "fix/toml-dotted-key-parsing"},
+            "head": {"ref": "fix/toml-dotted-key-parsing", "sha": "a" * 40},
             "labels": ["@auto-coder"],  # PR already has @auto-coder label
             "mergeable": True,
             "state": "open",

@@ -4,6 +4,7 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig, StaleJulesPRResult
 from auto_coder.automation_engine import AutomationEngine
+from tests.ci_observation_fakes import authoritative_ci_status
 
 
 class TestAutomationEngineCandidates:
@@ -18,7 +19,7 @@ class TestAutomationEngineCandidates:
         repo_name = "owner/repo"
 
         # Mock PR data
-        pr_data = {"number": 123, "title": "Jules PR", "draft": True, "head": {"ref": "jules-branch"}, "labels": [], "body": "Session ID: abc", "created_at": "2023-01-01T00:00:00Z", "node_id": "PR_123"}
+        pr_data = {"number": 123, "title": "Jules PR", "draft": True, "head": {"ref": "jules-branch", "sha": "a" * 40}, "labels": [], "body": "Session ID: abc", "created_at": "2023-01-01T00:00:00Z", "node_id": "PR_123"}
 
         # Mock get_open_prs_json to return the PR data
         mock_github_client.get_open_prs_json.return_value = [pr_data]
@@ -37,7 +38,7 @@ class TestAutomationEngineCandidates:
 
             mock_label_manager.return_value.__enter__.return_value = True
             mock_check_actions.return_value = True
-            mock_check_status.return_value = Mock(success=True)
+            mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[1])
             mock_skip_jules.return_value = False
             mock_close_stale.return_value = StaleJulesPRResult()
 
@@ -67,7 +68,7 @@ class TestAutomationEngineCandidates:
         repo_name = "owner/repo"
 
         # Mock PR data
-        pr_data = {"number": 123, "title": "Jules PR", "draft": False, "head": {"ref": "jules-branch"}, "labels": [], "body": "Session ID: abc", "created_at": "2023-01-01T00:00:00Z"}  # Already ready
+        pr_data = {"number": 123, "title": "Jules PR", "draft": False, "head": {"ref": "jules-branch", "sha": "a" * 40}, "labels": [], "body": "Session ID: abc", "created_at": "2023-01-01T00:00:00Z"}  # Already ready
 
         # Mock get_open_prs_json to return the PR data
         mock_github_client.get_open_prs_json.return_value = [pr_data]
@@ -86,7 +87,7 @@ class TestAutomationEngineCandidates:
 
             mock_label_manager.return_value.__enter__.return_value = True
             mock_check_actions.return_value = True
-            mock_check_status.return_value = Mock(success=True)
+            mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[1])
             mock_skip_jules.return_value = False
             mock_close_stale.return_value = StaleJulesPRResult()
 
@@ -109,7 +110,7 @@ class TestAutomationEngineCandidates:
         repo_name = "owner/repo"
 
         # Mock PR data
-        pr_data = {"number": 123, "title": "Regular PR", "draft": True, "head": {"ref": "feature-branch"}, "labels": [], "body": "Description", "created_at": "2023-01-01T00:00:00Z"}
+        pr_data = {"number": 123, "title": "Regular PR", "draft": True, "head": {"ref": "feature-branch", "sha": "a" * 40}, "labels": [], "body": "Description", "created_at": "2023-01-01T00:00:00Z"}
 
         # Mock get_open_prs_json to return the PR data
         mock_github_client.get_open_prs_json.return_value = [pr_data]
@@ -128,7 +129,7 @@ class TestAutomationEngineCandidates:
 
             mock_label_manager.return_value.__enter__.return_value = True
             mock_check_actions.return_value = True
-            mock_check_status.return_value = Mock(success=True)
+            mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[1])
             mock_skip_jules.return_value = False
             mock_close_stale.return_value = StaleJulesPRResult()
 

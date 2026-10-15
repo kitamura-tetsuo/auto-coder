@@ -12,6 +12,7 @@ from auto_coder.automation_config import AutomationConfig, Candidate, get_author
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.llm_backend_config import get_issue_allowlist_from_config, get_pr_allowlist_from_config
 from auto_coder.util.gh_cache import GitHubClient
+from tests.ci_observation_fakes import authoritative_ci_status
 
 
 class TestGetAuthorId:
@@ -205,7 +206,7 @@ class TestAutomationEngineAllowlistFiltering:
                 "created_at": "2026-01-01T00:00:00Z",
                 "labels": [],
                 "mergeable": True,
-                "head": {"ref": "branch1"},
+                "head": {"ref": "branch1", "sha": "a" * 40},
             },
             {
                 "number": 2,
@@ -215,7 +216,7 @@ class TestAutomationEngineAllowlistFiltering:
                 "created_at": "2026-01-01T00:00:00Z",
                 "labels": [],
                 "mergeable": True,
-                "head": {"ref": "branch2"},
+                "head": {"ref": "branch2", "sha": "a" * 40},
             },
         ]
 
@@ -240,7 +241,7 @@ class TestAutomationEngineAllowlistFiltering:
         ]
 
         with patch("auto_coder.util.github_action.preload_github_actions_status"), patch("auto_coder.util.github_action.check_github_actions_and_exit_if_in_progress", return_value=True), patch("auto_coder.util.github_action._check_github_actions_status") as mock_checks:
-            mock_checks.return_value = MagicMock(success=True)
+            mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
 
             candidates = engine._get_candidates("test/repo", max_items=10)
 

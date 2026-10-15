@@ -112,7 +112,9 @@ def select_pr_progress(inputs: PRProgressInputs) -> PRProgressDecision:
         return PRProgressDecision(ProgressRoute.BLOCK_EXHAUSTED_CONFLICT, "mergeability remediation allowance is exhausted", ci_state)
     if inputs.mergeable is False and inputs.remediation_enabled:
         return PRProgressDecision(ProgressRoute.REMEDIATE_CONFLICT, "affirmative conflict is eligible for remediation", ci_state)
-    if ci_state in {CIEvidenceState.PENDING, CIEvidenceState.KNOWN_EMPTY, CIEvidenceState.SUBJECT_MISMATCH}:
+    if ci_state is CIEvidenceState.KNOWN_EMPTY:
+        return PRProgressDecision(ProgressRoute.DISPATCH_CI, "no current-head CI observations exist", ci_state)
+    if ci_state in {CIEvidenceState.PENDING, CIEvidenceState.SUBJECT_MISMATCH}:
         return PRProgressDecision(ProgressRoute.WAIT_FOR_CI, "current-head CI evidence is pending or stale", ci_state)
     if ci_state in {CIEvidenceState.UNAVAILABLE, CIEvidenceState.MISSING}:
         return PRProgressDecision(ProgressRoute.REPORT_CI_UNAVAILABLE, "current-head CI evidence is unavailable or incomplete", ci_state)

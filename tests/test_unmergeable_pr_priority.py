@@ -5,6 +5,7 @@ import pytest
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.util.github_action import GitHubActionsStatusResult
+from tests.ci_observation_fakes import authoritative_ci_status
 
 
 class TestUnmergeablePRPriority:
@@ -38,7 +39,7 @@ class TestUnmergeablePRPriority:
                 "number": 1,
                 "title": "Unmergeable PR",
                 "body": "",
-                "head": {"ref": "pr-1"},
+                "head": {"ref": "pr-1", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": False,
                 "created_at": "2024-01-01T00:00:00Z",
@@ -47,7 +48,7 @@ class TestUnmergeablePRPriority:
                 "number": 2,
                 "title": "Mergeable PR",
                 "body": "",
-                "head": {"ref": "pr-2"},
+                "head": {"ref": "pr-2", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": True,
                 "created_at": "2024-01-02T00:00:00Z",
@@ -65,8 +66,8 @@ class TestUnmergeablePRPriority:
         mock_github_client.get_pr_commits.return_value = []
 
         # Mock GitHub Actions checks - all passing
-        def check_actions_side_effect(repo_name, pr_data, config):
-            return GitHubActionsStatusResult(success=True, ids=[])
+        def check_actions_side_effect(repo_name, pr_data, config, github_client=None):
+            return authoritative_ci_status(success=True, ids=[1])(repo_name, pr_data)
 
         mock_check_actions.side_effect = check_actions_side_effect
 
@@ -122,7 +123,7 @@ class TestUnmergeablePRPriority:
                 "number": 1,
                 "title": "Urgent unmergeable PR",
                 "body": "",
-                "head": {"ref": "pr-1"},
+                "head": {"ref": "pr-1", "sha": "a" * 40},
                 "labels": ["urgent"],
                 "mergeable": False,
                 "created_at": "2024-01-01T00:00:00Z",
@@ -131,7 +132,7 @@ class TestUnmergeablePRPriority:
                 "number": 2,
                 "title": "Urgent mergeable PR",
                 "body": "",
-                "head": {"ref": "pr-2"},
+                "head": {"ref": "pr-2", "sha": "a" * 40},
                 "labels": ["urgent"],
                 "mergeable": True,
                 "created_at": "2024-01-02T00:00:00Z",
@@ -140,7 +141,7 @@ class TestUnmergeablePRPriority:
                 "number": 3,
                 "title": "Regular unmergeable PR",
                 "body": "",
-                "head": {"ref": "pr-3"},
+                "head": {"ref": "pr-3", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": False,
                 "created_at": "2024-01-03T00:00:00Z",
@@ -158,8 +159,8 @@ class TestUnmergeablePRPriority:
         mock_github_client.get_pr_commits.return_value = []
 
         # Mock GitHub Actions checks - all passing
-        def check_actions_side_effect(repo_name, pr_data, config):
-            return GitHubActionsStatusResult(success=True, ids=[])
+        def check_actions_side_effect(repo_name, pr_data, config, github_client=None):
+            return authoritative_ci_status(success=True, ids=[1])(repo_name, pr_data)
 
         mock_check_actions.side_effect = check_actions_side_effect
 
@@ -239,7 +240,7 @@ class TestUnmergeablePRPriority:
                 "number": 1,
                 "title": "Urgent unmergeable",
                 "body": "",
-                "head": {"ref": "pr-1"},
+                "head": {"ref": "pr-1", "sha": "a" * 40},
                 "labels": ["urgent"],
                 "mergeable": False,
                 "created_at": "2024-01-01T00:00:00Z",
@@ -248,7 +249,7 @@ class TestUnmergeablePRPriority:
                 "number": 2,
                 "title": "Urgent mergeable",
                 "body": "",
-                "head": {"ref": "pr-2"},
+                "head": {"ref": "pr-2", "sha": "a" * 40},
                 "labels": ["urgent"],
                 "mergeable": True,
                 "created_at": "2024-01-02T00:00:00Z",
@@ -257,7 +258,7 @@ class TestUnmergeablePRPriority:
                 "number": 3,
                 "title": "Regular unmergeable",
                 "body": "",
-                "head": {"ref": "pr-3"},
+                "head": {"ref": "pr-3", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": False,
                 "created_at": "2024-01-03T00:00:00Z",
@@ -275,8 +276,8 @@ class TestUnmergeablePRPriority:
         mock_github_client.get_pr_commits.return_value = []
 
         # Mock GitHub Actions checks
-        def check_actions_side_effect(repo_name, pr_data, config):
-            return GitHubActionsStatusResult(success=True, ids=[])
+        def check_actions_side_effect(repo_name, pr_data, config, github_client=None):
+            return authoritative_ci_status(success=True, ids=[1])(repo_name, pr_data)
 
         mock_check_actions.side_effect = check_actions_side_effect
 
@@ -351,7 +352,7 @@ class TestPriorityBackwardCompatibility:
                 "number": 1,
                 "title": "Urgent PR",
                 "body": "",
-                "head": {"ref": "pr-1"},
+                "head": {"ref": "pr-1", "sha": "a" * 40},
                 "labels": ["urgent"],
                 "mergeable": True,
                 "created_at": "2024-01-01T00:00:00Z",
@@ -360,7 +361,7 @@ class TestPriorityBackwardCompatibility:
                 "number": 2,
                 "title": "Unmergeable PR",
                 "body": "",
-                "head": {"ref": "pr-2"},
+                "head": {"ref": "pr-2", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": False,
                 "created_at": "2024-01-02T00:00:00Z",
@@ -378,8 +379,8 @@ class TestPriorityBackwardCompatibility:
         mock_github_client.get_pr_commits.return_value = []
 
         # Mock GitHub Actions checks
-        def check_actions_side_effect(repo_name, pr_data, config):
-            return GitHubActionsStatusResult(success=True, ids=[])
+        def check_actions_side_effect(repo_name, pr_data, config, github_client=None):
+            return authoritative_ci_status(success=True, ids=[1])(repo_name, pr_data)
 
         mock_check_actions.side_effect = check_actions_side_effect
 
@@ -428,7 +429,7 @@ class TestPriorityBackwardCompatibility:
                 "number": 1,
                 "title": "Breaking change PR",
                 "body": "",
-                "head": {"ref": "pr-1"},
+                "head": {"ref": "pr-1", "sha": "a" * 40},
                 "labels": ["breaking-change"],
                 "mergeable": True,
                 "created_at": "2024-01-01T00:00:00Z",
@@ -437,7 +438,7 @@ class TestPriorityBackwardCompatibility:
                 "number": 2,
                 "title": "Urgent unmergeable PR",
                 "body": "",
-                "head": {"ref": "pr-2"},
+                "head": {"ref": "pr-2", "sha": "a" * 40},
                 "labels": ["urgent"],
                 "mergeable": False,
                 "created_at": "2024-01-02T00:00:00Z",
@@ -455,8 +456,8 @@ class TestPriorityBackwardCompatibility:
         mock_github_client.get_pr_commits.return_value = []
 
         # Mock GitHub Actions checks
-        def check_actions_side_effect(repo_name, pr_data, config):
-            return GitHubActionsStatusResult(success=True, ids=[])
+        def check_actions_side_effect(repo_name, pr_data, config, github_client=None):
+            return authoritative_ci_status(success=True, ids=[1])(repo_name, pr_data)
 
         mock_check_actions.side_effect = check_actions_side_effect
 
@@ -506,7 +507,7 @@ class TestPriorityEdgeCases:
             "number": 1,
             "title": "Unmergeable PR",
             "body": "",
-            "head": {"ref": "pr-1"},
+            "head": {"ref": "pr-1", "sha": "a" * 40},
             "labels": [],
             "mergeable": False,
             "created_at": "2024-01-01T00:00:00Z",
@@ -519,7 +520,7 @@ class TestPriorityEdgeCases:
         mock_github_client.get_pr_commits.return_value = []
 
         # Checks pass
-        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[1])
 
         mock_extract_issues.return_value = []
         mock_github_client.get_open_sub_issues.return_value = []
@@ -557,7 +558,7 @@ class TestPriorityEdgeCases:
             "number": 1,
             "title": "Unmergeable PR with failures",
             "body": "",
-            "head": {"ref": "pr-1"},
+            "head": {"ref": "pr-1", "sha": "a" * 40},
             "labels": [],
             "mergeable": False,
             "created_at": "2024-01-01T00:00:00Z",
@@ -570,7 +571,7 @@ class TestPriorityEdgeCases:
         mock_github_client.get_pr_commits.return_value = []
 
         # Checks fail
-        mock_check_actions.return_value = GitHubActionsStatusResult(success=False, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=False, ids=[1])
 
         mock_extract_issues.return_value = []
         mock_github_client.get_open_sub_issues.return_value = []
@@ -608,7 +609,7 @@ class TestPriorityEdgeCases:
             "number": 1,
             "title": "Mergeable PR with failures",
             "body": "",
-            "head": {"ref": "pr-1"},
+            "head": {"ref": "pr-1", "sha": "a" * 40},
             "labels": [],
             "mergeable": True,
             "created_at": "2024-01-01T00:00:00Z",
@@ -621,7 +622,7 @@ class TestPriorityEdgeCases:
         mock_github_client.get_pr_commits.return_value = []
 
         # Checks fail
-        mock_check_actions.return_value = GitHubActionsStatusResult(success=False, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=False, ids=[1])
 
         mock_extract_issues.return_value = []
         mock_github_client.get_open_sub_issues.return_value = []
@@ -659,7 +660,7 @@ class TestPriorityEdgeCases:
             "number": 1,
             "title": "Ready PR",
             "body": "",
-            "head": {"ref": "pr-1"},
+            "head": {"ref": "pr-1", "sha": "a" * 40},
             "labels": [],
             "mergeable": True,
             "created_at": "2024-01-01T00:00:00Z",
@@ -672,7 +673,7 @@ class TestPriorityEdgeCases:
         mock_github_client.get_pr_commits.return_value = []
 
         # Checks pass
-        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[1])
 
         mock_extract_issues.return_value = []
         mock_github_client.get_open_sub_issues.return_value = []
@@ -720,7 +721,7 @@ class TestPriorityIntegration:
                 "number": 1,
                 "title": "Failing mergeable",
                 "body": "",
-                "head": {"ref": "pr-1"},
+                "head": {"ref": "pr-1", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": True,
                 "created_at": "2024-01-01T00:00:00Z",
@@ -729,7 +730,7 @@ class TestPriorityIntegration:
                 "number": 2,
                 "title": "Unmergeable PR",
                 "body": "",
-                "head": {"ref": "pr-2"},
+                "head": {"ref": "pr-2", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": False,
                 "created_at": "2024-01-02T00:00:00Z",
@@ -756,10 +757,10 @@ class TestPriorityIntegration:
         mock_github_client.get_pr_commits.return_value = []
 
         # Checks: PR 1 fails, PR 2 passes (but is unmergeable)
-        def check_actions_side_effect(repo_name, pr_data, config):
+        def check_actions_side_effect(repo_name, pr_data, config, github_client=None):
             if pr_data["number"] == 1:
-                return GitHubActionsStatusResult(success=False, ids=[])
-            return GitHubActionsStatusResult(success=True, ids=[])
+                return authoritative_ci_status(success=False, ids=[1])(repo_name, pr_data)
+            return authoritative_ci_status(success=True, ids=[1])(repo_name, pr_data)
 
         mock_check_actions.side_effect = check_actions_side_effect
 
@@ -806,7 +807,7 @@ class TestPriorityIntegration:
                 "number": i,
                 "title": f"PR {i}",
                 "body": "",
-                "head": {"ref": f"pr-{i}"},
+                "head": {"ref": f"pr-{i}", "sha": "a" * 40},
                 "labels": [],
                 "mergeable": i % 2 == 0,  # Half unmergeable
                 "created_at": "2024-01-01T00:00:00Z",
@@ -818,7 +819,7 @@ class TestPriorityIntegration:
         # Mock bulk fetch via get_open_prs_json
         mock_github_client.get_open_prs_json.return_value = list(pr_data_map.values())
 
-        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[1])
         mock_extract_issues.return_value = []
         mock_github_client.get_open_sub_issues.return_value = []
         mock_github_client.has_linked_pr.return_value = False

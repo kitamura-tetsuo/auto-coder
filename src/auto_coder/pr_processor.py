@@ -6470,6 +6470,20 @@ def _handle_pr_merge(
             return actions
 
         watched_head = str(pr_data.get("head", {}).get("sha") or "")
+        if not watched_head:
+            reason = f"Missing head.sha in PR data for PR #{pr_number}"
+            actions.append(reason)
+            if processing_status is not None:
+                processing_status.outcome = PRProcessingOutcome.FAILED
+                processing_status.error = reason
+            _record_pr_stage(
+                pr_number,
+                "pr.ci-eligibility",
+                f"pr#{pr_number} CI eligibility",
+                Outcome.FAILED,
+                {"reason": reason},
+            )
+            return actions
         if watched_head:
             try:
                 ci_watch_store = DurableInvalidationQueue(Path(os.environ.get("AUTO_CODER_INVALIDATION_DB", "~/.auto-coder/entity-invalidations.sqlite3")).expanduser())
