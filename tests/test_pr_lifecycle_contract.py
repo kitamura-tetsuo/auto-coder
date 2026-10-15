@@ -6,7 +6,7 @@ with ``-m pr_lifecycle_contract``.
 """
 
 import subprocess
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import replace
 from threading import Event, Thread
 from types import SimpleNamespace
@@ -17,6 +17,7 @@ import pytest
 from auto_coder.adversarial_validation_attempts import AdversarialValidationAttemptRepository
 from auto_coder.adversarial_validator import AdversarialValidationResult, format_adversarial_validation_comment
 from auto_coder.automation_config import AutomationConfig, ProcessedPRResult, PRProcessingOutcome
+from auto_coder.automation_engine import AutomationEngine
 from auto_coder.ci_observation import (
     CIConclusion,
     CIObservationSnapshot,
@@ -29,6 +30,7 @@ from auto_coder.ci_observation import (
 from auto_coder.cloud_manager import CloudTaskBinding
 from auto_coder.durable_repair_allowance import RepairAllowanceLedger
 from auto_coder.github_app_reviewer import ReviewPublicationResult
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.local_review_repair import LocalReviewRepairRequest, admit_local_repair_allowance
 from auto_coder.pr_processor import (
     ClaimedReviewThreadGateState,
@@ -711,6 +713,107 @@ def test_terminal_ci_failure_retains_cloud_owner_without_local_repair(tmp_path, 
     assert any("GitHub Actions checks failed" in action for action in actions)
     assert "controlled cloud CI continuation" in actions
     assert any("Codex Cloud will handle fixing" in action for action in actions)
+
+
+def test_controller_reentry_carries_cloud_repair_to_new_head_and_final_merge(tmp_path, monkeypatch):
+    """REQ-004/005: discovery, worker handoff, durable ownership and H2 merge stay joined."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    pr_data = {
+        "number": PR_NUMBER,
+        "title": "Cloud implementation",
+        "body": "Closes #2501\nhttps://chatgpt.com/codex/tasks/task_joined_lifecycle",
+        "labels": [],
+        "user": {"login": "chatgpt-codex-connector[bot]"},
+        "head": {"ref": "issue-2501", "sha": H1},
+        "base": {"ref": "main", "sha": "base-1"},
+        "created_at": "2026-01-01T00:00:00Z",
+        "mergeable": True,
+    }
+    github = MagicMock(token="controlled-token")
+    github.get_open_prs_json.side_effect = lambda _repo: [dict(pr_data, head=dict(pr_data["head"]))]
+    github.get_open_issues_json.return_value = []
+    github.get_issue.return_value = {"number": 2501}
+    github.get_pr_review_threads_strict.return_value = []
+    github.get_pr_comments.return_value = []
+    github.get_pull_request.side_effect = lambda *_args: {"head": {"sha": pr_data["head"]["sha"]}}
+    config = AutomationConfig()
+    config.AUTO_MERGE = True
+    config.pr_review_thread_gate = False
+    slots_path = tmp_path / "slots.json"
+    slots = ImplementationSlotRepository(REPOSITORY, 1, slots_path)
+    owner = ImplementationOwner("issue", 2501)
+    assert slots.reserve(owner, implementation_pr=PR_NUMBER)
+    assert slots.record_provider_session(owner, "task_joined_lifecycle")
+    engine = AutomationEngine(github, config=config)
+    engine.implementation_slots = slots
+    continuations = []
+    ci_reads = iter(range(40))
+
+    def ci_status(_repo, candidate, *_args, **_kwargs):
+        head = candidate["head"]["sha"]
+        conclusion = CIConclusion.FAILURE if head == H1 else CIConclusion.SUCCESS
+        snapshot = replace(
+            _snapshot(ObservationAvailability.KNOWN, conclusion, head_sha=head),
+            cycle_id=f"joined-{head}-{next(ci_reads)}",
+        )
+        return GitHubActionsStatusResult(success=head == H2, ids=[701], observation=snapshot)
+
+    def cloud_feedback(*_args, **_kwargs):
+        continuations.append(("task_joined_lifecycle", H1))
+        return CodexCloudFeedbackResult(delivered=True, actions=("joined cloud continuation",))
+
+    with ExitStack() as stack:
+        collection_label = stack.enter_context(patch("auto_coder.automation_engine.LabelManager"))
+        worker_label = stack.enter_context(patch("auto_coder.label_manager.LabelManager"))
+        stack.enter_context(patch("auto_coder.util.github_action.preload_github_actions_status"))
+        stack.enter_context(patch("auto_coder.util.github_action._check_github_actions_status", side_effect=ci_status))
+        stack.enter_context(patch("auto_coder.pr_processor._check_github_actions_status", side_effect=ci_status))
+        stack.enter_context(patch("auto_coder.util.github_action.check_github_actions_and_exit_if_in_progress", return_value=True))
+        stack.enter_context(patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True))
+        unsafe = stack.enter_context(patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr"))
+        stack.enter_context(patch("auto_coder.pr_processor._close_empty_pr", return_value=SimpleNamespace(closed=False, actions=[], issue_numbers=[])))
+        stack.enter_context(patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=SimpleNamespace(closed=False, actions=[], issue_numbers=[])))
+        stack.enter_context(patch("auto_coder.pr_processor._should_skip_waiting_for_jules", return_value=False))
+        stack.enter_context(patch("auto_coder.pr_processor._is_jules_pr", return_value=False))
+        stack.enter_context(patch("auto_coder.pr_processor._is_dependabot_pr", return_value=False))
+        stack.enter_context(patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}))
+        stack.enter_context(patch("auto_coder.pr_processor.get_detailed_checks_from_history", return_value=SimpleNamespace(failed_checks=[{"name": "PR Tests"}])))
+        stack.enter_context(patch("auto_coder.pr_processor._resolve_cloud_task_origin", return_value=CloudTaskOriginResolution(CloudTaskOrigin("codex-cloud", "task_joined_lifecycle", MagicMock()))))
+        stack.enter_context(patch("auto_coder.pr_processor._send_codex_cloud_error_feedback", side_effect=cloud_feedback))
+        stack.enter_context(patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False))
+        stack.enter_context(patch("auto_coder.pr_processor._is_pr_adversarial_validation_enabled", return_value=True))
+        stack.enter_context(
+            patch(
+                "auto_coder.pr_processor._get_adversarial_validation_eligibility",
+                return_value=SimpleNamespace(lookup_error=None, is_applicable=True, issue_numbers=(2501,)),
+            )
+        )
+        strong_review = stack.enter_context(patch("auto_coder.pr_processor.run_adversarial_validation", return_value=AdversarialValidationResult(result="PASS", summary="independent strong pass")))
+        stack.enter_context(patch("auto_coder.pr_processor.publish_adversarial_review", return_value=ReviewPublicationResult(True, "APPROVE", "")))
+        stack.enter_context(patch("auto_coder.pr_processor.ci_observation_merge_authority", return_value=nullcontext(True)))
+        stack.enter_context(patch("auto_coder.pr_processor.isolated_pr_head_worktree", return_value=nullcontext(tmp_path)))
+        merge = stack.enter_context(patch("auto_coder.pr_processor._merge_pr", return_value=True))
+        stack.enter_context(patch.object(slots, "reconcile"))
+        collection_label.return_value.__enter__.return_value = True
+        worker_label.return_value.__enter__.return_value = True
+        unsafe.side_effect = lambda _client, _repo, candidate, _config: SimpleNamespace(closed=False, metadata_error=None, actions=[], authoritative_pr_data=candidate)
+        first = next(candidate for candidate in engine._get_candidates(REPOSITORY) if candidate.type == "pr")
+        first_result = engine._process_single_candidate_unified(REPOSITORY, first, config)
+        reopened = ImplementationSlotRepository(REPOSITORY, 1, slots_path)
+        assert reopened.active_owners() == (owner,)
+        assert reopened.has_provider_sessions(owner)
+        assert merge.call_count == 0
+
+        pr_data["head"]["sha"] = H2
+        second = next(candidate for candidate in engine._get_candidates(REPOSITORY) if candidate.type == "pr")
+        second_result = engine._process_single_candidate_unified(REPOSITORY, second, config)
+
+    assert first_result.outcome is PRProcessingOutcome.DEFERRED
+    assert second_result.outcome is PRProcessingOutcome.SUCCESS, second_result.actions
+    assert continuations == [("task_joined_lifecycle", H1)]
+    strong_review.assert_called_once()
+    assert merge.call_count == 1
+    assert merge.call_args.kwargs["expected_head_sha"] == H2
 
 
 def test_terminal_ci_head_change_defers_codex_dispatch_without_provider_effect(tmp_path, monkeypatch):

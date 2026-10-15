@@ -37,6 +37,18 @@ newer-head and newer-attempt fencing, and the final positive merge effect.
 the delayed-run publication guard. Local-LLM CI/conflict expansion remains out
 of scope.
 
+The joined controller regression uses one `AutomationEngine` for H1 discovery,
+selected cloud repair, worker return, and H2 rediscovery. It reopens the
+production implementation-slot store between passes to prove that the Issue,
+provider task, and PR association remain occupied until current-head review and
+the final merge boundary complete. The publication regression executes the
+actual workflow run blocks with controlled test, image-build, and registry
+commands: a failing test produces no build or push effect, while a passing test
+reaches those effects in order. It likewise executes the historical-run guard
+before the beta-write step and observes no registry command for a skipped
+source job. These are controlled pre-merge observations, not claims that a real
+main artifact has already been published.
+
 Legacy PR-flow tests no longer manufacture a passing aggregate result without
 an observation. Their shared controlled adapter creates check-run evidence
 through `github_ci_observer.observe_ci`, so phase fencing and final merge
