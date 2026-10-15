@@ -1,67 +1,54 @@
-# Auto-Coder: as-is execution sequences
+# Auto-Coder: as-is architecture
 
-These diagrams are static, explanatory source traces, not a proposed architecture, a runtime recording, or a new behavioral specification. Each document names its inspected source commit; later commits can behave differently. The original E/C/R/S/M overview is pinned to **`95ff379d2bd69e54a53f14c208eedaca5a58e3df`**. The detailed Issue implementation series (I/L/P/T/O) is pinned to **`d704b54e59ea559cce17d5cfe1a0841ac3ef465d`** and does not silently refresh the older diagrams.
+Source snapshot: **`e1da0e87eb7215d870cbaddd4737bcd9bd6a87e8`** (2026-10-15 JST). 
 
-The scope is the controller's Issue/PR lifecycle: startup, candidate intake, specification admission, implementation ownership, CI, ordinary and two-tier review, merge delivery, and restart/retry entrypoints. Backend SDK internals, every CLI command, and every configuration combination are not expanded. A call to a provider helper is not presented as proof that the remote operation succeeded.
+These documents describe the inspected production code, not a target architecture or an implementation contract. All source links are pinned to the snapshot above. The diagrams deliberately include blocked, uncertain and partially completed paths; a drawn path is not evidence that a live provider integration succeeds.
 
-## Reading order
+## Reading map
 
-| Document | Sequences |
+| Question | Document |
 | --- | --- |
-| [Engine and Issue admission](engine-and-issues.md) | E1 startup; E2 invalidation worker; E3 specification/family admission; E4 ownership and dispatch |
-| [PR intake, CI and repair](pr-ci-and-repair.md) | C1 PR intake and CI routing; C2 manual CI dispatch; C3 failure repair routing |
-| [Ordinary adversarial validation](pr-adversarial-validation.md) | R1 eligibility and reuse; R2 execution and acceptance; R3 publication and rollback |
-| [Two-tier PR review](pr-two-tier-review.md) | S1 strong audit and publication; S2 ordinary closure of strong findings |
-| [Merge and recovery](pr-merge-and-recovery.md) | M1 final merge gates; M2 durable approval/merge effects; M3 scheduler-driven resumption |
+| How do startup, candidate selection and workers interact? | [Engine and Issue lanes](engine-and-issues.md) |
+| What admits an Issue implementation? | [Issue implementation](issue-implementation.md) |
+| How does local execution reach a published PR? | [Local execution and finalization](issue-local-execution.md) |
+| Which ownership survives a worker return? | [Ownership and resumption](issue-ownership-and-resumption.md) |
+| How are providers selected and fallback bounded? | [Provider dispatch](issue-provider-dispatch.md) |
+| How are retries and uncertain submissions recovered? | [Retry and recovery](issue-retry-and-recovery.md) |
+| Where can CI prevent repair from being reached? | [CI and repair](pr-ci-and-repair.md) |
+| What does review acceptance actually authorize? | [Adversarial validation](pr-adversarial-validation.md) |
+| How do strong audit, closure and publication interact? | [Two-tier review](pr-two-tier-review.md) |
+| When are merge effects and slot release complete? | [Merge and recovery](pr-merge-and-recovery.md) |
+| Which modules currently own each responsibility? | [Responsibility map](responsibility-map.md) |
+| Which facts are authoritative, and which are not? | [State and authority](state-and-authority.md) |
+| Which repair paths use local jobs or cloud continuation? | [Backend routing matrix](backend-routing-matrix.md) |
+| Where can refactoring start, and what should be characterized? | [Refactoring seams and test probes](refactoring-seams-and-tests.md) |
 
-### Detailed Issue implementation lifecycle
+## Scope and notation
 
-This series expands the Issue side beyond the original E3/E4 overview. Its entry document defines the distinct generation, retry, provider and retirement identities.
+`H` is the captured PR head SHA; `B` is the base identity used by the relevant gate. `G` denotes the approved Issue implementation generation. Attempt IDs, local-job incarnations and review rounds are different identities, not aliases for `G`. In the two-tier review document, `M` and `P` denote the gate's contract and policy identities.
 
-| Document | Sequences |
-| --- | --- |
-| [Issue implementation lifecycle](issue-implementation.md) | I1 submission/specification; I2 ownership and reserved dispatch |
-| [Local execution](issue-local-execution.md) | L1 branch/edit/commit; L2 PR publication and association |
-| [Provider dispatch](issue-provider-dispatch.md) | P1 quota/routing; P2 Codex claim; P3 singleton Jules/Claude; P4 speculative Jules submission |
-| [Retry and recovery](issue-retry-and-recovery.md) | T1 explicit retry; T2 same-request replay; T3 stale Jules replacement; T4 initial Codex PR recovery |
-| [Ownership and resumption](issue-ownership-and-resumption.md) | O1 launcher return; O2 terminal PR-backed reclamation; O3 deferred Issue reevaluation |
+Participants are responsibility groupings, not necessarily separate processes. Arrows show selected calls, durable writes or external effects; adjacent arrows do **not** imply one transaction. A return to a worker does not imply that a provider, publication or lifetime slot has finished. Diagrams omit unrelated logging and presentation details and do not replace individual branch predicates in source.
 
-Each sequence has a scope/precondition and pinned source links. Separate diagrams are joined only at their named continuation points; they are not independent services or newly introduced event handlers. Early-return branches terminate the illustrated invocation, not necessarily the Issue/PR lifecycle.
+## Material changes from the previous snapshot
 
-## Notation and identities
+The normal Issue path now uses a dedicated no-review implementation lane and a common provider-dispatch coordinator. Local Issue implementation and local PR review correction can transfer execution to durable jobs. Local CI repair and conflict repair are not automatically instances of those jobs.
 
-Participants name responsibilities and identify their actual implementation in the accompanying source references. A store participant is a separate persistence boundary, not evidence that it shares a transaction with another store. Solid arrows denote calls/requests; dashed arrows denote returns/observations. They do not imply network delivery guarantees. Notes marked `C1`, `C2`, etc. identify hypothetical interruption positions in actual code ordering, not tested crash outcomes.
+Explicit-local review routing does not simply override every cloud association: an exact-PR cloud binding plus an explicit-local marker produces a conflict. `KNOWN_EMPTY` CI evidence is still converted to an in-progress result; candidate filtering can therefore prevent a PR from reaching the handler's conflict branch. These are current observations, not fixes introduced by this documentation update.
 
-| Symbol | Meaning in these diagrams |
-| --- | --- |
-| `N`, `I` | PR number and Issue number in one repository |
-| `H`, `B` | Examined PR head SHA and base SHA; a newer head is `H2` |
-| `g` | Durable **invalidation** claim generation, not the Issue specification identity |
-| `V1`, `V2` | Ordinary validation attempts ordered by allocated attempt sequence, not completion time |
-| `review_id` | Audit identity of one logical reviewer execution; distinct from an attempt and GitHub review ID |
-| `M`, `P` | Two-tier contract snapshot identity and strong reviewer policy identity |
-| `owner`, `execution_id` | Logical implementation ownership and one local execution within it; returning from execution does not prove remote work ended |
+Model completion, job settlement, PR publication, effective review acceptance, observed merge and slot release remain distinct boundaries. In particular, accepted findings can prevent approval despite a raw reviewer PASS, and a successful `gh pr merge --auto` command need not mean GitHub has already merged the PR.
 
-The engine, PR processor, and specialized stores do not all use one universal lifecycle key. In particular, manual CI dispatch keys include `H` and workflow; the merge-operation key is API origin + repository + PR, with expected head stored in the operation. See the corresponding diagrams before comparing or combining their state. The [Issue implementation identity table](issue-implementation.md) additionally distinguishes specification identity `V`, implementation generation `G`, retry request/attempt `R/A`, numeric attempt `a`, and reservation incarnation/activity revision.
+## Evidence and maintenance
 
-## Important source-reading findings
+This refresh is based on static inspection of the linked production modules and the existing architecture documents. It does not claim live local/cloud execution, fault-injection coverage or passing application tests. Test probes in the refactoring document are proposals unless explicitly identified otherwise.
 
-The daemon at the original snapshot already has a durable invalidation loop and separate Issue/PR workers. Its producer loop is maintenance, not a repeated general candidate scan. Specialized recovery schedulers coexist with this path; the diagrams do not replace them with a hypothetical single event bus. [Source][engine]
+When refreshing a page, update its source snapshot, recheck its callers as well as its helpers, and retain the distinction between observed behavior and proposed changes. Do not repin old line numbers mechanically. Check both the daemon origin and explicit processing when reachability differs. Source symbols are listed beside pinned file links so they remain searchable without misleading line anchors.
 
-`LabelManager` is a side-effect-free scope. Some caller comments still describe adding/removing the historical `@auto-coder` label, but its actual methods do not perform those mutations. No label-lock arrows are inferred from those comments. [Source][labels]
+The default project scope is accidental workspace/result corruption within trusted deployment boundaries, not hostile-code confinement. A prompt instruction, private working clone or removed environment variable is not documented here as universal publication prevention.
 
-The original snapshot contains production strong-audit execution and two-tier publication consumption. It also returns from an unsuccessful green-CI merge route rather than treating that result as evidence of CI failure. Earlier descriptions of these missing connections do not describe this snapshot. [Source][strong-and-route]
+Sources: [scheduler and entry points][engine], [Issue dispatch][dispatch], [local job state][jobs], [PR orchestration][pr], [CI evidence conversion][ci].
 
-There are deliberate limits to what a static trace establishes. For example, a persisted CI claim can suppress a request even when the process stopped before sending it; an accepted review can still await publication; and a successful local launch does not establish completion of a provider task. Those distinctions are retained rather than replaced with idealized recovery guarantees.
-
-The detailed Issue series also distinguishes action strings from actual GitHub mutations, provider-specific send/receipt ordering, and execution completion from capacity retirement. Its [local](issue-local-execution.md), [provider](issue-provider-dispatch.md), and [ownership](issue-ownership-and-resumption.md) documents identify the corresponding source call sites rather than treating a success-looking message as an effect receipt.
-
-## Relationship to existing documentation
-
-The source permalinks establish what was inspected for each snapshot. Existing feature fragments under `docs/client-features/` retain their own role; this directory neither aggregates nor replaces them. These sequences are informative and do not introduce merge-blocking Requirements or endorse existing behavior as the desired design.
-
-To refresh a diagram, choose a new source commit, retrace both the caller and the effect-owning helper, and update the snapshot and its source links together. Do not silently add an intended repair to an as-is arrow.
-
-[engine]: https://github.com/kitamura-tetsuo/auto-coder/blob/95ff379d2bd69e54a53f14c208eedaca5a58e3df/src/auto_coder/automation_engine.py#L2467-L2878
-[labels]: https://github.com/kitamura-tetsuo/auto-coder/blob/95ff379d2bd69e54a53f14c208eedaca5a58e3df/src/auto_coder/label_manager.py#L340-L393
-[strong-and-route]: https://github.com/kitamura-tetsuo/auto-coder/blob/95ff379d2bd69e54a53f14c208eedaca5a58e3df/src/auto_coder/pr_processor.py#L4110-L4470
+[engine]: https://github.com/kitamura-tetsuo/auto-coder/blob/e1da0e87eb7215d870cbaddd4737bcd9bd6a87e8/src/auto_coder/automation_engine.py
+[dispatch]: https://github.com/kitamura-tetsuo/auto-coder/blob/e1da0e87eb7215d870cbaddd4737bcd9bd6a87e8/src/auto_coder/issue_dispatch.py
+[jobs]: https://github.com/kitamura-tetsuo/auto-coder/blob/e1da0e87eb7215d870cbaddd4737bcd9bd6a87e8/src/auto_coder/local_job_handoff.py
+[pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/e1da0e87eb7215d870cbaddd4737bcd9bd6a87e8/src/auto_coder/pr_processor.py
+[ci]: https://github.com/kitamura-tetsuo/auto-coder/blob/e1da0e87eb7215d870cbaddd4737bcd9bd6a87e8/src/auto_coder/util/github_action.py
