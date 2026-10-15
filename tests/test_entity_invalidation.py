@@ -1509,7 +1509,7 @@ def test_authoritative_lifecycle_transition_survives_later_author_exclusion(tmp_
         patch("auto_coder.util.github_action.trigger_workflow_dispatch", return_value=WorkflowDispatchResult(outcome=DispatchOutcome.ACCEPTED)),
     ):
         actions = _handle_pr_merge(github, "owner/repo", pr_data, AutomationConfig(pr_allowlist=[1]), {})
-    assert "Created durable CI watch for ci.yml" in actions
+    assert any("No current CI observations are available for PR #100" in action for action in actions)
 
     engine = AutomationEngine(github, AutomationConfig(pr_allowlist=[999]))
     github.get_pull_request_metadata_strict = MagicMock(
@@ -1533,7 +1533,7 @@ def test_authoritative_lifecycle_transition_survives_later_author_exclusion(tmp_
         "SELECT head_sha, workflow_id, active FROM ci_watches WHERE repository = ? AND pr_number = ? ORDER BY head_sha, workflow_id",
         ("owner/repo", 100),
     ).fetchall()
-    expected_watches = [("new-head", "", 1), ("old-head", "", 0), ("old-head", "ci.yml", 0)] if reopened_head == "new-head" else [("old-head", "", 1), ("old-head", "ci.yml", 1)]
+    expected_watches = [("new-head", "", 1), ("old-head", "", 0)] if reopened_head == "new-head" else [("old-head", "", 1)]
     assert watches == expected_watches
     assert engine.invalidations.pending_count("owner/repo") == 0
     assert github.get_pull_request_metadata_strict.call_count == 2

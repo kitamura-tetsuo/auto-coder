@@ -2697,7 +2697,7 @@ class TestAdversarialValidationPRFlow:
         mock_worktree.assert_not_called()
         mock_run_validation.assert_not_called()
         mock_merge_pr.assert_not_called()
-        assert any("Missing head.sha in PR data" in a for a in actions)
+        assert any("current-head CI evidence is unavailable or incomplete" in a for a in actions)
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})

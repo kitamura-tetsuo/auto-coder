@@ -6,6 +6,7 @@ import pytest
 
 from auto_coder.util.gh_cache import list_all_workflow_jobs
 from auto_coder.util.github_action import GitHubActionsStatusResult, get_detailed_checks_from_history, get_github_actions_logs_from_url
+from tests.ci_observation_fakes import authoritative_ci_status
 
 
 def _jobs(count):
@@ -87,7 +88,7 @@ def test_local_pr_repair_receives_failure_beyond_first_page(tmp_path, monkeypatc
 
     from auto_coder.automation_config import AutomationConfig
     from auto_coder.ci_repair_authority import CIRepairAuthority
-    from auto_coder.pr_processor import _handle_pr_merge
+    from auto_coder.pr_processor import PRActionList, _handle_pr_merge
 
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     jobs = _jobs(101)
@@ -109,16 +110,16 @@ def test_local_pr_repair_receives_failure_beyond_first_page(tmp_path, monkeypatc
             "_apply_review_adjudication_effects": ([], False),
             "check_github_actions_and_exit_if_in_progress": True,
             "_get_mergeable_state": {"mergeable": True},
-            "_check_github_actions_status": GitHubActionsStatusResult(success=False, ids=[5467]),
             "check_pr_repair_exhaustion": None,
             "_checkout_pr_branch": True,
             "current_ci_failure_authority": nullcontext(authority),
         }.items():
             stack.enter_context(patch(f"auto_coder.pr_processor.{name}", return_value=value))
+        stack.enter_context(patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=False, ids=[5467])))
         stack.enter_context(patch("auto_coder.pr_processor.cmd.run_command", return_value=Mock(success=True, stdout="main\n")))
         stack.enter_context(patch("auto_coder.pr_processor.BranchManager"))
         summary = stack.enter_context(patch("auto_coder.pr_processor._create_github_action_log_summary", return_value=("Exact width failed", ["grid-widths.spec.ts"])))
-        repair = stack.enter_context(patch("auto_coder.pr_processor._fix_pr_issues_with_testing", return_value=["Repair invoked"]))
+        repair = stack.enter_context(patch("auto_coder.pr_processor._fix_pr_issues_with_testing", return_value=repair_actions))
         actions = _handle_pr_merge(client, "owner/repo", pr, config, {})
 
     assert "GitHub Actions checks failed for PR #5467: 1 failed" in actions

@@ -646,7 +646,7 @@ class TestUnlockAndRetryLinkedIssue:
 def _ci_observation(availability: ObservationAvailability, facts: tuple = (), *, unavailable_reason=None) -> CIObservationSnapshot:
     """Build a real CIObservationSnapshot for a fixed subject/request (Issue #2275)."""
     return CIObservationSnapshot(
-        subject=ObservationSubject("https://api.github.com", "owner/repo", 123, "deadbeef" * 5),
+        subject=ObservationSubject("https://api.github.com", "owner/repo", 4643, "deadbeef" * 5),
         request=ObservationRequest("github-actions", "checks+workflows"),
         cycle_id="cycle-1",
         invalidation_epoch=0,
@@ -791,7 +791,7 @@ class TestShouldSkipWaitingForJules:
 
         assert _should_skip_waiting_for_jules(github_client, "owner/repo", {"number": 123}, config, github_checks=failing_ci_checks()) is True
 
-    @patch("src.auto_coder.jules_client.JulesClient")
+    @patch("auto_coder.jules_client.JulesClient")
     def test_recovered_ci_releases_wait_with_active_session(self, mock_jules_client_class):
         """REQ-002: an IN_PROGRESS Jules session alone must not veto progress once CI is recovered."""
         mock_jules_client = Mock()
@@ -804,7 +804,7 @@ class TestShouldSkipWaitingForJules:
 
         assert _should_skip_waiting_for_jules(github_client, "owner/repo", pr_data, config, github_checks=recovered_ci_checks()) is False
 
-    @patch("src.auto_coder.jules_client.JulesClient")
+    @patch("auto_coder.jules_client.JulesClient")
     def test_active_session_still_waits_without_recovered_ci(self, mock_jules_client_class):
         """Positive control: session activity alone still gates progress when CI is not recovered."""
         mock_jules_client = Mock()
@@ -826,7 +826,7 @@ class TestProcessPullRequestResumesOnRecoveredCI:
     """
 
     @patch("src.auto_coder.pr_processor._process_pr_for_fixes")
-    @patch("src.auto_coder.jules_client.JulesClient")
+    @patch("auto_coder.jules_client.JulesClient")
     @patch("src.auto_coder.pr_processor._check_github_actions_status")
     def test_active_session_no_longer_defers_processing_once_ci_recovers(self, mock_check_status, mock_jules_client_class, mock_process_fixes):
         mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[1])
@@ -849,7 +849,7 @@ class TestProcessPullRequestResumesOnRecoveredCI:
         mock_process_fixes.assert_called_once()
 
     @patch("src.auto_coder.pr_processor._process_pr_for_fixes")
-    @patch("src.auto_coder.jules_client.JulesClient")
+    @patch("auto_coder.jules_client.JulesClient")
     @patch("src.auto_coder.pr_processor._check_github_actions_status")
     def test_active_session_still_defers_when_ci_is_still_failing(self, mock_check_status, mock_jules_client_class, mock_process_fixes):
         """Positive preservation control (AS-005): a still-failing head keeps the ordinary wait."""
@@ -874,7 +874,7 @@ class TestGetCandidatesResumesOnRecoveredCI:
     (Issue #2275, REQ-007, AS-004).
     """
 
-    @patch("src.auto_coder.jules_client.JulesClient")
+    @patch("auto_coder.jules_client.JulesClient")
     @patch("src.auto_coder.util.github_action._check_github_actions_status")
     def test_recovered_ci_pr_is_not_excluded_at_collection(self, mock_check_status, mock_jules_client_class):
         from src.auto_coder.automation_engine import AutomationEngine
