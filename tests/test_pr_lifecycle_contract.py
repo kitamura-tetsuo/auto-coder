@@ -30,7 +30,16 @@ from auto_coder.cloud_manager import CloudTaskBinding
 from auto_coder.durable_repair_allowance import RepairAllowanceLedger
 from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.local_review_repair import LocalReviewRepairRequest, admit_local_repair_allowance
-from auto_coder.pr_processor import ClaimedReviewThreadGateState, CloudTaskOrigin, CloudTaskOriginResolution, CodexCloudFeedbackResult, PRActionList, TwoTierGateInputs, _handle_pr_merge
+from auto_coder.pr_processor import (
+    ClaimedReviewThreadGateState,
+    CloudTaskOrigin,
+    CloudTaskOriginResolution,
+    CodexCloudFeedbackResult,
+    PRActionList,
+    PRReviewCoordinationResult,
+    TwoTierGateInputs,
+    _handle_pr_merge,
+)
 from auto_coder.pr_repair_dispatch import RepairDisposition, RepairFactState, RepairOrigin
 from auto_coder.pr_review_cycle import VERDICT_FINDINGS, ContractSnapshot, Finding, PrReviewCycleRepository, RoundProvenance, StrongPolicyIdentity
 from auto_coder.two_tier_pr_gate import TwoTierPrGate
@@ -312,6 +321,11 @@ def test_green_ci_reaches_merge_but_h1_to_h2_change_fails_closed():
     stale_actions, stale_merge, stale_failure, _ = _run_ci_consumer(green, remote_head=H2)
 
     current_merge.assert_called_once()
+    assert isinstance(current_actions, PRReviewCoordinationResult)
+    assert current_actions.scope.repository == REPOSITORY
+    assert current_actions.scope.pr_number == PR_NUMBER
+    assert current_actions.scope.head_sha == H1
+    assert current_actions.disposition.value == "MERGE_COMPLETED"
     assert any("Successfully merged" in action for action in current_actions)
     stale_merge.assert_not_called()
     assert any("head SHA changed" in action for action in stale_actions)

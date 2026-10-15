@@ -80,3 +80,14 @@ Sources: [review orchestration and routing][pr] (`_derive_effective_application`
 [pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/e1da0e87eb7215d870cbaddd4737bcd9bd6a87e8/src/auto_coder/pr_processor.py
 [correction]: https://github.com/kitamura-tetsuo/auto-coder/blob/e1da0e87eb7215d870cbaddd4737bcd9bd6a87e8/src/auto_coder/pr_correction_job.py
 [jobs]: https://github.com/kitamura-tetsuo/auto-coder/blob/e1da0e87eb7215d870cbaddd4737bcd9bd6a87e8/src/auto_coder/local_job_handoff.py
+
+## R4. Extracted review coordinator preserves effect authority
+
+`_handle_pr_merge` selects the green-CI review route and delegates its ordinary
+and two-tier composition to `_coordinate_pr_review`. The typed coordinator
+result reports what the invocation accomplished; it is not merge authority.
+The caller-owned `PRReviewRuntime` retains admission and attempt-transition
+contexts across the coordinator's final remote-head, CI, thread, current-attempt,
+and two-tier checks and through the merge effect. Existing durable review-cycle,
+effective-decision, correction-routing, publication, and merge helpers remain
+the authoritative producers and consumers.

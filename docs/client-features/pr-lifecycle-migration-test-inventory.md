@@ -74,3 +74,19 @@ remained unchanged. This test-only characterization changes no processing origin
 admission rule, route, outcome, durable resumption path, or trace schema, so the
 dashboard production-to-view contract and `docs/dashboard-observability.md`
 require no update.
+
+## Extracted review composition boundary
+
+Green-CI processing now delegates ordinary and two-tier review composition to
+`_coordinate_pr_review`. The coordinator receives the selected repository, PR,
+head, and base identities through `PRReviewScope`, returns a typed
+`PRReviewCoordinationResult`, and continues to use the existing review,
+correction, durable-result, publication, and gate producers. The caller owns
+`PRReviewRuntime`, so its validation admission lease and attempt-transition
+state remain live until the coordinator has completed the remote-head, current
+attempt, CI-authority, two-tier authorization, and merge-effect checks.
+
+The maintained contract group patches external GitHub/model effects at their
+existing production owners while traversing both `_handle_pr_merge` and the
+coordinator. It asserts the typed positive disposition and exact scope, plus
+stale-head and newer-attempt barriers before the controlled merge effect.
