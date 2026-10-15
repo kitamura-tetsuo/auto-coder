@@ -27,6 +27,7 @@ from auto_coder.ci_observation import (
 )
 from auto_coder.cloud_manager import CloudTaskBinding
 from auto_coder.durable_repair_allowance import RepairAllowanceLedger
+from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.local_review_repair import LocalReviewRepairRequest, admit_local_repair_allowance
 from auto_coder.pr_processor import ClaimedReviewThreadGateState, CodexCloudFeedbackResult, TwoTierGateInputs, _handle_pr_merge
 from auto_coder.pr_review_cycle import VERDICT_FINDINGS, ContractSnapshot, Finding, PrReviewCycleRepository, RoundProvenance, StrongPolicyIdentity
@@ -445,7 +446,18 @@ def test_final_attempt_admission_serializes_newer_and_current_work(tmp_path, reg
     result = AdversarialValidationResult(result="PASS", summary="current gates passed")
 
     outcome = []
-    ci_status = SimpleNamespace(success=True, ids=[701], in_progress=False, error=None, observation=None)
+    ci_reads = iter(range(20))
+
+    def current_ci_status(*_args, **_kwargs):
+        snapshot = _snapshot(ObservationAvailability.KNOWN, CIConclusion.SUCCESS)
+        return SimpleNamespace(
+            success=True,
+            ids=[701],
+            in_progress=False,
+            error=None,
+            observation=replace(snapshot, cycle_id=f"{snapshot.cycle_id}-{next(ci_reads)}"),
+        )
+
     with (
         patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as unsafe,
         patch("auto_coder.pr_processor._is_pr_adversarial_validation_enabled", return_value=True),
@@ -453,9 +465,14 @@ def test_final_attempt_admission_serializes_newer_and_current_work(tmp_path, reg
         patch("auto_coder.pr_processor.AdversarialValidationAttemptRepository", return_value=checkpoint_repository),
         patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
         patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-        patch("auto_coder.pr_processor._check_github_actions_status", return_value=ci_status),
+        patch("auto_coder.pr_processor._check_github_actions_status", side_effect=current_ci_status),
         patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False),
         patch("auto_coder.pr_processor.run_adversarial_validation", return_value=result),
+        patch(
+            "auto_coder.pr_processor.publish_adversarial_review",
+            return_value=ReviewPublicationResult(True, "APPROVE", ""),
+        ),
+        patch("auto_coder.pr_processor.ci_observation_merge_authority", return_value=nullcontext(True)),
         patch("auto_coder.pr_processor.isolated_pr_head_worktree", return_value=nullcontext(tmp_path)),
         patch("auto_coder.pr_processor._merge_pr", return_value=True) as merge,
     ):
@@ -474,7 +491,7 @@ def test_final_attempt_admission_serializes_newer_and_current_work(tmp_path, reg
         merge.assert_not_called()
         assert any("newer adversarial-validation attempt is applicable" in action for action in outcome), outcome
     else:
-        merge.assert_called_once()
+        assert merge.call_count == 1, outcome
         assert any("Successfully merged" in action for action in outcome)
 
 
