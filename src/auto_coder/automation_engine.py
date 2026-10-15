@@ -5604,9 +5604,10 @@ class AutomationEngine:
                     if not should_process:
                         continue
 
-                # Calculate GitHub Actions status for the PR
-                # check_github_actions_and_exit_if_in_progress returns True if we should continue (not in progress)
-                # and False if we should stop/skip (in progress)
+                # Observe once for this immutable head. The policy owns route
+                # selection; the helper below retains only its deployment-
+                # approval effect and receives this same evidence.
+                checks = _check_github_actions_status(repo_name, pr_data, self.config, self.github)
                 should_continue = check_github_actions_and_exit_if_in_progress(
                     repo_name,
                     pr_data,
@@ -5614,11 +5615,10 @@ class AutomationEngine:
                     self.github,
                     switch_branch_on_in_progress=False,
                     item_type="pr",
+                    github_checks=checks,
                 )
 
-                # Preserve observation-side effects in the helper above, but do
-                # not use its aggregate Boolean as route authority.
-                checks = _check_github_actions_status(repo_name, pr_data, self.config, self.github)
+                # Do not use the helper's aggregate Boolean as route authority.
                 head_sha = str(pr_data.get("head", {}).get("sha") or "")
                 if not head_sha:
                     logger.debug(f"Skipping PR #{pr_number} - current head is unavailable")

@@ -21,12 +21,13 @@ sequenceDiagram
     alt Batch candidate origin
         O->>E: Collect PR candidate
         E->>C: Observe checks for current immutable head H
+        E->>E: Select typed candidate-collection route
         alt KNOWN_EMPTY
             C-->>E: success=false, in_progress=true
             break Candidate filtered out
                 E-->>O: Exclude PR before handler
             end
-        else Candidate survives collection
+        else Typed route admits candidate
             E->>P: Enter PR processing
         end
     else Explicit processing origin
@@ -50,6 +51,12 @@ selects remediation before waiting. Other known-empty candidates retain the
 collector exclusion, while direct handler entry retains the existing CI wait
 and durable recheck. Unknown/incomplete observations and stale-head evidence are
 never conflated with a clean current run.
+
+The collector passes its single immutable observation through the existing
+deployment-approval effect boundary before consuming the policy route. It does
+not reinterpret the helper's legacy continue/stop Boolean, and it does not
+promote candidate membership into handler or merge authority. Candidate
+priority and all non-CI admission/effect owners remain outside the pure policy.
 
 ## C2. Workflow dispatch has its own effect boundary
 

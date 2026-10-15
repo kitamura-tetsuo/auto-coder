@@ -41,9 +41,10 @@ def test_real_ci_decoding_controls_conflicting_candidate_admission(mock_github_c
     config.PR_AUTHOR_ALLOWLIST = []
     engine = AutomationEngine(mock_github_client, config=config)
 
+    api = _api(head_sha, pending)
     with (
         ci_read_phase(),
-        patch("auto_coder.util.github_action.get_ghapi_client", return_value=_api(head_sha, pending)),
+        patch("auto_coder.util.github_action.get_ghapi_client", return_value=api),
         patch("auto_coder.automation_engine.LabelManager") as labels,
         patch("auto_coder.pr_processor._close_empty_pr", return_value=EmptyPRResult()),
         patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=StaleJulesPRResult()),
@@ -54,6 +55,11 @@ def test_real_ci_decoding_controls_conflicting_candidate_admission(mock_github_c
         candidates = engine._get_candidates("owner/repo")
 
     assert [candidate.data["number"] for candidate in candidates if candidate.type == "pr"] == expected_numbers
+    # Collection routes and deployment-approval effects consume one immutable
+    # observation. A second read could contradict the policy decision while
+    # the first result was being processed.
+    assert api.checks.list_for_ref.call_count == 1
+    assert api.actions.list_workflow_runs_for_repo.call_count == 1
     if not pending:
         assert candidates[0].priority == 2
 

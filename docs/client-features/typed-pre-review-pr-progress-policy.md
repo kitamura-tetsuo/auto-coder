@@ -22,3 +22,12 @@ only authorizes entry to one of those owners and is never proof that its effect
 succeeded. Existing trace stages and payloads are unchanged because the
 extraction changes internal route ownership without adding an admission,
 outcome, provider, resumption, or structured-event state.
+
+`AutomationEngine` is a collector-phase consumer of this policy. It obtains one
+immutable current-head CI observation, passes that same result to the existing
+deployment-approval effect owner, and uses the typed collector route—not the
+legacy helper Boolean—to decide candidate membership. Author, dependency-bot,
+Jules, empty/stale-PR, provider-wait, priority, and Issue-requeue gates remain
+independent collector responsibilities. The selected candidate still enters
+the handler, where a fresh in-handler policy evaluation protects remediation,
+review, repair, and merge effect boundaries.
