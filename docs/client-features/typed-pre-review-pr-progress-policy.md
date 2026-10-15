@@ -8,9 +8,10 @@ returns a typed route plus a diagnostic reason.
 
 Candidate collection and direct handler entry intentionally have different
 projections. In particular, candidate collection admits known-empty evidence
-only for an affirmatively conflicting PR whose remediation is enabled, while
-the handler selects the existing manual-dispatch owner for an otherwise
-eligible known-empty PR. An enabled, non-exhausted affirmative conflict selects
+only for an affirmatively conflicting PR whose remediation is enabled. An
+otherwise eligible known-empty PR retains the existing CI wait and durable
+recheck rather than expanding manual-dispatch admission. An enabled,
+non-exhausted affirmative conflict selects
 the existing remediation owner before a CI wait; unknown mergeability never
 does so.
 

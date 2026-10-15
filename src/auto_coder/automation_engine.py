@@ -5630,6 +5630,8 @@ class AutomationEngine:
                         ci=checks.observation,
                         mergeable=pr_data.get("mergeable") if isinstance(pr_data.get("mergeable"), bool) else None,
                         remediation_enabled=self.config.ENABLE_MERGEABILITY_REMEDIATION,
+                        ci_success=checks.success,
+                        ci_pending=checks.in_progress,
                     )
                 )
                 if progress.route is ProgressRoute.EXCLUDE_CANDIDATE:

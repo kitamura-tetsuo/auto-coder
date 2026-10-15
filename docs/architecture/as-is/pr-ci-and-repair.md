@@ -47,8 +47,8 @@ sequenceDiagram
 `KNOWN_EMPTY` remains non-passing evidence. Candidate collection admits it only
 for an affirmative conflict with enabled remediation; handler evaluation then
 selects remediation before waiting. Other known-empty candidates retain the
-collector exclusion, while direct handler entry can select the existing manual
-dispatch owner. Unknown/incomplete observations and stale-head evidence are
+collector exclusion, while direct handler entry retains the existing CI wait
+and durable recheck. Unknown/incomplete observations and stale-head evidence are
 never conflated with a clean current run.
 
 ## C2. Workflow dispatch has its own effect boundary

@@ -47,16 +47,26 @@ def _snapshot(availability: ObservationAvailability, conclusion: CIConclusion | 
         (_snapshot(ObservationAvailability.KNOWN, CIConclusion.SUCCESS), ProgressRoute.ENTER_REVIEW, CIEvidenceState.PASSING),
         (_snapshot(ObservationAvailability.KNOWN, CIConclusion.PENDING), ProgressRoute.WAIT_FOR_CI, CIEvidenceState.PENDING),
         (_snapshot(ObservationAvailability.KNOWN, CIConclusion.FAILURE), ProgressRoute.REPAIR_FAILED_CI, CIEvidenceState.FAILING),
-        (_snapshot(ObservationAvailability.KNOWN_EMPTY), ProgressRoute.DISPATCH_CI, CIEvidenceState.KNOWN_EMPTY),
+        (_snapshot(ObservationAvailability.KNOWN_EMPTY), ProgressRoute.WAIT_FOR_CI, CIEvidenceState.KNOWN_EMPTY),
         (_snapshot(ObservationAvailability.UNAVAILABLE), ProgressRoute.REPORT_CI_UNAVAILABLE, CIEvidenceState.UNAVAILABLE),
         (_snapshot(ObservationAvailability.PARTIAL), ProgressRoute.REPORT_CI_UNAVAILABLE, CIEvidenceState.UNAVAILABLE),
         (_snapshot(ObservationAvailability.SUPERSEDED), ProgressRoute.REPORT_CI_UNAVAILABLE, CIEvidenceState.UNAVAILABLE),
-        (None, ProgressRoute.REPORT_CI_UNAVAILABLE, CIEvidenceState.UNAVAILABLE),
+        (None, ProgressRoute.REPORT_CI_UNAVAILABLE, CIEvidenceState.MISSING),
         (_snapshot(ObservationAvailability.KNOWN, CIConclusion.SUCCESS, head="b" * 40), ProgressRoute.WAIT_FOR_CI, CIEvidenceState.SUBJECT_MISMATCH),
     ],
 )
 def test_handler_decision_table_preserves_ci_evidence_semantics(snapshot, route, state):
-    decision = select_pr_progress(PRProgressInputs(SCOPE, ProgressPhase.IN_HANDLER, snapshot, True, True))
+    decision = select_pr_progress(
+        PRProgressInputs(
+            SCOPE,
+            ProgressPhase.IN_HANDLER,
+            snapshot,
+            True,
+            True,
+            ci_success=state is CIEvidenceState.PASSING,
+            ci_pending=state is CIEvidenceState.PENDING,
+        )
+    )
 
     assert decision.route is route
     assert decision.ci_state is state
@@ -79,6 +89,7 @@ def test_handler_conflict_precedes_pending_ci_only_when_authorized(enabled, exha
             False,
             enabled,
             exhausted,
+            ci_pending=True,
         )
     )
 
@@ -92,7 +103,7 @@ def test_candidate_and_handler_keep_distinct_known_empty_projection():
     conflicting_candidate = select_pr_progress(PRProgressInputs(SCOPE, ProgressPhase.CANDIDATE_COLLECTION, empty, False, True))
 
     assert candidate.route is ProgressRoute.EXCLUDE_CANDIDATE
-    assert handler.route is ProgressRoute.DISPATCH_CI
+    assert handler.route is ProgressRoute.WAIT_FOR_CI
     assert conflicting_candidate.route is ProgressRoute.ADMIT_CANDIDATE
 
 
@@ -104,3 +115,16 @@ def test_scope_mismatch_cannot_carry_green_authority_to_new_head():
 
     assert decision.route is ProgressRoute.WAIT_FOR_CI
     assert decision.ci_state is CIEvidenceState.SUBJECT_MISMATCH
+
+
+@pytest.mark.parametrize("obsolete", [CIConclusion.FAILURE, CIConclusion.PENDING])
+def test_interpreted_success_ignores_obsolete_raw_attempt(obsolete):
+    current = _snapshot(ObservationAvailability.KNOWN, CIConclusion.SUCCESS)
+    old = WorkflowObservation(WorkflowExecutionIdentity("pr-tests", "17", 1), obsolete)
+    newest = WorkflowObservation(WorkflowExecutionIdentity("pr-tests", "17", 2), CIConclusion.SUCCESS)
+    snapshot = replace(current, facts=(old, newest))
+
+    decision = select_pr_progress(PRProgressInputs(SCOPE, ProgressPhase.IN_HANDLER, snapshot, True, True, ci_success=True))
+
+    assert decision.route is ProgressRoute.ENTER_REVIEW
+    assert decision.ci_state is CIEvidenceState.PASSING

@@ -4804,6 +4804,8 @@ def _handle_pr_merge(
                 ci=github_checks.observation,
                 mergeable=mergeable_flag if isinstance(mergeable_flag, bool) else None,
                 remediation_enabled=config.ENABLE_MERGEABILITY_REMEDIATION,
+                ci_success=github_checks.success,
+                ci_pending=github_checks.in_progress,
             )
         )
 
