@@ -23,6 +23,15 @@ from auto_coder.adversarial_validation_attempts import AdversarialValidationAtte
 from auto_coder.adversarial_validator import run_adversarial_validation
 from auto_coder.automation_config import AutomationConfig, ProcessedPRResult, PRProcessingOutcome
 from auto_coder.canonical_pr_blocker_ledger import BlockerDisposition, CanonicalPRBlockerLedger
+from auto_coder.ci_observation import (
+    CIConclusion,
+    CIObservationSnapshot,
+    ObservationAvailability,
+    ObservationRequest,
+    ObservationSubject,
+    WorkflowExecutionIdentity,
+    WorkflowObservation,
+)
 from auto_coder.cli_helpers import AdversarialValidationAvailability
 from auto_coder.cloud_task_client_base import CloudTask, CloudTaskState
 from auto_coder.codex_wham_client import FollowUpDeliveryOutcome
@@ -32,6 +41,7 @@ from auto_coder.pr_processor import (
     ClaimedReviewThreadGateState,
     CloudTaskOrigin,
     CloudTaskOriginResolution,
+    PRReviewCoordinationResult,
     ReviewRepairRouteDecision,
     ReviewRepairRouteDisposition,
     TwoTierGateInputs,
@@ -199,7 +209,7 @@ class Flow:
 
     # -- execution -----------------------------------------------------
 
-    def run(self, *, force: bool = False, thread_state: Optional[ClaimedReviewThreadGateState] = None, saved: Optional[tuple[Optional[str], Optional[str]]] = None, closure: Optional[ClosureScript] = None) -> list[str]:
+    def run(self, *, force: bool = False, thread_state: Optional[ClaimedReviewThreadGateState] = None, saved: Optional[tuple[Optional[str], Optional[str]]] = None, closure: Optional[ClosureScript] = None) -> PRReviewCoordinationResult:
         mp = self.monkeypatch
         env = self.env
         client = self.client
@@ -322,11 +332,20 @@ class Flow:
             for item in patches:
                 stack.enter_context(item)
             actions = _handle_pr_merge(client, REPO, self.pr_data(), config, {}, self.status, force_adversarial_validation=force)
-        return list(actions)
+        assert isinstance(actions, PRReviewCoordinationResult)
+        return actions
 
     def _ci_results(self) -> list[GitHubActionsStatusResult]:
         """Pre-validation CI is green; later reads (the post-validation refresh) may differ."""
-        green = GitHubActionsStatusResult(success=True, ids=[1])
+        observation = CIObservationSnapshot(
+            ObservationSubject("https://api.github.com", REPO, self.pr, self.head),
+            ObservationRequest("github-actions", "checks+workflows"),
+            "effective-decision-flow",
+            0,
+            ObservationAvailability.KNOWN,
+            (WorkflowObservation(WorkflowExecutionIdentity("pr-tests", "1", 1), CIConclusion.SUCCESS, "PR Tests"),),
+        )
+        green = GitHubActionsStatusResult(success=True, ids=[1], observation=observation)
         return [green, *([self.post_ci] * 8 if self.post_ci is not None else [green] * 8)]
 
     def _set_thread_resolved(self, thread: str, resolved: bool) -> None:
@@ -664,6 +683,7 @@ def test_new_violation_is_handed_off_once_while_accepted_correction_awaits_closu
     repair_events = [call.args for call in stages.call_args_list if call.args[1] == "pr.repair-delegation"]
     assert len(repair_events) == 1
     assert repair_events[0][4]["review_disposition"] == "CORRECTIVE_HANDOFF"
+    assert actions.disposition.value == "CORRECTIVE_HANDOFF"
 
     assert flow.router is not None
     new_roots = flow.router.review_roots[max(flow.router.review_roots)]
@@ -671,6 +691,7 @@ def test_new_violation_is_handed_off_once_while_accepted_correction_awaits_closu
     again = flow.run(closure=script)
     assert flow.model_calls == 1 and flow.handoffs == 1 and len(flow.reviews) == 1, again
     assert flow.merge.call_count == 0 and not flow.thread_resolved
+    assert again.disposition.value == "CORRECTIVE_HANDOFF"
 
 
 def test_missing_closure_assessment_waits_at_the_same_head_without_repeating_validation(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -993,6 +1014,7 @@ def test_provider_request_with_lost_response_is_reconciled_by_its_retained_ident
 
     first = flow.run()
     assert len(flow.provider.followups) == 1  # the accepted request whose response was lost
+    assert first.disposition.value == "CORRECTION_WAITING"
     retained = flow.retained()
     assert retained is not None and retained.handoff == HANDOFF_WAITING, first  # unknown delivery is never reported as confirmed
 
@@ -1015,6 +1037,7 @@ def test_unconfirmed_decision_write_prevents_every_dependent_effect(flow_env: En
     assert flow.reviews == [] and flow.handoffs == 0 and flow.merge.call_count == 0, actions
     assert any("could not be retained" in action and "no dependent review effect was emitted" in action for action in actions)
     assert flow.status.outcome is PRProcessingOutcome.FAILED
+    assert actions.disposition.value == "OPERATIONAL_FAILURE"
     monkeypatch.undo()
     assert flow.retained() is None
 
@@ -1031,6 +1054,7 @@ def test_unavailable_origin_route_is_a_distinct_wait_and_the_next_run_consumes_t
     retained = flow.retained()
     assert retained is not None and retained.handoff == HANDOFF_WAITING and retained.wait_reason == WAIT_ROUTE_UNAVAILABLE
     assert flow.status.outcome is not PRProcessingOutcome.SUCCESS and flow.merge.call_count == 0
+    assert actions.disposition.value == "CORRECTION_WAITING"
     assert len(flow_env.ledger.get_snapshot("https://api.github.com", REPO, 9100).blockers) == 1  # no alternative blocker or route was invented
 
     flow.origin_available = True  # a transient routing failure ends; the same original request is delivered
