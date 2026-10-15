@@ -5,7 +5,7 @@ import pytest
 from auto_coder.automation_config import AutomationConfig, EmptyPRResult, StaleJulesPRResult
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.github_ci_observer import ci_read_phase
-from auto_coder.pr_processor import _handle_pr_merge
+from auto_coder.pr_processor import PRActionList, _handle_pr_merge
 
 
 def _api(head_sha: str, pending: bool) -> Mock:
@@ -182,7 +182,7 @@ def test_unavailable_ci_conflict_survives_collection_and_reaches_remediation(moc
         patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=False),
         patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": False, "merge_state_status": "dirty"}),
         patch("auto_coder.pr_processor.check_pr_repair_exhaustion", return_value=None),
-        patch("auto_coder.pr_processor._start_mergeability_remediation", return_value=["entered remediation"]) as remediation,
+        patch("auto_coder.pr_processor._start_mergeability_remediation", return_value=PRActionList(["entered remediation"])) as remediation,
         patch("auto_coder.util.github_action.trigger_workflow_dispatch") as dispatch,
         patch("auto_coder.pr_processor.get_detailed_checks_from_history") as failure_repair,
         patch("auto_coder.pr_processor._merge_pr") as merge,
@@ -268,7 +268,7 @@ def test_pending_candidate_recovers_and_reconstructed_engine_processes_durable_w
         with (
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": False, "merge_state_status": "dirty"}),
             patch("auto_coder.pr_processor.check_pr_repair_exhaustion", return_value=None),
-            patch("auto_coder.pr_processor._start_mergeability_remediation", return_value=["entered remediation"]) as remediation,
+            patch("auto_coder.pr_processor._start_mergeability_remediation", return_value=PRActionList(["entered remediation"])) as remediation,
             patch("auto_coder.pr_processor._link_codex_cloud_pr_to_issue", return_value=None),
             patch("auto_coder.pr_processor._link_jules_pr_to_issue", return_value=True),
             patch("auto_coder.util.github_action.trigger_workflow_dispatch") as dispatch,

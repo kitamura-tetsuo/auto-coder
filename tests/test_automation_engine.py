@@ -4035,6 +4035,7 @@ class TestGetCandidates:
         mock_github_client.get_open_sub_issues.return_value = []
         mock_github_client.has_linked_pr.return_value = False
         mock_github_client.get_pr_reviews_strict.return_value = []
+        mock_github_client.get_pr_comments.return_value = []
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -4046,7 +4047,8 @@ class TestGetCandidates:
         assert candidates[0].related_issues == [10, 20]
         assert candidates[0].branch_name == "pr-1"
 
-        mock_extract_issues.assert_called_once_with("This PR fixes #10 and #20")
+        assert mock_extract_issues.call_count == 2
+        assert all(call.args == ("This PR fixes #10 and #20",) for call in mock_extract_issues.call_args_list)
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")

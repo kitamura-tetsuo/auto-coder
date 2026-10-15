@@ -826,10 +826,10 @@ class TestProcessPullRequestResumesOnRecoveredCI:
     """
 
     @patch("src.auto_coder.pr_processor._process_pr_for_fixes")
-    @patch("auto_coder.jules_client.JulesClient")
+    @patch("src.auto_coder.jules_client.JulesClient")
     @patch("src.auto_coder.pr_processor._check_github_actions_status")
     def test_active_session_no_longer_defers_processing_once_ci_recovers(self, mock_check_status, mock_jules_client_class, mock_process_fixes):
-        mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[1])
+        mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[1], namespace="src.auto_coder")
         mock_jules_client = Mock()
         mock_jules_client.get_session.return_value = {"state": "IN_PROGRESS"}
         mock_jules_client_class.return_value = mock_jules_client
@@ -849,7 +849,7 @@ class TestProcessPullRequestResumesOnRecoveredCI:
         mock_process_fixes.assert_called_once()
 
     @patch("src.auto_coder.pr_processor._process_pr_for_fixes")
-    @patch("auto_coder.jules_client.JulesClient")
+    @patch("src.auto_coder.jules_client.JulesClient")
     @patch("src.auto_coder.pr_processor._check_github_actions_status")
     def test_active_session_still_defers_when_ci_is_still_failing(self, mock_check_status, mock_jules_client_class, mock_process_fixes):
         """Positive preservation control (AS-005): a still-failing head keeps the ordinary wait."""
@@ -874,12 +874,12 @@ class TestGetCandidatesResumesOnRecoveredCI:
     (Issue #2275, REQ-007, AS-004).
     """
 
-    @patch("auto_coder.jules_client.JulesClient")
+    @patch("src.auto_coder.jules_client.JulesClient")
     @patch("src.auto_coder.util.github_action._check_github_actions_status")
     def test_recovered_ci_pr_is_not_excluded_at_collection(self, mock_check_status, mock_jules_client_class):
         from src.auto_coder.automation_engine import AutomationEngine
 
-        mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[1])
+        mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[1], namespace="src.auto_coder")
         mock_jules_client = Mock()
         mock_jules_client.get_session.return_value = {"state": "IN_PROGRESS"}
         mock_jules_client_class.return_value = mock_jules_client

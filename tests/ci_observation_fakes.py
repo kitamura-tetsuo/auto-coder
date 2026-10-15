@@ -41,6 +41,7 @@ def authoritative_ci_status(
     in_progress: bool = False,
     error: str | None = None,
     waiting_runs: list[tuple[int, int, str]] | None = None,
+    namespace: str | None = None,
 ) -> Callable[..., GitHubActionsStatusResult]:
     """Build a side effect whose snapshot participates in the real phase cache."""
     configured_ids = list(ids or [])
@@ -56,9 +57,9 @@ def authoritative_ci_status(
             checks=_Checks(status, None if in_progress else conclusion.value, identifier, error is not None),
             actions=_Actions(),
         )
-        namespace = "src.auto_coder" if any(type(arg).__module__.startswith("src.auto_coder") for arg in _args) else "auto_coder"
-        observer = import_module(f"{namespace}.github_ci_observer").observe_ci
-        result_type = import_module(f"{namespace}.util.github_action").GitHubActionsStatusResult
+        module_namespace = namespace or ("src.auto_coder" if any(type(arg).__module__.startswith("src.auto_coder") for arg in _args) else "auto_coder")
+        observer = import_module(f"{module_namespace}.github_ci_observer").observe_ci
+        result_type = import_module(f"{module_namespace}.util.github_action").GitHubActionsStatusResult
         snapshot = observer(api, "controlled-token", repository, pr_number, head, api_origin="https://api.github.test")
         return result_type(
             success=effective_success,
