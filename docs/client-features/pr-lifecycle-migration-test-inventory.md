@@ -34,12 +34,15 @@ blocking and a completed local correction awaiting independent validation as
 deferrals; neither is reinterpreted as CI failure or merge authority. A green
 review-repair case enters the same PR boundary twice with a temporary durable
 receipt store, proving replay retains the cloud owner without redelivery or a
-local substitute.
+local substitute. Temporary production review-cycle stores retain an accepted
+Strong finding and a pending Strong audit separately under green CI; both stop
+before merge without entering CI-failure repair.
 Only `observe_ci` and service construction are controlled for CI;
 the resulting `GitHubActionsStatusResult` is produced by production code. The
-conflict cases control the GitHub/Git repair effect at
-`_start_mergeability_remediation`, rather than replacing the processor or
-preselecting a CI verdict.
+terminal-failure case retains Codex Cloud ownership at the provider boundary.
+Conflict replay traverses `_start_mergeability_remediation` and the production
+base-update route with controlled Git commands, retaining one cloud delivery
+from its temporary receipt and never entering local conflict repair.
 
 The existing final-boundary and durable-owner coverage remains in
 `tests/test_adversarial_validation_pr_flow.py`,
@@ -58,11 +61,14 @@ Existing tests commonly patch imported globals in `pr_processor`, especially
 break patch lookup even if behavior is unchanged. Intermediate extraction
 commits can also duplicate the early candidate CI veto and final CI read, lose
 newest-attempt filtering, or move the remote-head/newer-validation checks after
-the merge effect. The maintained group therefore keeps a production CI
+the merge effect. The final-attempt cases pause immediately before the final
+serialized admission, after earlier validation/publication checks; a newly
+registered durable attempt fences merge while the equivalent current attempt
+reaches it. The maintained group therefore keeps a production CI
 interpreter boundary and an actual `_handle_pr_merge` route boundary available
 independently of those historical patch sites.
 
-At correction, the maintained group completed with 20 passing tests. No test
+At correction, the maintained group completed with 24 passing tests. No test
 was skipped or xfailed, no paid provider was contacted, and ordinary CI
 remained unchanged. This test-only characterization changes no processing origin,
 admission rule, route, outcome, durable resumption path, or trace schema, so the
