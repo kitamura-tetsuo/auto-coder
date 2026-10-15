@@ -4,6 +4,13 @@ Source snapshot: **`e1da0e87eb7215d870cbaddd4737bcd9bd6a87e8`** (2026-10-15 JST)
 
 ## C1. Candidate filtering and handler ordering are not the same gate
 
+Pre-review selection is now centralized in `pr_progress_policy`. The typed
+input includes repository, PR, immutable head and the caller phase; the typed
+result identifies the next existing executor and its reason. Evidence remains
+produced by the GitHub CI observer, and dispatch, remediation, review and merge
+remain separate effect owners. Consequently a selected route is not a claim,
+successful execution, review result or merge authorization.
+
 ```mermaid
 sequenceDiagram
     participant O as Processing origin
@@ -37,7 +44,12 @@ sequenceDiagram
     end
 ```
 
-`KNOWN_EMPTY` remains mapped to in-progress in this snapshot. Therefore, a conflict handler can exist and be correctly ordered inside `_handle_pr_merge` yet remain unreachable through batch collection. This documentation update does not fix that progress failure or treat missing CI as successful CI. Unknown/incomplete observations and stale-head evidence must not be conflated with a clean current run.
+`KNOWN_EMPTY` remains non-passing evidence. Candidate collection admits it only
+for an affirmative conflict with enabled remediation; handler evaluation then
+selects remediation before waiting. Other known-empty candidates retain the
+collector exclusion, while direct handler entry can select the existing manual
+dispatch owner. Unknown/incomplete observations and stale-head evidence are
+never conflated with a clean current run.
 
 ## C2. Workflow dispatch has its own effect boundary
 

@@ -112,6 +112,7 @@ from .llm_backend_config import get_pr_review_allowlist_from_config, get_review_
 from .logger_config import get_gh_logger, get_logger
 from .ordinary_closure_evidence import ApplicationStatus, ClosureEvidenceRecord, EvidenceState, ObservedTarget, restore_ordinary_result
 from .pr_blocker_closure import _BLOCKER_ID_RE, _GAP_ID_RE
+from .pr_progress_policy import ProgressPhase, ProgressRoute, PRProgressInputs, PRProgressScope, select_pr_progress
 from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repair_target
 from .pr_repair_guard import (
     PrRepairExhaustionInfo,
@@ -4750,9 +4751,9 @@ def _handle_pr_merge(
             adjudication_actions, adjudication_forces_revalidation = PRActionList(), False
         actions.extend(adjudication_actions)
 
-        # Step 1: Check GitHub Actions status using utility function
-        # Use switch_branch_on_in_progress=False to just skip instead of exit
-        should_continue = check_github_actions_and_exit_if_in_progress(  # type: ignore[arg-type]
+        # Keep observation-side deployment approval with its existing owner.
+        # Its legacy Boolean is deliberately not decision authority.
+        check_github_actions_and_exit_if_in_progress(  # type: ignore[arg-type]
             repo_name=repo_name,
             pr_data=pr_data,
             config=config,  # type: ignore[arg-type]
@@ -4760,31 +4761,53 @@ def _handle_pr_merge(
             switch_branch_on_in_progress=False,
             item_number=pr_number,
             item_type="PR",
-        )  # Not needed for this check
+        )
 
         mergeability = _get_mergeable_state(repo_name, pr_data, config)
         mergeable_flag = mergeability.get("mergeable")
         merge_state_status = mergeability.get("merge_state_status")
+        exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number) if mergeable_flag is False else None
+        progress = select_pr_progress(
+            PRProgressInputs(
+                scope=PRProgressScope(repo_name, pr_number, watched_head),
+                phase=ProgressPhase.IN_HANDLER,
+                ci=None,
+                mergeable=mergeable_flag if isinstance(mergeable_flag, bool) else None,
+                remediation_enabled=config.ENABLE_MERGEABILITY_REMEDIATION,
+                remediation_exhausted=bool(exhaustion_info and exhaustion_info.is_exhausted),
+            )
+        )
 
         if mergeable_flag is False:
             state_text = merge_state_status or "unknown"
             actions.append(f"PR #{pr_number} is not mergeable (state: {state_text})")
 
-            exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
-            if exhaustion_info and exhaustion_info.is_exhausted:
-                actions.append(f"Mergeability remediation stopped for PR #{pr_number}: repair allowance exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}")
-                publish_exhaustion_comment_deduped(github_client, repo_name, pr_number, exhaustion_info)
-                _record_pr_stage(pr_number, "pr.mergeability-remediation", f"pr#{pr_number} mergeability remediation", Outcome.BLOCKED, {"merge_state_status": state_text, "reason": "repair allowance exhausted", "blocker_ids": list(exhaustion_info.exhausted_blocker_ids)})
-                return actions
+        if progress.route is ProgressRoute.BLOCK_EXHAUSTED_CONFLICT:
+            assert exhaustion_info is not None
+            actions.append(f"Mergeability remediation stopped for PR #{pr_number}: repair allowance exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}")
+            publish_exhaustion_comment_deduped(github_client, repo_name, pr_number, exhaustion_info)
+            _record_pr_stage(pr_number, "pr.mergeability-remediation", f"pr#{pr_number} mergeability remediation", Outcome.BLOCKED, {"merge_state_status": merge_state_status or "unknown", "reason": "repair allowance exhausted", "blocker_ids": list(exhaustion_info.exhausted_blocker_ids)})
+            return actions
 
-            if config.ENABLE_MERGEABILITY_REMEDIATION:
-                remediation_actions = _start_mergeability_remediation(pr_number, merge_state_status, repo_name)
-                actions.extend(remediation_actions)
-                return actions
-            _record_pr_stage(pr_number, "pr.mergeability-remediation", f"pr#{pr_number} mergeability remediation", Outcome.SKIPPED, {"merge_state_status": state_text, "reason": "mergeability remediation is disabled"})
+        if progress.route is ProgressRoute.REMEDIATE_CONFLICT:
+            actions.extend(_start_mergeability_remediation(pr_number, merge_state_status, repo_name))
+            return actions
 
-        # Step 2: If checks are in progress, skip this PR
-        if not should_continue:
+        if mergeable_flag is False and not config.ENABLE_MERGEABILITY_REMEDIATION:
+            _record_pr_stage(pr_number, "pr.mergeability-remediation", f"pr#{pr_number} mergeability remediation", Outcome.SKIPPED, {"merge_state_status": merge_state_status or "unknown", "reason": "mergeability remediation is disabled"})
+
+        github_checks = _check_github_actions_status(repo_name, pr_data, config, github_client)
+        progress = select_pr_progress(
+            PRProgressInputs(
+                scope=PRProgressScope(repo_name, pr_number, watched_head),
+                phase=ProgressPhase.IN_HANDLER,
+                ci=github_checks.observation,
+                mergeable=mergeable_flag if isinstance(mergeable_flag, bool) else None,
+                remediation_enabled=config.ENABLE_MERGEABILITY_REMEDIATION,
+            )
+        )
+
+        if progress.route is ProgressRoute.WAIT_FOR_CI:
             actions.append(f"GitHub Actions checks are still in progress for PR #{pr_number}, skipping to next PR")
             if processing_status is not None:
                 processing_status.outcome = PRProcessingOutcome.DEFERRED
@@ -4796,52 +4819,28 @@ def _handle_pr_merge(
                     logger.debug(f"Could not schedule CI watch recheck for PR #{pr_number}: {exc}")
             return actions
 
-        # Step 3: Get detailed status for merge decision
-        github_checks = _check_github_actions_status(repo_name, pr_data, config, github_client)
-        if github_checks.error:
-            actions.append(f"Could not determine CI status for PR #{pr_number}: {github_checks.error}")
-            logger.error(f"Could not determine CI status for PR #{pr_number}: {github_checks.error}")
+        if progress.route is ProgressRoute.REPORT_CI_UNAVAILABLE:
+            reason = github_checks.error or progress.reason
+            actions.append(f"Could not determine CI status for PR #{pr_number}: {reason}")
+            logger.error(f"Could not determine CI status for PR #{pr_number}: {reason}")
             if processing_status is not None:
-                processing_status.error = github_checks.error
+                processing_status.error = reason
                 processing_status.outcome = PRProcessingOutcome.FAILED
-            _record_pr_stage(pr_number, "pr.ci-eligibility", f"pr#{pr_number} CI eligibility", Outcome.FAILED, {"reason": github_checks.error})
+            _record_pr_stage(pr_number, "pr.ci-eligibility", f"pr#{pr_number} CI eligibility", Outcome.FAILED, {"reason": reason})
             return actions
 
-        # Check if no actions have started for the latest commit
-        if not github_checks.ids:
-            # No checks found for the current head SHA
-            logger.info(f"No GitHub Actions found for PR #{pr_number} (SHA: {pr_data.get('head', {}).get('sha')[:8]}). Triggering ci.yml...")
+        if progress.route is ProgressRoute.DISPATCH_CI:
+            # No checks found for the current head SHA. The selected route only
+            # enters the existing claim/watch/dispatch effect owner below.
+            logger.info(f"No GitHub Actions found for PR #{pr_number} (SHA: {watched_head[:8]}). Triggering ci.yml...")
 
-            # 1. Add @auto-coder label to prevent multiple executions
-            # We use LabelManager to add the label
-            with LabelManager(
-                github_client,
-                repo_name,
-                pr_number,
-                item_type="pr",
-                config=config,
-                known_labels=pr_data.get("labels"),
-            ) as lm:
-                # Label added by entering context
-
-                # 2. Trigger workflow_dispatch
+            with LabelManager(github_client, repo_name, pr_number, item_type="pr", config=config, known_labels=pr_data.get("labels")) as lm:
                 from auto_coder.util.github_action import trigger_workflow_dispatch
 
                 head_branch = pr_data.get("head", {}).get("ref")
                 head_sha = pr_data.get("head", {}).get("sha")
                 workflow_id = "ci.yml"
-
-                # Manual CI dispatch admission is governed exclusively by the
-                # durable dispatch-claim store (see GitHub Issue #1791). The
-                # claim identity is repo + PR + head SHA + workflow, so a new
-                # head SHA is a different identity and is never blocked by a
-                # stale claim (REQ-001, REQ-007, REQ-008: no label involved).
-                dispatch_identity = DispatchIdentity(
-                    repo_name=repo_name,
-                    pr_number=pr_number,
-                    head_sha=head_sha or "",
-                    workflow_id=workflow_id,
-                )
+                dispatch_identity = DispatchIdentity(repo_name=repo_name, pr_number=pr_number, head_sha=head_sha or "", workflow_id=workflow_id)
                 claim_store = get_dispatch_claim_store()
                 claim = claim_store.try_acquire_claim(dispatch_identity)
                 if not claim.acquired:
@@ -4849,11 +4848,6 @@ def _handle_pr_merge(
                     actions.append(f"Skipped triggering {workflow_id} for PR #{pr_number}: dispatch already claimed ({claim.reason})")
                     _record_pr_stage(pr_number, "pr.manual-ci-dispatch", f"pr#{pr_number} manual CI dispatch", Outcome.SKIPPED, {"workflow": workflow_id, "reason": claim.reason})
                     return actions
-
-                # Publish the restart-safe observation obligation before the
-                # external dispatch.  A store failure leaves the already
-                # acquired claim suppressing and therefore visibly blocked;
-                # it must never degrade to an unmonitored dispatch.
                 invalidation_path = Path(os.environ.get("AUTO_CODER_INVALIDATION_DB", "~/.auto-coder/entity-invalidations.sqlite3")).expanduser()
                 try:
                     watch_store = DurableInvalidationQueue(invalidation_path)
@@ -4864,55 +4858,24 @@ def _handle_pr_merge(
                     _record_pr_stage(pr_number, "pr.manual-ci-dispatch", f"pr#{pr_number} manual CI dispatch", Outcome.DEFERRED, {"workflow": workflow_id, "reason": str(exc)})
                     return actions
                 if not watch_created:
-                    logger.error(f"CI watch identity was invalid for {dispatch_identity.key()}")
                     actions.append(f"Blocked triggering {workflow_id} for PR #{pr_number}: durable CI watch unavailable")
                     _record_pr_stage(pr_number, "pr.manual-ci-dispatch", f"pr#{pr_number} manual CI dispatch", Outcome.DEFERRED, {"workflow": workflow_id, "reason": "invalid CI watch identity"})
                     return actions
-
-                try:
-                    dispatch_result = trigger_workflow_dispatch(repo_name, workflow_id, head_branch)
-
-                    # The claim was published before the external call, so any
-                    # outcome other than a definite rejection must keep the
-                    # identity suppressing (REQ-004, REQ-006). If the durable
-                    # write itself fails, the claim is already left in its
-                    # prior (suppressing) state, so dispatch admission still
-                    # fails closed for this identity (REQ-003).
-                    recorded = claim_store.record_outcome(
-                        dispatch_identity,
-                        dispatch_result.outcome,
-                        holder_id=claim.holder_id,
-                    )
-                    if not recorded:
-                        logger.error(f"Failed to durably record dispatch outcome {dispatch_result.outcome.value} for {dispatch_identity.key()}; claim remains suppressing")
-
-                    if dispatch_result:
-                        actions.append(f"Triggered {workflow_id} for PR #{pr_number}")
-                        get_trace_logger().log("CI Trigger", f"Triggered {workflow_id} for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"workflow": workflow_id})
-
-                        actions.append(f"Created durable CI watch for {workflow_id}")
-                        get_trace_logger().log("CI Trigger", f"Created durable CI watch for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"workflow": workflow_id})
-                        _record_pr_stage(pr_number, "pr.manual-ci-dispatch", f"pr#{pr_number} manual CI dispatch", Outcome.ACCEPTED_HANDOFF, {"workflow": workflow_id})
-                        lm.keep_label()
-                        return actions
-
-                    else:
-                        actions.append(f"Failed to trigger {workflow_id} for PR #{pr_number} (outcome={dispatch_result.outcome.value})")
-                        _record_pr_stage(pr_number, "pr.manual-ci-dispatch", f"pr#{pr_number} manual CI dispatch", Outcome.FAILED, {"workflow": workflow_id, "outcome": dispatch_result.outcome.value})
-                        # Label will be removed by LabelManager exit
-
-                except Exception as e:
-                    # Clean up active monitor on exception. The dispatch claim
-                    # is intentionally left as-is: an exception here means the
-                    # dispatch outcome could not even be classified and
-                    # recorded, so the identity must remain suppressing
-                    # (REQ-003, REQ-004, AS-003) rather than risk a duplicate.
-                    raise e
-
+                dispatch_result = trigger_workflow_dispatch(repo_name, workflow_id, head_branch)
+                recorded = claim_store.record_outcome(dispatch_identity, dispatch_result.outcome, holder_id=claim.holder_id)
+                if not recorded:
+                    logger.error(f"Failed to durably record dispatch outcome {dispatch_result.outcome.value} for {dispatch_identity.key()}; claim remains suppressing")
+                if dispatch_result:
+                    actions.extend([f"Triggered {workflow_id} for PR #{pr_number}", f"Created durable CI watch for {workflow_id}"])
+                    _record_pr_stage(pr_number, "pr.manual-ci-dispatch", f"pr#{pr_number} manual CI dispatch", Outcome.ACCEPTED_HANDOFF, {"workflow": workflow_id})
+                    lm.keep_label()
+                    return actions
+                actions.append(f"Failed to trigger {workflow_id} for PR #{pr_number} (outcome={dispatch_result.outcome.value})")
+                _record_pr_stage(pr_number, "pr.manual-ci-dispatch", f"pr#{pr_number} manual CI dispatch", Outcome.FAILED, {"workflow": workflow_id, "outcome": dispatch_result.outcome.value})
             return actions
 
         # Step 4: If GitHub Actions passed, merge directly
-        if github_checks.success:
+        if progress.route is ProgressRoute.ENTER_REVIEW:
             actions.append(f"All GitHub Actions checks passed for PR #{pr_number}")
 
             # Check if AUTO_MERGE is enabled before attempting merge
