@@ -26,6 +26,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/setup-buildx-action@v4
+      - name: Require this exact run's tested publication
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -Eeuo pipefail
+          gh api --paginate "repos/${{ github.repository }}/actions/runs/$RUN_ID/jobs?per_page=100" > "$RUNNER_TEMP/source-jobs.json"
+          python scripts/ci_maintenance.py require-published-job --jobs "$RUNNER_TEMP/source-jobs.json"
       - name: Reject an out-of-order older successful run
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
