@@ -112,7 +112,7 @@ from .llm_backend_config import get_pr_review_allowlist_from_config, get_review_
 from .logger_config import get_gh_logger, get_logger
 from .ordinary_closure_evidence import ApplicationStatus, ClosureEvidenceRecord, EvidenceState, ObservedTarget, restore_ordinary_result
 from .pr_blocker_closure import _BLOCKER_ID_RE, _GAP_ID_RE
-from .pr_progress_policy import ProgressPhase, ProgressRoute, PRProgressInputs, PRProgressScope, select_pr_progress
+from .pr_progress_policy import CIEvidenceState, ProgressPhase, ProgressRoute, PRProgressInputs, PRProgressScope, select_pr_progress
 from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repair_target
 from .pr_repair_guard import (
     PrRepairExhaustionInfo,
@@ -4810,7 +4810,10 @@ def _handle_pr_merge(
         )
 
         if progress.route is ProgressRoute.WAIT_FOR_CI:
-            actions.append(f"GitHub Actions checks are still in progress for PR #{pr_number}, skipping to next PR")
+            if progress.ci_state is CIEvidenceState.KNOWN_EMPTY:
+                actions.append(f"No current CI observations are available for PR #{pr_number}; waiting for CI evidence and skipping to next PR")
+            else:
+                actions.append(f"GitHub Actions checks are still in progress for PR #{pr_number}, skipping to next PR")
             if processing_status is not None:
                 processing_status.outcome = PRProcessingOutcome.DEFERRED
             if watched_head:

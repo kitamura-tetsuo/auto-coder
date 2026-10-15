@@ -90,6 +90,54 @@ def test_real_ci_decoding_controls_conflicting_candidate_admission(mock_github_c
         assert candidates[0].priority == 2
 
 
+@pytest.mark.parametrize(("mergeable", "expected_numbers"), [(True, []), (False, [2506])])
+def test_known_empty_collector_diagnostics_match_policy_membership(mock_github_client, mergeable, expected_numbers):
+    """REQ-006: absent CI is never reported as executing or as a false skip."""
+    head_sha = "d" * 40
+    pr = {
+        "number": 2506,
+        "title": "known-empty diagnostics",
+        "draft": False,
+        "mergeable": mergeable,
+        "mergeable_state": "clean" if mergeable else "dirty",
+        "head": {"ref": "issue-2506", "sha": head_sha},
+        "labels": [],
+        "body": "Closes #2506",
+        "created_at": "2026-10-14T00:00:00Z",
+        "user": {"login": "allowed"},
+    }
+    mock_github_client.get_open_prs_json.return_value = [pr]
+    mock_github_client.get_open_issues_json.return_value = []
+    config = AutomationConfig()
+    config.PR_AUTHOR_ALLOWLIST = []
+    engine = AutomationEngine(mock_github_client, config=config)
+    api = _api(head_sha, pending=False)
+
+    with (
+        patch("auto_coder.util.github_action.get_ghapi_client", return_value=api),
+        patch("auto_coder.util.github_action.logger.info") as helper_log,
+        patch("auto_coder.automation_engine.logger.info") as engine_info,
+        patch("auto_coder.automation_engine.logger.debug") as engine_debug,
+        patch("auto_coder.automation_engine.LabelManager") as labels,
+        patch("auto_coder.pr_processor._close_empty_pr", return_value=EmptyPRResult()),
+        patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=StaleJulesPRResult()),
+        patch("auto_coder.pr_processor._should_skip_waiting_for_jules", return_value=False),
+        patch("auto_coder.pr_processor._is_jules_pr", return_value=False),
+    ):
+        labels.return_value.__enter__.return_value = True
+        candidates = engine._get_candidates("owner/repo")
+
+    assert [candidate.data["number"] for candidate in candidates if candidate.type == "pr"] == expected_numbers
+    diagnostics = "\n".join(str(call.args[0]) for mock in (helper_log, engine_info, engine_debug) for call in mock.call_args_list if call.args)
+    assert "No current CI observations" in diagnostics
+    assert "checks are still in progress" not in diagnostics
+    if mergeable:
+        assert "Skipping PR #2506 at progress policy: no current-head CI observations are available" in diagnostics
+    else:
+        assert "retained by candidate progress policy" in diagnostics
+        assert "skipping to next" not in diagnostics.lower()
+
+
 def test_unavailable_ci_conflict_survives_collection_and_reaches_remediation(mock_github_client, tmp_path, monkeypatch):
     """REQ-005: an exact-head conflict remains actionable when CI is unavailable."""
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))

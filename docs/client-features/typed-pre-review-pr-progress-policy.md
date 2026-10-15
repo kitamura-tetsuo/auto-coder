@@ -31,3 +31,10 @@ Jules, empty/stale-PR, provider-wait, priority, and Issue-requeue gates remain
 independent collector responsibilities. The selected candidate still enters
 the handler, where a fresh in-handler policy evaluation protects remediation,
 review, repair, and merge effect boundaries.
+
+Diagnostics preserve the evidence distinction as well as the route. A
+`KNOWN_EMPTY` snapshot is reported as having no current CI observations, never
+as an executing workflow. The collector then separately reports whether its
+typed route excluded or retained the candidate; genuine pending evidence keeps
+the existing in-progress wording. Direct handler entry likewise retains its
+durable CI wait while describing the absent observation accurately.

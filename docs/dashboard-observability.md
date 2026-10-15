@@ -2595,3 +2595,10 @@ selected-candidate handler events remain the production-to-view contract.
 tests/test_pr_progress_policy.py tests/test_pr_lifecycle_contract.py` exercises
 the real decoder, collector projection, handler projection, and retained
 durable-watch boundary.
+
+Issue #2506's diagnostic correction changes only human-readable log/action
+wording: `KNOWN_EMPTY` now reports absent observations, while genuine pending
+CI retains the executing-check wording and collector logs separately identify
+route exclusion or retention. It adds no structured event field, outcome,
+stage, origin, or dashboard renderer; existing CI availability and policy-route
+evidence remain authoritative rather than the diagnostic text.

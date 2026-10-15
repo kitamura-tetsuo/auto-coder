@@ -57,6 +57,10 @@ deployment-approval effect boundary before consuming the policy route. It does
 not reinterpret the helper's legacy continue/stop Boolean, and it does not
 promote candidate membership into handler or merge authority. Candidate
 priority and all non-CI admission/effect owners remain outside the pure policy.
+For diagnostics, `KNOWN_EMPTY` is described as absent observations before the
+collector reports exclusion or retention; only genuine pending evidence is
+described as CI still in progress. The handler uses the same distinction while
+retaining the existing durable recheck for both wait routes.
 
 ## C2. Workflow dispatch has its own effect boundary
 

@@ -2102,6 +2102,10 @@ def check_github_actions_and_exit_if_in_progress(
 
         # If GitHub Actions are still in progress
         if github_checks.in_progress:
+            known_empty = bool(github_checks.observation and github_checks.observation.complete and github_checks.observation.availability is ObservationAvailability.KNOWN_EMPTY)
+            if known_empty:
+                logger.info(f"No current CI observations are available for {item_type} #{number}; deferring to the caller's progress policy")
+                return False
             if switch_branch_on_in_progress:
                 # Issue processor pattern: switch to main and return to main loop
                 logger.info(f"GitHub Actions checks are still in progress for {item_type} #{number}, switching to main branch")
