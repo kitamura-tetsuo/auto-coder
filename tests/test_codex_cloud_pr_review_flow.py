@@ -25,6 +25,7 @@ from auto_coder.pr_processor import (
 from auto_coder.review_thread_validation import ClaimedReviewThread
 from auto_coder.util.gh_cache import PullRequestRepairMetadata, ReviewThread, ReviewThreadComment
 from auto_coder.util.github_action import GitHubActionsStatusResult
+from tests.ci_observation_fakes import authoritative_ci_status
 
 
 @pytest.fixture(autouse=True)
@@ -266,7 +267,7 @@ def test_single_pr_merge_entry_validates_claimed_thread_without_redelegating() -
         patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
         patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
         patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-        patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+        patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
         patch(
             "auto_coder.pr_processor._get_claimed_review_thread_state",
             return_value=ClaimedReviewThreadGateState(claimed=(claimed,)),
@@ -336,7 +337,7 @@ def test_passing_codex_pr_delegates_blocking_review_threads(
     _continue,
 ) -> None:
     thread = _thread()
-    checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+    checks.side_effect = authoritative_ci_status(success=True, ids=[1])
     claimed_state.return_value = ClaimedReviewThreadGateState(
         unresolved=(thread,),
         blocking_unresolved=(thread,),
@@ -384,7 +385,7 @@ def test_passing_jules_pr_routes_review_repair_from_durable_origin(tmp_path) -> 
         patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=tmp_path / "repairs.json"),
         patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
         patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
-        patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+        patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
         patch(
             "auto_coder.pr_processor._get_claimed_review_thread_state",
             return_value=ClaimedReviewThreadGateState(unresolved=(repair, provenance), blocking_unresolved=(repair, provenance), has_blocking_unresolved=True),
@@ -417,7 +418,7 @@ def test_unresolved_repair_without_durable_owner_fails_processing_visibly() -> N
     with (
         patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
         patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
-        patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+        patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
         patch(
             "auto_coder.pr_processor._get_claimed_review_thread_state",
             return_value=ClaimedReviewThreadGateState(unresolved=(thread,), blocking_unresolved=(thread,), has_blocking_unresolved=True),
@@ -445,7 +446,7 @@ def test_accepted_repair_without_any_durable_receipt_is_not_redelivered(tmp_path
         patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=tmp_path / "repairs.json"),
         patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
         patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
-        patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+        patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
         patch(
             "auto_coder.pr_processor._get_claimed_review_thread_state",
             return_value=ClaimedReviewThreadGateState(unresolved=(thread,), blocking_unresolved=(thread,), has_blocking_unresolved=True),

@@ -38,6 +38,7 @@ from auto_coder.pr_processor import (
 )
 from auto_coder.util.gh_cache import GitHubClient, ReviewThread, ReviewThreadComment
 from auto_coder.util.github_action import GitHubActionsStatusResult
+from tests.ci_observation_fakes import authoritative_ci_status
 
 REVIEWER_LOGIN = "auto-coder-reviewer[bot]"
 
@@ -206,7 +207,7 @@ class TestAS001UnresolvedHumanThreadBypassed:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "a" * 40
         pr_data = _pr_data(100, head_sha, linked_issue=42)
 
@@ -244,7 +245,7 @@ class TestAS001UnresolvedHumanThreadBypassed:
         mock_github_client.has_linked_pr.return_value = False
         mock_github_client.get_issue.return_value = {"number": 42, "title": "Spec", "body": ""}
         mock_github_client.get_pr_reviews_strict.return_value = []
-        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[1])
 
         engine = AutomationEngine(mock_github_client)
         engine.config = AutomationConfig(pr_review_thread_gate=False)
@@ -278,7 +279,7 @@ class TestAS002DisabledModeIsNonDestructive:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "a" * 40
         pr_data = _pr_data(100, head_sha, linked_issue=42)
 
@@ -333,7 +334,7 @@ class TestAS003ThreadLookupFailureDoesNotStopPR:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "a" * 40
         pr_data = _pr_data(100, head_sha, linked_issue=42)
 
@@ -369,7 +370,7 @@ class TestAS003ThreadLookupFailureDoesNotStopPR:
         mock_exit_in_progress,
     ):
         """When strict getter is unavailable, no fail-closed has_blocking_unresolved=True is applied."""
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "a" * 40
         pr_data = _pr_data(100, head_sha, linked_issue=42)
 
@@ -419,7 +420,7 @@ class TestAS004NoGateOnlyLookup:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "a" * 40
         pr_data = _pr_data(100, head_sha, linked_issue=42)
 
@@ -454,7 +455,7 @@ class TestAS004NoGateOnlyLookup:
         mock_exit_in_progress,
     ):
         """When PR has no linked issue, adversarial validation is not applicable, so no lookup is performed."""
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "a" * 40
         # Issue-less PR
         pr_data = _pr_data(100, head_sha, linked_issue=0)
@@ -495,7 +496,7 @@ class TestAS005AdversarialValidationRemainsIndependent:
         mock_github_client.has_linked_pr.return_value = False
         mock_github_client.get_issue.return_value = {"number": 42, "title": "Spec", "body": ""}
         mock_github_client.get_pr_reviews_strict.return_value = [_adversarial_review(head_sha, "NEEDS_FIX")]
-        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[1])
 
         engine = AutomationEngine(mock_github_client)
         engine.config = AutomationConfig(
@@ -522,7 +523,7 @@ class TestAS005AdversarialValidationRemainsIndependent:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "a" * 40
         pr_data = _pr_data(100, head_sha, linked_issue=42)
 
@@ -567,7 +568,7 @@ class TestAS006GitHubRequiredReviewCannotBeBypassed:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "a" * 40
         pr_data = _pr_data(100, head_sha, linked_issue=42)
 
@@ -615,7 +616,7 @@ class TestAS007AS008ReenableSemantics:
         mock_exit_in_progress,
     ):
         """AS-007: Re-enabling gate sees still-unresolved thread, blocks merge and triggers repair."""
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "a" * 40
         pr_data = _pr_data(100, head_sha, linked_issue=42)
 
@@ -653,7 +654,7 @@ class TestAS007AS008ReenableSemantics:
         mock_exit_in_progress,
     ):
         """AS-008: Reviewer genuinely resolves thread on GitHub before re-enable; PR merges cleanly."""
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "a" * 40
         pr_data = _pr_data(100, head_sha, linked_issue=42)
 

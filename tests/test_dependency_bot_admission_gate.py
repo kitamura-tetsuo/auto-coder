@@ -31,6 +31,7 @@ from auto_coder.pr_processor import (
     evaluate_dependency_bot_admission,
 )
 from auto_coder.util.github_action import GitHubActionsStatusResult
+from tests.ci_observation_fakes import authoritative_ci_status
 
 
 def _mergeable_open_pr(number: int = 5318, author: str = "dependabot[bot]", sha: str = "deadbeef") -> dict:
@@ -190,7 +191,7 @@ class TestEvaluateDependencyBotAdmission:
         pr_data = _mergeable_open_pr()
         client = _FakeStrictClient(responses=[pr_data])
         config = _config(ignore=False, auto_merge=True)
-        with patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=False, error="No current CI observations", in_progress=True)):
+        with patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=False, error="No current CI observations", in_progress=True)):
             decision = evaluate_dependency_bot_admission(client, "kitamura-tetsuo/outliner", pr_data, config)
         assert decision.allowed is False
         assert decision.outcome is ExplicitTargetOutcome.SKIPPED
@@ -199,7 +200,7 @@ class TestEvaluateDependencyBotAdmission:
         pr_data = _mergeable_open_pr()
         client = _FakeStrictClient(responses=[pr_data])
         config = _config(ignore=False, auto_merge=True)
-        with patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, in_progress=False)):
+        with patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, in_progress=False)):
             decision = evaluate_dependency_bot_admission(client, "o/r", pr_data, config)
         assert decision.allowed is True
         assert client.calls == 2  # initial + post-CI reconfirmation
@@ -208,7 +209,7 @@ class TestEvaluateDependencyBotAdmission:
         pr_data = _mergeable_open_pr()
         client = _FakeStrictClient(responses=[pr_data])
         config = _config(ignore=False, auto_merge=True)
-        with patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=False, in_progress=False)):
+        with patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=False, in_progress=False)):
             decision = evaluate_dependency_bot_admission(client, "o/r", pr_data, config)
         assert decision.allowed is False
         assert decision.outcome is ExplicitTargetOutcome.SKIPPED
@@ -217,7 +218,7 @@ class TestEvaluateDependencyBotAdmission:
         pr_data = _mergeable_open_pr()
         client = _FakeStrictClient(responses=[pr_data])
         config = _config(ignore=False, auto_merge=True)
-        with patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, in_progress=True)):
+        with patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, in_progress=True)):
             decision = evaluate_dependency_bot_admission(client, "o/r", pr_data, config)
         assert decision.allowed is False
         assert decision.outcome is ExplicitTargetOutcome.SKIPPED
@@ -251,7 +252,7 @@ class TestEvaluateDependencyBotAdmission:
         moved = _mergeable_open_pr(sha="new-sha")
         client = _FakeStrictClient(responses=[initial, moved])
         config = _config(ignore=False, auto_merge=True)
-        with patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, in_progress=False)):
+        with patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, in_progress=False)):
             decision = evaluate_dependency_bot_admission(client, "o/r", initial, config)
         assert decision.allowed is False
         assert decision.outcome is ExplicitTargetOutcome.DEFERRED
@@ -261,7 +262,7 @@ class TestEvaluateDependencyBotAdmission:
         client = _NoStrictRetrievalClient()
         pr_data = _mergeable_open_pr()
         config = _config(ignore=False, auto_merge=True)
-        with patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, in_progress=False)):
+        with patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, in_progress=False)):
             decision = evaluate_dependency_bot_admission(client, "o/r", pr_data, config)
         assert decision.allowed is True
 
@@ -336,7 +337,7 @@ class TestCommonAdmissionBoundaryRefusesDependencyBotPR:
         candidate = Candidate(type="pr", data=pr_data, priority=0)
 
         with (
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, in_progress=False)),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, in_progress=False)),
             patch("auto_coder.automation_engine.process_pull_request") as mock_pr_proc,
         ):
             mock_pr_proc.return_value = MagicMock(outcome=MagicMock(value="success"), error=None, actions_taken=[], pr_data=pr_data)
@@ -356,7 +357,7 @@ class TestCommonAdmissionBoundaryRefusesDependencyBotPR:
         candidate = Candidate(type="pr", data=pr_data, priority=0)
 
         with (
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=False, in_progress=False)),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=False, in_progress=False)),
             patch("auto_coder.automation_engine.process_pull_request") as mock_pr_proc,
         ):
             mock_pr_proc.return_value = MagicMock(outcome=MagicMock(value="success"), error=None, actions_taken=[], pr_data=pr_data)

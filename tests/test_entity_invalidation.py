@@ -42,6 +42,7 @@ from src.auto_coder.util.github_request_outcome import (
     configure_github_request_boundary,
 )
 from src.auto_coder.webhook_server import SentryWebhookPayload, create_app, process_github_payload, process_sentry_payload
+from tests.ci_observation_fakes import authoritative_ci_status
 
 
 def _github_deferral(reason: str, retry_at: float) -> GitHubRequestDeferred:
@@ -1502,7 +1503,7 @@ def test_authoritative_lifecycle_transition_survives_later_author_exclusion(tmp_
     claim_store = DispatchClaimStore(db_path=tmp_path / "dispatch-claims.sqlite3")
     with (
         patch("src.auto_coder.pr_processor.get_dispatch_claim_store", return_value=claim_store),
-        patch("src.auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[], in_progress=False)),
+        patch("src.auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[], in_progress=False)),
         patch("src.auto_coder.pr_processor.get_detailed_checks_from_history"),
         patch("src.auto_coder.pr_processor.LabelManager"),
         patch("auto_coder.util.github_action.trigger_workflow_dispatch", return_value=WorkflowDispatchResult(outcome=DispatchOutcome.ACCEPTED)),

@@ -18,6 +18,7 @@ from auto_coder.local_review_validation import LocalRepairVerificationStore, run
 from auto_coder.pr_processor import _review_feedback_identity
 from auto_coder.review_thread_validation import ClaimedReviewThread
 from auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
+from tests.ci_observation_fakes import authoritative_ci_status
 from tests.test_local_review_repair import _git, _repository, _request
 
 
@@ -435,7 +436,7 @@ def test_production_pending_lane_excludes_unrelated_threads_and_reports_missing_
     with (
         patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
         patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-        patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+        patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
         patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=gate_state),
         patch("auto_coder.durable_repair_allowance.RepairAllowanceLedger", return_value=ledger),
         patch("auto_coder.local_review_validation.RepairAllowanceLedger", return_value=ledger),
@@ -541,7 +542,7 @@ def test_same_commit_actionable_validation_routes_to_local_repair_even_with_forc
     with (
         patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
         patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-        patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+        patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
         patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState(unresolved=(thread,), blocking_unresolved=(thread,), has_blocking_unresolved=True)),
         patch("auto_coder.pr_processor._select_review_repair_route", return_value=route),
         patch("auto_coder.pr_processor._revalidate_local_review_repair_route", return_value=route),

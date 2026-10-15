@@ -37,6 +37,11 @@ newer-head and newer-attempt fencing, and the final positive merge effect.
 the delayed-run publication guard. Local-LLM CI/conflict expansion remains out
 of scope.
 
+Legacy PR-flow tests no longer manufacture a passing aggregate result without
+an observation. Their shared controlled adapter creates check-run evidence
+through `github_ci_observer.observe_ci`, so phase fencing and final merge
+authority remain part of the test oracle after the lifecycle extraction.
+
 ## Verification record and limitations
 
 The bounded local verification commands and observed results are recorded in

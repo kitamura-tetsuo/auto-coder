@@ -51,6 +51,7 @@ from auto_coder.pr_processor import (
 )
 from auto_coder.util.gh_cache import GitHubClient, ReviewThread, ReviewThreadComment
 from auto_coder.util.github_action import GitHubActionsStatusResult
+from tests.ci_observation_fakes import authoritative_ci_status
 
 
 def codex_review_summary(status: str, reviewed_sha: str = "original1") -> dict[str, object]:
@@ -1279,7 +1280,7 @@ class TestAdversarialValidationPRFlow:
             }
         ]
         client.get_pull_request.return_value = pr_data
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         strong = BackendConfig(name="codex", model="strong-model")
         llm_config = MagicMock()
         llm_config.get_backend_strong_pr_adversarial_validation.return_value = strong
@@ -1353,7 +1354,7 @@ class TestAdversarialValidationPRFlow:
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
         client.get_pull_request.return_value = {"head": {"sha": head_sha}}
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         processing_status = ProcessedPRResult(pr_data=pr_data)
 
         def reject_merge(*args, route_disposition: MergeRouteDisposition, **kwargs):
@@ -1397,7 +1398,7 @@ class TestAdversarialValidationPRFlow:
         mock_exit_in_progress,
         mock_recover_publications,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "abc123456789"
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
@@ -1444,7 +1445,7 @@ class TestAdversarialValidationPRFlow:
         mock_recover_publications,
         saved_pass,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "abc123456789"
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
@@ -1490,7 +1491,7 @@ class TestAdversarialValidationPRFlow:
     ):
         from auto_coder.adversarial_validation_attempts import AdversarialValidationAttempt
 
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         stale_registry = MagicMock()
         mock_run_validation.return_value = AdversarialValidationResult(
             result="PASS",
@@ -1545,7 +1546,7 @@ class TestAdversarialValidationPRFlow:
         mock_exit_in_progress,
     ):
         """REQ-001, REQ-004, REQ-010: a fresh EXHAUSTED result is published and never authorizes merge."""
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "abc123456789"
         retry_epoch = time.time() + 1800
         mock_run_validation.return_value = AdversarialValidationResult(
@@ -1586,7 +1587,7 @@ class TestAdversarialValidationPRFlow:
         mock_exit_in_progress,
     ):
         """REQ-005, REQ-006: an EXHAUSTED retry must not run before it is due."""
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "abc123456789"
         future_retry = time.time() + 3600
         client = MagicMock()
@@ -1633,7 +1634,7 @@ class TestAdversarialValidationPRFlow:
         """REQ-005, REQ-006, REQ-007, AS-004: a due EXHAUSTED retry runs automatically without --force."""
         from auto_coder.adversarial_validation_attempts import AdversarialValidationAttempt
 
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "abc123456789"
         past_retry = time.time() - 10
         mock_run_validation.return_value = AdversarialValidationResult(result="PASS", summary="Backend capacity recovered")
@@ -1686,7 +1687,7 @@ class TestAdversarialValidationPRFlow:
         """REQ-012, AS-008: a newer same-HEAD attempt supersedes a due EXHAUSTED retry."""
         from auto_coder.adversarial_validation_attempts import AdversarialValidationAttempt
 
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "abc123456789"
         past_retry = time.time() - 10
         mock_run_validation.return_value = AdversarialValidationResult(result="PASS", summary="Backend capacity recovered")
@@ -1808,7 +1809,7 @@ class TestAdversarialValidationPRFlow:
             reviewer_session_checkpoint=checkpoint,
             reviewer_session_registry=registry,
         )
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         attempt_repository = attempt_repository_type.return_value
         attempt_repository.start.return_value = AdversarialValidationAttempt("attempt-m2", 1)
         attempt_repository.latest_sequence.return_value = 1
@@ -1921,7 +1922,7 @@ class TestAdversarialValidationPRFlow:
             patch("auto_coder.pr_processor.AdversarialValidationAttemptRepository", return_value=attempt_repository),
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
             patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False),
             patch("auto_coder.pr_processor.run_adversarial_validation", side_effect=invoke_real_validator),
             patch("auto_coder.pr_processor.isolated_pr_head_worktree", return_value=nullcontext(None)),
@@ -1983,7 +1984,7 @@ class TestAdversarialValidationPRFlow:
         with (
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
             patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState(claimed=(claimed,))),
             patch("auto_coder.pr_processor.run_adversarial_validation", side_effect=finish_newer_attempt),
             patch("auto_coder.pr_processor.isolated_pr_head_worktree"),
@@ -2027,7 +2028,7 @@ class TestAdversarialValidationPRFlow:
         mock_exit_in_progress,
         mock_recover_publications,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "abc123456789"
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
@@ -2084,7 +2085,7 @@ class TestAdversarialValidationPRFlow:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "abc123456789"
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
@@ -2135,7 +2136,7 @@ class TestAdversarialValidationPRFlow:
         dedicated_reviewer_publication,
     ):
         """When CI is green and adversarial validation passes, PR should be merged."""
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
         mock_run_validation.return_value = AdversarialValidationResult(
             result="PASS",
@@ -2193,7 +2194,7 @@ class TestAdversarialValidationPRFlow:
         monkeypatch,
     ):
         """A fresh violation is published and delegated once before another pass."""
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
         result = AdversarialValidationResult(
             result="NEEDS_FIX",
@@ -2315,7 +2316,7 @@ class TestAdversarialValidationPRFlow:
             with (
                 patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
                 patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-                patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+                patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
                 patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False),
                 patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState()),
                 patch("auto_coder.pr_processor.run_adversarial_validation", return_value=result),
@@ -2371,7 +2372,7 @@ class TestAdversarialValidationPRFlow:
         dedicated_reviewer_publication,
     ):
         """When validation produces a BLOCKED or INCONCLUSIVE status, merge must be blocked (fail-closed)."""
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
         mock_run_validation.return_value = AdversarialValidationResult(
             result="BLOCKED",
@@ -2414,7 +2415,7 @@ class TestAdversarialValidationPRFlow:
         dedicated_reviewer_publication,
     ):
         raw_stream = '{"type":"thread.started"}\n{"type":"item.completed","item":{"text":"noise"}}'
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         mock_worktree.return_value.__enter__.side_effect = RuntimeError(raw_stream)
         config = AutomationConfig()
         config.AUTO_MERGE = True
@@ -2462,7 +2463,7 @@ class TestAdversarialValidationPRFlow:
         mock_exit_in_progress,
     ):
         """When adversarial validation is disabled via config, merge proceeds without validation."""
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
 
         config = AutomationConfig()
         config.AUTO_MERGE = True
@@ -2497,7 +2498,7 @@ class TestAdversarialValidationPRFlow:
         mock_exit_in_progress,
     ):
         """INCONCLUSIVE with findings must block merge."""
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
         mock_run_validation.return_value = AdversarialValidationResult(
             result="INCONCLUSIVE",
@@ -2542,7 +2543,7 @@ class TestAdversarialValidationPRFlow:
         mock_exit_in_progress,
     ):
         """When remote head SHA changes between CI/validation and merge, merge must be aborted."""
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
         mock_run_validation.return_value = AdversarialValidationResult(
             result="PASS",
@@ -2585,7 +2586,7 @@ class TestAdversarialValidationPRFlow:
         mock_exit_in_progress,
     ):
         """When get_pull_request fails during post-validation remote head check, merge must fail closed (aborted)."""
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
         mock_run_validation.return_value = AdversarialValidationResult(
             result="PASS",
@@ -2623,7 +2624,7 @@ class TestAdversarialValidationPRFlow:
         mock_exit_in_progress,
     ):
         """A status API failure is internal, unlike an expected pending-check gate."""
-        mock_checks.return_value = GitHubActionsStatusResult(error="GitHub API unavailable")
+        mock_checks.side_effect = authoritative_ci_status(error="GitHub API unavailable")
         config = AutomationConfig()
         pr_data = {"number": 77, "head": {"ref": "feature-77", "sha": "abc123"}, "labels": []}
         status = ProcessedPRResult(pr_data=pr_data)
@@ -2638,7 +2639,7 @@ class TestAdversarialValidationPRFlow:
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
-    @patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1]))
+    @patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1]))
     @patch("auto_coder.pr_processor._get_claimed_review_thread_state")
     def test_review_thread_lookup_error_is_structured_failure(
         self,
@@ -2681,7 +2682,7 @@ class TestAdversarialValidationPRFlow:
         mock_exit_in_progress,
     ):
         """When pr_data is missing head.sha, validation and merge must fail closed without running against ambient workspace."""
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
 
         config = AutomationConfig()
         config.AUTO_MERGE = True
@@ -2716,7 +2717,7 @@ class TestAdversarialValidationPRFlow:
         mock_exit_in_progress,
     ):
         """_handle_pr_merge must forward expected_head_sha to _merge_pr for atomic precondition enforcement."""
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
         mock_run_validation.return_value = AdversarialValidationResult(
             result="PASS",
@@ -2763,7 +2764,7 @@ class TestAdversarialValidationPRFlow:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "maintenance123"
         pr_data = {"number": 100, "body": "Periodic documentation refresh", "labels": [], "head": {"ref": "docs-refresh", "sha": head_sha}}
         client = MagicMock()
@@ -2800,7 +2801,7 @@ class TestAdversarialValidationPRFlow:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         pr_data = {"number": 100, "body": "Fixes #42", "labels": [], "head": {"ref": "feature-branch", "sha": "current-head"}}
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
@@ -2834,7 +2835,7 @@ class TestAdversarialValidationPRFlow:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "current2"}}
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
@@ -2855,7 +2856,7 @@ class TestAdversarialValidationPRFlow:
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
-    @patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1]))
+    @patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1]))
     @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
     @patch("auto_coder.pr_processor._get_codex_review_state", return_value=CodexReviewState(lookup_error="comments API unavailable"))
     @patch("auto_coder.pr_processor.run_adversarial_validation")
@@ -2888,7 +2889,7 @@ class TestAdversarialValidationPRFlow:
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
-    @patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1]))
+    @patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1]))
     @patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState())
     @patch(
         "auto_coder.pr_processor._get_adversarial_validation_eligibility",
@@ -2944,7 +2945,7 @@ class TestAdversarialValidationPRFlow:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "current2"}}
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
@@ -2979,7 +2980,7 @@ class TestAdversarialValidationPRFlow:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         mock_run_validation.return_value = AdversarialValidationResult(result="PASS", summary="Current head satisfies the Issue")
         current_sha = "current-head-h2"
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": current_sha}}
@@ -3359,7 +3360,7 @@ class TestMaxAdversarialValidationsGating:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "abc123456789"
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
@@ -3398,7 +3399,7 @@ class TestMaxAdversarialValidationsGating:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "newcommit1234"
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
@@ -3440,7 +3441,7 @@ class TestMaxAdversarialValidationsGating:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
         mock_run_validation.return_value = AdversarialValidationResult(
             result="PASS",
@@ -3488,7 +3489,7 @@ class TestMaxAdversarialValidationsGating:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "abc123456789"
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
@@ -3706,7 +3707,7 @@ class TestClaimedReviewThreadValidationFlow:
         with (
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
             patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=github_thread_state),
             patch("auto_coder.pr_processor._get_adversarial_validation_eligibility", return_value=AdversarialValidationEligibility(issue_numbers=(99,))),
             patch("auto_coder.pr_processor.resolve_reviewer_app_identity", return_value=ReviewerAppIdentity(login=app_identity_login, app_id=1)),
@@ -3815,7 +3816,7 @@ class TestClaimedReviewThreadValidationFlow:
         with (
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
             patch(
                 "auto_coder.pr_processor._get_claimed_review_thread_state",
                 side_effect=[initial_state, ClaimedReviewThreadGateState()],
@@ -3902,7 +3903,7 @@ class TestClaimedReviewThreadValidationFlow:
         with (
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
             patch(
                 "auto_coder.pr_processor._get_claimed_review_thread_state",
                 side_effect=[initial_state, ClaimedReviewThreadGateState()],
@@ -4008,7 +4009,7 @@ class TestClaimedReviewThreadValidationFlow:
         with (
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
             patch(
                 "auto_coder.pr_processor._get_claimed_review_thread_state",
                 side_effect=[initial_state, final_state],
@@ -4095,7 +4096,7 @@ class TestClaimedReviewThreadValidationFlow:
         with (
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
             patch(
                 "auto_coder.pr_processor._get_claimed_review_thread_state",
                 side_effect=[initial_state, post_codex_state, final_state],
@@ -4162,7 +4163,7 @@ class TestClaimedReviewThreadValidationFlow:
             patch("auto_coder.pr_processor.get_pr_review_allowlist_from_config", return_value=[]),
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
             patch("auto_coder.pr_processor._get_adversarial_validation_eligibility", return_value=AdversarialValidationEligibility(issue_numbers=(99,))),
             patch("auto_coder.pr_processor.run_adversarial_validation") as run_validation,
             patch("auto_coder.pr_processor._delegate_cloud_review_thread_repair", return_value=CloudReviewRepairResult(["Review repair was already requested"], delivered=True)) as repair,
@@ -4248,7 +4249,7 @@ class TestClaimedReviewThreadValidationFlow:
         with (
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
             patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState(claimed=(claimed,))),
             patch("auto_coder.pr_processor._get_published_adversarial_validation_status", return_value=("INCONCLUSIVE", None)),
             patch("auto_coder.pr_processor._get_published_adversarial_validation_comment", return_value=("prior review without this reply", None)),
@@ -4307,7 +4308,7 @@ class TestClaimedReviewThreadValidationFlow:
         with (
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
             patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState(claimed=(claimed,))),
             patch("auto_coder.pr_processor._get_published_adversarial_validation_status", return_value=("INCONCLUSIVE", None)),
             patch("auto_coder.pr_processor._get_published_adversarial_validation_comment", return_value=("old INCONCLUSIVE review", None)),
@@ -4374,7 +4375,7 @@ class TestClaimedReviewThreadValidationFlow:
         with (
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
             patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState(claimed=(claimed,))),
             patch(
                 "auto_coder.pr_processor._get_published_adversarial_validation_status",
@@ -4432,7 +4433,7 @@ class TestClaimedReviewThreadValidationFlow:
         from auto_coder.pr_processor import ClaimedReviewThreadGateState
         from auto_coder.review_thread_validation import ClaimedReviewThread
 
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
         claimed = ClaimedReviewThread(thread_id="thread-1", root_comment_database_id=1, root_author_login="chatgpt-codex-connector[bot]", original_finding="finding", discussion="discussion")
         mock_claimed_state.return_value = ClaimedReviewThreadGateState(claimed=(claimed,), has_blocking_unresolved=False)
@@ -4492,7 +4493,7 @@ class TestClaimedReviewThreadValidationFlow:
         from auto_coder.pr_processor import ClaimedReviewThreadGateState
         from auto_coder.review_thread_validation import ClaimedReviewThread, StaleReviewThreadResolutionError
 
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
         claimed = ClaimedReviewThread(thread_id="thread-1", root_comment_database_id=1, root_author_login="chatgpt-codex-connector[bot]", original_finding="finding", discussion="discussion")
         mock_claimed_state.return_value = ClaimedReviewThreadGateState(claimed=(claimed,), has_blocking_unresolved=False)
@@ -4651,7 +4652,7 @@ class TestClaimedReviewThreadValidationFlow:
     ):
         from auto_coder.pr_processor import ClaimedReviewThreadGateState
 
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         mock_claimed_state.return_value = ClaimedReviewThreadGateState(has_blocking_unresolved=True)
 
         config = AutomationConfig()

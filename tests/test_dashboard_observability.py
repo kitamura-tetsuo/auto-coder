@@ -25,6 +25,7 @@ from auto_coder.reissue_required_store import ReissueRequiredStore
 from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult
 from auto_coder.util.github_request_outcome import GitHubRequestContext, github_http_client
 from auto_coder.webhook_server import process_github_payload
+from tests.ci_observation_fakes import authoritative_ci_status
 
 
 @pytest.fixture(autouse=True)
@@ -810,7 +811,7 @@ class TestNewOriginCoverage:
         from auto_coder.github_app_reviewer import ReviewPublicationResult
         from auto_coder.pr_processor import _handle_pr_merge
 
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
         mock_run_validation.return_value = AdversarialValidationResult(
             result="NEEDS_FIX",
@@ -998,7 +999,7 @@ class TestOutcomeMatrixCoverage:
     ):
         from auto_coder.pr_processor import _handle_pr_merge
 
-        mock_checks.return_value = GitHubActionsStatusResult(success=False, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=False, ids=[1])
         mock_detailed.return_value = DetailedChecksResult(success=False, failed_checks=[{"name": "build"}])
         mock_close_stale.return_value = StaleJulesPRResult(closed=False)
 

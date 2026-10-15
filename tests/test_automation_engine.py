@@ -19,6 +19,7 @@ from auto_coder.implementation_slots import ImplementationHierarchyConflict, Imp
 from auto_coder.util.gh_cache import GitHubClient
 from auto_coder.util.github_action import GitHubActionsStatusResult
 from auto_coder.util.github_request_outcome import GitHubRequestContext
+from tests.ci_observation_fakes import authoritative_ci_status
 
 """Tests for automation engine functionality."""
 
@@ -1421,7 +1422,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(error="GitHub API unavailable")),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(error="GitHub API unavailable")),
         ):
             result = engine.process_single("owner/repo", "pr", 77)
 
@@ -1455,7 +1456,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
             patch(
                 "auto_coder.pr_processor._get_claimed_review_thread_state",
                 return_value=ClaimedReviewThreadGateState(has_blocking_unresolved=True),
@@ -1499,7 +1500,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
             patch(
                 "auto_coder.pr_processor._get_claimed_review_thread_state",
                 return_value=ClaimedReviewThreadGateState(lookup_error="GraphQL Network Error"),
@@ -1548,7 +1549,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
             patch("auto_coder.pr_processor._get_review_thread_gate_state", return_value=ReviewThreadGateState(has_unresolved=True)),
         ):
             result = engine.process_single("owner/repo", "pr", 80)
@@ -1590,7 +1591,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
             patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState()),
             patch("auto_coder.pr_processor._get_codex_review_state", return_value=CodexReviewState(lookup_error="comments API unavailable")),
         ):
@@ -1633,7 +1634,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
             patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState()),
             patch(
                 "auto_coder.pr_processor._get_adversarial_validation_eligibility",
@@ -1684,7 +1685,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
             patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState()),
             patch(
                 "auto_coder.pr_processor._get_adversarial_validation_eligibility",
@@ -1729,7 +1730,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
             patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState()),
             patch(
                 "auto_coder.pr_processor._get_adversarial_validation_eligibility",
@@ -1782,7 +1783,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             patch("auto_coder.util.github_action._check_github_actions_status") as mock_check_actions,
             patch("auto_coder.pr_processor._take_pr_actions") as mock_take_actions,
         ):
-            mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
+            mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[])
             mock_take_actions.return_value = ["Merged PR successfully", "Applied fixes"]
 
             # Execute
@@ -1825,7 +1826,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             patch("auto_coder.util.github_action._check_github_actions_status") as mock_check_actions,
             patch("auto_coder.pr_processor._take_pr_actions") as mock_take_actions,
         ):
-            mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
+            mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[])
             mock_take_actions.side_effect = Exception("Processing failed")
 
             # Execute
@@ -1870,7 +1871,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             patch("auto_coder.util.github_action._check_github_actions_status") as mock_check_actions,
             patch("auto_coder.pr_processor._take_pr_actions") as mock_take_actions,
         ):
-            mock_check_actions.return_value = GitHubActionsStatusResult(success=False, ids=[123])
+            mock_check_actions.side_effect = authoritative_ci_status(success=False, ids=[123])
             mock_take_actions.return_value = ["Resolved merge conflicts successfully"]
 
             # Execute
@@ -3886,7 +3887,7 @@ class TestGetCandidates:
         mock_github_client.get_pr_details.return_value = pr_details
         # Mock get_open_prs_json to return the list of PR data
         mock_github_client.get_open_prs_json.return_value = [pr_details]
-        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[])
         mock_extract_issues.return_value = []
         mock_github_client.get_open_sub_issues.return_value = []
         mock_github_client.has_linked_pr.return_value = False
@@ -4026,7 +4027,7 @@ class TestGetCandidates:
         # Mock get_open_prs_json to return the list of PR data
         mock_github_client.get_open_prs_json.return_value = [pr_details]
 
-        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[])
         mock_extract_issues.return_value = [10, 20]  # Extracted from PR body
         mock_github_client.get_open_sub_issues.return_value = []
         mock_github_client.has_linked_pr.return_value = False

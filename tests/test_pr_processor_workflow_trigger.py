@@ -7,6 +7,7 @@ from auto_coder.automation_config import AutomationConfig
 from auto_coder.dispatch_claim_store import DispatchClaimStore, DispatchIdentity, DispatchOutcome
 from auto_coder.pr_processor import _handle_pr_merge
 from auto_coder.util.github_action import GitHubActionsStatusResult, WorkflowDispatchResult
+from tests.ci_observation_fakes import authoritative_ci_status
 
 
 class _StrictMetadataGithubClient:
@@ -75,7 +76,7 @@ class TestWorkflowTrigger(unittest.TestCase):
     @patch("auto_coder.util.github_action.trigger_workflow_dispatch")
     def test_handle_pr_merge_triggers_workflow(self, mock_trigger, mock_label_manager, mock_get_detailed, mock_check_status):
         # Setup: No existing checks (ids is empty)
-        mock_check_status.return_value = GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+        mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[], in_progress=False)
 
         # Mock trigger success
         mock_trigger.return_value = WorkflowDispatchResult(outcome=DispatchOutcome.ACCEPTED)
@@ -101,7 +102,7 @@ class TestWorkflowTrigger(unittest.TestCase):
     @patch("auto_coder.util.github_action.trigger_workflow_dispatch")
     def test_handle_pr_merge_fails_trigger(self, mock_trigger, mock_label_manager, mock_get_detailed, mock_check_status, mock_run_command, mock_get_commit_log):
         # Setup: No existing checks
-        mock_check_status.return_value = GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+        mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[], in_progress=False)
 
         # Mock trigger failure (definitely rejected, so admission may retry later)
         mock_trigger.return_value = WorkflowDispatchResult(outcome=DispatchOutcome.REJECTED)
@@ -135,7 +136,7 @@ class TestWorkflowTrigger(unittest.TestCase):
         suppress an otherwise eligible dispatch once the PR head advances to a
         different SHA B, and each identity's persisted claim must carry its own
         authoritative head SHA rather than collapsing onto one shared identity."""
-        mock_check_status.return_value = GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+        mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[], in_progress=False)
         mock_trigger.return_value = WorkflowDispatchResult(outcome=DispatchOutcome.ACCEPTED)
 
         mock_lm_instance = MagicMock()
@@ -167,7 +168,7 @@ class TestWorkflowTrigger(unittest.TestCase):
         authoritative head SHA obtained from the strict, cache-bypassing PR
         metadata fetch performed inside _handle_pr_merge, not by whatever
         (possibly stale) head SHA the caller happened to pass in."""
-        mock_check_status.return_value = GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+        mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[], in_progress=False)
         mock_trigger.return_value = WorkflowDispatchResult(outcome=DispatchOutcome.ACCEPTED)
 
         mock_lm_instance = MagicMock()
