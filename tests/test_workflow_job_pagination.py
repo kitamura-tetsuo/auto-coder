@@ -102,6 +102,10 @@ def test_local_pr_repair_receives_failure_beyond_first_page(tmp_path, monkeypatc
     config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = True
     pr = {"number": 5467, "head": {"ref": "issue-5457", "sha": "a" * 40}, "base": {"ref": "main"}, "body": "<!-- auto-coder:local-llm -->"}
     authority = CIRepairAuthority(True, "current exact-head CI failure", "a" * 40)
+    repair_actions = PRActionList(["Repair invoked"])
+    repair_actions.repair_attempt_started = True
+    repair_actions.resulting_head = "b" * 40
+    repair_actions.synchronized = True
     with ExitStack() as stack:
         stack.enter_context(patch("auto_coder.util.github_action.GitHubClient"))
         stack.enter_context(patch("auto_coder.util.github_action.get_ghapi_client", return_value=api))
