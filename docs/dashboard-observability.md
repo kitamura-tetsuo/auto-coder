@@ -128,6 +128,12 @@ split event is visible in the mounted detail view while the execution remains
 blocked for unresolved defects; splitting alone never renders a merge success.
 
 Local conflict repair retains the existing remediation stage and schema.
+Typed CI/conflict repair dispatch is observability-neutral: it wraps the same
+production effect owners and preserves the existing `pr.repair-delegation` and
+`pr.mergeability-remediation` stages, outcomes, and detail keys. No processing
+origin, dashboard projection, structured event schema, or runnable production-
+to-view probe changes; `tests/test_pr_repair_dispatch.py` verifies that typed
+refusal and deferral evidence is not promoted to acceptance.
 `pr.mergeability-remediation` reports `COMPLETED` with `result=success` only
 after the local resolver confirms its push; a failed repair (including retained
 markers) reports `FAILED` with `result=failed`, rather than an invented degrading

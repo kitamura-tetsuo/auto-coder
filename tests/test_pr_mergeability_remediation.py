@@ -12,7 +12,8 @@ def _client():
 
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.pr_processor import _get_mergeable_state, _handle_pr_merge, _start_mergeability_remediation
+from src.auto_coder.pr_processor import PRActionList, _get_mergeable_state, _handle_pr_merge, _start_mergeability_remediation
+from src.auto_coder.pr_repair_dispatch import PRRepairResult, RepairDisposition
 
 
 class _CloudFollowupClient:
@@ -102,7 +103,9 @@ def test_production_remediation_preserves_cloud_pr_metadata_and_defers_after_del
         assert preserved_pr_data["head"] == api_pr["head"]
         assert preserved_pr_data["base"] == api_pr["base"]
         assert _delegate_cloud_merge_conflict_repair(repo_name, preserved_pr_data)
-        return ["Merge conflict detected for PR #1660", "Delegated merge-conflict repair for PR #1660 to its existing cloud session", "ACTION_FLAG:SKIP_ANALYSIS"]
+        actions = PRActionList(("Merge conflict detected for PR #1660", "Delegated merge-conflict repair for PR #1660 to its existing cloud session", "ACTION_FLAG:SKIP_ANALYSIS"))
+        actions.repair_result = PRRepairResult(RepairDisposition.ACCEPTED_OR_UNCERTAIN)
+        return actions
 
     config = AutomationConfig()
     config.ENABLE_MERGEABILITY_REMEDIATION = True
@@ -132,7 +135,7 @@ def test_mergeability_remediation_success_path(mock_github_client, mock_get_ghap
     """Verify remediation success path - checkout and update succeed."""
     mock_check_progress.return_value = True
     mock_checkout.return_value = True
-    mock_update.return_value = ["Determined base branch: main, head branch: feature-branch for PR #100", "Checked out PR #100 branch", "Pushed updated branch for PR #100", "ACTION_FLAG:SKIP_ANALYSIS"]
+    mock_update.return_value = PRActionList(("Determined base branch: main, head branch: feature-branch for PR #100", "Checked out PR #100 branch", "Pushed updated branch for PR #100", "ACTION_FLAG:SKIP_ANALYSIS"))
 
     mock_api = Mock()
     mock_get_ghapi_client.return_value = mock_api
@@ -288,7 +291,7 @@ def test_start_mergeability_remediation_success(mock_update, mock_checkout, mock
 
     # Mock successful checkout and update
     mock_checkout.return_value = True
-    mock_update.return_value = ["Pushed updated branch for PR #200", "ACTION_FLAG:SKIP_ANALYSIS"]
+    mock_update.return_value = PRActionList(("Pushed updated branch for PR #200", "ACTION_FLAG:SKIP_ANALYSIS"))
 
     actions = _start_mergeability_remediation(200, "DIRTY", repo_name="owner/repo")
 
@@ -360,7 +363,7 @@ def test_start_mergeability_remediation_update_fails(mock_update, mock_checkout,
 
     # Mock successful checkout but failed update
     mock_checkout.return_value = True
-    mock_update.return_value = ["Failed to merge: merge conflict resolution failed"]
+    mock_update.return_value = PRActionList(("Failed to merge: merge conflict resolution failed",))
 
     actions = _start_mergeability_remediation(203, "UNKNOWN", repo_name="owner/repo")
 

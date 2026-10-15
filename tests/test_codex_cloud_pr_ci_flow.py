@@ -8,7 +8,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from auto_coder.automation_config import AutomationConfig
+from auto_coder.automation_config import AutomationConfig, PRProcessingOutcome
+from auto_coder.ci_observation import (
+    CIConclusion,
+    CIObservationSnapshot,
+    ObservationAvailability,
+    ObservationRequest,
+    ObservationSubject,
+    WorkflowExecutionIdentity,
+    WorkflowObservation,
+)
 from auto_coder.ci_repair_authority import CIRepairAuthority
 from auto_coder.cloud_manager import CloudManager
 from auto_coder.cloud_run import CloudRun, CloudRunRepository
@@ -17,6 +26,17 @@ from auto_coder.pr_processor import (
     _send_codex_cloud_error_feedback,
     process_pull_request,
 )
+
+
+def _failed_observation(pr_number: int, head_sha: str) -> CIObservationSnapshot:
+    return CIObservationSnapshot(
+        ObservationSubject("https://api.github.test", "owner/repo", pr_number, head_sha),
+        ObservationRequest("github-actions", "checks+workflows"),
+        f"failed-{pr_number}",
+        0,
+        ObservationAvailability.KNOWN,
+        (WorkflowObservation(WorkflowExecutionIdentity("pr-tests", str(1000 + pr_number), 1), CIConclusion.FAILURE),),
+    )
 
 
 class TestCodexCloudPRCIFlow:
@@ -243,6 +263,7 @@ class TestCodexCloudPRCIFlow:
             success=False,
             ids=[1001],
             in_progress=False,
+            observation=_failed_observation(200, "abcdef123456"),
         )
 
         mock_detailed = DetailedChecksResult(
@@ -312,7 +333,12 @@ class TestCodexCloudPRCIFlow:
             "mergeable": True,
             "draft": False,
         }
-        mock_checks = GitHubActionsStatusResult(success=False, ids=[1002], in_progress=False)
+        mock_checks = GitHubActionsStatusResult(
+            success=False,
+            ids=[1002],
+            in_progress=False,
+            observation=_failed_observation(201, "abcdef123456"),
+        )
         mock_detailed = DetailedChecksResult(
             success=False,
             total_checks=1,
@@ -381,7 +407,12 @@ class TestCodexCloudPRCIFlow:
             "mergeable": True,
             "draft": False,
         }
-        mock_checks = GitHubActionsStatusResult(success=False, ids=[1003], in_progress=False)
+        mock_checks = GitHubActionsStatusResult(
+            success=False,
+            ids=[1003],
+            in_progress=False,
+            observation=_failed_observation(202, "abcdef123456"),
+        )
         mock_detailed = DetailedChecksResult(
             success=False,
             total_checks=1,
@@ -410,6 +441,8 @@ class TestCodexCloudPRCIFlow:
         assert any("could not be resumed" in action for action in result.actions_taken)
         assert any("retry is required and local fixes remain disabled" in action for action in result.actions_taken)
         assert not any("Codex Cloud will handle fixing" in action for action in result.actions_taken)
+        assert result.outcome is PRProcessingOutcome.FAILED
+        assert result.error
         checkout.assert_not_called()
         branch_manager.assert_not_called()
         local_repair.assert_not_called()
