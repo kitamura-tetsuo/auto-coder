@@ -8,6 +8,7 @@ from auto_coder.automation_config import AutomationConfig, CandidateProcessingRe
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.util.github_action import GitHubActionsStatusResult
+from tests.ci_observation_fakes import authoritative_ci_status
 
 
 def _pr(number: int, *, labels: list[str] | None = None, mergeable: bool = True) -> dict:
@@ -15,7 +16,7 @@ def _pr(number: int, *, labels: list[str] | None = None, mergeable: bool = True)
         "number": number,
         "title": f"PR {number}",
         "body": "",
-        "head": {"ref": f"pr-{number}"},
+        "head": {"ref": f"pr-{number}", "sha": "a" * 40},
         "labels": labels or [],
         "mergeable": mergeable,
         "created_at": f"2024-01-{number:02d}T00:00:00Z",
@@ -41,7 +42,7 @@ def collection_dependencies():
         patch("auto_coder.automation_engine.LabelManager") as label_manager,
         patch("auto_coder.util.github_action.preload_github_actions_status"),
         patch("auto_coder.util.github_action.check_github_actions_and_exit_if_in_progress", return_value=True),
-        patch("auto_coder.util.github_action._check_github_actions_status", return_value=GitHubActionsStatusResult(success=False, ids=[])),
+        patch("auto_coder.util.github_action._check_github_actions_status", side_effect=authoritative_ci_status(success=False, ids=[1])),
         patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as reject_unsafe,
         patch("auto_coder.pr_processor._close_empty_pr") as close_empty,
         patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=StaleJulesPRResult()),

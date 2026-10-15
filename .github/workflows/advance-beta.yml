@@ -33,7 +33,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           gh api --paginate "repos/${{ github.repository }}/actions/runs/$RUN_ID/jobs?per_page=100" > "$RUNNER_TEMP/source-jobs.json"
-          python scripts/ci_maintenance.py require-published-job --jobs "$RUNNER_TEMP/source-jobs.json"
+          python scripts/deployment_artifacts.py require-successful-job "$RUNNER_TEMP/source-jobs.json" "Build tested artifact"
       - name: Reject an out-of-order older successful run
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

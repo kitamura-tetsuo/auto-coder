@@ -42,6 +42,7 @@ from auto_coder.pr_processor import (
 )
 from auto_coder.util.gh_cache import GitHubClient
 from auto_coder.util.github_action import GitHubActionsStatusResult
+from tests.ci_observation_fakes import authoritative_ci_status
 
 
 @pytest.fixture(autouse=True)
@@ -226,7 +227,7 @@ class TestAS001LocalTestFailureWithRepairDisabled:
         client = MagicMock(spec=GitHubClient)
 
         # CI check fails
-        mock_checks.return_value = GitHubActionsStatusResult(success=False, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=False, ids=[1])
         mock_detailed = MagicMock()
         mock_detailed.failed_checks = [{"id": 1, "name": "test", "conclusion": "failure"}]
         mock_detailed_checks.return_value = mock_detailed
@@ -301,7 +302,7 @@ class TestAS002GitHubActionsFailureWithRepairDisabled:
         client = MagicMock(spec=GitHubClient)
 
         # CI check fails
-        mock_checks.return_value = GitHubActionsStatusResult(success=False, ids=[2])
+        mock_checks.side_effect = authoritative_ci_status(success=False, ids=[2])
         mock_detailed = MagicMock()
         mock_detailed.failed_checks = [{"id": 2, "name": "test", "conclusion": "failure"}]
         mock_detailed_checks.return_value = mock_detailed
@@ -360,7 +361,7 @@ class TestAS003RepeatedDisabledProcessingBudget:
         pr_data = _pr_data(102, head_sha, ref="issue-44")
         client = MagicMock(spec=GitHubClient)
 
-        mock_checks.return_value = GitHubActionsStatusResult(success=False, ids=[3])
+        mock_checks.side_effect = authoritative_ci_status(success=False, ids=[3])
         mock_detailed = MagicMock()
         mock_detailed.failed_checks = [{"id": 3, "name": "test", "conclusion": "failure"}]
         mock_detailed_checks.return_value = mock_detailed
@@ -420,7 +421,7 @@ class TestAS004TestsMayStillRun:
         pr_data = _pr_data(103, head_sha, ref="issue-45")
         client = MagicMock(spec=GitHubClient)
 
-        mock_checks.return_value = GitHubActionsStatusResult(success=False, ids=[4])
+        mock_checks.side_effect = authoritative_ci_status(success=False, ids=[4])
         mock_detailed = MagicMock()
         mock_detailed.failed_checks = [{"id": 4, "name": "test", "conclusion": "failure"}]
         mock_detailed_checks.return_value = mock_detailed
@@ -476,7 +477,7 @@ class TestAS005WorkspaceNotDestructivelyCleaned:
         pr_data = _pr_data(104, head_sha, ref="issue-46")
         client = MagicMock(spec=GitHubClient)
 
-        mock_checks.return_value = GitHubActionsStatusResult(success=False, ids=[5])
+        mock_checks.side_effect = authoritative_ci_status(success=False, ids=[5])
         mock_detailed = MagicMock()
         mock_detailed.failed_checks = [{"id": 5, "name": "test", "conclusion": "failure"}]
         mock_detailed_checks.return_value = mock_detailed
@@ -518,7 +519,7 @@ class TestAS005WorkspaceNotDestructivelyCleaned:
         pr_data = _pr_data(105, head_sha, ref="issue-47")
         client = MagicMock(spec=GitHubClient)
 
-        mock_checks.return_value = GitHubActionsStatusResult(success=False, ids=[6])
+        mock_checks.side_effect = authoritative_ci_status(success=False, ids=[6])
         mock_detailed = MagicMock()
         mock_detailed.failed_checks = [{"id": 6, "name": "test", "conclusion": "failure"}]
         mock_detailed_checks.return_value = mock_detailed
@@ -595,7 +596,7 @@ class TestAS006OtherPRAutomationRemainsIndependent:
         pr_data = _pr_data(107, head_sha)
         client = MagicMock(spec=GitHubClient)
 
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[7])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[7])
         client.get_pull_request.return_value = {"head": {"sha": head_sha}}
         client.get_issue.return_value = {"number": 42, "title": "Spec", "body": "Body"}
         client.get_pr_comments.return_value = []
@@ -621,7 +622,7 @@ class TestAS006OtherPRAutomationRemainsIndependent:
         mock_client.get_open_prs_json.return_value = [pr_data]
         mock_client.get_open_issues_json.return_value = []
         mock_client.has_linked_pr.return_value = False
-        mock_check_actions.return_value = GitHubActionsStatusResult(success=False, ids=[8])
+        mock_check_actions.side_effect = authoritative_ci_status(success=False, ids=[8])
 
         engine = AutomationEngine(mock_client)
         engine.config = AutomationConfig(automatic_test_fix=False)
@@ -670,7 +671,7 @@ class TestAS007ReEnableAfterDisabledFailures:
         pr_data = _pr_data(109, head_sha, ref="issue-49")
         client = MagicMock(spec=GitHubClient)
 
-        mock_checks.return_value = GitHubActionsStatusResult(success=False, ids=[9])
+        mock_checks.side_effect = authoritative_ci_status(success=False, ids=[9])
         mock_detailed = MagicMock()
         mock_detailed.failed_checks = [{"id": 9, "name": "test", "conclusion": "failure"}]
         mock_detailed_checks.return_value = mock_detailed

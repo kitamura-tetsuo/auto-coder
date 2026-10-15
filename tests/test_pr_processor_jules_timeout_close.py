@@ -9,6 +9,7 @@ from src.auto_coder.automation_config import AutomationConfig, StaleJulesPRResul
 from src.auto_coder.issue_stage_routing import IssueStageRoutingStore, implementation_classification
 from src.auto_coder.pr_processor import _close_stale_jules_pr, _handle_pr_merge, _should_skip_waiting_for_jules, process_pull_request
 from src.auto_coder.stale_jules_recovery import recovery_request_id
+from tests.ci_observation_fakes import authoritative_ci_status
 
 JULES_PR_BODY = "Fixes the reported bug.\n\nSession ID: 901463134778726610\nhttps://jules.google.com/session/901463134778726610\n\nclose #4636"
 
@@ -22,7 +23,7 @@ def _jules_pr_data(hours_old: float) -> dict:
         "body": JULES_PR_BODY,
         "created_at": created_at,
         "user": {"login": "google-labs-jules[bot]"},
-        "head": {"ref": "jules-fix-4636"},
+        "head": {"ref": "jules-fix-4636", "sha": "deadbeef" * 5},
         "base": {"ref": "main"},
     }
 
@@ -365,7 +366,7 @@ class TestHandlePrMergeJulesPR:
 
         mock_check_in_progress.return_value = True
         mock_mergeable.return_value = {"mergeable": True}
-        mock_check_status.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, in_progress=False, error=None, ids=[1])
+        mock_check_status.side_effect = authoritative_ci_status(success=False, ids=[1])
         mock_detailed_checks.return_value = MagicMock(spec=DetailedChecksResult, success=False, failed_checks=[{"name": "test"}])
         mock_run_command.return_value = CommandResult(success=True, stdout="main", stderr="", returncode=0)
         mock_increment.return_value = 2
@@ -409,7 +410,7 @@ class TestHandlePrMergeJulesPR:
 
         mock_check_in_progress.return_value = True
         mock_mergeable.return_value = {"mergeable": True}
-        mock_check_status.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, in_progress=False, error=None, ids=[1])
+        mock_check_status.side_effect = authoritative_ci_status(success=False, ids=[1])
         mock_detailed_checks.return_value = MagicMock(spec=DetailedChecksResult, success=False, failed_checks=[{"name": "test"}])
         mock_run_command.return_value = CommandResult(success=True, stdout="main", stderr="", returncode=0)
 
@@ -645,7 +646,7 @@ class TestUnlockAndRetryLinkedIssue:
 def _ci_observation(availability: ObservationAvailability, facts: tuple = (), *, unavailable_reason=None) -> CIObservationSnapshot:
     """Build a real CIObservationSnapshot for a fixed subject/request (Issue #2275)."""
     return CIObservationSnapshot(
-        subject=ObservationSubject("https://api.github.com", "owner/repo", 123, "deadbeef" * 5),
+        subject=ObservationSubject("https://api.github.com", "owner/repo", 4643, "deadbeef" * 5),
         request=ObservationRequest("github-actions", "checks+workflows"),
         cycle_id="cycle-1",
         invalidation_epoch=0,
@@ -824,16 +825,18 @@ class TestProcessPullRequestResumesOnRecoveredCI:
     (Issue #2275, REQ-002/REQ-005/REQ-007, AS-001/AS-005/AS-006).
     """
 
-    @patch("src.auto_coder.pr_processor._process_pr_for_fixes")
+    @patch("auto_coder.pr_processor._process_pr_for_fixes")
     @patch("auto_coder.jules_client.JulesClient")
-    @patch("src.auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor._check_github_actions_status")
     def test_active_session_no_longer_defers_processing_once_ci_recovers(self, mock_check_status, mock_jules_client_class, mock_process_fixes):
-        mock_check_status.return_value = recovered_ci_checks()
+        from auto_coder.pr_processor import process_pull_request as process
+
+        mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[1], namespace="auto_coder")
         mock_jules_client = Mock()
         mock_jules_client.get_session.return_value = {"state": "IN_PROGRESS"}
         mock_jules_client_class.return_value = mock_jules_client
 
-        from src.auto_coder.pr_processor import ProcessedPRResult
+        from auto_coder.pr_processor import ProcessedPRResult
 
         mock_process_fixes.return_value = ProcessedPRResult(pr_data={}, actions_taken=["Processed normally"], priority="fix", analysis=None)
 
@@ -842,16 +845,18 @@ class TestProcessPullRequestResumesOnRecoveredCI:
         config = AutomationConfig()
         pr_data = _jules_pr_data(hours_old=1)
 
-        result = process_pull_request(github_client, config, "owner/repo", pr_data)
+        result = process(github_client, config, "owner/repo", pr_data)
 
         assert not any("waiting for Jules" in action for action in result.actions_taken)
         mock_process_fixes.assert_called_once()
 
-    @patch("src.auto_coder.pr_processor._process_pr_for_fixes")
+    @patch("auto_coder.pr_processor._process_pr_for_fixes")
     @patch("auto_coder.jules_client.JulesClient")
-    @patch("src.auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor._check_github_actions_status")
     def test_active_session_still_defers_when_ci_is_still_failing(self, mock_check_status, mock_jules_client_class, mock_process_fixes):
         """Positive preservation control (AS-005): a still-failing head keeps the ordinary wait."""
+        from auto_coder.pr_processor import process_pull_request as process
+
         mock_check_status.return_value = failing_ci_checks()
         mock_jules_client = Mock()
         mock_jules_client.get_session.return_value = {"state": "IN_PROGRESS"}
@@ -862,7 +867,7 @@ class TestProcessPullRequestResumesOnRecoveredCI:
         config = AutomationConfig()
         pr_data = _jules_pr_data(hours_old=1)
 
-        result = process_pull_request(github_client, config, "owner/repo", pr_data)
+        result = process(github_client, config, "owner/repo", pr_data)
 
         assert any("waiting for Jules" in action for action in result.actions_taken)
         mock_process_fixes.assert_not_called()
@@ -874,17 +879,19 @@ class TestGetCandidatesResumesOnRecoveredCI:
     """
 
     @patch("auto_coder.jules_client.JulesClient")
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
     def test_recovered_ci_pr_is_not_excluded_at_collection(self, mock_check_status, mock_jules_client_class):
-        from src.auto_coder.automation_engine import AutomationEngine
+        from auto_coder.automation_engine import AutomationEngine
 
-        mock_check_status.return_value = recovered_ci_checks()
+        mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[1], namespace="auto_coder")
         mock_jules_client = Mock()
         mock_jules_client.get_session.return_value = {"state": "IN_PROGRESS"}
         mock_jules_client_class.return_value = mock_jules_client
 
         github_client = Mock()
         github_client.get_pr_review_threads_strict.return_value = []
+        github_client.get_pr_reviews_strict.return_value = []
+        github_client.get_pr_comments.return_value = []
         config = AutomationConfig()
         pr_data = _jules_pr_data(hours_old=1)
         pr_data["draft"] = False
@@ -894,7 +901,7 @@ class TestGetCandidatesResumesOnRecoveredCI:
         github_client.get_open_issues_json.return_value = []
 
         engine = AutomationEngine(github_client, config=config)
-        with patch("src.auto_coder.util.github_action.preload_github_actions_status"):
+        with patch("auto_coder.util.github_action.preload_github_actions_status"):
             candidates = engine._get_candidates("owner/repo")
 
         assert any(candidate.data.get("number") == pr_data["number"] for candidate in candidates)

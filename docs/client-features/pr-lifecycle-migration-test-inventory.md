@@ -90,3 +90,10 @@ The maintained contract group patches external GitHub/model effects at their
 existing production owners while traversing both `_handle_pr_merge` and the
 coordinator. It asserts the typed positive disposition and exact scope, plus
 stale-head and newer-attempt barriers before the controlled merge effect.
+
+## Completed integration and normal CI
+
+The completed integration and restoration inventory is maintained in
+`docs/client-features/restored-pr-lifecycle-ci.md`. The contract group remains
+permanent regression protection, but it no longer substitutes for ordinary CI:
+every pull request runs the normal four coverage shards and aggregate gate.

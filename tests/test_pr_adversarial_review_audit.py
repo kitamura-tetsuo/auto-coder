@@ -52,6 +52,7 @@ from auto_coder.review_capture import recorder as review_recorder
 from auto_coder.two_tier_pr_gate import TwoTierPrGate
 from auto_coder.util.github_action import GitHubActionsStatusResult
 from auto_coder.utils import bind_command_execution_cwd, reset_command_execution_cwd
+from tests.ci_observation_fakes import authoritative_ci_status
 
 REPO_NAME = "owner/repo"
 PR_NUMBER = 4242
@@ -237,7 +238,7 @@ def audit_store(tmp_path, monkeypatch):
 def _apply_standard_merge_gates(monkeypatch: pytest.MonkeyPatch, *, mergeable: bool = True, merge_result: bool = False) -> None:
     monkeypatch.setattr("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", lambda **kwargs: True)
     monkeypatch.setattr("auto_coder.pr_processor._get_mergeable_state", lambda *a, **k: {"mergeable": mergeable, "merge_state_status": "clean" if mergeable else "dirty"})
-    monkeypatch.setattr("auto_coder.pr_processor._check_github_actions_status", lambda *a, **k: GitHubActionsStatusResult(success=True, ids=[1]))
+    monkeypatch.setattr("auto_coder.pr_processor._check_github_actions_status", authoritative_ci_status(success=True, ids=[1]))
     monkeypatch.setattr("auto_coder.pr_processor.has_unresolved_review_threads", lambda *a, **k: False)
     monkeypatch.setattr("auto_coder.pr_processor._merge_pr", lambda *a, **k: merge_result)
 

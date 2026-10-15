@@ -10,6 +10,7 @@ import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.pr_processor import _fix_pr_issues_with_testing
+from tests.ci_observation_fakes import authoritative_ci_status
 
 # A focused runner result for the single reported failed file.
 _RUN = {"command": "bash scripts/test.sh tests/test_foo.py", "test_file": "tests/test_foo.py", "return_code": 1}
@@ -881,7 +882,13 @@ class TestPRMergeChecksInProgress:
         status = ProcessedPRResult(pr_data=pr_data)
 
         with patch.dict(os.environ, {"AUTO_CODER_INVALIDATION_DB": str(db_path)}):
-            with patch("src.auto_coder.entity_invalidation.time.time", return_value=120):
+            with (
+                patch("src.auto_coder.entity_invalidation.time.time", return_value=120),
+                patch(
+                    "src.auto_coder.pr_processor._check_github_actions_status",
+                    side_effect=authoritative_ci_status(success=False, ids=[1], in_progress=True),
+                ),
+            ):
                 actions = _handle_pr_merge(mock_gh, "owner/repo", pr_data, config, {}, processing_status=status)
 
         assert any("GitHub Actions checks are still in progress for PR #55" in a for a in actions)

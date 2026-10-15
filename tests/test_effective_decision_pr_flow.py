@@ -53,6 +53,7 @@ from auto_coder.pr_review_execution import FindingDisposition, ReviewExecutionRe
 from auto_coder.util.gh_cache import PullRequestRoutingMetadata, ReviewThread, ReviewThreadComment
 from auto_coder.util.github_action import GitHubActionsStatusResult
 from auto_coder.utils import CommandResult
+from tests.ci_observation_fakes import authoritative_ci_status
 from tests.test_accepted_finding_bridge import (  # noqa: F401  (env is a shared fixture)
     CONTRACT,
     POLICY,
@@ -335,18 +336,23 @@ class Flow:
         assert isinstance(actions, PRReviewCoordinationResult)
         return actions
 
-    def _ci_results(self) -> list[GitHubActionsStatusResult]:
+    def _ci_results(self):
         """Pre-validation CI is green; later reads (the post-validation refresh) may differ."""
-        observation = CIObservationSnapshot(
-            ObservationSubject("https://api.github.com", REPO, self.pr, self.head),
-            ObservationRequest("github-actions", "checks+workflows"),
-            "effective-decision-flow",
-            0,
-            ObservationAvailability.KNOWN,
-            (WorkflowObservation(WorkflowExecutionIdentity("pr-tests", "1", 1), CIConclusion.SUCCESS, "PR Tests"),),
-        )
-        green = GitHubActionsStatusResult(success=True, ids=[1], observation=observation)
-        return [green, *([self.post_ci] * 8 if self.post_ci is not None else [green] * 8)]
+        reads = 0
+
+        def read(repository, pr_data, *args, **kwargs):
+            nonlocal reads
+            reads += 1
+            configured = self.post_ci if reads > 1 and self.post_ci is not None else GitHubActionsStatusResult(success=True, ids=[1])
+            return authoritative_ci_status(
+                success=configured.success,
+                ids=configured.ids,
+                in_progress=configured.in_progress,
+                error=configured.error,
+                waiting_runs=configured.waiting_runs,
+            )(repository, pr_data, *args, **kwargs)
+
+        return read
 
     def _set_thread_resolved(self, thread: str, resolved: bool) -> None:
         assert thread == self.thread_id

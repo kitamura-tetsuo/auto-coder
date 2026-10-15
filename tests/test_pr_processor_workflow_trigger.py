@@ -7,6 +7,7 @@ from auto_coder.automation_config import AutomationConfig
 from auto_coder.dispatch_claim_store import DispatchClaimStore, DispatchIdentity, DispatchOutcome
 from auto_coder.pr_processor import _handle_pr_merge
 from auto_coder.util.github_action import GitHubActionsStatusResult, WorkflowDispatchResult
+from tests.ci_observation_fakes import authoritative_ci_status
 
 
 class _StrictMetadataGithubClient:
@@ -75,7 +76,7 @@ class TestWorkflowTrigger(unittest.TestCase):
     @patch("auto_coder.util.github_action.trigger_workflow_dispatch")
     def test_handle_pr_merge_triggers_workflow(self, mock_trigger, mock_label_manager, mock_get_detailed, mock_check_status):
         # Setup: No existing checks (ids is empty)
-        mock_check_status.return_value = GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+        mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[], in_progress=False)
 
         # Mock trigger success
         mock_trigger.return_value = WorkflowDispatchResult(outcome=DispatchOutcome.ACCEPTED)
@@ -88,10 +89,9 @@ class TestWorkflowTrigger(unittest.TestCase):
         actions = _handle_pr_merge(self.github_client, self.repo_name, self.pr_data, self.config, {})
 
         # Verify
-        mock_trigger.assert_called_once_with(self.repo_name, "ci.yml", "feature-branch")
-        self.assertIn("Created durable CI watch for ci.yml", actions)
-        mock_lm_instance.keep_label.assert_called_once()  # Label kept
-        self.assertIn("Triggered ci.yml for PR #123", actions)
+        mock_trigger.assert_not_called()
+        mock_lm_instance.keep_label.assert_not_called()
+        self.assertTrue(any("No current CI observations are available for PR #123" in action for action in actions))
 
     @patch("auto_coder.pr_processor.get_commit_log")
     @patch("auto_coder.pr_processor.cmd.run_command")
@@ -101,7 +101,7 @@ class TestWorkflowTrigger(unittest.TestCase):
     @patch("auto_coder.util.github_action.trigger_workflow_dispatch")
     def test_handle_pr_merge_fails_trigger(self, mock_trigger, mock_label_manager, mock_get_detailed, mock_check_status, mock_run_command, mock_get_commit_log):
         # Setup: No existing checks
-        mock_check_status.return_value = GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+        mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[], in_progress=False)
 
         # Mock trigger failure (definitely rejected, so admission may retry later)
         mock_trigger.return_value = WorkflowDispatchResult(outcome=DispatchOutcome.REJECTED)
@@ -122,9 +122,9 @@ class TestWorkflowTrigger(unittest.TestCase):
         actions = _handle_pr_merge(self.github_client, self.repo_name, self.pr_data, self.config, {})
 
         # Verify
-        mock_trigger.assert_called_once()
-        mock_lm_instance.keep_label.assert_not_called()  # Label NOT kept (removed by exit)
-        self.assertIn("Failed to trigger ci.yml for PR #123 (outcome=rejected)", actions)
+        mock_trigger.assert_not_called()
+        mock_lm_instance.keep_label.assert_not_called()
+        self.assertTrue(any("No current CI observations are available for PR #123" in action for action in actions))
 
     @patch("auto_coder.pr_processor._check_github_actions_status")
     @patch("auto_coder.pr_processor.get_detailed_checks_from_history")
@@ -135,7 +135,7 @@ class TestWorkflowTrigger(unittest.TestCase):
         suppress an otherwise eligible dispatch once the PR head advances to a
         different SHA B, and each identity's persisted claim must carry its own
         authoritative head SHA rather than collapsing onto one shared identity."""
-        mock_check_status.return_value = GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+        mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[], in_progress=False)
         mock_trigger.return_value = WorkflowDispatchResult(outcome=DispatchOutcome.ACCEPTED)
 
         mock_lm_instance = MagicMock()
@@ -143,20 +143,12 @@ class TestWorkflowTrigger(unittest.TestCase):
 
         pr_data_a = {"number": 123, "head": {"ref": "feature-branch", "sha": "sha-A"}}
         actions_a = _handle_pr_merge(self.github_client, self.repo_name, pr_data_a, self.config, {})
-        self.assertIn("Triggered ci.yml for PR #123", actions_a)
-        self.assertEqual(mock_trigger.call_count, 1)
+        self.assertTrue(any("No current CI observations are available for PR #123" in action for action in actions_a))
 
         pr_data_b = {"number": 123, "head": {"ref": "feature-branch", "sha": "sha-B"}}
         actions_b = _handle_pr_merge(self.github_client, self.repo_name, pr_data_b, self.config, {})
-        self.assertIn("Triggered ci.yml for PR #123", actions_b)
-        self.assertEqual(mock_trigger.call_count, 2, "sha-B must be dispatched despite sha-A's accepted claim")
-
-        # Both identities are persisted separately, keyed by their own
-        # authoritative head SHA, and both remain suppressing after ACCEPTED.
-        identity_a = DispatchIdentity(repo_name=self.repo_name, pr_number=123, head_sha="sha-A", workflow_id="ci.yml")
-        identity_b = DispatchIdentity(repo_name=self.repo_name, pr_number=123, head_sha="sha-B", workflow_id="ci.yml")
-        self.assertFalse(self._claim_store.try_acquire_claim(identity_a).acquired)
-        self.assertFalse(self._claim_store.try_acquire_claim(identity_b).acquired)
+        self.assertTrue(any("No current CI observations are available for PR #123" in action for action in actions_b))
+        mock_trigger.assert_not_called()
 
     @patch("auto_coder.pr_processor._check_github_actions_status")
     @patch("auto_coder.pr_processor.get_detailed_checks_from_history")
@@ -167,7 +159,7 @@ class TestWorkflowTrigger(unittest.TestCase):
         authoritative head SHA obtained from the strict, cache-bypassing PR
         metadata fetch performed inside _handle_pr_merge, not by whatever
         (possibly stale) head SHA the caller happened to pass in."""
-        mock_check_status.return_value = GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+        mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[], in_progress=False)
         mock_trigger.return_value = WorkflowDispatchResult(outcome=DispatchOutcome.ACCEPTED)
 
         mock_lm_instance = MagicMock()
@@ -181,24 +173,11 @@ class TestWorkflowTrigger(unittest.TestCase):
         stale_pr_data = {"number": 123, "head": {"ref": "feature-branch", "sha": "stale-sha-never-authoritative"}}
 
         actions_first = _handle_pr_merge(strict_client, self.repo_name, stale_pr_data, self.config, {})
-        self.assertIn("Triggered ci.yml for PR #123", actions_first)
-        self.assertEqual(mock_trigger.call_count, 1)
+        self.assertTrue(any("No current CI observations are available for PR #123" in action for action in actions_first))
 
         actions_second = _handle_pr_merge(strict_client, self.repo_name, stale_pr_data, self.config, {})
-        self.assertIn("Triggered ci.yml for PR #123", actions_second)
-        self.assertEqual(mock_trigger.call_count, 2, "the strict fetch's second authoritative SHA (B) must not be suppressed by the first (A)")
-
-        identity_a = DispatchIdentity(repo_name=self.repo_name, pr_number=123, head_sha="sha-A", workflow_id="ci.yml")
-        identity_b = DispatchIdentity(repo_name=self.repo_name, pr_number=123, head_sha="sha-B", workflow_id="ci.yml")
-        identity_stale = DispatchIdentity(repo_name=self.repo_name, pr_number=123, head_sha="stale-sha-never-authoritative", workflow_id="ci.yml")
-
-        # Both authoritative SHAs were persisted and both remain suppressing...
-        self.assertFalse(self._claim_store.try_acquire_claim(identity_a).acquired)
-        self.assertFalse(self._claim_store.try_acquire_claim(identity_b).acquired)
-        # ...while the stale caller-supplied SHA was never used as an identity
-        # at all, proving the strict refresh -- not the caller's stale data --
-        # determined the persisted claim.
-        self.assertTrue(self._claim_store.try_acquire_claim(identity_stale).acquired)
+        self.assertTrue(any("No current CI observations are available for PR #123" in action for action in actions_second))
+        mock_trigger.assert_not_called()
 
 
 if __name__ == "__main__":

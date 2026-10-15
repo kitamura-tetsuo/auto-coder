@@ -12,6 +12,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 RELEASE_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
@@ -29,6 +30,15 @@ def require_release_sha(value: str) -> None:
     """Reject values that cannot be an immutable full commit identifier."""
     if RELEASE_SHA_PATTERN.fullmatch(value) is None:
         raise SystemExit(f"Refusing deployment: invalid release commit SHA {value!r}")
+
+
+def require_successful_job(jobs: object, expected_name: str) -> None:
+    """Require exactly one completed successful job in the triggering run."""
+    if not isinstance(jobs, dict) or not isinstance(jobs.get("jobs"), list):
+        raise SystemExit("Refusing deployment: source-run job evidence is invalid")
+    matches = [job for job in jobs["jobs"] if isinstance(job, dict) and job.get("name") == expected_name]
+    if len(matches) != 1 or matches[0].get("status") != "completed" or matches[0].get("conclusion") != "success":
+        raise SystemExit(f"Refusing deployment: source run lacks one successful {expected_name!r} job")
 
 
 def inspect_digest(reference: str) -> None:
@@ -118,6 +128,7 @@ def main() -> None:
             "inspect-digest",
             "create-history-if-absent",
             "require-latest-successful-run",
+            "require-successful-job",
             "require-tested-beta",
             "require-release-history",
             "require-release-postcondition",
@@ -127,6 +138,15 @@ def main() -> None:
     parser.add_argument("candidate")
     parser.add_argument("authoritative", nargs="?")
     args = parser.parse_args()
+    if args.check == "require-successful-job":
+        if args.authoritative is None:
+            parser.error("require-successful-job requires an expected job name")
+        try:
+            jobs = json.loads(Path(args.candidate).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise SystemExit(f"Refusing deployment: source-run job evidence is unavailable: {error}") from error
+        require_successful_job(jobs, args.authoritative)
+        return
     if args.check == "inspect-digest":
         inspect_digest(args.candidate)
         return

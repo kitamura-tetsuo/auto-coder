@@ -6,6 +6,7 @@ import pytest
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.ci_repair_authority import CIRepairAuthority
 from src.auto_coder.pr_processor import _handle_pr_merge
+from tests.ci_observation_fakes import authoritative_ci_status
 
 
 def _client():
@@ -64,7 +65,7 @@ class TestPRProcessorLocalOverride:
         pr_branch = "feature/test-branch"
         pr_data = {
             "number": 123,
-            "head": {"ref": pr_branch},
+            "head": {"ref": pr_branch, "sha": "head-local"},
             "base": {"ref": "main"},
         }
         config = AutomationConfig()
@@ -82,7 +83,7 @@ class TestPRProcessorLocalOverride:
         # Mock failed checks
         mock_check_in_progress.return_value = True
         mock_get_mergeable_state.return_value = {"mergeable": True}
-        mock_check_status.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, error=None, ids=[1])
+        mock_check_status.side_effect = authoritative_ci_status(success=False, ids=[1])
         mock_get_detailed_checks.return_value = MagicMock(spec=DetailedChecksResult, success=False, failed_checks=["test_check"])
 
         # Mock checkout success

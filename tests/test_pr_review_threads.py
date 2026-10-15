@@ -14,6 +14,7 @@ from auto_coder.pr_processor import (
 )
 from auto_coder.util.gh_cache import GitHubClient, ReviewThread, ReviewThreadComment
 from auto_coder.util.github_action import GitHubActionsStatusResult
+from tests.ci_observation_fakes import authoritative_ci_status
 
 
 @pytest.fixture
@@ -240,7 +241,7 @@ def test_process_pr_for_merge_blocks_on_unresolved_threads(mock_gh_instance, moc
     config = AutomationConfig()
     config.AUTO_MERGE = True
     config.CHECK_LABELS = True
-    pr_data = {"number": 123, "head": {"ref": "feature-123"}, "labels": []}
+    pr_data = {"number": 123, "head": {"ref": "feature-123", "sha": "head-123"}, "labels": []}
 
     result = _process_pr_for_merge("owner/repo", pr_data, config)
 
@@ -261,7 +262,7 @@ def test_process_pr_for_merge_proceeds_when_resolved(mock_gh_instance, mock_labe
     config = AutomationConfig()
     config.AUTO_MERGE = True
     config.CHECK_LABELS = True
-    pr_data = {"number": 123, "head": {"ref": "feature-123"}, "labels": []}
+    pr_data = {"number": 123, "head": {"ref": "feature-123", "sha": "head-123"}, "labels": []}
 
     result = _process_pr_for_merge("owner/repo", pr_data, config)
 
@@ -276,12 +277,12 @@ def test_process_pr_for_merge_proceeds_when_resolved(mock_gh_instance, mock_labe
 @patch("auto_coder.pr_processor.has_unresolved_review_threads")
 @patch("auto_coder.pr_processor._merge_pr")
 def test_handle_pr_merge_blocks_on_unresolved_threads(mock_merge_pr, mock_has_unresolved, mock_checks, mock_mergeable, mock_exit_if_in_progress):
-    mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+    mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
     mock_has_unresolved.return_value = True
 
     config = AutomationConfig()
     config.AUTO_MERGE = True
-    pr_data = {"number": 123, "head": {"ref": "feature-123"}, "labels": []}
+    pr_data = {"number": 123, "head": {"ref": "feature-123", "sha": "head-123"}, "labels": []}
 
     client = MagicMock()
     client.get_pr_review_threads_strict.return_value = []
@@ -298,7 +299,7 @@ def test_handle_pr_merge_blocks_on_unresolved_threads(mock_merge_pr, mock_has_un
 @patch("auto_coder.pr_processor.run_adversarial_validation")
 @patch("auto_coder.pr_processor._merge_pr")
 def test_handle_pr_merge_fails_closed_when_real_review_thread_lookup_fails(mock_merge_pr, mock_validation, mock_checks, mock_mergeable, mock_exit_if_in_progress, mock_github_client):
-    mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+    mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
     mock_github_client.graphql_query.side_effect = Exception("reviewThreads API unavailable")
     config = AutomationConfig()
     config.AUTO_MERGE = True
@@ -324,7 +325,7 @@ def test_handle_pr_merge_fails_closed_when_real_review_thread_lookup_fails(mock_
 @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
 @patch("auto_coder.pr_processor._merge_pr")
 def test_handle_pr_merge_proceeds_when_all_threads_resolved(mock_merge_pr, mock_worktree, mock_publish, mock_adv_val, mock_has_unresolved, mock_checks, mock_mergeable, mock_exit_if_in_progress):
-    mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+    mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
     mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
     mock_has_unresolved.return_value = False
     mock_merge_pr.return_value = True

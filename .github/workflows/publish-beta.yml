@@ -9,20 +9,8 @@ permissions:
   packages: write
 
 jobs:
-  maintenance:
-    name: CI Maintenance Selection
-    runs-on: ubuntu-latest
-    outputs:
-      mode: ${{ steps.policy.outputs.mode }}
-    steps:
-      - uses: actions/checkout@v7
-      - name: Read exact main policy
-        id: policy
-        run: python scripts/ci_maintenance.py select-main
   build-tested-artifact:
     name: Build tested artifact
-    needs: maintenance
-    if: needs.maintenance.outputs.mode == 'NORMAL'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

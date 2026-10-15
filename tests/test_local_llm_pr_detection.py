@@ -10,8 +10,9 @@ from auto_coder.ci_repair_authority import CIRepairAuthority
 from auto_coder.conflict_resolver import _perform_base_branch_merge_and_conflict_resolution
 from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.issue_processor import _create_pr_for_issue
-from auto_coder.pr_processor import _handle_pr_merge, _is_local_llm_pr, is_local_llm_pr
+from auto_coder.pr_processor import PRActionList, _handle_pr_merge, _is_local_llm_pr, is_local_llm_pr
 from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult
+from tests.ci_observation_fakes import authoritative_ci_status
 
 
 @pytest.fixture(autouse=True)
@@ -193,7 +194,7 @@ class TestHandlePrMergeFixLimitation:
             "head": {"ref": "issue-10", "sha": "sha_101"},
         }
         github_client.get_pull_request.return_value = {"head": {"sha": "sha_101"}}
-        with patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])):
+        with patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])):
             actions = _handle_pr_merge(github_client, "owner/repo", local_pr, config, {})
             assert any("Successfully merged PR #101" in a for a in actions)
             mock_merge.assert_called_once()
@@ -207,7 +208,7 @@ class TestHandlePrMergeFixLimitation:
             "head": {"ref": "codex-branch", "sha": "sha_102"},
         }
         github_client.get_pull_request.return_value = {"head": {"sha": "sha_102"}}
-        with patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[2])):
+        with patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[2])):
             actions = _handle_pr_merge(github_client, "owner/repo", codex_pr, config, {})
             assert any("Successfully merged PR #102" in a for a in actions)
             mock_merge.assert_called_once()
@@ -217,7 +218,7 @@ class TestHandlePrMergeFixLimitation:
     @patch("auto_coder.pr_processor.cmd.run_command")
     @patch("auto_coder.pr_processor._checkout_pr_branch", return_value=True)
     @patch("auto_coder.pr_processor.BranchManager")
-    @patch("auto_coder.pr_processor._fix_pr_issues_with_testing", return_value=["Fixed PR locally"])
+    @patch("auto_coder.pr_processor._fix_pr_issues_with_testing", return_value=PRActionList(["Fixed PR locally"]))
     def test_ci_failure_runs_local_fix_for_local_pr(self, mock_fix, mock_bm, mock_checkout, mock_cmd, mock_mergeable, mock_exit_check):
         """Local PR with CI failure triggers local LLM fix loop."""
         config = AutomationConfig()
@@ -228,14 +229,14 @@ class TestHandlePrMergeFixLimitation:
         local_pr = {
             "number": 101,
             "body": "<!-- auto-coder:local-llm -->\nCloses #10",
-            "head": {"ref": "issue-10"},
+            "head": {"ref": "issue-10", "sha": "a" * 40},
         }
 
         mock_cmd.return_value = MagicMock(success=True, stdout="main\n")
         mock_bm.return_value.__enter__.return_value = MagicMock()
 
         with (
-            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=False, ids=[1])),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=False, ids=[1])),
             patch("auto_coder.pr_processor.get_detailed_checks_from_history", return_value=DetailedChecksResult(success=False, failed_checks=["test_failed"])),
             patch("auto_coder.pr_processor._create_github_action_log_summary", return_value=("Log summary", ["test_file.py"])),
         ):
@@ -257,12 +258,12 @@ class TestHandlePrMergeFixLimitation:
             "number": 102,
             "body": "Implementation by contributor",
             "user": {"login": "external-dev"},
-            "head": {"ref": "feature-external"},
+            "head": {"ref": "feature-external", "sha": "b" * 40},
         }
 
         mock_cmd.return_value = MagicMock(success=True, stdout="main\n")
 
-        with patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=False, ids=[1])), patch("auto_coder.pr_processor.get_detailed_checks_from_history", return_value=DetailedChecksResult(success=False, failed_checks=["test_failed"])):
+        with patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=False, ids=[1])), patch("auto_coder.pr_processor.get_detailed_checks_from_history", return_value=DetailedChecksResult(success=False, failed_checks=["test_failed"])):
             actions = _handle_pr_merge(github_client, "owner/repo", non_local_pr, config, {})
             assert any("was not created by local LLM, skipping local LLM fixes" in a for a in actions)
             mock_fix.assert_not_called()

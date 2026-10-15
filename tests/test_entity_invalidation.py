@@ -42,6 +42,7 @@ from src.auto_coder.util.github_request_outcome import (
     configure_github_request_boundary,
 )
 from src.auto_coder.webhook_server import SentryWebhookPayload, create_app, process_github_payload, process_sentry_payload
+from tests.ci_observation_fakes import authoritative_ci_status
 
 
 def _github_deferral(reason: str, retry_at: float) -> GitHubRequestDeferred:
@@ -1502,13 +1503,13 @@ def test_authoritative_lifecycle_transition_survives_later_author_exclusion(tmp_
     claim_store = DispatchClaimStore(db_path=tmp_path / "dispatch-claims.sqlite3")
     with (
         patch("src.auto_coder.pr_processor.get_dispatch_claim_store", return_value=claim_store),
-        patch("src.auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[], in_progress=False)),
+        patch("src.auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[], in_progress=False)),
         patch("src.auto_coder.pr_processor.get_detailed_checks_from_history"),
         patch("src.auto_coder.pr_processor.LabelManager"),
         patch("auto_coder.util.github_action.trigger_workflow_dispatch", return_value=WorkflowDispatchResult(outcome=DispatchOutcome.ACCEPTED)),
     ):
         actions = _handle_pr_merge(github, "owner/repo", pr_data, AutomationConfig(pr_allowlist=[1]), {})
-    assert "Created durable CI watch for ci.yml" in actions
+    assert any("No current CI observations are available for PR #100" in action for action in actions)
 
     engine = AutomationEngine(github, AutomationConfig(pr_allowlist=[999]))
     github.get_pull_request_metadata_strict = MagicMock(
@@ -1532,7 +1533,7 @@ def test_authoritative_lifecycle_transition_survives_later_author_exclusion(tmp_
         "SELECT head_sha, workflow_id, active FROM ci_watches WHERE repository = ? AND pr_number = ? ORDER BY head_sha, workflow_id",
         ("owner/repo", 100),
     ).fetchall()
-    expected_watches = [("new-head", "", 1), ("old-head", "", 0), ("old-head", "ci.yml", 0)] if reopened_head == "new-head" else [("old-head", "", 1), ("old-head", "ci.yml", 1)]
+    expected_watches = [("new-head", "", 1), ("old-head", "", 0)] if reopened_head == "new-head" else [("old-head", "", 1)]
     assert watches == expected_watches
     assert engine.invalidations.pending_count("owner/repo") == 0
     assert github.get_pull_request_metadata_strict.call_count == 2

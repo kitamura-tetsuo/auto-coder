@@ -38,6 +38,7 @@ from auto_coder.pr_processor import (
 )
 from auto_coder.util.gh_cache import GitHubClient, ReviewThread, ReviewThreadComment
 from auto_coder.util.github_action import GitHubActionsStatusResult
+from tests.ci_observation_fakes import authoritative_ci_status
 
 REVIEWER_LOGIN = "auto-coder-reviewer[bot]"
 
@@ -253,7 +254,7 @@ class TestAS001DisabledOnGreenPRSkipsValidatorAndMerges:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "f" * 40
         pr_data = _pr_data(100, head_sha, linked_issue=42)
 
@@ -313,7 +314,7 @@ class TestAS002ExistingVerdictDoesNotBlockOrDeprioritize:
         mock_github_client.has_linked_pr.return_value = False
         mock_github_client.get_issue.return_value = {"number": 42, "title": "Spec", "body": ""}
         mock_github_client.get_pr_reviews_strict.return_value = [_adversarial_review(head_sha, "NEEDS_FIX")]
-        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[1])
 
         engine = AutomationEngine(mock_github_client)
         engine.config = AutomationConfig(pr_adversarial_validation=False)
@@ -336,7 +337,7 @@ class TestAS002ExistingVerdictDoesNotBlockOrDeprioritize:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "a" * 40
         pr_data = _pr_data(100, head_sha, linked_issue=42)
 
@@ -379,7 +380,7 @@ class TestAS003ValidatorThreadsNonBlockingAndUntouched:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "a" * 40
         pr_data = _pr_data(100, head_sha, linked_issue=42)
 
@@ -447,7 +448,7 @@ class TestAS004HumanReviewThreadRemainsBlocking:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "a" * 40
         pr_data = _pr_data(100, head_sha, linked_issue=42)
 
@@ -492,7 +493,7 @@ class TestAS005NonAdversarialMergeGatesStillApply:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=False, ids=[1, 2])
+        mock_checks.side_effect = authoritative_ci_status(success=False, ids=[1, 2])
         head_sha = "a" * 40
         pr_data = _pr_data(100, head_sha, linked_issue=42)
 
@@ -517,7 +518,7 @@ class TestAS005NonAdversarialMergeGatesStillApply:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "a" * 40
         pr_data = _pr_data(100, head_sha, mergeable=False, linked_issue=42)
 
@@ -542,7 +543,7 @@ class TestAS005NonAdversarialMergeGatesStillApply:
         mock_mergeable,
         mock_exit_in_progress,
     ):
-        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         head_sha = "a" * 40
         pr_data = _pr_data(100, head_sha, linked_issue=42)
 
@@ -589,7 +590,7 @@ class TestAS006AndAS007ReEnablingSemantics:
         mock_github_client.has_linked_pr.return_value = False
         mock_github_client.get_issue.return_value = {"number": 42, "title": "Spec", "body": ""}
         mock_github_client.get_pr_reviews_strict.return_value = [_adversarial_review(head_sha, "NEEDS_FIX")]
-        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[1])
 
         engine = AutomationEngine(mock_github_client)
 
@@ -620,7 +621,7 @@ class TestAS006AndAS007ReEnablingSemantics:
         mock_github_client.get_issue.return_value = {"number": 42, "title": "Spec", "body": ""}
         # Review only on old_sha
         mock_github_client.get_pr_reviews_strict.return_value = [_adversarial_review(old_sha, "NEEDS_FIX")]
-        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
+        mock_check_actions.side_effect = authoritative_ci_status(success=True, ids=[1])
 
         engine = AutomationEngine(mock_github_client)
         engine.config = AutomationConfig(pr_adversarial_validation=True)

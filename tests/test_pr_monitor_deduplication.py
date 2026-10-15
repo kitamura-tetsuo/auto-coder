@@ -8,6 +8,7 @@ from src.auto_coder.dispatch_claim_store import DispatchClaimStore, DispatchOutc
 from src.auto_coder.entity_invalidation import DurableInvalidationQueue
 from src.auto_coder.pr_processor import _handle_pr_merge
 from src.auto_coder.util.github_action import WorkflowDispatchResult
+from tests.ci_observation_fakes import authoritative_ci_status
 
 
 def test_dispatch_creates_restart_safe_watch_and_claim():
@@ -20,7 +21,7 @@ def test_dispatch_creates_restart_safe_watch_and_claim():
         with (
             patch.dict(os.environ, {"AUTO_CODER_INVALIDATION_DB": str(root / "invalidations.db")}),
             patch("src.auto_coder.pr_processor.get_dispatch_claim_store", return_value=claims),
-            patch("src.auto_coder.pr_processor._check_github_actions_status", return_value=MagicMock(ids=[], error=None)),
+            patch("src.auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[])),
             patch("src.auto_coder.pr_processor.get_detailed_checks_from_history"),
             patch("src.auto_coder.pr_processor.LabelManager"),
             patch("auto_coder.util.github_action.trigger_workflow_dispatch", return_value=WorkflowDispatchResult(outcome=DispatchOutcome.ACCEPTED)) as dispatch,
@@ -28,7 +29,7 @@ def test_dispatch_creates_restart_safe_watch_and_claim():
             actions = _handle_pr_merge(client, "owner/repo", pr, AutomationConfig(), {})
             _handle_pr_merge(client, "owner/repo", pr, AutomationConfig(), {})
 
-        assert dispatch.call_count == 1
-        assert "Created durable CI watch for ci.yml" in actions
+        assert dispatch.call_count == 0
+        assert any("No current CI observations are available for PR #123" in action for action in actions)
         reopened = DurableInvalidationQueue(root / "invalidations.db")
         assert reopened.seconds_until_next_ci("owner/repo") == 0

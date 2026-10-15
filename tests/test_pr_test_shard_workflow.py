@@ -156,6 +156,6 @@ def test_workflow_contract_and_aggregate_shell():
     assert "--max-attempts 2" in test_step["run"]
     assert "scripts/run_pr_test_shard.py" in test_step["run"]
     aggregate = workflow["jobs"]["tests"]
-    assert aggregate["needs"] == ["maintenance", "tests-shard"]
-    assert aggregate["if"] == "always() && needs.maintenance.outputs.mode == 'NORMAL'"
+    assert aggregate["needs"] == "tests-shard"
+    assert aggregate["if"] == "always()"
     assert '!= "success"' in aggregate["steps"][0]["run"]

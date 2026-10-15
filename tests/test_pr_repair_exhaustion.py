@@ -70,6 +70,7 @@ from auto_coder.provider_repair_correlation import (
     ProviderRepairCoordinator,
     ProviderRepairCorrelationStore,
 )
+from tests.ci_observation_fakes import authoritative_ci_status
 
 API_ORIGIN = "https://api.github.com"
 REPO = "kitamura-tetsuo/auto-coder"
@@ -473,7 +474,7 @@ def test_as007_review_limits_never_repair_success(
     checks.success = True
     checks.error = None
     checks.in_progress = False
-    monkeypatch.setattr("auto_coder.pr_processor._check_github_actions_status", lambda *args, **kwargs: checks)
+    monkeypatch.setattr("auto_coder.pr_processor._check_github_actions_status", authoritative_ci_status(success=True, ids=[1]))
     monkeypatch.setattr("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", lambda *args, **kwargs: True)
     monkeypatch.setattr("auto_coder.pr_processor._get_mergeable_state", lambda *args, **kwargs: {"mergeable": True, "merge_state_status": "clean"})
     monkeypatch.setattr("auto_coder.pr_processor._get_published_adversarial_validation_status", lambda *args, **kwargs: ("PASS", None))

@@ -25,6 +25,7 @@ from src.auto_coder.ci_repair_verification import (
 )
 from src.auto_coder.invocation_admission import ci_repair_designated
 from src.auto_coder.prompt_loader import render_prompt
+from tests.ci_observation_fakes import authoritative_ci_status
 
 SCRIPT = r"""#!/bin/bash
 # Records every invocation. File state decides the outcome; unscoped runs are flagged.
@@ -310,7 +311,7 @@ def test_handle_pr_merge_origin_reaches_every_target_and_initial_correction(harn
         patch.object(pr_processor, "_get_mergeable_state", return_value={"mergeable": True}),
         patch.object(pr_processor, "_is_jules_pr", return_value=False),
         patch.object(pr_processor, "_is_local_llm_pr", return_value=True),
-        patch.object(pr_processor, "_check_github_actions_status", return_value=MagicMock(success=False, error=None, ids=[1])),
+        patch.object(pr_processor, "_check_github_actions_status", side_effect=authoritative_ci_status(success=False, ids=[1])),
         patch.object(pr_processor, "get_detailed_checks_from_history", return_value=MagicMock(spec=DetailedChecksResult, success=False, failed_checks=[{"id": 1, "name": "t", "conclusion": "failure"}])),
         patch.object(pr_processor, "_checkout_pr_branch", return_value=True),
         patch.object(pr_processor, "BranchManager"),
