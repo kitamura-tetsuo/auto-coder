@@ -85,6 +85,13 @@ sequenceDiagram
 
 Local CI repair can use local test results and Actions failure information; a passed local test is not proof that GitHub CI passed. `_fix_pr_ci_with_local_llm` remains a synchronous repair path with bounded CI polling. Conflict remediation and `_update_with_base_branch` also have their own result semantics. `success`, `attempt_started`, `should_continue` and synchronization results must not be collapsed into one generic completion flag.
 
+The existing CI-failure and conflict owners are now entered through
+`pr_repair_dispatch` requests and return typed dispositions. The adapter carries
+the immutable PR head and the established cloud/local origin, but deliberately
+contains no provider-selection tree. Existing provider helpers, durable
+receipts, worktree operations, test runner, and Git helpers remain the effect
+owners; diagnostic action strings are not completion evidence.
+
 The durable local-job kinds in this snapshot cover Issue implementation and PR review correction, not all CI/conflict repairs. See [backend routing](backend-routing-matrix.md).
 
 Sources: [CI conversion][ci] (`_check_github_actions_status`); [candidate collection][engine] (`_get_candidates`); [PR branches][pr] (`_handle_pr_merge`, `_start_mergeability_remediation`, `_fix_pr_ci_with_local_llm`, `_update_with_base_branch`); [local-job kinds][jobs].

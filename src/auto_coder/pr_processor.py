@@ -114,6 +114,15 @@ from .ordinary_closure_evidence import ApplicationStatus, ClosureEvidenceRecord,
 from .pr_blocker_closure import _BLOCKER_ID_RE, _GAP_ID_RE
 from .pr_progress_policy import ProgressPhase, ProgressRoute, PRProgressInputs, PRProgressScope, select_pr_progress
 from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repair_target
+from .pr_repair_dispatch import (
+    PRRepairRequest,
+    PRRepairResult,
+    RepairDisposition,
+    RepairFactState,
+    RepairKind,
+    RepairOrigin,
+    dispatch_pr_repair,
+)
 from .pr_repair_guard import (
     PrRepairExhaustionInfo,
     check_pr_repair_exhaustion,
@@ -1239,6 +1248,80 @@ class CloudConflictDelegationResult:
 
     def __bool__(self) -> bool:
         return self.delegated
+
+
+def _repair_request(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    kind: RepairKind,
+    origin: RepairOrigin,
+    *,
+    owner_identity: str = "",
+    local_origin: str = "",
+) -> PRRepairRequest:
+    """Capture the immutable repair target before entering an effect owner."""
+    return PRRepairRequest(
+        repository=repo_name,
+        pr_number=int(pr_data["number"]),
+        head_sha=str(pr_data.get("head", {}).get("sha") or pr_data.get("head_sha") or "unknown-head"),
+        kind=kind,
+        origin=origin,
+        owner_identity=owner_identity,
+        local_origin=local_origin,
+    )
+
+
+def _dispatch_codex_ci_failure_repair(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    failed_checks: List[Dict[str, Any]],
+    config: AutomationConfig,
+    github_client: Any,
+    *,
+    force: bool,
+) -> PRRepairResult:
+    request = _repair_request(repo_name, pr_data, RepairKind.CI_FAILURE, RepairOrigin.CODEX_CLOUD, owner_identity="verified-codex-cloud-origin")
+
+    def execute(_request: PRRepairRequest) -> PRRepairResult:
+        produced = _send_codex_cloud_error_feedback(repo_name, pr_data, failed_checks, config, github_client, force=force)
+        if produced.delivered:
+            return PRRepairResult(
+                RepairDisposition.ACCEPTED_OR_UNCERTAIN,
+                produced.actions,
+                attempt_started=True,
+                receipt_state=RepairFactState.AVAILABLE,
+                receipt="codex-cloud-continuation-accepted",
+            )
+        disposition = RepairDisposition.FAILED if produced.retryable else RepairDisposition.REFUSED
+        return PRRepairResult(disposition, produced.actions, reason=produced.actions[-1] if produced.actions else "repair was not started")
+
+    return dispatch_pr_repair(request, execute)
+
+
+def _dispatch_cloud_conflict_repair(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    github_client: Any,
+) -> PRRepairResult:
+    request = _repair_request(repo_name, pr_data, RepairKind.MERGE_CONFLICT, RepairOrigin.CODEX_CLOUD, owner_identity="existing-cloud-session")
+
+    def execute(_request: PRRepairRequest) -> PRRepairResult:
+        produced = _delegate_cloud_merge_conflict_repair_result(repo_name, pr_data, github_client)
+        actions = (produced.accepted_action,) if produced.accepted_action else ()
+        if produced.deferred:
+            return PRRepairResult(RepairDisposition.DEFERRED, actions, produced.reason, retry_not_before=produced.retry_not_before)
+        if produced.delegated:
+            return PRRepairResult(
+                RepairDisposition.ACCEPTED_OR_UNCERTAIN,
+                actions,
+                produced.reason,
+                attempt_started=True,
+                receipt_state=RepairFactState.AVAILABLE,
+                receipt="existing-cloud-conflict-delivery",
+            )
+        return PRRepairResult(RepairDisposition.REFUSED, actions, produced.reason)
+
+    return dispatch_pr_repair(request, execute)
 
 
 @dataclass(frozen=True)
@@ -6385,9 +6468,16 @@ def _handle_pr_merge(
         # checkout state. Resolve this execution origin before inspecting the
         if _is_codex_pr(pr_data):
             actions.append(f"PR #{pr_number} is a Codex-created PR, sending continuation request to Codex Cloud")
-            feedback_result = _send_codex_cloud_error_feedback(repo_name, pr_data, failed_checks, config, github_client, force=force_adversarial_validation)
-            actions.extend(feedback_result.actions)
-            if feedback_result.delivered:
+            codex_dispatch_result = _dispatch_codex_ci_failure_repair(
+                repo_name,
+                pr_data,
+                failed_checks,
+                config,
+                github_client,
+                force=force_adversarial_validation,
+            )
+            actions.extend(codex_dispatch_result.actions)
+            if codex_dispatch_result.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN:
                 actions.append(f"Codex Cloud will handle fixing PR #{pr_number}, skipping local fixes")
             else:
                 actions.append(f"Codex Cloud repair request for PR #{pr_number} was not delivered; retry is required and local fixes remain disabled")
@@ -6395,8 +6485,8 @@ def _handle_pr_merge(
                 pr_number,
                 "pr.repair-delegation",
                 f"pr#{pr_number} repair delegation",
-                Outcome.ACCEPTED_HANDOFF if feedback_result.delivered else Outcome.FAILED,
-                {"effect": "ci-failure-repair", "backend": "codex-cloud", "retryable": feedback_result.retryable},
+                Outcome.ACCEPTED_HANDOFF if codex_dispatch_result.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN else Outcome.FAILED,
+                {"effect": "ci-failure-repair", "backend": "codex-cloud", "disposition": codex_dispatch_result.disposition.value},
             )
             return actions
 
@@ -6824,24 +6914,23 @@ def _update_with_base_branch(
                     reporting_client = GitHubClient.get_instance()
                 except Exception as exc:
                     logger.warning(f"Could not initialize GitHub reporting for PR #{pr_number}: {exc}")
-            cloud_delegation = _delegate_cloud_merge_conflict_repair_result(repo_name, pr_data, reporting_client)
-            if cloud_delegation.deferred:
-                actions.append(f"DEFERRED Claude merge-conflict repair for PR #{pr_number}: {cloud_delegation.reason}")
+            cloud_repair = _dispatch_cloud_conflict_repair(repo_name, pr_data, reporting_client)
+            if cloud_repair.disposition is RepairDisposition.DEFERRED:
+                actions.append(f"DEFERRED Claude merge-conflict repair for PR #{pr_number}: {cloud_repair.reason}")
                 actions.quota_deferred = True
-                actions.retry_not_before = cloud_delegation.retry_not_before
+                actions.retry_not_before = cloud_repair.retry_not_before
                 cmd.run_command(["git", "merge", "--abort"])
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
                 return actions
-            if cloud_delegation:
+            if cloud_repair.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN:
                 cmd.run_command(["git", "merge", "--abort"])
-                if cloud_delegation.accepted_action:
-                    actions.append(cloud_delegation.accepted_action)
+                actions.extend(cloud_repair.actions)
                 actions.append(f"Delegated merge-conflict repair for PR #{pr_number} to its existing cloud session")
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
                 return actions
 
             if not _is_local_llm_pr(pr_data):
-                actions.append(f"Cloud merge-conflict repair could not be delegated for PR #{pr_number}: " f"{cloud_delegation.reason}; deferring conflict resolution.")
+                actions.append(f"Cloud merge-conflict repair could not be delegated for PR #{pr_number}: " f"{cloud_repair.reason}; deferring conflict resolution.")
                 cmd.run_command(["git", "merge", "--abort"])
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
                 return actions
