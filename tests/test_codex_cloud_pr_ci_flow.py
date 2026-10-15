@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from auto_coder.automation_config import AutomationConfig
+from auto_coder.automation_config import AutomationConfig, PRProcessingOutcome
 from auto_coder.ci_observation import (
     CIConclusion,
     CIObservationSnapshot,
@@ -441,6 +441,8 @@ class TestCodexCloudPRCIFlow:
         assert any("could not be resumed" in action for action in result.actions_taken)
         assert any("retry is required and local fixes remain disabled" in action for action in result.actions_taken)
         assert not any("Codex Cloud will handle fixing" in action for action in result.actions_taken)
+        assert result.outcome is PRProcessingOutcome.FAILED
+        assert result.error
         checkout.assert_not_called()
         branch_manager.assert_not_called()
         local_repair.assert_not_called()

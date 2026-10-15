@@ -1245,6 +1245,10 @@ class CloudConflictDelegationResult:
     accepted_action: str = ""
     deferred: bool = False
     retry_not_before: Optional[float] = None
+    provider: str = ""
+    task_id: str = ""
+    attempt_started: bool = False
+    receipt_identity: str = ""
 
     def __bool__(self) -> bool:
         return self.delegated
@@ -1263,7 +1267,7 @@ def _repair_request(
     return PRRepairRequest(
         repository=repo_name,
         pr_number=int(pr_data["number"]),
-        head_sha=str(pr_data.get("head", {}).get("sha") or pr_data.get("head_sha") or "unknown-head"),
+        head_sha=str(pr_data.get("head", {}).get("sha") or pr_data.get("head_sha") or ""),
         kind=kind,
         origin=origin,
         owner_identity=owner_identity,
@@ -1280,7 +1284,15 @@ def _dispatch_codex_ci_failure_repair(
     *,
     force: bool,
 ) -> PRRepairResult:
-    request = _repair_request(repo_name, pr_data, RepairKind.CI_FAILURE, RepairOrigin.CODEX_CLOUD, owner_identity="verified-codex-cloud-origin")
+    resolution = _resolve_cloud_task_origin(repo_name, pr_data, github_client)
+    task_id = resolution.origin.task_id if resolution.origin is not None else (_resolve_codex_cloud_task_id(repo_name, pr_data, github_client) or "")
+    request = _repair_request(
+        repo_name,
+        pr_data,
+        RepairKind.CI_FAILURE,
+        RepairOrigin.CODEX_CLOUD if task_id else RepairOrigin.UNKNOWN,
+        owner_identity=task_id,
+    )
 
     def execute(_request: PRRepairRequest) -> PRRepairResult:
         produced = _send_codex_cloud_error_feedback(repo_name, pr_data, failed_checks, config, github_client, force=force)
@@ -1289,8 +1301,6 @@ def _dispatch_codex_ci_failure_repair(
                 RepairDisposition.ACCEPTED_OR_UNCERTAIN,
                 produced.actions,
                 attempt_started=True,
-                receipt_state=RepairFactState.AVAILABLE,
-                receipt="codex-cloud-continuation-accepted",
             )
         disposition = RepairDisposition.FAILED if produced.retryable else RepairDisposition.REFUSED
         return PRRepairResult(disposition, produced.actions, reason=produced.actions[-1] if produced.actions else "repair was not started")
@@ -1303,10 +1313,17 @@ def _dispatch_cloud_conflict_repair(
     pr_data: Dict[str, Any],
     github_client: Any,
 ) -> PRRepairResult:
-    request = _repair_request(repo_name, pr_data, RepairKind.MERGE_CONFLICT, RepairOrigin.CODEX_CLOUD, owner_identity="existing-cloud-session")
+    resolved_origin = _resolve_cloud_conflict_origin(repo_name, pr_data, github_client)
+    if resolved_origin is None:
+        request = _repair_request(repo_name, pr_data, RepairKind.MERGE_CONFLICT, RepairOrigin.UNKNOWN)
+    else:
+        client, task_id = resolved_origin
+        provider = str(getattr(client, "backend_name", "") or ("codex-cloud" if task_id.startswith("task_e_") else ""))
+        request_origin = RepairOrigin.CODEX_CLOUD if provider == "codex-cloud" else RepairOrigin.CLAUDE_ROUTINE if provider.startswith("claude-routine") else RepairOrigin.UNKNOWN
+        request = _repair_request(repo_name, pr_data, RepairKind.MERGE_CONFLICT, request_origin, owner_identity=task_id)
 
     def execute(_request: PRRepairRequest) -> PRRepairResult:
-        produced = _delegate_cloud_merge_conflict_repair_result(repo_name, pr_data, github_client)
+        produced = _delegate_cloud_merge_conflict_repair_result(repo_name, pr_data, github_client, resolved_origin=resolved_origin)
         actions = (produced.accepted_action,) if produced.accepted_action else ()
         if produced.deferred:
             return PRRepairResult(RepairDisposition.DEFERRED, actions, produced.reason, retry_not_before=produced.retry_not_before)
@@ -1315,13 +1332,97 @@ def _dispatch_cloud_conflict_repair(
                 RepairDisposition.ACCEPTED_OR_UNCERTAIN,
                 actions,
                 produced.reason,
-                attempt_started=True,
-                receipt_state=RepairFactState.AVAILABLE,
-                receipt="existing-cloud-conflict-delivery",
+                attempt_started=produced.attempt_started,
+                receipt_state=RepairFactState.AVAILABLE if produced.receipt_identity else RepairFactState.UNKNOWN,
+                receipt=produced.receipt_identity,
             )
         return PRRepairResult(RepairDisposition.REFUSED, actions, produced.reason)
 
     return dispatch_pr_repair(request, execute)
+
+
+def _dispatch_local_repair(
+    request: PRRepairRequest,
+    operation: Callable[[], PRRepairResult],
+) -> PRRepairResult:
+    """Run one existing synchronous local producer through the typed boundary."""
+    return dispatch_pr_repair(request, lambda _request: operation())
+
+
+def _dispatch_local_ci_failure_repair(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    operation: Callable[[], "PRActionList"],
+) -> PRRepairResult:
+    request = _repair_request(
+        repo_name,
+        pr_data,
+        RepairKind.CI_FAILURE,
+        RepairOrigin.LOCAL,
+        local_origin="synchronous-local-ci-repair",
+    )
+
+    def execute() -> PRRepairResult:
+        produced = operation()
+        if produced.synchronized is True and produced.resulting_head:
+            return PRRepairResult(
+                RepairDisposition.APPLIED,
+                tuple(produced),
+                attempt_started=produced.repair_attempt_started,
+                resulting_head_state=RepairFactState.AVAILABLE,
+                resulting_head=produced.resulting_head,
+                synchronization_state=RepairFactState.AVAILABLE,
+                synchronized=True,
+            )
+        if produced.synchronized is False:
+            return PRRepairResult(
+                RepairDisposition.FAILED,
+                tuple(produced),
+                reason="local CI repair was not synchronized",
+                attempt_started=produced.repair_attempt_started,
+                resulting_head_state=RepairFactState.AVAILABLE if produced.resulting_head else RepairFactState.UNKNOWN,
+                resulting_head=produced.resulting_head,
+                synchronization_state=RepairFactState.AVAILABLE,
+                synchronized=False,
+            )
+        return PRRepairResult(
+            RepairDisposition.REFUSED,
+            tuple(produced),
+            reason="local CI repair produced no synchronized result",
+            attempt_started=produced.repair_attempt_started,
+        )
+
+    return _dispatch_local_repair(request, execute)
+
+
+def _dispatch_local_conflict_repair(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    operation: Callable[[], bool],
+) -> PRRepairResult:
+    request = _repair_request(
+        repo_name,
+        pr_data,
+        RepairKind.MERGE_CONFLICT,
+        RepairOrigin.LOCAL,
+        local_origin="synchronous-local-conflict-repair",
+    )
+
+    def execute() -> PRRepairResult:
+        applied = operation()
+        head_result = cmd.run_command(["git", "rev-parse", "HEAD"])
+        resulting_head = head_result.stdout.strip() if applied and head_result.success else ""
+        return PRRepairResult(
+            RepairDisposition.APPLIED if applied else RepairDisposition.FAILED,
+            attempt_started=True,
+            resulting_head_state=RepairFactState.AVAILABLE if resulting_head else RepairFactState.UNKNOWN,
+            resulting_head=resulting_head,
+            synchronization_state=RepairFactState.AVAILABLE,
+            synchronized=applied,
+            reason="" if applied else "local conflict repair did not synchronize a result",
+        )
+
+    return _dispatch_local_repair(request, execute)
 
 
 @dataclass(frozen=True)
@@ -1364,6 +1465,17 @@ class PRActionList(list[str]):
         self.adversarial_validation_error = adversarial_validation_error
         self.quota_deferred = False
         self.retry_not_before: Optional[float] = None
+        self.repair_attempt_started = False
+        self.resulting_head = ""
+        self.synchronized: Optional[bool] = None
+
+
+@dataclass(frozen=True)
+class CIRepairSubmission:
+    actions: Tuple[str, ...]
+    attempt_started: bool = False
+    resulting_head: str = ""
+    synchronized: Optional[bool] = None
 
 
 class CloudReviewRepairResult(list[str]):
@@ -6481,6 +6593,9 @@ def _handle_pr_merge(
                 actions.append(f"Codex Cloud will handle fixing PR #{pr_number}, skipping local fixes")
             else:
                 actions.append(f"Codex Cloud repair request for PR #{pr_number} was not delivered; retry is required and local fixes remain disabled")
+                if codex_dispatch_result.disposition is RepairDisposition.FAILED and processing_status is not None:
+                    processing_status.outcome = PRProcessingOutcome.FAILED
+                    processing_status.error = codex_dispatch_result.reason or f"Codex Cloud CI repair failed for PR #{pr_number}"
             _record_pr_stage(
                 pr_number,
                 "pr.repair-delegation",
@@ -6568,8 +6683,15 @@ def _handle_pr_merge(
                     # Proceed directly to extracting GitHub Actions logs and attempting fixes
                     if failed_checks:
                         github_logs, failed_test_files = _create_github_action_log_summary(repo_name, config, failed_checks)
-                        fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files)
-                        actions.extend(fix_actions)
+                        local_repair = _dispatch_local_ci_failure_repair(
+                            repo_name,
+                            pr_data,
+                            lambda: _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files),
+                        )
+                        actions.extend(local_repair.actions)
+                        if local_repair.disposition is RepairDisposition.FAILED and processing_status is not None:
+                            processing_status.outcome = PRProcessingOutcome.FAILED
+                            processing_status.error = local_repair.reason
                     else:
                         actions.append(f"No specific failed checks found for PR #{pr_number}")
 
@@ -6621,8 +6743,15 @@ def _handle_pr_merge(
                         if failed_checks:
                             # Unit test expects _get_github_actions_logs(repo_name, failed_checks)
                             github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
-                            fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs)
-                            actions.extend(fix_actions)
+                            local_repair = _dispatch_local_ci_failure_repair(
+                                repo_name,
+                                pr_data,
+                                lambda: _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs),
+                            )
+                            actions.extend(local_repair.actions)
+                            if local_repair.disposition is RepairDisposition.FAILED and processing_status is not None:
+                                processing_status.outcome = PRProcessingOutcome.FAILED
+                                processing_status.error = local_repair.reason
                         else:
                             actions.append(f"No specific failed checks found for PR #{pr_number}")
                     else:
@@ -6938,15 +7067,19 @@ def _update_with_base_branch(
             # Use the common subroutine for conflict resolution
             from .conflict_resolver import _perform_base_branch_merge_and_conflict_resolution, scan_conflict_markers
 
-            conflict_resolved = _perform_base_branch_merge_and_conflict_resolution(
-                pr_number,
-                target_branch,
-                config,
-                pr_data,
+            local_conflict_repair = _dispatch_local_conflict_repair(
                 repo_name,
+                pr_data,
+                lambda: _perform_base_branch_merge_and_conflict_resolution(
+                    pr_number,
+                    target_branch,
+                    config,
+                    pr_data,
+                    repo_name,
+                ),
             )
 
-            if conflict_resolved:
+            if local_conflict_repair.disposition is RepairDisposition.APPLIED:
                 actions.append(f"Successfully resolved merge conflicts for PR #{pr_number}")
                 actions.append(f"Pushed updated branch for PR #{pr_number}")
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
@@ -9399,6 +9532,8 @@ def _delegate_cloud_merge_conflict_repair_result(
     repo_name: str,
     pr_data: Dict[str, Any],
     github_client: Optional[Any] = None,
+    *,
+    resolved_origin: Optional[Tuple[Any, str]] = None,
 ) -> CloudConflictDelegationResult:
     """Fence journal reconciliation and transport against overlapping senders."""
     state_path = _cloud_conflict_state_path(repo_name)
@@ -9408,7 +9543,7 @@ def _delegate_cloud_merge_conflict_repair_result(
         # Do not wait while an existing sender may hold an implementation lock.
         # This order avoids a journal/implementation-owner lock inversion.
         with file_lock(delivery_lock, timeout=0.0, reentrant=False):
-            return _delegate_cloud_merge_conflict_repair_locked(repo_name, pr_data, github_client)
+            return _delegate_cloud_merge_conflict_repair_locked(repo_name, pr_data, github_client, resolved_origin=resolved_origin)
     except (LockAcquisitionTimeout, OSError, RuntimeError) as exc:
         reason = f"cloud conflict delivery coordination is unavailable: {exc}"
         logger.warning(reason)
@@ -9419,6 +9554,8 @@ def _delegate_cloud_merge_conflict_repair_locked(
     repo_name: str,
     pr_data: dict,
     github_client: Optional[Any] = None,
+    *,
+    resolved_origin: Optional[Tuple[Any, str]] = None,
 ) -> CloudConflictDelegationResult:
     """Delegate a current conflict to its originating cloud session when possible.
 
@@ -9426,10 +9563,11 @@ def _delegate_cloud_merge_conflict_repair_locked(
     delegated, so local repair must stop for this processing pass. ``False``
     preserves the caller's existing fallback path.
     """
-    origin = _resolve_cloud_conflict_origin(repo_name, pr_data, github_client)
+    origin = resolved_origin if resolved_origin is not None else _resolve_cloud_conflict_origin(repo_name, pr_data, github_client)
     if origin is None:
         return CloudConflictDelegationResult(reason="no originating cloud implementation session could be resolved")
     client, task_id = origin
+    provider = str(getattr(client, "backend_name", "") or ("codex-cloud" if task_id.startswith("task_e_") else "unknown"))
 
     # An inherited default method means that the provider does not opt in to
     # follow-up work. Do not use continue_if_paused as a substitute.
@@ -9459,7 +9597,8 @@ def _delegate_cloud_merge_conflict_repair_locked(
             deferred=True,
             retry_not_before=retained_wait.retry_not_before,
         )
-    accepted_action = f"Codex Cloud task '{task_id}' accepted merge-conflict-repair follow-up for " f"PR #{pr_number} at head {target.head_sha}"
+    provider_label = "Codex Cloud" if provider == "codex-cloud" else provider
+    accepted_action = f"{provider_label} task '{task_id}' accepted merge-conflict-repair follow-up for " f"PR #{pr_number} at head {target.head_sha}"
     state_path = _cloud_conflict_state_path(repo_name)
     with _cloud_conflict_delivery_lock:
         delivered: dict[str, CloudConflictDeliveryRecord] = {}
@@ -9497,6 +9636,9 @@ def _delegate_cloud_merge_conflict_repair_locked(
                 delegated=True,
                 reason="an equivalent repair request was already delegated",
                 accepted_action=accepted_action,
+                provider=provider,
+                task_id=task_id,
+                receipt_identity=existing.logical_identity,
             )
         if existing:
             return CloudConflictDelegationResult(reason=(f"delivery to originating cloud session '{existing.task_id}' has unconfirmed status; " "not resending a potentially accepted request"))
@@ -9579,6 +9721,10 @@ def _delegate_cloud_merge_conflict_repair_locked(
         delegated=True,
         reason=f"repair was delivered to cloud session '{task_id}'",
         accepted_action=accepted_action,
+        provider=provider,
+        task_id=task_id,
+        attempt_started=True,
+        receipt_identity=logical_identity,
     )
 
 
@@ -10624,7 +10770,7 @@ def _fix_pr_issues_with_testing(
     config: AutomationConfig,
     github_logs: str,
     failed_tests: List[str] | None = None,
-) -> List[str]:
+) -> PRActionList:
     """Repair a PR's CI failure from the reported failures with focused local checks.
 
     CI owns full validation. Every local corrective call carries the CI-repair
@@ -10634,7 +10780,7 @@ def _fix_pr_issues_with_testing(
     candidate is submitted for CI validation without requiring local full-suite
     success; local outcomes never establish CI clearance or merge authority.
     """
-    actions: List[str] = []
+    actions = PRActionList()
     pr_number = pr_data["number"]
 
     if failed_tests is None:
@@ -10660,6 +10806,7 @@ def _fix_pr_issues_with_testing(
     try:
         # Initial correction from the CI diagnostics (all of them, including non-test failures).
         if _is_automatic_test_fix_enabled(config, repo_name):
+            actions.repair_attempt_started = True
             get_trace_logger().log("Fixing Issues", f"Fixing PR #{pr_number} using GHA logs", item_type="pr", item_number=pr_number)
             actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
         actions.extend(_apply_github_actions_fix(repo_name, pr_data, config, github_logs, backend_manager=high_score_backend_manager, focused_targets=known_failures))
@@ -10728,7 +10875,10 @@ def _fix_pr_issues_with_testing(
         if not _is_automatic_test_fix_enabled(config, repo_name):
             return actions
 
-        actions.extend(_submit_ci_repair_candidate(repo_name, pr_number))
+        submission = _submit_ci_repair_candidate(repo_name, pr_number)
+        actions.extend(submission.actions)
+        actions.resulting_head = submission.resulting_head
+        actions.synchronized = submission.synchronized
 
     except AutoCoderRetryableBackendError:
         raise
@@ -10738,7 +10888,7 @@ def _fix_pr_issues_with_testing(
     return actions
 
 
-def _submit_ci_repair_candidate(repo_name: str, pr_number: int) -> List[str]:
+def _submit_ci_repair_candidate(repo_name: str, pr_number: int) -> CIRepairSubmission:
     """Commit and push a real corrective diff for the still-open PR branch.
 
     Success means only that a candidate was submitted; CI validation of the
@@ -10748,21 +10898,33 @@ def _submit_ci_repair_candidate(repo_name: str, pr_number: int) -> List[str]:
     from .util.github_action import is_item_closed_on_github
 
     if is_item_closed_on_github(repo_name, "pr", pr_number, GitHubClient.get_instance()):
-        return [f"PR #{pr_number} is closed on GitHub; corrective changes were not submitted"]
+        return CIRepairSubmission((f"PR #{pr_number} is closed on GitHub; corrective changes were not submitted",))
     status = cmd.run_command(["git", "status", "--porcelain"])
     if not status.success or not status.stdout.strip():
-        return ["No changes generated by CI repair; nothing submitted"]
+        return CIRepairSubmission(("No changes generated by CI repair; nothing submitted",))
     cmd.run_command(["git", "add", "."])
     c_res = git_commit_with_retry(f"Auto-Coder: Fix issues based on GitHub Actions logs (PR #{pr_number})")
     if not c_res.success:
-        return [f"Failed to commit fixes: {c_res.stderr}"]
+        return CIRepairSubmission((f"Failed to commit fixes: {c_res.stderr}",), attempt_started=True, synchronized=False)
+    head_result = cmd.run_command(["git", "rev-parse", "HEAD"])
+    resulting_head = head_result.stdout.strip() if head_result.success else ""
     p_res = git_push()
     if not p_res.success:
-        return ["Committed fixes based on GitHub Actions logs", f"Failed to push fixes: {p_res.stderr}"]
-    return [
-        "Committed fixes based on GitHub Actions logs",
-        "Pushed fixes to GitHub to trigger new Actions run; full validation is pending CI on the new head",
-    ]
+        return CIRepairSubmission(
+            ("Committed fixes based on GitHub Actions logs", f"Failed to push fixes: {p_res.stderr}"),
+            attempt_started=True,
+            resulting_head=resulting_head,
+            synchronized=False,
+        )
+    return CIRepairSubmission(
+        (
+            "Committed fixes based on GitHub Actions logs",
+            "Pushed fixes to GitHub to trigger new Actions run; full validation is pending CI on the new head",
+        ),
+        attempt_started=True,
+        resulting_head=resulting_head,
+        synchronized=True,
+    )
 
 
 def _apply_github_actions_fix(

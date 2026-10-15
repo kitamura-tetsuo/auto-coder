@@ -19,6 +19,7 @@ class RepairKind(str, Enum):
 
 class RepairOrigin(str, Enum):
     CODEX_CLOUD = "codex-cloud"
+    CLAUDE_ROUTINE = "claude-routine"
     JULES = "jules"
     LOCAL = "local"
     UNKNOWN = "unknown"
@@ -50,7 +51,7 @@ class PRRepairRequest:
     def __post_init__(self) -> None:
         if not self.repository or self.pr_number <= 0 or not self.head_sha:
             raise ValueError("repository, positive PR number and head SHA are required")
-        if self.origin in {RepairOrigin.CODEX_CLOUD, RepairOrigin.JULES} and not self.owner_identity:
+        if self.origin in {RepairOrigin.CODEX_CLOUD, RepairOrigin.CLAUDE_ROUTINE, RepairOrigin.JULES} and not self.owner_identity:
             raise ValueError("cloud repairs require their existing owner identity")
         if self.origin is RepairOrigin.LOCAL and not self.local_origin:
             raise ValueError("local repairs require their existing execution origin")

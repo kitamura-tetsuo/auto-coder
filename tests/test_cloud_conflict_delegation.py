@@ -673,8 +673,16 @@ def test_local_conflict_repair_emits_confirmed_remediation_outcome(tmp_path, res
     local_pr["user"] = {"login": "kitamura-tetsuo"}
     local_pr["head"]["ref"] = "issue-5456"
     api.pulls.get.return_value = local_pr
+    dispatches = []
+
+    def capture_dispatch(request, operation):
+        result = operation(request)
+        dispatches.append((request, result))
+        return result
+
     with (
         patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=None),
+        patch("src.auto_coder.pr_processor.dispatch_pr_repair", side_effect=capture_dispatch),
         patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=tmp_path / "repairs.json"),
         patch("src.auto_coder.pr_processor.get_trace_collector", return_value=collector),
         patch("src.auto_coder.pr_processor.check_pr_repair_exhaustion", return_value=None),
@@ -686,11 +694,20 @@ def test_local_conflict_repair_emits_confirmed_remediation_outcome(tmp_path, res
         patch("src.auto_coder.conflict_resolver.scan_conflict_markers", return_value=[] if resolved else ["app.txt"]),
         patch("src.auto_coder.pr_processor.cmd") as commands,
     ):
-        commands.run_command.side_effect = [CommandResult(True, "", "", 0), CommandResult(True, "3\n", "", 0), CommandResult(False, "CONFLICT", "", 1)]
+        commands.run_command.side_effect = [
+            CommandResult(True, "", "", 0),
+            CommandResult(True, "3\n", "", 0),
+            CommandResult(False, "CONFLICT", "", 1),
+            CommandResult(True, "H2\n", "", 0),
+        ]
         with collector.start_execution("owner/repo", "pr", 1589, origin="explicit-only") as execution:
             actions = _start_mergeability_remediation(1589, "dirty", "owner/repo")
 
     repair.assert_called_once()
+    local_dispatches = [(request, result) for request, result in dispatches if request.origin.value == "local"]
+    assert len(local_dispatches) == 1
+    assert local_dispatches[0][0].local_origin == "synchronous-local-conflict-repair"
+    assert local_dispatches[0][1].synchronized is resolved
     github.return_value.close_pr.assert_not_called()
     assert "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" not in actions
     events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="pr", item_number=1589).events if event.stage_id == "pr.mergeability-remediation" and event.execution_id == execution.scope.execution_id]

@@ -46,6 +46,7 @@ def test_adapter_preserves_structured_effect_evidence() -> None:
     ("origin", "owner", "local"),
     [
         (RepairOrigin.CODEX_CLOUD, "", ""),
+        (RepairOrigin.CLAUDE_ROUTINE, "", ""),
         (RepairOrigin.JULES, "", ""),
         (RepairOrigin.LOCAL, "", ""),
     ],
@@ -81,6 +82,8 @@ def test_cloud_conflict_adapter_preserves_deferred_retry(monkeypatch: pytest.Mon
         )
     )
     monkeypatch.setattr(pr_processor, "_delegate_cloud_merge_conflict_repair_result", producer)
+    owner = MagicMock(backend_name="claude-routine")
+    monkeypatch.setattr(pr_processor, "_resolve_cloud_conflict_origin", MagicMock(return_value=(owner, "session-12")))
 
     result = pr_processor._dispatch_cloud_conflict_repair("owner/repo", {"number": 12, "head": {"sha": "H1"}}, MagicMock())
 
