@@ -5455,6 +5455,7 @@ class AutomationEngine:
         from .util.github_action import (
             _check_github_actions_status,
             check_github_actions_and_exit_if_in_progress,
+            is_exact_head_known_empty_ci,
         )
 
         candidates: List[Candidate] = []
@@ -5616,13 +5617,19 @@ class AutomationEngine:
                 )
 
                 if not should_continue:
-                    logger.debug(f"Skipping PR #{pr_number} - CI checks are in progress")
-                    continue
-
-                # We still need the checks object for priority calculation later
-                # Since check_github_actions_and_exit_if_in_progress doesn't return it, we call _check_github_actions_status again
-                # or we could refactor, but for now let's just call it to get the object as it's cached
-                checks = _check_github_actions_status(repo_name, pr_data, self.config)
+                    if pr_data.get("mergeable") is not False or not self.config.ENABLE_MERGEABILITY_REMEDIATION:
+                        logger.debug(f"Skipping PR #{pr_number} - CI checks are in progress")
+                        continue
+                    head_sha = str(pr_data.get("head", {}).get("sha") or "")
+                    checks = _check_github_actions_status(repo_name, pr_data, self.config, self.github)
+                    if not is_exact_head_known_empty_ci(checks, repo_name, pr_number, head_sha):
+                        logger.debug(f"Skipping PR #{pr_number} - CI checks are in progress")
+                        continue
+                    logger.info(f"PR #{pr_number} has no current CI observations; retaining conflicting PR for mergeability remediation")
+                else:
+                    # Preserve the established three-argument evaluator call
+                    # contract used by candidate collection and its adapters.
+                    checks = _check_github_actions_status(repo_name, pr_data, self.config)
 
                 # Check if we should skip this PR because it's waiting for Jules.
                 # ``checks`` is this same current-head CI observation, so a

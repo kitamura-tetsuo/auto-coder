@@ -541,6 +541,22 @@ def is_ci_observation_recovered(github_checks: Optional[GitHubActionsStatusResul
     return observation.availability is ObservationAvailability.KNOWN
 
 
+def is_exact_head_known_empty_ci(
+    github_checks: Optional[GitHubActionsStatusResult],
+    repo_name: str,
+    pr_number: int,
+    head_sha: str,
+) -> bool:
+    """Return whether a complete observation proves this PR head has no CI facts."""
+    if github_checks is None or not head_sha:
+        return False
+    observation = github_checks.observation
+    if observation is None or not observation.complete:
+        return False
+    subject = observation.subject
+    return observation.availability is ObservationAvailability.KNOWN_EMPTY and subject.repository == repo_name and subject.pr_number == pr_number and subject.head_sha == head_sha
+
+
 # --- Common helpers for historical GitHub Actions processing ---
 
 
