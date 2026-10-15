@@ -26,14 +26,16 @@ from auto_coder.ci_observation import (
     WorkflowObservation,
 )
 from auto_coder.cloud_manager import CloudTaskBinding
+from auto_coder.dispatch_claim_store import DispatchClaimStore, DispatchOutcome
 from auto_coder.durable_repair_allowance import RepairAllowanceLedger
+from auto_coder.execution_trace import Outcome
 from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.local_review_repair import LocalReviewRepairRequest, admit_local_repair_allowance
 from auto_coder.pr_processor import ClaimedReviewThreadGateState, CodexCloudFeedbackResult, TwoTierGateInputs, _handle_pr_merge
 from auto_coder.pr_review_cycle import VERDICT_FINDINGS, ContractSnapshot, Finding, PrReviewCycleRepository, RoundProvenance, StrongPolicyIdentity
 from auto_coder.two_tier_pr_gate import TwoTierPrGate
 from auto_coder.util.gh_cache import PullRequestRepairMetadata, ReviewThread, ReviewThreadComment
-from auto_coder.util.github_action import _check_github_actions_status
+from auto_coder.util.github_action import GitHubActionsStatusResult, WorkflowDispatchResult, _check_github_actions_status
 from auto_coder.utils import CommandResult
 
 pytestmark = pytest.mark.pr_lifecycle_contract
@@ -213,6 +215,55 @@ def test_non_authorizing_ci_reaches_consumer_without_merge_or_failure_repair(sna
     _, merge, failure_consumer, _ = _run_ci_consumer(snapshot)
     merge.assert_not_called()
     failure_consumer.assert_not_called()
+
+
+def test_known_empty_handler_enters_manual_dispatch_owner_once(tmp_path, monkeypatch):
+    """REQ-005: exact-head KNOWN_EMPTY reaches the existing dispatch effects."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    config = AutomationConfig()
+    pr_data = {
+        "number": PR_NUMBER,
+        "body": "Fixes #2503",
+        "labels": [],
+        "head": {"ref": "issue-2503", "sha": H1},
+    }
+    client = MagicMock()
+    claim_store = DispatchClaimStore(tmp_path / "dispatch-claims.sqlite3")
+    known_empty = GitHubActionsStatusResult(
+        success=False,
+        in_progress=True,
+        error="No current CI observations",
+        observation=_snapshot(ObservationAvailability.KNOWN_EMPTY),
+    )
+
+    with (
+        patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as unsafe,
+        patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False),
+        patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=False),
+        patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+        patch("auto_coder.pr_processor._check_github_actions_status", return_value=known_empty),
+        patch("auto_coder.pr_processor.get_dispatch_claim_store", return_value=claim_store),
+        patch("auto_coder.pr_processor.LabelManager") as labels,
+        patch(
+            "auto_coder.util.github_action.trigger_workflow_dispatch",
+            return_value=WorkflowDispatchResult(outcome=DispatchOutcome.ACCEPTED),
+        ) as dispatch,
+        patch("auto_coder.pr_processor._record_pr_stage") as record_stage,
+        patch("auto_coder.pr_processor._merge_pr") as merge,
+        patch("auto_coder.pr_processor.get_detailed_checks_from_history") as failure_repair,
+    ):
+        unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
+        label_context = MagicMock()
+        labels.return_value.__enter__.return_value = label_context
+        actions = _handle_pr_merge(client, REPOSITORY, pr_data, config, {})
+
+    dispatch.assert_called_once_with(REPOSITORY, "ci.yml", "issue-2503")
+    assert f"Triggered ci.yml for PR #{PR_NUMBER}" in actions
+    assert "Created durable CI watch for ci.yml" in actions
+    assert any(call.args[1:4] == ("pr.manual-ci-dispatch", f"pr#{PR_NUMBER} manual CI dispatch", Outcome.ACCEPTED_HANDOFF) for call in record_stage.call_args_list)
+    label_context.keep_label.assert_called_once()
+    merge.assert_not_called()
+    failure_repair.assert_not_called()
 
 
 def test_green_ci_reaches_merge_but_h1_to_h2_change_fails_closed():
