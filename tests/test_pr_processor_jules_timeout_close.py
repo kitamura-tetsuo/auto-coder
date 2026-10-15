@@ -825,16 +825,18 @@ class TestProcessPullRequestResumesOnRecoveredCI:
     (Issue #2275, REQ-002/REQ-005/REQ-007, AS-001/AS-005/AS-006).
     """
 
-    @patch("src.auto_coder.pr_processor._process_pr_for_fixes")
-    @patch("src.auto_coder.jules_client.JulesClient")
-    @patch("src.auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor._process_pr_for_fixes")
+    @patch("auto_coder.jules_client.JulesClient")
+    @patch("auto_coder.pr_processor._check_github_actions_status")
     def test_active_session_no_longer_defers_processing_once_ci_recovers(self, mock_check_status, mock_jules_client_class, mock_process_fixes):
-        mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[1], namespace="src.auto_coder")
+        from auto_coder.pr_processor import process_pull_request as process
+
+        mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[1], namespace="auto_coder")
         mock_jules_client = Mock()
         mock_jules_client.get_session.return_value = {"state": "IN_PROGRESS"}
         mock_jules_client_class.return_value = mock_jules_client
 
-        from src.auto_coder.pr_processor import ProcessedPRResult
+        from auto_coder.pr_processor import ProcessedPRResult
 
         mock_process_fixes.return_value = ProcessedPRResult(pr_data={}, actions_taken=["Processed normally"], priority="fix", analysis=None)
 
@@ -843,16 +845,18 @@ class TestProcessPullRequestResumesOnRecoveredCI:
         config = AutomationConfig()
         pr_data = _jules_pr_data(hours_old=1)
 
-        result = process_pull_request(github_client, config, "owner/repo", pr_data)
+        result = process(github_client, config, "owner/repo", pr_data)
 
         assert not any("waiting for Jules" in action for action in result.actions_taken)
         mock_process_fixes.assert_called_once()
 
-    @patch("src.auto_coder.pr_processor._process_pr_for_fixes")
-    @patch("src.auto_coder.jules_client.JulesClient")
-    @patch("src.auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor._process_pr_for_fixes")
+    @patch("auto_coder.jules_client.JulesClient")
+    @patch("auto_coder.pr_processor._check_github_actions_status")
     def test_active_session_still_defers_when_ci_is_still_failing(self, mock_check_status, mock_jules_client_class, mock_process_fixes):
         """Positive preservation control (AS-005): a still-failing head keeps the ordinary wait."""
+        from auto_coder.pr_processor import process_pull_request as process
+
         mock_check_status.return_value = failing_ci_checks()
         mock_jules_client = Mock()
         mock_jules_client.get_session.return_value = {"state": "IN_PROGRESS"}
@@ -863,7 +867,7 @@ class TestProcessPullRequestResumesOnRecoveredCI:
         config = AutomationConfig()
         pr_data = _jules_pr_data(hours_old=1)
 
-        result = process_pull_request(github_client, config, "owner/repo", pr_data)
+        result = process(github_client, config, "owner/repo", pr_data)
 
         assert any("waiting for Jules" in action for action in result.actions_taken)
         mock_process_fixes.assert_not_called()
@@ -874,18 +878,20 @@ class TestGetCandidatesResumesOnRecoveredCI:
     (Issue #2275, REQ-007, AS-004).
     """
 
-    @patch("src.auto_coder.jules_client.JulesClient")
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.jules_client.JulesClient")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
     def test_recovered_ci_pr_is_not_excluded_at_collection(self, mock_check_status, mock_jules_client_class):
-        from src.auto_coder.automation_engine import AutomationEngine
+        from auto_coder.automation_engine import AutomationEngine
 
-        mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[1], namespace="src.auto_coder")
+        mock_check_status.side_effect = authoritative_ci_status(success=True, ids=[1], namespace="auto_coder")
         mock_jules_client = Mock()
         mock_jules_client.get_session.return_value = {"state": "IN_PROGRESS"}
         mock_jules_client_class.return_value = mock_jules_client
 
         github_client = Mock()
         github_client.get_pr_review_threads_strict.return_value = []
+        github_client.get_pr_reviews_strict.return_value = []
+        github_client.get_pr_comments.return_value = []
         config = AutomationConfig()
         pr_data = _jules_pr_data(hours_old=1)
         pr_data["draft"] = False
@@ -895,7 +901,7 @@ class TestGetCandidatesResumesOnRecoveredCI:
         github_client.get_open_issues_json.return_value = []
 
         engine = AutomationEngine(github_client, config=config)
-        with patch("src.auto_coder.util.github_action.preload_github_actions_status"):
+        with patch("auto_coder.util.github_action.preload_github_actions_status"):
             candidates = engine._get_candidates("owner/repo")
 
         assert any(candidate.data.get("number") == pr_data["number"] for candidate in candidates)
