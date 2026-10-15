@@ -25,7 +25,11 @@ bash scripts/test.sh tests/test_pr_mergeability_remediation.py
 The group enters `_check_github_actions_status` with complete passing, pending,
 known-empty, unavailable, superseded, and replacement-attempt observations.
 It enters `_handle_pr_merge` for enabled, disabled, and exhausted conflict
-remediation. Only `observe_ci` and service construction are controlled for CI;
+remediation. It also carries those CI observations into the merge consumer,
+uses explicit checkpoints to order a remote H1-to-H2 change and a durable newer
+validation attempt before the merge effect, proves the unchanged-head positive
+case reaches that effect, and replays a real temporary cloud-repair receipt.
+Only `observe_ci` and service construction are controlled for CI;
 the resulting `GitHubActionsStatusResult` is produced by production code. The
 conflict cases control the GitHub/Git repair effect at
 `_start_mergeability_remediation`, rather than replacing the processor or
@@ -52,7 +56,7 @@ the merge effect. The maintained group therefore keeps a production CI
 interpreter boundary and an actual `_handle_pr_merge` route boundary available
 independently of those historical patch sites.
 
-At introduction, both commands above completed successfully. No test was
+At correction, both commands above completed successfully. No test was
 skipped or xfailed, no paid provider was contacted, and ordinary CI remained
 unchanged. This test-only characterization changes no processing origin,
 admission rule, route, outcome, durable resumption path, or trace schema, so the
