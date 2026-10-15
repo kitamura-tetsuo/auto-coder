@@ -11,8 +11,6 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from loguru import logger
-
 POLICY_PATH = Path(".github/ci-maintenance.json")
 CLOSING_REFERENCE = re.compile(
     r"(?im)(?:^|\s)(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?:https://github\.com/([^/\s]+)/([^/\s]+)/issues/|#)(\d+)\b"
@@ -136,10 +134,10 @@ def main() -> int:
             return 0
         if require_published_job(_load_json(args.jobs), args.name):
             return 0
-        logger.error("Exact source run lacks one successful {!r} job", args.name)
+        print(f"Exact source run lacks one successful {args.name!r} job", file=sys.stderr)
         return 1
     except (OSError, ValueError, TypeError) as error:
-        logger.error("CI maintenance evidence unavailable: {}", error)
+        print(f"CI maintenance evidence unavailable: {error}", file=sys.stderr)
         if args.command == "require-published-job":
             return 1
         _write_selection(Selection(reason="policy or event evidence is unavailable"), {})

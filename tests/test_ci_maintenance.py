@@ -1,5 +1,7 @@
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -65,6 +67,34 @@ def test_exact_source_run_requires_one_successful_build_job():
         {},
     ):
         assert ci_maintenance.require_published_job(jobs, "Build tested artifact") is False
+
+
+def test_selector_runs_before_dependencies_are_installed(tmp_path):
+    event_path = tmp_path / "event.json"
+    output_path = tmp_path / "output"
+    event_path.write_text(json.dumps(event("Closes #2502")), encoding="utf-8")
+    environment = os.environ.copy()
+    environment["GITHUB_OUTPUT"] = str(output_path)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            str(ROOT / "scripts/ci_maintenance.py"),
+            "select-pr",
+            "--event",
+            str(event_path),
+            "--policy",
+            str(ROOT / ".github/ci-maintenance.json"),
+        ],
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "NORMAL\n"
+    assert output_path.read_text(encoding="utf-8") == "mode=NORMAL\n"
 
 
 def test_real_workflow_wiring_stops_commands_and_retains_failures():
