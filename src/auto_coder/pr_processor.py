@@ -4686,6 +4686,10 @@ class PRReviewCoordinationResult(PRActionList):
         self.scope = scope
         self.disposition = ReviewDisposition.CORRECTION_WAITING
 
+    def record_disposition(self, disposition: ReviewDisposition | str) -> None:
+        """Record the same typed outcome emitted by the authoritative producer."""
+        self.disposition = disposition if isinstance(disposition, ReviewDisposition) else ReviewDisposition(disposition)
+
 
 def _coordinate_pr_review(
     github_client: Any,
@@ -4805,6 +4809,8 @@ def _coordinate_pr_review(
                             if closure_accepted:
                                 saved_review_revalidation = True
                             else:
+                                replay_handoff, _ = classify_repair_handoff(repair_result)
+                                actions.record_disposition(ReviewDisposition.CORRECTIVE_HANDOFF if replay_handoff == HANDOFF_DISPATCHED else ReviewDisposition.CORRECTION_WAITING)
                                 actions.append(f"Reused unresolved {current_status} validation for PR #{pr_number} at unchanged commit {head_sha_for_gate[:8]}; repair takes priority over another full validation")
                                 _record_pr_stage(
                                     pr_number,
@@ -5475,6 +5481,7 @@ def _coordinate_pr_review(
                         try:
                             _retain_effective_decision(repo_name, pr_data, head_sha, effective_application)
                         except DecisionRetentionError as exc:
+                            actions.record_disposition(ReviewDisposition.OPERATIONAL_FAILURE)
                             actions.append(f"Effective review decision for PR #{pr_number} could not be retained: {exc}; no dependent review effect was emitted")
                             _record_pr_stage(
                                 pr_number,
@@ -5725,6 +5732,7 @@ def _coordinate_pr_review(
                     [format_adversarial_finding_comment(finding) for finding in val_result.findings] + [format_test_oracle_gap_comment(gap) for gap in val_result.open_test_oracle_gaps],
                 )
                 actions.extend(feedback_actions)
+                actions.record_disposition(handoff_facts["review_disposition"])
                 if (getattr(feedback_actions, "quota_deferred", False) or getattr(feedback_actions, "deferred", False)) and processing_status is not None:
                     processing_status.error = None
                     processing_status.outcome = PRProcessingOutcome.DEFERRED
@@ -5759,6 +5767,7 @@ def _coordinate_pr_review(
                     [format_test_oracle_gap_comment(gap) for gap in val_result.open_test_oracle_gaps],
                 )
                 actions.extend(feedback_actions)
+                actions.record_disposition(handoff_facts["review_disposition"])
                 if (getattr(feedback_actions, "quota_deferred", False) or getattr(feedback_actions, "deferred", False)) and processing_status is not None:
                     processing_status.error = None
                     processing_status.outcome = PRProcessingOutcome.DEFERRED
