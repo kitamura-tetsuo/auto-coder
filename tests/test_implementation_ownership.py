@@ -16,6 +16,7 @@ rather than directly constructing an owned routing record.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import time
 from datetime import datetime, timedelta, timezone
@@ -689,6 +690,109 @@ def test_explicit_retry_after_completed_execution_starts_distinct_attempt(tmp_pa
     assert engine.issue_stage_routing.is_implementation_owned(REPO, 1, generation)
 
 
+def test_retry_flag_gate_and_same_request_competition_cross_production_candidate_boundary(tmp_path, monkeypatch):
+    """#2523 REQ-006: only the complete manual flag conjunction creates R,
+    and competing production admissions for the same R retain one identity."""
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    snapshot = _standalone_snapshot(1, created_at)
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _ready_engine(tmp_path, monkeypatch, {1: snapshot}, config)
+    github.get_issue_comments_strict.return_value = []
+    owner = ImplementationOwner("issue", 1)
+    generation = engine._compute_implementation_generation(REPO, snapshot, None)
+    original = engine.implementation_slots.start_execution(owner, generation=generation)
+    assert original is not None
+    engine.issue_stage_routing.record_implementation_owned(REPO, 1, generation)
+    engine.implementation_slots.finish_execution(owner, original)
+    downstream_authorities = []
+
+    def downstream(*_args, **kwargs):
+        downstream_authorities.append(kwargs.get("retry_authority"))
+        return CandidateProcessingResult(type="issue", number=1, success=True, actions=["checkpoint only"])
+
+    engine._process_single_candidate_reserved = downstream
+    candidate = Candidate(type="issue", data=dict(snapshot), priority=0)
+
+    force_only = engine._process_single_candidate_unified(REPO, candidate, config, explicit_only=True, force=True, retry=False, origin="explicit-single-target")
+    assert force_only.target_outcome is ExplicitTargetOutcome.SKIPPED
+    assert engine.issue_stage_routing.retry_requests(REPO, 1) == ()
+    assert downstream_authorities == []
+
+    request_id = "production-same-request"
+
+    def process_retry():
+        return engine._process_single_candidate_unified(
+            REPO,
+            Candidate(type="issue", data=dict(snapshot), priority=0),
+            config,
+            explicit_only=True,
+            force=True,
+            retry=True,
+            retry_request_id=request_id,
+            origin="explicit-single-target",
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        results = tuple(executor.map(lambda _index: process_retry(), range(2)))
+
+    assert all(result.success for result in results)
+    assert len(downstream_authorities) == 2
+    assert all(authority is not None for authority in downstream_authorities)
+    identities = {(authority.request_id, authority.attempt_id, authority.generation, authority.ownership_reference) for authority in downstream_authorities}
+    assert len(identities) == 1
+    assert identities.pop()[0] == request_id
+    stored = engine.issue_stage_routing.retry_request(request_id)
+    assert stored is not None and stored.status == "owned"
+    assert engine.issue_stage_routing.retry_requests(REPO, 1) == (stored,)
+    reopened_routing = IssueStageRoutingStore(tmp_path / "routing.sqlite3")
+    reopened_slots = ImplementationSlotRepository(
+        REPO,
+        1,
+        engine.implementation_slots.storage_path,
+        engine.implementation_slots.retired_storage_path,
+    )
+    assert reopened_routing.retry_request(request_id) == stored
+    assert reopened_slots.implementation_generation(owner) == stored.generation
+    assert reopened_slots.active_execution_ids(owner) == ()
+
+
+def test_manual_retry_generation_change_checkpoint_has_zero_downstream_entries(tmp_path, monkeypatch):
+    """#2523 REQ-006: the final production generation checkpoint rejects a
+    request captured for G when the authoritative candidate has advanced to G2."""
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    old_snapshot = _standalone_snapshot(1, created_at)
+    new_snapshot = dict(old_snapshot, title="Changed after retry capture")
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _ready_engine(tmp_path, monkeypatch, {1: new_snapshot}, config)
+    github.get_issue_comments_strict.return_value = []
+    old_generation = engine._compute_implementation_generation(REPO, old_snapshot, None)
+    pending = engine.issue_stage_routing.accept_retry_request("generation-checkpoint", REPO, 1, old_generation)
+    downstream = MagicMock()
+    engine._process_single_candidate_reserved = downstream
+
+    result = engine._process_single_candidate_unified(
+        REPO,
+        Candidate(type="issue", data=dict(new_snapshot), priority=0),
+        config,
+        explicit_only=True,
+        force=True,
+        retry=True,
+        retry_request_id=pending.request_id,
+        origin="explicit-single-target",
+    )
+
+    assert result.success is False
+    assert result.error is not None and "different inputs" in result.error
+    downstream.assert_not_called()
+    retained = engine.issue_stage_routing.retry_request(pending.request_id)
+    assert retained == pending
+    assert engine.implementation_slots.active_execution_ids(ImplementationOwner("issue", 1)) == ()
+
+
 def test_automatic_stale_jules_recovery_defers_until_predecessor_retires(tmp_path, monkeypatch):
     """Issue #2286 REQ-003: ordinary admission must not start a durably
     recorded automatic stale-Jules recovery while the predecessor Jules
@@ -747,17 +851,25 @@ def test_automatic_stale_jules_recovery_acquires_once_predecessor_is_free(tmp_pa
     generation = engine._compute_implementation_generation(REPO, snapshot, None)
     execution_id = engine.implementation_slots.start_execution(owner, generation=generation)
     assert execution_id is not None
+    assert engine.implementation_slots.record_provider_session(owner, "temporary-predecessor")
     engine.issue_stage_routing.record_implementation_owned(REPO, 1, generation)
     engine.implementation_slots.finish_execution(owner, execution_id)
-    # Simulate the real retirement scheduler having already freed this owner
-    # (no retained execution, session, or PR membership).
-    assert not engine.implementation_slots.has_qualifying_implementation_activity(owner)
 
     authority = capture_stale_jules_recovery(engine.issue_stage_routing, REPO, 1, 9001, generation)
     assert authority is not None
 
     candidate = Candidate(type="issue", data=dict(snapshot), priority=0)
-    result = engine._process_single_candidate_unified(REPO, candidate, engine.config, origin="capacity-refill-intake")
+    waiting = engine._process_single_candidate_unified(REPO, candidate, engine.config, origin="capacity-refill-intake")
+
+    assert waiting.target_outcome is ExplicitTargetOutcome.DEFERRED
+    reserved.assert_not_called()
+    retained = engine.issue_stage_routing.retry_request(authority.request_id)
+    assert retained == authority
+
+    # The authoritative retirement boundary clears the temporary blocker;
+    # the same controller and production candidate origin must resume R.
+    assert engine.implementation_slots.finish_provider_session(owner, "temporary-predecessor")
+    result = engine._process_single_candidate_unified(REPO, Candidate(type="issue", data=dict(snapshot), priority=0), engine.config, origin="capacity-refill-intake")
 
     assert result.success
     reserved.assert_called_once()
