@@ -27,8 +27,6 @@ class CodexRetryReconciler:
         slots: ImplementationSlotRepository,
         defer: Callable[[str, int], None],
     ) -> None:
-        if slots.repo_name != repository:
-            raise ValueError("Codex retry reconciler requires repository-matched slots")
         self.repository = repository
         self.slots = slots
         self._defer = defer
