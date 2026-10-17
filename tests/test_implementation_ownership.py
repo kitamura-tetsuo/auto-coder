@@ -37,7 +37,9 @@ from auto_coder.implementation_slots import (
     ImplementationSlotRepository,
     ImplementationSlotUnavailable,
 )
+from auto_coder.issue_dispatch import DispatchOutcome, IssueAttemptIdentity, IssueDispatchGuard
 from auto_coder.issue_job_finalizer import IssueJobFinalizer
+from auto_coder.issue_local_job import IssueLocalJobAdapter
 from auto_coder.issue_processor import handle_stale_jules_issue_sessions
 from auto_coder.issue_stage_routing import IssueStageRoutingStore
 from auto_coder.llm_backend_config import LLMBackendConfiguration
@@ -299,6 +301,17 @@ def test_failed_production_local_job_is_explained_on_ordinary_reprocessing(tmp_p
     job_id = admitted.dispatch_result.provider_reference
     accepted = store.get(job_id)
     assert accepted is not None and accepted.state is LocalJobState.PENDING
+    owner = ImplementationOwner("issue", 1)
+    assert accepted.implementation_execution_id
+    assert engine.implementation_slots.active_execution_ids(owner) == (accepted.implementation_execution_id,)
+    assert store.get_effect(job_id, accepted.execution_incarnation, "pr") is None
+    assert IssueLocalJobAdapter(
+        engine,
+        REPO,
+        store,
+        engine.implementation_slots,
+        tmp_path,
+    ).authorize_provider_entry(accepted)
 
     class ControlledFailureAdapter:
         calls = 0
@@ -381,6 +394,95 @@ def test_failed_production_local_job_is_explained_on_ordinary_reprocessing(tmp_p
     assert len(duplicate_events) == 1
     assert duplicate_events[0].outcome == Outcome.SKIPPED.value
     assert duplicate_events[0].facts["explanation"] == duplicate.actions[0]
+
+
+def test_explicit_issue_acquires_and_dispatches_real_local_job(tmp_path, monkeypatch):
+    """Explicit entry must traverse unified ownership and durable local dispatch."""
+    snapshot = _standalone_snapshot(1, (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat())
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _ready_engine(tmp_path, monkeypatch, {1: snapshot}, config)
+    github.get_issue_comments_strict.return_value = []
+    store = LocalJobStore(tmp_path / "explicit-jobs.sqlite3")
+    engine.local_job_store = store
+    llm_config = LLMBackendConfiguration.load_from_dict({"backends": {"controlled-local": {"backend_type": "codex", "model": "test"}}})
+    monkeypatch.setattr("auto_coder.issue_processor._ordinary_issue_candidates", lambda _repo: ["controlled-local"])
+    monkeypatch.setattr("auto_coder.llm_backend_config.get_llm_config", lambda **_kwargs: llm_config)
+    monkeypatch.setattr("auto_coder.cli_helpers.build_backend_manager", lambda **_kwargs: MagicMock())
+    monkeypatch.setattr("auto_coder.issue_processor.get_current_attempt", lambda *_args: 0)
+    monkeypatch.setattr("auto_coder.issue_processor.get_commit_log", lambda *_args, **_kwargs: "baseline")
+    monkeypatch.setattr("auto_coder.automation_engine.resolve_authoritative_item_type", lambda *_args: "issue")
+    candidate = Candidate("issue", dict(snapshot), 0)
+    monkeypatch.setattr(engine, "_check_and_handle_closed_branch", lambda _repo: True)
+    monkeypatch.setattr(engine, "_create_candidate_from_single", lambda *_args, **_kwargs: candidate)
+    monkeypatch.setattr(engine, "_preflight_explicit_issue_relationships", lambda *_args, **_kwargs: dict(snapshot))
+    monkeypatch.setattr(engine, "_validate_submitted_parent_generation_for_child", lambda *_args, **_kwargs: None)
+    completion = MagicMock()
+    monkeypatch.setattr(engine, "_complete_explicit_local_issue", completion)
+
+    result = engine.process_single(REPO, "issue", 1, explicit_only=True)
+
+    completion.assert_called_once()
+    dispatched = completion.call_args.args[1]
+    assert dispatched.dispatch_result is not None
+    assert dispatched.dispatch_result.outcome.value == "local_accepted"
+    job = store.get(dispatched.dispatch_result.provider_reference)
+    assert job is not None and job.state is LocalJobState.PENDING
+    owner = ImplementationOwner("issue", 1)
+    assert job.implementation_execution_id
+    assert engine.implementation_slots.active_execution_ids(owner) == (job.implementation_execution_id,)
+    generation = engine.implementation_slots.implementation_generation(owner)
+    assert generation is not None
+    assert engine.issue_stage_routing.is_implementation_owned(REPO, 1, generation)
+    assert IssueLocalJobAdapter(engine, REPO, store, engine.implementation_slots, tmp_path).authorize_provider_entry(job)
+    assert result["target_type"] == "issue"
+    assert result["target_number"] == 1
+
+
+def test_ordinary_cloud_handoff_reopens_accepted_dispatch_and_provider_owner(tmp_path, monkeypatch):
+    """Normal cloud entry retains both its accepted receipt and provider owner."""
+    snapshot = _standalone_snapshot(1, (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat())
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _ready_engine(tmp_path, monkeypatch, {1: snapshot}, config)
+    github.get_issue_comments_strict.return_value = []
+    llm_config = LLMBackendConfiguration.load_from_dict({"backends": {"controlled-jules": {"backend_type": "jules", "api_key": "test-key"}}})
+    monkeypatch.setattr("auto_coder.issue_processor._ordinary_issue_candidates", lambda _repo: ["controlled-jules"])
+    monkeypatch.setattr("auto_coder.llm_backend_config.get_llm_config", lambda **_kwargs: llm_config)
+    monkeypatch.setattr("auto_coder.issue_processor.get_current_attempt", lambda *_args: 0)
+    monkeypatch.setattr("auto_coder.issue_processor.get_commit_log", lambda *_args, **_kwargs: "baseline")
+    monkeypatch.setattr("auto_coder.automation_engine.resolve_authoritative_item_type", lambda *_args: "issue")
+    monkeypatch.setattr("auto_coder.jules_client.JulesClient.start_session", lambda *_args, **_kwargs: "session-retained")
+
+    result = engine._process_single_candidate_unified(
+        REPO,
+        Candidate("issue", dict(snapshot), 0),
+        config,
+        origin="worker",
+    )
+
+    assert result.dispatch_result is not None
+    assert result.dispatch_result.outcome is DispatchOutcome.REMOTE_ACCEPTED
+    assert result.dispatch_result.provider == "jules"
+    assert result.dispatch_result.provider_reference == "session-retained"
+    owner = ImplementationOwner("issue", 1)
+    assert engine.implementation_slots.active_execution_ids(owner) == ()
+
+    reopened_dispatch = IssueDispatchGuard().inspect(IssueAttemptIdentity("owner", "repo", 1, "0"))
+    assert reopened_dispatch is not None
+    assert reopened_dispatch.outcome is DispatchOutcome.REMOTE_ACCEPTED
+    assert reopened_dispatch.provider == "jules"
+    assert reopened_dispatch.provider_reference == "session-retained"
+    reopened_slots = ImplementationSlotRepository(
+        REPO,
+        1,
+        engine.implementation_slots.storage_path,
+        engine.implementation_slots.retired_storage_path,
+    )
+    assert reopened_slots.has_provider_sessions(owner)
+    assert reopened_slots.active_execution_ids(owner) == ()
 
 
 def test_busy_with_different_generation_defers_without_owning_new_one(tmp_path):

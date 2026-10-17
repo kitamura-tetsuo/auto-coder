@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import auto_coder.issue_job_finalizer as finalizer_module
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
 from auto_coder.issue_job_finalizer import IssueJobFinalizer
@@ -95,6 +96,66 @@ def test_lost_pr_create_response_is_reconciled_without_duplicate(tmp_path: Path,
     assert replay.disposition == "published"
     assert replay.pr_number == 91
     assert creates == 1
+
+
+def test_unfinished_publication_reopens_stores_without_repeating_push(tmp_path: Path, monkeypatch, _use_real_commands) -> None:
+    _source, _remote, store, slots, checkpoint = _completed_job(tmp_path, 44)
+    original = store.get(checkpoint.job_id)
+    assert original is not None and original.execution_incarnation
+    real_push = finalizer_module.git_push
+    pushes = 0
+
+    def counted_push(**kwargs):
+        nonlocal pushes
+        pushes += 1
+        return real_push(**kwargs)
+
+    monkeypatch.setattr(finalizer_module, "git_push", counted_push)
+
+    def unavailable_lookup(_repository: str, _branch: str):
+        raise TimeoutError("GitHub unavailable after confirmed push")
+
+    first = IssueJobFinalizer(store, slots, unavailable_lookup, lambda *_args: None).finalize(checkpoint.job_id)
+    retained = store.get(checkpoint.job_id)
+    assert first.disposition == "pending"
+    assert retained is not None and retained.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+    assert retained.execution_incarnation == original.execution_incarnation
+    assert pushes == 1
+
+    reopened_store = LocalJobStore(store.path)
+    reopened_slots = ImplementationSlotRepository(
+        "owner/repo",
+        1,
+        slots.storage_path,
+        slots.retired_storage_path,
+    )
+    observed: dict[str, object] = {}
+    creates = 0
+
+    def lookup(_repository: str, branch: str):
+        return observed.get(branch)
+
+    def create(record, _summary: str) -> None:
+        nonlocal creates
+        creates += 1
+        observed[record.work_branch] = {
+            "number": 94,
+            "head": {"ref": record.work_branch},
+            "body": f"Closes #{record.target_number}",
+        }
+
+    resumed = IssueJobFinalizer(reopened_store, reopened_slots, lookup, create).resume_all("owner/repo")
+
+    assert len(resumed) == 1
+    assert resumed[0].job_id == checkpoint.job_id
+    assert resumed[0].disposition == "published"
+    assert resumed[0].pr_number == 94
+    assert pushes == 1
+    assert creates == 1
+    settled = reopened_store.get(checkpoint.job_id)
+    assert settled is not None and settled.execution_incarnation == original.execution_incarnation
+    assert reopened_store.get_effect(checkpoint.job_id, checkpoint.execution_incarnation, "push").state == "completed"  # type: ignore[union-attr]
+    assert reopened_store.get_effect(checkpoint.job_id, checkpoint.execution_incarnation, "pr").evidence == "94"  # type: ignore[union-attr]
 
 
 def test_settled_no_change_replays_after_workspace_disposal(tmp_path: Path, _use_real_commands) -> None:
