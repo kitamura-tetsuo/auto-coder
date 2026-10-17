@@ -65,7 +65,7 @@ test = [
     "pytest-split>=0.10.0",
 ]
 dev = [
-    "black>=24.0.0",
+    "black>=26.10.1",
     "isort>=9.0.1",
     "flake8>=6.0.0",
     "mypy>=2.4.0",
@@ -241,7 +241,7 @@ markers = [
 
 [dependency-groups]
 dev = [
-    "black>=25.9.0",
+    "black>=26.10.1",
     "isort>=9.0.1",
     "flake8>=6.0.0",
     "types-pyyaml>=6.0.12.20260906",
