@@ -17,7 +17,9 @@ bash scripts/test.sh -m issue_lifecycle_contract tests/test_issue_lifecycle_cont
 The group enters both supported production origins: the ordinary durable
 Implementation lane and explicit single-Issue processing. Ordinary cases use
 the common candidate path through real generation acquisition and dispatch;
-the explicit case traverses the real local runner and publication finalizer.
+the explicit case enters `process_single`, traverses unified generation
+acquisition and durable local dispatch, and stops only at the completion
+consumer after proving the retained job can pass real provider-entry authority.
 The group reuses the integration fixtures and file-backed SQLite/JSON stores
 owned by the focused test modules rather than substituting preselected results
 at the contested boundaries.
@@ -27,8 +29,8 @@ at the contested boundaries.
 The remote case holds an actual dispatch claim at an observable barrier and
 proves that competing cloud and local work cannot enter, then reopens the store
 and observes the accepted provider identity. The local cases assert that
-`LOCAL_ACCEPTED` only transfers the retained execution: the queue worker can
-return while the job remains pending, no PR is reported at acceptance, and the
+`LOCAL_ACCEPTED` only transfers the retained execution: the common candidate
+call returns while the job remains pending, no PR is reported at acceptance, and the
 same execution proceeds through result recording and publication. A later PR
 route still independently applies validation and merge gates.
 

@@ -12,7 +12,7 @@ import pytest
 
 from tests.test_codex_retry_promotion import test_acceptance_and_cross_provider_promotion_share_one_stale_writer_fence as _retry_ordering
 from tests.test_codex_retry_promotion import test_owned_retry_promotes_attributed_predecessor_and_replay_preserves_run as _retry_replay
-from tests.test_explicit_local_issue_completion import test_explicit_issue_waits_for_local_execution_and_finalization as _explicit_local_completion
+from tests.test_implementation_ownership import test_explicit_issue_acquires_and_dispatches_real_local_job as _explicit_local_dispatch
 from tests.test_implementation_ownership import test_failed_production_local_job_is_explained_on_ordinary_reprocessing as _ordinary_local_handoff
 from tests.test_issue_dispatch import test_confirmed_not_started_releases_with_new_incarnation_and_stale_result_is_ignored as _confirmed_non_start
 from tests.test_issue_dispatch import test_contested_remote_claim_blocks_remote_local_and_restart as _remote_handoff
@@ -20,6 +20,7 @@ from tests.test_issue_dispatch import test_ranked_candidates_stop_on_indetermina
 from tests.test_issue_implementation_worker import test_production_lane_duplicate_wakeup_and_restart_cannot_redispatch_owned_generation as _duplicate_generation
 from tests.test_issue_implementation_worker import test_production_lane_final_refresh_rejects_readiness_loss_without_slot_or_review as _changed_generation
 from tests.test_issue_job_finalizer import test_lost_pr_create_response_is_reconciled_without_duplicate as _publication_replay
+from tests.test_issue_job_finalizer import test_unfinished_publication_reopens_stores_without_repeating_push as _unfinished_publication_replay
 from tests.test_jules_ordinary_startup import test_dispatch_candidates_routes_jules_only_pool_to_real_session_start as _ordinary_cloud_handoff
 from tests.test_pr_lifecycle_contract import test_settled_local_job_waits_for_independent_validation_at_green_ci as _independent_pr_gates
 
@@ -38,20 +39,6 @@ test_ordinary_local_handoff_retains_execution_identity = _ordinary_local_handoff
 test_codex_retry_replay_retains_request_and_run = _retry_replay
 test_retry_promotion_uses_observable_ordering_barrier = _retry_ordering
 test_local_publication_replay_deduplicates_external_effect = _publication_replay
+test_unfinished_publication_reopens_decisive_stores = _unfinished_publication_replay
 test_transferred_local_work_keeps_independent_pr_gates = _independent_pr_gates
-
-
-def test_explicit_local_handoff_reaches_publication_without_finishing_on_acceptance(
-    tmp_path,
-    monkeypatch,
-    _use_real_commands,
-    _use_real_sleep,
-):
-    """Exercise the explicit entry with real stores and a temporary Git remote."""
-    _explicit_local_completion(
-        tmp_path,
-        monkeypatch,
-        _use_real_commands,
-        _use_real_sleep,
-        "published",
-    )
+test_explicit_local_handoff_uses_real_acquisition_and_dispatch = _explicit_local_dispatch
