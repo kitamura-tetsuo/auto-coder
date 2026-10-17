@@ -67,7 +67,6 @@ from .github_request_governor import GitHubRequestDeferred, GitHubRequestGoverno
 from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
 from .implementation_ownership import (
     OwnershipStartDecision,
-    acquire_explicit_retry,
     begin_implementation_ownership,
     confirm_implementation_ownership,
     evaluate_implementation_start,
@@ -94,6 +93,7 @@ from .issue_context import extract_associated_issue_numbers, get_linked_issues_c
 from .issue_implementation_worker import ImplementationLaneOutcome, IssueImplementationWorker
 from .issue_job_finalizer import IssueJobFinalizer, IssuePublicationResult
 from .issue_processor import create_feature_issues
+from .issue_retry_admission import IssueRetryAdmissionService, IssueRetryDisposition, IssueRetryOrigin
 from .issue_review_rerun import IssueReviewRerunOperation, ReviewSubject, SubjectRerunStatus
 from .issue_review_service import (
     IssueReviewService,
@@ -7214,53 +7214,44 @@ class AutomationEngine:
                     if manual_retry:
                         assert implementation_key is not None
                         assert retry_request_id is not None
-                        pending = tuple(request for request in self.issue_stage_routing.retry_requests(repo_name, item_number) if request.status == "pending" and request.request_id != retry_request_id)
-                        if pending:
-                            blocker = pending[0]
-                            result.target_outcome = ExplicitTargetOutcome.DEFERRED
-                            result.actions = [f"Deferred - retry request {blocker.request_id} has no known creation outcome"]
-                            return result
-                        authority = self.issue_stage_routing.accept_retry_request(retry_request_id, repo_name, item_number, implementation_key)
-                        authority = acquire_explicit_retry(
-                            self.issue_stage_routing,
-                            slots,
+                        admission = IssueRetryAdmissionService(self.issue_stage_routing, slots).admit(
                             repo_name,
                             item_number,
                             implementation_key,
-                            authority.request_id,
+                            retry_request_id,
+                            IssueRetryOrigin.MANUAL,
                             github_client=self.github if isinstance(self.github, GitHubClient) else None,
                             bypass_capacity=explicit_only,
                         )
-                        execution_id = authority.ownership_reference if authority.status == "owned" else None
+                        if admission.disposition is IssueRetryDisposition.FAILED:
+                            result.error = f"Cannot acquire durable Issue retry authority: {admission.reason}"
+                            return result
+                        execution_id = admission.authority.ownership_reference if admission.disposition is IssueRetryDisposition.OWNED and admission.authority is not None else None
                         already_owned = False
-                        retry_authority = authority
+                        retry_authority = admission.authority if admission.disposition is IssueRetryDisposition.OWNED else None
+                        auto_retry_deferred = admission.disposition in {IssueRetryDisposition.DEFERRED, IssueRetryDisposition.STALE}
+                        if admission.disposition is IssueRetryDisposition.DEFERRED:
+                            result.actions = [f"Deferred - {admission.reason}"]
                     else:
                         retry_authority = None
                         auto_retry = self._pending_stale_jules_recovery(repo_name, item_number, implementation_key) if candidate.type == "issue" and implementation_key is not None else None
-                        if auto_retry is not None and slots.has_qualifying_implementation_activity(owner):
-                            # The predecessor Jules PR/session evidence this
-                            # recovery is waiting on has not been retired yet
-                            # (Issue #2286 REQ-003). Defer without attempting
-                            # either path so the capacity-retry fallback below
-                            # cannot start a plain same-generation
-                            # continuation around this deliberate wait.
-                            execution_id, already_owned = None, False
-                            auto_retry_deferred = True
-                        elif auto_retry is not None:
+                        if auto_retry is not None:
                             assert implementation_key is not None
-                            authority = acquire_explicit_retry(
-                                self.issue_stage_routing,
-                                slots,
+                            admission = IssueRetryAdmissionService(self.issue_stage_routing, slots).admit(
                                 repo_name,
                                 item_number,
                                 implementation_key,
                                 auto_retry.request_id,
+                                IssueRetryOrigin.STALE_JULES,
                                 github_client=self.github if isinstance(self.github, GitHubClient) else None,
-                                bypass_capacity=False,
                             )
-                            execution_id = authority.ownership_reference if authority.status == "owned" else None
+                            if admission.disposition is IssueRetryDisposition.FAILED:
+                                result.error = f"Cannot acquire durable Issue retry authority: {admission.reason}"
+                                return result
+                            execution_id = admission.authority.ownership_reference if admission.disposition is IssueRetryDisposition.OWNED and admission.authority is not None else None
                             already_owned = False
-                            retry_authority = authority
+                            retry_authority = admission.authority if admission.disposition is IssueRetryDisposition.OWNED else None
+                            auto_retry_deferred = admission.disposition in {IssueRetryDisposition.DEFERRED, IssueRetryDisposition.STALE}
                         else:
                             execution_id, already_owned = self._start_issue_implementation_execution(
                                 repo_name,
@@ -7345,7 +7336,8 @@ class AutomationEngine:
             if candidate.type == "pr":
                 _record_pr_stage_result(item_number, "pr.implementation-admission", f"pr#{item_number} implementation admission", Outcome.DEFERRED, {"owner": owner.key, "reason": reason})
             result.target_outcome = ExplicitTargetOutcome.DEFERRED
-            result.actions = [f"Deferred - {reason} ({owner.key})"]
+            if not result.actions:
+                result.actions = [f"Deferred - {reason} ({owner.key})"]
             result.capacity_deferred = not bool(slots.active_execution_ids(owner))
             return result
 
