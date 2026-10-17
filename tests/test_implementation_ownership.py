@@ -37,6 +37,7 @@ from auto_coder.implementation_slots import (
     ImplementationSlotRepository,
     ImplementationSlotUnavailable,
 )
+from auto_coder.issue_dispatch import DispatchOutcome, IssueAttemptIdentity, IssueDispatchGuard
 from auto_coder.issue_job_finalizer import IssueJobFinalizer
 from auto_coder.issue_local_job import IssueLocalJobAdapter
 from auto_coder.issue_processor import handle_stale_jules_issue_sessions
@@ -437,6 +438,51 @@ def test_explicit_issue_acquires_and_dispatches_real_local_job(tmp_path, monkeyp
     assert IssueLocalJobAdapter(engine, REPO, store, engine.implementation_slots, tmp_path).authorize_provider_entry(job)
     assert result["target_type"] == "issue"
     assert result["target_number"] == 1
+
+
+def test_ordinary_cloud_handoff_reopens_accepted_dispatch_and_provider_owner(tmp_path, monkeypatch):
+    """Normal cloud entry retains both its accepted receipt and provider owner."""
+    snapshot = _standalone_snapshot(1, (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat())
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _ready_engine(tmp_path, monkeypatch, {1: snapshot}, config)
+    github.get_issue_comments_strict.return_value = []
+    llm_config = LLMBackendConfiguration.load_from_dict({"backends": {"controlled-jules": {"backend_type": "jules", "api_key": "test-key"}}})
+    monkeypatch.setattr("auto_coder.issue_processor._ordinary_issue_candidates", lambda _repo: ["controlled-jules"])
+    monkeypatch.setattr("auto_coder.llm_backend_config.get_llm_config", lambda **_kwargs: llm_config)
+    monkeypatch.setattr("auto_coder.issue_processor.get_current_attempt", lambda *_args: 0)
+    monkeypatch.setattr("auto_coder.issue_processor.get_commit_log", lambda *_args, **_kwargs: "baseline")
+    monkeypatch.setattr("auto_coder.automation_engine.resolve_authoritative_item_type", lambda *_args: "issue")
+    monkeypatch.setattr("auto_coder.jules_client.JulesClient.start_session", lambda *_args, **_kwargs: "session-retained")
+
+    result = engine._process_single_candidate_unified(
+        REPO,
+        Candidate("issue", dict(snapshot), 0),
+        config,
+        origin="worker",
+    )
+
+    assert result.dispatch_result is not None
+    assert result.dispatch_result.outcome is DispatchOutcome.REMOTE_ACCEPTED
+    assert result.dispatch_result.provider == "jules"
+    assert result.dispatch_result.provider_reference == "session-retained"
+    owner = ImplementationOwner("issue", 1)
+    assert engine.implementation_slots.active_execution_ids(owner) == ()
+
+    reopened_dispatch = IssueDispatchGuard().inspect(IssueAttemptIdentity("owner", "repo", 1, "0"))
+    assert reopened_dispatch is not None
+    assert reopened_dispatch.outcome is DispatchOutcome.REMOTE_ACCEPTED
+    assert reopened_dispatch.provider == "jules"
+    assert reopened_dispatch.provider_reference == "session-retained"
+    reopened_slots = ImplementationSlotRepository(
+        REPO,
+        1,
+        engine.implementation_slots.storage_path,
+        engine.implementation_slots.retired_storage_path,
+    )
+    assert reopened_slots.has_provider_sessions(owner)
+    assert reopened_slots.active_execution_ids(owner) == ()
 
 
 def test_busy_with_different_generation_defers_without_owning_new_one(tmp_path):

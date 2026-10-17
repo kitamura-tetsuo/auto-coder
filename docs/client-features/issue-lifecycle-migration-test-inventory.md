@@ -26,9 +26,12 @@ at the contested boundaries.
 
 ## Authoritative assertions
 
-The remote case holds an actual dispatch claim at an observable barrier and
-proves that competing cloud and local work cannot enter, then reopens the store
-and observes the accepted provider identity. The local cases assert that
+The remote cases hold an actual dispatch claim at an observable barrier and
+prove that competing cloud and local work cannot enter. Normal cloud admission
+also traverses common-candidate generation acquisition and selected Jules
+dispatch, then reopens both the dispatch journal and ownership store to observe
+the exact accepted attempt/session and retained provider membership after the
+controller execution has ended. The local cases assert that
 `LOCAL_ACCEPTED` only transfers the retained execution: the common candidate
 call returns while the job remains pending, no PR is reported at acceptance, and the
 same execution proceeds through result recording and publication. A later PR
