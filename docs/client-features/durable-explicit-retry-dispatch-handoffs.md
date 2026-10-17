@@ -84,6 +84,13 @@ This daemon path therefore makes progress after restart or transient storage
 failure without requiring adapter replay, while preserving concurrent PR
 associations and newer accepted ownership.
 
+Accepted Codex retry repair is owned by the bounded
+`CodexRetryReconciler`, shared by the immediate post-acceptance path and the
+durable pending-work stage. The service is wired only to the existing retry,
+run, binding, routing, slot, and pending-work stores; it has no Issue-dispatch
+or provider-submission dependency, so replay can repair projections without
+creating another provider task.
+
 The same consumer reconstructs a missing logical owner from the joined owned
 request and immutable accepted receipt. Reconstruction records the original
 request, logical attempt, generation, acquisition reference, and provider task

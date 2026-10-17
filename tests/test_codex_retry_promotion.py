@@ -10,11 +10,20 @@ from auto_coder.automation_engine import CODEX_RETRY_HANDOFF_EFFECT, AutomationE
 from auto_coder.cloud_manager import CloudManager, CloudTaskBinding
 from auto_coder.cloud_run import CloudRun, CloudRunRepository
 from auto_coder.codex_cloud_client import CodexSubmissionOutcome, CodexSubmissionResult
+from auto_coder.codex_retry_reconciliation import CodexRetryReconciler
 from auto_coder.github_pending_work import PendingWorkStore
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.issue_processor import _acknowledge_retry_projection, _process_issue_codex_cloud_mode
 from auto_coder.issue_stage_routing import ImplementationRetryRequest, IssueStageRoutingStore
 from auto_coder.retry_dispatch import RetryDispatchRepository
+
+
+def _reconciler(engine: AutomationEngine) -> CodexRetryReconciler:
+    return CodexRetryReconciler(
+        "owner/repo",
+        engine._get_implementation_slots("owner/repo"),
+        lambda request_id, issue_number: engine._schedule_codex_retry_handoff("owner/repo", request_id, issue_number),
+    )
 
 
 def _authority(request_id: str = "request-1", attempt_id: str = "logical-1") -> ImplementationRetryRequest:
@@ -68,8 +77,8 @@ def test_controller_confirms_accepted_receipt_only_after_slot_membership(tmp_pat
     engine = AutomationEngine(MagicMock(), config=AutomationConfig())
     engine.implementation_slots = slots
 
-    outcome, reason = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
-    replay_outcome, _ = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+    outcome, reason = _reconciler(engine).reconcile(authority.request_id)
+    replay_outcome, _ = _reconciler(engine).reconcile(authority.request_id)
 
     assert outcome is ExplicitTargetOutcome.SUCCESS
     assert replay_outcome is ExplicitTargetOutcome.SUCCESS
@@ -93,8 +102,8 @@ def test_controller_reconstructs_missing_owner_without_starting_execution(tmp_pa
     engine = AutomationEngine(MagicMock(), config=AutomationConfig())
     engine.implementation_slots = ImplementationSlotRepository("owner/repo", 2)
 
-    outcome, reason = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
-    replay_outcome, _ = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+    outcome, reason = _reconciler(engine).reconcile(authority.request_id)
+    replay_outcome, _ = _reconciler(engine).reconcile(authority.request_id)
 
     assert outcome is ExplicitTargetOutcome.SUCCESS
     assert replay_outcome is ExplicitTargetOutcome.SUCCESS
@@ -130,7 +139,7 @@ def test_missing_owner_recovery_counts_over_limit_and_preserves_existing_owner(t
     engine = AutomationEngine(MagicMock(), config=AutomationConfig())
     engine.implementation_slots = slots
 
-    outcome, _ = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+    outcome, _ = _reconciler(engine).reconcile(authority.request_id)
 
     assert outcome is ExplicitTargetOutcome.SUCCESS
     snapshot = slots.snapshot()
@@ -172,7 +181,7 @@ def test_controller_recovers_missing_receipt_from_owned_request_and_accepted_run
     engine = AutomationEngine(MagicMock(), config=AutomationConfig())
     engine.implementation_slots = slots
 
-    outcome, reason = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+    outcome, reason = _reconciler(engine).reconcile(authority.request_id)
 
     mock_client_type.assert_not_called()
     assert outcome is ExplicitTargetOutcome.SUCCESS
@@ -218,7 +227,7 @@ def test_run_mismatch_schedules_live_handoff_and_next_turn_repairs(tmp_path, mon
     pending = PendingWorkStore(tmp_path / "pending.db")
     monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda repository: pending)
 
-    outcome, reason = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+    outcome, reason = _reconciler(engine).reconcile(authority.request_id)
 
     assert outcome is ExplicitTargetOutcome.DEFERRED
     assert "boundary=cloud-run" in reason
@@ -240,7 +249,7 @@ def test_run_mismatch_schedules_live_handoff_and_next_turn_repairs(tmp_path, mon
     CloudRunRepository("owner/repo").save(run)
     assert CloudManager("owner/repo").add_session(2223, run.task_id, run.provider, run.backend_name)
 
-    stage_result = _CodexRetryHandoffStageHandler(engine, "owner/repo").dispatch(obligations[0])
+    stage_result = _CodexRetryHandoffStageHandler(_reconciler(engine), "owner/repo").dispatch(obligations[0])
 
     assert stage_result.completed_effects == (CODEX_RETRY_HANDOFF_EFFECT,)
     assert RetryDispatchRepository("owner/repo").get(authority.request_id).handoff_complete is True
@@ -276,7 +285,7 @@ def test_daemon_reconstructs_run_and_promotes_captured_legacy_predecessor(tmp_pa
     engine = AutomationEngine(MagicMock(), config=AutomationConfig())
     engine.implementation_slots = slots
 
-    outcome, reason = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+    outcome, reason = _reconciler(engine).reconcile(authority.request_id)
 
     assert outcome is ExplicitTargetOutcome.SUCCESS
     assert "phase=accepted-current" in reason
@@ -330,7 +339,7 @@ def test_daemon_reconstructs_canonical_url_from_retained_task_identity(tmp_path,
     engine = AutomationEngine(MagicMock(), config=AutomationConfig())
     engine.implementation_slots = slots
 
-    outcome, _ = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+    outcome, _ = _reconciler(engine).reconcile(authority.request_id)
 
     assert outcome is ExplicitTargetOutcome.SUCCESS
     run = CloudRunRepository("owner/repo").get(2223, 5)
