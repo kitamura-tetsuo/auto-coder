@@ -16,7 +16,7 @@ from auto_coder.backend_manager import BackendManager
 from auto_coder.github_request_governor import GitHubRequestDeferred
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
-from auto_coder.issue_local_job import IssueLocalJobAdapter
+from auto_coder.issue_local_job import IssueLocalJobAdapter, issue_job_authorization_ports
 from auto_coder.issue_processor import _dispatch_issue_candidates
 from auto_coder.llm_backend_config import LLMBackendConfiguration
 from auto_coder.local_issue_start_notification import LocalIssueStartNotifier
@@ -247,7 +247,7 @@ def test_production_runner_posts_at_real_adapter_manager_boundary_after_false_st
     slots = MagicMock()
     slots.owner_incarnation.return_value = "owner-incarnation"
     slots.implementation_generation.return_value = "generation"
-    adapter = IssueLocalJobAdapter(engine, "owner/repo", store, slots, source)
+    adapter = IssueLocalJobAdapter(issue_job_authorization_ports(engine), "owner/repo", store, slots, source)
     entered = Event()
     release = Event()
 

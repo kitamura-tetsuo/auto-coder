@@ -47,6 +47,13 @@ handoff and wait through execution and publication. They reuse the same adapter,
 private workspace, and finalizer as the daemon. The daemon remains nonblocking;
 only the explicit command waits, and it never drains other accepted jobs.
 
+`IssueJobRuntime` is the repository-bound composition root for this path. It
+assembles the durable store, target-scoped or daemon runner, adapter, start
+notification recovery, and finalizer. The adapter receives explicit GitHub and
+authorization callbacks rather than an `AutomationEngine`, keeping execution
+and publication authority available to both entry paths without coupling those
+mechanisms back to the engine.
+
 The result producer unwraps Codex, Claude, and Muse CLI event streams using the
 same final-response parsers as adversarial validation. It validates the actual
 assistant result rather than treating JSON event lines as implementation prose.

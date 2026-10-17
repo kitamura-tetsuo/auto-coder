@@ -19,7 +19,7 @@ from src.auto_coder.execution_trace import EventKind, Outcome, get_trace_collect
 from src.auto_coder.implementation_slots import ImplementationSlotRepository
 from src.auto_coder.invocation_admission import InvocationAdmissionGate
 from src.auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
-from src.auto_coder.issue_local_job import IssueLocalJobAdapter
+from src.auto_coder.issue_local_job import IssueLocalJobAdapter, issue_job_authorization_ports
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 from src.auto_coder.local_job_handoff import ContinuationState, LocalJobKind, LocalJobOffer, LocalJobStore
 from src.auto_coder.local_job_runner import LocalJobRunner
@@ -609,7 +609,7 @@ def test_issue_adapter_runner_delivers_gate_controlled_muse_background_result(tm
     monkeypatch.setattr("auto_coder.cli_helpers.build_backend_manager", lambda **_kwargs: manager)
     engine = SimpleNamespace(config=SimpleNamespace(MAIN_BRANCH="main"), github=SimpleNamespace())
     slots = ImplementationSlotRepository("owner/repo", 2, tmp_path / "slots.json", tmp_path / "retired.json")
-    adapter = IssueLocalJobAdapter(engine, "owner/repo", store, slots, source)
+    adapter = IssueLocalJobAdapter(issue_job_authorization_ports(engine), "owner/repo", store, slots, source)
     monkeypatch.setattr(adapter, "authorize_provider_entry", lambda _job: True)
     monkeypatch.setattr(adapter._start_notifier, "observe_and_publish", lambda *_args, **_kwargs: None)
     wakes: list[str] = []

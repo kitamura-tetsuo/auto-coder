@@ -39,7 +39,7 @@ from auto_coder.implementation_slots import (
 )
 from auto_coder.issue_dispatch import DispatchOutcome, IssueAttemptIdentity, IssueDispatchGuard
 from auto_coder.issue_job_finalizer import IssueJobFinalizer
-from auto_coder.issue_local_job import IssueLocalJobAdapter
+from auto_coder.issue_local_job import IssueLocalJobAdapter, issue_job_authorization_ports
 from auto_coder.issue_processor import handle_stale_jules_issue_sessions
 from auto_coder.issue_stage_routing import IssueStageRoutingStore
 from auto_coder.llm_backend_config import LLMBackendConfiguration
@@ -306,7 +306,7 @@ def test_failed_production_local_job_is_explained_on_ordinary_reprocessing(tmp_p
     assert engine.implementation_slots.active_execution_ids(owner) == (accepted.implementation_execution_id,)
     assert store.get_effect(job_id, accepted.execution_incarnation, "pr") is None
     assert IssueLocalJobAdapter(
-        engine,
+        issue_job_authorization_ports(engine),
         REPO,
         store,
         engine.implementation_slots,
@@ -435,7 +435,7 @@ def test_explicit_issue_acquires_and_dispatches_real_local_job(tmp_path, monkeyp
     generation = engine.implementation_slots.implementation_generation(owner)
     assert generation is not None
     assert engine.issue_stage_routing.is_implementation_owned(REPO, 1, generation)
-    assert IssueLocalJobAdapter(engine, REPO, store, engine.implementation_slots, tmp_path).authorize_provider_entry(job)
+    assert IssueLocalJobAdapter(issue_job_authorization_ports(engine), REPO, store, engine.implementation_slots, tmp_path).authorize_provider_entry(job)
     assert result["target_type"] == "issue"
     assert result["target_number"] == 1
 

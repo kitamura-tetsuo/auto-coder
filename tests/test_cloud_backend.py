@@ -402,10 +402,10 @@ class TestNonDifficultCloudIssueRouting:
 
             from auto_coder.invocation_admission import InvocationAdmissionGate
             from auto_coder.issue_job_workspace import IssueJobCheckpoint
-            from auto_coder.issue_local_job import IssueLocalJobAdapter
+            from auto_coder.issue_local_job import IssueLocalJobAdapter, issue_job_authorization_ports
             from auto_coder.local_job_handoff import LocalJobKind
 
-            adapter = IssueLocalJobAdapter(MagicMock(), "owner/repo", store, MagicMock(), tmp_path)
+            adapter = IssueLocalJobAdapter(issue_job_authorization_ports(MagicMock()), "owner/repo", store, MagicMock(), tmp_path)
 
             def execute(_producer, claim, _source, invoke, *, checkpoint_result=True):  # type: ignore[no-untyped-def]
                 output = invoke(tmp_path, claim.record.invocation_input)
@@ -469,7 +469,7 @@ class TestNonDifficultCloudIssueRouting:
             from auto_coder.automation_engine import AutomationEngine
             from auto_coder.implementation_slots import ImplementationOwner
             from auto_coder.invocation_admission import InvocationAdmissionGate
-            from auto_coder.issue_local_job import IssueLocalJobAdapter
+            from auto_coder.issue_local_job import IssueLocalJobAdapter, issue_job_authorization_ports
             from auto_coder.local_job_handoff import LocalJobKind
 
             github = MagicMock()
@@ -483,7 +483,7 @@ class TestNonDifficultCloudIssueRouting:
             engine._is_issue_author_allowed = MagicMock(return_value=True)  # type: ignore[method-assign]
             slots = MagicMock()
             slots.active_execution_ids.return_value = ("execution-2082",)
-            adapter = IssueLocalJobAdapter(engine, "owner/repo", store, slots, tmp_path)
+            adapter = IssueLocalJobAdapter(issue_job_authorization_ports(engine), "owner/repo", store, slots, tmp_path)
             runner = LocalJobRunner(
                 store,
                 InvocationAdmissionGate(),

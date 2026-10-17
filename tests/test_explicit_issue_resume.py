@@ -19,7 +19,7 @@ from auto_coder.implementation_slots import ImplementationOwner, ImplementationS
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
 from auto_coder.issue_job_workspace import IssueJobSource, IssueJobWorkspaceProducer
-from auto_coder.issue_local_job import IssueLocalJobAdapter
+from auto_coder.issue_local_job import IssueLocalJobAdapter, issue_job_authorization_ports
 from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 from auto_coder.local_job_handoff import ContinuationState, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore
 from auto_coder.local_job_runner import LocalJobRunner, current_runner_owner
@@ -100,7 +100,7 @@ def test_resume_refuses_unsafe_state_without_provider_entry(tmp_path, monkeypatc
     source, store, slots, job, provider = retained_job(tmp_path)
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3", timeout=10)})
     monkeypatch.setattr("auto_coder.llm_backend_config.get_llm_config", lambda **_kwargs: config)
-    adapter = IssueLocalJobAdapter(SimpleNamespace(github=Mock()), "owner/repo", store, slots, source)
+    adapter = IssueLocalJobAdapter(issue_job_authorization_ports(Mock(github=Mock())), "owner/repo", store, slots, source)
     monkeypatch.setattr(adapter, "authorize_recovery", lambda _job: problem != "denied")
     entered = Mock()
     monkeypatch.setattr(adapter, "resume_continuation", entered)
@@ -157,7 +157,7 @@ def test_confirmed_resume_result_is_recovered_without_provider_call(tmp_path, mo
     assert store.record_candidate_output(job.job_id, continuation.executor_token, continuation.frontier, "ACTION_SUMMARY: completed before interruption")
     assert store.confirm_final_output(job.job_id, continuation.executor_token, continuation.frontier)
     continuation = store.get_continuation(job.job_id)
-    adapter = IssueLocalJobAdapter(SimpleNamespace(github=Mock()), "owner/repo", store, slots, source)
+    adapter = IssueLocalJobAdapter(issue_job_authorization_ports(Mock(github=Mock())), "owner/repo", store, slots, source)
     monkeypatch.setattr(adapter, "authorize_recovery", lambda _job: True)
     provider_call = Mock(side_effect=AssertionError("Confirmed result must not re-enter Muse"))
     monkeypatch.setattr(adapter, "resume_continuation", provider_call)

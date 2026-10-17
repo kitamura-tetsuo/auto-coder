@@ -13,7 +13,7 @@ from auto_coder.automation_config import AutomationConfig
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.execution_trace import get_trace_collector
 from auto_coder.invocation_admission import InvocationAdmissionGate
-from auto_coder.issue_local_job import IssueLocalJobAdapter
+from auto_coder.issue_local_job import IssueLocalJobAdapter, issue_job_authorization_ports
 from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 from auto_coder.local_job_handoff import ContinuationState, LocalJobKind
 from auto_coder.local_job_runner import LocalJobRunner
@@ -220,7 +220,7 @@ def test_live_muse_resume_reconciles_predecessors_after_writer_settlement(tmp_pa
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3", timeout=10)})
     monkeypatch.setattr("auto_coder.llm_backend_config.get_llm_config", lambda **_kwargs: config)
     monkeypatch.setattr("auto_coder.muse_client.get_llm_config", lambda **_kwargs: config)
-    adapter = IssueLocalJobAdapter(SimpleNamespace(github=Mock()), "owner/repo", store, slots, source)
+    adapter = IssueLocalJobAdapter(issue_job_authorization_ports(Mock(github=Mock())), "owner/repo", store, slots, source)
     monkeypatch.setattr(adapter, "authorize_recovery", lambda _job: True)
     # The earlier candidate was invalidated by a later recorded turn. The new
     # call must produce and confirm its own output, not recover that candidate.

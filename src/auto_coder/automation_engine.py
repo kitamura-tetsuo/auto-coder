@@ -92,7 +92,9 @@ from .invocation_admission import GateSnapshot, GateState, InvocationAdmissionGa
 from .issue_admission_cache import IssueAdmissionCache
 from .issue_context import extract_associated_issue_numbers, get_linked_issues_context
 from .issue_implementation_worker import ImplementationLaneOutcome, IssueImplementationWorker
-from .issue_job_finalizer import IssueJobFinalizer, IssuePublicationResult
+from .issue_job_finalizer import IssuePublicationResult
+from .issue_job_runtime import IssueJobRuntime
+from .issue_local_job import IssueJobAuthorizationPorts, IssueJobGitHubPort
 from .issue_processor import create_feature_issues
 from .issue_review_rerun import IssueReviewRerunOperation, ReviewSubject, SubjectRerunStatus
 from .issue_review_service import (
@@ -121,7 +123,7 @@ from .jules_engine import check_and_resume_or_archive_sessions, check_and_start_
 from .label_manager import LabelManager
 from .llm_backend_config import active_repo_context, get_pr_review_allowlist_from_config, get_review_adjudicator_allowlist_from_config
 from .local_job_handoff import LocalJobClaim, LocalJobKind, LocalJobStore
-from .local_job_runner import LocalJobRunner, runner_owner_alive
+from .local_job_runner import LocalJobRunner
 from .logger_config import get_logger
 from .merge_operation_scheduler import get_merge_operation_scheduler
 from .merge_operation_state import MergeOperation
@@ -1054,6 +1056,7 @@ class AutomationEngine:
         # tracks invocations and never gates the daemon's own exit.
         self.invocation_gate = InvocationAdmissionGate()
         self.local_job_store: Optional[LocalJobStore] = None
+        self._issue_job_runtimes: Dict[str, IssueJobRuntime] = {}
         # Full Jules discovery is deliberately delayed after startup.  Claiming
         # a cycle advances this deadline before any HTTP work begins, so a
         # failed listing cannot cause a hot retry on the next loop iteration.
@@ -2830,19 +2833,14 @@ class AutomationEngine:
         local_runner = None
         local_runner_task = None
         if isinstance(slot_repository, ImplementationSlotRepository):
-            from .issue_local_job import IssueLocalJobAdapter
-
             assert self.local_job_store is not None
+            issue_runtime = self._get_issue_job_runtime(repo_name, slot_repository)
 
             def wake_issue_publication(_job: Any) -> None:
                 self._resume_local_issue_publications(repo_name, slot_repository)
 
-            local_runner = LocalJobRunner(
-                self.local_job_store,
-                self.invocation_gate,
-                repository=repo_name,
+            local_runner = issue_runtime.new_runner(
                 capacity=max(1, self.config.MAX_CONCURRENT_IMPLEMENTATIONS),
-                adapters={LocalJobKind.ISSUE_IMPLEMENTATION: IssueLocalJobAdapter(self, repo_name, self.local_job_store, slot_repository, Path.cwd())},
                 completion_wake=wake_issue_publication,
             )
             local_runner_task = asyncio.create_task(self._local_job_runner_loop(local_runner), name="durable-local-job-runner")
@@ -2931,6 +2929,58 @@ class AutomationEngine:
             self.local_job_store = LocalJobStore()
         return self.local_job_store
 
+    def _issue_job_authorization_ports(self) -> IssueJobAuthorizationPorts:
+        """Expose only the policy operations required at provider entry."""
+        return IssueJobAuthorizationPorts(
+            github=cast(IssueJobGitHubPort, self.github),
+            main_branch=self.config.MAIN_BRANCH,
+            author_allowed=self._is_issue_author_allowed,
+            authorize_dispatch=self._authorize_stale_jules_dispatch,
+            parent_number=self._get_authoritative_parent_number,
+            decomposition_set=self._fetch_authoritative_decomposition_set,
+            implementation_generation=self._compute_implementation_generation,
+        )
+
+    def _get_issue_job_runtime(self, repo_name: str, slots: ImplementationSlotRepository) -> IssueJobRuntime:
+        """Lazily assemble the shared local Issue runtime for a repository."""
+        store = self._get_local_job_store()
+        existing = self._issue_job_runtimes.get(repo_name)
+        if existing is not None and existing.store is store and existing.slots is slots:
+            return existing
+
+        from .issue_processor import _create_pr_for_issue
+
+        def create_pr(record: Any, summary: str) -> object:
+            issue = self.github.get_issue(repo_name, record.target_number)
+            if not isinstance(issue, dict):
+                issue = {"number": record.target_number, "title": getattr(issue, "title", "Unknown"), "body": getattr(issue, "body", "") or "", "labels": getattr(issue, "labels", []) or []}
+            return _create_pr_for_issue(repo_name, issue, record.work_branch, self.config.MAIN_BRANCH, summary, self.github, self.config, None)
+
+        def observe(result: IssuePublicationResult, origin: str, owner_restored: bool) -> None:
+            outcome = Outcome.COMPLETED if result.disposition in {"published", "no_change"} else Outcome.FAILED if result.disposition in {"cannot_fix", "failed", "interrupted"} else Outcome.DEFERRED
+            get_trace_collector().record_event(
+                EventKind.STAGE_RESULT,
+                stage_id="issue.local-publication-finalization",
+                origin=origin,
+                label=f"issue job {result.job_id} publication finalization",
+                outcome=outcome,
+                facts={"job_id": result.job_id, "disposition": result.disposition, "pr_number": result.pr_number, "diagnostic": result.diagnostic, "owner_restored": owner_restored},
+            )
+
+        runtime = IssueJobRuntime(
+            repo_name,
+            store,
+            slots,
+            self.invocation_gate,
+            self._issue_job_authorization_ports(),
+            Path.cwd(),
+            lambda repository, branch: self.github.find_pr_by_head_branch_strict(repository, branch),
+            create_pr,
+            observe,
+        )
+        self._issue_job_runtimes[repo_name] = runtime
+        return runtime
+
     async def _perform_startup_reconciliation(self, repo_name: str) -> None:
         """Complete startup recovery, retrying governed admission failures durably.
 
@@ -3003,7 +3053,6 @@ class AutomationEngine:
 
     def _resume_local_issue_publications(self, repo_name: str, slots: ImplementationSlotRepository, *, job_id: Optional[str] = None, origin: str = "startup-recovery") -> tuple[IssuePublicationResult, ...]:
         """Resume exact job-owned publication effects without model re-entry."""
-        from .issue_processor import _create_pr_for_issue
         from .local_job_handoff import InvocationOutcome, LocalJobState
 
         store = self._get_local_job_store()
@@ -3028,51 +3077,7 @@ class AutomationEngine:
             except Exception as exc:
                 logger.warning("Retaining local publication {} without owner restoration: {}", job.job_id, exc)
 
-        def create_pr(record: Any, summary: str) -> object:
-            issue = self.github.get_issue(repo_name, record.target_number)
-            if not isinstance(issue, dict):
-                issue = {
-                    "number": record.target_number,
-                    "title": getattr(issue, "title", "Unknown"),
-                    "body": getattr(issue, "body", "") or "",
-                    "labels": getattr(issue, "labels", []) or [],
-                }
-            return _create_pr_for_issue(
-                repo_name,
-                issue,
-                record.work_branch,
-                self.config.MAIN_BRANCH,
-                summary,
-                self.github,
-                self.config,
-                None,
-            )
-
-        finalizer = IssueJobFinalizer(
-            self._get_local_job_store(),
-            slots,
-            lambda repository, branch: self.github.find_pr_by_head_branch_strict(repository, branch),
-            create_pr,
-        )
-        results = (finalizer.finalize(job_id),) if job_id is not None else finalizer.resume_all(repo_name)
-        for result in results:
-            outcome = Outcome.COMPLETED if result.disposition in {"published", "no_change"} else Outcome.FAILED if result.disposition in {"cannot_fix", "failed", "interrupted"} else Outcome.DEFERRED
-            get_trace_collector().record_event(
-                EventKind.STAGE_RESULT,
-                stage_id="issue.local-publication-finalization",
-                origin=origin,
-                label=f"issue job {result.job_id} publication finalization",
-                outcome=outcome,
-                facts={
-                    "job_id": result.job_id,
-                    "disposition": result.disposition,
-                    "pr_number": result.pr_number,
-                    "diagnostic": result.diagnostic,
-                    "owner_restored": result.job_id in restored_jobs,
-                },
-            )
-
-        return results
+        return self._get_issue_job_runtime(repo_name, slots).finalize(job_id=job_id, origin=origin, restored_job_ids=frozenset(restored_jobs))
 
     def _resume_explicit_issue(self, repo_name: str, number: int) -> CandidateProcessingResult:
         """Resolve retained ownership directly, without admitting a new implementation."""
@@ -3123,7 +3128,6 @@ class AutomationEngine:
 
     def _run_explicit_local_issue(self, repo_name: str, result: CandidateProcessingResult, *, resume: bool = False) -> None:
         """Drive only the accepted target through execution and publication."""
-        from .issue_local_job import IssueLocalJobAdapter
         from .local_job_handoff import LocalJobState
 
         dispatch = result.dispatch_result
@@ -3134,34 +3138,7 @@ class AutomationEngine:
         if job is None or job.repository != repo_name or job.kind is not LocalJobKind.ISSUE_IMPLEMENTATION or job.target_number != result.number or job.upstream_incarnation != dispatch.claim_incarnation:
             raise RuntimeError("Accepted local implementation job does not match the explicit target")
         slots = self._get_implementation_slots(repo_name)
-        runner = LocalJobRunner(
-            store,
-            self.invocation_gate,
-            repository=repo_name,
-            capacity=1,
-            adapters={LocalJobKind.ISSUE_IMPLEMENTATION: IssueLocalJobAdapter(self, repo_name, store, slots, Path.cwd())},
-            job_ids=frozenset({job_id}),
-        )
-        try:
-            live_external_owner = job.runner_owner != runner.runner_id and job.state in {LocalJobState.RUNNING, LocalJobState.RESULT_RECORDED} and runner_owner_alive(job.runner_owner) is True
-            if resume and job.state is LocalJobState.RUNNING and not job.result_reference:
-                runner.resume(job_id)
-            elif not live_external_owner:
-                runner.poll()
-            while True:
-                if not runner.active_count():
-                    current = store.get(job_id)
-                    # Another live controller may win the durable claim before
-                    # this command polls. Wait for that exact owner as well,
-                    # without reclaiming or replaying its provider invocation.
-                    if current is None or current.state not in {LocalJobState.RUNNING, LocalJobState.RESULT_RECORDED} or current.runner_owner == runner.runner_id or runner_owner_alive(current.runner_owner) is not True:
-                        break
-                time.sleep(0.1)
-            # Recover a committed artifact/checkpoint without re-entering a
-            # provider whose call has already completed.
-            runner.recover_unsettled()
-        finally:
-            runner.close(wait=True)
+        self._get_issue_job_runtime(repo_name, slots).wait_for_target(job_id, resume=resume)
         job = store.get(job_id)
         if job is None:
             raise RuntimeError("Accepted local implementation job disappeared")

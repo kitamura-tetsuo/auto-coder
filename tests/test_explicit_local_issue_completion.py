@@ -13,7 +13,7 @@ from auto_coder.execution_trace import get_trace_collector
 from auto_coder.implementation_skip_diagnostic import explain_already_owned
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.issue_dispatch import CandidateHandoff, DispatchOutcome, DispatchResult, IssueAttemptIdentity, IssueDispatchGuard
-from auto_coder.issue_local_job import IssueLocalJobAdapter
+from auto_coder.issue_local_job import IssueLocalJobAdapter, issue_job_authorization_ports
 from auto_coder.local_job_handoff import LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore
 from auto_coder.local_job_runner import LocalJobRunner
 from auto_coder.utils import CommandExecutor
@@ -149,8 +149,10 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
 
         monkeypatch.setattr(store, "record_result", checkpoint)
     if external:
-        monkeypatch.setattr("auto_coder.automation_engine.runner_owner_alive", lambda owner: True if owner == "external-owner" else None)
-        external_runner = LocalJobRunner(store, engine.invocation_gate, repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: IssueLocalJobAdapter(engine, "owner/repo", store, slots, source)}, runner_id="external-owner", job_ids=frozenset({accepted.job_id}))
+        monkeypatch.setattr("auto_coder.issue_job_runtime.runner_owner_alive", lambda owner: True if owner == "external-owner" else None)
+        external_runner = LocalJobRunner(
+            store, engine.invocation_gate, repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: IssueLocalJobAdapter(issue_job_authorization_ports(engine), "owner/repo", store, slots, source)}, runner_id="external-owner", job_ids=frozenset({accepted.job_id})
+        )
         assert external_runner.poll() == 1
         assert entered.wait(10)
         if checkpoint_pause:
