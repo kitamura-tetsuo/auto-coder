@@ -24,6 +24,14 @@ The group reuses the integration fixtures and file-backed SQLite/JSON stores
 owned by the focused test modules rather than substituting preselected results
 at the contested boundaries.
 
+## Verification revision
+
+The integrated boundary was inspected and locally verified at revision
+`0769b84eaabcf2d0c6a80f6c62660bd179003e02`, after the execution, adapter,
+retry, local-job, and repository-runtime extractions. Normal GitHub Actions
+results belong to the published PR head and are not inferred from this local
+record.
+
 ## Authoritative assertions
 
 The remote cases hold an actual dispatch claim at an observable barrier and
@@ -37,12 +45,22 @@ call returns while the job remains pending, no PR is reported at acceptance, and
 same execution proceeds through result recording and publication. A later PR
 route still independently applies validation and merge gates.
 
+The joined local lifecycle scenario keeps one Issue generation, execution,
+job, published PR, and slot owner across those boundaries. Pending current-head
+CI first prevents merge without releasing that owner; current successful CI
+then permits the merge command, which still does not count as retirement. A
+subsequent terminal PR observation schedules the production reclamation path,
+which retires that exact Issue lifetime while leaving an unrelated owner
+unchanged.
+
 Negative controls refresh authoritative Issue state immediately before
 dispatch, reject a changed generation without entering a provider, and suppress
 an already-owned generation after routing-store recovery. Dispatch receipts
 also distinguish a positively confirmed `NOT_STARTED` release from an
 indeterminate or accepted attempt, so only the former advances candidate
 selection.
+
+The composed startup probe enters `AutomationEngine.start_automation`, holds ordinary producers, workers, and the local Issue runner behind a failed-and-retried enumeration barrier, then proves accepted retry reconciliation and local publication resume on the same controller. It also reopens the job store, preserves a retained job for another repository, and proves repeated scheduling retains one operation identity.
 
 Recovery probes reopen decisive stores. Accepted Codex retry replay retains its
 request, task, run, environment, branch, URL, and PR identities without a
@@ -60,6 +78,13 @@ use real temporary Git repositories. Semantic-review fixtures establish READY
 state before entry but do not bypass the generation refresh or ownership
 boundary under test. The group is intentionally a migration safety net rather
 than an exhaustive replacement for focused module tests or the normal CI suite.
+
+The focused verification commands are:
+
+```console
+bash scripts/test.sh -m issue_lifecycle_contract tests/test_issue_lifecycle_contract.py
+bash scripts/test.sh -m pr_lifecycle_contract tests/test_pr_lifecycle_contract.py
+```
 
 This inventory and group add no runtime behavior, trace producer, or dashboard
 event, so the production-to-dashboard observability contract is unchanged.
