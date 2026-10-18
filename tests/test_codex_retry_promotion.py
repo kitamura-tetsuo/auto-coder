@@ -2,7 +2,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -23,10 +23,16 @@ from auto_coder.implementation_retirement import (
     SessionTerminalState,
 )
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
 from auto_coder.issue_processor import _acknowledge_retry_projection, _process_issue_codex_cloud_mode
 from auto_coder.issue_stage_routing import ImplementationRetryRequest, IssueStageRoutingStore
+from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore
+from auto_coder.local_job_runner import LocalJobRunner
 from auto_coder.retry_dispatch import RetryDispatchRepository
 from auto_coder.util.gh_cache import OpenGitHubEntities
+from auto_coder.util.github_request_outcome import GitHubApiOutcome
+
+from .test_pending_work_resumption import _github_error
 
 
 def _reconciler(engine: AutomationEngine) -> CodexRetryReconciler:
@@ -328,7 +334,7 @@ def test_startup_rediscovers_unfinished_receipt_through_ordinary_scheduler(mock_
         task = asyncio.create_task(engine.start_automation("owner/repo", concurrency=1))
         for _ in range(300):
             current = RetryDispatchRepository("owner/repo").get(authority.request_id)
-            if current is not None and current.handoff_complete:
+            if current is not None and current.handoff_complete and not pending.all_pending():
                 break
             await asyncio.sleep(0.01)
         task.cancel()
@@ -345,6 +351,142 @@ def test_startup_rediscovers_unfinished_receipt_through_ordinary_scheduler(mock_
     assert reopened_slots.has_provider_sessions(owner)
     assert pending.all_pending() == []
     process_candidate.assert_not_called()
+    mock_client_type.return_value.submit_task.assert_not_called()
+
+
+@patch("auto_coder.codex_cloud_client.CodexCloudClient")
+def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_retained_state(mock_client_type, tmp_path, monkeypatch):
+    """REQ-006: exercise recovery ordering through the real engine entrypoint."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    authority = _authority("request-composed-startup")
+    dispatch = RetryDispatchRepository("owner/repo")
+    dispatch.claim(authority, "codex-cloud", "codex-alias", {"base_branch": "main"})
+    dispatch.allocate_numeric_attempt(authority.request_id, [4])
+    dispatch.record_outcome(authority.request_id, "accepted", external_id="task-composed", tracking_complete=True)
+    dispatch.mark_tracking_complete(authority.request_id)
+    CloudRunRepository("owner/repo").save(
+        CloudRun(
+            "owner/repo",
+            2223,
+            5,
+            "codex-cloud",
+            task_id="task-composed",
+            backend_name="codex-alias",
+            environment_id="environment-composed",
+            base_branch="main",
+            submission_outcome="accepted",
+            launch_identity=authority.request_id,
+        )
+    )
+    assert CloudManager("owner/repo").add_session(2223, "task-composed", "codex-cloud", "codex-alias")
+
+    jobs = LocalJobStore()
+
+    def retained_result(repository: str, issue: int, attempt: str) -> str:
+        owner, repo = repository.split("/", 1)
+        identity = IssueAttemptIdentity(owner, repo, issue, attempt)
+        guard = IssueDispatchGuard(tmp_path / f"{attempt}.sqlite3")
+        assert guard.reserve(identity, CandidateHandoff("codex", "local")).admitted
+        offer = LocalJobOffer(LocalJobKind.ISSUE_IMPLEMENTATION, repository, issue, attempt, "codex", "retained input")
+        accepted = jobs.offer_issue(offer, identity, guard)
+        assert accepted is not None
+        claim = jobs.claim(accepted.job_id, f"dead-owner-{attempt}")
+        assert claim is not None and jobs.mark_provider_entered(claim)
+        artifact = jobs.persist_result_artifact(claim, InvocationOutcome.COMPLETED, "ACTION_SUMMARY: retained")
+        assert artifact is not None and jobs.record_result(claim, InvocationOutcome.COMPLETED, artifact.artifact_id)
+        assert jobs.get(accepted.job_id).state is LocalJobState.RESULT_RECORDED
+        return accepted.job_id
+
+    own_job = retained_result("owner/repo", 61, "own-retained")
+    foreign_job = retained_result("other/repo", 62, "foreign-retained")
+    reopened = LocalJobStore(jobs.path)
+
+    checkpoint_entered = Event()
+    release_checkpoint = Event()
+    enumeration_calls = 0
+
+    class CheckpointGithub(MagicMock):
+        def get_open_entities_strict(self, repository):
+            nonlocal enumeration_calls
+            enumeration_calls += 1
+            if enumeration_calls == 1:
+                raise _github_error(GitHubApiOutcome.PRIMARY_THROTTLED)
+            checkpoint_entered.set()
+            assert release_checkpoint.wait(5)
+            return OpenGitHubEntities()
+
+    github = CheckpointGithub()
+    engine = AutomationEngine(github, config=AutomationConfig())
+    engine.local_job_store = reopened
+    pending = PendingWorkStore(tmp_path / "pending.db")
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda _repository: pending)
+    monkeypatch.setattr("auto_coder.automation_engine.install_asyncio_diagnostics", lambda _loop: None)
+    monkeypatch.setattr("auto_coder.automation_engine.get_health_monitor", MagicMock())
+    monkeypatch.setattr(engine, "_resume_local_issue_publications", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(engine, "_enqueue_pending_invalidations", AsyncMock())
+
+    producer_entered = asyncio.Event()
+    worker_entries = 0
+
+    async def producer(_repository):
+        producer_entered.set()
+        await asyncio.Event().wait()
+
+    async def worker(*_args):
+        nonlocal worker_entries
+        worker_entries += 1
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(engine, "_producer_loop", producer)
+    monkeypatch.setattr(engine, "_worker_loop", worker)
+
+    issue_poll_count = 0
+    original_poll = LocalJobRunner.poll
+
+    def counted_poll(runner):
+        nonlocal issue_poll_count
+        if LocalJobKind.ISSUE_IMPLEMENTATION in runner.adapters:
+            issue_poll_count += 1
+        return original_poll(runner)
+
+    monkeypatch.setattr(LocalJobRunner, "poll", counted_poll)
+
+    async def scenario():
+        task = asyncio.create_task(engine.start_automation("owner/repo", concurrency=1))
+        assert await asyncio.to_thread(checkpoint_entered.wait, 5)
+        assert enumeration_calls == 2
+        assert not producer_entered.is_set()
+        assert worker_entries == 0
+        assert issue_poll_count == 0
+        assert reopened.get(own_job).state is LocalJobState.RESULT_RECORDED
+        assert reopened.get(foreign_job).state is LocalJobState.RESULT_RECORDED
+        assert engine.pending_work_scheduler is not None
+        assert len(engine.pending_work_scheduler._handlers) == 6
+
+        # Repeating the same recovery turn retains one durable identity rather
+        # than manufacturing a second effect or executor registration.
+        engine._schedule_codex_retry_handoff("owner/repo", authority.request_id, 2223)
+        engine._schedule_codex_retry_handoff("owner/repo", authority.request_id, 2223)
+        matching = [item for item in pending.all_pending() if item.identity.revision == authority.request_id]
+        assert len(matching) <= 1
+        assert len(engine.pending_work_scheduler._handlers) == 6
+
+        release_checkpoint.set()
+        await asyncio.wait_for(producer_entered.wait(), 5)
+        for _ in range(300):
+            if issue_poll_count and RetryDispatchRepository("owner/repo").get(authority.request_id).handoff_complete:
+                break
+            await asyncio.sleep(0.01)
+        assert worker_entries == 2
+        assert issue_poll_count > 0
+        assert reopened.get(foreign_job).state is LocalJobState.RESULT_RECORDED
+        completed = RetryDispatchRepository("owner/repo").get(authority.request_id)
+        assert completed is not None and completed.handoff_complete
+        assert len([item for item in pending.all_pending() if item.identity.revision == authority.request_id]) == 0
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
     mock_client_type.return_value.submit_task.assert_not_called()
 
 
