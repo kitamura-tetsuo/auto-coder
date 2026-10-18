@@ -40,7 +40,7 @@ class TestPRProcessorLocalOverride:
     @patch("src.auto_coder.pr_processor._check_github_actions_status")
     @patch("src.auto_coder.pr_processor.get_detailed_checks_from_history")
     @patch("src.auto_coder.pr_processor._send_jules_error_feedback")
-    @patch("src.auto_coder.pr_processor._fix_pr_issues_with_testing")
+    @patch("src.auto_coder.pr_processor._apply_github_actions_fix")
     @patch("src.auto_coder.pr_processor._checkout_pr_branch")
     @patch("src.auto_coder.pr_processor._update_with_base_branch")
     @patch("src.auto_coder.pr_processor.BranchManager")
@@ -100,7 +100,7 @@ class TestPRProcessorLocalOverride:
         # 1. Should NOT send feedback to Jules
         mock_send_feedback.assert_not_called()
 
-        # 2. Should call _fix_pr_issues_with_testing
+        # 2. Should call the narrow initial-correction effect
         mock_fix_issues.assert_called_once()
 
         # 3. Resumption on the PR branch must not drop the CI evidence
@@ -145,7 +145,7 @@ def test_ci_base_update_consumer_ignores_identical_misleading_actions(dispositio
         patch("src.auto_coder.pr_processor._update_with_base_branch", return_value=produced) as update,
         patch("src.auto_coder.pr_processor._is_automatic_test_fix_enabled", return_value=True),
         patch("src.auto_coder.pr_processor._get_github_actions_logs", return_value="logs"),
-        patch("src.auto_coder.pr_processor._fix_pr_issues_with_testing", return_value=PRActionList()) as fix,
+        patch("src.auto_coder.pr_processor._apply_github_actions_fix", return_value=[]) as fix,
         patch("src.auto_coder.pr_processor._merge_pr") as merge,
     ):
         unsafe.return_value = MagicMock(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)

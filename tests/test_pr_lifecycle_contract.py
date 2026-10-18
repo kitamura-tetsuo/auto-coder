@@ -1077,14 +1077,11 @@ def test_terminal_ci_failure_enters_typed_synchronous_local_repair(tmp_path, mon
     produced.repair_attempt_started = True
     produced.resulting_head = H2
     produced.synchronized = False
-    requests = []
-    results = []
 
-    def capture_dispatch(request, operation):
-        requests.append(request)
-        result = operation(request)
-        results.append(result)
-        return result
+    def initial_correction(*_args, on_invocation_started=None, **_kwargs):
+        assert on_invocation_started is not None
+        on_invocation_started()
+        return ["local correction invoked"]
 
     status = ProcessedPRResult(pr_data=pr_data, actions_taken=[], priority="fix", analysis=None)
     with (
@@ -1099,8 +1096,11 @@ def test_terminal_ci_failure_enters_typed_synchronous_local_repair(tmp_path, mon
         patch("auto_coder.pr_processor._checkout_pr_branch", return_value=True),
         patch("auto_coder.pr_processor.BranchManager", return_value=nullcontext()),
         patch("auto_coder.pr_processor._create_github_action_log_summary", return_value=("failed logs", ["tests/test_pr.py"])),
-        patch("auto_coder.pr_processor._fix_pr_issues_with_testing", return_value=produced) as local_repair,
-        patch("auto_coder.pr_processor.dispatch_pr_repair", side_effect=capture_dispatch),
+        patch("auto_coder.pr_processor._apply_github_actions_fix", side_effect=initial_correction) as local_repair,
+        patch(
+            "auto_coder.pr_processor._submit_ci_repair_candidate",
+            return_value=SimpleNamespace(actions=tuple(produced), resulting_head=H2, synchronized=False),
+        ),
         patch("auto_coder.pr_processor._merge_pr") as merge,
     ):
         unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
@@ -1108,12 +1108,9 @@ def test_terminal_ci_failure_enters_typed_synchronous_local_repair(tmp_path, mon
 
     local_repair.assert_called_once()
     merge.assert_not_called()
-    assert len(requests) == 1
-    assert requests[0].origin is RepairOrigin.LOCAL
-    assert requests[0].local_origin == "synchronous-local-ci-repair"
-    assert results[0].disposition is RepairDisposition.FAILED
-    assert results[0].resulting_head == H2
-    assert results[0].synchronized is False
+    assert actions.repair_attempt_started is True
+    assert actions.resulting_head == H2
+    assert actions.synchronized is False
     assert status.outcome is PRProcessingOutcome.FAILED
     assert "local candidate failed to synchronize" in actions
 
@@ -1335,21 +1332,12 @@ def test_public_local_ci_repair_uses_real_h1_to_h2_git_result(tmp_path, monkeypa
         "base": {"ref": "main", "sha": "base-1"},
     }
     client = MagicMock(token="controlled-token")
-    results = []
 
-    def real_git_repair(*_args, **_kwargs):
+    def real_git_repair(*_args, on_invocation_started=None, **_kwargs):
+        assert on_invocation_started is not None
+        on_invocation_started()
         tracked.write_text("H2\n", encoding="utf-8")
-        submission = pr_processor._submit_ci_repair_candidate(REPOSITORY, PR_NUMBER)
-        produced = PRActionList(submission.actions)
-        produced.repair_attempt_started = submission.attempt_started
-        produced.resulting_head = submission.resulting_head
-        produced.synchronized = submission.synchronized
-        return produced
-
-    def capture_dispatch(request, operation):
-        result = operation(request)
-        results.append(result)
-        return result
+        return ["local correction invoked"]
 
     with (
         patch("auto_coder.util.github_action.get_ghapi_client", return_value=MagicMock()),
@@ -1370,8 +1358,7 @@ def test_public_local_ci_repair_uses_real_h1_to_h2_git_result(tmp_path, monkeypa
         patch("auto_coder.pr_processor._checkout_pr_branch", return_value=True),
         patch("auto_coder.pr_processor.BranchManager", return_value=nullcontext()),
         patch("auto_coder.pr_processor._create_github_action_log_summary", return_value=("failed logs", ["tests/test_pr.py"])),
-        patch("auto_coder.pr_processor._fix_pr_issues_with_testing", side_effect=real_git_repair),
-        patch("auto_coder.pr_processor.dispatch_pr_repair", side_effect=capture_dispatch),
+        patch("auto_coder.pr_processor._apply_github_actions_fix", side_effect=real_git_repair),
         patch("auto_coder.pr_processor.GitHubClient.get_instance", return_value=client),
         patch("auto_coder.util.github_action.is_item_closed_on_github", return_value=False),
         patch("auto_coder.pr_processor.git_push", return_value=CommandResult(push_succeeds, "", "push rejected" if not push_succeeds else "", 0 if push_succeeds else 1)),
@@ -1381,12 +1368,10 @@ def test_public_local_ci_repair_uses_real_h1_to_h2_git_result(tmp_path, monkeypa
         actions = _handle_pr_merge(client, REPOSITORY, pr_data, config, {})
 
     h2 = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository, check=True, capture_output=True, text=True).stdout.strip()
-    assert results, actions
+    assert actions
     assert h2 != h1
-    assert len(results) == 1
-    assert results[0].resulting_head == h2
-    assert results[0].disposition is (RepairDisposition.APPLIED if push_succeeds else RepairDisposition.FAILED)
-    assert results[0].synchronized is push_succeeds
+    assert actions.resulting_head == h2
+    assert actions.synchronized is push_succeeds
     merge.assert_not_called()
 
 

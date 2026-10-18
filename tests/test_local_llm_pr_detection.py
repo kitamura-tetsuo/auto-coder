@@ -218,7 +218,7 @@ class TestHandlePrMergeFixLimitation:
     @patch("auto_coder.pr_processor.cmd.run_command")
     @patch("auto_coder.pr_processor._checkout_pr_branch", return_value=True)
     @patch("auto_coder.pr_processor.BranchManager")
-    @patch("auto_coder.pr_processor._fix_pr_issues_with_testing", return_value=PRActionList(["Fixed PR locally"]))
+    @patch("auto_coder.pr_processor._apply_github_actions_fix", return_value=["Fixed PR locally"])
     def test_ci_failure_runs_local_fix_for_local_pr(self, mock_fix, mock_bm, mock_checkout, mock_cmd, mock_mergeable, mock_exit_check):
         """Local PR with CI failure triggers local LLM fix loop."""
         config = AutomationConfig()
