@@ -90,10 +90,10 @@ sequenceDiagram
         L->>L: execute_local_ci_repair
         alt Base update is skipped or reports no update needed
             L->>L: execute_correction and focused verification
+            L->>G: _submit_ci_repair_candidate commits and publishes candidate
         else Base update has a terminal repair disposition
             L-->>P: Return typed base/conflict result without correction
         end
-        L->>G: _submit_ci_repair_candidate commits and publishes candidate
         L-->>P: Repair/synchronization result; full CI remains pending
     else Missing origin, unknown authority or manual-only path
         P-->>P: Skip/defer/report the applicable reason
@@ -120,7 +120,7 @@ The existing CI-failure and conflict owners are entered through
 `pr_repair_dispatch` requests and return typed dispositions. Base updates and
 conflicts additionally cross `BaseUpdateConflictExecutionService`. The adapters carry
 the immutable PR head and the established cloud/local origin, but deliberately
-contains no provider-selection tree. Existing provider helpers, durable
+contain no provider-selection tree. Existing provider helpers, durable
 receipts, worktree operations, test runner, and Git helpers remain the effect
 owners; diagnostic action strings are not completion evidence.
 
