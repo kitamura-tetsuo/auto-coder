@@ -1,6 +1,6 @@
 # Engine, startup and Issue lanes
 
-Source snapshot: **`0769b84eaabcf2d0c6a80f6c62660bd179003e02`** (2026-10-18 UTC). [Scope and notation](README.md).
+Source snapshot: **`007e97cb8be80ccc98e8c4a2604b3b084c23d156`** (2026-10-18 UTC). [Scope and notation](README.md).
 
 ## E1. Startup is a reconciliation barrier, not just worker creation
 
@@ -40,7 +40,9 @@ sequenceDiagram
     Q->>E: Candidate or retained work becomes eligible
     alt Batch PR candidate collection
         E->>C: Check current CI progress
-        alt Helper reports in progress, including KNOWN_EMPTY
+        alt KNOWN_EMPTY plus affirmative conflict and enabled remediation
+            E->>P: Retain candidate for conflict remediation
+        else Policy selects a CI wait route
             E->>E: Exclude candidate before PR handler
         else Candidate survives filters
             E->>P: Process PR
@@ -84,6 +86,6 @@ Normal dispatch is no longer an engine-level `jules_mode` decision tree. The imp
 
 Sources: [AutomationEngine][engine] (`start_automation`, `_get_candidates`, `_process_single_candidate`, `_process_single_candidate_reserved`); [dedicated implementation worker][worker]; [Issue dispatcher integration][issue] (`_dispatch_issue_candidates`).
 
-[engine]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/automation_engine.py
-[worker]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/issue_implementation_worker.py
-[issue]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/issue_processor.py
+[engine]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/automation_engine.py
+[worker]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/issue_implementation_worker.py
+[issue]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/issue_processor.py

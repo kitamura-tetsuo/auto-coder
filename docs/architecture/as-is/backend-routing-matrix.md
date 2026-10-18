@@ -1,6 +1,6 @@
 # Backend routing and execution-path matrix
 
-Source snapshot: **`0769b84eaabcf2d0c6a80f6c62660bd179003e02`** (2026-10-18 UTC). [Scope and notation](README.md).
+Source snapshot: **`007e97cb8be80ccc98e8c4a2604b3b084c23d156`** (2026-10-18 UTC). [Scope and notation](README.md).
 
 Here "local" describes the controller-side execution/repair route or explicit-local marker. It does not, by itself, prove that model weights run on local hardware: a locally invoked client can use a configured inference transport. Model hosting, execution lifecycle and provider task ownership are different axes.
 
@@ -41,9 +41,9 @@ The existence of a CI/conflict repair function does not prove a complete Issue-t
 
 Sources: [Issue policy/adapters][dispatch], [local jobs][jobs], [local executor][local], [Issue publication][finalizer], [PR routing and CI/conflict branches][pr], [local review correction][correction].
 
-[dispatch]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/issue_dispatch.py
-[jobs]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/local_job_handoff.py
-[local]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/issue_local_job.py
-[finalizer]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/issue_job_finalizer.py
-[pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/pr_processor.py
-[correction]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/pr_correction_job.py
+[dispatch]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/issue_dispatch.py
+[jobs]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/local_job_handoff.py
+[local]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/issue_local_job.py
+[finalizer]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/issue_job_finalizer.py
+[pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/pr_processor.py
+[correction]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/pr_correction_job.py

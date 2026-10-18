@@ -237,6 +237,7 @@ markers = [
     "opencode_live: test that drives the real (auto-installed) OpenCode CLI against a controlled local provider, each invocation costing several real seconds of CLI startup (excluded from ordinary PR Tests shards; run by the dedicated OpenCode Live Tests GitHub Actions workflow)",
     "muse_live: test that drives the pinned released Muse host against a controlled local provider (excluded from ordinary shards; run by the dedicated Muse Live Tests workflow)",
     "pr_lifecycle_contract: maintained production-origin PR lifecycle contract group",
+    "pr_repair_contract: maintained production-origin PR repair execution contract group",
     "issue_lifecycle_contract: maintained production-origin Issue lifecycle contract group",
 ]
 

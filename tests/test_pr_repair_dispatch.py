@@ -2,6 +2,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+pytestmark = pytest.mark.pr_repair_contract
+
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.pr_repair_dispatch import (
     PRRepairRequest,

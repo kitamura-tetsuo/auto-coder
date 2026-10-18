@@ -1,6 +1,10 @@
 from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+pytestmark = pytest.mark.pr_repair_contract
+
 from auto_coder.ci_observation import (
     CIConclusion,
     CIObservationSnapshot,

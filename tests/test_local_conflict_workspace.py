@@ -6,6 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
+pytestmark = pytest.mark.pr_repair_contract
+
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.conflict_resolver import resolve_merge_conflicts_with_llm, scan_conflict_markers
 from src.auto_coder.utils import CommandResult

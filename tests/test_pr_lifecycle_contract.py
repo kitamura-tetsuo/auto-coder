@@ -49,7 +49,7 @@ from auto_coder.util.gh_cache import PullRequestRepairMetadata, ReviewThread, Re
 from auto_coder.util.github_action import GitHubActionsStatusResult, _check_github_actions_status
 from auto_coder.utils import CommandResult
 
-pytestmark = pytest.mark.pr_lifecycle_contract
+pytestmark = [pytest.mark.pr_lifecycle_contract, pytest.mark.pr_repair_contract]
 
 REPOSITORY = "owner/repo"
 PR_NUMBER = 2501
