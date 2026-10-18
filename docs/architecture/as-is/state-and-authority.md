@@ -1,6 +1,6 @@
 # State, evidence and authority boundaries
 
-Source snapshot: **`e1da0e87eb7215d870cbaddd4737bcd9bd6a87e8`** (2026-10-15 JST). [Scope and notation](README.md).
+Source snapshot: **`0769b84eaabcf2d0c6a80f6c62660bd179003e02`** (2026-10-18 UTC). [Scope and notation](README.md).
 
 ## A fact needs a producer, not just a convenient flag
 
@@ -40,17 +40,17 @@ The default local-job SQLite path is `~/.auto-coder/local_jobs.sqlite3`. Job rep
 
 ## Current joins are not a universal transaction
 
-Generation/slot state, local jobs, provider histories, retry state, review effects and post-merge intents are joined by orchestration and replay. Their co-occurrence in one function does not create atomic commit semantics. Retain explicit unknown and accepted-but-incomplete states when moving code across boundaries.
+Generation/slot state, local jobs, provider histories, retry state, review effects and post-merge intents are joined by orchestration and replay. `IssueImplementationService` joins admission to exact execution settlement, while `IssueRuntimeComposition` joins repository startup services; neither replaces those decisive stores. Their co-occurrence in one function does not create atomic commit semantics. Retain explicit unknown and accepted-but-incomplete states when moving code across boundaries.
 
 This map concerns correctness under the project's existing trusted deployment boundaries. It does not turn prompt instructions or ordinary workspace isolation into proof that an adversarial process cannot publish or escape.
 
 Sources: [implementation worker][worker], [job evidence][jobs], [runner recovery][runner], [dispatch][dispatch], [publication][finalizer], [CI conversion][ci], [PR authority and cleanup][pr], [review cycle][cycle].
 
-[worker]: https://github.com/kitamura-tetsuo/auto-coder/blob/e1da0e87eb7215d870cbaddd4737bcd9bd6a87e8/src/auto_coder/issue_implementation_worker.py
-[jobs]: https://github.com/kitamura-tetsuo/auto-coder/blob/e1da0e87eb7215d870cbaddd4737bcd9bd6a87e8/src/auto_coder/local_job_handoff.py
-[runner]: https://github.com/kitamura-tetsuo/auto-coder/blob/e1da0e87eb7215d870cbaddd4737bcd9bd6a87e8/src/auto_coder/local_job_runner.py
-[dispatch]: https://github.com/kitamura-tetsuo/auto-coder/blob/e1da0e87eb7215d870cbaddd4737bcd9bd6a87e8/src/auto_coder/issue_dispatch.py
-[finalizer]: https://github.com/kitamura-tetsuo/auto-coder/blob/e1da0e87eb7215d870cbaddd4737bcd9bd6a87e8/src/auto_coder/issue_job_finalizer.py
-[ci]: https://github.com/kitamura-tetsuo/auto-coder/blob/e1da0e87eb7215d870cbaddd4737bcd9bd6a87e8/src/auto_coder/util/github_action.py
-[pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/e1da0e87eb7215d870cbaddd4737bcd9bd6a87e8/src/auto_coder/pr_processor.py
-[cycle]: https://github.com/kitamura-tetsuo/auto-coder/blob/e1da0e87eb7215d870cbaddd4737bcd9bd6a87e8/src/auto_coder/pr_review_cycle.py
+[worker]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/issue_implementation_worker.py
+[jobs]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/local_job_handoff.py
+[runner]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/local_job_runner.py
+[dispatch]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/issue_dispatch.py
+[finalizer]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/issue_job_finalizer.py
+[ci]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/util/github_action.py
+[pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/pr_processor.py
+[cycle]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/pr_review_cycle.py
