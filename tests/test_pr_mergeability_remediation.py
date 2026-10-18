@@ -318,18 +318,22 @@ def test_start_mergeability_remediation_success(mock_update, mock_checkout, mock
         (RepairDisposition.FAILED, "remediation failed"),
     ],
 )
+@pytest.mark.parametrize("include_degrading_flag", [False, True])
 @patch("src.auto_coder.pr_processor.get_ghapi_client")
 @patch("src.auto_coder.pr_processor.GitHubClient")
 @patch("src.auto_coder.pr_processor.BranchManager")
 @patch("src.auto_coder.pr_processor._checkout_pr_branch", return_value=True)
 @patch("src.auto_coder.pr_processor._update_with_base_branch")
-def test_start_remediation_uses_typed_result_despite_identical_misleading_actions(mock_update, _checkout, _branch_manager, mock_github_client, mock_get_ghapi_client, disposition, expected_text):
+def test_start_remediation_uses_typed_result_despite_identical_misleading_actions(mock_update, _checkout, _branch_manager, mock_github_client, mock_get_ghapi_client, disposition, expected_text, include_degrading_flag):
     """REQ-003: display flags cannot change the remediation transition."""
     mock_api = Mock()
     mock_api.pulls.get.return_value = {"base": {"ref": "main"}, "head": {"ref": "feature"}}
     mock_get_ghapi_client.return_value = mock_api
     mock_github_client.get_instance.return_value.token = "token"
-    produced = PRActionList(("Pushed updated branch", "up to date with main branch", "ACTION_FLAG:SKIP_ANALYSIS", "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE"))
+    display = ["Pushed updated branch", "up to date with main branch", "ACTION_FLAG:SKIP_ANALYSIS"]
+    if include_degrading_flag:
+        display.append("ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE")
+    produced = PRActionList(display)
     produced.repair_result = PRRepairResult(disposition, reason="comparison failed")
     mock_update.return_value = produced
 

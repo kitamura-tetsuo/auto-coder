@@ -111,18 +111,24 @@ class TestPRProcessorLocalOverride:
         assert any("Checked out PR #123 branch" in action for action in actions)
 
 
-@pytest.mark.parametrize("disposition", [RepairDisposition.NO_UPDATE_NEEDED, RepairDisposition.FAILED])
-def test_ci_base_update_consumer_ignores_identical_misleading_actions(disposition):
+@pytest.mark.parametrize("disposition", [RepairDisposition.NO_UPDATE_NEEDED, RepairDisposition.FAILED, RepairDisposition.QUALITY_REFUSED])
+@pytest.mark.parametrize("include_degrading_flag", [False, True])
+def test_ci_base_update_consumer_ignores_identical_misleading_actions(disposition, include_degrading_flag):
     """REQ-003: the CI repair transition is authorized only by typed evidence."""
     repo_name = "test/repo"
     pr_data = {"number": 2540, "head": {"ref": "feature", "sha": "head"}, "base": {"ref": "main"}}
     config = AutomationConfig()
     config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = False
-    produced = PRActionList(("up to date with main branch", "Pushed updated branch", "ACTION_FLAG:SKIP_ANALYSIS", "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE"))
+    display = ["up to date with main branch", "Pushed updated branch", "ACTION_FLAG:SKIP_ANALYSIS"]
+    if include_degrading_flag:
+        display.append("ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE")
+    produced = PRActionList(display)
     produced.repair_result = PRRepairResult(disposition, reason="comparison failed")
     status = ProcessedPRResult(pr_data=pr_data, actions_taken=[], priority="fix", analysis=None)
+    client = _client()
 
     with (
+        patch("src.auto_coder.pr_processor.GitHubClient.get_instance", return_value=client),
         patch("src.auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as unsafe,
         patch("src.auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False),
         patch("src.auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
@@ -143,11 +149,14 @@ def test_ci_base_update_consumer_ignores_identical_misleading_actions(dispositio
         patch("src.auto_coder.pr_processor._merge_pr") as merge,
     ):
         unsafe.return_value = MagicMock(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
-        client = _client()
         actions = _handle_pr_merge(client, repo_name, pr_data, config, {}, status)
 
     update.assert_called_once()
     merge.assert_not_called()
+    if disposition is RepairDisposition.QUALITY_REFUSED:
+        client.close_pr.assert_called_once()
+        fix.assert_not_called()
+        return
     assert "ACTION_FLAG:SKIP_ANALYSIS" not in actions
     client.close_pr.assert_not_called()
     if disposition is RepairDisposition.NO_UPDATE_NEEDED:
