@@ -211,6 +211,7 @@ def test_delegation_uses_existing_task_and_actual_pr_branches(tmp_path) -> None:
     with (
         patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=(client, "task_existing")),
         patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=state_path),
+        patch("src.auto_coder.pr_processor._record_cloud_conflict_deliveries", wraps=_record_cloud_conflict_deliveries) as record,
     ):
         assert _delegate_cloud_merge_conflict_repair("owner/repo", pr_data())
 
@@ -565,8 +566,10 @@ def test_interrupted_conflict_reservation_reconciles_typed_provider_receipt(tmp_
         assert len(client.messages) == (1 if delivery is FollowUpDeliveryOutcome.NOT_DELIVERED else 0)
 
 
-def test_active_conflict_sender_prevents_reconciliation_and_duplicate_transport(tmp_path):
+def test_dispatch_defers_behind_active_sender_then_reopens_confirmed_journal(tmp_path):
+    """REQ-006: visible contention defers; re-entry never duplicates the send."""
     client = FollowupClient()
+    client.backend_name = "claude-routine"
     state_path = tmp_path / "repairs.json"
     entered = threading.Event()
     release = threading.Event()
@@ -582,21 +585,32 @@ def test_active_conflict_sender_prevents_reconciliation_and_duplicate_transport(
     with (
         patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=(client, "task_existing")),
         patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=state_path),
+        patch("src.auto_coder.pr_processor._record_cloud_conflict_deliveries", wraps=_record_cloud_conflict_deliveries) as record,
     ):
-        thread = threading.Thread(target=lambda: results.append(_delegate_cloud_merge_conflict_repair_result("owner/repo", pr_data())))
+        thread = threading.Thread(target=lambda: results.append(_dispatch_cloud_conflict_repair("owner/repo", pr_data(), MagicMock())))
         thread.start()
         try:
             assert entered.wait(timeout=5)
-            second = _delegate_cloud_merge_conflict_repair_result("owner/repo", pr_data())
-            assert not second
-            assert "coordination is unavailable" in second.reason
+            deferred = _dispatch_cloud_conflict_repair("owner/repo", pr_data(), MagicMock())
+            assert deferred.disposition is RepairDisposition.DEFERRED
+            assert deferred.retry_not_before is not None
+            assert deferred.retry_not_before > 0
+            assert deferred.repository == "owner/repo"
+            assert deferred.input_head == "H1"
+            assert deferred.base_ref == "release/2.x"
             assert next(iter(json.loads(state_path.read_text()).values()))["status"] == "pending"
         finally:
             release.set()
             thread.join(timeout=5)
         assert not thread.is_alive()
-    assert len(results) == 1 and results[0]
+        recovered = _dispatch_cloud_conflict_repair("owner/repo", pr_data(), MagicMock())
+    assert len(results) == 1
+    assert results[0].disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN
+    assert recovered.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN
+    assert recovered.receipt_state.value == "unknown"
     assert len(client.messages) == 1
+    assert record.call_count == 2
+    assert next(iter(json.loads(state_path.read_text()).values()))["status"] == "confirmed"
 
 
 @pytest.mark.parametrize("delivery", list(FollowUpDeliveryOutcome))

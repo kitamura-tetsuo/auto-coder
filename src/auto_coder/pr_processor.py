@@ -9558,7 +9558,12 @@ def _delegate_cloud_merge_conflict_repair_result(
         # This order avoids a journal/implementation-owner lock inversion.
         with file_lock(delivery_lock, timeout=0.0, reentrant=False):
             return _delegate_cloud_merge_conflict_repair_locked(repo_name, pr_data, github_client, resolved_origin=resolved_origin)
-    except (LockAcquisitionTimeout, OSError, RuntimeError) as exc:
+    except LockAcquisitionTimeout as exc:
+        retry_not_before = time.time() + 1.0
+        reason = f"cloud conflict delivery coordination is unavailable: {exc}"
+        logger.warning(reason)
+        return CloudConflictDelegationResult(reason=reason, deferred=True, retry_not_before=retry_not_before)
+    except (OSError, RuntimeError) as exc:
         reason = f"cloud conflict delivery coordination is unavailable: {exc}"
         logger.warning(reason)
         return CloudConflictDelegationResult(reason=reason)
