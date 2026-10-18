@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from contextlib import contextmanager
 from hashlib import sha256
-from typing import Iterator, Protocol
+from typing import AbstractSet, Iterator, Protocol
 
 from .local_job_handoff import LocalJobKind, LocalJobRecord, LocalJobState, LocalJobStore, LocalStartNotification, StartNotificationState
 from .local_llm_observability import bind_local_llm_start_callback, reset_local_llm_start_callback
@@ -59,9 +59,10 @@ class LocalIssueStartNotifier:
             daemon=True,
         ).start()
 
-    def recover(self) -> None:
+    def recover(self, repository: str, job_ids: AbstractSet[str] | None = None) -> None:
+        """Recover notifications within one runner's repository/job scope."""
         try:
-            recoverable = self._store.recoverable_start_notifications()
+            recoverable = tuple(notification for notification in self._store.recoverable_start_notifications() if notification.repository == repository and (job_ids is None or notification.job_id in job_ids))
         except Exception as exc:
             logger.warning("Local Issue start notification recovery enumeration failed: {}", type(exc).__name__)
             return

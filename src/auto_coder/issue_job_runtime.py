@@ -56,7 +56,7 @@ class IssueJobRuntime:
         )
 
     def recover_start_notifications(self) -> None:
-        self._adapter.recover_start_notifications()
+        self._adapter.recover_start_notifications(self.repository, None)
 
     def finalize(
         self,

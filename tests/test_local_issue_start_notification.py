@@ -178,7 +178,7 @@ def test_ambiguous_accepted_post_reconciles_exact_marker_without_repost(tmp_path
     assert retained is not None and retained.state is StartNotificationState.CONFIRMED
     assert github.posts == 1
 
-    LocalIssueStartNotifier(LocalJobStore(store.path), github).recover()
+    LocalIssueStartNotifier(LocalJobStore(store.path), github).recover("owner/repo")
     assert github.posts == 1
 
 
@@ -192,7 +192,7 @@ def test_ambiguous_post_with_unavailable_evidence_stays_indeterminate(tmp_path: 
     _wait_for_state(store, _job().job_id, StartNotificationState.INDETERMINATE)
     retained = store.get_start_notification(_job().job_id)
     assert retained is not None and retained.state is StartNotificationState.INDETERMINATE
-    LocalIssueStartNotifier(LocalJobStore(store.path), github).recover()
+    LocalIssueStartNotifier(LocalJobStore(store.path), github).recover("owner/repo")
     assert github.posts == 1
 
 
@@ -207,7 +207,7 @@ def test_definitely_unsent_delivery_recovers_after_job_settlement(tmp_path: Path
     assert retained is not None and retained.state is StartNotificationState.DEFINITELY_UNSENT
 
     github.post_error = None
-    LocalIssueStartNotifier(LocalJobStore(store.path), github).recover()
+    LocalIssueStartNotifier(LocalJobStore(store.path), github).recover("owner/repo")
     retained = store.get_start_notification(_job().job_id)
     assert retained is not None and retained.state is StartNotificationState.CONFIRMED
     assert github.posts == 2
@@ -413,7 +413,7 @@ def test_governor_deferral_is_retried_once_from_reopened_store(tmp_path: Path) -
     assert github.comments == []
 
     github.blocked = False
-    LocalIssueStartNotifier(LocalJobStore(store.path), github).recover()
+    LocalIssueStartNotifier(LocalJobStore(store.path), github).recover("owner/repo")
 
     retained = LocalJobStore(store.path).get_start_notification("governor-deferred")
     assert retained is not None and retained.state is StartNotificationState.CONFIRMED
@@ -446,7 +446,7 @@ def test_notification_state_failures_are_diagnostic_and_preserve_uncertainty(tmp
 
         diagnostics.clear()
 
-        LocalIssueStartNotifier(failing_store, github).recover()
+        LocalIssueStartNotifier(failing_store, github).recover("owner/repo")
         assert any("recovery enumeration failed" in message for message in diagnostics)
         assert base.get_start_notification(job.job_id).state is StartNotificationState.PENDING  # type: ignore[union-attr]
 

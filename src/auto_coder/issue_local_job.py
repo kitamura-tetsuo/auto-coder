@@ -74,9 +74,9 @@ class IssueLocalJobAdapter:
         self._repository_path = repository_path.resolve()
         self._start_notifier = LocalIssueStartNotifier(store, ports.github)
 
-    def recover_start_notifications(self) -> None:
+    def recover_start_notifications(self, repository: str, job_ids: frozenset[str] | None) -> None:
         """Recover notification effects independently of invocation settlement."""
-        self._start_notifier.recover()
+        self._start_notifier.recover(repository, job_ids)
 
     def authorize_provider_entry(self, job: LocalJobRecord) -> bool:
         if job.repository != self._repository:

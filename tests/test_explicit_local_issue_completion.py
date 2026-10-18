@@ -1,6 +1,7 @@
 """Integration coverage of single-target local execution and publication."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from threading import Event, Thread
 from unittest.mock import Mock, patch
@@ -23,7 +24,28 @@ from .test_issue_job_workspace import git, repository
 
 
 @pytest.mark.parametrize(
-    "behavior", ["published", "no_change", "failed", "refused", "newer_generation", "publication_pending", "codex_json", "claude_json", "muse_json", "cannot_fix", "external_runner", "external_checkpoint", "generated_cache", "cache_no_change", "stale_main", "retry_latest_main", "fetch_failed"]
+    "behavior",
+    [
+        "published",
+        "no_change",
+        "failed",
+        "refused",
+        "newer_generation",
+        "publication_pending",
+        "codex_json",
+        "claude_json",
+        "muse_json",
+        "cannot_fix",
+        "external_runner",
+        "external_checkpoint",
+        "generated_cache",
+        "cache_no_change",
+        "stale_main",
+        "retry_latest_main",
+        "fetch_failed",
+        "unrelated_notification_same_repository",
+        "unrelated_notification_other_repository",
+    ],
 )
 def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, monkeypatch, _use_real_commands, _use_real_sleep, behavior):
     fresh_source = behavior in {"stale_main", "retry_latest_main"}
@@ -80,7 +102,21 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
     assert guard.reserve(other_identity, CandidateHandoff("codex", "local")).admitted
     other = store.offer_issue(LocalJobOffer(LocalJobKind.ISSUE_IMPLEMENTATION, "owner/repo", 42, "0", "codex", "other"), other_identity, guard)
     assert other
+    notification_scope = behavior if behavior.startswith("unrelated_notification_") else ""
+    behavior = "published" if notification_scope else behavior
+    unrelated_notification = None
+    if notification_scope:
+        notification_job = other if notification_scope.endswith("same_repository") else replace(other, job_id=f"{other.job_id}-other-repository", repository="other/repo", target_number=99)
+        unrelated_notification = store.observe_issue_start(notification_job, backend_name="codex", model_name="model", marker=f"marker-{notification_job.job_id}")
+        assert unrelated_notification is not None
     github = Mock()
+    unrelated_notification_entered = Event()
+
+    def reject_unrelated_notification(*_args, **_kwargs):
+        unrelated_notification_entered.set()
+        raise AssertionError("explicit target entered an unrelated notification boundary")
+
+    github.add_comment_to_issue.side_effect = reject_unrelated_notification
     engine = AutomationEngine(github, AutomationConfig())
     traces = get_trace_collector()
     traces.clear()
@@ -214,6 +250,9 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
     assert results[0]["target_type"] == "issue"
     assert results[0]["target_number"] == 41
     assert calls == ([] if behavior in {"refused", "newer_generation", "fetch_failed"} else ["implement"])
+    assert not unrelated_notification_entered.is_set()
+    if unrelated_notification is not None:
+        assert store.get_start_notification(unrelated_notification.job_id) == unrelated_notification
     assert store.get(other.job_id).state is LocalJobState.PENDING
     assert source.joinpath("value.txt").read_text() == "original\n"
     assert git(source, "rev-parse", "HEAD") == shared_head
