@@ -17,7 +17,7 @@ from auto_coder.util.gh_cache import get_ghapi_client, is_implementation_ready, 
 from auto_coder.util.github_action import _check_github_actions_status, check_and_handle_closed_state, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
 from .attempt_manager import get_current_attempt, increment_attempt
-from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult, StaleJulesIssueResult
+from .automation_config import AutomationConfig, CandidateProcessingResult, ProcessedIssueResult, ProcessResult, StaleJulesIssueResult
 from .backend_manager import BackendManager, get_llm_backend_manager, parse_llm_output_as_json, run_llm_noedit_prompt
 from .branch_manager import BranchManager
 from .cloud_manager import CloudManager, CloudTaskBinding
@@ -1486,6 +1486,7 @@ def handle_stale_jules_issue_sessions(
     implementation_slots: Optional[ImplementationSlotRepository] = None,
     authorize_dispatch: Optional[Callable[[str, int, Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
     routing: Optional[IssueStageRoutingStore] = None,
+    dispatch_replacement: Optional[Callable[[int, Dict[str, Any], Dict[str, Any], Optional[str]], CandidateProcessingResult]] = None,
 ) -> StaleJulesIssueResult:
     """Take issues away from Jules sessions that ran out of time without opening a PR.
 
@@ -1614,12 +1615,11 @@ def handle_stale_jules_issue_sessions(
                     logger.warning(f"Skipping stale Jules session {session_id}: specification dispatch authorization is unavailable")
                     continue
                 # Captured before any of the stop/finish/release calls below,
-                # which may fully release and later recreate this owner
-                # record. This resumption is a continuation of whichever
-                # Implementation generation was already durably acquired
-                # (REQ-007 of #2061), never a fresh routing admission, so the
-                # replacement execution below must carry the same captured
-                # generation forward rather than recomputing "current" state.
+                # which may fully release and later recreate this owner record.
+                # Legacy fallback uses this ownership evidence directly.  The
+                # extracted replacement callback instead derives its generation
+                # from the post-stop authorized snapshot, which may include an
+                # edit made while Jules was running.
                 captured_generation = implementation_slots.implementation_generation(owner)
                 if not _stop_jules_session_for_issue(jules_client, repo_name, issue_number, session_id, timeout_hours, github_client, implementation_slots=implementation_slots):
                     continue
@@ -1646,6 +1646,22 @@ def handle_stale_jules_issue_sessions(
                 issue_data["title"] = str(authorized_issue.get("title") or "")
                 issue_data["body"] = str(authorized_issue.get("body") or "")
 
+                if dispatch_replacement is not None:
+                    result.actions.append(f"Stopped Jules session '{session_id}' for issue #{issue_number} (no PR within {timeout_hours}h)")
+                    get_trace_logger().log(
+                        "Jules Timeout",
+                        f"Stopped Jules session for issue #{issue_number}",
+                        item_type="issue",
+                        item_number=issue_number,
+                        details={"session_id": session_id, "timeout_hours": timeout_hours},
+                    )
+
+                    replacement = dispatch_replacement(issue_number, issue_data, authorized_issue, captured_generation)
+                    result.actions.extend(replacement.actions)
+                    if replacement.success:
+                        result.issue_numbers.append(issue_number)
+                    continue
+
                 replacement_execution_id = implementation_slots.start_execution(
                     owner,
                     github_client=github_client if isinstance(github_client, GitHubClient) else None,
@@ -1658,7 +1674,6 @@ def handle_stale_jules_issue_sessions(
                     # Recover the routing tombstone now in case the earlier
                     # acquisition crashed before it was persisted (REQ-004).
                     confirm_implementation_ownership(routing, repo_name, owner, captured_generation)
-
                 try:
                     result.actions.append(f"Stopped Jules session '{session_id}' for issue #{issue_number} (no PR within {timeout_hours}h)")
                     get_trace_logger().log(
@@ -1674,28 +1689,17 @@ def handle_stale_jules_issue_sessions(
                     try:
                         new_attempt = increment_attempt(repo_name, issue_number)
                         result.actions.append(f"Incremented attempt for issue #{issue_number} to {new_attempt}")
-                    except Exception as e:
-                        logger.error(f"Failed to increment attempt for issue #{issue_number}: {e}")
-                        result.actions.append(f"Failed to increment attempt for issue #{issue_number}: {e}")
-
+                    except Exception as exc:
+                        logger.error(f"Failed to increment attempt for issue #{issue_number}: {exc}")
+                        result.actions.append(f"Failed to increment attempt for issue #{issue_number}: {exc}")
                     from .cli_helpers import create_high_score_backend_manager
 
                     backend_manager = create_high_score_backend_manager()
                     if backend_manager is None:
                         logger.warning("backend_with_high_score is not configured; using the default backend for the Jules fallback")
-
                     # The @auto-coder label the Jules run left on the issue is kept so no other
-                    # instance picks the issue up while the fallback is working on it. Passing
-                    result.actions.extend(
-                        _take_issue_actions(
-                            repo_name,
-                            issue_data,
-                            config,
-                            github_client,
-                            backend_manager=backend_manager,
-                            implementation_slots=implementation_slots,
-                        )
-                    )
+                    # instance picks the issue up while the fallback is working on it.
+                    result.actions.extend(_take_issue_actions(repo_name, issue_data, config, github_client, backend_manager=backend_manager, implementation_slots=implementation_slots))
                     result.issue_numbers.append(issue_number)
                 finally:
                     implementation_slots.finish_execution(owner, replacement_execution_id)

@@ -2608,3 +2608,15 @@ CI retains the executing-check wording and collector logs separately identify
 route exclusion or retention. It adds no structured event field, outcome,
 stage, origin, or dashboard renderer; existing CI availability and policy-route
 evidence remain authoritative rather than the diagnostic text.
+
+# Issue implementation execution service
+
+Issue ownership-to-dispatch orchestration now runs through
+`IssueImplementationService` for every ordinary Issue entry. This extraction is
+observability-neutral: the controller supplies the existing trace callbacks,
+and provider selection, dispatch outcomes, retry facts, non-start evidence, and
+slot-release stages keep their established names and meanings. In particular,
+handoff success remains provider-entry evidence rather than model completion,
+publication, or merge evidence. Focused production-boundary coverage remains in
+`tests/test_issue_implementation_worker.py` and
+`tests/test_implementation_ownership.py`.
