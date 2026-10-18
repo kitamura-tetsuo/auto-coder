@@ -32,6 +32,7 @@ from auto_coder.durable_repair_allowance import RepairAllowanceLedger
 from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.github_ci_observer import fence_active_ci_observations
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from auto_coder.local_ci_repair_execution import LocalCIRepairResult
 from auto_coder.local_review_repair import LocalReviewRepairRequest, admit_local_repair_allowance
 from auto_coder.pr_processor import (
     ClaimedReviewThreadGateState,
@@ -41,6 +42,7 @@ from auto_coder.pr_processor import (
     PRActionList,
     PRReviewCoordinationResult,
     TwoTierGateInputs,
+    _dispatch_local_ci_failure_repair,
     _handle_pr_merge,
     _start_mergeability_remediation,
 )
@@ -57,6 +59,38 @@ REPOSITORY = "owner/repo"
 PR_NUMBER = 2501
 H1 = "1" * 40
 H2 = "2" * 40
+
+
+@pytest.mark.parametrize(
+    ("execution", "disposition"),
+    [
+        (LocalCIRepairResult(("published",), True, H2, True), RepairDisposition.APPLIED),
+        (LocalCIRepairResult(("push failed",), True, H2, False, failure_reason="push failed"), RepairDisposition.FAILED),
+        (LocalCIRepairResult(("quota wait",), retry_not_before=4321.0, quota_deferred=True), RepairDisposition.DEFERRED),
+        (LocalCIRepairResult(("no correction",)), RepairDisposition.REFUSED),
+    ],
+)
+def test_local_ci_executor_facts_cross_typed_pr_repair_boundary(execution, disposition):
+    """REQ-001/002: local executor facts, not action wording, control orchestration."""
+    pr_data = {
+        "number": PR_NUMBER,
+        "head": {"sha": H1},
+        "base": {"ref": "main"},
+    }
+
+    result = _dispatch_local_ci_failure_repair(REPOSITORY, pr_data, lambda: execution)
+
+    assert result.disposition is disposition
+    assert result.actions == execution.actions
+    assert result.repository == REPOSITORY
+    assert result.pr_number == PR_NUMBER
+    assert result.input_head == H1
+    assert result.base_ref == "main"
+    assert result.resulting_head == execution.candidate_head
+    assert result.retry_not_before == execution.retry_not_before
+    if disposition is RepairDisposition.APPLIED:
+        assert result.synchronization_state is RepairFactState.AVAILABLE
+        assert result.synchronized is True
 
 
 def _snapshot(
