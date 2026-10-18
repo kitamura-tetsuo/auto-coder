@@ -59,3 +59,20 @@ def test_execution_service_does_not_fallback_after_a_refusal() -> None:
     assert calls == 1
     assert result.disposition is RepairDisposition.REFUSED
     assert result.reason == "origin does not support repair"
+
+
+def test_conflict_service_preserves_producer_result_when_base_is_not_preobserved() -> None:
+    request_without_base = BaseUpdateExecutionRequest("owner/repo", 2542, "head-1", "", "cloud")
+
+    result = BaseUpdateConflictExecutionService().execute_conflict_repair(
+        request_without_base,
+        lambda: PRRepairResult(
+            RepairDisposition.DEFERRED,
+            reason="owner quota wait",
+            retry_not_before=1234.0,
+        ),
+    )
+
+    assert result.disposition is RepairDisposition.DEFERRED
+    assert result.retry_not_before == 1234.0
+    assert result.base_ref == ""

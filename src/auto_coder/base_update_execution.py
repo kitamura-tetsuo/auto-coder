@@ -23,8 +23,8 @@ class BaseUpdateExecutionRequest:
     origin: str
 
     def __post_init__(self) -> None:
-        if not self.repository or self.pr_number <= 0 or not self.base_ref:
-            raise ValueError("repository, positive PR number and base ref are required")
+        if not self.repository or self.pr_number <= 0:
+            raise ValueError("repository and positive PR number are required")
 
 
 @dataclass(frozen=True)

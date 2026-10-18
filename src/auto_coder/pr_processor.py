@@ -1342,10 +1342,6 @@ def _dispatch_cloud_conflict_repair(
         return PRRepairResult(RepairDisposition.REFUSED, actions, produced.reason)
 
     base_ref = str(pr_data.get("base", {}).get("ref") or pr_data.get("base_branch") or "")
-    if not base_ref:
-        # Cloud delivery identity requires the configured PR base. Refuse
-        # before entering the journal producer rather than guessing ``main``.
-        return PRRepairResult(RepairDisposition.REFUSED, reason="the PR base metadata required for repair is unavailable")
     execution_request = BaseUpdateExecutionRequest(
         repo_name,
         int(pr_data["number"]),
