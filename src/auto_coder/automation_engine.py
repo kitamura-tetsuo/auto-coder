@@ -104,6 +104,7 @@ from .issue_review_service import (
     build_decomposition_descriptor,
     build_individual_descriptor,
 )
+from .issue_runtime_composition import IssueRuntimeComposition
 from .issue_stage_routing import (
     IMPLEMENTATION_STAGE,
     REVIEW_STAGE,
@@ -1057,6 +1058,7 @@ class AutomationEngine:
         self.invocation_gate = InvocationAdmissionGate()
         self.local_job_store: Optional[LocalJobStore] = None
         self._issue_job_runtimes: Dict[str, IssueJobRuntime] = {}
+        self._issue_runtime_composition: Optional[IssueRuntimeComposition] = None
         # Full Jules discovery is deliberately delayed after startup.  Claiming
         # a cycle advances this deadline before any HTTP work begins, so a
         # failed listing cannot cause a hot retry on the next loop iteration.
@@ -2683,16 +2685,24 @@ class AutomationEngine:
         # falls back to shared storage or an empty queue.
         store = get_pending_work_store(repo_name)
         self._pending_work_repository_key = repository_key
-        self.pending_work_scheduler = PendingWorkScheduler(store, repository=repo_name)
-        self.pending_work_scheduler.register_handler(STARTUP_RECONCILIATION_STAGE, _StartupReconciliationHandler(self, repo_name))
-        self.pending_work_scheduler.register_handler(PR_PROCESSING_STAGE, _PrProcessingStageHandler(self, repo_name))
-        self.pending_work_scheduler.register_handler(ISSUE_PROCESSING_STAGE, _IssueProcessingStageHandler(self, repo_name))
-        self.pending_work_scheduler.register_handler(
-            CODEX_RETRY_HANDOFF_STAGE,
-            _CodexRetryHandoffStageHandler(self._codex_retry_reconciler(repo_name), repo_name),
+        slots = self._get_implementation_slots(repo_name)
+        composition = IssueRuntimeComposition(
+            repo_name,
+            store,
+            self._get_issue_job_runtime(repo_name, slots),
+            self._codex_retry_reconciler(repo_name),
         )
-        self.pending_work_scheduler.register_handler(VALIDATION_PUBLICATION_STAGE, _ValidationPublicationStageHandler(self, repo_name))
-        self.pending_work_scheduler.register_handler(DECOMPOSITION_PUBLICATION_STAGE, _DecompositionPublicationStageHandler(self, repo_name))
+        self.pending_work_scheduler = composition.register(
+            {
+                STARTUP_RECONCILIATION_STAGE: _StartupReconciliationHandler(self, repo_name),
+                PR_PROCESSING_STAGE: _PrProcessingStageHandler(self, repo_name),
+                ISSUE_PROCESSING_STAGE: _IssueProcessingStageHandler(self, repo_name),
+                CODEX_RETRY_HANDOFF_STAGE: _CodexRetryHandoffStageHandler(composition.retry_reconciler, repo_name),
+                VALIDATION_PUBLICATION_STAGE: _ValidationPublicationStageHandler(self, repo_name),
+                DECOMPOSITION_PUBLICATION_STAGE: _DecompositionPublicationStageHandler(self, repo_name),
+            }
+        )
+        self._issue_runtime_composition = composition
 
     async def start_automation(self, repo_name: str, concurrency: Optional[int] = None) -> None:
         """Start independent Issue and PR pools with ``concurrency`` workers each."""
@@ -2750,16 +2760,15 @@ class AutomationEngine:
         # enumeration that only marks entities dirty again.
         self._startup_reconciliation_event = asyncio.Event()
         assert self.pending_work_scheduler is not None
-        pending_work_task = asyncio.create_task(self.pending_work_scheduler.run(self._shutdown_event), name="pending-work-scheduler")
+        assert self._issue_runtime_composition is not None
 
-        # Provider projection acknowledgements written by older releases do
-        # not prove the enclosing logical-slot write happened. Discover every
-        # accepted, not-joined receipt before startup reconciliation so normal
-        # pending-work service can finish it without creating provider work.
-        from .retry_dispatch import RetryDispatchRepository
+        def wake_issue_publication(_job: Any) -> None:
+            self._resume_local_issue_publications(repo_name, self._get_implementation_slots(repo_name))
 
-        for handoff in RetryDispatchRepository(repo_name).list_unfinished_accepted():
-            self._schedule_codex_retry_handoff(repo_name, handoff.request_id, handoff.issue_number)
+        pending_work_task = self._issue_runtime_composition.start_recovery(
+            self._shutdown_event,
+            schedule_retry=lambda request_id, issue_number: self._schedule_codex_retry_handoff(repo_name, request_id, issue_number),
+        )
 
         # A pending approval/merge effect (Issue #1939) is resumed by its own
         # dedicated scheduler rather than PR_PROCESSING_STAGE: its deadlines,
@@ -2833,20 +2842,11 @@ class AutomationEngine:
             # preventing ordinary Issue/PR work from serving the repository.
             logger.error(f"Codex initial-PR recovery is unavailable for {repo_name}: {type(exc).__name__}")
         capacity_task = asyncio.create_task(self._capacity_refill_loop(repo_name), name="implementation-capacity-refill") if isinstance(slot_repository, ImplementationSlotRepository) else None
-        local_runner = None
-        local_runner_task = None
-        if isinstance(slot_repository, ImplementationSlotRepository):
-            assert self.local_job_store is not None
-            issue_runtime = self._get_issue_job_runtime(repo_name, slot_repository)
-
-            def wake_issue_publication(_job: Any) -> None:
-                self._resume_local_issue_publications(repo_name, slot_repository)
-
-            local_runner = issue_runtime.new_runner(
-                capacity=max(1, self.config.MAX_CONCURRENT_IMPLEMENTATIONS),
-                completion_wake=wake_issue_publication,
-            )
-            local_runner_task = asyncio.create_task(self._local_job_runner_loop(local_runner), name="durable-local-job-runner")
+        local_runner, local_runner_task = self._issue_runtime_composition.start_local_jobs(
+            self._shutdown_event,
+            capacity=self.config.MAX_CONCURRENT_IMPLEMENTATIONS,
+            completion_wake=wake_issue_publication,
+        )
 
         # Reserve worker capacity for each type so either lane can make progress.
         workers = [asyncio.create_task(self._worker_loop(repo_name, offset * concurrency + i, item_type), name=f"{item_type}-worker-{i}") for offset, item_type in enumerate(("issue", "pr")) for i in range(concurrency)]
@@ -2856,8 +2856,7 @@ class AutomationEngine:
             all_loop_tasks.append(codex_recovery_task)
         if capacity_task is not None:
             all_loop_tasks.append(capacity_task)
-        if local_runner_task is not None:
-            all_loop_tasks.append(local_runner_task)
+        all_loop_tasks.append(local_runner_task)
         shutdown_wait = asyncio.create_task(self._shutdown_event.wait(), name="graceful-shutdown-request")
         try:
             done, _ = await asyncio.wait({*all_loop_tasks, shutdown_wait}, return_when=asyncio.FIRST_COMPLETED)
@@ -2915,16 +2914,6 @@ class AutomationEngine:
             shutdown_wait.cancel()
             local_job_runner.close(wait=False)
             get_health_monitor().log_snapshot(reason="engine_stop")
-
-    async def _local_job_runner_loop(self, runner: Any) -> None:
-        """Continuously discover durable local jobs without occupying a worker."""
-        assert self._shutdown_event is not None
-        while not self._shutdown_event.is_set():
-            await asyncio.to_thread(runner.poll)
-            try:
-                await asyncio.wait_for(self._shutdown_event.wait(), timeout=0.25)
-            except asyncio.TimeoutError:
-                pass
 
     def _get_local_job_store(self) -> LocalJobStore:
         """Return the engine-wide durable authority for daemon and explicit routes."""
