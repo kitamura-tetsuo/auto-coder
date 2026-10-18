@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
@@ -722,6 +723,56 @@ def test_retry_flag_gate_and_same_request_competition_cross_production_candidate
     assert downstream_authorities == []
 
     request_id = "production-same-request"
+    # Hold both production calls after the service has durably accepted R but
+    # before either can project it into slot ownership.  A bare thread-pool
+    # race can otherwise complete the first call before the second is ever
+    # scheduled and therefore prove only sequential replay.
+    import auto_coder.issue_retry_admission as retry_admission
+
+    real_acquire = retry_admission.acquire_explicit_retry
+    acquisition_paused = threading.Event()
+    release_acquisition = threading.Event()
+    acquisition_entry_lock = threading.Lock()
+    acquisition_entries = 0
+
+    def checkpointed_acquire(*args, **kwargs):
+        nonlocal acquisition_entries
+        with acquisition_entry_lock:
+            acquisition_entries += 1
+            entry = acquisition_entries
+        if entry == 1:
+            acquisition_paused.set()
+            assert release_acquisition.wait(timeout=5), "test did not release retry ownership projection"
+        return real_acquire(*args, **kwargs)
+
+    monkeypatch.setattr(retry_admission, "acquire_explicit_retry", checkpointed_acquire)
+    real_get_slots = engine._get_implementation_slots
+    candidate_threads_at_ownership_boundary = set()
+    candidate_boundary_lock = threading.Lock()
+    both_candidates_ready = threading.Event()
+
+    def checkpointed_get_slots(*args, **kwargs):
+        slots = real_get_slots(*args, **kwargs)
+        with candidate_boundary_lock:
+            candidate_threads_at_ownership_boundary.add(threading.get_ident())
+            if len(candidate_threads_at_ownership_boundary) == 2:
+                both_candidates_ready.set()
+        assert both_candidates_ready.wait(timeout=5), "both candidates did not reach the ownership boundary"
+        return slots
+
+    monkeypatch.setattr(engine, "_get_implementation_slots", checkpointed_get_slots)
+    real_start_execution = engine.implementation_slots.start_execution
+    retry_slot_acquisitions = 0
+    retry_slot_lock = threading.Lock()
+
+    def counted_start_execution(*args, **kwargs):
+        nonlocal retry_slot_acquisitions
+        if kwargs.get("retry_request_id") == request_id:
+            with retry_slot_lock:
+                retry_slot_acquisitions += 1
+        return real_start_execution(*args, **kwargs)
+
+    monkeypatch.setattr(engine.implementation_slots, "start_execution", counted_start_execution)
 
     def process_retry():
         return engine._process_single_candidate_unified(
@@ -736,12 +787,37 @@ def test_retry_flag_gate_and_same_request_competition_cross_production_candidate
         )
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        results = tuple(executor.map(lambda _index: process_retry(), range(2)))
+        futures = (executor.submit(process_retry), executor.submit(process_retry))
+        assert both_candidates_ready.wait(timeout=5)
+        assert acquisition_paused.wait(timeout=5)
+        assert not futures[0].done() and not futures[1].done()
+        accepted = engine.issue_stage_routing.retry_request(request_id)
+        assert accepted is not None and accepted.status == "pending"
+        assert accepted.request_id == request_id and accepted.attempt_id
+        assert accepted.generation == generation
+        assert downstream_authorities == []
+        release_acquisition.set()
+        results = tuple(future.result(timeout=5) for future in futures)
 
+    assert len(candidate_threads_at_ownership_boundary) == 2
+    assert acquisition_entries == 2
+    assert retry_slot_acquisitions == 1
     assert all(result.success for result in results)
     assert len(downstream_authorities) == 2
     assert all(authority is not None for authority in downstream_authorities)
-    identities = {(authority.request_id, authority.attempt_id, authority.generation, authority.ownership_reference) for authority in downstream_authorities}
+    identities = {
+        (
+            authority.request_id,
+            authority.attempt_id,
+            authority.generation,
+            authority.predecessor_captured,
+            authority.predecessor_provider,
+            authority.predecessor_task_id,
+            authority.predecessor_backend_name,
+            authority.ownership_reference,
+        )
+        for authority in downstream_authorities
+    }
     assert len(identities) == 1
     assert identities.pop()[0] == request_id
     stored = engine.issue_stage_routing.retry_request(request_id)
