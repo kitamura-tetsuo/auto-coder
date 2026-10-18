@@ -5,7 +5,8 @@ import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.ci_repair_authority import CIRepairAuthority
-from src.auto_coder.pr_processor import _handle_pr_merge
+from src.auto_coder.pr_processor import PRActionList, ProcessedPRResult, PRProcessingOutcome, _handle_pr_merge
+from src.auto_coder.pr_repair_dispatch import PRRepairResult, RepairDisposition
 from tests.ci_observation_fakes import authoritative_ci_status
 
 
@@ -108,3 +109,48 @@ class TestPRProcessorLocalOverride:
 
         # 4. Verify actions contain expected messages
         assert any("Checked out PR #123 branch" in action for action in actions)
+
+
+@pytest.mark.parametrize("disposition", [RepairDisposition.NO_UPDATE_NEEDED, RepairDisposition.FAILED])
+def test_ci_base_update_consumer_ignores_identical_misleading_actions(disposition):
+    """REQ-003: the CI repair transition is authorized only by typed evidence."""
+    repo_name = "test/repo"
+    pr_data = {"number": 2540, "head": {"ref": "feature", "sha": "head"}, "base": {"ref": "main"}}
+    config = AutomationConfig()
+    config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = False
+    produced = PRActionList(("up to date with main branch", "Pushed updated branch", "ACTION_FLAG:SKIP_ANALYSIS"))
+    produced.repair_result = PRRepairResult(disposition, reason="comparison failed")
+    status = ProcessedPRResult(pr_data=pr_data, actions_taken=[], priority="fix", analysis=None)
+
+    with (
+        patch("src.auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as unsafe,
+        patch("src.auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False),
+        patch("src.auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+        patch("src.auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True}),
+        patch("src.auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=False, ids=[1])),
+        patch("src.auto_coder.pr_processor.get_detailed_checks_from_history", return_value=MagicMock(failed_checks=["PR Tests"])),
+        patch("src.auto_coder.pr_processor.check_pr_repair_exhaustion", return_value=None),
+        patch("src.auto_coder.pr_processor._is_jules_pr", return_value=False),
+        patch("src.auto_coder.pr_processor._is_codex_pr", return_value=False),
+        patch("src.auto_coder.pr_processor._is_dependabot_pr", return_value=False),
+        patch("src.auto_coder.pr_processor._is_local_llm_pr", return_value=True),
+        patch("src.auto_coder.pr_processor._checkout_pr_branch", return_value=True),
+        patch("src.auto_coder.pr_processor.BranchManager", return_value=nullcontext()),
+        patch("src.auto_coder.pr_processor._update_with_base_branch", return_value=produced) as update,
+        patch("src.auto_coder.pr_processor._is_automatic_test_fix_enabled", return_value=True),
+        patch("src.auto_coder.pr_processor._get_github_actions_logs", return_value="logs"),
+        patch("src.auto_coder.pr_processor._fix_pr_issues_with_testing", return_value=PRActionList()) as fix,
+        patch("src.auto_coder.pr_processor._merge_pr") as merge,
+    ):
+        unsafe.return_value = MagicMock(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
+        actions = _handle_pr_merge(_client(), repo_name, pr_data, config, {}, status)
+
+    update.assert_called_once()
+    merge.assert_not_called()
+    assert "ACTION_FLAG:SKIP_ANALYSIS" not in actions
+    if disposition is RepairDisposition.NO_UPDATE_NEEDED:
+        fix.assert_called_once()
+        assert status.outcome is not PRProcessingOutcome.FAILED
+    else:
+        fix.assert_not_called()
+        assert status.outcome is PRProcessingOutcome.FAILED

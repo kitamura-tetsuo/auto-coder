@@ -311,6 +311,36 @@ def test_start_mergeability_remediation_success(mock_update, mock_checkout, mock
     assert "Failed" not in str(actions)
 
 
+@pytest.mark.parametrize(
+    ("disposition", "expected_text"),
+    [
+        (RepairDisposition.NO_UPDATE_NEEDED, "found no base update needed"),
+        (RepairDisposition.FAILED, "remediation failed"),
+    ],
+)
+@patch("src.auto_coder.pr_processor.get_ghapi_client")
+@patch("src.auto_coder.pr_processor.GitHubClient")
+@patch("src.auto_coder.pr_processor.BranchManager")
+@patch("src.auto_coder.pr_processor._checkout_pr_branch", return_value=True)
+@patch("src.auto_coder.pr_processor._update_with_base_branch")
+def test_start_remediation_uses_typed_result_despite_identical_misleading_actions(mock_update, _checkout, _branch_manager, mock_github_client, mock_get_ghapi_client, disposition, expected_text):
+    """REQ-003: display flags cannot change the remediation transition."""
+    mock_api = Mock()
+    mock_api.pulls.get.return_value = {"base": {"ref": "main"}, "head": {"ref": "feature"}}
+    mock_get_ghapi_client.return_value = mock_api
+    mock_github_client.get_instance.return_value.token = "token"
+    produced = PRActionList(("Pushed updated branch", "up to date with main branch", "ACTION_FLAG:SKIP_ANALYSIS"))
+    produced.repair_result = PRRepairResult(disposition, reason="comparison failed")
+    mock_update.return_value = produced
+
+    actions = _start_mergeability_remediation(2040, "DIRTY", repo_name="owner/repo")
+
+    assert mock_update.call_count == 1
+    assert expected_text in " ".join(actions).lower()
+    assert "ACTION_FLAG:SKIP_ANALYSIS" not in actions
+    assert ("remediation completed" in " ".join(actions).lower()) is False
+
+
 @patch("src.auto_coder.pr_processor.get_ghapi_client")
 @patch("src.auto_coder.pr_processor.GitHubClient")
 def test_start_mergeability_remediation_pr_details_fails(mock_github_client, mock_get_ghapi_client):

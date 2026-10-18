@@ -3630,6 +3630,8 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
         # Step 5: Verify successful remediation
         # If push succeeded, the action flag will be set
         repair_result = update_actions.repair_result
+        if repair_result is not None and repair_result.disposition in {RepairDisposition.NO_UPDATE_NEEDED, RepairDisposition.FAILED}:
+            actions[:] = [action for action in actions if action != "ACTION_FLAG:SKIP_ANALYSIS"]
         if repair_result is not None and repair_result.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN:
             actions.append(f"Mergeability remediation delegated for PR #{pr_number}; deferring until a later pass observes a new head")
             actions.append("ACTION_FLAG:SKIP_ANALYSIS")
@@ -6855,6 +6857,8 @@ def _handle_pr_merge(
                     update_result = update_actions.repair_result
                     if update_result is None:
                         raise RuntimeError("base update returned no typed control result")
+                    if update_result.disposition in {RepairDisposition.NO_UPDATE_NEEDED, RepairDisposition.FAILED}:
+                        actions[:] = [action for action in actions if action != "ACTION_FLAG:SKIP_ANALYSIS"]
                     if update_result.disposition in {RepairDisposition.APPLIED, RepairDisposition.ACCEPTED_OR_UNCERTAIN, RepairDisposition.DEFERRED, RepairDisposition.REFUSED}:
                         actions.append(f"Updated PR #{pr_number} with base branch, skipping to next PR for GitHub Actions check")
                         get_trace_logger().log("Update Base", f"Pushed updated branch for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "pushed"})
@@ -6885,6 +6889,11 @@ def _handle_pr_merge(
                                 processing_status.error = local_repair.reason
                         else:
                             actions.append(f"No specific failed checks found for PR #{pr_number}")
+                    elif update_result.disposition is RepairDisposition.FAILED:
+                        actions.append(f"Base branch comparison or update failed for PR #{pr_number}")
+                        if processing_status is not None:
+                            processing_status.outcome = PRProcessingOutcome.FAILED
+                            processing_status.error = update_result.reason or "base branch update failed"
                     else:
                         # If we reach here, some other update action occurred
                         actions.append(f"PR #{pr_number} processing completed")
