@@ -349,7 +349,9 @@ def test_base_update_publication_result_reaches_remediation_consumer(
         assert actions.repair_result.synchronization_state is RepairFactState.UNKNOWN
         assert actions.repair_result.synchronized is False
         assert actions.repair_result.resulting_head == subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository, check=True, capture_output=True, text=True).stdout.strip()
-        assert subprocess.run(["git", "rev-parse", "refs/remotes/origin/feature"], cwd=repository, check=True, capture_output=True, text=True).stdout.strip() != actions.repair_result.resulting_head
+        remote_head = subprocess.run(["git", "--git-dir", str(remote), "rev-parse", "refs/heads/feature"], check=True, capture_output=True, text=True).stdout.strip()
+        assert remote_head != actions.repair_result.resulting_head
+        assert remote_head == subprocess.run(["git", "rev-parse", "HEAD^1"], cwd=repository, check=True, capture_output=True, text=True).stdout.strip()
         assert any("is up to date with main branch" in action for action in actions)
         assert not any("Mergeability remediation completed" in action for action in actions)
         assert "ACTION_FLAG:SKIP_ANALYSIS" not in actions
