@@ -49,6 +49,7 @@ from auto_coder.local_job_runner import LocalJobExecutionResult, LocalJobRunner
 from auto_coder.specification_analyzer import SpecificationAnalysisResult
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
 from auto_coder.stale_jules_recovery import capture_stale_jules_recovery, find_pending_stale_jules_recovery
+from auto_coder.util.gh_cache import GitHubClient
 from tests.test_issue_stage_routing import REPO, _routing_engine
 
 ISSUE = ImplementationOwner("issue", 1)
@@ -880,6 +881,92 @@ def test_automatic_stale_jules_recovery_acquires_once_predecessor_is_free(tmp_pa
     assert engine.implementation_slots.implementation_generation(owner) == generation
     assert engine.issue_stage_routing.is_implementation_owned(REPO, 1, generation)
     assert find_pending_stale_jules_recovery(engine.issue_stage_routing, REPO, 1) is None
+
+
+def test_stale_recovery_hierarchy_outage_retains_refill_and_exact_request(tmp_path, monkeypatch):
+    """#2523 REQ-005/REQ-006: a temporary failure inside the real slot
+    acquisition remains retryable and cannot strand the durable recovery R."""
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    snapshot = _standalone_snapshot(1, created_at)
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, _github = _ready_engine(tmp_path, monkeypatch, {1: snapshot}, config)
+    generation = engine._compute_implementation_generation(REPO, snapshot, None)
+    authority = capture_stale_jules_recovery(engine.issue_stage_routing, REPO, 1, 9001, generation)
+    assert authority is not None
+
+    class AcquisitionHierarchyAdapter(GitHubClient):
+        """Minimal production-compatible reader with one acquisition outage."""
+
+        def __init__(self):
+            self.fail_hierarchy = True
+
+        def get_issue_dispatch_snapshot_strict(self, _repository, _number):
+            return dict(snapshot)
+
+        def get_direct_sub_issues_strict(self, _repository, _number):
+            return []
+
+        def get_open_sub_issues_strict(self, _repository, _number):
+            return []
+
+        def get_parent_issue_details_strict(self, _repository, _number):
+            return None
+
+        def get_parent_issue_number_strict(self, _repository, _number):
+            return None
+
+        def get_issue_hierarchy_generation_strict(self, _repository, _number):
+            if self.fail_hierarchy:
+                raise RuntimeError("temporary hierarchy outage")
+            return "hierarchy-generation-1"
+
+    adapter = AcquisitionHierarchyAdapter()
+    engine.github = adapter
+    # Keep unrelated relationship discovery outside this acquisition-focused
+    # oracle; the real slots repository still consumes the adapter above.
+    monkeypatch.setattr(engine, "_standalone_relationship_is_current", lambda *_args: True)
+    downstream = MagicMock(return_value=CandidateProcessingResult(type="issue", number=1, success=True, actions=["dispatched"]))
+    engine._process_single_candidate_reserved = downstream
+    candidate = Candidate(type="issue", data=dict(snapshot), priority=0)
+
+    failed = engine._process_single_candidate_unified(REPO, candidate, config, origin="capacity-refill-intake")
+
+    assert failed.success is False
+    assert failed.refill_retry_required is True
+    assert failed.error is not None and "authoritative hierarchy" in failed.error
+    downstream.assert_not_called()
+    retained = engine.issue_stage_routing.retry_request(authority.request_id)
+    assert retained is not None
+    assert (retained.request_id, retained.attempt_id, retained.generation) == (
+        authority.request_id,
+        authority.attempt_id,
+        authority.generation,
+    )
+    assert retained.predecessor_captured is True
+    assert retained.status == "pending"
+    assert engine.implementation_slots.active_execution_ids(ImplementationOwner("issue", 1)) == ()
+
+    # The same engine/controller retries its retained refill obligation after
+    # the authoritative read recovers; no slot transition or new wake occurs.
+    adapter.fail_hierarchy = False
+    resumed = engine._process_single_candidate_unified(
+        REPO,
+        Candidate(type="issue", data=dict(snapshot), priority=0),
+        config,
+        origin="capacity-refill-intake",
+    )
+
+    assert resumed.success is True
+    downstream.assert_called_once()
+    granted = downstream.call_args.kwargs["retry_authority"]
+    assert (granted.request_id, granted.attempt_id, granted.generation) == (
+        authority.request_id,
+        authority.attempt_id,
+        authority.generation,
+    )
+    assert granted.status == "owned"
 
 
 def test_automatic_stale_jules_recovery_invalidated_on_generation_change(tmp_path, monkeypatch):

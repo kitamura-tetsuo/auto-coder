@@ -12,7 +12,13 @@ from enum import Enum
 from typing import Optional
 
 from .implementation_ownership import acquire_explicit_retry
-from .implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from .implementation_slots import (
+    ImplementationHierarchyConflict,
+    ImplementationHierarchyUnavailable,
+    ImplementationOwner,
+    ImplementationSlotRepository,
+    ImplementationSlotUnavailable,
+)
 from .issue_stage_routing import ImplementationRetryRequest, IssueStageRoutingStore
 
 
@@ -60,8 +66,8 @@ class IssueRetryAdmissionService:
         bypass_capacity: bool = False,
     ) -> IssueRetryAdmission:
         """Acquire one existing request without performing provider submission."""
+        authority: Optional[ImplementationRetryRequest] = None
         try:
-            authority: Optional[ImplementationRetryRequest]
             if origin is IssueRetryOrigin.MANUAL:
                 blockers = tuple(request for request in self._routing.retry_requests(repository, target_number) if request.status == "pending" and request.request_id != request_id)
                 if blockers:
@@ -99,8 +105,14 @@ class IssueRetryAdmissionService:
                 github_client=github_client,
                 bypass_capacity=bypass_capacity if origin is IssueRetryOrigin.MANUAL else False,
             )
+        except (ImplementationHierarchyConflict, ImplementationHierarchyUnavailable, ImplementationSlotUnavailable):
+            # These classifications are part of the engine's ownership-boundary
+            # contract.  In particular, temporary hierarchy/slot failures must
+            # retain the capacity-refill obligation, while hierarchy conflicts
+            # remain an ordinary deferral.  Do not flatten them into FAILED.
+            raise
         except Exception as exc:
-            return IssueRetryAdmission(IssueRetryDisposition.FAILED, None, str(exc))
+            return IssueRetryAdmission(IssueRetryDisposition.FAILED, authority, str(exc))
 
         if acquired.status == "owned":
             return IssueRetryAdmission(IssueRetryDisposition.OWNED, acquired, "retry ownership acquired")
