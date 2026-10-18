@@ -105,8 +105,8 @@ class OrdinaryIssueAdapterComposition:
                         request.github_client,
                         backend_name=candidate.backend_name,
                         label_context=request.label_context,
-                        implementation_slots=request.implementation_slots,
-                        retry_authority=request.retry_authority,
+                        **({"implementation_slots": request.implementation_slots} if request.implementation_slots is not None else {}),  # type: ignore[arg-type]
+                        **({"retry_authority": request.retry_authority} if request.retry_authority is not None else {}),  # type: ignore[arg-type]
                     )
                 elif backend_type == "claude-routine":
                     actions = request.effects.process_claude_routine(
@@ -117,7 +117,7 @@ class OrdinaryIssueAdapterComposition:
                         backend_name=candidate.backend_name,
                         label_context=request.label_context,
                         acceptance_observer=observed_acceptance.append,
-                        retry_authority=request.retry_authority,
+                        **({"retry_authority": request.retry_authority} if request.retry_authority is not None else {}),  # type: ignore[arg-type]
                     )
                 elif backend_type == "jules":
                     actions = request.effects.process_jules(
