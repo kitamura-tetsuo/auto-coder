@@ -3635,11 +3635,14 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
             actions.append("ACTION_FLAG:SKIP_ANALYSIS")
             get_trace_logger().log("Remediation", f"Remediation delegated for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "delegated"})
             _record_pr_stage(pr_number, "pr.mergeability-remediation", f"pr#{pr_number} mergeability remediation", Outcome.ACCEPTED_HANDOFF, {"result": "delegated", "state": state_text})
-        elif repair_result is not None and repair_result.disposition in {RepairDisposition.APPLIED, RepairDisposition.NO_UPDATE_NEEDED}:
+        elif repair_result is not None and repair_result.disposition is RepairDisposition.APPLIED:
             actions.append(f"Mergeability remediation completed for PR #{pr_number}")
             actions.append("ACTION_FLAG:SKIP_ANALYSIS")
             get_trace_logger().log("Remediation", f"Remediation success for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "success"})
             _record_pr_stage(pr_number, "pr.mergeability-remediation", f"pr#{pr_number} mergeability remediation", Outcome.COMPLETED, {"result": "success", "state": state_text})
+        elif repair_result is not None and repair_result.disposition is RepairDisposition.NO_UPDATE_NEEDED:
+            actions.append(f"Mergeability remediation found no base update needed for PR #{pr_number}")
+            _record_pr_stage(pr_number, "pr.mergeability-remediation", f"pr#{pr_number} mergeability remediation", Outcome.COMPLETED, {"result": "no-update-needed", "state": state_text})
         elif repair_result is not None and repair_result.disposition in {RepairDisposition.DEFERRED, RepairDisposition.REFUSED}:
             actions.append(f"Mergeability remediation deferred for PR #{pr_number}; no repair was confirmed")
             actions.append("ACTION_FLAG:SKIP_ANALYSIS")
