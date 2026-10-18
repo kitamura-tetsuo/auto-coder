@@ -51,6 +51,7 @@ from .adversarial_validator import (
 )
 from .attempt_manager import build_pr_attempt_trigger, get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, EmptyPRResult, ExplicitTargetOutcome, ProcessedPRResult, PRProcessingOutcome, StaleJulesPRResult
+from .base_update_execution import BaseUpdateConflictExecutionService, BaseUpdateExecutionRequest, BaseUpdateExecutionResult
 from .bounded_repair_bundle import (
     build_repair_handoff_bundle,
     render_bounded_repair_payload,
@@ -1340,7 +1341,20 @@ def _dispatch_cloud_conflict_repair(
             )
         return PRRepairResult(RepairDisposition.REFUSED, actions, produced.reason)
 
-    return dispatch_pr_repair(request, execute)
+    base_ref = str(pr_data.get("base", {}).get("ref") or pr_data.get("base_branch") or "")
+    if not base_ref:
+        # Cloud delivery identity requires the configured PR base. Refuse
+        # before entering the journal producer rather than guessing ``main``.
+        return PRRepairResult(RepairDisposition.REFUSED, reason="the PR base metadata required for repair is unavailable")
+    execution_request = BaseUpdateExecutionRequest(
+        repo_name,
+        int(pr_data["number"]),
+        str(pr_data.get("head", {}).get("sha") or pr_data.get("head_sha") or ""),
+        base_ref,
+        request.origin.value,
+    )
+    service = BaseUpdateConflictExecutionService()
+    return service.execute_conflict_repair(execution_request, lambda: dispatch_pr_repair(request, execute))
 
 
 def _dispatch_local_repair(
@@ -7078,7 +7092,7 @@ def _force_checkout_pr_manually(repo_name: str, pr_data: Dict[str, Any], config:
         return False
 
 
-def _update_with_base_branch(
+def _execute_base_update_operation(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
@@ -7300,6 +7314,40 @@ def _update_with_base_branch(
                 base_ref=target_branch,
             )
 
+    return actions
+
+
+def _update_with_base_branch(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+    github_client: Optional[Any] = None,
+) -> PRActionList:
+    """Run the selected base update through the bounded execution service."""
+    base_ref = pr_data.get("base_branch") or pr_data.get("base", {}).get("ref") or config.MAIN_BRANCH
+    request = BaseUpdateExecutionRequest(
+        repository=repo_name,
+        pr_number=int(pr_data["number"]),
+        expected_head=str(pr_data.get("head", {}).get("sha") or pr_data.get("head_sha") or ""),
+        base_ref=str(base_ref),
+        origin="optional-base-update",
+    )
+    service = BaseUpdateConflictExecutionService()
+
+    def operation() -> BaseUpdateExecutionResult:
+        actions = _execute_base_update_operation(repo_name, pr_data, config, github_client)
+        repair = actions.repair_result or PRRepairResult(
+            RepairDisposition.FAILED,
+            tuple(actions),
+            reason="base update returned no typed result",
+        )
+        return BaseUpdateExecutionResult(repair, tuple(actions), actions.quota_deferred, actions.retry_not_before)
+
+    result = service.execute_base_update(request, operation)
+    actions = PRActionList(result.actions)
+    actions.repair_result = result.repair
+    actions.quota_deferred = result.quota_deferred
+    actions.retry_not_before = result.retry_not_before
     return actions
 
 
@@ -10867,7 +10915,7 @@ def _get_allowed_merge_methods(repo_name: str) -> List[str]:
 
 
 @serialize_checkout
-def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: AutomationConfig) -> bool:
+def _execute_local_conflict_operation(repo_name: str, pr_number: int, config: AutomationConfig) -> bool:
     """Resolve merge conflicts for a PR by checking it out and merging with its base branch (not necessarily main)."""
     try:
         # Step 0: Clean up any existing git state
@@ -10984,6 +11032,40 @@ def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automati
     except Exception as e:
         logger.error(f"Error resolving merge conflicts for PR #{pr_number}: {e}")
         return False
+
+
+def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: AutomationConfig) -> bool:
+    """Execute definitive local conflict repair through the bounded service."""
+    pr_data: Dict[str, Any] = {"number": pr_number}
+    try:
+        token = GitHubClient.get_instance().token
+        api = get_ghapi_client(token)
+        owner, repo = repo_name.split("/")
+        pr_data = api.pulls.get(owner, repo, pr_number)
+    except Exception as exc:
+        # The operation retains its established lookup/fallback behavior.  This
+        # observation only enriches the immutable service identity when usable.
+        logger.debug(f"Could not pre-observe PR #{pr_number} conflict target: {exc}")
+
+    base_ref = str(pr_data.get("base", {}).get("ref") or config.MAIN_BRANCH)
+    expected_head = str(pr_data.get("head", {}).get("sha") or "")
+    request = BaseUpdateExecutionRequest(repo_name, pr_number, expected_head, base_ref, "definitive-local-conflict")
+    service = BaseUpdateConflictExecutionService()
+
+    def operation() -> PRRepairResult:
+        applied = _execute_local_conflict_operation(repo_name, pr_number, config)
+        head = cmd.run_command(["git", "rev-parse", "HEAD"])
+        resulting_head = head.stdout.strip() if applied and head.success else ""
+        return PRRepairResult(
+            RepairDisposition.APPLIED if applied else RepairDisposition.FAILED,
+            reason="" if applied else "local conflict repair did not synchronize a result",
+            resulting_head_state=RepairFactState.AVAILABLE if resulting_head else RepairFactState.UNKNOWN,
+            resulting_head=resulting_head,
+            synchronization_state=RepairFactState.AVAILABLE,
+            synchronized=applied,
+        )
+
+    return service.execute_conflict_repair(request, operation).disposition is RepairDisposition.APPLIED
 
 
 def _fix_pr_issues_with_testing(

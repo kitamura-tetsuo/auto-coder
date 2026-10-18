@@ -1,5 +1,13 @@
 # Merge Conflict Handling
 
+Base-update and definitive local-conflict entry points pass their selected
+operation through `BaseUpdateConflictExecutionService`. The service carries the
+repository, PR number, observed head, actual PR base and selected origin across
+the execution boundary, and propagates the producer's typed result without
+interpreting action strings or selecting a fallback provider. Existing Git,
+private-workspace, cloud journal and provider producers retain their locks and
+effect ownership.
+
 Local LLM PRs (including the explicit `auto-coder:local-llm` marker) resolve
 conflicts in one editable LLM execution without a separate analysis-only call.
 Before invoking the backend, the controller stages the current merge files,
