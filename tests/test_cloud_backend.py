@@ -202,8 +202,8 @@ class TestNonDifficultCloudIssueRouting:
     """Test handling and routing of non-difficult issues to backend_cloud."""
 
     @pytest.mark.parametrize("backend_type", ["jules", "claude-routine"])
-    def test_remote_acceptance_survives_binding_failure(self, backend_type, tmp_path, monkeypatch):
-        """A genuine provider reference remains accepted when secondary tracking fails."""
+    def test_remote_acceptance_survives_binding_failure_and_ordinary_replay(self, backend_type, tmp_path, monkeypatch):
+        """An incomplete remote receipt suppresses replacement work after restart."""
         monkeypatch.setenv("HOME", str(tmp_path))
         alias = f"{backend_type}-team"
         llm_config = LLMBackendConfiguration.load_from_dict({"backends": {alias: {"backend_type": backend_type, "api_key": "team-key", "url": "https://routine.test"}}})
@@ -217,25 +217,47 @@ class TestNonDifficultCloudIssueRouting:
             patch("auto_coder.claude_routine_client.get_llm_config", return_value=llm_config),
             patch("auto_coder.issue_processor.get_current_attempt", return_value=0),
             patch("auto_coder.issue_processor.get_commit_log", return_value=""),
-            patch("auto_coder.issue_processor.CloudManager.add_session", return_value=False),
-            patch("auto_coder.issue_processor.JulesClient.start_session", return_value=provider_reference),
-            patch("auto_coder.claude_routine_client.ClaudeRoutineClient.fire_routine", return_value=(provider_reference, None)),
+            patch("auto_coder.issue_processor.CloudManager.add_session", return_value=False) as publish_binding,
+            patch("auto_coder.issue_processor.JulesClient.start_session", return_value=provider_reference) as start_jules,
+            patch(
+                "auto_coder.claude_routine_client.ClaudeRoutineClient.fire_routine",
+                return_value=(provider_reference, None),
+            ) as start_claude,
             patch("auto_coder.cli_helpers.build_backend_manager") as fallback,
         ):
-            execution = _dispatch_issue_candidates("owner/repo", issue, AutomationConfig(), github, [alias, "codex"])
+            first = _dispatch_issue_candidates("owner/repo", issue, AutomationConfig(), github, [alias, "codex"])
+            replay = _dispatch_issue_candidates("owner/repo", issue, AutomationConfig(), github, [alias, "codex"])
 
-        assert execution.result.outcome is DispatchOutcome.REMOTE_ACCEPTED
-        assert execution.result.provider_reference == provider_reference
-        assert execution.result.tracking_complete is False
+        assert first.result.outcome is DispatchOutcome.REMOTE_ACCEPTED
+        assert first.result.identity == IssueAttemptIdentity("owner", "repo", 2078, "0")
+        assert first.result.provider == backend_type
+        assert first.result.backend_name == alias
+        assert first.result.provider_reference == provider_reference
+        assert first.result.claim_incarnation
+        assert first.result.tracking_complete is False
+        assert replay.result.outcome is DispatchOutcome.REMOTE_ACCEPTED
+        assert replay.result.identity == first.result.identity
+        assert replay.result.provider == first.result.provider
+        assert replay.result.backend_name == first.result.backend_name
+        assert replay.result.provider_reference == first.result.provider_reference
+        assert replay.result.claim_incarnation == first.result.claim_incarnation
+        assert replay.result.tracking_complete is False
+        assert start_jules.call_count == (1 if backend_type == "jules" else 0)
+        assert start_claude.call_count == (1 if backend_type == "claude-routine" else 0)
+        publish_binding.assert_called_once()
         fallback.assert_not_called()
 
         from auto_coder.issue_dispatch import IssueDispatchGuard
 
         retained = IssueDispatchGuard().inspect(IssueAttemptIdentity("owner", "repo", 2078, "0"))
         assert retained is not None
-        assert retained.outcome is DispatchOutcome.REMOTE_ACCEPTED
-        assert retained.provider_reference == provider_reference
-        assert retained.tracking_complete is False
+        assert retained.identity == replay.result.identity
+        assert retained.outcome is replay.result.outcome
+        assert retained.provider == replay.result.provider
+        assert retained.backend_name == replay.result.backend_name
+        assert retained.provider_reference == replay.result.provider_reference
+        assert retained.claim_incarnation == replay.result.claim_incarnation
+        assert retained.tracking_complete is replay.result.tracking_complete is False
 
     def test_local_runtime_error_is_not_reported_completed(self, tmp_path, monkeypatch):
         """A local side effect followed by an execution error remains indeterminate."""
