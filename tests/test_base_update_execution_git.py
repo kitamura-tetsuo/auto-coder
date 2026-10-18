@@ -127,7 +127,7 @@ def test_definitive_entry_carries_non_main_base_into_real_checkout(tmp_path: Pat
     with (
         patch("auto_coder.pr_processor.GitHubClient.get_instance", return_value=github),
         patch("auto_coder.pr_processor.get_ghapi_client", return_value=api),
-        patch("auto_coder.pr_processor._execute_local_conflict_operation", return_value=False) as operation,
+        patch("auto_coder.base_update_execution._run_local_conflict_operation", return_value=False) as operation,
     ):
         assert not _resolve_pr_merge_conflicts("owner/repo", 2542, AutomationConfig())
 
