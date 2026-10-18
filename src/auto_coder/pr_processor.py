@@ -10956,7 +10956,7 @@ def _execute_local_conflict_operation(repo_name: str, pr_number: int, config: Au
         # Step 2: Checkout the PR branch
         logger.info(f"Checking out PR #{pr_number} to resolve merge conflicts")
         # Use reusable _checkout_pr_branch which uses direct git commands
-        checkout_success = _checkout_pr_branch(repo_name, {"number": pr_number}, config)
+        checkout_success = _checkout_pr_branch(repo_name, {**(pr_data or {}), "number": pr_number}, config)
 
         if not checkout_success:
             logger.error(f"Failed to checkout PR #{pr_number}")

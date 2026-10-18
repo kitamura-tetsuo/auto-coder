@@ -25,6 +25,7 @@ from src.auto_coder.pr_processor import (
     _delegate_cloud_merge_conflict_repair,
     _delegate_cloud_merge_conflict_repair_result,
     _delegate_cloud_review_thread_repair,
+    _dispatch_cloud_conflict_repair,
     _handle_definitive_merge_rejection,
     _link_jules_pr_to_issue,
     _merge_pr,
@@ -454,6 +455,41 @@ def test_delivery_is_reserved_before_followup_and_never_redelivered(tmp_path) ->
     assert second
     assert len(client.messages) == 1
     assert record.call_count == 2
+
+
+def test_dispatch_service_reopens_journal_after_quota_block_without_duplicate_send(tmp_path) -> None:
+    """REQ-006: production dispatch retains deadline and re-enters one journal."""
+    client = FollowupClient()
+    client.backend_name = "claude-routine"
+    state_path = tmp_path / "repairs.json"
+    deadline = 9_999_999_999.0
+    wait_store = MagicMock()
+    wait_store.get.side_effect = [
+        SimpleNamespace(certainty=DeliveryCertainty.NOT_SENT, retry_not_before=deadline),
+        None,
+        None,
+    ]
+
+    with (
+        patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=(client, "task_existing")),
+        patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=state_path),
+        patch("src.auto_coder.pr_processor.get_claude_followup_wait_store", return_value=wait_store),
+        patch("src.auto_coder.pr_processor._record_cloud_conflict_deliveries", wraps=_record_cloud_conflict_deliveries) as record,
+    ):
+        blocked = _dispatch_cloud_conflict_repair("owner/repo", pr_data(), MagicMock())
+        recovered = _dispatch_cloud_conflict_repair("owner/repo", pr_data(), MagicMock())
+        confirmed = _dispatch_cloud_conflict_repair("owner/repo", pr_data(), MagicMock())
+
+    assert blocked.disposition is RepairDisposition.DEFERRED
+    assert blocked.retry_not_before == deadline
+    assert recovered.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN
+    assert confirmed.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN
+    assert {result.repository for result in (blocked, recovered, confirmed)} == {"owner/repo"}
+    assert {result.input_head for result in (blocked, recovered, confirmed)} == {"H1"}
+    assert {result.base_ref for result in (blocked, recovered, confirmed)} == {"release/2.x"}
+    assert len(client.messages) == 1
+    assert record.call_count == 2
+    assert len(json.loads(state_path.read_text())) == 1
 
 
 class InterruptedJournalClient(FollowupClient):
