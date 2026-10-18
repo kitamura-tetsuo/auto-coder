@@ -110,7 +110,7 @@ from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues
 from .issue_stage_routing import IMPLEMENTATION_STAGE, ImplementationRetryRequest, IssueStageRoutingStore
 from .label_manager import LabelManager, LabelOperationError, filter_legacy_auto_coder_label
 from .llm_backend_config import get_pr_review_allowlist_from_config, get_review_adjudicator_allowlist_from_config
-from .local_ci_repair_execution import CorrectionPorts, LocalCIRepairPorts, LocalCIRepairRequest, execute_correction, execute_local_ci_repair
+from .local_ci_repair_execution import CorrectionPorts, LocalCIRepairPorts, LocalCIRepairRequest, LocalCIRepairResult, execute_correction, execute_local_ci_repair
 from .logger_config import get_gh_logger, get_logger
 from .ordinary_closure_evidence import ApplicationStatus, ClosureEvidenceRecord, EvidenceState, ObservedTarget, restore_ordinary_result
 from .pr_blocker_closure import _BLOCKER_ID_RE, _GAP_ID_RE
@@ -1393,8 +1393,9 @@ def _dispatch_jules_repair(
 def _dispatch_local_ci_failure_repair(
     repo_name: str,
     pr_data: Dict[str, Any],
-    operation: Callable[[], "PRActionList"],
+    operation: Callable[[], LocalCIRepairResult],
 ) -> PRRepairResult:
+    """Execute the selected local CI service and retain its typed evidence."""
     request = _repair_request(
         repo_name,
         pr_data,
@@ -1405,33 +1406,45 @@ def _dispatch_local_ci_failure_repair(
 
     def execute() -> PRRepairResult:
         produced = operation()
-        if produced.synchronized is True and produced.resulting_head:
-            return PRRepairResult(
-                RepairDisposition.APPLIED,
-                tuple(produced),
-                attempt_started=produced.repair_attempt_started,
-                resulting_head_state=RepairFactState.AVAILABLE,
-                resulting_head=produced.resulting_head,
-                synchronization_state=RepairFactState.AVAILABLE,
-                synchronized=True,
+
+        if produced.repair_result is not None:
+            # Optional base update/conflict execution already classified the
+            # effect.  Preserve that authority while replacing its partial
+            # action stream with the enclosing CI executor's complete stream.
+            return replace(
+                produced.repair_result,
+                actions=produced.actions,
+                retry_not_before=(produced.retry_not_before if produced.retry_not_before is not None else produced.repair_result.retry_not_before),
             )
+
+        def result(disposition: RepairDisposition, reason: str = "") -> PRRepairResult:
+            return PRRepairResult(
+                disposition=disposition,
+                actions=produced.actions,
+                reason=reason,
+                attempt_started=produced.attempt_started,
+                resulting_head_state=RepairFactState.AVAILABLE if produced.candidate_head else RepairFactState.UNKNOWN,
+                resulting_head=produced.candidate_head,
+                synchronization_state=RepairFactState.AVAILABLE if produced.synchronized is not None else RepairFactState.UNKNOWN,
+                synchronized=produced.synchronized is True,
+                retry_not_before=produced.retry_not_before,
+                repository=repo_name,
+                pr_number=int(pr_data["number"]),
+                input_head=request.head_sha,
+                base_ref=str(pr_data.get("base", {}).get("ref") or pr_data.get("base_branch") or ""),
+            )
+
+        if produced.close_for_quality:
+            return result(RepairDisposition.QUALITY_REFUSED, "local correction would degrade code quality")
+        if produced.quota_deferred:
+            return result(RepairDisposition.DEFERRED, produced.failure_reason or "local CI repair was deferred")
+        if produced.synchronized is True and produced.candidate_head:
+            return result(RepairDisposition.APPLIED)
         if produced.synchronized is False:
-            return PRRepairResult(
-                RepairDisposition.FAILED,
-                tuple(produced),
-                reason="local CI repair was not synchronized",
-                attempt_started=produced.repair_attempt_started,
-                resulting_head_state=RepairFactState.AVAILABLE if produced.resulting_head else RepairFactState.UNKNOWN,
-                resulting_head=produced.resulting_head,
-                synchronization_state=RepairFactState.AVAILABLE,
-                synchronized=False,
-            )
-        return PRRepairResult(
-            RepairDisposition.REFUSED,
-            tuple(produced),
-            reason="local CI repair produced no synchronized result",
-            attempt_started=produced.repair_attempt_started,
-        )
+            return result(RepairDisposition.FAILED, produced.failure_reason or "local CI repair was not synchronized")
+        if produced.failure_reason:
+            return result(RepairDisposition.FAILED, produced.failure_reason)
+        return result(RepairDisposition.REFUSED, "local CI repair produced no synchronized result")
 
     return _dispatch_local_repair(request, execute)
 
@@ -2500,6 +2513,8 @@ def _process_pull_request_impl(
                 processed_pr.priority = processed_pr_result.priority
                 processed_pr.analysis = processed_pr_result.analysis
                 processed_pr.outcome = processed_pr_result.outcome
+                processed_pr.retry_not_before = processed_pr_result.retry_not_before
+                processed_pr.repair_result = processed_pr_result.repair_result
                 processed_pr.target_reason = processed_pr_result.target_reason
                 # Copy error if it was set
                 if processed_pr_result.error:
@@ -3733,7 +3748,10 @@ def _process_pr_for_merge(
             processed_pr.actions_taken = [*([projection_action] if projection_action else []), "Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
 
-        processed_pr.actions_taken = [*([projection_action] if projection_action else []), *_handle_pr_merge(github_client, repo_name, pr_data, config, {}, processed_pr)]
+        merge_actions = _handle_pr_merge(github_client, repo_name, pr_data, config, {}, processed_pr)
+        processed_pr.actions_taken = [*([projection_action] if projection_action else []), *merge_actions]
+        processed_pr.retry_not_before = merge_actions.retry_not_before
+        processed_pr.repair_result = merge_actions.repair_result
         if any("Successfully merged" in action for action in processed_pr.actions_taken):
             should_process.keep_label()
         return processed_pr
@@ -3793,6 +3811,8 @@ def _process_pr_for_fixes(
                 processed_pr.actions_taken = [*([projection_action] if projection_action else []), *actions]
                 processed_pr.error = processing_status.error
                 processed_pr.outcome = processing_status.outcome
+                processed_pr.retry_not_before = processing_status.retry_not_before
+                processed_pr.repair_result = processing_status.repair_result
                 processed_pr.target_reason = processing_status.target_reason
                 # Retain label on successful merge
                 if any("Successfully merged" in action for action in actions):
@@ -3841,6 +3861,13 @@ def _take_pr_actions(
         actions.adversarial_validation_error = getattr(merge_actions, "adversarial_validation_error", None)
         actions.quota_deferred = getattr(merge_actions, "quota_deferred", False)
         actions.retry_not_before = getattr(merge_actions, "retry_not_before", None)
+        actions.repair_attempt_started = getattr(merge_actions, "repair_attempt_started", False)
+        actions.resulting_head = getattr(merge_actions, "resulting_head", "")
+        actions.synchronized = getattr(merge_actions, "synchronized", None)
+        actions.repair_result = getattr(merge_actions, "repair_result", None)
+        if processing_status is not None:
+            processing_status.retry_not_before = actions.retry_not_before
+            processing_status.repair_result = actions.repair_result
         if actions.quota_deferred and processing_status is not None:
             processing_status.error = None
             processing_status.outcome = PRProcessingOutcome.DEFERRED
@@ -6817,38 +6844,42 @@ def _handle_pr_merge(
                 details={"result": result},
             )
 
-        execution = execute_local_ci_repair(
-            LocalCIRepairRequest(
-                repository=repo_name,
-                pr_number=pr_number,
-                expected_head=expected_head,
-                branch_name=pr_branch_name,
-                already_checked_out=already_on_pr_branch,
-                failed_checks=tuple(failed_checks),
-                config=config,
-                github_client=github_client,
-            ),
-            LocalCIRepairPorts(
-                authority=current_ci_failure_authority,
-                prepare_branch=lambda: _checkout_pr_branch(repo_name, pr_data, config, perform_checkout=False),
-                branch_context=BranchManager,
-                automatic_fix_enabled=lambda: _is_automatic_test_fix_enabled(config, repo_name),
-                update_base=lambda: _update_with_base_branch(repo_name, pr_data, config),
-                summarize_checks=lambda checks: _create_github_action_log_summary(repo_name, config, list(checks)),
-                read_logs=lambda checks: _get_github_actions_logs(repo_name, config, list(checks), pr_data),
-                correction=_local_ci_correction_ports(repo_name, pr_data, config),
-                extract_failed_tests=extract_all_failed_tests,
-                trace_base_update=trace_base_update,
-            ),
+        local_request = LocalCIRepairRequest(
+            repository=repo_name,
+            pr_number=pr_number,
+            expected_head=expected_head,
+            branch_name=pr_branch_name,
+            already_checked_out=already_on_pr_branch,
+            failed_checks=tuple(failed_checks),
+            config=config,
+            github_client=github_client,
         )
-        actions.extend(execution.actions)
-        actions.repair_attempt_started = execution.attempt_started is True
-        actions.resulting_head = execution.candidate_head
-        actions.synchronized = execution.synchronized
-        actions.quota_deferred = execution.quota_deferred
-        actions.retry_not_before = execution.retry_not_before
+        local_ports = LocalCIRepairPorts(
+            authority=current_ci_failure_authority,
+            prepare_branch=lambda: _checkout_pr_branch(repo_name, pr_data, config, perform_checkout=False),
+            branch_context=BranchManager,
+            automatic_fix_enabled=lambda: _is_automatic_test_fix_enabled(config, repo_name),
+            update_base=lambda: _update_with_base_branch(repo_name, pr_data, config),
+            summarize_checks=lambda checks: _create_github_action_log_summary(repo_name, config, list(checks)),
+            read_logs=lambda checks: _get_github_actions_logs(repo_name, config, list(checks), pr_data),
+            correction=_local_ci_correction_ports(repo_name, pr_data, config),
+            extract_failed_tests=extract_all_failed_tests,
+            trace_base_update=trace_base_update,
+        )
+        repair_result = _dispatch_local_ci_failure_repair(
+            repo_name,
+            pr_data,
+            lambda: execute_local_ci_repair(local_request, local_ports),
+        )
+        actions.extend(repair_result.actions)
+        actions.repair_result = repair_result
+        actions.repair_attempt_started = repair_result.attempt_started is True
+        actions.resulting_head = repair_result.resulting_head
+        actions.synchronized = repair_result.synchronized if repair_result.synchronization_state is RepairFactState.AVAILABLE else None
+        actions.quota_deferred = repair_result.disposition is RepairDisposition.DEFERRED
+        actions.retry_not_before = repair_result.retry_not_before
 
-        if execution.close_for_quality:
+        if repair_result.disposition is RepairDisposition.QUALITY_REFUSED:
             actions.append(f"LLM determined merge would degrade code quality for PR #{pr_number}, closing PR without merge")
             try:
                 client = GitHubClient.get_instance()
@@ -6860,9 +6891,13 @@ def _handle_pr_merge(
                 logger.error(f"Failed to close PR #{pr_number}: {e}")
                 actions.append(f"Error closing PR #{pr_number}: {e}")
             return actions
-        if execution.failure_reason and processing_status is not None:
+        if repair_result.disposition is RepairDisposition.FAILED and processing_status is not None:
             processing_status.outcome = PRProcessingOutcome.FAILED
-            processing_status.error = execution.failure_reason
+            processing_status.error = repair_result.reason
+        elif repair_result.disposition is RepairDisposition.DEFERRED and processing_status is not None:
+            processing_status.outcome = PRProcessingOutcome.DEFERRED
+            processing_status.error = None
+            processing_status.retry_not_before = repair_result.retry_not_before
         return actions
 
     except Exception as e:

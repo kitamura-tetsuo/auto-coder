@@ -11,7 +11,7 @@ from .automation_config import AutomationConfig
 from .ci_repair_authority import CIRepairAuthority
 from .ci_repair_verification import FocusedVerification, dedupe_targets, follow_up_budget_exhausted
 from .exceptions import AutoCoderRetryableBackendError
-from .pr_repair_dispatch import PRRepairResult, RepairDisposition
+from .pr_repair_dispatch import PRRepairResult, RepairDisposition, RepairFactState
 
 
 class ActionResult(Protocol):
@@ -74,6 +74,7 @@ class LocalCIRepairResult:
     retry_not_before: float | None = None
     failure_reason: str = ""
     close_for_quality: bool = False
+    repair_result: PRRepairResult | None = None
 
 
 @dataclass(frozen=True)
@@ -161,16 +162,24 @@ def execute_local_ci_repair(request: LocalCIRepairRequest, ports: LocalCIRepairP
                     ports.trace_base_update("pushed")
                     return LocalCIRepairResult(
                         tuple(actions),
+                        attempt_started=update_result.attempt_started,
+                        candidate_head=update_result.resulting_head,
+                        synchronized=(update_result.synchronized if update_result.synchronization_state is RepairFactState.AVAILABLE else None),
                         quota_deferred=update.quota_deferred,
-                        retry_not_before=update.retry_not_before,
+                        retry_not_before=update.retry_not_before if update.retry_not_before is not None else update_result.retry_not_before,
+                        repair_result=update_result,
                     )
                 reason = update_result.reason or "base branch update failed"
                 actions.append(f"Base branch comparison or update failed for PR #{request.pr_number}")
                 return LocalCIRepairResult(
                     tuple(actions),
+                    attempt_started=update_result.attempt_started,
+                    candidate_head=update_result.resulting_head,
+                    synchronized=(update_result.synchronized if update_result.synchronization_state is RepairFactState.AVAILABLE else None),
                     quota_deferred=update.quota_deferred,
-                    retry_not_before=update.retry_not_before,
+                    retry_not_before=update.retry_not_before if update.retry_not_before is not None else update_result.retry_not_before,
                     failure_reason=reason,
+                    repair_result=update_result,
                 )
 
             actions.append(f"PR #{request.pr_number} is up to date with main branch, test failures are due to PR content")

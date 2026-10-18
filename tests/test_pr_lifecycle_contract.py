@@ -32,6 +32,7 @@ from auto_coder.durable_repair_allowance import RepairAllowanceLedger
 from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.github_ci_observer import fence_active_ci_observations
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from auto_coder.local_ci_repair_execution import LocalCIRepairResult
 from auto_coder.local_review_repair import LocalReviewRepairRequest, admit_local_repair_allowance
 from auto_coder.pr_processor import (
     ClaimedReviewThreadGateState,
@@ -41,8 +42,10 @@ from auto_coder.pr_processor import (
     PRActionList,
     PRReviewCoordinationResult,
     TwoTierGateInputs,
+    _dispatch_local_ci_failure_repair,
     _handle_pr_merge,
     _start_mergeability_remediation,
+    process_pull_request,
 )
 from auto_coder.pr_repair_dispatch import PRRepairResult, RepairDisposition, RepairFactState, RepairOrigin
 from auto_coder.pr_review_cycle import VERDICT_FINDINGS, ContractSnapshot, Finding, PrReviewCycleRepository, RoundProvenance, StrongPolicyIdentity
@@ -57,6 +60,162 @@ REPOSITORY = "owner/repo"
 PR_NUMBER = 2501
 H1 = "1" * 40
 H2 = "2" * 40
+
+
+@pytest.mark.parametrize(
+    ("execution", "disposition"),
+    [
+        (LocalCIRepairResult(("published",), True, H2, True), RepairDisposition.APPLIED),
+        (LocalCIRepairResult(("push failed",), True, H2, False, failure_reason="push failed"), RepairDisposition.FAILED),
+        (LocalCIRepairResult(("quota wait",), retry_not_before=4321.0, quota_deferred=True), RepairDisposition.DEFERRED),
+        (LocalCIRepairResult(("no correction",)), RepairDisposition.REFUSED),
+    ],
+)
+def test_local_ci_executor_facts_cross_typed_pr_repair_boundary(execution, disposition):
+    """REQ-001/002: local executor facts, not action wording, control orchestration."""
+    pr_data = {
+        "number": PR_NUMBER,
+        "head": {"sha": H1},
+        "base": {"ref": "main"},
+    }
+
+    result = _dispatch_local_ci_failure_repair(REPOSITORY, pr_data, lambda: execution)
+
+    assert result.disposition is disposition
+    assert result.actions == execution.actions
+    assert result.repository == REPOSITORY
+    assert result.pr_number == PR_NUMBER
+    assert result.input_head == H1
+    assert result.base_ref == "main"
+    assert result.resulting_head == execution.candidate_head
+    assert result.retry_not_before == execution.retry_not_before
+    if disposition is RepairDisposition.APPLIED:
+        assert result.synchronization_state is RepairFactState.AVAILABLE
+        assert result.synchronized is True
+
+
+@pytest.mark.parametrize(
+    "repair_result",
+    [
+        PRRepairResult(
+            RepairDisposition.APPLIED,
+            reason="published H2",
+            resulting_head_state=RepairFactState.AVAILABLE,
+            resulting_head=H2,
+            synchronization_state=RepairFactState.AVAILABLE,
+            synchronized=True,
+        ),
+        PRRepairResult(
+            RepairDisposition.DEFERRED,
+            reason="provider quota",
+            retry_not_before=4321.0,
+        ),
+    ],
+)
+def test_public_processing_preserves_typed_repair_evidence(tmp_path, monkeypatch, repair_result):
+    """REQ-002: public processing retains repair facts through its controller result."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    config = AutomationConfig()
+    pr_data = {
+        "number": PR_NUMBER,
+        "title": "Typed repair",
+        "body": "Closes #2501",
+        "labels": [],
+        "head": {"ref": "feature", "sha": H1},
+    }
+    client = MagicMock(token="controlled-token")
+
+    def take_actions(_client, _repo, _pr, _config, status, **_kwargs):
+        status.repair_result = repair_result
+        status.retry_not_before = repair_result.retry_not_before
+        status.outcome = PRProcessingOutcome.DEFERRED
+        actions = PRActionList(repair_result.actions)
+        actions.repair_result = repair_result
+        actions.retry_not_before = repair_result.retry_not_before
+        return actions
+
+    with ExitStack() as stack:
+        unsafe = stack.enter_context(patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr"))
+        stack.enter_context(patch("auto_coder.pr_processor._close_empty_pr", return_value=SimpleNamespace(closed=False)))
+        stack.enter_context(patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=SimpleNamespace(closed=False)))
+        stack.enter_context(patch("auto_coder.pr_processor._should_skip_waiting_for_jules", return_value=False))
+        stack.enter_context(patch("auto_coder.pr_processor._link_jules_pr_to_issue", return_value=True))
+        stack.enter_context(patch("auto_coder.pr_processor._link_codex_cloud_pr_to_issue", return_value=None))
+        stack.enter_context(patch("auto_coder.pr_processor._check_github_actions_status", return_value=MagicMock()))
+        stack.enter_context(patch("auto_coder.pr_processor._take_pr_actions", side_effect=take_actions))
+        label = stack.enter_context(patch("auto_coder.pr_processor.LabelManager"))
+        label.return_value.__enter__.return_value = True
+        unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
+
+        result = process_pull_request(client, config, REPOSITORY, pr_data)
+
+    assert result.repair_result is repair_result
+    assert result.retry_not_before == repair_result.retry_not_before
+    assert result.repair_result.reason == repair_result.reason
+    assert result.repair_result.resulting_head == repair_result.resulting_head
+    assert result.repair_result.synchronization_state is repair_result.synchronization_state
+
+
+@pytest.mark.parametrize(
+    "base_result",
+    [
+        PRRepairResult(
+            RepairDisposition.APPLIED,
+            resulting_head_state=RepairFactState.AVAILABLE,
+            resulting_head=H2,
+            synchronization_state=RepairFactState.AVAILABLE,
+            synchronized=True,
+        ),
+        PRRepairResult(
+            RepairDisposition.ACCEPTED_OR_UNCERTAIN,
+            reason="existing Jules session accepted conflict work",
+            attempt_started=True,
+        ),
+    ],
+)
+def test_handler_preserves_terminal_optional_base_update_evidence(tmp_path, monkeypatch, base_result):
+    """REQ-002: base execution facts cross the real local CI composition and handler."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    config = AutomationConfig()
+    config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = False
+    failed = _snapshot(ObservationAvailability.KNOWN, CIConclusion.FAILURE)
+    pr_data = {
+        "number": PR_NUMBER,
+        "body": "<!-- auto-coder:local-llm -->\nCloses #2501",
+        "labels": [],
+        "head": {"ref": "feature", "sha": H1},
+        "base": {"ref": "main"},
+    }
+    update_actions = PRActionList(("base executor completed",))
+    update_actions.repair_result = base_result
+    client = MagicMock(token="controlled-token")
+
+    with (
+        patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as unsafe,
+        patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False),
+        patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress"),
+        patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+        patch(
+            "auto_coder.pr_processor._check_github_actions_status",
+            return_value=GitHubActionsStatusResult(success=False, ids=[701], observation=failed),
+        ),
+        patch("auto_coder.pr_processor.get_detailed_checks_from_history", return_value=SimpleNamespace(failed_checks=[{"name": "PR Tests"}])),
+        patch("auto_coder.pr_processor.check_pr_repair_exhaustion", return_value=None),
+        patch("auto_coder.pr_processor.cmd.run_command", return_value=SimpleNamespace(success=True, stdout="feature\n")),
+        patch("auto_coder.pr_processor.current_ci_failure_authority", return_value=nullcontext(SimpleNamespace(allowed=True))),
+        patch("auto_coder.pr_processor.BranchManager", return_value=nullcontext()),
+        patch("auto_coder.pr_processor._update_with_base_branch", return_value=update_actions),
+        patch("auto_coder.pr_processor._apply_github_actions_fix") as correction,
+    ):
+        unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
+        actions = _handle_pr_merge(client, REPOSITORY, pr_data, config, {})
+
+    correction.assert_not_called()
+    assert actions.repair_result is not None
+    assert actions.repair_result.disposition is base_result.disposition
+    assert actions.repair_result.resulting_head == base_result.resulting_head
+    assert actions.repair_result.synchronized is base_result.synchronized
+    assert actions.repair_result.attempt_started == base_result.attempt_started
 
 
 def _snapshot(

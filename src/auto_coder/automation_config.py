@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from .issue_dispatch import DispatchResult
 from .logger_config import get_logger
+from .pr_repair_dispatch import PRRepairResult
 
 logger = get_logger(__name__)
 
@@ -1021,6 +1022,7 @@ class ProcessedPRResult:
     error: Optional[str] = None
     outcome: PRProcessingOutcome = PRProcessingOutcome.DEFERRED
     retry_not_before: Optional[float] = None
+    repair_result: Optional[PRRepairResult] = None
     target_reason: Optional[str] = None
 
 

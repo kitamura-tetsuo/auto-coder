@@ -12,6 +12,14 @@ exact-head authority context encloses the first workspace mutation. The service
 returns attempt-start, candidate-head and synchronization facts independently;
 action text is not publication evidence.
 
+The public PR handler passes that service result through the same typed repair
+boundary used by cloud and conflict owners. The resulting disposition, target
+head, synchronization certainty, and retry time are retained on the public
+processing result. A confirmed publication ends the current invocation and is
+observed again as a new head; it does not reuse the repaired head's predecessor
+CI or grant review or merge authority. Deferred, refused, and failed execution
+likewise cannot be inferred as successful from diagnostic action wording.
+
 For an operator-requested post-merge local test run,
 `AUTO_CODER_DEFER_LOCAL_TESTS=1` also defers focused local checks. The initial
 correction and publication still run; no local test success is claimed and

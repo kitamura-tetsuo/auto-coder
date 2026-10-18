@@ -356,7 +356,7 @@ class TestKeepLabelOnPRMerge:
         from unittest.mock import Mock, patch
 
         from src.auto_coder.automation_config import AutomationConfig
-        from src.auto_coder.pr_processor import _process_pr_for_merge
+        from src.auto_coder.pr_processor import PRActionList, _process_pr_for_merge
 
         repo_name = "owner/repo"
         pr_data = {"number": 123, "title": "Test PR", "body": "Test body", "head": {"ref": "feature-123"}}
@@ -382,7 +382,7 @@ class TestKeepLabelOnPRMerge:
 
         # Mock the shared merge workflow to return a successful merge.
         with patch("src.auto_coder.pr_processor.LabelManager", fake_label_manager):
-            with patch("src.auto_coder.pr_processor._handle_pr_merge", return_value=["Successfully merged PR #123"]):
+            with patch("src.auto_coder.pr_processor._handle_pr_merge", return_value=PRActionList(("Successfully merged PR #123",))):
                 with patch("src.auto_coder.pr_processor.GitHubClient") as mock_client_class:
                     mock_client = Mock()
                     mock_client_class.get_instance.return_value = mock_client
@@ -399,7 +399,7 @@ class TestKeepLabelOnPRMerge:
         from unittest.mock import Mock, patch
 
         from src.auto_coder.automation_config import AutomationConfig
-        from src.auto_coder.pr_processor import _process_pr_for_merge
+        from src.auto_coder.pr_processor import PRActionList, _process_pr_for_merge
 
         repo_name = "owner/repo"
         pr_data = {"number": 456, "title": "Test PR", "body": "Test body", "head": {"ref": "feature-456"}}
@@ -425,7 +425,7 @@ class TestKeepLabelOnPRMerge:
 
         # Mock the shared merge workflow to return a failed merge.
         with patch("src.auto_coder.pr_processor.LabelManager", fake_label_manager):
-            with patch("src.auto_coder.pr_processor._handle_pr_merge", return_value=["Failed to merge PR #456"]):
+            with patch("src.auto_coder.pr_processor._handle_pr_merge", return_value=PRActionList(("Failed to merge PR #456",))):
                 with patch("src.auto_coder.pr_processor.GitHubClient") as mock_client_class:
                     mock_client = Mock()
                     mock_client_class.get_instance.return_value = mock_client

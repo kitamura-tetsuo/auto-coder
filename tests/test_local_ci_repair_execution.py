@@ -129,3 +129,38 @@ def test_failed_publication_keeps_candidate_and_synchronization_facts_distinct()
     assert result.candidate_head == "head-2"
     assert result.synchronized is False
     assert result.failure_reason == "local CI repair was not synchronized"
+
+
+@pytest.mark.parametrize(
+    "update_result",
+    [
+        PRRepairResult(
+            RepairDisposition.APPLIED,
+            resulting_head_state=RepairFactState.AVAILABLE,
+            resulting_head="head-2",
+            synchronization_state=RepairFactState.AVAILABLE,
+            synchronized=True,
+        ),
+        PRRepairResult(
+            RepairDisposition.ACCEPTED_OR_UNCERTAIN,
+            reason="Jules owns the conflict repair",
+            attempt_started=True,
+            receipt_state=RepairFactState.AVAILABLE,
+            receipt="jules-session-7",
+        ),
+    ],
+)
+def test_optional_base_update_preserves_publication_or_owner_evidence(update_result: PRRepairResult) -> None:
+    """REQ-002: terminal base work retains its typed executor evidence."""
+    config = AutomationConfig()
+    config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = False
+    events: list[str] = []
+    ports = replace(_ports(events), update_base=lambda: UpdateActions(update_result))
+
+    result = execute_local_ci_repair(_request(config, checked_out=True), ports)
+
+    assert result.repair_result is update_result
+    assert result.candidate_head == update_result.resulting_head
+    assert result.attempt_started == update_result.attempt_started
+    assert result.synchronized is (True if update_result.disposition is RepairDisposition.APPLIED else None)
+    assert "repair" not in events
