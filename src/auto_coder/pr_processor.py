@@ -9800,6 +9800,9 @@ def _delegate_cloud_merge_conflict_repair_locked(
             reason=f"Claude quota wait is active until {retained_wait.retry_not_before}",
             deferred=True,
             retry_not_before=retained_wait.retry_not_before,
+            provider=provider,
+            task_id=task_id,
+            receipt_identity=logical_identity,
         )
     provider_label = "Codex Cloud" if provider == "codex-cloud" else provider
     accepted_action = f"{provider_label} task '{task_id}' accepted merge-conflict-repair follow-up for " f"PR #{pr_number} at head {target.head_sha}"
@@ -9845,7 +9848,13 @@ def _delegate_cloud_merge_conflict_repair_locked(
                 receipt_identity=existing.logical_identity,
             )
         if existing:
-            return CloudConflictDelegationResult(reason=(f"delivery to originating cloud session '{existing.task_id}' has unconfirmed status; " "not resending a potentially accepted request"))
+            return CloudConflictDelegationResult(
+                reason=(f"delivery to originating cloud session '{existing.task_id}' has unconfirmed status; " "not resending a potentially accepted request"),
+                provider=provider,
+                task_id=existing.task_id,
+                receipt_identity=existing.logical_identity,
+                attempt_started=True,
+            )
 
         # Reserve the conflict identity before the non-idempotent follow-up call.
         # Pending state prevents speculative redelivery but is never evidence
