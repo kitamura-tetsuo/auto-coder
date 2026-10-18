@@ -22,11 +22,12 @@ sequenceDiagram
         O->>E: Collect PR candidate
         E->>C: Observe checks for current immutable head H
         E->>E: Select typed candidate-collection route
-        alt KNOWN_EMPTY
+        alt KNOWN_EMPTY plus affirmative conflict and enabled remediation
             C-->>E: success=false, in_progress=true
-            break Candidate filtered out
-                E-->>O: Exclude PR before handler
-            end
+            E->>P: Enter PR processing for conflict remediation
+        else Other KNOWN_EMPTY observation
+            C-->>E: success=false, in_progress=true
+            E-->>O: Exclude PR before handler
         else Typed route admits candidate
             E->>P: Enter PR processing
         end
@@ -86,15 +87,22 @@ sequenceDiagram
         P->>O: Retain receipt/claim and notification progress
     else Authorized non-Codex local repair with auto-fix enabled
         P->>L: Establish PR execution authority and update from base
-        L->>L: Recheck repair necessity and run configured local test/fix path
-        L->>G: Observe repaired head and bounded CI polling
-        L-->>P: Repair/synchronization result
+        L->>L: _fix_pr_issues_with_testing and focused verification
+        L->>G: _submit_ci_repair_candidate commits and publishes candidate
+        L-->>P: Repair/synchronization result; full CI remains pending
     else Missing origin, unknown authority or manual-only path
         P-->>P: Skip/defer/report the applicable reason
     end
 ```
 
-Local CI repair can use local test results and Actions failure information; a passed local test is not proof that GitHub CI passed. `_fix_pr_ci_with_local_llm` remains a synchronous repair path with bounded CI polling. Conflict remediation and `_update_with_base_branch` also have their own result semantics. `success`, `attempt_started`, `should_continue` and synchronization results must not be collapsed into one generic completion flag.
+Local CI repair can use local test results and Actions failure information; a
+passed focused test is not proof that GitHub CI passed. The synchronous handler
+enters `_fix_pr_issues_with_testing`, which rechecks the reported failures and
+runs focused verification before `_submit_ci_repair_candidate` commits and
+publishes the candidate. A synchronized new head still awaits full current-head
+CI validation. Conflict remediation and `_update_with_base_branch` also have
+their own result semantics. `success`, `attempt_started`, `should_continue` and
+synchronization results must not be collapsed into one generic completion flag.
 
 The existing CI-failure and conflict owners are now entered through
 `pr_repair_dispatch` requests and return typed dispositions. The adapter carries
@@ -105,7 +113,7 @@ owners; diagnostic action strings are not completion evidence.
 
 The durable local-job kinds in this snapshot cover Issue implementation and PR review correction, not all CI/conflict repairs. See [backend routing](backend-routing-matrix.md).
 
-Sources: [CI conversion][ci] (`_check_github_actions_status`); [candidate collection][engine] (`_get_candidates`); [PR branches][pr] (`_handle_pr_merge`, `_start_mergeability_remediation`, `_fix_pr_ci_with_local_llm`, `_update_with_base_branch`); [local-job kinds][jobs].
+Sources: [CI conversion][ci] (`_check_github_actions_status`); [candidate collection][engine] (`_get_candidates`); [PR branches][pr] (`_handle_pr_merge`, `_start_mergeability_remediation`, `_fix_pr_issues_with_testing`, `_submit_ci_repair_candidate`, `_update_with_base_branch`); [local-job kinds][jobs].
 
 [ci]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/util/github_action.py
 [engine]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/automation_engine.py
