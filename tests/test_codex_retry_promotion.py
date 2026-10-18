@@ -1,4 +1,5 @@
 import asyncio
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
@@ -12,7 +13,7 @@ from auto_coder.cloud_manager import CloudManager, CloudTaskBinding
 from auto_coder.cloud_run import CloudRun, CloudRunRepository
 from auto_coder.codex_cloud_client import CodexSubmissionOutcome, CodexSubmissionResult
 from auto_coder.codex_retry_reconciliation import CodexRetryReconciler
-from auto_coder.github_pending_work import PendingWorkStore
+from auto_coder.github_pending_work import PendingWorkStore, WorkIdentity
 from auto_coder.implementation_retirement import (
     ContinuingObligations,
     ImplementationPRObservation,
@@ -362,6 +363,95 @@ def test_startup_rediscovers_unfinished_receipt_through_ordinary_scheduler(mock_
 
 
 @patch("auto_coder.codex_cloud_client.CodexCloudClient")
+def test_startup_rediscovery_preserves_retained_retry_deadline(mock_client_type, tmp_path, monkeypatch):
+    """REQ-004: startup discovery must not rearm retained pending work."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    authority = _authority("request-retained-deadline")
+    dispatch = RetryDispatchRepository("owner/repo")
+    dispatch.claim(authority, "codex-cloud", "codex-alias", {"base_branch": "main"})
+    dispatch.allocate_numeric_attempt(authority.request_id, [4])
+    dispatch.record_outcome(authority.request_id, "accepted", external_id="task-retained-deadline", tracking_complete=True)
+    dispatch.mark_tracking_complete(authority.request_id)
+    CloudRunRepository("owner/repo").save(
+        CloudRun(
+            "owner/repo",
+            2223,
+            5,
+            "codex-cloud",
+            task_id="task-retained-deadline",
+            backend_name="codex-alias",
+            environment_id="environment-retained-deadline",
+            base_branch="main",
+            submission_outcome="accepted",
+            launch_identity=authority.request_id,
+        )
+    )
+    assert CloudManager("owner/repo").add_session(2223, "task-retained-deadline", "codex-cloud", "codex-alias")
+
+    now = time.time()
+    deadline = now + 3600
+    identity = WorkIdentity("owner/repo", f"issue:2223:retry:{authority.request_id}", "codex-retry-handoff", authority.request_id)
+    pending = PendingWorkStore(tmp_path / "pending.db")
+    pending.schedule_reevaluation(identity, (CODEX_RETRY_HANDOFF_EFFECT,), now=now)
+    retained = pending.defer(
+        identity,
+        _github_error(GitHubApiOutcome.PRIMARY_THROTTLED),
+        (CODEX_RETRY_HANDOFF_EFFECT,),
+        governor_deadline=deadline,
+        now=now,
+    )
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda _repository: pending)
+
+    reconciliation_calls: list[str] = []
+    original_reconcile = CodexRetryReconciler.reconcile
+
+    def counted_reconcile(reconciler, request_id):
+        reconciliation_calls.append(request_id)
+        return original_reconcile(reconciler, request_id)
+
+    monkeypatch.setattr(CodexRetryReconciler, "reconcile", counted_reconcile)
+    github = MagicMock()
+    github.get_open_entities_strict.return_value = OpenGitHubEntities()
+    engine = AutomationEngine(github, config=AutomationConfig())
+    producer_entered = asyncio.Event()
+
+    async def producer(_repository):
+        producer_entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(engine, "_producer_loop", producer)
+    monkeypatch.setattr(engine, "_worker_loop", lambda *_args: asyncio.Event().wait())
+    monkeypatch.setattr("auto_coder.automation_engine.install_asyncio_diagnostics", lambda _loop: None)
+    monkeypatch.setattr("auto_coder.automation_engine.get_health_monitor", MagicMock())
+
+    async def scenario():
+        task = asyncio.create_task(engine.start_automation("owner/repo", concurrency=1))
+        await asyncio.wait_for(producer_entered.wait(), 5)
+        assert engine.pending_work_scheduler is not None
+        clock = [now]
+        engine.pending_work_scheduler._clock = lambda: clock[0]
+
+        await engine.pending_work_scheduler._dispatch_due()
+        await asyncio.gather(*tuple(engine.pending_work_scheduler._tasks))
+        assert reconciliation_calls == []
+        assert pending.get(identity) == retained
+
+        clock[0] = deadline + 1
+        await engine.pending_work_scheduler._dispatch_due()
+        await asyncio.gather(*tuple(engine.pending_work_scheduler._tasks))
+        assert reconciliation_calls == [authority.request_id]
+        assert pending.get(identity) is None
+
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+    completed = dispatch.get(authority.request_id)
+    assert completed is not None and completed.handoff_complete
+    mock_client_type.return_value.submit_task.assert_not_called()
+
+
+@patch("auto_coder.codex_cloud_client.CodexCloudClient")
 def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_retained_state(mock_client_type, retained_result, tmp_path, monkeypatch):
     """REQ-006: exercise recovery ordering through the real engine entrypoint."""
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -429,12 +519,18 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
     engine.implementation_slots = slots
     scheduled_identities: list[tuple[str, int]] = []
     original_schedule = engine._schedule_codex_retry_handoff
+    original_rediscover = engine._rediscover_codex_retry_handoff
 
     def record_schedule(repository: str, request_id: str, issue_number: int) -> None:
         scheduled_identities.append((request_id, issue_number))
         original_schedule(repository, request_id, issue_number)
 
+    def record_rediscovery(repository: str, request_id: str, issue_number: int) -> None:
+        scheduled_identities.append((request_id, issue_number))
+        original_rediscover(repository, request_id, issue_number)
+
     monkeypatch.setattr(engine, "_schedule_codex_retry_handoff", record_schedule)
+    monkeypatch.setattr(engine, "_rediscover_codex_retry_handoff", record_rediscovery)
     pending = PendingWorkStore(tmp_path / "pending.db")
     monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda _repository: pending)
     monkeypatch.setattr("auto_coder.automation_engine.install_asyncio_diagnostics", lambda _loop: None)

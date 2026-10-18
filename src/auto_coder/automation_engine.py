@@ -2767,7 +2767,7 @@ class AutomationEngine:
 
         pending_work_task = self._issue_runtime_composition.start_recovery(
             self._shutdown_event,
-            schedule_retry=lambda request_id, issue_number: self._schedule_codex_retry_handoff(repo_name, request_id, issue_number),
+            schedule_retry=lambda request_id, issue_number: self._rediscover_codex_retry_handoff(repo_name, request_id, issue_number),
         )
 
         # A pending approval/merge effect (Issue #1939) is resumed by its own
@@ -7831,6 +7831,14 @@ class AutomationEngine:
     def _schedule_codex_retry_handoff(self, repo_name: str, request_id: str, issue_number: int) -> None:
         identity = WorkIdentity(repo_name, f"issue:{issue_number}:retry:{request_id}", CODEX_RETRY_HANDOFF_STAGE, request_id)
         get_pending_work_store(repo_name).schedule_reevaluation(identity, (CODEX_RETRY_HANDOFF_EFFECT,))
+        self._wake_pending_work()
+
+    def _rediscover_codex_retry_handoff(self, repo_name: str, request_id: str, issue_number: int) -> None:
+        """Create missing startup work without rearming retained retry state."""
+        identity = WorkIdentity(repo_name, f"issue:{issue_number}:retry:{request_id}", CODEX_RETRY_HANDOFF_STAGE, request_id)
+        pending_store = get_pending_work_store(repo_name)
+        if pending_store.get(identity) is None:
+            pending_store.schedule_reevaluation(identity, (CODEX_RETRY_HANDOFF_EFFECT,))
         self._wake_pending_work()
 
     def _codex_retry_reconciler(self, repo_name: str) -> CodexRetryReconciler:
