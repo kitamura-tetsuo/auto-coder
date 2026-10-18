@@ -7184,16 +7184,45 @@ class AutomationEngine:
                 )
 
             def dispatch_issue(retry_authority: Optional[ImplementationRetryRequest]) -> CandidateProcessingResult:
-                return self._process_single_candidate_reserved(
-                    repo_name,
-                    candidate,
-                    config,
-                    jules_mode,
-                    advance_issue_attempt=advance_issue_attempt,
-                    manual_retry=retry_authority is not None,
-                    retry_authority=retry_authority,
-                    explicit_only=explicit_only,
-                )
+                if retry_authority is not None:
+                    if explicit_only:
+                        return self._process_single_candidate_reserved(
+                            repo_name,
+                            candidate,
+                            config,
+                            jules_mode,
+                            manual_retry=True,
+                            retry_authority=retry_authority,
+                            explicit_only=True,
+                        )
+                    return self._process_single_candidate_reserved(
+                        repo_name,
+                        candidate,
+                        config,
+                        jules_mode,
+                        manual_retry=True,
+                        retry_authority=retry_authority,
+                    )
+                if advance_issue_attempt:
+                    if explicit_only:
+                        return self._process_single_candidate_reserved(
+                            repo_name,
+                            candidate,
+                            config,
+                            jules_mode,
+                            advance_issue_attempt=True,
+                            explicit_only=True,
+                        )
+                    return self._process_single_candidate_reserved(
+                        repo_name,
+                        candidate,
+                        config,
+                        jules_mode,
+                        advance_issue_attempt=True,
+                    )
+                if explicit_only:
+                    return self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, explicit_only=True)
+                return self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode)
 
             def explain_duplicate_generation(generation: str, execution_id: str) -> str:
                 try:
