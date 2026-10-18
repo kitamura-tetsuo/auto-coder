@@ -52,7 +52,8 @@ def test_mergeability_remediation_flow_invoked(mock_github_client, mock_get_ghap
     """Verify remediation flow is activated when enabled."""
     mock_check_progress.return_value = True
     mock_checkout.return_value = True
-    mock_update.return_value = ["Pushed updated branch for PR #99", "ACTION_FLAG:SKIP_ANALYSIS"]
+    mock_update.return_value = PRActionList(("legacy display text",))
+    mock_update.return_value.repair_result = PRRepairResult(RepairDisposition.APPLIED)
 
     mock_api = Mock()
     mock_get_ghapi_client.return_value = mock_api
@@ -139,7 +140,8 @@ def test_mergeability_remediation_success_path(mock_github_client, mock_get_ghap
     """Verify remediation success path - checkout and update succeed."""
     mock_check_progress.return_value = True
     mock_checkout.return_value = True
-    mock_update.return_value = PRActionList(("Determined base branch: main, head branch: feature-branch for PR #100", "Checked out PR #100 branch", "Pushed updated branch for PR #100", "ACTION_FLAG:SKIP_ANALYSIS"))
+    mock_update.return_value = PRActionList(("misleading display text",))
+    mock_update.return_value.repair_result = PRRepairResult(RepairDisposition.APPLIED)
 
     mock_api = Mock()
     mock_get_ghapi_client.return_value = mock_api
@@ -198,7 +200,8 @@ def test_mergeability_remediation_update_fails(mock_github_client, mock_get_ghap
     """Verify remediation handles update failure."""
     mock_check_progress.return_value = True
     mock_checkout.return_value = True
-    mock_update.return_value = ["Failed to update: merge conflict resolution failed"]
+    mock_update.return_value = PRActionList(("Pushed updated branch for PR #102", "ACTION_FLAG:SKIP_ANALYSIS"))
+    mock_update.return_value.repair_result = PRRepairResult(RepairDisposition.FAILED, reason="merge conflict resolution failed")
 
     mock_api = Mock()
     mock_get_ghapi_client.return_value = mock_api
@@ -213,8 +216,8 @@ def test_mergeability_remediation_update_fails(mock_github_client, mock_get_ghap
 
     # Verify failure is handled
     assert any("Starting mergeability remediation" in action for action in actions)
-    assert any("Failed" in action for action in actions)
-    assert "ACTION_FLAG:SKIP_ANALYSIS" not in actions
+    assert any("remediation failed" in action.lower() for action in actions)
+    assert not any("remediation completed" in action.lower() for action in actions)
     mock_check_status.assert_not_called()
 
 
@@ -295,7 +298,8 @@ def test_start_mergeability_remediation_success(mock_update, mock_checkout, mock
 
     # Mock successful checkout and update
     mock_checkout.return_value = True
-    mock_update.return_value = PRActionList(("Pushed updated branch for PR #200", "ACTION_FLAG:SKIP_ANALYSIS"))
+    mock_update.return_value = PRActionList(("display text does not authorize completion",))
+    mock_update.return_value.repair_result = PRRepairResult(RepairDisposition.APPLIED)
 
     actions = _start_mergeability_remediation(200, "DIRTY", repo_name="owner/repo")
 
@@ -305,6 +309,64 @@ def test_start_mergeability_remediation_success(mock_update, mock_checkout, mock
     assert any("Mergeability remediation completed for PR #200" in action for action in actions)
     assert "ACTION_FLAG:SKIP_ANALYSIS" in actions
     assert "Failed" not in str(actions)
+
+
+@pytest.mark.parametrize(
+    ("disposition", "expected_text"),
+    [
+        (RepairDisposition.NO_UPDATE_NEEDED, "found no base update needed"),
+        (RepairDisposition.FAILED, "remediation failed"),
+    ],
+)
+@pytest.mark.parametrize("include_degrading_flag", [False, True])
+@patch("src.auto_coder.pr_processor.get_ghapi_client")
+@patch("src.auto_coder.pr_processor.GitHubClient")
+@patch("src.auto_coder.pr_processor.BranchManager")
+@patch("src.auto_coder.pr_processor._checkout_pr_branch", return_value=True)
+@patch("src.auto_coder.pr_processor._update_with_base_branch")
+def test_start_remediation_uses_typed_result_despite_identical_misleading_actions(mock_update, _checkout, _branch_manager, mock_github_client, mock_get_ghapi_client, disposition, expected_text, include_degrading_flag):
+    """REQ-003: display flags cannot change the remediation transition."""
+    mock_api = Mock()
+    mock_api.pulls.get.return_value = {"base": {"ref": "main"}, "head": {"ref": "feature"}}
+    mock_get_ghapi_client.return_value = mock_api
+    mock_github_client.get_instance.return_value.token = "token"
+    display = ["Pushed updated branch", "up to date with main branch", "ACTION_FLAG:SKIP_ANALYSIS"]
+    if include_degrading_flag:
+        display.append("ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE")
+    produced = PRActionList(display)
+    produced.repair_result = PRRepairResult(disposition, reason="comparison failed")
+    mock_update.return_value = produced
+
+    actions = _start_mergeability_remediation(2040, "DIRTY", repo_name="owner/repo")
+
+    assert mock_update.call_count == 1
+    assert expected_text in " ".join(actions).lower()
+    assert "ACTION_FLAG:SKIP_ANALYSIS" not in actions
+    assert ("remediation completed" in " ".join(actions).lower()) is False
+    mock_github_client.get_instance.return_value.close_pr.assert_not_called()
+
+
+@patch("src.auto_coder.pr_processor.get_ghapi_client")
+@patch("src.auto_coder.pr_processor.GitHubClient")
+@patch("src.auto_coder.pr_processor.BranchManager")
+@patch("src.auto_coder.pr_processor._checkout_pr_branch", return_value=True)
+@patch("src.auto_coder.pr_processor._update_with_base_branch")
+def test_start_remediation_closes_only_for_typed_quality_refusal(mock_update, _checkout, _branch, mock_github, mock_api_factory):
+    """REQ-003: typed quality refusal, not its display flag, owns closure."""
+    api = Mock()
+    api.pulls.get.return_value = {"base": {"ref": "main"}, "head": {"ref": "feature"}}
+    mock_api_factory.return_value = api
+    client = mock_github.get_instance.return_value
+    client.token = "token"
+    produced = PRActionList(("ordinary diagnostic",))
+    produced.repair_result = PRRepairResult(RepairDisposition.QUALITY_REFUSED, reason="quality degradation")
+    mock_update.return_value = produced
+
+    actions = _start_mergeability_remediation(2041, "DIRTY", repo_name="owner/repo")
+
+    mock_update.assert_called_once()
+    client.close_pr.assert_called_once()
+    assert any("quality degradation risk" in action for action in actions)
 
 
 @patch("src.auto_coder.pr_processor.get_ghapi_client")
@@ -322,7 +384,7 @@ def test_start_mergeability_remediation_pr_details_fails(mock_github_client, moc
 
     assert any("Starting mergeability remediation for PR #201" in action for action in actions)
     assert any("Failed to get PR #201 details via GhApi" in action for action in actions)
-    assert "ACTION_FLAG:SKIP_ANALYSIS" not in actions
+    assert not any("remediation completed" in action.lower() for action in actions)
 
 
 @patch("src.auto_coder.pr_processor.get_ghapi_client")
@@ -367,13 +429,14 @@ def test_start_mergeability_remediation_update_fails(mock_update, mock_checkout,
 
     # Mock successful checkout but failed update
     mock_checkout.return_value = True
-    mock_update.return_value = PRActionList(("Failed to merge: merge conflict resolution failed",))
+    mock_update.return_value = PRActionList(("Pushed updated branch for PR #203", "ACTION_FLAG:SKIP_ANALYSIS"))
+    mock_update.return_value.repair_result = PRRepairResult(RepairDisposition.FAILED, reason="merge conflict resolution failed")
 
     actions = _start_mergeability_remediation(203, "UNKNOWN", repo_name="owner/repo")
 
     assert any("Starting mergeability remediation for PR #203" in action for action in actions)
     assert any("Mergeability remediation failed for PR #203" in action for action in actions)
-    assert "ACTION_FLAG:SKIP_ANALYSIS" not in actions
+    assert not any("remediation completed" in action.lower() for action in actions)
 
 
 @patch("src.auto_coder.pr_processor.get_ghapi_client")

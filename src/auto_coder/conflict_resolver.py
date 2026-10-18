@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import time
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from auto_coder.backend_manager import run_llm_noedit_prompt, run_llm_prompt
@@ -21,6 +22,21 @@ from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_acti
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
+
+
+class ConflictPublicationDisposition(str, Enum):
+    """Authoritative publication outcome for a local conflict repair."""
+
+    APPLIED = "applied"
+    FAILED = "failed"
+
+
+class ConflictResolutionResult(list[str]):
+    """Presentation actions accompanied by typed publication evidence."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.disposition = ConflictPublicationDisposition.FAILED
 
 
 def _push_updated_branch_with_retry(pr_number: int, commit_message: Optional[str] = None) -> List[str]:
@@ -278,9 +294,9 @@ def resolve_merge_conflicts_with_llm(
     conflict_info: str,
     config: AutomationConfig,
     repo_name: Optional[str] = None,
-) -> List[str]:
+) -> ConflictResolutionResult:
     """Ask LLM to resolve merge conflicts."""
-    actions: List[str] = []
+    actions = ConflictResolutionResult()
 
     try:
         pr_number = pr_data.get("number", 0)
@@ -365,6 +381,7 @@ def resolve_merge_conflicts_with_llm(
             if push_res.success:
                 actions.append(f"Pushed resolved merge for PR #{pr_number}")
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+                actions.disposition = ConflictPublicationDisposition.APPLIED
             else:
                 actions.append(f"Failed to push resolved merge: {push_res.stderr}")
                 # Trigger fallback due to push failure
@@ -665,7 +682,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
             # Check if conflicts were resolved successfully
             status_result = cmd.run_command(["git", "status", "--porcelain"])
 
-            if "ACTION_FLAG:SKIP_ANALYSIS" in resolve_actions and status_result.success and not status_result.stdout.strip():
+            if resolve_actions.disposition is ConflictPublicationDisposition.APPLIED and status_result.success and not status_result.stdout.strip():
                 logger.info(f"Merge conflicts resolved for PR #{pr_number}")
                 return True
             else:

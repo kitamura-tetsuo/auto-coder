@@ -3,6 +3,7 @@
 import json
 import threading
 from contextlib import nullcontext
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -14,14 +15,17 @@ from src.auto_coder.claude_usage_checker import ClaudeStrictUsageObservation
 from src.auto_coder.cloud_run import CloudRun
 from src.auto_coder.cloud_task_client_base import CloudTaskClientBase
 from src.auto_coder.codex_wham_client import FollowUpDeliveryOutcome
+from src.auto_coder.exceptions import DeliveryCertainty
 from src.auto_coder.execution_trace import TraceCollector
 from src.auto_coder.issue_processor import _process_issue_claude_routine_mode
 from src.auto_coder.llm_backend_config import BackendConfig
 from src.auto_coder.pr_processor import (
     CloudConflictDeliveryRecord,
+    MergeRouteDisposition,
     _delegate_cloud_merge_conflict_repair,
     _delegate_cloud_merge_conflict_repair_result,
     _delegate_cloud_review_thread_repair,
+    _handle_definitive_merge_rejection,
     _link_jules_pr_to_issue,
     _merge_pr,
     _record_cloud_conflict_deliveries,
@@ -50,6 +54,33 @@ class UnsupportedClient:
     """Provider that retains the optional base implementation."""
 
     send_followup = CloudTaskClientBase.send_followup
+
+
+def test_definitive_rejection_preserves_actual_cloud_quota_producer_wait(tmp_path):
+    """REQ-004: a durable provider hold reaches the direct merge consumer intact."""
+    client = FollowupClient()
+    client.backend_name = "claude-routine"
+    deadline = 9_999_999_999.0
+    wait_store = MagicMock()
+    wait_store.get.return_value = SimpleNamespace(certainty=DeliveryCertainty.NOT_SENT, retry_not_before=deadline)
+    api = MagicMock()
+    api.pulls.get.return_value = {**pr_data(), "mergeable": False}
+    route = MergeRouteDisposition()
+    merge_attempt = MagicMock()
+    with (
+        patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=(client, "task_existing")),
+        patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=tmp_path / "repairs.json"),
+        patch("src.auto_coder.pr_processor.get_claude_followup_wait_store", return_value=wait_store),
+        patch("src.auto_coder.pr_processor._resolve_pr_merge_conflicts") as local,
+        patch("src.auto_coder.pr_processor._trigger_fallback_for_pr_failure") as fallback,
+    ):
+        assert not _handle_definitive_merge_rejection("owner/repo", pr_data()["number"], AutomationConfig(), MagicMock(), api, "owner", "repo", MagicMock(), MagicMock(), merge_attempt, "H1", route)
+
+    local.assert_not_called()
+    fallback.assert_not_called()
+    merge_attempt.assert_not_called()
+    assert client.messages == []
+    assert route.retry_not_before == deadline
 
 
 def pr_data(head_sha: str = "H1", base_sha: str = "B1") -> dict:
@@ -465,11 +496,30 @@ def test_interrupted_conflict_reservation_reconciles_typed_provider_receipt(tmp_
         client.delivery = delivery
         result = _delegate_cloud_merge_conflict_repair_result("owner/repo", pr_data())
         final = next(iter(json.loads(state_path.read_text()).values()))
+        if delivery is FollowUpDeliveryOutcome.INDETERMINATE:
+            api = MagicMock()
+            api.pulls.get.return_value = {**pr_data(), "mergeable": False}
+            route = MergeRouteDisposition()
+            with (
+                patch("src.auto_coder.pr_processor._resolve_pr_merge_conflicts") as local,
+                patch("src.auto_coder.pr_processor._trigger_fallback_for_pr_failure") as fallback,
+            ):
+                merge_attempt = MagicMock()
+                assert not _handle_definitive_merge_rejection("owner/repo", pr_data()["number"], AutomationConfig(), MagicMock(), api, "owner", "repo", MagicMock(), MagicMock(), merge_attempt, "head-sha", route)
+            local.assert_not_called()
+            fallback.assert_not_called()
+            merge_attempt.assert_not_called()
+            assert route.retry_not_before is None
 
-    assert client.identities == [("task_existing", record["logical_identity"])]
+    expected_observations = 2 if delivery is FollowUpDeliveryOutcome.INDETERMINATE else 1
+    assert client.identities == [("task_existing", record["logical_identity"])] * expected_observations
     if delivery is FollowUpDeliveryOutcome.INDETERMINATE:
         assert not result
         assert "not resending" in result.reason
+        assert result.provider
+        assert result.task_id == "task_existing"
+        assert result.receipt_identity == record["logical_identity"]
+        assert result.attempt_started is True
         assert final == record
         assert client.messages == []
     else:

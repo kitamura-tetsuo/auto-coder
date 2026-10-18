@@ -64,7 +64,7 @@ from .ci_repair_verification import FocusedVerification, dedupe_targets, follow_
 from .claude_followup_waits import ClaudeFollowupHoldActive, get_claude_followup_wait_store, wait_from_error
 from .codex_cloud_task import canonical_codex_cloud_task_url, extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
 from .codex_pr_attribution import AttributionDisposition, CodexPrAttributionRepository, resolve_codex_pr_origin, task_ids_from_text
-from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
+from .conflict_resolver import ConflictPublicationDisposition, _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .dispatch_claim_store import DispatchIdentity, DispatchOutcome, get_dispatch_claim_store
 from .effective_decision_application import (
     HANDOFF_DISPATCHED,
@@ -3599,7 +3599,7 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
             actions.retry_not_before = update_actions.retry_not_before
 
             # Step 4: Check for degrading merge detection
-        if "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" in update_actions:
+        if update_actions.repair_result is not None and update_actions.repair_result.disposition is RepairDisposition.QUALITY_REFUSED:
             # LLM determined merge would degrade code quality
             # The _trigger_fallback_for_conflict_failure has already been called in conflict_resolver
             # The linked issues have been reopened and attempt incremented
@@ -3630,21 +3630,26 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
         # Step 5: Verify successful remediation
         # If push succeeded, the action flag will be set
         repair_result = update_actions.repair_result
+        if repair_result is not None and repair_result.disposition in {RepairDisposition.NO_UPDATE_NEEDED, RepairDisposition.FAILED}:
+            actions[:] = [action for action in actions if action != "ACTION_FLAG:SKIP_ANALYSIS"]
         if repair_result is not None and repair_result.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN:
             actions.append(f"Mergeability remediation delegated for PR #{pr_number}; deferring until a later pass observes a new head")
             actions.append("ACTION_FLAG:SKIP_ANALYSIS")
             get_trace_logger().log("Remediation", f"Remediation delegated for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "delegated"})
             _record_pr_stage(pr_number, "pr.mergeability-remediation", f"pr#{pr_number} mergeability remediation", Outcome.ACCEPTED_HANDOFF, {"result": "delegated", "state": state_text})
-        elif (repair_result is not None and repair_result.disposition is RepairDisposition.APPLIED) or (repair_result is None and any("Pushed updated branch" in action for action in update_actions)):
+        elif repair_result is not None and repair_result.disposition is RepairDisposition.APPLIED:
             actions.append(f"Mergeability remediation completed for PR #{pr_number}")
             actions.append("ACTION_FLAG:SKIP_ANALYSIS")
             get_trace_logger().log("Remediation", f"Remediation success for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "success"})
             _record_pr_stage(pr_number, "pr.mergeability-remediation", f"pr#{pr_number} mergeability remediation", Outcome.COMPLETED, {"result": "success", "state": state_text})
-        elif (repair_result is not None and repair_result.disposition in {RepairDisposition.DEFERRED, RepairDisposition.REFUSED}) or (repair_result is None and "ACTION_FLAG:SKIP_ANALYSIS" in update_actions):
+        elif repair_result is not None and repair_result.disposition is RepairDisposition.NO_UPDATE_NEEDED:
+            actions.append(f"Mergeability remediation found no base update needed for PR #{pr_number}")
+            _record_pr_stage(pr_number, "pr.mergeability-remediation", f"pr#{pr_number} mergeability remediation", Outcome.COMPLETED, {"result": "no-update-needed", "state": state_text})
+        elif repair_result is not None and repair_result.disposition in {RepairDisposition.DEFERRED, RepairDisposition.REFUSED}:
             actions.append(f"Mergeability remediation deferred for PR #{pr_number}; no repair was confirmed")
             actions.append("ACTION_FLAG:SKIP_ANALYSIS")
             _record_pr_stage(pr_number, "pr.mergeability-remediation", f"pr#{pr_number} mergeability remediation", Outcome.DEFERRED, {"result": "unconfirmed", "state": state_text})
-        elif (repair_result is not None and repair_result.disposition is RepairDisposition.FAILED) or (repair_result is None and "Failed" in str(update_actions)):
+        elif repair_result is None or repair_result.disposition is RepairDisposition.FAILED:
             # Remediation attempted but failed
             actions.append(f"Mergeability remediation failed for PR #{pr_number}")
             get_trace_logger().log("Remediation", f"Remediation failed for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "failed"})
@@ -6434,6 +6439,7 @@ class MergeRouteDisposition:
 
     outcome: PRProcessingOutcome = PRProcessingOutcome.DEFERRED
     reason: str = "Merge was not confirmed"
+    retry_not_before: Optional[float] = None
 
 
 def _handle_pr_merge(
@@ -6832,7 +6838,7 @@ def _handle_pr_merge(
                     # Step 9: Check for special cases from base branch update
 
                     # Check if LLM determined merge would degrade code quality
-                    if "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" in update_actions:
+                    if update_actions.repair_result is not None and update_actions.repair_result.disposition is RepairDisposition.QUALITY_REFUSED:
                         actions.append(f"LLM determined merge would degrade code quality for PR #{pr_number}, closing PR without merge")
                         # Close the PR without merging
                         try:
@@ -6849,14 +6855,19 @@ def _handle_pr_merge(
                         return actions
 
                     # If base branch update required pushing changes, skip to next PR
-                    if "ACTION_FLAG:SKIP_ANALYSIS" in update_actions or any("Pushed updated branch" in action for action in update_actions):
+                    update_result = update_actions.repair_result
+                    if update_result is None:
+                        raise RuntimeError("base update returned no typed control result")
+                    if update_result.disposition in {RepairDisposition.NO_UPDATE_NEEDED, RepairDisposition.FAILED}:
+                        actions[:] = [action for action in actions if action != "ACTION_FLAG:SKIP_ANALYSIS"]
+                    if update_result.disposition in {RepairDisposition.APPLIED, RepairDisposition.ACCEPTED_OR_UNCERTAIN, RepairDisposition.DEFERRED, RepairDisposition.REFUSED}:
                         actions.append(f"Updated PR #{pr_number} with base branch, skipping to next PR for GitHub Actions check")
                         get_trace_logger().log("Update Base", f"Pushed updated branch for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "pushed"})
                         return actions
 
                     # Step 10: If no main branch updates were needed, the test failures are due to PR content
                     # Get GitHub Actions error logs and ask Gemini to fix
-                    if any("up to date with" in action for action in update_actions):
+                    if update_result.disposition is RepairDisposition.NO_UPDATE_NEEDED:
                         actions.append(f"PR #{pr_number} is up to date with main branch, test failures are due to PR content")
                         get_trace_logger().log("Update Base", f"PR #{pr_number} is up to date", item_type="pr", item_number=pr_number, details={"result": "up_to_date"})
 
@@ -6879,6 +6890,11 @@ def _handle_pr_merge(
                                 processing_status.error = local_repair.reason
                         else:
                             actions.append(f"No specific failed checks found for PR #{pr_number}")
+                    elif update_result.disposition is RepairDisposition.FAILED:
+                        actions.append(f"Base branch comparison or update failed for PR #{pr_number}")
+                        if processing_status is not None:
+                            processing_status.outcome = PRProcessingOutcome.FAILED
+                            processing_status.error = update_result.reason or "base branch update failed"
                     else:
                         # If we reach here, some other update action occurred
                         actions.append(f"PR #{pr_number} processing completed")
@@ -7076,25 +7092,49 @@ def _update_with_base_branch(
     actions = PRActionList()
     pr_number = pr_data["number"]
 
+    target_branch = pr_data.get("base_branch") or pr_data.get("base", {}).get("ref") or config.MAIN_BRANCH
+    input_head = pr_data.get("head", {}).get("sha", "")
+
+    def record(disposition: RepairDisposition, *, reason: str = "", resulting_head: str = "", synchronized: Optional[bool] = None) -> None:
+        """Attach the authoritative control result without interpreting display text."""
+        actions.repair_result = PRRepairResult(
+            disposition,
+            tuple(actions),
+            reason=reason,
+            resulting_head_state=RepairFactState.AVAILABLE if resulting_head else RepairFactState.UNKNOWN,
+            resulting_head=resulting_head,
+            synchronization_state=RepairFactState.AVAILABLE if synchronized is not None else RepairFactState.UNKNOWN,
+            synchronized=synchronized is True,
+            repository=repo_name,
+            pr_number=pr_number,
+            input_head=input_head,
+            base_ref=target_branch,
+        )
+
     try:
         # Determine target base branch for this PR
-        target_branch = pr_data.get("base_branch") or pr_data.get("base", {}).get("ref") or config.MAIN_BRANCH
-
         # Fetch latest changes from origin
         result = cmd.run_command(["git", "fetch", "origin"])
         if not result.success:
             actions.append(f"Failed to fetch latest changes: {result.stderr}")
+            record(RepairDisposition.FAILED, reason=actions[-1])
             return actions
 
         # Check if base branch has new commits
         result = cmd.run_command(["git", "rev-list", "--count", f"HEAD..refs/remotes/origin/{target_branch}"])
         if not result.success:
             actions.append(f"Failed to check {target_branch} branch status: {result.stderr}")
+            record(RepairDisposition.FAILED, reason=actions[-1])
             return actions
 
         commits_behind = int(result.stdout.strip())
         if commits_behind == 0:
             actions.append(f"PR #{pr_number} is up to date with {target_branch} branch")
+            head = cmd.run_command(["git", "rev-parse", "HEAD"])
+            if not head.success or not head.stdout.strip():
+                record(RepairDisposition.FAILED, reason="Failed to observe HEAD after base comparison")
+            else:
+                record(RepairDisposition.NO_UPDATE_NEEDED, resulting_head=head.stdout.strip())
             return actions
 
         actions.append(f"PR #{pr_number} is {commits_behind} commits behind {target_branch}, updating...")
@@ -7110,6 +7150,8 @@ def _update_with_base_branch(
                 actions.append(f"Pushed updated branch for PR #{pr_number}")
                 # Signal to skip further LLM analysis for this PR in this run
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+                head = cmd.run_command(["git", "rev-parse", "HEAD"])
+                record(RepairDisposition.APPLIED, resulting_head=head.stdout.strip() if head.success else "", synchronized=True)
             else:
                 # Push failed - try one more time after a brief pause
                 logger.warning(f"First push attempt failed: {push_result.stderr}, retrying...")
@@ -7120,6 +7162,8 @@ def _update_with_base_branch(
                 if retry_push_result.success:
                     actions.append(f"Pushed updated branch for PR #{pr_number} (after retry)")
                     actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+                    head = cmd.run_command(["git", "rev-parse", "HEAD"])
+                    record(RepairDisposition.APPLIED, resulting_head=head.stdout.strip() if head.success else "", synchronized=True)
                 else:
                     logger.error(f"Failed to push updated branch after retry: {retry_push_result.stderr}")
                     logger.error("Exiting application due to git push failure")
@@ -7168,6 +7212,7 @@ def _update_with_base_branch(
                 actions.append(f"PR #{pr_number} is a dependency-bot PR with merge conflicts. Skipping conflict resolution.")
                 cmd.run_command(["git", "merge", "--abort"])
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+                record(RepairDisposition.REFUSED, reason=actions[-2])
                 return actions
 
             reporting_client = github_client
@@ -7230,8 +7275,30 @@ def _update_with_base_branch(
                 else:
                     actions.append(f"Failed to resolve merge conflicts for PR #{pr_number}")
 
+            # Preserve the provider/local operation facts while adding operation identity.
+            if actions.repair_result is not None:
+                actions.repair_result = replace(
+                    actions.repair_result,
+                    actions=tuple(actions),
+                    repository=repo_name,
+                    pr_number=pr_number,
+                    input_head=input_head,
+                    base_ref=target_branch,
+                )
+
     except Exception as e:
         actions.append(f"Error updating with base branch for PR #{pr_number}: {e}")
+        record(RepairDisposition.FAILED, reason=actions[-1])
+    finally:
+        if actions.repair_result is not None:
+            actions.repair_result = replace(
+                actions.repair_result,
+                actions=tuple(actions),
+                repository=repo_name,
+                pr_number=pr_number,
+                input_head=input_head,
+                base_ref=target_branch,
+            )
 
     return actions
 
@@ -9733,6 +9800,9 @@ def _delegate_cloud_merge_conflict_repair_locked(
             reason=f"Claude quota wait is active until {retained_wait.retry_not_before}",
             deferred=True,
             retry_not_before=retained_wait.retry_not_before,
+            provider=provider,
+            task_id=task_id,
+            receipt_identity=logical_identity,
         )
     provider_label = "Codex Cloud" if provider == "codex-cloud" else provider
     accepted_action = f"{provider_label} task '{task_id}' accepted merge-conflict-repair follow-up for " f"PR #{pr_number} at head {target.head_sha}"
@@ -9778,7 +9848,13 @@ def _delegate_cloud_merge_conflict_repair_locked(
                 receipt_identity=existing.logical_identity,
             )
         if existing:
-            return CloudConflictDelegationResult(reason=(f"delivery to originating cloud session '{existing.task_id}' has unconfirmed status; " "not resending a potentially accepted request"))
+            return CloudConflictDelegationResult(
+                reason=(f"delivery to originating cloud session '{existing.task_id}' has unconfirmed status; " "not resending a potentially accepted request"),
+                provider=provider,
+                task_id=existing.task_id,
+                receipt_identity=existing.logical_identity,
+                attempt_started=True,
+            )
 
         # Reserve the conflict identity before the non-idempotent follow-up call.
         # Pending state prevents speculative redelivery but is never evidence
@@ -10658,6 +10734,15 @@ def _handle_definitive_merge_rejection(
         _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.ACCEPTED_HANDOFF, {"effect": "merge-conflict", "backend": "cloud"})
         return False
 
+    if cloud_delegation.deferred or cloud_delegation.receipt_identity or cloud_delegation.task_id or cloud_delegation.provider:
+        logger.info(f"Cloud merge-conflict repair for PR #{pr_number} remains owned by {cloud_delegation.provider or 'cloud provider'}; waiting for reobservation")
+        _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.DEFERRED, {"effect": "merge-conflict", "backend": cloud_delegation.provider or "cloud", "reason": cloud_delegation.reason})
+        if route_disposition is not None:
+            route_disposition.outcome = PRProcessingOutcome.DEFERRED
+            route_disposition.reason = cloud_delegation.reason or "Cloud conflict repair requires reobservation"
+            route_disposition.retry_not_before = cloud_delegation.retry_not_before
+        return False
+
     if not _resolve_pr_merge_conflicts(repo_name, pr_number, config):
         log_action(f"Failed to resolve merge conflicts for PR #{pr_number}")
         _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.FAILED, {"effect": "merge-conflict", "backend": "local"})
@@ -10888,7 +10973,7 @@ def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automati
             # Check if conflicts were resolved successfully
             status_result = cmd.run_command(["git", "status", "--porcelain"])
 
-            if "ACTION_FLAG:SKIP_ANALYSIS" in resolve_actions and status_result.success and not status_result.stdout.strip():
+            if resolve_actions.disposition is ConflictPublicationDisposition.APPLIED and status_result.success and not status_result.stdout.strip():
                 logger.info(f"Merge conflicts resolved for PR #{pr_number}")
                 get_trace_logger().log("Conflict Resolution", f"Resolved merge conflicts for PR #{pr_number}", item_type="pr", item_number=pr_number)
                 return True

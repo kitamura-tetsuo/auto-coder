@@ -269,7 +269,10 @@ def test_public_conflict_facade_preserves_typed_remediation_result(
     merge.assert_not_called()
 
 
-@pytest.mark.parametrize("publication", ["not-needed", "succeeds", "fails-twice"])
+@pytest.mark.parametrize(
+    "publication",
+    ["not-needed", "succeeds", "fails-twice", "conflict-succeeds", "conflict-fails", "conflict-unresolved"],
+)
 def test_base_update_publication_result_reaches_remediation_consumer(
     tmp_path,
     monkeypatch,
@@ -290,15 +293,30 @@ def test_base_update_publication_result_reaches_remediation_consumer(
     subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=repository, check=True)
     subprocess.run(["git", "push", "-u", "origin", "main"], cwd=repository, check=True, capture_output=True)
     subprocess.run(["git", "checkout", "-b", "feature"], cwd=repository, check=True, capture_output=True)
-    (repository / "feature.txt").write_text("feature\n", encoding="utf-8")
-    subprocess.run(["git", "add", "feature.txt"], cwd=repository, check=True)
+    if publication.startswith("conflict-"):
+        (repository / "shared.txt").write_text("feature\n", encoding="utf-8")
+        feature_path = "shared.txt"
+    else:
+        (repository / "feature.txt").write_text("feature\n", encoding="utf-8")
+        feature_path = "feature.txt"
+    subprocess.run(["git", "add", feature_path], cwd=repository, check=True)
     subprocess.run(["git", "commit", "-m", "feature"], cwd=repository, check=True, capture_output=True)
     subprocess.run(["git", "push", "-u", "origin", "feature"], cwd=repository, check=True, capture_output=True)
 
-    if publication != "not-needed":
+    if publication == "not-needed":
         subprocess.run(["git", "checkout", "main"], cwd=repository, check=True, capture_output=True)
-        (repository / "base.txt").write_text("new base\n", encoding="utf-8")
-        subprocess.run(["git", "add", "base.txt"], cwd=repository, check=True)
+        base_path = "shared.txt" if publication.startswith("conflict-") else "base.txt"
+        (repository / base_path).write_text("new base\n", encoding="utf-8")
+        subprocess.run(["git", "add", base_path], cwd=repository, check=True)
+        subprocess.run(["git", "commit", "-m", "base advance"], cwd=repository, check=True, capture_output=True)
+        subprocess.run(["git", "push", "origin", "main"], cwd=repository, check=True, capture_output=True)
+        subprocess.run(["git", "checkout", "feature"], cwd=repository, check=True, capture_output=True)
+        subprocess.run(["git", "merge", "origin/main"], cwd=repository, check=True, capture_output=True)
+    else:
+        subprocess.run(["git", "checkout", "main"], cwd=repository, check=True, capture_output=True)
+        base_path = "shared.txt" if publication.startswith("conflict-") else "base.txt"
+        (repository / base_path).write_text("new base\n", encoding="utf-8")
+        subprocess.run(["git", "add", base_path], cwd=repository, check=True)
         subprocess.run(["git", "commit", "-m", "base advance"], cwd=repository, check=True, capture_output=True)
         subprocess.run(["git", "push", "origin", "main"], cwd=repository, check=True, capture_output=True)
         subprocess.run(["git", "checkout", "feature"], cwd=repository, check=True, capture_output=True)
@@ -307,21 +325,48 @@ def test_base_update_publication_result_reaches_remediation_consumer(
     api = MagicMock()
     api.pulls.get.return_value = {
         "number": PR_NUMBER,
-        "body": "Closes #2501",
+        "body": "<!-- auto-coder:local-llm -->\nCloses #2501" if publication.startswith("conflict-") else "Closes #2501",
+        "author": {"login": "auto-coder"},
         "head": {"ref": "feature", "sha": H1},
         "base": {"ref": "main"},
+        "baseRefName": "main",
     }
     failed_push = CommandResult(False, "", "publication rejected", 1)
     successful_push = CommandResult(True, "", "", 0)
     push_result = successful_push if publication == "succeeds" else failed_push
+    github_client = MagicMock(token="controlled-token")
+    github_client.get_pull_request.return_value = api.pulls.get.return_value
+    github_client.get_pr_details.return_value = {
+        **api.pulls.get.return_value,
+        "head_branch": "feature",
+    }
+
+    def resolve_conflict(_prompt):
+        if publication != "conflict-unresolved":
+            (repository / "shared.txt").write_text("feature and base\n", encoding="utf-8")
+        return "ACTION_SUMMARY: resolved"
 
     with (
         patch("auto_coder.pr_processor.check_pr_repair_exhaustion", return_value=None),
-        patch("auto_coder.pr_processor.GitHubClient.get_instance", return_value=MagicMock(token="controlled-token")),
+        patch("auto_coder.pr_processor.GitHubClient.get_instance", return_value=github_client),
+        patch("auto_coder.conflict_resolver.GitHubClient.get_instance", return_value=github_client),
         patch("auto_coder.pr_processor.get_ghapi_client", return_value=api),
         patch("auto_coder.pr_processor._checkout_pr_branch", return_value=True),
         patch("auto_coder.pr_processor.BranchManager", return_value=nullcontext()),
         patch("auto_coder.pr_processor.git_push", return_value=push_result) as publish,
+        patch(
+            "auto_coder.pr_processor._dispatch_cloud_conflict_repair",
+            return_value=PRRepairResult(RepairDisposition.FAILED, (), reason="no cloud owner"),
+        ),
+        patch("auto_coder.conflict_resolver.create_high_score_backend_manager", return_value=None),
+        patch("auto_coder.conflict_resolver.get_linked_issues_context", return_value=""),
+        patch("auto_coder.conflict_resolver.run_llm_prompt", side_effect=resolve_conflict),
+        patch(
+            "auto_coder.conflict_resolver.git_push",
+            return_value=successful_push if publication == "conflict-succeeds" else failed_push,
+        ) as conflict_publish,
+        patch("auto_coder.conflict_resolver._trigger_fallback_for_conflict_failure") as conflict_fallback,
+        patch("auto_coder.pr_processor._merge_pr") as merge,
         patch("auto_coder.pr_processor.time.sleep"),
         patch("auto_coder.pr_processor._record_pr_stage") as record_stage,
     ):
@@ -331,20 +376,43 @@ def test_base_update_publication_result_reaches_remediation_consumer(
             assert terminal.value.code == 1
             assert publish.call_count == 2
             assert not any(call.args[3].value == "completed" for call in record_stage.call_args_list)
+            merge.assert_not_called()
             return
 
         actions = _start_mergeability_remediation(PR_NUMBER, "dirty", REPOSITORY)
 
+    merge.assert_not_called()
     if publication == "not-needed":
         publish.assert_not_called()
+        assert actions.repair_result is not None
+        assert actions.repair_result.synchronization_state is RepairFactState.UNKNOWN
+        assert actions.repair_result.synchronized is False
+        assert actions.repair_result.resulting_head == subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository, check=True, capture_output=True, text=True).stdout.strip()
+        remote_head = subprocess.run(["git", "--git-dir", str(remote), "rev-parse", "refs/heads/feature"], check=True, capture_output=True, text=True).stdout.strip()
+        assert remote_head != actions.repair_result.resulting_head
+        assert remote_head == subprocess.run(["git", "rev-parse", "HEAD^1"], cwd=repository, check=True, capture_output=True, text=True).stdout.strip()
         assert any("is up to date with main branch" in action for action in actions)
         assert not any("Mergeability remediation completed" in action for action in actions)
         assert "ACTION_FLAG:SKIP_ANALYSIS" not in actions
-    else:
+    elif publication == "succeeds":
         publish.assert_called_once()
         assert any("Pushed updated branch" in action for action in actions)
         assert f"Mergeability remediation completed for PR #{PR_NUMBER}" in actions
         assert "ACTION_FLAG:SKIP_ANALYSIS" in actions
+    else:
+        publish.assert_not_called()
+        assert actions.repair_result is not None
+        assert actions.repair_result.disposition is (RepairDisposition.APPLIED if publication == "conflict-succeeds" else RepairDisposition.FAILED)
+        assert conflict_publish.call_count == int(publication != "conflict-unresolved")
+        assert conflict_fallback.call_count == (0 if publication == "conflict-succeeds" else 2)
+        if publication == "conflict-succeeds":
+            assert actions.repair_result.synchronized is True
+            assert actions.repair_result.resulting_head == subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository, check=True, capture_output=True, text=True).stdout.strip()
+            assert f"Mergeability remediation completed for PR #{PR_NUMBER}" in actions
+            assert "ACTION_FLAG:SKIP_ANALYSIS" in actions
+        else:
+            assert not any("Mergeability remediation completed" in action for action in actions)
+            assert "ACTION_FLAG:SKIP_ANALYSIS" not in actions
 
 
 def _run_ci_consumer(snapshot, *, remote_head=H1, thread_state=None, body="Fixes #99", ledger=None):
