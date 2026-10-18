@@ -87,7 +87,12 @@ sequenceDiagram
         P->>O: Retain receipt/claim and notification progress
     else Authorized non-Codex local repair with auto-fix enabled
         P->>L: Establish PR execution authority and update from base
-        L->>L: _fix_pr_issues_with_testing and focused verification
+        L->>L: execute_local_ci_repair
+        alt Base update is skipped or reports no update needed
+            L->>L: execute_correction and focused verification
+        else Base update has a terminal repair disposition
+            L-->>P: Return typed base/conflict result without correction
+        end
         L->>G: _submit_ci_repair_candidate commits and publishes candidate
         L-->>P: Repair/synchronization result; full CI remains pending
     else Missing origin, unknown authority or manual-only path
@@ -95,14 +100,21 @@ sequenceDiagram
     end
 ```
 
-Local CI repair is composed by `LocalCIRepairExecution` and can use local test results and Actions failure information; a
-passed focused test is not proof that GitHub CI passed. The synchronous handler
-enters `_fix_pr_issues_with_testing`, which rechecks the reported failures and
-runs focused verification before `_submit_ci_repair_candidate` commits and
-publishes the candidate. A synchronized new head still awaits full current-head
-CI validation. Conflict remediation and `_update_with_base_branch` also have
-their own result semantics. `success`, `attempt_started`, `should_continue` and
-synchronization results must not be collapsed into one generic completion flag.
+Local CI repair can use local test results and Actions failure information; a
+passed focused test is not proof that GitHub CI passed. `_handle_pr_merge`
+constructs `LocalCIRepairRequest` and `LocalCIRepairPorts`, then enters
+`execute_local_ci_repair`. When base update is skipped, that function summarizes
+the failed checks and calls `execute_correction`; when base update is enabled,
+it first invokes the `_update_with_base_branch` port and calls
+`execute_correction` only after a `NO_UPDATE_NEEDED` result. Other terminal
+base/conflict dispositions return directly to the handler. Correction runs the
+focused verification before the submission port (`_submit_ci_repair_candidate`)
+commits and publishes the candidate. The retained
+`_fix_pr_issues_with_testing` function is a forwarding surface that calls
+`execute_correction`; it is not the normal handler entry. A synchronized new
+head still awaits full current-head CI validation. `success`, `attempt_started`,
+`should_continue` and synchronization results must not be collapsed into one
+generic completion flag.
 
 The existing CI-failure and conflict owners are entered through
 `pr_repair_dispatch` requests and return typed dispositions. Base updates and
@@ -116,9 +128,10 @@ The public PR handler consumes these results and preserves retry, receipt, resul
 
 The durable local-job kinds in this snapshot cover Issue implementation and PR review correction, not CI/conflict repairs. Those local paths remain synchronous and do not claim restart-safe inference or publication. See [backend routing](backend-routing-matrix.md).
 
-Sources: [CI conversion][ci] (`_check_github_actions_status`); [candidate collection][engine] (`_get_candidates`); [PR branches][pr] (`_handle_pr_merge`, `_start_mergeability_remediation`, `_fix_pr_issues_with_testing`, `_submit_ci_repair_candidate`, `_update_with_base_branch`); [local-job kinds][jobs].
+Sources: [CI conversion][ci] (`_check_github_actions_status`); [candidate collection][engine] (`_get_candidates`); [PR branches][pr] (`_handle_pr_merge`, `_start_mergeability_remediation`, `_fix_pr_issues_with_testing`, `_submit_ci_repair_candidate`, `_update_with_base_branch`); [local CI execution][local-ci] (`execute_local_ci_repair`, `execute_correction`); [local-job kinds][jobs].
 
 [ci]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/util/github_action.py
 [engine]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/automation_engine.py
 [pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/pr_processor.py
+[local-ci]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/local_ci_repair_execution.py
 [jobs]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/local_job_handoff.py
