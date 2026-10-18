@@ -1,3 +1,4 @@
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
@@ -6,15 +7,34 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from auto_coder.automation_config import AutomationConfig, ExplicitTargetOutcome
-from auto_coder.automation_engine import CODEX_RETRY_HANDOFF_EFFECT, AutomationEngine, _CodexRetryHandoffStageHandler
+from auto_coder.automation_engine import CODEX_RETRY_HANDOFF_EFFECT, AutomationEngine
 from auto_coder.cloud_manager import CloudManager, CloudTaskBinding
 from auto_coder.cloud_run import CloudRun, CloudRunRepository
 from auto_coder.codex_cloud_client import CodexSubmissionOutcome, CodexSubmissionResult
+from auto_coder.codex_retry_reconciliation import CodexRetryReconciler
 from auto_coder.github_pending_work import PendingWorkStore
+from auto_coder.implementation_retirement import (
+    ContinuingObligations,
+    ImplementationPRObservation,
+    ImplementationRetirementObservation,
+    ProviderSessionObservation,
+    PRTerminalState,
+    RetirementStatus,
+    SessionTerminalState,
+)
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.issue_processor import _acknowledge_retry_projection, _process_issue_codex_cloud_mode
 from auto_coder.issue_stage_routing import ImplementationRetryRequest, IssueStageRoutingStore
 from auto_coder.retry_dispatch import RetryDispatchRepository
+from auto_coder.util.gh_cache import OpenGitHubEntities
+
+
+def _reconciler(engine: AutomationEngine) -> CodexRetryReconciler:
+    return CodexRetryReconciler(
+        "owner/repo",
+        engine._get_implementation_slots("owner/repo"),
+        lambda request_id, issue_number: engine._schedule_codex_retry_handoff("owner/repo", request_id, issue_number),
+    )
 
 
 def _authority(request_id: str = "request-1", attempt_id: str = "logical-1") -> ImplementationRetryRequest:
@@ -68,8 +88,8 @@ def test_controller_confirms_accepted_receipt_only_after_slot_membership(tmp_pat
     engine = AutomationEngine(MagicMock(), config=AutomationConfig())
     engine.implementation_slots = slots
 
-    outcome, reason = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
-    replay_outcome, _ = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+    outcome, reason = _reconciler(engine).reconcile(authority.request_id)
+    replay_outcome, _ = _reconciler(engine).reconcile(authority.request_id)
 
     assert outcome is ExplicitTargetOutcome.SUCCESS
     assert replay_outcome is ExplicitTargetOutcome.SUCCESS
@@ -93,8 +113,8 @@ def test_controller_reconstructs_missing_owner_without_starting_execution(tmp_pa
     engine = AutomationEngine(MagicMock(), config=AutomationConfig())
     engine.implementation_slots = ImplementationSlotRepository("owner/repo", 2)
 
-    outcome, reason = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
-    replay_outcome, _ = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+    outcome, reason = _reconciler(engine).reconcile(authority.request_id)
+    replay_outcome, _ = _reconciler(engine).reconcile(authority.request_id)
 
     assert outcome is ExplicitTargetOutcome.SUCCESS
     assert replay_outcome is ExplicitTargetOutcome.SUCCESS
@@ -130,7 +150,7 @@ def test_missing_owner_recovery_counts_over_limit_and_preserves_existing_owner(t
     engine = AutomationEngine(MagicMock(), config=AutomationConfig())
     engine.implementation_slots = slots
 
-    outcome, _ = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+    outcome, _ = _reconciler(engine).reconcile(authority.request_id)
 
     assert outcome is ExplicitTargetOutcome.SUCCESS
     snapshot = slots.snapshot()
@@ -164,6 +184,7 @@ def test_controller_recovers_missing_receipt_from_owned_request_and_accepted_run
         base_branch="original-base",
         submission_outcome="accepted",
         task_url=retained_url,
+        launch_identity=authority.request_id,
     )
     CloudRunRepository("owner/repo").save(run)
     assert CloudManager("owner/repo").add_session(2223, run.task_id, run.provider, run.backend_name)
@@ -172,7 +193,7 @@ def test_controller_recovers_missing_receipt_from_owned_request_and_accepted_run
     engine = AutomationEngine(MagicMock(), config=AutomationConfig())
     engine.implementation_slots = slots
 
-    outcome, reason = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+    outcome, reason = _reconciler(engine).reconcile(authority.request_id)
 
     mock_client_type.assert_not_called()
     assert outcome is ExplicitTargetOutcome.SUCCESS
@@ -204,13 +225,15 @@ def test_controller_recovers_missing_receipt_from_owned_request_and_accepted_run
     )
 
 
-def test_run_mismatch_schedules_live_handoff_and_next_turn_repairs(tmp_path, monkeypatch):
+@patch("auto_coder.codex_cloud_client.CodexCloudClient")
+def test_run_mismatch_schedules_live_handoff_and_next_turn_repairs(mock_client_type, tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     authority = _authority()
     store = RetryDispatchRepository("owner/repo")
     store.claim(authority, "codex-cloud", "codex-alias", {"base_branch": "main"})
     store.allocate_numeric_attempt(authority.request_id, [4])
-    store.record_outcome(authority.request_id, "accepted", external_id="task-live")
+    store.record_outcome(authority.request_id, "accepted", external_id="task-live", tracking_complete=True)
+    store.mark_tracking_complete(authority.request_id)
     slots = ImplementationSlotRepository("owner/repo", 2)
     assert slots.reserve(ImplementationOwner("issue", 2223))
     engine = AutomationEngine(MagicMock(), config=AutomationConfig())
@@ -218,13 +241,20 @@ def test_run_mismatch_schedules_live_handoff_and_next_turn_repairs(tmp_path, mon
     pending = PendingWorkStore(tmp_path / "pending.db")
     monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda repository: pending)
 
-    outcome, reason = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+    outcome, reason = _reconciler(engine).reconcile(authority.request_id)
 
     assert outcome is ExplicitTargetOutcome.DEFERRED
     assert "boundary=cloud-run" in reason
     assert "retained environment/base provenance is incomplete" in reason
     obligations = pending.all_pending()
     assert len(obligations) == 1
+    incomplete = store.get(authority.request_id)
+    assert incomplete is not None
+    assert (incomplete.tracking_complete, incomplete.projection_disposition, incomplete.handoff_complete) == (
+        True,
+        "accepted-tracking-incomplete",
+        False,
+    )
     assert obligations[0].unfinished_effects == (CODEX_RETRY_HANDOFF_EFFECT,)
     run = CloudRun(
         "owner/repo",
@@ -240,10 +270,313 @@ def test_run_mismatch_schedules_live_handoff_and_next_turn_repairs(tmp_path, mon
     CloudRunRepository("owner/repo").save(run)
     assert CloudManager("owner/repo").add_session(2223, run.task_id, run.provider, run.backend_name)
 
-    stage_result = _CodexRetryHandoffStageHandler(engine, "owner/repo").dispatch(obligations[0])
+    engine._bind_pending_work_scheduler("owner/repo")
 
-    assert stage_result.completed_effects == (CODEX_RETRY_HANDOFF_EFFECT,)
-    assert RetryDispatchRepository("owner/repo").get(authority.request_id).handoff_complete is True
+    async def dispatch_pending():
+        assert engine.pending_work_scheduler is not None
+        await engine.pending_work_scheduler._dispatch_due()
+        await asyncio.gather(*tuple(engine.pending_work_scheduler._tasks))
+
+    asyncio.run(dispatch_pending())
+
+    assert pending.get(obligations[0].identity) is None
+    completed = RetryDispatchRepository("owner/repo").get(authority.request_id)
+    assert completed is not None
+    assert (completed.projection_disposition, completed.handoff_complete) == ("accepted-current", True)
+    mock_client_type.return_value.submit_task.assert_not_called()
+
+
+@patch("auto_coder.codex_cloud_client.CodexCloudClient")
+def test_startup_rediscovers_unfinished_receipt_through_ordinary_scheduler(mock_client_type, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    authority = _authority()
+    dispatch = RetryDispatchRepository("owner/repo")
+    dispatch.claim(authority, "codex-cloud", "codex-alias", {"base_branch": "main"})
+    dispatch.allocate_numeric_attempt(authority.request_id, [4])
+    dispatch.record_outcome(authority.request_id, "accepted", external_id="task-startup", tracking_complete=True)
+    dispatch.mark_tracking_complete(authority.request_id)
+    CloudRunRepository("owner/repo").save(
+        CloudRun(
+            "owner/repo",
+            2223,
+            5,
+            "codex-cloud",
+            task_id="task-startup",
+            backend_name="codex-alias",
+            environment_id="environment-startup",
+            base_branch="main",
+            submission_outcome="accepted",
+            launch_identity=authority.request_id,
+        )
+    )
+    assert CloudManager("owner/repo").add_session(2223, "task-startup", "codex-cloud", "codex-alias")
+
+    # Reopen every durable authority behind a fresh production controller.
+    pending = PendingWorkStore(tmp_path / "pending.db")
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda repository: pending)
+    github = MagicMock()
+    github.get_open_entities_strict.return_value = OpenGitHubEntities()
+    engine = AutomationEngine(github, config=AutomationConfig())
+    engine.pending_work_scheduler = None
+    process_candidate = MagicMock()
+    monkeypatch.setattr(engine, "_process_single_candidate", process_candidate)
+    monkeypatch.setattr(engine, "_producer_loop", lambda repo: asyncio.Event().wait())
+    monkeypatch.setattr("auto_coder.automation_engine.install_asyncio_diagnostics", lambda loop: None)
+    monkeypatch.setattr("auto_coder.automation_engine.get_health_monitor", MagicMock())
+
+    async def run_until_reconciled():
+        task = asyncio.create_task(engine.start_automation("owner/repo", concurrency=1))
+        for _ in range(300):
+            current = RetryDispatchRepository("owner/repo").get(authority.request_id)
+            if current is not None and current.handoff_complete:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run_until_reconciled())
+
+    completed = RetryDispatchRepository("owner/repo").get(authority.request_id)
+    assert completed is not None and completed.handoff_complete
+    assert completed.projection_disposition == "accepted-current"
+    owner = ImplementationOwner("issue", 2223)
+    reopened_slots = ImplementationSlotRepository("owner/repo", 2)
+    assert reopened_slots.active_execution_ids(owner) == ()
+    assert reopened_slots.has_provider_sessions(owner)
+    assert pending.all_pending() == []
+    process_candidate.assert_not_called()
+    mock_client_type.return_value.submit_task.assert_not_called()
+
+
+@patch("auto_coder.codex_cloud_client.CodexCloudClient")
+def test_pending_reconciliation_cannot_reclaim_pointer_after_newer_acceptance_at_confirmation(mock_client_type, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    first = _authority("request-1")
+    dispatch = RetryDispatchRepository("owner/repo")
+    dispatch.claim(first, "codex-cloud", "codex-alias", {"base_branch": "main"})
+    dispatch.allocate_numeric_attempt(first.request_id, [4])
+    dispatch.record_outcome(first.request_id, "accepted", external_id="task-first")
+    CloudRunRepository("owner/repo").save(
+        CloudRun(
+            "owner/repo",
+            2223,
+            5,
+            "codex-cloud",
+            task_id="task-first",
+            backend_name="codex-alias",
+            environment_id="environment-first",
+            base_branch="main",
+            submission_outcome="accepted",
+            launch_identity=first.request_id,
+        )
+    )
+    manager = CloudManager("owner/repo")
+    assert manager.add_session(2223, "task-first", "codex-cloud", "codex-alias")
+    pending = PendingWorkStore(tmp_path / "pending.db")
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda repository: pending)
+    slots = ImplementationSlotRepository("owner/repo", 2)
+    engine = AutomationEngine(MagicMock(), config=AutomationConfig())
+    engine.implementation_slots = slots
+    engine._schedule_codex_retry_handoff("owner/repo", first.request_id, 2223)
+    engine._bind_pending_work_scheduler("owner/repo")
+
+    original_restore = slots.restore_accepted_retry_session
+    restore_calls = 0
+
+    def accept_newer_at_confirmation(owner, **kwargs):
+        nonlocal restore_calls
+        restore_calls += 1
+        if restore_calls == 2:
+            newer = _authority("request-2")
+            dispatch.claim(newer, "codex-cloud", "codex-alias", {"base_branch": "main"})
+            dispatch.allocate_numeric_attempt(newer.request_id, [5])
+            dispatch.record_outcome(newer.request_id, "accepted", external_id="task-newer")
+            assert manager.add_session(2223, "task-newer", "codex-cloud", "codex-alias")
+        return original_restore(owner, **kwargs)
+
+    monkeypatch.setattr(slots, "restore_accepted_retry_session", accept_newer_at_confirmation)
+
+    async def dispatch_pending():
+        assert engine.pending_work_scheduler is not None
+        await engine.pending_work_scheduler._dispatch_due()
+        await asyncio.gather(*tuple(engine.pending_work_scheduler._tasks))
+
+    asyncio.run(dispatch_pending())
+
+    first_after = RetryDispatchRepository("owner/repo").get(first.request_id)
+    assert first_after is not None
+    assert (first_after.projection_disposition, first_after.handoff_complete) == (
+        "accepted-historical",
+        True,
+    )
+    assert manager.read_bindings_strict()["2223"] == CloudTaskBinding("codex-cloud", "task-newer", "codex-alias")
+    owner = ImplementationOwner("issue", 2223)
+    assert slots.active_execution_ids(owner) == ()
+    assert slots.has_provider_sessions(owner)
+    assert pending.all_pending() == []
+    mock_client_type.return_value.submit_task.assert_not_called()
+
+
+@patch("auto_coder.codex_cloud_client.CodexCloudClient")
+def test_pending_reconciliation_retries_failed_handoff_persistence(mock_client_type, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    authority = _authority()
+    dispatch = RetryDispatchRepository("owner/repo")
+    dispatch.claim(authority, "codex-cloud", "codex-alias", {"base_branch": "main"})
+    dispatch.allocate_numeric_attempt(authority.request_id, [4])
+    dispatch.record_outcome(authority.request_id, "accepted", external_id="task-persistence")
+    CloudRunRepository("owner/repo").save(
+        CloudRun(
+            "owner/repo",
+            2223,
+            5,
+            "codex-cloud",
+            task_id="task-persistence",
+            backend_name="codex-alias",
+            environment_id="environment-persistence",
+            base_branch="main",
+            submission_outcome="accepted",
+            launch_identity=authority.request_id,
+        )
+    )
+    manager = CloudManager("owner/repo")
+    assert manager.add_session(2223, "task-persistence", "codex-cloud", "codex-alias")
+    pending = PendingWorkStore(tmp_path / "pending.db")
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda repository: pending)
+    engine = AutomationEngine(MagicMock(), config=AutomationConfig())
+    engine._schedule_codex_retry_handoff("owner/repo", authority.request_id, 2223)
+    engine._bind_pending_work_scheduler("owner/repo")
+
+    original_complete = RetryDispatchRepository.mark_handoff_complete
+    fail_once = True
+
+    def transient_failure(self, request_id):
+        nonlocal fail_once
+        if fail_once:
+            fail_once = False
+            raise OSError("handoff journal unavailable")
+        return original_complete(self, request_id)
+
+    monkeypatch.setattr(RetryDispatchRepository, "mark_handoff_complete", transient_failure)
+
+    async def dispatch_pending():
+        assert engine.pending_work_scheduler is not None
+        await engine.pending_work_scheduler._dispatch_due()
+        await asyncio.gather(*tuple(engine.pending_work_scheduler._tasks))
+
+    asyncio.run(dispatch_pending())
+    retained = RetryDispatchRepository("owner/repo").get(authority.request_id)
+    assert retained is not None
+    assert (retained.tracking_complete, retained.projection_disposition, retained.handoff_complete) == (
+        True,
+        "accepted-tracking-incomplete",
+        False,
+    )
+    obligations = pending.all_pending()
+    assert len(obligations) == 1
+    assert obligations[0].unfinished_effects == (CODEX_RETRY_HANDOFF_EFFECT,)
+
+    asyncio.run(dispatch_pending())
+
+    completed = RetryDispatchRepository("owner/repo").get(authority.request_id)
+    assert completed is not None
+    assert (completed.projection_disposition, completed.handoff_complete) == (
+        "accepted-current",
+        True,
+    )
+    assert manager.read_bindings_strict()["2223"] == CloudTaskBinding("codex-cloud", "task-persistence", "codex-alias")
+    assert pending.all_pending() == []
+    mock_client_type.return_value.submit_task.assert_not_called()
+
+
+@patch("auto_coder.codex_cloud_client.CodexCloudClient")
+def test_pending_reconciliation_preserves_exact_retired_session_history(mock_client_type, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    authority = _authority()
+    dispatch = RetryDispatchRepository("owner/repo")
+    dispatch.claim(authority, "codex-cloud", "codex-alias", {"base_branch": "main"})
+    dispatch.allocate_numeric_attempt(authority.request_id, [4])
+    dispatch.record_outcome(authority.request_id, "accepted", external_id="task-retired")
+    CloudRunRepository("owner/repo").save(
+        CloudRun(
+            "owner/repo",
+            2223,
+            5,
+            "codex-cloud",
+            task_id="task-retired",
+            backend_name="codex-alias",
+            environment_id="environment-retired",
+            base_branch="main",
+            submission_outcome="accepted",
+            launch_identity=authority.request_id,
+        )
+    )
+    manager = CloudManager("owner/repo")
+    assert manager.add_session(2223, "unrelated-current", "codex-cloud", "other-backend")
+    owner = ImplementationOwner("issue", 2223)
+    slots = ImplementationSlotRepository("owner/repo", 2)
+    with slots.serialize(owner):
+        assert (
+            slots.restore_accepted_retry_session(
+                owner,
+                request_id=authority.request_id,
+                attempt_id=authority.attempt_id,
+                generation=authority.generation,
+                acquisition_reference=authority.ownership_reference,
+                session_id="task-retired",
+            )
+            == "restored"
+        )
+    assert slots.record_implementation_pr(owner, 91)
+    incarnation = slots.owner_incarnation(owner)
+    revision = slots.owner_activity_revision(owner)
+    assert incarnation is not None and revision is not None
+    retirement = slots.retire_owner(
+        ImplementationRetirementObservation(
+            repository="owner/repo",
+            owner=owner,
+            reservation_incarnation=incarnation,
+            activity_revision=revision,
+            implementation_prs=(ImplementationPRObservation(91, PRTerminalState.CLOSED),),
+            provider_sessions=(
+                ProviderSessionObservation(
+                    "task-retired",
+                    "codex-cloud",
+                    SessionTerminalState.ENDED,
+                ),
+            ),
+            continuing_obligations=ContinuingObligations(),
+        )
+    )
+    assert retirement.status is RetirementStatus.RELEASED
+
+    pending_path = tmp_path / "pending.db"
+    pending = PendingWorkStore(pending_path)
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda repository: pending)
+    restarted = AutomationEngine(MagicMock(), config=AutomationConfig())
+    restarted.implementation_slots = ImplementationSlotRepository("owner/repo", 2)
+    restarted._schedule_codex_retry_handoff("owner/repo", authority.request_id, 2223)
+    restarted._bind_pending_work_scheduler("owner/repo")
+
+    async def dispatch_pending():
+        assert restarted.pending_work_scheduler is not None
+        await restarted.pending_work_scheduler._dispatch_due()
+        await asyncio.gather(*tuple(restarted.pending_work_scheduler._tasks))
+
+    asyncio.run(dispatch_pending())
+
+    retained = RetryDispatchRepository("owner/repo").get(authority.request_id)
+    assert retained is not None
+    assert (retained.projection_disposition, retained.handoff_complete) == (
+        "accepted-historical",
+        True,
+    )
+    assert manager.read_bindings_strict()["2223"] == CloudTaskBinding("codex-cloud", "unrelated-current", "other-backend")
+    reopened_slots = ImplementationSlotRepository("owner/repo", 2)
+    assert reopened_slots.active_owners() == ()
+    assert reopened_slots.has_retired_session("task-retired")
+    assert pending.all_pending() == []
+    mock_client_type.return_value.submit_task.assert_not_called()
 
 
 def test_daemon_reconstructs_run_and_promotes_captured_legacy_predecessor(tmp_path, monkeypatch):
@@ -276,7 +609,7 @@ def test_daemon_reconstructs_run_and_promotes_captured_legacy_predecessor(tmp_pa
     engine = AutomationEngine(MagicMock(), config=AutomationConfig())
     engine.implementation_slots = slots
 
-    outcome, reason = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+    outcome, reason = _reconciler(engine).reconcile(authority.request_id)
 
     assert outcome is ExplicitTargetOutcome.SUCCESS
     assert "phase=accepted-current" in reason
@@ -330,7 +663,7 @@ def test_daemon_reconstructs_canonical_url_from_retained_task_identity(tmp_path,
     engine = AutomationEngine(MagicMock(), config=AutomationConfig())
     engine.implementation_slots = slots
 
-    outcome, _ = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+    outcome, _ = _reconciler(engine).reconcile(authority.request_id)
 
     assert outcome is ExplicitTargetOutcome.SUCCESS
     run = CloudRunRepository("owner/repo").get(2223, 5)
@@ -586,6 +919,77 @@ def test_run_write_failure_retains_receipt_and_repairs_without_resubmission(mock
         "environment-retained",
         "accepted-current",
     )
+
+
+@patch("auto_coder.codex_cloud_client.CodexCloudClient")
+def test_reconciler_repairs_indeterminate_run_claim_without_resubmission(mock_client_type, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    authority = _authority()
+    store = RetryDispatchRepository("owner/repo")
+    store.claim(authority, "codex-cloud", "codex-alias", {"base_branch": "main"})
+    store.allocate_numeric_attempt(authority.request_id, [4])
+    store.record_outcome(
+        authority.request_id,
+        "accepted",
+        external_id="task-after-run-failure",
+        environment_id="environment-retained",
+    )
+    CloudRunRepository("owner/repo").save(
+        CloudRun(
+            "owner/repo",
+            2223,
+            5,
+            "codex-cloud",
+            backend_name="codex-alias",
+            environment_id="environment-retained",
+            base_branch="main",
+            submission_outcome="indeterminate",
+            launch_identity=authority.request_id,
+        )
+    )
+    engine = AutomationEngine(MagicMock(), config=AutomationConfig())
+
+    outcome, _ = engine._codex_retry_reconciler("owner/repo").reconcile(authority.request_id)
+
+    assert outcome is ExplicitTargetOutcome.SUCCESS
+    mock_client_type.return_value.submit_task.assert_not_called()
+    run = CloudRunRepository("owner/repo").get(2223, 5)
+    assert run is not None
+    assert (run.task_id, run.submission_outcome, run.launch_identity) == (
+        "task-after-run-failure",
+        "accepted",
+        authority.request_id,
+    )
+
+
+@patch("auto_coder.codex_cloud_client.CodexCloudClient")
+def test_missing_receipt_rejects_accepted_run_from_another_request(mock_client_type, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    authority = _authority()
+    run = CloudRun(
+        "owner/repo",
+        2223,
+        5,
+        "codex-cloud",
+        task_id="task-earlier",
+        backend_name="codex-alias",
+        environment_id="environment-earlier",
+        base_branch="main",
+        submission_outcome="accepted",
+        launch_identity="different-request",
+    )
+    CloudRunRepository("owner/repo").save(run)
+    manager = CloudManager("owner/repo")
+    assert manager.add_session(2223, run.task_id, run.provider, run.backend_name)
+    engine = AutomationEngine(MagicMock(), config=AutomationConfig())
+
+    outcome, _ = engine._codex_retry_reconciler("owner/repo").reconcile(authority.request_id)
+
+    assert outcome is ExplicitTargetOutcome.DEFERRED
+    mock_client_type.return_value.submit_task.assert_not_called()
+    assert RetryDispatchRepository("owner/repo").get(authority.request_id) is None
+    assert CloudRunRepository("owner/repo").get(2223, 5) == run
+    assert manager.read_bindings_strict()["2223"].task_id == "task-earlier"
 
 
 @patch("auto_coder.codex_cloud_client.CodexCloudClient")
