@@ -26,6 +26,7 @@ class RepairOrigin(str, Enum):
 
 
 class RepairDisposition(str, Enum):
+    NO_UPDATE_NEEDED = "no_update_needed"
     REFUSED = "refused"
     DEFERRED = "deferred"
     ACCEPTED_OR_UNCERTAIN = "accepted_or_uncertain"
@@ -70,6 +71,10 @@ class PRRepairResult:
     synchronization_state: RepairFactState = RepairFactState.UNKNOWN
     synchronized: bool = False
     retry_not_before: float | None = None
+    repository: str = ""
+    pr_number: int = 0
+    input_head: str = ""
+    base_ref: str = ""
 
     @property
     def stops_processing(self) -> bool:
