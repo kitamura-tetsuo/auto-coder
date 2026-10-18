@@ -637,6 +637,47 @@ class TestNonDifficultCloudIssueRouting:
         assert client.submit_task.call_args.kwargs["repo_name"] == "owner/repo"
         assert client.submit_task.call_args.kwargs["base_branch"] == "release"
 
+    @patch("auto_coder.codex_cloud_client.CodexCloudClient")
+    def test_codex_post_submit_notification_failure_replays_accepted_receipt(self, mock_client_type, tmp_path, monkeypatch):
+        """A notification failure cannot downgrade already persisted Codex acceptance."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        alias = "remote-primary"
+        llm_config = LLMBackendConfiguration.load_from_dict({"backends": {alias: {"backend_type": "codex-cloud", "model": "gpt-test"}, "local-fallback": {"backend_type": "codex", "model": "local"}}})
+        client = mock_client_type.return_value
+        client.environment_id = "env-test"
+        client.submit_task.return_value = CodexSubmissionResult(CodexSubmissionOutcome.ACCEPTED, "task-notified-late")
+        github = MagicMock()
+        github.add_comment_to_issue.side_effect = RuntimeError("GitHub comment unavailable")
+
+        with (
+            patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config),
+            patch("auto_coder.codex_cloud_client.get_llm_config", return_value=llm_config),
+            patch("auto_coder.issue_processor.get_current_attempt", return_value=3),
+            patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+            patch("auto_coder.cli_helpers.build_backend_manager") as fallback,
+        ):
+            first = _dispatch_issue_candidates("owner/repo", {"number": 2081, "title": "Notify", "body": "", "labels": []}, AutomationConfig(), github, [alias, "local-fallback"])
+            replay = _dispatch_issue_candidates("owner/repo", {"number": 2081, "title": "Notify", "body": "", "labels": []}, AutomationConfig(), github, [alias, "local-fallback"])
+
+        assert first.result.outcome is DispatchOutcome.REMOTE_ACCEPTED
+        assert first.result.provider_reference == "task-notified-late"
+        assert first.result.tracking_complete is True
+        assert "GitHub comment unavailable" in first.result.diagnostic
+        assert replay.result.identity == first.result.identity
+        assert replay.result.provider_reference == first.result.provider_reference
+        assert replay.result.claim_incarnation == first.result.claim_incarnation
+        assert replay.result.tracking_complete is True
+        assert client.submit_task.call_count == 1
+        fallback.assert_not_called()
+
+        from auto_coder.issue_dispatch import IssueDispatchGuard
+
+        retained = IssueDispatchGuard().inspect(first.result.identity)
+        assert retained is not None
+        assert retained.provider_reference == first.result.provider_reference
+        assert retained.claim_incarnation == first.result.claim_incarnation
+        assert retained.tracking_complete is True
+
     @patch("auto_coder.issue_processor._process_issue_codex_cloud_mode")
     @patch("auto_coder.quota_selector.evaluate_backend_quota")
     def test_toml_priority_groups_rank_within_group_during_issue_dispatch(

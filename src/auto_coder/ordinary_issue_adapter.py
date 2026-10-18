@@ -88,6 +88,33 @@ class OrdinaryIssueAdapterComposition:
             nonlocal actions
             backend_type = candidate.provider.lower()
             observed_acceptance: List[AdapterOutcome] = []
+
+            def accepted_evidence(diagnostic: str = "") -> Optional[AdapterOutcome]:
+                """Resolve acceptance from the candidate's exact durable evidence."""
+                binding = CloudManager(request.repo_name).get_binding(issue_number)
+                if backend_type == "codex-cloud":
+                    match_attempt = request.numeric_attempt
+                    retry_handoff = None
+                    if request.retry_authority is not None:
+                        retry_handoff = RetryDispatchRepository(request.repo_name).get(request.retry_authority.request_id)
+                        if retry_handoff is not None and retry_handoff.numeric_attempt is not None:
+                            match_attempt = retry_handoff.numeric_attempt
+                    runs = CloudRunRepository(request.repo_name).list_for_issue(issue_number)
+                    matching = [run for run in runs if str(run.attempt) == str(match_attempt) and run.backend_name == candidate.backend_name and run.task_id and run.submission_outcome == "accepted"]
+                    if matching:
+                        run = matching[-1]
+                        exact_binding = binding is not None and binding.provider == backend_type and binding.backend_name == candidate.backend_name and binding.task_id == run.task_id
+                        tracking_complete = exact_binding
+                        evidence_diagnostic = "" if exact_binding else "secondary tracking incomplete"
+                        if retry_handoff is not None and retry_handoff.outcome in {"accepted", "completed"} and retry_handoff.external_id == run.task_id:
+                            tracking_complete = retry_handoff.tracking_complete and exact_binding
+                            evidence_diagnostic = retry_handoff.diagnostic or evidence_diagnostic
+                        combined = "; ".join(part for part in (evidence_diagnostic, diagnostic) if part)
+                        return AdapterOutcome(DispatchOutcome.REMOTE_ACCEPTED, run.task_id, combined, tracking_complete=tracking_complete)
+                if binding is not None and binding.provider == backend_type and binding.backend_name == candidate.backend_name:
+                    return AdapterOutcome(DispatchOutcome.REMOTE_ACCEPTED, binding.task_id, diagnostic)
+                return None
+
             request.effects.record_dispatch_stage(
                 issue_number,
                 "issue.dispatch.selection",
@@ -198,23 +225,16 @@ class OrdinaryIssueAdapterComposition:
             except (AutoCoderUsageLimitError, CloudSubmissionNotStartedError, FileNotFoundError, LocalPreparationNotStartedError) as exc:
                 return AdapterOutcome(DispatchOutcome.NOT_STARTED, diagnostic=str(exc))
             except Exception as exc:
+                retained = accepted_evidence(str(exc))
+                if retained is not None:
+                    return retained
                 return AdapterOutcome(DispatchOutcome.INDETERMINATE, diagnostic=str(exc))
 
             if observed_acceptance:
                 return observed_acceptance[-1]
-            binding = CloudManager(request.repo_name).get_binding(issue_number)
-            if binding is not None and binding.provider == backend_type and binding.backend_name == candidate.backend_name:
-                return AdapterOutcome(DispatchOutcome.REMOTE_ACCEPTED, binding.task_id)
-            if backend_type == "codex-cloud":
-                match_attempt = request.numeric_attempt
-                if request.retry_authority is not None:
-                    retry_handoff = RetryDispatchRepository(request.repo_name).get(request.retry_authority.request_id)
-                    if retry_handoff is not None and retry_handoff.numeric_attempt is not None:
-                        match_attempt = retry_handoff.numeric_attempt
-                runs = CloudRunRepository(request.repo_name).list_for_issue(issue_number)
-                matching = [run for run in runs if str(run.attempt) == str(match_attempt) and run.backend_name == candidate.backend_name]
-                if matching and matching[-1].task_id and matching[-1].submission_outcome == "accepted":
-                    return AdapterOutcome(DispatchOutcome.REMOTE_ACCEPTED, matching[-1].task_id, "secondary tracking incomplete")
+            retained = accepted_evidence()
+            if retained is not None:
+                return retained
             assert backend_type in self._REMOTE_TYPES
             return AdapterOutcome(DispatchOutcome.INDETERMINATE, diagnostic="remote adapter returned without durable provider acceptance evidence")
 
