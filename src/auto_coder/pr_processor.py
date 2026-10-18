@@ -109,6 +109,7 @@ from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues
 from .issue_stage_routing import IMPLEMENTATION_STAGE, ImplementationRetryRequest, IssueStageRoutingStore
 from .label_manager import LabelManager, LabelOperationError, filter_legacy_auto_coder_label
 from .llm_backend_config import get_pr_review_allowlist_from_config, get_review_adjudicator_allowlist_from_config
+from .local_ci_repair_execution import CorrectionPorts, LocalCIRepairPorts, LocalCIRepairRequest, execute_correction, execute_local_ci_repair
 from .logger_config import get_gh_logger, get_logger
 from .ordinary_closure_evidence import ApplicationStatus, ClosureEvidenceRecord, EvidenceState, ObservedTarget, restore_ordinary_result
 from .pr_blocker_closure import _BLOCKER_ID_RE, _GAP_ID_RE
@@ -6780,124 +6781,69 @@ def _handle_pr_merge(
             _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.SKIPPED, {"effect": "ci-failure-repair", "reason": "not created by local LLM"})
             return actions
 
-        # If automatic test fixing is disabled and we're not already on the PR branch,
-        # skip checkout and test-failure repair entirely to avoid mutating the workspace.
-        if not _is_automatic_test_fix_enabled(config, repo_name) and not already_on_pr_branch:
-            actions.append(f"Automatic test fix is disabled for PR #{pr_number}; skipping test-failure repair")
-            _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.SKIPPED, {"effect": "ci-failure-repair", "reason": "automatic test fix is disabled"})
-            return actions
-
-        # Step 7: Checkout PR branch for non-Jules PRs
-        # pr_branch_name is defined earlier (around line 1004)
-
         expected_head = str(pr_data.get("head", {}).get("sha") or "")
-        with current_ci_failure_authority(github_client, repo_name, pr_number, expected_head) as authority:
-            if not authority.allowed:
-                actions.append(f"Deferred local CI repair for PR #{pr_number}: {authority.reason}")
-                return actions
-            logger.info(f"Initiating local CI repair for PR #{pr_number}; head={expected_head} failures={authority.failure_identities}")
-            # Branch preparation may reset or clean the worktree, making it
-            # the first effect for a different-checkout repair.
-            prepare_ok = True if already_on_pr_branch else _checkout_pr_branch(repo_name, pr_data, config, perform_checkout=False)
-            if not prepare_ok:
-                actions.append(f"Failed to prepare PR #{pr_number} branch")
-                return actions
 
-            with BranchManager(pr_branch_name) as manager:
-                actions.append(f"Checked out PR #{pr_number} branch")
+        def trace_base_update(result: str) -> None:
+            descriptions = {
+                "skipped": f"Skipped base branch update for PR #{pr_number}",
+                "pushed": f"Pushed updated branch for PR #{pr_number}",
+                "up_to_date": f"PR #{pr_number} is up to date",
+            }
+            get_trace_logger().log(
+                "Update Base",
+                descriptions[result],
+                item_type="pr",
+                item_number=pr_number,
+                details={"result": result},
+            )
 
-                # Step 8: Optionally update with latest base branch commits (configurable)
-                if config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL:
-                    actions.append(f"[Policy] Skipping base branch update for PR #{pr_number} (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=True)")
-                    get_trace_logger().log("Update Base", f"Skipped base branch update for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "skipped"})
+        execution = execute_local_ci_repair(
+            LocalCIRepairRequest(
+                repository=repo_name,
+                pr_number=pr_number,
+                expected_head=expected_head,
+                branch_name=pr_branch_name,
+                already_checked_out=already_on_pr_branch,
+                failed_checks=tuple(failed_checks),
+                config=config,
+                github_client=github_client,
+            ),
+            LocalCIRepairPorts(
+                authority=current_ci_failure_authority,
+                prepare_branch=lambda: _checkout_pr_branch(repo_name, pr_data, config, perform_checkout=False),
+                branch_context=BranchManager,
+                automatic_fix_enabled=lambda: _is_automatic_test_fix_enabled(config, repo_name),
+                update_base=lambda: _update_with_base_branch(repo_name, pr_data, config),
+                summarize_checks=lambda checks: _create_github_action_log_summary(repo_name, config, list(checks)),
+                read_logs=lambda checks: _get_github_actions_logs(repo_name, config, list(checks), pr_data),
+                correction=_local_ci_correction_ports(repo_name, pr_data, config),
+                extract_failed_tests=extract_all_failed_tests,
+                trace_base_update=trace_base_update,
+            ),
+        )
+        actions.extend(execution.actions)
+        actions.repair_attempt_started = execution.attempt_started is True
+        actions.resulting_head = execution.candidate_head
+        actions.synchronized = execution.synchronized
+        actions.quota_deferred = execution.quota_deferred
+        actions.retry_not_before = execution.retry_not_before
 
-                    # Proceed directly to extracting GitHub Actions logs and attempting fixes
-                    if failed_checks:
-                        github_logs, failed_test_files = _create_github_action_log_summary(repo_name, config, failed_checks)
-                        local_repair = _dispatch_local_ci_failure_repair(
-                            repo_name,
-                            pr_data,
-                            lambda: _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files),
-                        )
-                        actions.extend(local_repair.actions)
-                        if local_repair.disposition is RepairDisposition.FAILED and processing_status is not None:
-                            processing_status.outcome = PRProcessingOutcome.FAILED
-                            processing_status.error = local_repair.reason
-                    else:
-                        actions.append(f"No specific failed checks found for PR #{pr_number}")
-
-                    return actions
-                else:
-                    actions.append(f"[Policy] Performing base branch update for PR #{pr_number} before fixes (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)")
-                    update_actions = _update_with_base_branch(repo_name, pr_data, config)
-                    actions.extend(update_actions)
-                    if update_actions.quota_deferred:
-                        actions.quota_deferred = True
-                        actions.retry_not_before = update_actions.retry_not_before
-
-                    # Step 9: Check for special cases from base branch update
-
-                    # Check if LLM determined merge would degrade code quality
-                    if update_actions.repair_result is not None and update_actions.repair_result.disposition is RepairDisposition.QUALITY_REFUSED:
-                        actions.append(f"LLM determined merge would degrade code quality for PR #{pr_number}, closing PR without merge")
-                        # Close the PR without merging
-                        try:
-                            client = GitHubClient.get_instance()
-                            close_comment = f"Auto-Coder: Closing PR because LLM determined merge would degrade code quality. The linked issue(s) have been reopened with incremented attempt count."
-                            client.close_pr(repo_name, pr_number, close_comment)
-                            _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
-                            actions.append(f"Closed PR #{pr_number} without merging")
-
-                            # BranchManager handles return to original branch
-                        except Exception as e:
-                            logger.error(f"Failed to close PR #{pr_number}: {e}")
-                            actions.append(f"Error closing PR #{pr_number}: {e}")
-                        return actions
-
-                    # If base branch update required pushing changes, skip to next PR
-                    update_result = update_actions.repair_result
-                    if update_result is None:
-                        raise RuntimeError("base update returned no typed control result")
-                    if update_result.disposition in {RepairDisposition.NO_UPDATE_NEEDED, RepairDisposition.FAILED}:
-                        actions[:] = [action for action in actions if action != "ACTION_FLAG:SKIP_ANALYSIS"]
-                    if update_result.disposition in {RepairDisposition.APPLIED, RepairDisposition.ACCEPTED_OR_UNCERTAIN, RepairDisposition.DEFERRED, RepairDisposition.REFUSED}:
-                        actions.append(f"Updated PR #{pr_number} with base branch, skipping to next PR for GitHub Actions check")
-                        get_trace_logger().log("Update Base", f"Pushed updated branch for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "pushed"})
-                        return actions
-
-                    # Step 10: If no main branch updates were needed, the test failures are due to PR content
-                    # Get GitHub Actions error logs and ask Gemini to fix
-                    if update_result.disposition is RepairDisposition.NO_UPDATE_NEEDED:
-                        actions.append(f"PR #{pr_number} is up to date with main branch, test failures are due to PR content")
-                        get_trace_logger().log("Update Base", f"PR #{pr_number} is up to date", item_type="pr", item_number=pr_number, details={"result": "up_to_date"})
-
-                        if not _is_automatic_test_fix_enabled(config, repo_name):
-                            actions.append(f"Automatic test fix is disabled for PR #{pr_number}; skipping test-failure repair")
-                            return actions
-
-                        # Fix PR issues using GitHub Actions logs first, then local tests
-                        if failed_checks:
-                            # Unit test expects _get_github_actions_logs(repo_name, failed_checks)
-                            github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
-                            local_repair = _dispatch_local_ci_failure_repair(
-                                repo_name,
-                                pr_data,
-                                lambda: _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs),
-                            )
-                            actions.extend(local_repair.actions)
-                            if local_repair.disposition is RepairDisposition.FAILED and processing_status is not None:
-                                processing_status.outcome = PRProcessingOutcome.FAILED
-                                processing_status.error = local_repair.reason
-                        else:
-                            actions.append(f"No specific failed checks found for PR #{pr_number}")
-                    elif update_result.disposition is RepairDisposition.FAILED:
-                        actions.append(f"Base branch comparison or update failed for PR #{pr_number}")
-                        if processing_status is not None:
-                            processing_status.outcome = PRProcessingOutcome.FAILED
-                            processing_status.error = update_result.reason or "base branch update failed"
-                    else:
-                        # If we reach here, some other update action occurred
-                        actions.append(f"PR #{pr_number} processing completed")
+        if execution.close_for_quality:
+            actions.append(f"LLM determined merge would degrade code quality for PR #{pr_number}, closing PR without merge")
+            try:
+                client = GitHubClient.get_instance()
+                close_comment = "Auto-Coder: Closing PR because LLM determined merge would degrade code quality. The linked issue(s) have been reopened with incremented attempt count."
+                client.close_pr(repo_name, pr_number, close_comment)
+                _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
+                actions.append(f"Closed PR #{pr_number} without merging")
+            except Exception as e:
+                logger.error(f"Failed to close PR #{pr_number}: {e}")
+                actions.append(f"Error closing PR #{pr_number}: {e}")
+            return actions
+        if execution.failure_reason and processing_status is not None:
+            processing_status.outcome = PRProcessingOutcome.FAILED
+            processing_status.error = execution.failure_reason
+        return actions
 
     except Exception as e:
         diagnostic = f"Error handling PR merge for PR #{pr_number}: {e}"
@@ -11002,112 +10948,62 @@ def _fix_pr_issues_with_testing(
     candidate is submitted for CI validation without requiring local full-suite
     success; local outcomes never establish CI clearance or merge authority.
     """
-    actions = PRActionList()
+    request = LocalCIRepairRequest(repo_name, pr_data["number"], "", "", True, (), config, object())
+    result = execute_correction(request, github_logs, failed_tests, _local_ci_correction_ports(repo_name, pr_data, config), extract_all_failed_tests)
+    actions = PRActionList(result.actions)
+    actions.repair_attempt_started = result.attempt_started is True
+    actions.resulting_head = result.candidate_head
+    actions.synchronized = result.synchronized
+    return actions
+
+
+def _local_ci_correction_ports(repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig) -> CorrectionPorts:
     pr_number = pr_data["number"]
 
-    if failed_tests is None:
-        failed_tests = extract_all_failed_tests(github_logs)
-    known_failures = dedupe_targets(failed_tests)
-
-    # With automatic_test_fix disabled no backend is created, no correction starts and
-    # nothing is published; focused checks remain observational.
-    current_backend_manager: Optional[BackendManager] = None
-    high_score_backend_manager: Optional[BackendManager] = None
-    if _is_automatic_test_fix_enabled(config, repo_name):
+    def get_current() -> Optional[BackendManager]:
         try:
-            current_backend_manager = get_llm_backend_manager()
-        except Exception as e:
-            logger.debug(f"Could not get LLM backend manager: {e}")
+            return get_llm_backend_manager()
+        except Exception as exc:
+            logger.debug(f"Could not get LLM backend manager: {exc}")
+            return None
+
+    def get_high_score() -> Optional[BackendManager]:
         try:
-            high_score_backend_manager = create_high_score_backend_manager()
-        except Exception as e:
-            logger.debug(f"Could not create high score backend manager: {e}")
+            return create_high_score_backend_manager()
+        except Exception as exc:
+            logger.debug(f"Could not create high score backend manager: {exc}")
+            return None
 
-    attempt_history: List[Dict[str, Any]] = []
+    def initial(logs: str, manager: object | None, targets: List[str], started: Callable[[], None]) -> Sequence[str]:
+        return _apply_github_actions_fix(repo_name, pr_data, config, logs, backend_manager=manager, focused_targets=targets, on_invocation_started=started)  # type: ignore[arg-type]
 
-    try:
-        # Initial correction from the CI diagnostics (all of them, including non-test failures).
-        if _is_automatic_test_fix_enabled(config, repo_name):
-            actions.repair_attempt_started = True
-            get_trace_logger().log("Fixing Issues", f"Fixing PR #{pr_number} using GHA logs", item_type="pr", item_number=pr_number)
-            actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
-        actions.extend(_apply_github_actions_fix(repo_name, pr_data, config, github_logs, backend_manager=high_score_backend_manager, focused_targets=known_failures))
+    def focused(targets: List[str]) -> FocusedVerification:
+        with ProgressStage("Running focused local checks"):
+            return verify_targets(targets, run_local_tests, config)
 
-        # Focused verification loop over F only; the follow-up budget is shared across F.
-        verification = FocusedVerification()
-        if os.environ.get("AUTO_CODER_DEFER_LOCAL_TESTS") == "1":
-            actions.append("Local verification deferred by operator until after merge; GitHub CI remains authoritative")
-        elif not known_failures:
-            actions.append("Local verification not performed: CI diagnostics identified no test file to select; full validation is left to CI")
-        else:
-            follow_ups = 0
-            while True:
-                with ProgressStage("Running focused local checks"):
-                    verification = verify_targets(known_failures, run_local_tests, config)
-                failing = verification.failed
-                if not failing:
-                    break
-                if not _is_automatic_test_fix_enabled(config, repo_name):
-                    actions.append(f"Automatic test fix is disabled for PR #{pr_number}; skipping local test repair")
-                    break
-                if follow_up_budget_exhausted(config.MAX_FIX_ATTEMPTS, follow_ups):
-                    actions.append(f"Max fix attempts ({config.MAX_FIX_ATTEMPTS}) reached for PR #{pr_number}")
-                    break
-                if not new_work_allowed():
-                    actions.append(f"Deferred another repair attempt for PR #{pr_number}: graceful shutdown is draining")
-                    break
+    def follow_up(raw: Dict[str, Any], history: List[Dict[str, object]], manager: object | None, started: Callable[[], None]) -> Tuple[Sequence[str], str]:
+        return _apply_local_test_fix(repo_name, pr_data, config, raw, history, backend_manager=manager, on_invocation_started=started)  # type: ignore[arg-type]
 
-                from .util.gh_cache import GitHubClient
-                from .util.github_action import is_item_closed_on_github
+    from .util.github_action import is_item_closed_on_github
 
-                if is_item_closed_on_github(repo_name, "pr", pr_number, GitHubClient.get_instance()):
-                    msg = f"PR #{pr_number} is closed on GitHub. Aborting fix loop."
-                    logger.info(msg)
-                    actions.append(msg)
-                    return actions
+    def pr_closed() -> bool:
+        from .util.gh_cache import GitHubClient as LocalGitHubClient
 
-                follow_ups += 1
-                if follow_ups >= 2 and high_score_backend_manager and current_backend_manager != high_score_backend_manager:
-                    logger.info(f"Switching to fallback backend for PR #{pr_number} after {follow_ups} follow-up attempts")
-                    current_backend_manager = high_score_backend_manager
-                    actions.append(f"Switched to fallback backend for PR #{pr_number}")
+        return is_item_closed_on_github(repo_name, "pr", pr_number, LocalGitHubClient.get_instance())
 
-                with ProgressStage(f"Low-failure fix attempt {follow_ups}"):
-                    local_fix_actions, llm_response = _apply_local_test_fix(
-                        repo_name,
-                        pr_data,
-                        config,
-                        failing[0].raw,
-                        attempt_history,
-                        backend_manager=current_backend_manager,
-                    )
-                actions.extend(local_fix_actions)
-                if not llm_response and not math.isfinite(float(config.MAX_FIX_ATTEMPTS)):
-                    # An unbounded budget must not spin on a follow-up that produces no correction.
-                    actions.append(f"No local correction was produced for {failing[0].target}; stopping local repair")
-                    break
-                attempt_history.append({"attempt_number": follow_ups, "llm_output": llm_response, "test_result": failing[0].raw})
-
-            actions.extend(verification.describe())
-            if verification.all_passed:
-                actions.append(f"All {len(verification.results)} known CI-failed test file(s) passed locally on the latest corrected state (focused scope only; full validation pending CI)")
-            else:
-                actions.append("Known CI-failed tests are not all verified locally; full validation pending CI")
-
-        if not _is_automatic_test_fix_enabled(config, repo_name):
-            return actions
-
-        submission = _submit_ci_repair_candidate(repo_name, pr_number)
-        actions.extend(submission.actions)
-        actions.resulting_head = submission.resulting_head
-        actions.synchronized = submission.synchronized
-
-    except AutoCoderRetryableBackendError:
-        raise
-    except Exception as e:
-        actions.append(f"Error fixing PR issues with testing for PR #{pr_number}: {e}")
-
-    return actions
+    return CorrectionPorts(
+        automatic_fix_enabled=lambda: _is_automatic_test_fix_enabled(config, repo_name),
+        current_backend=get_current,
+        high_score_backend=get_high_score,
+        initial_correction=initial,
+        verify=focused,
+        follow_up=follow_up,
+        new_work_allowed=new_work_allowed,
+        pr_closed=pr_closed,
+        submit=lambda: _submit_ci_repair_candidate(repo_name, pr_number),
+        defer_verification=lambda: os.environ.get("AUTO_CODER_DEFER_LOCAL_TESTS") == "1",
+        trace_initial=lambda: get_trace_logger().log("Fixing Issues", f"Fixing PR #{pr_number} using GHA logs", item_type="pr", item_number=pr_number),
+    )
 
 
 def _submit_ci_repair_candidate(repo_name: str, pr_number: int) -> CIRepairSubmission:
@@ -11158,6 +11054,7 @@ def _apply_github_actions_fix(
     github_client: Optional[Any] = None,
     backend_manager: Optional[BackendManager] = None,
     focused_targets: Optional[List[str]] = None,
+    on_invocation_started: Optional[Callable[[], None]] = None,
 ) -> List[str]:
     """Apply initial fix using GitHub Actions error logs.
 
@@ -11207,6 +11104,8 @@ def _apply_github_actions_fix(
             return actions
         logger.info(f"Requesting LLM GitHub Actions fix for PR #{pr_number}")
         with bind_ci_repair_designation(), bind_invocation_target(repo_name, f"pr#{pr_number}", "github_actions_repair"):
+            if on_invocation_started is not None:
+                on_invocation_started()
             response = run_llm_prompt(fix_prompt, backend_manager=backend_manager)
 
         if response:
@@ -11232,6 +11131,7 @@ def _apply_local_test_fix(
     attempt_history: List[Dict[str, Any]],
     backend_manager: Optional[BackendManager] = None,
     github_client: Optional[Any] = None,
+    on_invocation_started: Optional[Callable[[], None]] = None,
 ) -> Tuple[List[str], str]:
     """Apply fix using local test failure logs.
 
@@ -11332,6 +11232,8 @@ def _apply_local_test_fix(
                 actions.append(f"Deferred local repair for PR #{pr_number}: graceful shutdown is draining")
                 return actions, llm_response
             with bind_ci_repair_designation():
+                if on_invocation_started is not None:
+                    on_invocation_started()
                 llm_response = manager.run_test_fix_prompt(fix_prompt, current_test_file=tr.test_file)
 
             if llm_response:

@@ -30,6 +30,7 @@ from auto_coder.ci_observation import (
 from auto_coder.cloud_manager import CloudTaskBinding
 from auto_coder.durable_repair_allowance import RepairAllowanceLedger
 from auto_coder.github_app_reviewer import ReviewPublicationResult
+from auto_coder.github_ci_observer import fence_active_ci_observations
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.local_review_repair import LocalReviewRepairRequest, admit_local_repair_allowance
 from auto_coder.pr_processor import (
@@ -1076,14 +1077,11 @@ def test_terminal_ci_failure_enters_typed_synchronous_local_repair(tmp_path, mon
     produced.repair_attempt_started = True
     produced.resulting_head = H2
     produced.synchronized = False
-    requests = []
-    results = []
 
-    def capture_dispatch(request, operation):
-        requests.append(request)
-        result = operation(request)
-        results.append(result)
-        return result
+    def initial_correction(*_args, on_invocation_started=None, **_kwargs):
+        assert on_invocation_started is not None
+        on_invocation_started()
+        return ["local correction invoked"]
 
     status = ProcessedPRResult(pr_data=pr_data, actions_taken=[], priority="fix", analysis=None)
     with (
@@ -1098,8 +1096,11 @@ def test_terminal_ci_failure_enters_typed_synchronous_local_repair(tmp_path, mon
         patch("auto_coder.pr_processor._checkout_pr_branch", return_value=True),
         patch("auto_coder.pr_processor.BranchManager", return_value=nullcontext()),
         patch("auto_coder.pr_processor._create_github_action_log_summary", return_value=("failed logs", ["tests/test_pr.py"])),
-        patch("auto_coder.pr_processor._fix_pr_issues_with_testing", return_value=produced) as local_repair,
-        patch("auto_coder.pr_processor.dispatch_pr_repair", side_effect=capture_dispatch),
+        patch("auto_coder.pr_processor._apply_github_actions_fix", side_effect=initial_correction) as local_repair,
+        patch(
+            "auto_coder.pr_processor._submit_ci_repair_candidate",
+            return_value=SimpleNamespace(actions=tuple(produced), resulting_head=H2, synchronized=False),
+        ),
         patch("auto_coder.pr_processor._merge_pr") as merge,
     ):
         unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
@@ -1107,14 +1108,198 @@ def test_terminal_ci_failure_enters_typed_synchronous_local_repair(tmp_path, mon
 
     local_repair.assert_called_once()
     merge.assert_not_called()
-    assert len(requests) == 1
-    assert requests[0].origin is RepairOrigin.LOCAL
-    assert requests[0].local_origin == "synchronous-local-ci-repair"
-    assert results[0].disposition is RepairDisposition.FAILED
-    assert results[0].resulting_head == H2
-    assert results[0].synchronized is False
+    assert actions.repair_attempt_started is True
+    assert actions.resulting_head == H2
+    assert actions.synchronized is False
     assert status.outcome is PRProcessingOutcome.FAILED
     assert "local candidate failed to synchronize" in actions
+
+
+@pytest.mark.parametrize("invalidate_final_read", [True, False], ids=["invalidated", "fresh-exact-head"])
+@pytest.mark.parametrize("already_checked_out", [False, True], ids=["checkout-required", "already-checked-out"])
+def test_public_local_ci_repair_real_authority_fences_first_checkout_mutation(tmp_path, monkeypatch, invalidate_final_read, already_checked_out):
+    """REQ-006: public repair uses the real final observation/fence before mutation."""
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    marker = worktree / "checkout-prepared"
+    marker.write_text("clean", encoding="utf-8")
+    subprocess.run(["git", "init", "-b", "main"], cwd=worktree, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.com"], cwd=worktree, check=True)
+    subprocess.run(["git", "config", "user.name", "Tests"], cwd=worktree, check=True)
+    subprocess.run(["git", "add", marker.name], cwd=worktree, check=True)
+    subprocess.run(["git", "commit", "-m", "clean checkout"], cwd=worktree, check=True, capture_output=True)
+    monkeypatch.chdir(worktree)
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+
+    failed = _snapshot(ObservationAvailability.KNOWN, CIConclusion.FAILURE)
+    config = AutomationConfig()
+    config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = True
+    pr_data = {
+        "number": PR_NUMBER,
+        "body": "<!-- auto-coder:local-llm -->\nFixes #2541",
+        "labels": [],
+        "user": {"login": "local-owner"},
+        "head": {"ref": "local/feature", "sha": H1},
+        "base": {"ref": "main", "sha": "base-1"},
+    }
+    client = MagicMock(token="controlled-token")
+    client.get_pull_request_metadata_strict.return_value = {
+        "number": PR_NUMBER,
+        "state": "open",
+        "merged_at": None,
+        "head": {"sha": H1},
+    }
+    effects = {"prepare": 0, "branch": 0, "backend": 0}
+
+    def final_checks(_owner, _repo, *, ref, **_kwargs):
+        if invalidate_final_read:
+            fence_active_ci_observations("controlled newer CI delivery")
+        return {
+            "check_runs": [
+                {
+                    "id": 901,
+                    "name": "PR Tests",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "head_sha": ref,
+                    "app": {"id": 1},
+                }
+            ]
+        }
+
+    api = SimpleNamespace(
+        checks=SimpleNamespace(list_for_ref=final_checks),
+        actions=SimpleNamespace(list_workflow_runs_for_repo=lambda *_args, **_kwargs: {"workflow_runs": []}),
+    )
+
+    def prepare_branch(*_args, **_kwargs):
+        effects["prepare"] += 1
+        marker.write_text("mutated", encoding="utf-8")
+        return True
+
+    @contextmanager
+    def branch_context(_branch):
+        effects["branch"] += 1
+        yield
+
+    def repair(*_args, on_invocation_started=None, **_kwargs):
+        assert on_invocation_started is not None
+        on_invocation_started()
+        effects["backend"] += 1
+        marker.write_text("corrected", encoding="utf-8")
+        return ["controlled local correction"]
+
+    with (
+        patch(
+            "auto_coder.pr_processor._check_github_actions_status",
+            return_value=GitHubActionsStatusResult(success=False, ids=[701], observation=failed),
+        ),
+        patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+        patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as unsafe,
+        patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False),
+        patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+        patch("auto_coder.pr_processor.get_detailed_checks_from_history", return_value=SimpleNamespace(failed_checks=[{"name": "PR Tests"}])),
+        patch("auto_coder.pr_processor._is_codex_pr", return_value=False),
+        patch("auto_coder.pr_processor._is_jules_pr", return_value=False),
+        patch("auto_coder.pr_processor._is_dependabot_pr", return_value=False),
+        patch("auto_coder.pr_processor._is_local_llm_pr", return_value=True),
+        patch("auto_coder.pr_processor.cmd.run_command", return_value=CommandResult(True, ("local/feature" if already_checked_out else "main") + "\n", "", 0)),
+        patch("auto_coder.ci_repair_authority.get_ghapi_client", return_value=api),
+        patch("auto_coder.pr_processor._checkout_pr_branch", side_effect=prepare_branch),
+        patch("auto_coder.pr_processor.BranchManager", side_effect=branch_context),
+        patch("auto_coder.pr_processor._create_github_action_log_summary", return_value=("failed logs", ["tests/test_pr.py"])),
+        patch("auto_coder.pr_processor._apply_github_actions_fix", side_effect=repair),
+        patch("auto_coder.pr_processor._submit_ci_repair_candidate", return_value=SimpleNamespace(actions=("candidate published",), resulting_head=H2, synchronized=True)),
+        patch("auto_coder.pr_processor._merge_pr") as merge,
+    ):
+        unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
+        actions = _handle_pr_merge(client, REPOSITORY, pr_data, config, {})
+
+    merge.assert_not_called()
+    client.get_pull_request_metadata_strict.assert_called_once_with(REPOSITORY, PR_NUMBER)
+    if invalidate_final_read:
+        assert effects == {"prepare": 0, "branch": 0, "backend": 0}
+        assert marker.read_text(encoding="utf-8") == "clean"
+        assert subprocess.run(["git", "status", "--porcelain"], cwd=worktree, check=True, capture_output=True, text=True).stdout == ""
+        assert any("CI evidence is superseded" in action for action in actions)
+    else:
+        assert effects == {"prepare": 0 if already_checked_out else 1, "branch": 1, "backend": 1}
+        assert marker.read_text(encoding="utf-8") == "corrected"
+        assert "controlled local correction" in actions
+
+
+@pytest.mark.parametrize("preexisting_dirty", [False, True], ids=["clean", "preexisting-dirty"])
+def test_public_local_ci_repair_shutdown_refusal_never_publishes_existing_diff(tmp_path, monkeypatch, preexisting_dirty):
+    """REQ-005: refused backend admission cannot create attempt or publication facts."""
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    tracked = worktree / "tracked.txt"
+    tracked.write_text("clean", encoding="utf-8")
+    subprocess.run(["git", "init", "-b", "local-feature"], cwd=worktree, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.com"], cwd=worktree, check=True)
+    subprocess.run(["git", "config", "user.name", "Tests"], cwd=worktree, check=True)
+    subprocess.run(["git", "add", tracked.name], cwd=worktree, check=True)
+    subprocess.run(["git", "commit", "-m", "baseline"], cwd=worktree, check=True, capture_output=True)
+    if preexisting_dirty:
+        tracked.write_text("unrelated dirty change", encoding="utf-8")
+    monkeypatch.chdir(worktree)
+
+    failed = _snapshot(ObservationAvailability.KNOWN, CIConclusion.FAILURE)
+    pr_data = {
+        "number": PR_NUMBER,
+        "body": "<!-- auto-coder:local-llm -->",
+        "labels": [],
+        "user": {"login": "local-owner"},
+        "head": {"ref": "local-feature", "sha": H1},
+        "base": {"ref": "main", "sha": "base-1"},
+    }
+    client = MagicMock(token="controlled-token")
+    client.get_pull_request_metadata_strict.return_value = {
+        "state": "open",
+        "merged_at": None,
+        "head": {"sha": H1},
+    }
+    api = SimpleNamespace(
+        checks=SimpleNamespace(list_for_ref=lambda _owner, _repo, *, ref, **_kwargs: {"check_runs": [{"id": 901, "name": "PR Tests", "status": "completed", "conclusion": "failure", "head_sha": ref, "app": {"id": 1}}]}),
+        actions=SimpleNamespace(list_workflow_runs_for_repo=lambda *_args, **_kwargs: {"workflow_runs": []}),
+    )
+    config = AutomationConfig()
+    config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = True
+
+    with (
+        patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=False, ids=[701], observation=failed)),
+        patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+        patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as unsafe,
+        patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False),
+        patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True}),
+        patch("auto_coder.pr_processor.get_detailed_checks_from_history", return_value=SimpleNamespace(failed_checks=[{"name": "PR Tests"}])),
+        patch("auto_coder.pr_processor._is_codex_pr", return_value=False),
+        patch("auto_coder.pr_processor._is_jules_pr", return_value=False),
+        patch("auto_coder.pr_processor._is_dependabot_pr", return_value=False),
+        patch("auto_coder.pr_processor._is_local_llm_pr", return_value=True),
+        patch("auto_coder.pr_processor.cmd.run_command", return_value=CommandResult(True, "local-feature\n", "", 0)),
+        patch("auto_coder.ci_repair_authority.get_ghapi_client", return_value=api),
+        patch("auto_coder.pr_processor.BranchManager", return_value=nullcontext()),
+        patch("auto_coder.pr_processor._create_github_action_log_summary", return_value=("lint failed", [])),
+        patch("auto_coder.pr_processor.new_work_allowed", return_value=False),
+        patch("auto_coder.pr_processor.run_llm_prompt") as backend,
+        patch("auto_coder.pr_processor._submit_ci_repair_candidate") as submit,
+        patch("auto_coder.pr_processor.git_commit_with_retry") as commit,
+        patch("auto_coder.pr_processor.git_push") as push,
+        patch("auto_coder.pr_processor._merge_pr") as merge,
+    ):
+        unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
+        actions = _handle_pr_merge(client, REPOSITORY, pr_data, config, {})
+
+    backend.assert_not_called()
+    submit.assert_not_called()
+    commit.assert_not_called()
+    push.assert_not_called()
+    merge.assert_not_called()
+    assert actions.repair_attempt_started is False
+    assert actions.resulting_head == ""
+    assert actions.synchronized is None
+    assert tracked.read_text(encoding="utf-8") == ("unrelated dirty change" if preexisting_dirty else "clean")
 
 
 @pytest.mark.parametrize("push_succeeds", [True, False], ids=["applied", "synchronization-failed"])
@@ -1147,21 +1332,12 @@ def test_public_local_ci_repair_uses_real_h1_to_h2_git_result(tmp_path, monkeypa
         "base": {"ref": "main", "sha": "base-1"},
     }
     client = MagicMock(token="controlled-token")
-    results = []
 
-    def real_git_repair(*_args, **_kwargs):
+    def real_git_repair(*_args, on_invocation_started=None, **_kwargs):
+        assert on_invocation_started is not None
+        on_invocation_started()
         tracked.write_text("H2\n", encoding="utf-8")
-        submission = pr_processor._submit_ci_repair_candidate(REPOSITORY, PR_NUMBER)
-        produced = PRActionList(submission.actions)
-        produced.repair_attempt_started = submission.attempt_started
-        produced.resulting_head = submission.resulting_head
-        produced.synchronized = submission.synchronized
-        return produced
-
-    def capture_dispatch(request, operation):
-        result = operation(request)
-        results.append(result)
-        return result
+        return ["local correction invoked"]
 
     with (
         patch("auto_coder.util.github_action.get_ghapi_client", return_value=MagicMock()),
@@ -1182,8 +1358,7 @@ def test_public_local_ci_repair_uses_real_h1_to_h2_git_result(tmp_path, monkeypa
         patch("auto_coder.pr_processor._checkout_pr_branch", return_value=True),
         patch("auto_coder.pr_processor.BranchManager", return_value=nullcontext()),
         patch("auto_coder.pr_processor._create_github_action_log_summary", return_value=("failed logs", ["tests/test_pr.py"])),
-        patch("auto_coder.pr_processor._fix_pr_issues_with_testing", side_effect=real_git_repair),
-        patch("auto_coder.pr_processor.dispatch_pr_repair", side_effect=capture_dispatch),
+        patch("auto_coder.pr_processor._apply_github_actions_fix", side_effect=real_git_repair),
         patch("auto_coder.pr_processor.GitHubClient.get_instance", return_value=client),
         patch("auto_coder.util.github_action.is_item_closed_on_github", return_value=False),
         patch("auto_coder.pr_processor.git_push", return_value=CommandResult(push_succeeds, "", "push rejected" if not push_succeeds else "", 0 if push_succeeds else 1)),
@@ -1193,12 +1368,10 @@ def test_public_local_ci_repair_uses_real_h1_to_h2_git_result(tmp_path, monkeypa
         actions = _handle_pr_merge(client, REPOSITORY, pr_data, config, {})
 
     h2 = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository, check=True, capture_output=True, text=True).stdout.strip()
-    assert results, actions
+    assert actions
     assert h2 != h1
-    assert len(results) == 1
-    assert results[0].resulting_head == h2
-    assert results[0].disposition is (RepairDisposition.APPLIED if push_succeeds else RepairDisposition.FAILED)
-    assert results[0].synchronized is push_succeeds
+    assert actions.resulting_head == h2
+    assert actions.synchronized is push_succeeds
     merge.assert_not_called()
 
 

@@ -123,12 +123,14 @@ def test_local_pr_repair_receives_failure_beyond_first_page(tmp_path, monkeypatc
         stack.enter_context(patch("auto_coder.pr_processor.cmd.run_command", return_value=Mock(success=True, stdout="main\n")))
         stack.enter_context(patch("auto_coder.pr_processor.BranchManager"))
         summary = stack.enter_context(patch("auto_coder.pr_processor._create_github_action_log_summary", return_value=("Exact width failed", ["grid-widths.spec.ts"])))
-        repair = stack.enter_context(patch("auto_coder.pr_processor._fix_pr_issues_with_testing", return_value=repair_actions))
+        repair = stack.enter_context(patch("auto_coder.pr_processor._apply_github_actions_fix", return_value=["Repair invoked"]))
         actions = _handle_pr_merge(client, "owner/repo", pr, config, {})
 
     assert "GitHub Actions checks failed for PR #5467: 1 failed" in actions
     assert "Repair invoked" in actions
     assert not any("No specific failed checks" in action for action in actions)
     assert summary.call_args.args[2][0]["job_id"] == 101
-    repair.assert_called_once_with("owner/repo", pr, config, "Exact width failed", ["grid-widths.spec.ts"])
+    repair.assert_called_once()
+    assert repair.call_args.args[:4] == ("owner/repo", pr, config, "Exact width failed")
+    assert repair.call_args.kwargs["focused_targets"] == ["grid-widths.spec.ts"]
     client.merge_pr.assert_not_called()
