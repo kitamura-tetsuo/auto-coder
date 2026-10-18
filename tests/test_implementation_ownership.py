@@ -40,6 +40,7 @@ from auto_coder.implementation_slots import (
     ImplementationSlotUnavailable,
 )
 from auto_coder.issue_dispatch import DispatchOutcome, IssueAttemptIdentity, IssueDispatchGuard
+from auto_coder.issue_implementation_service import IssueImplementationService
 from auto_coder.issue_job_finalizer import IssueJobFinalizer
 from auto_coder.issue_local_job import IssueLocalJobAdapter, issue_job_authorization_ports
 from auto_coder.issue_processor import handle_stale_jules_issue_sessions
@@ -1415,17 +1416,34 @@ async def test_stale_jules_recovery_continues_same_generation_without_new_routin
     github.get_issue_details.side_effect = lambda issue: dict(issue)
     github.has_linked_pr.return_value = False
 
-    result = handle_stale_jules_issue_sessions(
-        REPO,
-        config,
-        github,
-        implementation_slots=engine.implementation_slots,
-        authorize_dispatch=lambda _repo, _number, current: dict(current),
-        routing=engine.issue_stage_routing,
-    )
-    assert result.issue_numbers == [1]
+    finish_calls: list[str] = []
+    real_finish = engine.implementation_slots.finish_execution
+
+    def observe_finish(finished_owner, execution_id):  # type: ignore[no-untyped-def]
+        assert finished_owner == owner
+        finish_calls.append(execution_id)
+        return real_finish(finished_owner, execution_id)
+
+    monkeypatch.setattr(engine.implementation_slots, "finish_execution", observe_finish)
+    service_entries: list[int] = []
+    real_execute = IssueImplementationService.execute
+
+    def observe_service(service, request, ports):  # type: ignore[no-untyped-def]
+        service_entries.append(request.target_number)
+        return real_execute(service, request, ports)
+
+    monkeypatch.setattr(IssueImplementationService, "execute", observe_service)
+    monkeypatch.setattr("auto_coder.cli_helpers.create_high_score_backend_manager", lambda: MagicMock(name="high-score-policy"))
+    monkeypatch.setattr("auto_coder.attempt_manager.increment_attempt", lambda *_args: 2)
+
+    actions = engine.handle_stale_jules_issue_sessions(REPO)
+    assert "fallback dispatched" in actions
+    assert service_entries == [1]
+    assert len(finish_calls) == 1
+    assert finish_calls[0]
     # Still the same generation, still owned exactly once: no new routing
     # arrival/tombstone was fabricated for a "new" attempt.
     assert engine.implementation_slots.implementation_generation(owner) == generation
     assert engine.issue_stage_routing.is_implementation_owned(REPO, 1, generation)
     assert engine.issue_stage_routing.pending(REPO, "implementation") == ()
+    assert engine.implementation_slots.validation_identity(owner) is not None

@@ -435,7 +435,9 @@ class TestAutomationEngineHook:
             implementation_slots=engine._get_implementation_slots("owner/repo"),
             authorize_dispatch=engine._authorize_stale_jules_dispatch,
             routing=engine.issue_stage_routing,
+            dispatch_replacement=mock_handle.call_args.kwargs["dispatch_replacement"],
         )
+        assert callable(mock_handle.call_args.kwargs["dispatch_replacement"])
         assert actions == stale_result.actions
 
     def test_engine_swallows_errors(self, config):

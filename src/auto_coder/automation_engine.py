@@ -1305,6 +1305,7 @@ class AutomationEngine:
                 implementation_slots=self._get_implementation_slots(repo_name),
                 authorize_dispatch=self._authorize_stale_jules_dispatch,
                 routing=self.issue_stage_routing,
+                dispatch_replacement=lambda number, issue_data, authorized, generation: self._dispatch_stale_jules_replacement(repo_name, number, issue_data, authorized, generation),
             )
             for action in stale_result.actions:
                 logger.info(f"Stale Jules issue session: {action}")
@@ -1312,6 +1313,88 @@ class AutomationEngine:
         except Exception as e:
             logger.error(f"Error handling stale Jules issue sessions: {e}")
             return []
+
+    def _dispatch_stale_jules_replacement(
+        self,
+        repo_name: str,
+        issue_number: int,
+        issue_data: Dict[str, Any],
+        authorized_issue: Dict[str, Any],
+        generation: str,
+    ) -> CandidateProcessingResult:
+        """Run the daemon's high-score fallback through Issue execution ownership."""
+        slots = self._get_implementation_slots(repo_name)
+        owner = ImplementationOwner("issue", issue_number)
+        current_snapshot: dict[str, Any] = dict(authorized_issue)
+        current_identity: Optional[str] = None
+
+        def refresh_generation() -> Optional[str]:
+            nonlocal current_snapshot, current_identity
+            refreshed = self._authorize_stale_jules_dispatch(repo_name, issue_number, current_snapshot)
+            if refreshed is None:
+                return None
+            parent_number = self._get_authoritative_parent_number(repo_name, issue_number, refreshed)
+            family_set = self._fetch_authoritative_decomposition_set(repo_name, parent_number) if parent_number is not None else None
+            relationship = self._child_review_context(*family_set, issue_number) if family_set is not None else None
+            current_snapshot = refreshed
+            current_identity = (
+                self._get_specification_validator(repo_name)
+                .identity(
+                    issue_number,
+                    str(refreshed.get("title") or ""),
+                    str(refreshed.get("body") or ""),
+                    relationship,
+                )
+                .key
+            )
+            return self._compute_implementation_generation(repo_name, refreshed, family_set)
+
+        def dispatch(_retry: Optional[ImplementationRetryRequest]) -> CandidateProcessingResult:
+            from .attempt_manager import increment_attempt
+            from .cli_helpers import create_high_score_backend_manager
+            from .issue_processor import _take_issue_actions
+
+            result = CandidateProcessingResult(type="issue", number=issue_number, success=True)
+            try:
+                attempt = increment_attempt(repo_name, issue_number)
+                result.actions.append(f"Incremented attempt for issue #{issue_number} to {attempt}")
+            except Exception as exc:
+                logger.error("Failed to increment attempt for issue #{}: {}", issue_number, exc)
+                result.actions.append(f"Failed to increment attempt for issue #{issue_number}: {exc}")
+            backend_manager = create_high_score_backend_manager()
+            if backend_manager is None:
+                logger.warning("backend_with_high_score is not configured; using the default backend for the Jules fallback")
+            issue_data.update(current_snapshot)
+            result.actions.extend(
+                _take_issue_actions(
+                    repo_name,
+                    issue_data,
+                    self.config,
+                    self.github,
+                    backend_manager=backend_manager,
+                    implementation_slots=slots,
+                )
+            )
+            return result
+
+        service = IssueImplementationService(self.issue_stage_routing, slots)
+        return service.execute(
+            IssueImplementationRequest(
+                repository=repo_name,
+                target_number=issue_number,
+                initial_generation=generation,
+                resume_owned_generation=True,
+            ),
+            IssueImplementationPorts(
+                refresh_generation=refresh_generation,
+                dispatch=dispatch,
+                is_draining=lambda: self.is_draining,
+                github_client=self.github if isinstance(self.github, GitHubClient) else None,
+                reconciliation_client=self.github,
+                bind_validation_identity=lambda _execution_id: current_identity is not None and slots.record_validation_identity(owner, current_identity),
+                owner_already_serialized=True,
+            ),
+        )
 
     def _get_specification_validator(self, repo_name: str) -> SpecificationValidationLifecycle:
         with self._validator_cache_lock:

@@ -14,6 +14,9 @@ check before ownership and after capacity reconciliation, keeps owner
 serialization across provider entry, and stops new entry after graceful drain.
 Explicit retry admission remains bound to its durable request, attempt,
 generation, and execution rather than acting as a general force override.
+Daemon recovery of a timed-out Jules session also re-enters this boundary with
+its captured generation while retaining the dedicated high-score fallback
+policy; it does not join the ordinary provider pool.
 
 Settlement follows the actual execution boundary. A local accepted handoff
 retains its execution for the local job, inherited executions remain owned by

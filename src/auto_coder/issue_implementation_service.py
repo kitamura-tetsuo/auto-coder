@@ -7,6 +7,7 @@ callbacks for repeating that check and entering the existing provider boundary.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -42,6 +43,7 @@ class IssueImplementationRequest:
     manual_retry: bool = False
     retry_request_id: Optional[str] = None
     urgent: bool = False
+    resume_owned_generation: bool = False
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,7 @@ class IssueImplementationPorts:
     record_not_started: Optional[Callable[[str, Optional[str]], None]] = None
     record_release: Optional[Callable[[bool], None]] = None
     bind_validation_identity: Optional[Callable[[str], bool]] = None
+    owner_already_serialized: bool = False
 
 
 class IssueImplementationService:
@@ -177,7 +180,8 @@ class IssueImplementationService:
         try:
             if retry_authority is not None and ports.record_retry is not None:
                 ports.record_retry(retry_authority, request.manual_retry)
-            with self._slots.serialize(owner):
+            serialization = nullcontext() if ports.owner_already_serialized else self._slots.serialize(owner)
+            with serialization:
                 result = ports.dispatch(retry_authority)
                 if retry_authority is not None:
                     result.actions.insert(0, f"Retry accepted for issue #{request.target_number}: request={retry_authority.request_id} attempt={retry_authority.attempt_id} phase=owned")
@@ -212,6 +216,17 @@ class IssueImplementationService:
         request: IssueImplementationRequest,
         github_client: object | None,
     ) -> tuple[Optional[str], bool]:
+        if request.resume_owned_generation:
+            execution_id = self._slots.start_execution(
+                owner,
+                generation=generation,
+                bypass_capacity=request.explicit_only,
+                allow_urgent_emergency=request.urgent,
+                github_client=github_client,
+            )
+            if execution_id is not None:
+                confirm_implementation_ownership(self._routing, request.repository, owner, generation)
+            return execution_id, False
         gate = evaluate_implementation_start(self._routing, self._slots, request.repository, owner, generation)
         if gate.decision is OwnershipStartDecision.ALREADY_OWNED:
             return None, True
