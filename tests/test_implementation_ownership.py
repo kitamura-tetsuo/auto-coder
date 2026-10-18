@@ -20,8 +20,9 @@ import concurrent.futures
 import json
 import threading
 import time
+from contextlib import ExitStack, nullcontext
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -44,6 +45,7 @@ from auto_coder.implementation_slots import (
 from auto_coder.issue_dispatch import DispatchOutcome, IssueAttemptIdentity, IssueDispatchGuard
 from auto_coder.issue_implementation_service import IssueImplementationService
 from auto_coder.issue_job_finalizer import IssueJobFinalizer
+from auto_coder.issue_job_workspace import IssueJobSource, IssueJobWorkspaceProducer
 from auto_coder.issue_local_job import IssueLocalJobAdapter, issue_job_authorization_ports
 from auto_coder.issue_processor import handle_stale_jules_issue_sessions
 from auto_coder.issue_stage_routing import IssueStageRoutingStore
@@ -55,6 +57,7 @@ from auto_coder.specification_analyzer import SpecificationAnalysisResult
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
 from auto_coder.stale_jules_recovery import capture_stale_jules_recovery, find_pending_stale_jules_recovery
 from auto_coder.util.gh_cache import GitHubClient
+from tests.test_issue_job_workspace import git, repository
 from tests.test_issue_stage_routing import REPO, _routing_engine
 
 ISSUE = ImplementationOwner("issue", 1)
@@ -445,6 +448,180 @@ def test_explicit_issue_acquires_and_dispatches_real_local_job(tmp_path, monkeyp
     assert IssueLocalJobAdapter(issue_job_authorization_ports(engine), REPO, store, engine.implementation_slots, tmp_path).authorize_provider_entry(job)
     assert result["target_type"] == "issue"
     assert result["target_number"] == 1
+
+
+def test_ordinary_local_issue_stays_owned_until_its_published_pr_is_validated_and_observed_merged(tmp_path, monkeypatch, _use_real_commands):
+    """#2528 REQ-002: one production identity crosses admission through retirement."""
+    from auto_coder.ci_observation import (
+        CIConclusion,
+        CIObservationSnapshot,
+        ObservationAvailability,
+        ObservationRequest,
+        ObservationSubject,
+        WorkflowExecutionIdentity,
+        WorkflowObservation,
+    )
+    from auto_coder.implementation_reclamation_scheduler import run_due_reclamation_checks
+    from auto_coder.pr_processor import PRProcessingOutcome
+    from auto_coder.util.github_action import GitHubActionsStatusResult
+
+    snapshot = _standalone_snapshot(1, (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat())
+    config = AutomationConfig(repo_name=REPO)
+    config.MAX_CONCURRENT_IMPLEMENTATIONS = 3
+    config.AUTO_MERGE = True
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    config.pr_review_thread_gate = False
+    engine, github = _ready_engine(tmp_path, monkeypatch, {1: snapshot}, config)
+    engine.implementation_slots = ImplementationSlotRepository(REPO, 3, engine.implementation_slots.storage_path)
+    github.get_issue_comments_strict.return_value = []
+    jobs = LocalJobStore(tmp_path / "joined-jobs.sqlite3")
+    engine.local_job_store = jobs
+    llm_config = LLMBackendConfiguration.load_from_dict({"backends": {"controlled-local": {"backend_type": "codex", "model": "test"}}})
+    monkeypatch.setattr("auto_coder.issue_processor._ordinary_issue_candidates", lambda _repo: ["controlled-local"])
+    monkeypatch.setattr("auto_coder.llm_backend_config.get_llm_config", lambda **_kwargs: llm_config)
+    monkeypatch.setattr("auto_coder.cli_helpers.build_backend_manager", lambda **_kwargs: MagicMock())
+    monkeypatch.setattr("auto_coder.issue_processor.get_current_attempt", lambda *_args: 0)
+    monkeypatch.setattr("auto_coder.issue_processor.get_commit_log", lambda *_args, **_kwargs: "baseline")
+    monkeypatch.setattr("auto_coder.automation_engine.resolve_authoritative_item_type", lambda *_args: "issue")
+
+    admitted = engine._process_single_candidate_unified(REPO, Candidate("issue", dict(snapshot), 0), config, origin="worker")
+    assert admitted.dispatch_result is not None
+    assert admitted.dispatch_result.outcome is DispatchOutcome.LOCAL_ACCEPTED
+    job_id = admitted.dispatch_result.provider_reference
+    admitted_job = jobs.get(job_id)
+    owner = ImplementationOwner("issue", 1)
+    assert admitted_job is not None and admitted_job.state is LocalJobState.PENDING
+    assert engine.implementation_slots.active_execution_ids(owner) == (admitted_job.implementation_execution_id,)
+
+    git(tmp_path, "config", "--global", "user.email", "test@example.com")
+    git(tmp_path, "config", "--global", "user.name", "Test")
+    source, _head = repository(tmp_path)
+    remote = tmp_path / "joined-publication.git"
+    git(tmp_path, "init", "--bare", str(remote))
+    git(source, "remote", "set-url", "origin", str(remote))
+    git(source, "push", "origin", "main")
+    claim = jobs.claim(job_id, "joined-controlled-provider")
+    assert claim is not None
+
+    def implement(workspace, _prompt):
+        (workspace / "joined.txt").write_text("implemented\n", encoding="utf-8")
+        return "ACTION_SUMMARY: implemented and verified"
+
+    checkpoint = IssueJobWorkspaceProducer(jobs, tmp_path / "joined-workspaces", engine.implementation_slots).execute(
+        claim,
+        IssueJobSource(REPO, source, "main", "issue-1"),
+        implement,
+    )
+    observed_prs = {}
+
+    def lookup(_repository, branch):
+        return observed_prs.get(branch)
+
+    def create(record, _summary):
+        observed_prs[record.work_branch] = {
+            "number": 77,
+            "state": "open",
+            "merged": False,
+            "body": "Closes #1",
+            "head": {"ref": record.work_branch, "sha": "published-head"},
+            "base": {"ref": "main", "sha": "base-head"},
+            "labels": [],
+            "user": {"login": "local-agent"},
+        }
+
+    published = IssueJobFinalizer(jobs, engine.implementation_slots, lookup, create).finalize(checkpoint.job_id)
+    assert published.disposition == "published"
+    assert published.pr_number == 77
+    pr_data = observed_prs[checkpoint.work_branch]
+    owner_observation = next(item for item in engine.implementation_slots.snapshot().owners if item.owner == owner)
+    assert owner_observation.implementation_prs == (77,)
+    assert engine.implementation_slots.active_owners() == (owner,)
+
+    unrelated = ImplementationOwner("issue", 2)
+    assert engine.implementation_slots.reserve_new(unrelated)
+    validation = {"conclusion": CIConclusion.PENDING}
+
+    def ci_status(*_args, **_kwargs):
+        current = validation["conclusion"]
+        attempt = 1 if current is CIConclusion.PENDING else 2
+        observation = CIObservationSnapshot(
+            ObservationSubject("https://api.github.test", REPO, 77, "published-head"),
+            ObservationRequest("github-actions", "checks+workflows"),
+            f"joined-{attempt}",
+            0,
+            ObservationAvailability.KNOWN,
+            (
+                WorkflowObservation(
+                    WorkflowExecutionIdentity("pr-tests", "701", attempt),
+                    current,
+                    "PR Tests",
+                    workflow_path=".github/workflows/pr-tests.yml",
+                ),
+            ),
+        )
+        return GitHubActionsStatusResult(
+            success=current is CIConclusion.SUCCESS,
+            ids=[701],
+            in_progress=current is CIConclusion.PENDING,
+            observation=observation,
+        )
+
+    github.get_pull_request.side_effect = lambda *_args: dict(pr_data)
+    github.get_pr_review_threads_strict.return_value = []
+    github.get_pr_comments.return_value = []
+    with ExitStack() as stack:
+        collection_label = stack.enter_context(patch("auto_coder.automation_engine.LabelManager"))
+        label = stack.enter_context(patch("auto_coder.label_manager.LabelManager"))
+        stack.enter_context(patch("auto_coder.util.github_action._check_github_actions_status", side_effect=ci_status))
+        stack.enter_context(patch("auto_coder.pr_processor._check_github_actions_status", side_effect=ci_status))
+        stack.enter_context(patch("auto_coder.util.github_action.check_github_actions_and_exit_if_in_progress", return_value=True))
+        stack.enter_context(patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True))
+        unsafe = stack.enter_context(patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr"))
+        stack.enter_context(patch("auto_coder.pr_processor._close_empty_pr", return_value=MagicMock(closed=False, actions=[], issue_numbers=[])))
+        stack.enter_context(patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=MagicMock(closed=False, actions=[], issue_numbers=[])))
+        stack.enter_context(patch("auto_coder.pr_processor._should_skip_waiting_for_jules", return_value=False))
+        stack.enter_context(patch("auto_coder.pr_processor._is_jules_pr", return_value=False))
+        stack.enter_context(patch("auto_coder.pr_processor._is_dependabot_pr", return_value=False))
+        stack.enter_context(patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}))
+        stack.enter_context(patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False))
+        stack.enter_context(patch("auto_coder.pr_processor._is_pr_adversarial_validation_enabled", return_value=False))
+        stack.enter_context(patch("auto_coder.pr_processor.ci_observation_merge_authority", return_value=nullcontext(True)))
+        merge = stack.enter_context(patch("auto_coder.pr_processor._merge_pr", return_value=True))
+        collection_label.return_value.__enter__.return_value = True
+        label.return_value.__enter__.return_value = True
+        unsafe.side_effect = lambda _client, _repo, candidate, _config: MagicMock(closed=False, metadata_error=None, actions=[], authoritative_pr_data=candidate)
+
+        waiting = engine._process_single_candidate_unified(REPO, Candidate("pr", dict(pr_data), 0), config, origin="worker")
+        assert waiting.outcome is PRProcessingOutcome.DEFERRED
+        merge.assert_not_called()
+        assert set(engine.implementation_slots.active_owners()) == {owner, unrelated}
+
+        validation["conclusion"] = CIConclusion.SUCCESS
+        merged = engine._process_single_candidate_unified(REPO, Candidate("pr", dict(pr_data), 0), config, origin="worker")
+        assert merged.outcome is PRProcessingOutcome.SUCCESS
+        merge.assert_called_once()
+
+    # A successful merge command is not retirement evidence. Only the later
+    # supported terminal-PR observation may reclaim this exact lifetime.
+    assert set(engine.implementation_slots.active_owners()) == {owner, unrelated}
+    pr_data.update({"state": "closed", "merged": True})
+    github.get_pull_request_metadata_strict.return_value = dict(pr_data)
+    github.get_connected_prs.return_value = [77]
+    github.get_open_pull_requests_strict.return_value = []
+    engine._reconcile_terminal_pr_resumption(REPO, dict(pr_data))
+    assert (
+        run_due_reclamation_checks(
+            engine.implementation_slots,
+            github_client=github,
+            now=time.time() + 1,
+            routing=engine.issue_stage_routing,
+        )
+        == 1
+    )
+
+    assert owner not in engine.implementation_slots.active_owners()
+    assert unrelated in engine.implementation_slots.active_owners()
 
 
 def test_ordinary_cloud_handoff_reopens_accepted_dispatch_and_provider_owner(tmp_path, monkeypatch):

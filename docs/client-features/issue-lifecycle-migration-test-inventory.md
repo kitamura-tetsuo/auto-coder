@@ -45,6 +45,14 @@ call returns while the job remains pending, no PR is reported at acceptance, and
 same execution proceeds through result recording and publication. A later PR
 route still independently applies validation and merge gates.
 
+The joined local lifecycle scenario keeps one Issue generation, execution,
+job, published PR, and slot owner across those boundaries. Pending current-head
+CI first prevents merge without releasing that owner; current successful CI
+then permits the merge command, which still does not count as retirement. A
+subsequent terminal PR observation schedules the production reclamation path,
+which retires that exact Issue lifetime while leaving an unrelated owner
+unchanged.
+
 Negative controls refresh authoritative Issue state immediately before
 dispatch, reject a changed generation without entering a provider, and suppress
 an already-owned generation after routing-store recovery. Dispatch receipts
