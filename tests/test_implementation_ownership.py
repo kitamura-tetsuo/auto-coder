@@ -641,6 +641,43 @@ async def test_duplicate_wake_never_dispatches_twice_for_the_same_generation(tmp
     await asyncio.gather(worker, return_exceptions=True)
 
 
+@pytest.mark.asyncio
+async def test_daemon_invalidation_lazily_accepts_local_job_before_startup(tmp_path, monkeypatch):
+    """A pre-start daemon worker hands off locally instead of invoking inline."""
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    snapshot = _standalone_snapshot(1, created_at)
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _ready_engine(tmp_path, monkeypatch, {1: snapshot}, config)
+    github.get_issue_comments_strict.return_value = []
+    llm_config = LLMBackendConfiguration.load_from_dict({"backends": {"controlled-local": {"backend_type": "codex", "model": "test"}}})
+    monkeypatch.setattr("auto_coder.issue_processor._ordinary_issue_candidates", lambda _repo: ["controlled-local"])
+    monkeypatch.setattr("auto_coder.llm_backend_config.get_llm_config", lambda **_kwargs: llm_config)
+    monkeypatch.setattr("auto_coder.cli_helpers.build_backend_manager", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr("auto_coder.issue_processor.get_current_attempt", lambda *_args: 0)
+    monkeypatch.setattr("auto_coder.issue_processor.get_commit_log", lambda *_args, **_kwargs: "baseline")
+    monkeypatch.setattr("auto_coder.automation_engine.resolve_authoritative_item_type", lambda *_args: "issue")
+    monkeypatch.setattr("auto_coder.issue_dispatch.default_issue_dispatch_db_path", lambda: tmp_path / "dispatch.sqlite3")
+    monkeypatch.setattr("auto_coder.local_job_handoff.default_local_job_db_path", lambda: tmp_path / "jobs.sqlite3")
+
+    assert engine.local_job_store is None
+    worker = asyncio.create_task(engine._worker_loop(REPO, 0, "issue"))
+    try:
+        await engine.invalidate_entity(REPO, "issue", 1)
+        await asyncio.wait_for(engine.queue.join(), timeout=5)
+    finally:
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+    store = engine.local_job_store
+    assert store is not None
+    jobs = [job for job in store.discover_unsettled() if job.repository == REPO and job.target_number == 1]
+    assert len(jobs) == 1
+    assert jobs[0].state is LocalJobState.PENDING
+    assert engine.queue.empty()
+
+
 def test_explicit_retry_after_completed_execution_starts_distinct_attempt(tmp_path, monkeypatch):
     """An explicit request is the narrow exception to G's start tombstone."""
     created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()

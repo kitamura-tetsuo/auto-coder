@@ -7598,7 +7598,11 @@ class AutomationEngine:
                             label_context=should_process,
                             implementation_slots=implementation_slots,
                             retry_authority=retry_authority,
-                            local_job_store=(self._get_local_job_store() if explicit_only or self.local_job_store is not None else None),
+                            # Both daemon invalidations and explicit commands
+                            # must reach the same lazy durable authority.  A
+                            # daemon may process an invalidation before
+                            # start_automation has assembled its runner.
+                            local_job_store=self._get_local_job_store(),
                             implementation_execution_id=implementation_slots.current_execution_id(ImplementationOwner("issue", item_number)) or "",
                         )
                         result.actions = dispatch.actions
