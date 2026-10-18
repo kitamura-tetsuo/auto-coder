@@ -1,6 +1,8 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.conflict_resolver import (
     _extract_session_id_from_pr_body,
@@ -421,19 +423,34 @@ def test_resolve_merge_conflicts_commit_message_uses_pr_number():
         assert "Pushed resolved merge for PR #4809" in actions
 
 
-def test_local_base_merge_runs_repair_without_analysis():
-    """A local PR conflict reaches the editable turn without an analysis-only call."""
+@pytest.mark.parametrize(
+    ("disposition", "display_actions", "expected"),
+    [
+        ("applied", (), True),
+        ("failed", ("ACTION_FLAG:SKIP_ANALYSIS",), False),
+    ],
+)
+def test_local_base_merge_uses_typed_publication_evidence(disposition, display_actions, expected):
+    """REQ-003/006: conflict publication text cannot authorize its consumer."""
     pr = {"number": 5465, "body": "<!-- auto-coder:local-llm -->", "author": {"login": "kitamura-tetsuo"}, "baseRefName": "main", "head_branch": "issue-5456"}
     with (
         patch("src.auto_coder.conflict_resolver.cmd") as commands,
         patch("src.auto_coder.conflict_resolver.GitHubClient.get_instance") as github,
         patch("src.auto_coder.conflict_resolver.scan_conflict_markers", return_value=["app.txt"]),
         patch("src.auto_coder.conflict_resolver.check_mergeability_with_llm") as analysis,
-        patch("src.auto_coder.conflict_resolver.resolve_merge_conflicts_with_llm", return_value=["ACTION_FLAG:SKIP_ANALYSIS"]) as repair,
+        patch("src.auto_coder.conflict_resolver.resolve_merge_conflicts_with_llm") as repair,
+        patch("src.auto_coder.conflict_resolver._trigger_fallback_for_conflict_failure") as fallback,
     ):
+        from src.auto_coder.conflict_resolver import ConflictPublicationDisposition, ConflictResolutionResult
+
+        repair_result = ConflictResolutionResult()
+        repair_result.extend(display_actions)
+        repair_result.disposition = ConflictPublicationDisposition(disposition)
+        repair.return_value = repair_result
         github.return_value.get_pr_details.return_value = pr
         commands.run_command.side_effect = [CommandResult(True, "", "", 0)] * 7 + [CommandResult(False, "CONFLICT", "", 1), CommandResult(True, "", "", 0)]
-        assert _perform_base_branch_merge_and_conflict_resolution(5465, "main", AutomationConfig(), pr, "owner/repo") is True
+        assert _perform_base_branch_merge_and_conflict_resolution(5465, "main", AutomationConfig(), pr, "owner/repo") is expected
     analysis.assert_not_called()
-    repair.assert_called_once()
+    assert repair.call_count == 1
+    assert fallback.call_count == int(not expected)
     assert repair.call_args.args[1] == "app.txt"

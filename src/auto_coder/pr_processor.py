@@ -64,7 +64,7 @@ from .ci_repair_verification import FocusedVerification, dedupe_targets, follow_
 from .claude_followup_waits import ClaudeFollowupHoldActive, get_claude_followup_wait_store, wait_from_error
 from .codex_cloud_task import canonical_codex_cloud_task_url, extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
 from .codex_pr_attribution import AttributionDisposition, CodexPrAttributionRepository, resolve_codex_pr_origin, task_ids_from_text
-from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
+from .conflict_resolver import ConflictPublicationDisposition, _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .dispatch_claim_store import DispatchIdentity, DispatchOutcome, get_dispatch_claim_store
 from .effective_decision_application import (
     HANDOFF_DISPATCHED,
@@ -10954,7 +10954,7 @@ def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automati
             # Check if conflicts were resolved successfully
             status_result = cmd.run_command(["git", "status", "--porcelain"])
 
-            if "ACTION_FLAG:SKIP_ANALYSIS" in resolve_actions and status_result.success and not status_result.stdout.strip():
+            if resolve_actions.disposition is ConflictPublicationDisposition.APPLIED and status_result.success and not status_result.stdout.strip():
                 logger.info(f"Merge conflicts resolved for PR #{pr_number}")
                 get_trace_logger().log("Conflict Resolution", f"Resolved merge conflicts for PR #{pr_number}", item_type="pr", item_number=pr_number)
                 return True
