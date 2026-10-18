@@ -7,7 +7,6 @@ import json
 import os
 import sys
 from contextlib import nullcontext
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, TypedDict, Union, cast
@@ -32,12 +31,13 @@ from .implementation_ownership import confirm_implementation_ownership
 from .implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from .invocation_admission import bind_invocation_target, take_pending_invocation_handle
 from .issue_context import get_linked_issues_context, validate_issue_references
-from .issue_dispatch import AdapterOutcome, DispatchResult
+from .issue_dispatch import AdapterOutcome
 from .issue_stage_routing import ImplementationRetryRequest, IssueStageRoutingStore
 from .jules_client import JulesClient
 from .jules_engine import get_session_pull_request, is_session_stopped, mark_session_stopped
 from .label_manager import LabelManager, LabelManagerContext, LabelOperationError, filter_legacy_auto_coder_label, resolve_pr_labels_with_priority
 from .logger_config import get_gh_logger, get_logger
+from .ordinary_issue_adapter import IssueDispatchExecution, OrdinaryIssueAdapterComposition, OrdinaryIssueAdapterEffects, OrdinaryIssueAdapterInput
 from .progress_footer import ProgressStage, newline_progress, set_progress_item
 from .prompt_loader import render_prompt
 from .retry_dispatch import RetryDispatchRepository
@@ -52,14 +52,6 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
-
-
-@dataclass(frozen=True)
-class IssueDispatchExecution:
-    """Structured ordinary-dispatch result plus its presentation actions."""
-
-    result: DispatchResult
-    actions: List[str]
 
 
 def _durable_retry_authority(
@@ -1325,23 +1317,14 @@ def _dispatch_issue_candidates(
     local_job_store: Optional["LocalJobStore"] = None,
     implementation_execution_id: str = "",
 ) -> IssueDispatchExecution:
-    """Execute one caller-ranked ordinary sequence through the durable boundary."""
-    from .cli_helpers import build_backend_manager
-    from .cloud_run import CloudRunRepository
-    from .issue_dispatch import AdapterOutcome, CandidateHandoff, DispatchOutcome, DispatchResult, IssueAttemptIdentity, IssueDispatchGuard
-    from .llm_backend_config import get_llm_config
+    """Dispatch one ranked ordinary sequence through the adapter composition."""
+    from .issue_dispatch import DispatchOutcome, DispatchResult, IssueAttemptIdentity
 
     owner, repository = repo_name.split("/", 1)
     issue_number = int(issue_data["number"])
     attempt = get_current_attempt(repo_name, issue_number)
     authorize_new_attempt = False
     if retry_authority is not None:
-        # The shared guard's durable identity must be the retry's own logical
-        # attempt A, re-verified against the durable request store at this
-        # dispatch boundary. The ordinary numeric attempt counter must never
-        # be substituted here: it stays at its prior value (e.g. "0") across
-        # an explicit retry of a truncated/indeterminate attempt, which is
-        # exactly the predecessor identity a retry must not collide with.
         try:
             retry_authority = _durable_retry_authority(repo_name, issue_number, retry_authority)
         except ValueError as exc:
@@ -1356,167 +1339,34 @@ def _dispatch_issue_candidates(
                 [diagnostic],
             )
         identity = IssueAttemptIdentity(owner, repository, issue_number, retry_authority.attempt_id)
-        # An explicit, freshly re-verified retry is the only source of this
-        # exception: it lets the guard admit a fresh claim under A even when
-        # a same-issue predecessor row exists under a different attempt (e.g.
-        # legacy numeric "0"), without weakening ordinary same-attempt
-        # suppression for any other caller.
         authorize_new_attempt = True
     else:
         identity = IssueAttemptIdentity(owner, repository, issue_number, str(attempt))
-    llm_config = get_llm_config(repo_name=repo_name)
-    remote_types = {"codex-cloud", "claude-routine", "jules"}
-    local_types = {"codex", "codex-mcp", "antigravity", "qwen", "auggie", "muse", "claude", "aider", "opencode"}
-    candidates = []
-    for name in candidate_names:
-        backend_config = llm_config.get_backend_config(name)
-        provider = (backend_config.backend_type if backend_config is not None else None) or name
-        candidates.append(CandidateHandoff(name, provider, local_job_store is not None and provider.lower() in local_types))
-    actions: List[str] = []
 
-    def invoke(candidate: CandidateHandoff) -> AdapterOutcome:
-        nonlocal actions
-        backend_type = candidate.provider.lower()
-        observed_acceptance: List[AdapterOutcome] = []
-        _record_dispatch_stage(
-            issue_number,
-            "issue.dispatch.selection",
-            f"issue#{issue_number} dispatch candidate selected",
-            Outcome.UNKNOWN,
-            {"candidate_pool": "cloud" if backend_type in remote_types else "local", "backend_type": backend_type, "backend_name": candidate.backend_name},
-            kind=EventKind.STAGE_STARTED,
+    return OrdinaryIssueAdapterComposition().dispatch(
+        OrdinaryIssueAdapterInput(
+            repo_name=repo_name,
+            issue_data=issue_data,
+            config=config,
+            github_client=github_client,
+            candidate_names=candidate_names,
+            identity=identity,
+            numeric_attempt=attempt,
+            effects=OrdinaryIssueAdapterEffects(
+                process_codex_cloud=_process_issue_codex_cloud_mode,
+                process_claude_routine=_process_issue_claude_routine_mode,
+                process_jules=_process_issue_jules_mode,
+                take_local_actions=_take_issue_actions,
+                record_dispatch_stage=_record_dispatch_stage,
+            ),
+            authorize_new_attempt=authorize_new_attempt,
+            label_context=label_context,
+            implementation_slots=implementation_slots,
+            retry_authority=retry_authority,
+            local_job_store=local_job_store,
+            implementation_execution_id=implementation_execution_id,
         )
-        try:
-            if backend_type == "codex-cloud":
-                actions = _process_issue_codex_cloud_mode(
-                    repo_name,
-                    issue_data,
-                    config,
-                    github_client,
-                    backend_name=candidate.backend_name,
-                    label_context=label_context,
-                    **({"implementation_slots": implementation_slots} if implementation_slots is not None else {}),  # type: ignore[arg-type]
-                    **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
-                )
-            elif backend_type == "claude-routine":
-                actions = _process_issue_claude_routine_mode(
-                    repo_name,
-                    issue_data,
-                    config,
-                    github_client,
-                    backend_name=candidate.backend_name,
-                    label_context=label_context,
-                    acceptance_observer=observed_acceptance.append,
-                    **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
-                )
-            elif backend_type == "jules":
-                actions = _process_issue_jules_mode(
-                    repo_name,
-                    issue_data,
-                    config,
-                    github_client,
-                    label_context=label_context,
-                    implementation_slots=implementation_slots,
-                    backend_name=candidate.backend_name,
-                    acceptance_observer=observed_acceptance.append,
-                    **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
-                )
-            elif backend_type in local_types:
-                model = llm_config.get_model_for_backend(candidate.backend_name) or ""
-                # Backend construction is the existing synchronous preparation
-                # boundary. A missing CLI/model is positively not started and
-                # must release this claim so the ranked successor can run.
-                manager = build_backend_manager(
-                    selected_backends=[candidate.backend_name],
-                    primary_backend=candidate.backend_name,
-                    models={candidate.backend_name: model},
-                )
-                if local_job_store is not None:
-                    from .local_job_handoff import LocalJobKind, LocalJobOffer
-
-                    issue_labels = filter_legacy_auto_coder_label(issue_data.get("labels", []))
-                    prompt = render_prompt(
-                        "issue.local_implementation",
-                        repo_name=repo_name,
-                        issue_number=issue_number,
-                        issue_title=issue_data.get("title", "Unknown"),
-                        issue_body=issue_data.get("body") or "",
-                        issue_labels=", ".join(issue_labels),
-                        issue_state=issue_data.get("state", "open"),
-                        issue_author=(issue_data.get("user") or {}).get("login", issue_data.get("author", "unknown")),
-                        commit_log=get_commit_log(base_branch=config.MAIN_BRANCH) or "(No commit history)",
-                        parent_issue_body=issue_data.get("parent_issue_body", ""),
-                        main_branch=config.MAIN_BRANCH,
-                    )
-                    accepted = local_job_store.offer_issue(
-                        LocalJobOffer(
-                            LocalJobKind.ISSUE_IMPLEMENTATION,
-                            repo_name,
-                            issue_number,
-                            identity.implementation_attempt_id,
-                            candidate.backend_name,
-                            prompt,
-                            implementation_execution_id,
-                        ),
-                        identity,
-                        IssueDispatchGuard(),
-                    )
-                    if accepted is None:
-                        return AdapterOutcome(DispatchOutcome.INDETERMINATE, diagnostic="durable local-job handoff was not confirmed", tracking_complete=False)
-                    actions = [f"Accepted local implementation job {accepted.job_id} for issue #{issue_number}"]
-                    if label_context is not None:
-                        label_context.keep_label()
-                    _record_dispatch_stage(
-                        issue_number,
-                        "issue.dispatch.local-job",
-                        f"issue#{issue_number} local implementation handoff",
-                        Outcome.ACCEPTED_HANDOFF,
-                        {"backend_name": candidate.backend_name, "job_id": accepted.job_id, "state": accepted.state.value},
-                    )
-                    return AdapterOutcome(DispatchOutcome.LOCAL_ACCEPTED, accepted.job_id)
-                actions = _take_issue_actions(
-                    repo_name,
-                    issue_data,
-                    config,
-                    github_client,
-                    backend_manager=manager,
-                    implementation_slots=implementation_slots,
-                    implementation_attempt=identity.implementation_attempt_id,
-                    raise_on_failure=True,
-                    **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
-                )
-                return AdapterOutcome(DispatchOutcome.LOCAL_COMPLETED)
-            else:
-                return AdapterOutcome(DispatchOutcome.NOT_STARTED, diagnostic=f"unsupported backend type: {backend_type}")
-        except (AutoCoderUsageLimitError, CloudSubmissionNotStartedError, FileNotFoundError, LocalPreparationNotStartedError) as exc:
-            return AdapterOutcome(DispatchOutcome.NOT_STARTED, diagnostic=str(exc))
-        except Exception as exc:
-            return AdapterOutcome(DispatchOutcome.INDETERMINATE, diagnostic=str(exc))
-
-        if observed_acceptance:
-            return observed_acceptance[-1]
-        binding = CloudManager(repo_name).get_binding(issue_number)
-        if binding is not None and binding.provider == backend_type and binding.backend_name == candidate.backend_name:
-            return AdapterOutcome(DispatchOutcome.REMOTE_ACCEPTED, binding.task_id)
-        if backend_type == "codex-cloud":
-            # A retry's numeric attempt N is allocated inside the adapter
-            # itself, after this closure captured the ambient counter; the
-            # once-assigned R/A-to-N binding, not that stale local value, is
-            # the acceptance lookup's authoritative key (see #2292).
-            match_attempt = attempt
-            if retry_authority is not None:
-                retry_handoff = RetryDispatchRepository(repo_name).get(retry_authority.request_id)
-                if retry_handoff is not None and retry_handoff.numeric_attempt is not None:
-                    match_attempt = retry_handoff.numeric_attempt
-            runs = CloudRunRepository(repo_name).list_for_issue(issue_number)
-            matching = [run for run in runs if str(run.attempt) == str(match_attempt) and run.backend_name == candidate.backend_name]
-            if matching and matching[-1].task_id and matching[-1].submission_outcome == "accepted":
-                return AdapterOutcome(DispatchOutcome.REMOTE_ACCEPTED, matching[-1].task_id, "secondary tracking incomplete")
-        assert backend_type in remote_types
-        return AdapterOutcome(DispatchOutcome.INDETERMINATE, diagnostic="remote adapter returned without durable provider acceptance evidence")
-
-    result = IssueDispatchGuard().dispatch_candidates(identity, candidates, invoke, authorize_new_attempt=authorize_new_attempt)
-    return IssueDispatchExecution(result, actions)
+    )
 
 
 def _process_issue_cloud_backend(
