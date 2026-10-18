@@ -1813,6 +1813,13 @@ evaluation and eventual delivery or successor deferral remain visible in the
 existing PR stage trace rather than introducing a parallel success signal.
 # CI repair initiation authority
 
+The synchronous local CI-repair extraction is observability-neutral: it retains
+the existing `Update Base` trace emissions and PR repair-delegation outcomes,
+while moving their execution composition into `local_ci_repair_execution`.
+Focused service regressions live in `tests/test_local_ci_repair_execution.py`,
+and public-entry coverage remains in
+`tests/test_ci_repair_focused_verification.py`.
+
 CI-triggered Codex Cloud and Jules repair delegation now emits the existing
 `pr.repair-delegation` stage only after a fresh exact-head admission at the
 provider boundary. Refused admissions remain failed/deferred actions with the

@@ -4,6 +4,14 @@ When a local PR's current-head CI failure is admitted for repair, Auto-Coder
 repairs it from the reported failures and submits the result to CI for full
 validation. It does not run the repository's full test suite locally.
 
+The synchronous branch preparation, optional typed base update, diagnostic
+selection, focused correction and candidate publication are composed by
+`local_ci_repair_execution.execute_local_ci_repair`. Both an existing checkout
+and a checkout-required invocation enter that service, and its final
+exact-head authority context encloses the first workspace mutation. The service
+returns attempt-start, candidate-head and synchronization facts independently;
+action text is not publication evidence.
+
 For an operator-requested post-merge local test run,
 `AUTO_CODER_DEFER_LOCAL_TESTS=1` also defers focused local checks. The initial
 correction and publication still run; no local test success is claimed and
