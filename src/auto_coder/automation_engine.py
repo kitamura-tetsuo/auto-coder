@@ -90,6 +90,7 @@ from .implementation_slots import (
 from .invocation_admission import GateSnapshot, GateState, InvocationAdmissionGate, install_invocation_gate, reset_invocation_gate
 from .issue_admission_cache import IssueAdmissionCache
 from .issue_context import extract_associated_issue_numbers, get_linked_issues_context
+from .issue_implementation_service import IssueImplementationPorts, IssueImplementationRequest, IssueImplementationService
 from .issue_implementation_worker import ImplementationLaneOutcome, IssueImplementationWorker
 from .issue_job_finalizer import IssuePublicationResult
 from .issue_job_runtime import IssueJobRuntime
@@ -7159,6 +7160,117 @@ class AutomationEngine:
             direct_child_reader = getattr(self.github, "get_direct_sub_issues_strict", None)
             latest_children = direct_child_reader(repo_name, item_number) if callable(direct_child_reader) else []
             return is_implementation_ready(latest) and not (isinstance(latest_children, list) and latest_children) and self._standalone_relationship_is_current(repo_name, item_number, latest)
+
+        if candidate.type == "issue":
+            if not issue_generation_is_current():
+                result.target_outcome = ExplicitTargetOutcome.SKIPPED
+                result.actions = ["Skipped - validated Issue generation changed before ownership admission"]
+                return result
+            initial_implementation_generation = self._compute_implementation_generation(
+                repo_name,
+                generation_context["snapshot"],
+                generation_context.get("family_set"),
+            )
+            slots = self._get_implementation_slots(repo_name)
+            owner = ImplementationOwner("issue", item_number)
+
+            def refresh_generation() -> Optional[str]:
+                if not issue_generation_is_current():
+                    return None
+                return self._compute_implementation_generation(
+                    repo_name,
+                    generation_context["snapshot"],
+                    generation_context.get("family_set"),
+                )
+
+            def dispatch_issue(retry_authority: Optional[ImplementationRetryRequest]) -> CandidateProcessingResult:
+                return self._process_single_candidate_reserved(
+                    repo_name,
+                    candidate,
+                    config,
+                    jules_mode,
+                    advance_issue_attempt=advance_issue_attempt,
+                    manual_retry=retry_authority is not None,
+                    retry_authority=retry_authority,
+                    explicit_only=explicit_only,
+                )
+
+            def explain_duplicate_generation(generation: str, execution_id: str) -> str:
+                try:
+                    return explain_already_owned(self._get_local_job_store(), repo_name, item_number, generation, execution_id).message
+                except Exception:
+                    logger.opt(exception=True).debug("Duplicate-start diagnostic failed for issue#{}; preserving refusal", item_number)
+                    prefix, retry_guidance = duplicate_suppression_guidance(repo_name, item_number)
+                    return f"{prefix} Supplementary outcome evidence is unavailable. {retry_guidance}"
+
+            def record_retry_authority(authority: ImplementationRetryRequest, is_manual: bool) -> None:
+                _record_issue_stage_result(
+                    item_number,
+                    "issue.manual-retry",
+                    f"issue#{item_number} manual retry authorized",
+                    Outcome.COMPLETED,
+                    {
+                        "reason": "explicit --only --force --retry" if is_manual else "automatic stale-Jules recovery",
+                        "owner": owner.key,
+                        "request_id": authority.request_id,
+                        "attempt_id": authority.attempt_id,
+                        "generation": authority.generation,
+                        "phase": "owned",
+                    },
+                )
+
+            service = IssueImplementationService(self.issue_stage_routing, slots)
+            request = IssueImplementationRequest(
+                repository=repo_name,
+                target_number=item_number,
+                initial_generation=initial_implementation_generation,
+                explicit_only=explicit_only,
+                continue_execution=continue_execution,
+                manual_retry=manual_retry,
+                retry_request_id=retry_request_id,
+                urgent=urgent_issue,
+            )
+            ports = IssueImplementationPorts(
+                refresh_generation=refresh_generation,
+                dispatch=dispatch_issue,
+                is_draining=lambda: self.is_draining,
+                github_client=self.github if isinstance(self.github, GitHubClient) else None,
+                reconciliation_client=self.github,
+                explain_duplicate=explain_duplicate_generation,
+                record_duplicate=lambda generation, explanation: _record_issue_stage_result(
+                    item_number,
+                    "issue.implementation-duplicate-suppression",
+                    f"issue#{item_number} duplicate automatic-start suppression",
+                    Outcome.SKIPPED,
+                    {"generation": generation, "explanation": explanation},
+                ),
+                record_retry=record_retry_authority,
+                record_not_started=lambda generation, reason: _record_issue_stage_result(
+                    item_number,
+                    "issue.implementation-not-started",
+                    f"issue#{item_number} preparation retry",
+                    Outcome.DEFERRED,
+                    {"generation": generation, "reason": reason, "provider_started": False},
+                ),
+                record_release=lambda released: _record_issue_stage_result(
+                    item_number,
+                    "issue.cloud-submission-slot-release",
+                    f"issue#{item_number} Cloud submission slot cleanup",
+                    Outcome.COMPLETED if released else Outcome.DEFERRED,
+                    {"slot_released": released, "reason": "Cloud submission did not start"},
+                ),
+                bind_validation_identity=lambda _execution_id: slots.record_validation_identity(owner, expected_identity.key),
+            )
+            try:
+                return service.execute(request, ports)
+            except ImplementationHierarchyConflict as exc:
+                result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                result.actions = [f"Deferred - direct parent/child implementation conflict ({exc})"]
+                return result
+            except ImplementationHierarchyUnavailable as exc:
+                result.error = f"Cannot establish authoritative hierarchy for implementation admission: {exc}"
+                result.refill_retry_required = True
+                return result
 
         # Try to reuse an existing owner before reconciliation.  In particular,
         # this atomically records a newly discovered branch-linked PR while its
