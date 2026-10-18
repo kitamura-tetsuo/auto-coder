@@ -1486,7 +1486,7 @@ def handle_stale_jules_issue_sessions(
     implementation_slots: Optional[ImplementationSlotRepository] = None,
     authorize_dispatch: Optional[Callable[[str, int, Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
     routing: Optional[IssueStageRoutingStore] = None,
-    dispatch_replacement: Optional[Callable[[int, Dict[str, Any], Dict[str, Any], str], CandidateProcessingResult]] = None,
+    dispatch_replacement: Optional[Callable[[int, Dict[str, Any], Dict[str, Any], Optional[str]], CandidateProcessingResult]] = None,
 ) -> StaleJulesIssueResult:
     """Take issues away from Jules sessions that ran out of time without opening a PR.
 
@@ -1615,12 +1615,11 @@ def handle_stale_jules_issue_sessions(
                     logger.warning(f"Skipping stale Jules session {session_id}: specification dispatch authorization is unavailable")
                     continue
                 # Captured before any of the stop/finish/release calls below,
-                # which may fully release and later recreate this owner
-                # record. This resumption is a continuation of whichever
-                # Implementation generation was already durably acquired
-                # (REQ-007 of #2061), never a fresh routing admission, so the
-                # replacement execution below must carry the same captured
-                # generation forward rather than recomputing "current" state.
+                # which may fully release and later recreate this owner record.
+                # Legacy fallback uses this ownership evidence directly.  The
+                # extracted replacement callback instead derives its generation
+                # from the post-stop authorized snapshot, which may include an
+                # edit made while Jules was running.
                 captured_generation = implementation_slots.implementation_generation(owner)
                 if not _stop_jules_session_for_issue(jules_client, repo_name, issue_number, session_id, timeout_hours, github_client, implementation_slots=implementation_slots):
                     continue
@@ -1648,9 +1647,6 @@ def handle_stale_jules_issue_sessions(
                 issue_data["body"] = str(authorized_issue.get("body") or "")
 
                 if dispatch_replacement is not None:
-                    if captured_generation is None:
-                        logger.warning(f"Skipping stale Jules replacement for issue #{issue_number}: implementation generation is unavailable")
-                        continue
                     result.actions.append(f"Stopped Jules session '{session_id}' for issue #{issue_number} (no PR within {timeout_hours}h)")
                     get_trace_logger().log(
                         "Jules Timeout",

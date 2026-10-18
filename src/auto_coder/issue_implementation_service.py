@@ -62,6 +62,7 @@ class IssueImplementationPorts:
     record_release: Optional[Callable[[bool], None]] = None
     bind_validation_identity: Optional[Callable[[str], bool]] = None
     owner_already_serialized: bool = False
+    reconcile_after_dispatch: bool = True
 
 
 class IssueImplementationService:
@@ -206,7 +207,8 @@ class IssueImplementationService:
                         ports.record_release(released)
                 if not owner_existed and result.actions == ["Skipped - another instance started processing (@auto-coder label added)"]:
                     self._slots.release_unbound_idle_owner(owner)
-                self._slots.reconcile(ports.reconciliation_client)
+                if ports.reconcile_after_dispatch:
+                    self._slots.reconcile(ports.reconciliation_client)
         return result
 
     def _start(

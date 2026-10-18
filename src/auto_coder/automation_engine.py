@@ -1320,13 +1320,23 @@ class AutomationEngine:
         issue_number: int,
         issue_data: Dict[str, Any],
         authorized_issue: Dict[str, Any],
-        generation: str,
+        generation: Optional[str],
     ) -> CandidateProcessingResult:
         """Run the daemon's high-score fallback through Issue execution ownership."""
         slots = self._get_implementation_slots(repo_name)
         owner = ImplementationOwner("issue", issue_number)
         current_snapshot: dict[str, Any] = dict(authorized_issue)
         current_identity: Optional[str] = None
+
+        def snapshot_generation(snapshot: Dict[str, Any]) -> str:
+            parent_number = self._get_authoritative_parent_number(repo_name, issue_number, snapshot)
+            family_set = self._fetch_authoritative_decomposition_set(repo_name, parent_number) if parent_number is not None else None
+            return self._compute_implementation_generation(repo_name, snapshot, family_set)
+
+        # Authorization runs after the remote session is stopped, so its snapshot
+        # is the authority for the replacement generation.  The captured value is
+        # only legacy ownership evidence and may describe the pre-stop Issue body.
+        generation = snapshot_generation(current_snapshot)
 
         def refresh_generation() -> Optional[str]:
             nonlocal current_snapshot, current_identity
@@ -1350,13 +1360,12 @@ class AutomationEngine:
             return self._compute_implementation_generation(repo_name, refreshed, family_set)
 
         def dispatch(_retry: Optional[ImplementationRetryRequest]) -> CandidateProcessingResult:
-            from .attempt_manager import increment_attempt
+            from . import issue_processor
             from .cli_helpers import create_high_score_backend_manager
-            from .issue_processor import _take_issue_actions
 
             result = CandidateProcessingResult(type="issue", number=issue_number, success=True)
             try:
-                attempt = increment_attempt(repo_name, issue_number)
+                attempt = issue_processor.increment_attempt(repo_name, issue_number)
                 result.actions.append(f"Incremented attempt for issue #{issue_number} to {attempt}")
             except Exception as exc:
                 logger.error("Failed to increment attempt for issue #{}: {}", issue_number, exc)
@@ -1366,7 +1375,7 @@ class AutomationEngine:
                 logger.warning("backend_with_high_score is not configured; using the default backend for the Jules fallback")
             issue_data.update(current_snapshot)
             result.actions.extend(
-                _take_issue_actions(
+                issue_processor._take_issue_actions(
                     repo_name,
                     issue_data,
                     self.config,
@@ -1393,6 +1402,7 @@ class AutomationEngine:
                 reconciliation_client=self.github,
                 bind_validation_identity=lambda _execution_id: current_identity is not None and slots.record_validation_identity(owner, current_identity),
                 owner_already_serialized=True,
+                reconcile_after_dispatch=False,
             ),
         )
 
