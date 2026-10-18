@@ -418,6 +418,14 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
     github = CheckpointGithub()
     engine = AutomationEngine(github, config=AutomationConfig())
     engine.local_job_store = reopened
+    scheduled_identities: list[tuple[str, int]] = []
+    original_schedule = engine._schedule_codex_retry_handoff
+
+    def record_schedule(repository: str, request_id: str, issue_number: int) -> None:
+        scheduled_identities.append((request_id, issue_number))
+        original_schedule(repository, request_id, issue_number)
+
+    monkeypatch.setattr(engine, "_schedule_codex_retry_handoff", record_schedule)
     pending = PendingWorkStore(tmp_path / "pending.db")
     monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda _repository: pending)
     monkeypatch.setattr("auto_coder.automation_engine.install_asyncio_diagnostics", lambda _loop: None)
@@ -462,6 +470,7 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
         assert reopened.get(foreign_job).state is LocalJobState.RESULT_RECORDED
         assert engine.pending_work_scheduler is not None
         assert len(engine.pending_work_scheduler._handlers) == 6
+        assert scheduled_identities == [(authority.request_id, 2223)]
 
         # Repeating the same recovery turn retains one durable identity rather
         # than manufacturing a second effect or executor registration.
@@ -469,6 +478,10 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
         engine._schedule_codex_retry_handoff("owner/repo", authority.request_id, 2223)
         matching = [item for item in pending.all_pending() if item.identity.revision == authority.request_id]
         assert len(matching) <= 1
+        assert scheduled_identities == [(authority.request_id, 2223)] * 3
+        assert len(set(scheduled_identities)) == 1
+        if matching:
+            assert matching[0].unfinished_effects == (CODEX_RETRY_HANDOFF_EFFECT,)
         assert len(engine.pending_work_scheduler._handlers) == 6
 
         release_checkpoint.set()
