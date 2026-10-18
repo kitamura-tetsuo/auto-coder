@@ -71,7 +71,27 @@ class BaseUpdateConflictExecutionService:
         if config is not None:
             from . import pr_processor as p
 
-            applied = _run_local_conflict_operation(request.repository, request.pr_number, config)
+            try:
+                token = p.GitHubClient.get_instance().token
+                api = p.get_ghapi_client(token)
+                owner, repo = request.repository.split("/")
+                current_pr = api.pulls.get(owner, repo, request.pr_number)
+            except Exception as exc:
+                produced = PRRepairResult(RepairDisposition.FAILED, reason=f"could not verify local conflict target: {exc}")
+                return self._bind_target(request, produced, produced.actions)
+            current_head = str(current_pr.get("head", {}).get("sha") or "")
+            current_base = str(current_pr.get("base", {}).get("ref") or "")
+            if current_head != request.expected_head or current_base != request.base_ref:
+                produced = PRRepairResult(
+                    RepairDisposition.REFUSED,
+                    reason="PR head or configured base changed before local conflict execution",
+                    repository=request.repository,
+                    pr_number=request.pr_number,
+                    input_head=current_head,
+                    base_ref=current_base,
+                )
+                return produced
+            applied = _run_local_conflict_operation(request, config, current_pr)
             head = p.cmd.run_command(["git", "rev-parse", "HEAD"])
             resulting_head = head.stdout.strip() if applied and head.success else ""
             produced = PRRepairResult(
@@ -367,14 +387,12 @@ def _run_base_update_operation(
     return actions
 
 
-def _run_local_conflict_operation(repo_name: str, pr_number: int, config: Any) -> bool:
+def _run_local_conflict_operation(request: BaseUpdateExecutionRequest, config: Any, pr_data: dict[str, Any]) -> bool:
     """Resolve merge conflicts for a PR by checking it out and merging with its base branch (not necessarily main)."""
     from . import pr_processor as p
 
     cmd = p.cmd
     logger = p.logger
-    GitHubClient = p.GitHubClient
-    get_ghapi_client = p.get_ghapi_client
     _is_dependabot_pr = p._is_dependabot_pr
     _checkout_pr_branch = p._checkout_pr_branch
     git_push = p.git_push
@@ -382,6 +400,9 @@ def _run_local_conflict_operation(repo_name: str, pr_number: int, config: Any) -
     resolve_merge_conflicts_with_llm = p.resolve_merge_conflicts_with_llm
     ConflictPublicationDisposition = p.ConflictPublicationDisposition
     get_trace_logger = p.get_trace_logger
+    repo_name = request.repository
+    pr_number = request.pr_number
+    base_branch = request.base_ref
     try:
         # Step 0: Clean up any existing git state
         logger.info(f"Cleaning up git state before resolving conflicts for PR #{pr_number}")
@@ -401,24 +422,9 @@ def _run_local_conflict_operation(repo_name: str, pr_number: int, config: Any) -
         if abort_result.success:
             logger.info("Aborted ongoing merge")
 
-        # Step 1: Get PR details to determine the target base branch and the author
-        pr_data = None
-        try:
-            from auto_coder.util.gh_cache import get_ghapi_client
-
-            token = GitHubClient.get_instance().token
-            api = get_ghapi_client(token)
-            owner, repo = repo_name.split("/")
-
-            pr_data = api.pulls.get(owner, repo, pr_number)
-            base_branch = pr_data.get("base", {}).get("ref", config.MAIN_BRANCH)
-        except Exception as e:
-            logger.warning(f"Failed to get PR #{pr_number} details via GhApi: {e}")
-            base_branch = config.MAIN_BRANCH
-
         # Dependency-bot PRs (Dependabot/Renovate) are never conflict-resolved:
         # the bot recreates the PR against the updated base branch by itself.
-        if pr_data is not None and _is_dependabot_pr(pr_data):
+        if _is_dependabot_pr(pr_data):
             logger.info(f"Skipping merge conflict resolution for dependency-bot PR #{pr_number}")
             return False
 

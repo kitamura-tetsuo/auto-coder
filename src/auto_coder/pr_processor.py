@@ -1339,6 +1339,16 @@ def _dispatch_cloud_conflict_repair(
                 receipt_state=RepairFactState.AVAILABLE if produced.receipt_identity else RepairFactState.UNKNOWN,
                 receipt=produced.receipt_identity,
             )
+        if produced.receipt_identity or produced.task_id or produced.provider:
+            return PRRepairResult(
+                RepairDisposition.DEFERRED,
+                actions,
+                produced.reason,
+                attempt_started=produced.attempt_started,
+                receipt_state=RepairFactState.AVAILABLE if produced.receipt_identity else RepairFactState.UNKNOWN,
+                receipt=produced.receipt_identity,
+                retry_not_before=produced.retry_not_before,
+            )
         return PRRepairResult(RepairDisposition.REFUSED, actions, produced.reason)
 
     base_ref = str(pr_data.get("base", {}).get("ref") or pr_data.get("base_branch") or "")
@@ -10518,15 +10528,30 @@ def _handle_definitive_merge_rejection(
                 # REQ-007/REQ-009 (Issue #2147): guard + durably admit this
                 # outbound mutation to an existing Jules session before
                 # sending it.
-                if not _guard_outbound_jules_send(repo_name, config, session_id):
-                    logger.info(f"Blocked merge-conflict resolution request for PR #{pr_number}: session '{session_id}' " "belongs to a durably retired implementation slot (REQ-009)")
-                    _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.SKIPPED, {"effect": "merge-conflict", "backend": "jules", "reason": "retired implementation slot"})
-                    return False
-                prompt = render_prompt("pr.jules_merge_conflict_resolution")
-                jules_client.send_message(session_id, prompt)
-                logger.info(f"Requested Jules to resolve merge conflict in session {session_id}")
-                log_action(f"Requested Jules to resolve merge conflicts for PR #{pr_number}")
-                _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.ACCEPTED_HANDOFF, {"effect": "merge-conflict", "backend": "jules"})
+                request = BaseUpdateExecutionRequest(
+                    repo_name,
+                    pr_number,
+                    str(pr_info.get("head", {}).get("sha") or head_sha),
+                    str(pr_info.get("base", {}).get("ref") or config.MAIN_BRANCH),
+                    RepairOrigin.JULES.value,
+                )
+
+                def send_jules() -> PRRepairResult:
+                    if not _guard_outbound_jules_send(repo_name, config, session_id):
+                        reason = f"Blocked merge-conflict resolution request for PR #{pr_number}: session '{session_id}' belongs to a durably retired implementation slot (REQ-009)"
+                        return PRRepairResult(RepairDisposition.REFUSED, reason=reason)
+                    prompt = render_prompt("pr.jules_merge_conflict_resolution")
+                    jules_client.send_message(session_id, prompt)
+                    return PRRepairResult(RepairDisposition.ACCEPTED_OR_UNCERTAIN, attempt_started=True)
+
+                result = BaseUpdateConflictExecutionService().execute_conflict_repair(
+                    request,
+                    lambda: _dispatch_jules_repair(repo_name, pr_info, RepairKind.MERGE_CONFLICT, session_id, send_jules),
+                )
+                if result.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN:
+                    logger.info(f"Requested Jules to resolve merge conflict in session {session_id}")
+                    log_action(f"Requested Jules to resolve merge conflicts for PR #{pr_number}")
+                    _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.ACCEPTED_HANDOFF, {"effect": "merge-conflict", "backend": "jules"})
                 return False
             else:
                 logger.warning(f"Jules PR #{pr_number} has merge conflicts but no session ID found. Cannot delegate.")
@@ -10541,21 +10566,21 @@ def _handle_definitive_merge_rejection(
         _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.SKIPPED, {"effect": "merge-conflict", "reason": "dependency-bot PR"})
         return False
 
-    cloud_delegation = _delegate_cloud_merge_conflict_repair_result(repo_name, pr_info, client)
-    if cloud_delegation:
-        if cloud_delegation.accepted_action:
-            log_action(cloud_delegation.accepted_action)
+    cloud_repair = _dispatch_cloud_conflict_repair(repo_name, pr_info, client)
+    if cloud_repair.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN:
+        for action in cloud_repair.actions:
+            log_action(action)
         log_action(f"Delegated merge-conflict repair for PR #{pr_number} to its existing cloud session")
         _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.ACCEPTED_HANDOFF, {"effect": "merge-conflict", "backend": "cloud"})
         return False
 
-    if cloud_delegation.deferred or cloud_delegation.receipt_identity or cloud_delegation.task_id or cloud_delegation.provider:
-        logger.info(f"Cloud merge-conflict repair for PR #{pr_number} remains owned by {cloud_delegation.provider or 'cloud provider'}; waiting for reobservation")
-        _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.DEFERRED, {"effect": "merge-conflict", "backend": cloud_delegation.provider or "cloud", "reason": cloud_delegation.reason})
+    if cloud_repair.disposition is RepairDisposition.DEFERRED or cloud_repair.receipt_state is RepairFactState.AVAILABLE:
+        logger.info(f"Cloud merge-conflict repair for PR #{pr_number} remains provider-owned; waiting for reobservation")
+        _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.DEFERRED, {"effect": "merge-conflict", "backend": "cloud", "reason": cloud_repair.reason})
         if route_disposition is not None:
             route_disposition.outcome = PRProcessingOutcome.DEFERRED
-            route_disposition.reason = cloud_delegation.reason or "Cloud conflict repair requires reobservation"
-            route_disposition.retry_not_before = cloud_delegation.retry_not_before
+            route_disposition.reason = cloud_repair.reason or "Cloud conflict repair requires reobservation"
+            route_disposition.retry_not_before = cloud_repair.retry_not_before
         return False
 
     if not _resolve_pr_merge_conflicts(repo_name, pr_number, config):

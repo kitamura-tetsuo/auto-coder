@@ -11,6 +11,7 @@ import pytest
 pytestmark = pytest.mark.pr_repair_contract
 
 from src.auto_coder.automation_config import AutomationConfig
+from src.auto_coder.base_update_execution import BaseUpdateConflictExecutionService
 from src.auto_coder.claude_usage_checker import ClaudeStrictUsageObservation
 from src.auto_coder.cloud_run import CloudRun
 from src.auto_coder.cloud_task_client_base import CloudTaskClientBase
@@ -68,10 +69,18 @@ def test_definitive_rejection_preserves_actual_cloud_quota_producer_wait(tmp_pat
     api.pulls.get.return_value = {**pr_data(), "mergeable": False}
     route = MergeRouteDisposition()
     merge_attempt = MagicMock()
+    service_entries = []
+    original = BaseUpdateConflictExecutionService.execute_conflict_repair
+
+    def observe(service, request, operation=None, *, config=None):
+        service_entries.append(request)
+        return original(service, request, operation, config=config)
+
     with (
         patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=(client, "task_existing")),
         patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=tmp_path / "repairs.json"),
         patch("src.auto_coder.pr_processor.get_claude_followup_wait_store", return_value=wait_store),
+        patch.object(BaseUpdateConflictExecutionService, "execute_conflict_repair", new=observe),
         patch("src.auto_coder.pr_processor._resolve_pr_merge_conflicts") as local,
         patch("src.auto_coder.pr_processor._trigger_fallback_for_pr_failure") as fallback,
     ):
@@ -82,6 +91,37 @@ def test_definitive_rejection_preserves_actual_cloud_quota_producer_wait(tmp_pat
     merge_attempt.assert_not_called()
     assert client.messages == []
     assert route.retry_not_before == deadline
+    assert len(service_entries) == 1
+    assert service_entries[0].expected_head == "H1"
+    assert service_entries[0].base_ref == "release/2.x"
+
+
+def test_definitive_jules_conflict_executes_once_through_service() -> None:
+    api = MagicMock()
+    pull = {**pr_data(), "mergeable": False, "body": "Session ID: session-existing"}
+    api.pulls.get.return_value = pull
+    jules = MagicMock()
+    service_entries = []
+    original = BaseUpdateConflictExecutionService.execute_conflict_repair
+
+    def observe(service, request, operation=None, *, config=None):
+        service_entries.append(request)
+        return original(service, request, operation, config=config)
+
+    with (
+        patch("src.auto_coder.pr_processor._is_jules_pr", return_value=True),
+        patch("src.auto_coder.pr_processor._guard_outbound_jules_send", return_value=True),
+        patch("auto_coder.jules_client.JulesClient", return_value=jules),
+        patch.object(BaseUpdateConflictExecutionService, "execute_conflict_repair", new=observe),
+        patch("src.auto_coder.pr_processor._resolve_pr_merge_conflicts") as local,
+    ):
+        assert not _handle_definitive_merge_rejection("owner/repo", 1589, AutomationConfig(), MagicMock(), api, "owner", "repo", MagicMock(), MagicMock(), MagicMock(), "H1")
+
+    assert len(service_entries) == 1
+    assert service_entries[0].expected_head == "H1"
+    assert service_entries[0].base_ref == "release/2.x"
+    jules.send_message.assert_called_once()
+    local.assert_not_called()
 
 
 def pr_data(head_sha: str = "H1", base_sha: str = "B1") -> dict:

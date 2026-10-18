@@ -40,6 +40,11 @@ def conflict_repository(tmp_path: Path) -> tuple[Path, dict[str, object]]:
     (seed / "app.txt").write_text("base\n")
     git(seed, "commit", "-am", "base")
     git(seed, "push")
+    git(seed, "checkout", "-b", "develop")
+    (seed / "develop.txt").write_text("develop\n")
+    git(seed, "add", "develop.txt")
+    git(seed, "commit", "-m", "develop base")
+    git(seed, "push", "-u", "origin", "develop")
     git(tmp_path, "clone", "--branch", "feature", str(remote), str(work))
     git(work, "config", "user.email", "test@example.com")
     git(work, "config", "user.name", "Test")
@@ -131,4 +136,28 @@ def test_definitive_entry_carries_non_main_base_into_real_checkout(tmp_path: Pat
     ):
         assert not _resolve_pr_merge_conflicts("owner/repo", 2542, AutomationConfig())
 
-    operation.assert_called_once_with("owner/repo", 2542, ANY)
+    operation.assert_called_once_with(ANY, ANY, pr_data)
+
+
+def test_definitive_entry_refuses_changed_head_and_base_before_git_effects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands: None) -> None:
+    work, observed = conflict_repository(tmp_path)
+    monkeypatch.chdir(work)
+    changed = {
+        **observed,
+        "head": {"ref": "feature", "sha": "H2"},
+        "base": {"ref": "develop", "sha": "B2"},
+    }
+    api = MagicMock()
+    api.pulls.get.side_effect = [observed, changed]
+    github = MagicMock(token="token")
+    original_head = git(work, "rev-parse", "HEAD").stdout.strip()
+    with (
+        patch("auto_coder.pr_processor.GitHubClient.get_instance", return_value=github),
+        patch("auto_coder.pr_processor.get_ghapi_client", return_value=api),
+        patch("auto_coder.base_update_execution._run_local_conflict_operation") as operation,
+    ):
+        assert not _resolve_pr_merge_conflicts("owner/repo", 2542, AutomationConfig())
+
+    operation.assert_not_called()
+    assert git(work, "rev-parse", "HEAD").stdout.strip() == original_head
+    assert git(work, "status", "--porcelain").stdout == ""
