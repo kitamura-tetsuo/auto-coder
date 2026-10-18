@@ -295,7 +295,15 @@ def test_base_update_publication_result_reaches_remediation_consumer(
     subprocess.run(["git", "commit", "-m", "feature"], cwd=repository, check=True, capture_output=True)
     subprocess.run(["git", "push", "-u", "origin", "feature"], cwd=repository, check=True, capture_output=True)
 
-    if publication != "not-needed":
+    if publication == "not-needed":
+        subprocess.run(["git", "checkout", "main"], cwd=repository, check=True, capture_output=True)
+        (repository / "base.txt").write_text("new base\n", encoding="utf-8")
+        subprocess.run(["git", "add", "base.txt"], cwd=repository, check=True)
+        subprocess.run(["git", "commit", "-m", "base advance"], cwd=repository, check=True, capture_output=True)
+        subprocess.run(["git", "push", "origin", "main"], cwd=repository, check=True, capture_output=True)
+        subprocess.run(["git", "checkout", "feature"], cwd=repository, check=True, capture_output=True)
+        subprocess.run(["git", "merge", "origin/main"], cwd=repository, check=True, capture_output=True)
+    else:
         subprocess.run(["git", "checkout", "main"], cwd=repository, check=True, capture_output=True)
         (repository / "base.txt").write_text("new base\n", encoding="utf-8")
         subprocess.run(["git", "add", "base.txt"], cwd=repository, check=True)
@@ -337,6 +345,11 @@ def test_base_update_publication_result_reaches_remediation_consumer(
 
     if publication == "not-needed":
         publish.assert_not_called()
+        assert actions.repair_result is not None
+        assert actions.repair_result.synchronization_state is RepairFactState.UNKNOWN
+        assert actions.repair_result.synchronized is False
+        assert actions.repair_result.resulting_head == subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository, check=True, capture_output=True, text=True).stdout.strip()
+        assert subprocess.run(["git", "rev-parse", "refs/remotes/origin/feature"], cwd=repository, check=True, capture_output=True, text=True).stdout.strip() != actions.repair_result.resulting_head
         assert any("is up to date with main branch" in action for action in actions)
         assert not any("Mergeability remediation completed" in action for action in actions)
         assert "ACTION_FLAG:SKIP_ANALYSIS" not in actions

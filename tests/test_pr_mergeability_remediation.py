@@ -329,7 +329,7 @@ def test_start_remediation_uses_typed_result_despite_identical_misleading_action
     mock_api.pulls.get.return_value = {"base": {"ref": "main"}, "head": {"ref": "feature"}}
     mock_get_ghapi_client.return_value = mock_api
     mock_github_client.get_instance.return_value.token = "token"
-    produced = PRActionList(("Pushed updated branch", "up to date with main branch", "ACTION_FLAG:SKIP_ANALYSIS"))
+    produced = PRActionList(("Pushed updated branch", "up to date with main branch", "ACTION_FLAG:SKIP_ANALYSIS", "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE"))
     produced.repair_result = PRRepairResult(disposition, reason="comparison failed")
     mock_update.return_value = produced
 
@@ -339,6 +339,7 @@ def test_start_remediation_uses_typed_result_despite_identical_misleading_action
     assert expected_text in " ".join(actions).lower()
     assert "ACTION_FLAG:SKIP_ANALYSIS" not in actions
     assert ("remediation completed" in " ".join(actions).lower()) is False
+    mock_github_client.get_instance.return_value.close_pr.assert_not_called()
 
 
 @patch("src.auto_coder.pr_processor.get_ghapi_client")

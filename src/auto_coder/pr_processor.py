@@ -3599,7 +3599,7 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
             actions.retry_not_before = update_actions.retry_not_before
 
             # Step 4: Check for degrading merge detection
-        if "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" in update_actions:
+        if update_actions.repair_result is not None and update_actions.repair_result.disposition is RepairDisposition.QUALITY_REFUSED:
             # LLM determined merge would degrade code quality
             # The _trigger_fallback_for_conflict_failure has already been called in conflict_resolver
             # The linked issues have been reopened and attempt incremented
@@ -6439,6 +6439,7 @@ class MergeRouteDisposition:
 
     outcome: PRProcessingOutcome = PRProcessingOutcome.DEFERRED
     reason: str = "Merge was not confirmed"
+    retry_not_before: Optional[float] = None
 
 
 def _handle_pr_merge(
@@ -6837,7 +6838,7 @@ def _handle_pr_merge(
                     # Step 9: Check for special cases from base branch update
 
                     # Check if LLM determined merge would degrade code quality
-                    if "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" in update_actions:
+                    if update_actions.repair_result is not None and update_actions.repair_result.disposition is RepairDisposition.QUALITY_REFUSED:
                         actions.append(f"LLM determined merge would degrade code quality for PR #{pr_number}, closing PR without merge")
                         # Close the PR without merging
                         try:
@@ -7133,7 +7134,7 @@ def _update_with_base_branch(
             if not head.success or not head.stdout.strip():
                 record(RepairDisposition.FAILED, reason="Failed to observe HEAD after base comparison")
             else:
-                record(RepairDisposition.NO_UPDATE_NEEDED, resulting_head=head.stdout.strip(), synchronized=True)
+                record(RepairDisposition.NO_UPDATE_NEEDED, resulting_head=head.stdout.strip())
             return actions
 
         actions.append(f"PR #{pr_number} is {commits_behind} commits behind {target_branch}, updating...")
@@ -10722,6 +10723,15 @@ def _handle_definitive_merge_rejection(
             log_action(cloud_delegation.accepted_action)
         log_action(f"Delegated merge-conflict repair for PR #{pr_number} to its existing cloud session")
         _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.ACCEPTED_HANDOFF, {"effect": "merge-conflict", "backend": "cloud"})
+        return False
+
+    if cloud_delegation.deferred or cloud_delegation.receipt_identity or cloud_delegation.task_id or cloud_delegation.provider:
+        logger.info(f"Cloud merge-conflict repair for PR #{pr_number} remains owned by {cloud_delegation.provider or 'cloud provider'}; waiting for reobservation")
+        _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.DEFERRED, {"effect": "merge-conflict", "backend": cloud_delegation.provider or "cloud", "reason": cloud_delegation.reason})
+        if route_disposition is not None:
+            route_disposition.outcome = PRProcessingOutcome.DEFERRED
+            route_disposition.reason = cloud_delegation.reason or "Cloud conflict repair requires reobservation"
+            route_disposition.retry_not_before = cloud_delegation.retry_not_before
         return False
 
     if not _resolve_pr_merge_conflicts(repo_name, pr_number, config):

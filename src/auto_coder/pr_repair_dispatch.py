@@ -27,6 +27,7 @@ class RepairOrigin(str, Enum):
 
 class RepairDisposition(str, Enum):
     NO_UPDATE_NEEDED = "no_update_needed"
+    QUALITY_REFUSED = "quality_refused"
     REFUSED = "refused"
     DEFERRED = "deferred"
     ACCEPTED_OR_UNCERTAIN = "accepted_or_uncertain"

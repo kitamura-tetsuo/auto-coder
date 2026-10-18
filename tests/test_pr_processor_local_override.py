@@ -118,7 +118,7 @@ def test_ci_base_update_consumer_ignores_identical_misleading_actions(dispositio
     pr_data = {"number": 2540, "head": {"ref": "feature", "sha": "head"}, "base": {"ref": "main"}}
     config = AutomationConfig()
     config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = False
-    produced = PRActionList(("up to date with main branch", "Pushed updated branch", "ACTION_FLAG:SKIP_ANALYSIS"))
+    produced = PRActionList(("up to date with main branch", "Pushed updated branch", "ACTION_FLAG:SKIP_ANALYSIS", "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE"))
     produced.repair_result = PRRepairResult(disposition, reason="comparison failed")
     status = ProcessedPRResult(pr_data=pr_data, actions_taken=[], priority="fix", analysis=None)
 
@@ -143,11 +143,13 @@ def test_ci_base_update_consumer_ignores_identical_misleading_actions(dispositio
         patch("src.auto_coder.pr_processor._merge_pr") as merge,
     ):
         unsafe.return_value = MagicMock(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
-        actions = _handle_pr_merge(_client(), repo_name, pr_data, config, {}, status)
+        client = _client()
+        actions = _handle_pr_merge(client, repo_name, pr_data, config, {}, status)
 
     update.assert_called_once()
     merge.assert_not_called()
     assert "ACTION_FLAG:SKIP_ANALYSIS" not in actions
+    client.close_pr.assert_not_called()
     if disposition is RepairDisposition.NO_UPDATE_NEEDED:
         fix.assert_called_once()
         assert status.outcome is not PRProcessingOutcome.FAILED
