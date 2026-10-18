@@ -27,6 +27,8 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ExplicitTargetOutcome
 from auto_coder.automation_engine import AutomationEngine
+from auto_coder.cloud_manager import CloudManager
+from auto_coder.codex_cloud_client import CodexSubmissionOutcome, CodexSubmissionResult
 from auto_coder.execution_trace import Outcome, get_trace_collector
 from auto_coder.implementation_ownership import (
     OwnershipStartDecision,
@@ -48,6 +50,7 @@ from auto_coder.issue_stage_routing import IssueStageRoutingStore
 from auto_coder.llm_backend_config import LLMBackendConfiguration
 from auto_coder.local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobKind, LocalJobState, LocalJobStore
 from auto_coder.local_job_runner import LocalJobExecutionResult, LocalJobRunner
+from auto_coder.retry_dispatch import RetryDispatchRepository
 from auto_coder.specification_analyzer import SpecificationAnalysisResult
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
 from auto_coder.stale_jules_recovery import capture_stale_jules_recovery, find_pending_stale_jules_recovery
@@ -728,6 +731,86 @@ def test_explicit_retry_after_completed_execution_starts_distinct_attempt(tmp_pa
     assert engine.implementation_slots.active_execution_ids(owner) == ()
     assert engine.implementation_slots.implementation_generation(owner) == generation
     assert engine.issue_stage_routing.is_implementation_owned(REPO, 1, generation)
+
+
+def test_tracking_incomplete_cloud_retry_reentry_retains_receipt_and_exact_settlement(tmp_path, monkeypatch):
+    """A production retry re-entry reuses its accepted receipt and caller lifetimes."""
+    snapshot = _standalone_snapshot(1, (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat())
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _ready_engine(tmp_path, monkeypatch, {1: snapshot}, config)
+    github.get_issue_comments_strict.return_value = []
+    alias = "controlled-cloud"
+    llm_config = LLMBackendConfiguration.load_from_dict({"backends": {alias: {"backend_type": "codex-cloud", "model": "test"}}})
+    client = MagicMock(environment_id="environment-1")
+    client.submit_task.return_value = CodexSubmissionResult(
+        CodexSubmissionOutcome.ACCEPTED,
+        "task-retained",
+        "https://example.test/tasks/task-retained",
+    )
+    monkeypatch.setattr("auto_coder.issue_processor._ordinary_issue_candidates", lambda _repo: [alias])
+    monkeypatch.setattr("auto_coder.llm_backend_config.get_llm_config", lambda **_kwargs: llm_config)
+    monkeypatch.setattr("auto_coder.codex_cloud_client.get_llm_config", lambda **_kwargs: llm_config)
+    monkeypatch.setattr("auto_coder.codex_cloud_client.CodexCloudClient", MagicMock(return_value=client))
+    monkeypatch.setattr("auto_coder.issue_processor.get_current_attempt", lambda *_args: 0)
+    monkeypatch.setattr(
+        "auto_coder.issue_processor.increment_attempt",
+        lambda *_args, attempt_number=None, **_kwargs: attempt_number or 1,
+    )
+    monkeypatch.setattr("auto_coder.issue_processor.get_commit_log", lambda *_args, **_kwargs: "baseline")
+    monkeypatch.setattr("auto_coder.automation_engine.resolve_authoritative_item_type", lambda *_args: "issue")
+    monkeypatch.setattr("auto_coder.issue_dispatch.default_issue_dispatch_db_path", lambda: tmp_path / "dispatch.sqlite3")
+    monkeypatch.setattr(CloudManager, "promote_retry_binding", MagicMock(side_effect=OSError("projection unavailable")))
+
+    owner = ImplementationOwner("issue", 1)
+    finish_calls = []
+    real_finish = engine.implementation_slots.finish_execution
+
+    def observed_finish(finished_owner, execution_id):  # type: ignore[no-untyped-def]
+        assert finished_owner == owner
+        finish_calls.append(execution_id)
+        real_finish(finished_owner, execution_id)
+
+    monkeypatch.setattr(engine.implementation_slots, "finish_execution", observed_finish)
+
+    def process():  # type: ignore[no-untyped-def]
+        return engine._process_single_candidate_unified(
+            REPO,
+            Candidate("issue", dict(snapshot), 0),
+            config,
+            explicit_only=True,
+            force=True,
+            retry=True,
+            retry_request_id="tracking-incomplete-retry",
+            origin="explicit-single-target",
+        )
+
+    first = process()
+    retained = RetryDispatchRepository(REPO).get("tracking-incomplete-retry")
+    assert retained is not None
+    first_identity = (retained.external_id, retained.creation_id)
+    assert retained.external_id == "task-retained"
+    assert retained.tracking_complete is False
+    assert first.dispatch_result is not None
+    assert first.dispatch_result.provider_reference == retained.external_id
+    dispatch_incarnation = first.dispatch_result.claim_incarnation
+    assert dispatch_incarnation
+
+    replay = process()
+    replayed = RetryDispatchRepository(REPO).get("tracking-incomplete-retry")
+    assert replayed is not None
+    assert (replayed.external_id, replayed.creation_id) == first_identity
+    assert replayed.tracking_complete is False
+    assert replay.dispatch_result is not None
+    assert replay.dispatch_result.provider_reference == retained.external_id
+    assert replay.dispatch_result.claim_incarnation == dispatch_incarnation
+    assert client.submit_task.call_count == 1
+    assert engine.implementation_slots.has_provider_sessions(owner)
+    authority = engine.issue_stage_routing.retry_request("tracking-incomplete-retry")
+    assert authority is not None and authority.ownership_reference
+    assert finish_calls == [authority.ownership_reference, authority.ownership_reference]
+    assert engine.implementation_slots.active_execution_ids(owner) == ()
 
 
 def test_retry_flag_gate_and_same_request_competition_cross_production_candidate_boundary(tmp_path, monkeypatch):
