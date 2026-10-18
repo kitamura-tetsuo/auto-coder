@@ -344,6 +344,29 @@ def test_start_remediation_uses_typed_result_despite_identical_misleading_action
 
 @patch("src.auto_coder.pr_processor.get_ghapi_client")
 @patch("src.auto_coder.pr_processor.GitHubClient")
+@patch("src.auto_coder.pr_processor.BranchManager")
+@patch("src.auto_coder.pr_processor._checkout_pr_branch", return_value=True)
+@patch("src.auto_coder.pr_processor._update_with_base_branch")
+def test_start_remediation_closes_only_for_typed_quality_refusal(mock_update, _checkout, _branch, mock_github, mock_api_factory):
+    """REQ-003: typed quality refusal, not its display flag, owns closure."""
+    api = Mock()
+    api.pulls.get.return_value = {"base": {"ref": "main"}, "head": {"ref": "feature"}}
+    mock_api_factory.return_value = api
+    client = mock_github.get_instance.return_value
+    client.token = "token"
+    produced = PRActionList(("ordinary diagnostic",))
+    produced.repair_result = PRRepairResult(RepairDisposition.QUALITY_REFUSED, reason="quality degradation")
+    mock_update.return_value = produced
+
+    actions = _start_mergeability_remediation(2041, "DIRTY", repo_name="owner/repo")
+
+    mock_update.assert_called_once()
+    client.close_pr.assert_called_once()
+    assert any("quality degradation risk" in action for action in actions)
+
+
+@patch("src.auto_coder.pr_processor.get_ghapi_client")
+@patch("src.auto_coder.pr_processor.GitHubClient")
 def test_start_mergeability_remediation_pr_details_fails(mock_github_client, mock_get_ghapi_client):
     """Verify remediation handles PR details retrieval failure."""
     mock_api = Mock()

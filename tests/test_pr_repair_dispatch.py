@@ -43,6 +43,7 @@ def test_definitive_merge_rejection_preserves_cloud_wait_without_local_fallback(
     api.pulls.get.return_value = {"number": 2504, "mergeable": False, "head": {"sha": "H1"}}
     route = pr_processor.MergeRouteDisposition()
     result = pr_processor.CloudConflictDelegationResult(reason="wait for provider", **cloud_result)
+    merge_attempt = MagicMock()
     with (
         patch.object(pr_processor, "_is_jules_pr", return_value=False),
         patch.object(pr_processor, "_is_dependabot_pr", return_value=False),
@@ -50,11 +51,12 @@ def test_definitive_merge_rejection_preserves_cloud_wait_without_local_fallback(
         patch.object(pr_processor, "_resolve_pr_merge_conflicts") as local,
         patch.object(pr_processor, "_trigger_fallback_for_pr_failure") as fallback,
     ):
-        assert pr_processor._handle_definitive_merge_rejection("owner/repo", 2504, AutomationConfig(), MagicMock(), api, "owner", "repo", MagicMock(), MagicMock(), MagicMock(), "H1", route) is False
+        assert pr_processor._handle_definitive_merge_rejection("owner/repo", 2504, AutomationConfig(), MagicMock(), api, "owner", "repo", MagicMock(), MagicMock(), merge_attempt, "H1", route) is False
 
     delegate.assert_called_once()
     local.assert_not_called()
     fallback.assert_not_called()
+    merge_attempt.assert_not_called()
     assert route.outcome is pr_processor.PRProcessingOutcome.DEFERRED
     assert route.retry_not_before == cloud_result.get("retry_not_before")
 
