@@ -50,7 +50,7 @@ class CodexRetryReconciler:
             matching_runs = [
                 run
                 for run in CloudRunRepository(self.repository).list_for_issue(authority.target_number)
-                if binding is not None and run.provider == "codex-cloud" and run.submission_outcome == "accepted" and run.task_id == binding.task_id and run.backend_name == binding.backend_name and run.environment_id and run.base_branch
+                if binding is not None and run.provider == "codex-cloud" and run.submission_outcome == "accepted" and run.task_id == binding.task_id and run.backend_name == binding.backend_name and run.environment_id and run.base_branch and run.launch_identity == request_id
             ]
             if len(matching_runs) != 1:
                 self._defer(request_id, authority.target_number)
@@ -139,7 +139,7 @@ class CodexRetryReconciler:
         run_repository = CloudRunRepository(self.repository)
         try:
             run = run_repository.get(handoff.issue_number, handoff.numeric_attempt)
-            if run is None:
+            if run is None or (run.submission_outcome == "indeterminate" and not run.task_id):
                 retained_config = json.loads(handoff.route_config)
                 if not isinstance(retained_config, dict):
                     raise ValueError("retained launch provenance is not an object")
@@ -216,8 +216,11 @@ class CodexRetryReconciler:
                     raise RuntimeError("logical implementation slot is unavailable")
                 if not dispatch.is_latest_accepted(request_id) or manager.read_bindings_strict().get(str(handoff.issue_number)) != expected:
                     raise RuntimeError("current ownership changed during slot confirmation")
-                if not handoff.tracking_complete:
-                    dispatch.mark_tracking_complete(request_id)
+                # Reassert the current disposition even when an earlier
+                # tracking write succeeded. A later failed handoff write may
+                # have durably moved the receipt back to tracking-incomplete
+                # without clearing the monotonic tracking_complete evidence.
+                dispatch.mark_tracking_complete(request_id)
                 dispatch.mark_handoff_complete(request_id)
         except Exception as exc:
             actual = None
