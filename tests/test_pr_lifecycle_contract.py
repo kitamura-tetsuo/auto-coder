@@ -30,6 +30,7 @@ from auto_coder.ci_observation import (
 from auto_coder.cloud_manager import CloudTaskBinding
 from auto_coder.durable_repair_allowance import RepairAllowanceLedger
 from auto_coder.github_app_reviewer import ReviewPublicationResult
+from auto_coder.github_ci_observer import fence_active_ci_observations
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.local_review_repair import LocalReviewRepairRequest, admit_local_repair_allowance
 from auto_coder.pr_processor import (
@@ -1115,6 +1116,114 @@ def test_terminal_ci_failure_enters_typed_synchronous_local_repair(tmp_path, mon
     assert results[0].synchronized is False
     assert status.outcome is PRProcessingOutcome.FAILED
     assert "local candidate failed to synchronize" in actions
+
+
+@pytest.mark.parametrize("invalidate_final_read", [True, False], ids=["invalidated", "fresh-exact-head"])
+def test_public_local_ci_repair_real_authority_fences_first_checkout_mutation(tmp_path, monkeypatch, invalidate_final_read):
+    """REQ-006: public repair uses the real final observation/fence before mutation."""
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    marker = worktree / "checkout-prepared"
+    marker.write_text("clean", encoding="utf-8")
+    subprocess.run(["git", "init", "-b", "main"], cwd=worktree, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.com"], cwd=worktree, check=True)
+    subprocess.run(["git", "config", "user.name", "Tests"], cwd=worktree, check=True)
+    subprocess.run(["git", "add", marker.name], cwd=worktree, check=True)
+    subprocess.run(["git", "commit", "-m", "clean checkout"], cwd=worktree, check=True, capture_output=True)
+    monkeypatch.chdir(worktree)
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+
+    failed = _snapshot(ObservationAvailability.KNOWN, CIConclusion.FAILURE)
+    config = AutomationConfig()
+    config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = True
+    pr_data = {
+        "number": PR_NUMBER,
+        "body": "<!-- auto-coder:local-llm -->\nFixes #2541",
+        "labels": [],
+        "user": {"login": "local-owner"},
+        "head": {"ref": "local/feature", "sha": H1},
+        "base": {"ref": "main", "sha": "base-1"},
+    }
+    client = MagicMock(token="controlled-token")
+    client.get_pull_request_metadata_strict.return_value = {
+        "number": PR_NUMBER,
+        "state": "open",
+        "merged_at": None,
+        "head": {"sha": H1},
+    }
+    effects = {"prepare": 0, "branch": 0, "backend": 0}
+
+    def final_checks(_owner, _repo, *, ref, **_kwargs):
+        if invalidate_final_read:
+            fence_active_ci_observations("controlled newer CI delivery")
+        return {
+            "check_runs": [
+                {
+                    "id": 901,
+                    "name": "PR Tests",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "head_sha": ref,
+                    "app": {"id": 1},
+                }
+            ]
+        }
+
+    api = SimpleNamespace(
+        checks=SimpleNamespace(list_for_ref=final_checks),
+        actions=SimpleNamespace(list_workflow_runs_for_repo=lambda *_args, **_kwargs: {"workflow_runs": []}),
+    )
+
+    def prepare_branch(*_args, **_kwargs):
+        effects["prepare"] += 1
+        marker.write_text("mutated", encoding="utf-8")
+        return True
+
+    @contextmanager
+    def branch_context(_branch):
+        effects["branch"] += 1
+        yield
+
+    def repair(*_args, **_kwargs):
+        effects["backend"] += 1
+        return PRActionList(("controlled local correction",))
+
+    with (
+        patch(
+            "auto_coder.pr_processor._check_github_actions_status",
+            return_value=GitHubActionsStatusResult(success=False, ids=[701], observation=failed),
+        ),
+        patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+        patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as unsafe,
+        patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False),
+        patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+        patch("auto_coder.pr_processor.get_detailed_checks_from_history", return_value=SimpleNamespace(failed_checks=[{"name": "PR Tests"}])),
+        patch("auto_coder.pr_processor._is_codex_pr", return_value=False),
+        patch("auto_coder.pr_processor._is_jules_pr", return_value=False),
+        patch("auto_coder.pr_processor._is_dependabot_pr", return_value=False),
+        patch("auto_coder.pr_processor._is_local_llm_pr", return_value=True),
+        patch("auto_coder.pr_processor.cmd.run_command", return_value=CommandResult(True, "main\n", "", 0)),
+        patch("auto_coder.ci_repair_authority.get_ghapi_client", return_value=api),
+        patch("auto_coder.pr_processor._checkout_pr_branch", side_effect=prepare_branch),
+        patch("auto_coder.pr_processor.BranchManager", side_effect=branch_context),
+        patch("auto_coder.pr_processor._create_github_action_log_summary", return_value=("failed logs", ["tests/test_pr.py"])),
+        patch("auto_coder.pr_processor._fix_pr_issues_with_testing", side_effect=repair),
+        patch("auto_coder.pr_processor._merge_pr") as merge,
+    ):
+        unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
+        actions = _handle_pr_merge(client, REPOSITORY, pr_data, config, {})
+
+    merge.assert_not_called()
+    client.get_pull_request_metadata_strict.assert_called_once_with(REPOSITORY, PR_NUMBER)
+    if invalidate_final_read:
+        assert effects == {"prepare": 0, "branch": 0, "backend": 0}
+        assert marker.read_text(encoding="utf-8") == "clean"
+        assert subprocess.run(["git", "status", "--porcelain"], cwd=worktree, check=True, capture_output=True, text=True).stdout == ""
+        assert any("CI evidence is superseded" in action for action in actions)
+    else:
+        assert effects == {"prepare": 1, "branch": 1, "backend": 1}
+        assert marker.read_text(encoding="utf-8") == "mutated"
+        assert "controlled local correction" in actions
 
 
 @pytest.mark.parametrize("push_succeeds", [True, False], ids=["applied", "synchronization-failed"])
