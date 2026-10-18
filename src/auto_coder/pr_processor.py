@@ -6756,6 +6756,8 @@ def _handle_pr_merge(
                 force=force_adversarial_validation,
             )
             actions.extend(codex_dispatch_result.actions)
+            actions.repair_result = codex_dispatch_result
+            actions.retry_not_before = codex_dispatch_result.retry_not_before
             if codex_dispatch_result.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN:
                 actions.append(f"Codex Cloud will handle fixing PR #{pr_number}, skipping local fixes")
             else:
@@ -6812,6 +6814,8 @@ def _handle_pr_merge(
 
             jules_feedback = _dispatch_jules_repair(repo_name, pr_data, RepairKind.CI_FAILURE, session_id, send_jules_ci)
             actions.extend(jules_feedback.actions)
+            actions.repair_result = jules_feedback
+            actions.retry_not_before = jules_feedback.retry_not_before
             actions.append(f"Jules will handle fixing PR #{pr_number}, skipping local fixes")
             _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.ACCEPTED_HANDOFF, {"effect": "ci-failure-repair", "backend": "jules"})
             return actions

@@ -1022,6 +1022,85 @@ def test_terminal_ci_failure_retains_cloud_owner_without_local_repair(tmp_path, 
     assert any("Codex Cloud will handle fixing" in action for action in actions)
 
 
+@pytest.mark.parametrize(
+    ("owner", "feedback", "expected_disposition", "expected_reason"),
+    [
+        (
+            "codex",
+            CodexCloudFeedbackResult(delivered=True, actions=("accepted continuation",)),
+            RepairDisposition.ACCEPTED_OR_UNCERTAIN,
+            "",
+        ),
+        (
+            "codex",
+            CodexCloudFeedbackResult(deferred=True, retryable=True, actions=("temporary provider wait",)),
+            RepairDisposition.DEFERRED,
+            "temporary provider wait",
+        ),
+        ("jules", None, RepairDisposition.ACCEPTED_OR_UNCERTAIN, "Jules producer does not expose delivery certainty"),
+    ],
+)
+def test_public_processing_preserves_cloud_ci_executor_result(
+    tmp_path,
+    monkeypatch,
+    owner,
+    feedback,
+    expected_disposition,
+    expected_reason,
+):
+    """REQ-002: cloud CI evidence crosses the handler into ProcessedPRResult."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    failed = _snapshot(ObservationAvailability.KNOWN, CIConclusion.FAILURE)
+    config = AutomationConfig()
+    pr_data = {
+        "number": PR_NUMBER,
+        "title": "Cloud repair result",
+        "body": "Fixes #2501\nhttps://chatgpt.com/codex/tasks/task_result_owner",
+        "labels": [],
+        "user": {"login": "cloud-owner"},
+        "head": {"ref": "cloud/feature", "sha": H1},
+        "base": {"ref": "main", "sha": "base-1"},
+    }
+    github = MagicMock(token="controlled-token")
+
+    with ExitStack() as stack:
+        unsafe = stack.enter_context(patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr"))
+        stack.enter_context(patch("auto_coder.pr_processor._close_empty_pr", return_value=SimpleNamespace(closed=False)))
+        stack.enter_context(patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=SimpleNamespace(closed=False)))
+        stack.enter_context(patch("auto_coder.pr_processor._should_skip_waiting_for_jules", return_value=False))
+        stack.enter_context(patch("auto_coder.pr_processor._link_jules_pr_to_issue", return_value=True))
+        stack.enter_context(patch("auto_coder.pr_processor._link_codex_cloud_pr_to_issue", return_value=None))
+        stack.enter_context(patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=False, ids=[701], observation=failed)))
+        stack.enter_context(patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True))
+        stack.enter_context(patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}))
+        stack.enter_context(patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False))
+        stack.enter_context(patch("auto_coder.pr_processor.get_detailed_checks_from_history", return_value=SimpleNamespace(failed_checks=[{"name": "PR Tests"}])))
+        stack.enter_context(patch("auto_coder.pr_processor.check_pr_repair_exhaustion", return_value=None))
+        stack.enter_context(patch("auto_coder.pr_processor._is_codex_pr", return_value=owner == "codex"))
+        stack.enter_context(patch("auto_coder.pr_processor._is_jules_pr", return_value=owner == "jules"))
+        stack.enter_context(patch("auto_coder.pr_processor._is_dependabot_pr", return_value=False))
+        if owner == "codex":
+            stack.enter_context(
+                patch(
+                    "auto_coder.pr_processor._resolve_cloud_task_origin",
+                    return_value=CloudTaskOriginResolution(CloudTaskOrigin("codex-cloud", "task_result_owner", MagicMock())),
+                )
+            )
+            stack.enter_context(patch("auto_coder.pr_processor._send_codex_cloud_error_feedback", return_value=feedback))
+        else:
+            stack.enter_context(patch("auto_coder.pr_processor._send_jules_error_feedback", return_value=["accepted Jules continuation"]))
+        label = stack.enter_context(patch("auto_coder.pr_processor.LabelManager"))
+        label.return_value.__enter__.return_value = True
+        unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
+
+        result = process_pull_request(github, config, REPOSITORY, pr_data)
+
+    assert result.repair_result is not None
+    assert result.repair_result.disposition is expected_disposition
+    assert result.repair_result.reason == expected_reason
+    assert result.repair_result.actions
+
+
 def test_controller_reentry_carries_cloud_repair_to_new_head_and_final_merge(tmp_path, monkeypatch):
     """REQ-004/005: discovery, worker handoff, durable ownership and H2 merge stay joined."""
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
@@ -1056,6 +1135,16 @@ def test_controller_reentry_carries_cloud_repair_to_new_head_and_final_merge(tmp
     continuations = []
     ci_reads = iter(range(40))
 
+    class ControlledCodexCloudClient:
+        def continue_if_paused(self, task_id, **kwargs):
+            continuations.append((task_id, pr_data["head"]["sha"], kwargs))
+            # The provider effect is the visible checkpoint after which the
+            # controlled GitHub boundary exposes the repaired head.
+            pr_data["head"]["sha"] = H2
+            return True
+
+    cloud_client = ControlledCodexCloudClient()
+
     def ci_status(_repo, candidate, *_args, **_kwargs):
         head = candidate["head"]["sha"]
         conclusion = CIConclusion.FAILURE if head == H1 else CIConclusion.SUCCESS
@@ -1064,10 +1153,6 @@ def test_controller_reentry_carries_cloud_repair_to_new_head_and_final_merge(tmp
             cycle_id=f"joined-{head}-{next(ci_reads)}",
         )
         return GitHubActionsStatusResult(success=head == H2, ids=[701], observation=snapshot)
-
-    def cloud_feedback(*_args, **_kwargs):
-        continuations.append(("task_joined_lifecycle", H1))
-        return CodexCloudFeedbackResult(delivered=True, actions=("joined cloud continuation",))
 
     with ExitStack() as stack:
         collection_label = stack.enter_context(patch("auto_coder.automation_engine.LabelManager"))
@@ -1085,8 +1170,11 @@ def test_controller_reentry_carries_cloud_repair_to_new_head_and_final_merge(tmp
         stack.enter_context(patch("auto_coder.pr_processor._is_dependabot_pr", return_value=False))
         stack.enter_context(patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}))
         stack.enter_context(patch("auto_coder.pr_processor.get_detailed_checks_from_history", return_value=SimpleNamespace(failed_checks=[{"name": "PR Tests"}])))
-        stack.enter_context(patch("auto_coder.pr_processor._resolve_cloud_task_origin", return_value=CloudTaskOriginResolution(CloudTaskOrigin("codex-cloud", "task_joined_lifecycle", MagicMock()))))
-        stack.enter_context(patch("auto_coder.pr_processor._send_codex_cloud_error_feedback", side_effect=cloud_feedback))
+        stack.enter_context(patch("auto_coder.pr_processor._resolve_cloud_task_origin", return_value=CloudTaskOriginResolution(CloudTaskOrigin("codex-cloud", "task_joined_lifecycle", cloud_client))))
+        stack.enter_context(patch("auto_coder.pr_processor.current_ci_failure_authority", return_value=nullcontext(SimpleNamespace(allowed=True, reason="", failure_identities=("PR Tests",)))))
+        stack.enter_context(patch("auto_coder.pr_processor._revalidate_cloud_origin", return_value=None))
+        stack.enter_context(patch("auto_coder.pr_processor.new_work_allowed", return_value=True))
+        stack.enter_context(patch("auto_coder.pr_processor._add_unique_pr_comment", return_value=True))
         stack.enter_context(patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False))
         stack.enter_context(patch("auto_coder.pr_processor._is_pr_adversarial_validation_enabled", return_value=True))
         stack.enter_context(
@@ -1111,13 +1199,15 @@ def test_controller_reentry_carries_cloud_repair_to_new_head_and_final_merge(tmp
         assert reopened.has_provider_sessions(owner)
         assert merge.call_count == 0
 
-        pr_data["head"]["sha"] = H2
+        assert continuations[0][0:2] == ("task_joined_lifecycle", H1)
+        assert pr_data["head"]["sha"] == H2
         second = next(candidate for candidate in engine._get_candidates(REPOSITORY) if candidate.type == "pr")
         second_result = engine._process_single_candidate_unified(REPOSITORY, second, config)
 
     assert first_result.outcome is PRProcessingOutcome.DEFERRED
     assert second_result.outcome is PRProcessingOutcome.SUCCESS, second_result.actions
-    assert continuations == [("task_joined_lifecycle", H1)]
+    assert len(continuations) == 1
+    assert continuations[0][0:2] == ("task_joined_lifecycle", H1)
     strong_review.assert_called_once()
     assert merge.call_count == 1
     assert merge.call_args.kwargs["expected_head_sha"] == H2
