@@ -16,7 +16,7 @@ from auto_coder.backend_manager import BackendManager
 from auto_coder.github_request_governor import GitHubRequestDeferred
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
-from auto_coder.issue_local_job import IssueLocalJobAdapter
+from auto_coder.issue_local_job import IssueLocalJobAdapter, issue_job_authorization_ports
 from auto_coder.issue_processor import _dispatch_issue_candidates
 from auto_coder.llm_backend_config import LLMBackendConfiguration
 from auto_coder.local_issue_start_notification import LocalIssueStartNotifier
@@ -178,7 +178,7 @@ def test_ambiguous_accepted_post_reconciles_exact_marker_without_repost(tmp_path
     assert retained is not None and retained.state is StartNotificationState.CONFIRMED
     assert github.posts == 1
 
-    LocalIssueStartNotifier(LocalJobStore(store.path), github).recover()
+    LocalIssueStartNotifier(LocalJobStore(store.path), github).recover("owner/repo")
     assert github.posts == 1
 
 
@@ -192,7 +192,7 @@ def test_ambiguous_post_with_unavailable_evidence_stays_indeterminate(tmp_path: 
     _wait_for_state(store, _job().job_id, StartNotificationState.INDETERMINATE)
     retained = store.get_start_notification(_job().job_id)
     assert retained is not None and retained.state is StartNotificationState.INDETERMINATE
-    LocalIssueStartNotifier(LocalJobStore(store.path), github).recover()
+    LocalIssueStartNotifier(LocalJobStore(store.path), github).recover("owner/repo")
     assert github.posts == 1
 
 
@@ -207,7 +207,7 @@ def test_definitely_unsent_delivery_recovers_after_job_settlement(tmp_path: Path
     assert retained is not None and retained.state is StartNotificationState.DEFINITELY_UNSENT
 
     github.post_error = None
-    LocalIssueStartNotifier(LocalJobStore(store.path), github).recover()
+    LocalIssueStartNotifier(LocalJobStore(store.path), github).recover("owner/repo")
     retained = store.get_start_notification(_job().job_id)
     assert retained is not None and retained.state is StartNotificationState.CONFIRMED
     assert github.posts == 2
@@ -247,7 +247,7 @@ def test_production_runner_posts_at_real_adapter_manager_boundary_after_false_st
     slots = MagicMock()
     slots.owner_incarnation.return_value = "owner-incarnation"
     slots.implementation_generation.return_value = "generation"
-    adapter = IssueLocalJobAdapter(engine, "owner/repo", store, slots, source)
+    adapter = IssueLocalJobAdapter(issue_job_authorization_ports(engine), "owner/repo", store, slots, source)
     entered = Event()
     release = Event()
 
@@ -413,7 +413,7 @@ def test_governor_deferral_is_retried_once_from_reopened_store(tmp_path: Path) -
     assert github.comments == []
 
     github.blocked = False
-    LocalIssueStartNotifier(LocalJobStore(store.path), github).recover()
+    LocalIssueStartNotifier(LocalJobStore(store.path), github).recover("owner/repo")
 
     retained = LocalJobStore(store.path).get_start_notification("governor-deferred")
     assert retained is not None and retained.state is StartNotificationState.CONFIRMED
@@ -446,7 +446,7 @@ def test_notification_state_failures_are_diagnostic_and_preserve_uncertainty(tmp
 
         diagnostics.clear()
 
-        LocalIssueStartNotifier(failing_store, github).recover()
+        LocalIssueStartNotifier(failing_store, github).recover("owner/repo")
         assert any("recovery enumeration failed" in message for message in diagnostics)
         assert base.get_start_notification(job.job_id).state is StartNotificationState.PENDING  # type: ignore[union-attr]
 

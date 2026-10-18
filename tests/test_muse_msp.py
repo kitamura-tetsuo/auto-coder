@@ -19,7 +19,7 @@ from src.auto_coder.execution_trace import EventKind, Outcome, get_trace_collect
 from src.auto_coder.implementation_slots import ImplementationSlotRepository
 from src.auto_coder.invocation_admission import InvocationAdmissionGate
 from src.auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
-from src.auto_coder.issue_local_job import IssueLocalJobAdapter
+from src.auto_coder.issue_local_job import IssueJobAuthorizationPorts, IssueLocalJobAdapter
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 from src.auto_coder.local_job_handoff import ContinuationState, LocalJobKind, LocalJobOffer, LocalJobStore
 from src.auto_coder.local_job_runner import LocalJobRunner
@@ -607,9 +607,17 @@ def test_issue_adapter_runner_delivers_gate_controlled_muse_background_result(tm
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3", timeout=10)})
     manager = _manager(config)
     monkeypatch.setattr("auto_coder.cli_helpers.build_backend_manager", lambda **_kwargs: manager)
-    engine = SimpleNamespace(config=SimpleNamespace(MAIN_BRANCH="main"), github=SimpleNamespace())
+    ports = IssueJobAuthorizationPorts(
+        github=SimpleNamespace(),
+        main_branch="main",
+        author_allowed=lambda _snapshot: True,
+        authorize_dispatch=lambda _repository, _number, snapshot: snapshot,
+        parent_number=lambda _repository, _number, _snapshot: None,
+        decomposition_set=lambda _repository, _parent: None,
+        implementation_generation=lambda _repository, _snapshot, _family: "generation",
+    )
     slots = ImplementationSlotRepository("owner/repo", 2, tmp_path / "slots.json", tmp_path / "retired.json")
-    adapter = IssueLocalJobAdapter(engine, "owner/repo", store, slots, source)
+    adapter = IssueLocalJobAdapter(ports, "owner/repo", store, slots, source)
     monkeypatch.setattr(adapter, "authorize_provider_entry", lambda _job: True)
     monkeypatch.setattr(adapter._start_notifier, "observe_and_publish", lambda *_args, **_kwargs: None)
     wakes: list[str] = []

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import Any, Callable, Mapping, Optional, Protocol
 
 from .attempt_manager import get_current_attempt
 from .implementation_slots import ImplementationOwner, ImplementationSlotRepository
@@ -17,8 +18,42 @@ from .local_llm_observability import bind_local_llm_start_callback, reset_local_
 from .muse_background_observation import bind_muse_job_observation
 from .utils import bind_command_execution_cwd, reset_command_execution_cwd
 
-if TYPE_CHECKING:
-    from .automation_engine import AutomationEngine
+
+class IssueJobGitHubPort(Protocol):
+    """GitHub operations needed before a local provider may be entered."""
+
+    def get_issue_dispatch_snapshot_strict(self, repository: str, number: int) -> Mapping[str, object]: ...
+
+    def add_comment_to_issue(self, repository: str, issue_number: int, body: str) -> None: ...
+
+    def get_issue_comments_strict(self, repository: str, issue_number: int) -> list[dict[str, object]]: ...
+
+
+@dataclass(frozen=True)
+class IssueJobAuthorizationPorts:
+    """Narrow controller policy used by the durable Issue adapter."""
+
+    github: IssueJobGitHubPort
+    main_branch: str
+    author_allowed: Callable[[Any], bool]
+    authorize_dispatch: Callable[[str, int, Any], Optional[Any]]
+    parent_number: Callable[[str, int, Any], Optional[int]]
+    decomposition_set: Callable[[str, int], Any]
+    implementation_generation: Callable[[str, Any, Any], str]
+
+
+def issue_job_authorization_ports(controller: object) -> IssueJobAuthorizationPorts:
+    """Project a controller-shaped object onto the adapter's explicit ports."""
+    config = getattr(controller, "config")
+    return IssueJobAuthorizationPorts(
+        github=getattr(controller, "github"),
+        main_branch=getattr(config, "MAIN_BRANCH"),
+        author_allowed=getattr(controller, "_is_issue_author_allowed"),
+        authorize_dispatch=getattr(controller, "_authorize_stale_jules_dispatch"),
+        parent_number=getattr(controller, "_get_authoritative_parent_number"),
+        decomposition_set=getattr(controller, "_fetch_authoritative_decomposition_set"),
+        implementation_generation=getattr(controller, "_compute_implementation_generation"),
+    )
 
 
 class IssueLocalJobAdapter:
@@ -26,22 +61,22 @@ class IssueLocalJobAdapter:
 
     def __init__(
         self,
-        engine: "AutomationEngine",
+        ports: IssueJobAuthorizationPorts,
         repository: str,
         store: LocalJobStore,
         slots: ImplementationSlotRepository,
         repository_path: Path,
     ) -> None:
-        self._engine = engine
+        self._ports = ports
         self._repository = repository
         self._store = store
         self._slots = slots
         self._repository_path = repository_path.resolve()
-        self._start_notifier = LocalIssueStartNotifier(store, engine.github)
+        self._start_notifier = LocalIssueStartNotifier(store, ports.github)
 
-    def recover_start_notifications(self) -> None:
+    def recover_start_notifications(self, repository: str, job_ids: frozenset[str] | None) -> None:
         """Recover notification effects independently of invocation settlement."""
-        self._start_notifier.recover()
+        self._start_notifier.recover(repository, job_ids)
 
     def authorize_provider_entry(self, job: LocalJobRecord) -> bool:
         if job.repository != self._repository:
@@ -65,15 +100,15 @@ class IssueLocalJobAdapter:
         if not job.implementation_execution_id or job.implementation_execution_id not in self._slots.active_execution_ids(owner):
             return False
         try:
-            snapshot = self._engine.github.get_issue_dispatch_snapshot_strict(job.repository, job.target_number)
-            if not isinstance(snapshot, dict) or not self._engine._is_issue_author_allowed(snapshot):
+            snapshot = self._ports.github.get_issue_dispatch_snapshot_strict(job.repository, job.target_number)
+            if not isinstance(snapshot, Mapping) or not self._ports.author_allowed(snapshot):
                 return False
-            authorized = self._engine._authorize_stale_jules_dispatch(job.repository, job.target_number, snapshot)
+            authorized = self._ports.authorize_dispatch(job.repository, job.target_number, snapshot)
             if authorized is None:
                 return False
-            parent_number = self._engine._get_authoritative_parent_number(job.repository, job.target_number, authorized)
-            family_set = self._engine._fetch_authoritative_decomposition_set(job.repository, parent_number) if parent_number is not None else None
-            current_generation = self._engine._compute_implementation_generation(job.repository, authorized, family_set)
+            parent_number = self._ports.parent_number(job.repository, job.target_number, authorized)
+            family_set = self._ports.decomposition_set(job.repository, parent_number) if parent_number is not None else None
+            current_generation = self._ports.implementation_generation(job.repository, authorized, family_set)
             return self._slots.implementation_generation(owner) == current_generation
         except Exception:
             return False
@@ -201,7 +236,7 @@ class IssueLocalJobAdapter:
         source = IssueJobSource(
             job.repository,
             self._repository_path,
-            self._engine.config.MAIN_BRANCH,
+            self._ports.main_branch,
             f"issue-{job.target_number}-attempt-{job.upstream_attempt}",
         )
         producer = IssueJobWorkspaceProducer(self._store, implementation_slots=self._slots)

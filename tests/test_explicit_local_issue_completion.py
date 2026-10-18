@@ -1,6 +1,7 @@
 """Integration coverage of single-target local execution and publication."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from threading import Event, Thread
 from unittest.mock import Mock, patch
@@ -13,7 +14,7 @@ from auto_coder.execution_trace import get_trace_collector
 from auto_coder.implementation_skip_diagnostic import explain_already_owned
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.issue_dispatch import CandidateHandoff, DispatchOutcome, DispatchResult, IssueAttemptIdentity, IssueDispatchGuard
-from auto_coder.issue_local_job import IssueLocalJobAdapter
+from auto_coder.issue_local_job import IssueLocalJobAdapter, issue_job_authorization_ports
 from auto_coder.local_job_handoff import LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore
 from auto_coder.local_job_runner import LocalJobRunner
 from auto_coder.utils import CommandExecutor
@@ -22,7 +23,30 @@ from .test_dashboard_observability import _assert_required_stage_visible, _mount
 from .test_issue_job_workspace import git, repository
 
 
-@pytest.mark.parametrize("behavior", ["published", "no_change", "failed", "refused", "publication_pending", "codex_json", "claude_json", "muse_json", "cannot_fix", "external_runner", "external_checkpoint", "generated_cache", "cache_no_change", "stale_main", "retry_latest_main", "fetch_failed"])
+@pytest.mark.parametrize(
+    "behavior",
+    [
+        "published",
+        "no_change",
+        "failed",
+        "refused",
+        "newer_generation",
+        "publication_pending",
+        "codex_json",
+        "claude_json",
+        "muse_json",
+        "cannot_fix",
+        "external_runner",
+        "external_checkpoint",
+        "generated_cache",
+        "cache_no_change",
+        "stale_main",
+        "retry_latest_main",
+        "fetch_failed",
+        "unrelated_notification_same_repository",
+        "unrelated_notification_other_repository",
+    ],
+)
 def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, monkeypatch, _use_real_commands, _use_real_sleep, behavior):
     fresh_source = behavior in {"stale_main", "retry_latest_main"}
     attempt = "retry-new-attempt" if behavior == "retry_latest_main" else "0"
@@ -61,7 +85,9 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
     monkeypatch.setenv("GIT_COMMITTER_NAME", "Test")
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "test@example.com")
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
-    guard = IssueDispatchGuard(tmp_path / "dispatch.sqlite3")
+    dispatch_path = tmp_path / "dispatch.sqlite3"
+    monkeypatch.setattr("auto_coder.issue_dispatch.default_issue_dispatch_db_path", lambda: dispatch_path)
+    guard = IssueDispatchGuard(dispatch_path)
     slots = ImplementationSlotRepository("owner/repo", 2, tmp_path / "slots.json", tmp_path / "retired.json")
     owner = ImplementationOwner("issue", 41)
     execution = slots.start_execution(owner, generation="generation")
@@ -76,13 +102,28 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
     assert guard.reserve(other_identity, CandidateHandoff("codex", "local")).admitted
     other = store.offer_issue(LocalJobOffer(LocalJobKind.ISSUE_IMPLEMENTATION, "owner/repo", 42, "0", "codex", "other"), other_identity, guard)
     assert other
+    notification_scope = behavior if behavior.startswith("unrelated_notification_") else ""
+    behavior = "published" if notification_scope else behavior
+    unrelated_notification = None
+    if notification_scope:
+        notification_job = other if notification_scope.endswith("same_repository") else replace(other, job_id=f"{other.job_id}-other-repository", repository="other/repo", target_number=99)
+        unrelated_notification = store.observe_issue_start(notification_job, backend_name="codex", model_name="model", marker=f"marker-{notification_job.job_id}")
+        assert unrelated_notification is not None
     github = Mock()
+    unrelated_notification_entered = Event()
+
+    def reject_unrelated_notification(*_args, **_kwargs):
+        unrelated_notification_entered.set()
+        raise AssertionError("explicit target entered an unrelated notification boundary")
+
+    github.add_comment_to_issue.side_effect = reject_unrelated_notification
     engine = AutomationEngine(github, AutomationConfig())
     traces = get_trace_collector()
     traces.clear()
     engine.local_job_store = store
     monkeypatch.setattr(engine, "_get_implementation_slots", lambda _repo: slots)
-    candidate = Candidate(type="issue", data={"number": 41, "title": "Implement"}, priority=1)
+    snapshot = {"number": 41, "title": "Implement", "body": "initial generation"}
+    candidate = Candidate(type="issue", data=snapshot, priority=1)
     dispatch = DispatchResult(identity, DispatchOutcome.LOCAL_ACCEPTED, "codex", "local", accepted.job_id, claim_incarnation=reserved.claim_incarnation)
     processing = CandidateProcessingResult(type="issue", number=41, success=True, target_outcome=ExplicitTargetOutcome.SUCCESS, dispatch_result=dispatch, actions=["Accepted local implementation job"])
     monkeypatch.setattr(engine, "_check_and_handle_closed_branch", lambda _repo: True)
@@ -90,9 +131,30 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
     monkeypatch.setattr(engine, "_preflight_explicit_issue_relationships", lambda *_args, **_kwargs: candidate.data)
     monkeypatch.setattr(engine, "_validate_submitted_parent_generation_for_child", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(engine, "_process_single_candidate_unified", lambda *_args, **_kwargs: processing)
-    monkeypatch.setattr("auto_coder.issue_local_job.IssueLocalJobAdapter.authorize_provider_entry", lambda *_args: behavior != "refused")
+    if behavior != "newer_generation":
+        monkeypatch.setattr("auto_coder.issue_local_job.IssueLocalJobAdapter.authorize_provider_entry", lambda *_args: behavior != "refused")
+    else:
+        github.get_issue_dispatch_snapshot_strict.side_effect = lambda *_args: dict(snapshot)
+        monkeypatch.setattr(engine, "_is_issue_author_allowed", lambda _snapshot: True)
+        monkeypatch.setattr(engine, "_authorize_stale_jules_dispatch", lambda _repo, _number, current: current)
+        monkeypatch.setattr(engine, "_get_authoritative_parent_number", lambda *_args: None)
+        monkeypatch.setattr(engine, "_compute_implementation_generation", lambda _repo, current, _family: "generation" if current["body"] == "initial generation" else "new-generation")
+        monkeypatch.setattr("auto_coder.issue_local_job.get_current_attempt", lambda *_args: 0)
     monkeypatch.setattr("auto_coder.util.github_action.check_and_handle_closed_state", lambda *_args: None)
     entered, release = Event(), Event()
+    preparation_finished, release_preparation = Event(), Event()
+    if behavior == "newer_generation":
+        from auto_coder.issue_job_workspace import IssueJobWorkspaceProducer
+
+        original_prepare = IssueJobWorkspaceProducer._prepare
+
+        def paused_prepare(producer, *args, **kwargs):  # type: ignore[no-untyped-def]
+            prepared = original_prepare(producer, *args, **kwargs)
+            preparation_finished.set()
+            assert release_preparation.wait(10)
+            return prepared
+
+        monkeypatch.setattr(IssueJobWorkspaceProducer, "_prepare", paused_prepare)
     calls = []
 
     def implement(prompt):
@@ -149,8 +211,10 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
 
         monkeypatch.setattr(store, "record_result", checkpoint)
     if external:
-        monkeypatch.setattr("auto_coder.automation_engine.runner_owner_alive", lambda owner: True if owner == "external-owner" else None)
-        external_runner = LocalJobRunner(store, engine.invocation_gate, repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: IssueLocalJobAdapter(engine, "owner/repo", store, slots, source)}, runner_id="external-owner", job_ids=frozenset({accepted.job_id}))
+        monkeypatch.setattr("auto_coder.issue_job_runtime.runner_owner_alive", lambda owner: True if owner == "external-owner" else None)
+        external_runner = LocalJobRunner(
+            store, engine.invocation_gate, repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: IssueLocalJobAdapter(issue_job_authorization_ports(engine), "owner/repo", store, slots, source)}, runner_id="external-owner", job_ids=frozenset({accepted.job_id})
+        )
         assert external_runner.poll() == 1
         assert entered.wait(10)
         if checkpoint_pause:
@@ -160,7 +224,11 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
     thread = Thread(target=lambda: results.append(engine.process_single("owner/repo", "issue", 41, explicit_only=True, force=True)))
     thread.start()
     try:
-        if behavior not in {"refused", "fetch_failed"}:
+        if behavior == "newer_generation":
+            assert preparation_finished.wait(10)
+            snapshot["body"] = "newer generation"
+            release_preparation.set()
+        elif behavior not in {"refused", "fetch_failed"}:
             assert entered.wait(10)
             thread.join(0.2)
             assert thread.is_alive()
@@ -169,6 +237,7 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
             if checkpoint_pause:
                 assert store.get(accepted.job_id).state is LocalJobState.RESULT_RECORDED
     finally:
+        release_preparation.set()
         checkpoint_release.set()
         release.set()
         thread.join(15)
@@ -180,7 +249,10 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
     assert results[0]["target_outcome"] == expected
     assert results[0]["target_type"] == "issue"
     assert results[0]["target_number"] == 41
-    assert calls == ([] if behavior in {"refused", "fetch_failed"} else ["implement"])
+    assert calls == ([] if behavior in {"refused", "newer_generation", "fetch_failed"} else ["implement"])
+    assert not unrelated_notification_entered.is_set()
+    if unrelated_notification is not None:
+        assert store.get_start_notification(unrelated_notification.job_id) == unrelated_notification
     assert store.get(other.job_id).state is LocalJobState.PENDING
     assert source.joinpath("value.txt").read_text() == "original\n"
     assert git(source, "rev-parse", "HEAD") == shared_head
@@ -209,11 +281,11 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
         assert job.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
         assert "publication deferred" in results[0]["target_reason"]
         assert slots.active_execution_ids(owner) == (execution,)
-    elif behavior == "refused":
+    elif behavior in {"refused", "newer_generation"}:
         assert job.state is LocalJobState.PENDING
         assert not job.provider_entered
     finalizations = [event for event in traces.get_snapshot(repository="owner/repo", item_type="issue", item_number=41).events if event.stage_id == "issue.local-publication-finalization" and event.facts.get("job_id") == accepted.job_id]
-    if behavior == "refused":
+    if behavior in {"refused", "newer_generation"}:
         assert finalizations == []
     else:
         assert len(finalizations) == 1
@@ -224,7 +296,7 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
     with patch("auto_coder.dashboard.ui") as mock_ui:
         diagram = _mounted_detail(mock_ui, "issue", 41)
     _assert_required_stage_visible(diagram, "local completion")
-    if behavior != "refused":
+    if behavior not in {"refused", "newer_generation"}:
         _assert_required_stage_visible(diagram, "publication finalization")
     assert f"outcome: {'completed' if expected == 'success' else expected}" in diagram
     if behavior in {"published", "no_change", "failed", "cannot_fix", "publication_pending"}:

@@ -39,7 +39,7 @@ from auto_coder.implementation_slots import (
 )
 from auto_coder.issue_dispatch import DispatchOutcome, IssueAttemptIdentity, IssueDispatchGuard
 from auto_coder.issue_job_finalizer import IssueJobFinalizer
-from auto_coder.issue_local_job import IssueLocalJobAdapter
+from auto_coder.issue_local_job import IssueLocalJobAdapter, issue_job_authorization_ports
 from auto_coder.issue_processor import handle_stale_jules_issue_sessions
 from auto_coder.issue_stage_routing import IssueStageRoutingStore
 from auto_coder.llm_backend_config import LLMBackendConfiguration
@@ -306,7 +306,7 @@ def test_failed_production_local_job_is_explained_on_ordinary_reprocessing(tmp_p
     assert engine.implementation_slots.active_execution_ids(owner) == (accepted.implementation_execution_id,)
     assert store.get_effect(job_id, accepted.execution_incarnation, "pr") is None
     assert IssueLocalJobAdapter(
-        engine,
+        issue_job_authorization_ports(engine),
         REPO,
         store,
         engine.implementation_slots,
@@ -435,7 +435,7 @@ def test_explicit_issue_acquires_and_dispatches_real_local_job(tmp_path, monkeyp
     generation = engine.implementation_slots.implementation_generation(owner)
     assert generation is not None
     assert engine.issue_stage_routing.is_implementation_owned(REPO, 1, generation)
-    assert IssueLocalJobAdapter(engine, REPO, store, engine.implementation_slots, tmp_path).authorize_provider_entry(job)
+    assert IssueLocalJobAdapter(issue_job_authorization_ports(engine), REPO, store, engine.implementation_slots, tmp_path).authorize_provider_entry(job)
     assert result["target_type"] == "issue"
     assert result["target_number"] == 1
 
@@ -639,6 +639,43 @@ async def test_duplicate_wake_never_dispatches_twice_for_the_same_generation(tmp
 
     worker.cancel()
     await asyncio.gather(worker, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_daemon_invalidation_lazily_accepts_local_job_before_startup(tmp_path, monkeypatch):
+    """A pre-start daemon worker hands off locally instead of invoking inline."""
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    snapshot = _standalone_snapshot(1, created_at)
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _ready_engine(tmp_path, monkeypatch, {1: snapshot}, config)
+    github.get_issue_comments_strict.return_value = []
+    llm_config = LLMBackendConfiguration.load_from_dict({"backends": {"controlled-local": {"backend_type": "codex", "model": "test"}}})
+    monkeypatch.setattr("auto_coder.issue_processor._ordinary_issue_candidates", lambda _repo: ["controlled-local"])
+    monkeypatch.setattr("auto_coder.llm_backend_config.get_llm_config", lambda **_kwargs: llm_config)
+    monkeypatch.setattr("auto_coder.cli_helpers.build_backend_manager", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr("auto_coder.issue_processor.get_current_attempt", lambda *_args: 0)
+    monkeypatch.setattr("auto_coder.issue_processor.get_commit_log", lambda *_args, **_kwargs: "baseline")
+    monkeypatch.setattr("auto_coder.automation_engine.resolve_authoritative_item_type", lambda *_args: "issue")
+    monkeypatch.setattr("auto_coder.issue_dispatch.default_issue_dispatch_db_path", lambda: tmp_path / "dispatch.sqlite3")
+    monkeypatch.setattr("auto_coder.local_job_handoff.default_local_job_db_path", lambda: tmp_path / "jobs.sqlite3")
+
+    assert engine.local_job_store is None
+    worker = asyncio.create_task(engine._worker_loop(REPO, 0, "issue"))
+    try:
+        await engine.invalidate_entity(REPO, "issue", 1)
+        await asyncio.wait_for(engine.queue.join(), timeout=5)
+    finally:
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+    store = engine.local_job_store
+    assert store is not None
+    jobs = [job for job in store.discover_unsettled() if job.repository == REPO and job.target_number == 1]
+    assert len(jobs) == 1
+    assert jobs[0].state is LocalJobState.PENDING
+    assert engine.queue.empty()
 
 
 def test_explicit_retry_after_completed_execution_starts_distinct_attempt(tmp_path, monkeypatch):

@@ -353,9 +353,9 @@ class LocalJobRunner:
             with self._lock:
                 self._notifying.discard(job.job_id)
 
-    def _recover_start_notifications(self, adapter_identity: int, recover: Callable[[], None]) -> None:
+    def _recover_start_notifications(self, adapter_identity: int, recover: Callable[[str, Optional[frozenset[str]]], None]) -> None:
         try:
-            recover()
+            recover(self.repository, self._job_ids)
         except Exception as exc:
             logger.warning("Local start notification recovery failed: {}", type(exc).__name__)
         finally:
