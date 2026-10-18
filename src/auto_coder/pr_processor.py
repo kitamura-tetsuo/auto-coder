@@ -51,6 +51,7 @@ from .adversarial_validator import (
 )
 from .attempt_manager import build_pr_attempt_trigger, get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, EmptyPRResult, ExplicitTargetOutcome, ProcessedPRResult, PRProcessingOutcome, StaleJulesPRResult
+from .base_update_execution import BaseUpdateConflictExecutionService, BaseUpdateExecutionRequest
 from .bounded_repair_bundle import (
     build_repair_handoff_bundle,
     render_bounded_repair_payload,
@@ -1339,9 +1340,28 @@ def _dispatch_cloud_conflict_repair(
                 receipt_state=RepairFactState.AVAILABLE if produced.receipt_identity else RepairFactState.UNKNOWN,
                 receipt=produced.receipt_identity,
             )
+        if produced.receipt_identity or produced.task_id or produced.provider:
+            return PRRepairResult(
+                RepairDisposition.DEFERRED,
+                actions,
+                produced.reason,
+                attempt_started=produced.attempt_started,
+                receipt_state=RepairFactState.AVAILABLE if produced.receipt_identity else RepairFactState.UNKNOWN,
+                receipt=produced.receipt_identity,
+                retry_not_before=produced.retry_not_before,
+            )
         return PRRepairResult(RepairDisposition.REFUSED, actions, produced.reason)
 
-    return dispatch_pr_repair(request, execute)
+    base_ref = str(pr_data.get("base", {}).get("ref") or pr_data.get("base_branch") or "")
+    execution_request = BaseUpdateExecutionRequest(
+        repo_name,
+        int(pr_data["number"]),
+        str(pr_data.get("head", {}).get("sha") or pr_data.get("head_sha") or ""),
+        base_ref,
+        request.origin.value,
+    )
+    service = BaseUpdateConflictExecutionService()
+    return service.execute_conflict_repair(execution_request, lambda: dispatch_pr_repair(request, execute))
 
 
 def _dispatch_local_repair(
@@ -7030,222 +7050,22 @@ def _update_with_base_branch(
     config: AutomationConfig,
     github_client: Optional[Any] = None,
 ) -> PRActionList:
-    """Update PR branch with latest base branch commits.
+    """Run the selected base update through the bounded execution service."""
+    base_ref = pr_data.get("base_branch") or pr_data.get("base", {}).get("ref") or config.MAIN_BRANCH
+    request = BaseUpdateExecutionRequest(
+        repository=repo_name,
+        pr_number=int(pr_data["number"]),
+        expected_head=str(pr_data.get("head", {}).get("sha") or pr_data.get("head_sha") or ""),
+        base_ref=str(base_ref),
+        origin="optional-base-update",
+    )
+    service = BaseUpdateConflictExecutionService()
 
-    This function merges the PR's base branch (e.g., main, develop) into the PR branch
-    to bring it up to date before attempting fixes.
-    """
-    actions = PRActionList()
-    pr_number = pr_data["number"]
-
-    target_branch = pr_data.get("base_branch") or pr_data.get("base", {}).get("ref") or config.MAIN_BRANCH
-    input_head = pr_data.get("head", {}).get("sha", "")
-
-    def record(disposition: RepairDisposition, *, reason: str = "", resulting_head: str = "", synchronized: Optional[bool] = None) -> None:
-        """Attach the authoritative control result without interpreting display text."""
-        actions.repair_result = PRRepairResult(
-            disposition,
-            tuple(actions),
-            reason=reason,
-            resulting_head_state=RepairFactState.AVAILABLE if resulting_head else RepairFactState.UNKNOWN,
-            resulting_head=resulting_head,
-            synchronization_state=RepairFactState.AVAILABLE if synchronized is not None else RepairFactState.UNKNOWN,
-            synchronized=synchronized is True,
-            repository=repo_name,
-            pr_number=pr_number,
-            input_head=input_head,
-            base_ref=target_branch,
-        )
-
-    try:
-        # Determine target base branch for this PR
-        # Fetch latest changes from origin
-        result = cmd.run_command(["git", "fetch", "origin"])
-        if not result.success:
-            actions.append(f"Failed to fetch latest changes: {result.stderr}")
-            record(RepairDisposition.FAILED, reason=actions[-1])
-            return actions
-
-        # Check if base branch has new commits
-        result = cmd.run_command(["git", "rev-list", "--count", f"HEAD..refs/remotes/origin/{target_branch}"])
-        if not result.success:
-            actions.append(f"Failed to check {target_branch} branch status: {result.stderr}")
-            record(RepairDisposition.FAILED, reason=actions[-1])
-            return actions
-
-        commits_behind = int(result.stdout.strip())
-        if commits_behind == 0:
-            actions.append(f"PR #{pr_number} is up to date with {target_branch} branch")
-            head = cmd.run_command(["git", "rev-parse", "HEAD"])
-            if not head.success or not head.stdout.strip():
-                record(RepairDisposition.FAILED, reason="Failed to observe HEAD after base comparison")
-            else:
-                record(RepairDisposition.NO_UPDATE_NEEDED, resulting_head=head.stdout.strip())
-            return actions
-
-        actions.append(f"PR #{pr_number} is {commits_behind} commits behind {target_branch}, updating...")
-
-        # Try to merge base branch
-        result = cmd.run_command(["git", "merge", f"refs/remotes/origin/{target_branch}"])
-        if result.success:
-            actions.append(f"Successfully merged {target_branch} branch into PR #{pr_number}")
-
-            # Push the updated branch using centralized helper with retry
-            push_result = git_push()
-            if push_result.success:
-                actions.append(f"Pushed updated branch for PR #{pr_number}")
-                # Signal to skip further LLM analysis for this PR in this run
-                actions.append("ACTION_FLAG:SKIP_ANALYSIS")
-                head = cmd.run_command(["git", "rev-parse", "HEAD"])
-                record(RepairDisposition.APPLIED, resulting_head=head.stdout.strip() if head.success else "", synchronized=True)
-            else:
-                # Push failed - try one more time after a brief pause
-                logger.warning(f"First push attempt failed: {push_result.stderr}, retrying...")
-                import time
-
-                time.sleep(2)
-                retry_push_result = git_push()
-                if retry_push_result.success:
-                    actions.append(f"Pushed updated branch for PR #{pr_number} (after retry)")
-                    actions.append("ACTION_FLAG:SKIP_ANALYSIS")
-                    head = cmd.run_command(["git", "rev-parse", "HEAD"])
-                    record(RepairDisposition.APPLIED, resulting_head=head.stdout.strip() if head.success else "", synchronized=True)
-                else:
-                    logger.error(f"Failed to push updated branch after retry: {retry_push_result.stderr}")
-                    logger.error("Exiting application due to git push failure")
-                    sys.exit(1)
-        else:
-            # Merge conflict occurred, check if Jules PR
-            actions.append(f"Merge conflict detected for PR #{pr_number}")
-
-            if _is_jules_pr(pr_data):
-                actions.append(f"PR #{pr_number} is a Jules PR with merge conflicts. Requesting Jules to resolve it.")
-                try:
-                    from auto_coder.jules_client import JulesClient
-
-                    jules_client = JulesClient()
-                    session_id = _extract_session_id_from_pr_body(pr_data.get("body", ""))
-                    if session_id:
-
-                        def send_jules_conflict() -> PRRepairResult:
-                            # Keep the existing retirement admission immediately
-                            # before the provider mutation.
-                            if not _guard_outbound_jules_send(repo_name, config, session_id):
-                                reason = f"Blocked merge-conflict resolution request for PR #{pr_number}: session '{session_id}' belongs to a durably retired implementation slot (REQ-009)"
-                                return PRRepairResult(RepairDisposition.REFUSED, (reason,), reason=reason)
-                            prompt = render_prompt("pr.jules_merge_conflict_resolution")
-                            jules_client.send_message(session_id, prompt)
-                            return PRRepairResult(
-                                RepairDisposition.ACCEPTED_OR_UNCERTAIN,
-                                (f"Requested Jules to resolve merge conflict in session {session_id}",),
-                                attempt_started=True,
-                            )
-
-                        jules_repair = _dispatch_jules_repair(repo_name, pr_data, RepairKind.MERGE_CONFLICT, session_id, send_jules_conflict)
-                        actions.extend(jules_repair.actions)
-                        actions.repair_result = jules_repair
-                        # We return here so we don't proceed with LLM fixing this PR right now
-                        actions.append("ACTION_FLAG:SKIP_ANALYSIS")
-                        return actions
-                    else:
-                        actions.append(f"Jules PR #{pr_number} has merge conflicts but no session ID found. Cannot delegate.")
-                except Exception as e:
-                    actions.append(f"Error requesting Jules to resolve conflict: {e}")
-
-            # Dependency-bot PRs (Dependabot/Renovate) are never conflict-resolved:
-            # the bot recreates the PR against the updated base branch by itself.
-            if _is_dependabot_pr(pr_data):
-                actions.append(f"PR #{pr_number} is a dependency-bot PR with merge conflicts. Skipping conflict resolution.")
-                cmd.run_command(["git", "merge", "--abort"])
-                actions.append("ACTION_FLAG:SKIP_ANALYSIS")
-                record(RepairDisposition.REFUSED, reason=actions[-2])
-                return actions
-
-            reporting_client = github_client
-            if reporting_client is None:
-                try:
-                    reporting_client = GitHubClient.get_instance()
-                except Exception as exc:
-                    logger.warning(f"Could not initialize GitHub reporting for PR #{pr_number}: {exc}")
-            cloud_repair = _dispatch_cloud_conflict_repair(repo_name, pr_data, reporting_client)
-            if cloud_repair.disposition is RepairDisposition.DEFERRED:
-                actions.append(f"DEFERRED Claude merge-conflict repair for PR #{pr_number}: {cloud_repair.reason}")
-                actions.quota_deferred = True
-                actions.retry_not_before = cloud_repair.retry_not_before
-                actions.repair_result = cloud_repair
-                cmd.run_command(["git", "merge", "--abort"])
-                actions.append("ACTION_FLAG:SKIP_ANALYSIS")
-                return actions
-            if cloud_repair.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN:
-                actions.repair_result = cloud_repair
-                cmd.run_command(["git", "merge", "--abort"])
-                actions.extend(cloud_repair.actions)
-                actions.append(f"Delegated merge-conflict repair for PR #{pr_number} to its existing cloud session")
-                actions.append("ACTION_FLAG:SKIP_ANALYSIS")
-                return actions
-
-            if not _is_local_llm_pr(pr_data):
-                actions.repair_result = cloud_repair
-                actions.append(f"Cloud merge-conflict repair could not be delegated for PR #{pr_number}: " f"{cloud_repair.reason}; deferring conflict resolution.")
-                cmd.run_command(["git", "merge", "--abort"])
-                actions.append("ACTION_FLAG:SKIP_ANALYSIS")
-                return actions
-
-            # Use the common subroutine for conflict resolution
-            from .conflict_resolver import _perform_base_branch_merge_and_conflict_resolution, scan_conflict_markers
-
-            local_conflict_repair = _dispatch_local_conflict_repair(
-                repo_name,
-                pr_data,
-                lambda: _perform_base_branch_merge_and_conflict_resolution(
-                    pr_number,
-                    target_branch,
-                    config,
-                    pr_data,
-                    repo_name,
-                ),
-            )
-            actions.repair_result = local_conflict_repair
-
-            if local_conflict_repair.disposition is RepairDisposition.APPLIED:
-                actions.append(f"Successfully resolved merge conflicts for PR #{pr_number}")
-                actions.append(f"Pushed updated branch for PR #{pr_number}")
-                actions.append("ACTION_FLAG:SKIP_ANALYSIS")
-            else:
-                # Unresolved local conflicts are repair failures, not evidence
-                # that a read-only quality check rejected the merge.
-                remaining_conflicts = scan_conflict_markers()
-                if remaining_conflicts and not _is_local_llm_pr(pr_data):
-                    actions.append(f"LLM determined merge would degrade code quality for PR #{pr_number}, skipping merge attempt")
-                    actions.append("ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE")
-                else:
-                    actions.append(f"Failed to resolve merge conflicts for PR #{pr_number}")
-
-            # Preserve the provider/local operation facts while adding operation identity.
-            if actions.repair_result is not None:
-                actions.repair_result = replace(
-                    actions.repair_result,
-                    actions=tuple(actions),
-                    repository=repo_name,
-                    pr_number=pr_number,
-                    input_head=input_head,
-                    base_ref=target_branch,
-                )
-
-    except Exception as e:
-        actions.append(f"Error updating with base branch for PR #{pr_number}: {e}")
-        record(RepairDisposition.FAILED, reason=actions[-1])
-    finally:
-        if actions.repair_result is not None:
-            actions.repair_result = replace(
-                actions.repair_result,
-                actions=tuple(actions),
-                repository=repo_name,
-                pr_number=pr_number,
-                input_head=input_head,
-                base_ref=target_branch,
-            )
-
+    result = service.execute_base_update(request, pr_data, config, github_client)
+    actions = PRActionList(result.actions)
+    actions.repair_result = result.repair
+    actions.quota_deferred = result.quota_deferred
+    actions.retry_not_before = result.retry_not_before
     return actions
 
 
@@ -9694,7 +9514,12 @@ def _delegate_cloud_merge_conflict_repair_result(
         # This order avoids a journal/implementation-owner lock inversion.
         with file_lock(delivery_lock, timeout=0.0, reentrant=False):
             return _delegate_cloud_merge_conflict_repair_locked(repo_name, pr_data, github_client, resolved_origin=resolved_origin)
-    except (LockAcquisitionTimeout, OSError, RuntimeError) as exc:
+    except LockAcquisitionTimeout as exc:
+        retry_not_before = time.time() + 1.0
+        reason = f"cloud conflict delivery coordination is unavailable: {exc}"
+        logger.warning(reason)
+        return CloudConflictDelegationResult(reason=reason, deferred=True, retry_not_before=retry_not_before)
+    except (OSError, RuntimeError) as exc:
         reason = f"cloud conflict delivery coordination is unavailable: {exc}"
         logger.warning(reason)
         return CloudConflictDelegationResult(reason=reason)
@@ -10649,15 +10474,30 @@ def _handle_definitive_merge_rejection(
                 # REQ-007/REQ-009 (Issue #2147): guard + durably admit this
                 # outbound mutation to an existing Jules session before
                 # sending it.
-                if not _guard_outbound_jules_send(repo_name, config, session_id):
-                    logger.info(f"Blocked merge-conflict resolution request for PR #{pr_number}: session '{session_id}' " "belongs to a durably retired implementation slot (REQ-009)")
-                    _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.SKIPPED, {"effect": "merge-conflict", "backend": "jules", "reason": "retired implementation slot"})
-                    return False
-                prompt = render_prompt("pr.jules_merge_conflict_resolution")
-                jules_client.send_message(session_id, prompt)
-                logger.info(f"Requested Jules to resolve merge conflict in session {session_id}")
-                log_action(f"Requested Jules to resolve merge conflicts for PR #{pr_number}")
-                _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.ACCEPTED_HANDOFF, {"effect": "merge-conflict", "backend": "jules"})
+                request = BaseUpdateExecutionRequest(
+                    repo_name,
+                    pr_number,
+                    str(pr_info.get("head", {}).get("sha") or head_sha),
+                    str(pr_info.get("base", {}).get("ref") or config.MAIN_BRANCH),
+                    RepairOrigin.JULES.value,
+                )
+
+                def send_jules() -> PRRepairResult:
+                    if not _guard_outbound_jules_send(repo_name, config, session_id):
+                        reason = f"Blocked merge-conflict resolution request for PR #{pr_number}: session '{session_id}' belongs to a durably retired implementation slot (REQ-009)"
+                        return PRRepairResult(RepairDisposition.REFUSED, reason=reason)
+                    prompt = render_prompt("pr.jules_merge_conflict_resolution")
+                    jules_client.send_message(session_id, prompt)
+                    return PRRepairResult(RepairDisposition.ACCEPTED_OR_UNCERTAIN, attempt_started=True)
+
+                result = BaseUpdateConflictExecutionService().execute_conflict_repair(
+                    request,
+                    lambda: _dispatch_jules_repair(repo_name, pr_info, RepairKind.MERGE_CONFLICT, session_id, send_jules),
+                )
+                if result.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN:
+                    logger.info(f"Requested Jules to resolve merge conflict in session {session_id}")
+                    log_action(f"Requested Jules to resolve merge conflicts for PR #{pr_number}")
+                    _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.ACCEPTED_HANDOFF, {"effect": "merge-conflict", "backend": "jules"})
                 return False
             else:
                 logger.warning(f"Jules PR #{pr_number} has merge conflicts but no session ID found. Cannot delegate.")
@@ -10672,21 +10512,21 @@ def _handle_definitive_merge_rejection(
         _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.SKIPPED, {"effect": "merge-conflict", "reason": "dependency-bot PR"})
         return False
 
-    cloud_delegation = _delegate_cloud_merge_conflict_repair_result(repo_name, pr_info, client)
-    if cloud_delegation:
-        if cloud_delegation.accepted_action:
-            log_action(cloud_delegation.accepted_action)
+    cloud_repair = _dispatch_cloud_conflict_repair(repo_name, pr_info, client)
+    if cloud_repair.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN:
+        for action in cloud_repair.actions:
+            log_action(action)
         log_action(f"Delegated merge-conflict repair for PR #{pr_number} to its existing cloud session")
         _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.ACCEPTED_HANDOFF, {"effect": "merge-conflict", "backend": "cloud"})
         return False
 
-    if cloud_delegation.deferred or cloud_delegation.receipt_identity or cloud_delegation.task_id or cloud_delegation.provider:
-        logger.info(f"Cloud merge-conflict repair for PR #{pr_number} remains owned by {cloud_delegation.provider or 'cloud provider'}; waiting for reobservation")
-        _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.DEFERRED, {"effect": "merge-conflict", "backend": cloud_delegation.provider or "cloud", "reason": cloud_delegation.reason})
+    if cloud_repair.disposition is RepairDisposition.DEFERRED or cloud_repair.receipt_state is RepairFactState.AVAILABLE:
+        logger.info(f"Cloud merge-conflict repair for PR #{pr_number} remains provider-owned; waiting for reobservation")
+        _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.DEFERRED, {"effect": "merge-conflict", "backend": "cloud", "reason": cloud_repair.reason})
         if route_disposition is not None:
             route_disposition.outcome = PRProcessingOutcome.DEFERRED
-            route_disposition.reason = cloud_delegation.reason or "Cloud conflict repair requires reobservation"
-            route_disposition.retry_not_before = cloud_delegation.retry_not_before
+            route_disposition.reason = cloud_repair.reason or "Cloud conflict repair requires reobservation"
+            route_disposition.retry_not_before = cloud_repair.retry_not_before
         return False
 
     if not _resolve_pr_merge_conflicts(repo_name, pr_number, config):
@@ -10814,122 +10654,24 @@ def _get_allowed_merge_methods(repo_name: str) -> List[str]:
 
 @serialize_checkout
 def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: AutomationConfig) -> bool:
-    """Resolve merge conflicts for a PR by checking it out and merging with its base branch (not necessarily main)."""
+    """Execute definitive local conflict repair through the bounded service."""
+    pr_data: Dict[str, Any] = {"number": pr_number}
     try:
-        # Step 0: Clean up any existing git state
-        logger.info(f"Cleaning up git state before resolving conflicts for PR #{pr_number}")
+        token = GitHubClient.get_instance().token
+        api = get_ghapi_client(token)
+        owner, repo = repo_name.split("/")
+        pr_data = api.pulls.get(owner, repo, pr_number)
+    except Exception as exc:
+        # The operation retains its established lookup/fallback behavior.  This
+        # observation only enriches the immutable service identity when usable.
+        logger.debug(f"Could not pre-observe PR #{pr_number} conflict target: {exc}")
 
-        # Reset any uncommitted changes
-        reset_result = cmd.run_command(["git", "reset", "--hard"])
-        if not reset_result.success:
-            logger.warning(f"Failed to reset git state: {reset_result.stderr}")
+    base_ref = str(pr_data.get("base", {}).get("ref") or config.MAIN_BRANCH)
+    expected_head = str(pr_data.get("head", {}).get("sha") or "")
+    request = BaseUpdateExecutionRequest(repo_name, pr_number, expected_head, base_ref, "definitive-local-conflict")
+    service = BaseUpdateConflictExecutionService()
 
-        # Clean untracked files
-        clean_result = cmd.run_command(["git", "clean", "-fd"])
-        if not clean_result.success:
-            logger.warning(f"Failed to clean untracked files: {clean_result.stderr}")
-
-        # Abort any ongoing merge
-        abort_result = cmd.run_command(["git", "merge", "--abort"])
-        if abort_result.success:
-            logger.info("Aborted ongoing merge")
-
-        # Step 1: Get PR details to determine the target base branch and the author
-        pr_data = None
-        try:
-            from auto_coder.util.gh_cache import get_ghapi_client
-
-            token = GitHubClient.get_instance().token
-            api = get_ghapi_client(token)
-            owner, repo = repo_name.split("/")
-
-            pr_data = api.pulls.get(owner, repo, pr_number)
-            base_branch = pr_data.get("base", {}).get("ref", config.MAIN_BRANCH)
-        except Exception as e:
-            logger.warning(f"Failed to get PR #{pr_number} details via GhApi: {e}")
-            base_branch = config.MAIN_BRANCH
-
-        # Dependency-bot PRs (Dependabot/Renovate) are never conflict-resolved:
-        # the bot recreates the PR against the updated base branch by itself.
-        if pr_data is not None and _is_dependabot_pr(pr_data):
-            logger.info(f"Skipping merge conflict resolution for dependency-bot PR #{pr_number}")
-            return False
-
-        # Step 2: Checkout the PR branch
-        logger.info(f"Checking out PR #{pr_number} to resolve merge conflicts")
-        # Use reusable _checkout_pr_branch which uses direct git commands
-        checkout_success = _checkout_pr_branch(repo_name, {"number": pr_number}, config)
-
-        if not checkout_success:
-            logger.error(f"Failed to checkout PR #{pr_number}")
-            return False
-
-        # Step 3: Fetch the latest base branch
-        logger.info(f"Fetching latest {base_branch} branch")
-        fetch_result = cmd.run_command(["git", "fetch", "origin", base_branch])
-
-        if not fetch_result.success:
-            logger.error(f"Failed to fetch {base_branch} branch: {fetch_result.stderr}")
-            return False
-
-        # Step 4: Attempt to merge base branch
-        logger.info(f"Merging refs/remotes/origin/{base_branch} into PR #{pr_number}")
-        merge_result = cmd.run_command(["git", "merge", f"refs/remotes/origin/{base_branch}"])
-
-        if merge_result.success:
-            # No conflicts, push the updated branch using centralized helper with retry
-            logger.info(f"Successfully merged {base_branch} into PR #{pr_number}, pushing changes")
-            push_result = git_push()
-
-            if push_result.success:
-                logger.info(f"Successfully pushed updated branch for PR #{pr_number}")
-                return True
-            else:
-                # Push failed - try one more time after a brief pause
-                logger.warning(f"First push attempt failed: {push_result.stderr}, retrying...")
-                import time
-
-                time.sleep(2)
-                retry_push_result = git_push()
-                if retry_push_result.success:
-                    logger.info(f"Successfully pushed updated branch for PR #{pr_number} (after retry)")
-                    return True
-                else:
-                    logger.error(f"Failed to push updated branch after retry: {retry_push_result.stderr}")
-                    return False
-        else:
-            # Merge conflicts detected, use LLM to resolve them
-            logger.info(f"Merge conflicts detected for PR #{pr_number}, using LLM to resolve")
-
-            # Get conflict information
-            conflict_info = _get_merge_conflict_info()
-
-            # Use LLM to resolve conflicts
-            resolve_actions = resolve_merge_conflicts_with_llm(
-                {**(pr_data or {}), "number": pr_number, "base_branch": base_branch},
-                conflict_info,
-                config,
-                repo_name,
-            )
-
-            # Log the resolution actions
-            for action in resolve_actions:
-                logger.info(f"Conflict resolution action: {action}")
-
-            # Check if conflicts were resolved successfully
-            status_result = cmd.run_command(["git", "status", "--porcelain"])
-
-            if resolve_actions.disposition is ConflictPublicationDisposition.APPLIED and status_result.success and not status_result.stdout.strip():
-                logger.info(f"Merge conflicts resolved for PR #{pr_number}")
-                get_trace_logger().log("Conflict Resolution", f"Resolved merge conflicts for PR #{pr_number}", item_type="pr", item_number=pr_number)
-                return True
-            else:
-                logger.error(f"Failed to resolve merge conflicts for PR #{pr_number}")
-                return False
-
-    except Exception as e:
-        logger.error(f"Error resolving merge conflicts for PR #{pr_number}: {e}")
-        return False
+    return service.execute_conflict_repair(request, config=config).disposition is RepairDisposition.APPLIED
 
 
 def _fix_pr_issues_with_testing(
