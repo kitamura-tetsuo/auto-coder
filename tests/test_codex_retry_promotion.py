@@ -23,10 +23,15 @@ from auto_coder.implementation_retirement import (
     SessionTerminalState,
 )
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
-from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
+from auto_coder.issue_dispatch import CandidateHandoff, DispatchOutcome, IssueAttemptIdentity, IssueDispatchGuard
 from auto_coder.issue_local_job import IssueLocalJobAdapter
-from auto_coder.issue_processor import _acknowledge_retry_projection, _process_issue_codex_cloud_mode
+from auto_coder.issue_processor import (
+    _acknowledge_retry_projection,
+    _dispatch_issue_candidates,
+    _process_issue_codex_cloud_mode,
+)
 from auto_coder.issue_stage_routing import ImplementationRetryRequest, IssueStageRoutingStore
+from auto_coder.llm_backend_config import LLMBackendConfiguration
 from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore
 from auto_coder.local_job_runner import LocalJobRunner
 from auto_coder.retry_dispatch import RetryDispatchRepository
@@ -926,6 +931,61 @@ def test_unrecognized_conflict_retains_accepted_receipt_as_incomplete(mock_clien
     assert handoff.external_id == "task-new"
     assert handoff.projection_disposition == "accepted-tracking-incomplete"
     assert manager.read_bindings_strict()["2223"].task_id == "unknown-racer"
+
+
+@patch("auto_coder.codex_cloud_client.CodexCloudClient")
+def test_ordinary_retry_dispatch_prefers_exact_receipt_over_predecessor_pointer(mock_client_type, tmp_path, monkeypatch):
+    """The logical retry result and replay retain T2 when CSV still names T1."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    alias = "codex-alias"
+    manager = CloudManager("owner/repo")
+    assert manager.add_session(2223, "task-predecessor", provider="codex-cloud", backend_name=alias)
+    authority = _authority()
+    llm_config = LLMBackendConfiguration.load_from_dict({"backends": {alias: {"backend_type": "codex-cloud", "model": "gpt-test"}, "local-fallback": {"backend_type": "codex", "model": "local"}}})
+    client = mock_client_type.return_value
+    client.environment_id = "environment-new"
+    client.submit_task.return_value = CodexSubmissionResult(CodexSubmissionOutcome.ACCEPTED, "task-retry-new")
+
+    with (
+        patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config),
+        patch("auto_coder.codex_cloud_client.get_llm_config", return_value=llm_config),
+        patch("auto_coder.issue_processor.get_current_attempt", return_value=4),
+        patch("auto_coder.issue_processor.increment_attempt", return_value=5),
+        patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+        patch.object(CloudManager, "_write_bindings", side_effect=OSError("projection unavailable")),
+        patch("auto_coder.cli_helpers.build_backend_manager") as fallback,
+    ):
+        first = _dispatch_issue_candidates(
+            "owner/repo",
+            {"number": 2223, "title": "Retry safely", "body": "", "labels": []},
+            AutomationConfig(),
+            MagicMock(),
+            [alias, "local-fallback"],
+            retry_authority=authority,
+        )
+        replay = _dispatch_issue_candidates(
+            "owner/repo",
+            {"number": 2223, "title": "Retry safely", "body": "", "labels": []},
+            AutomationConfig(),
+            MagicMock(),
+            [alias, "local-fallback"],
+            retry_authority=authority,
+        )
+
+    handoff = RetryDispatchRepository("owner/repo").get(authority.request_id)
+    assert handoff is not None
+    assert (handoff.attempt_id, handoff.numeric_attempt, handoff.external_id) == (authority.attempt_id, 5, "task-retry-new")
+    assert handoff.tracking_complete is False
+    assert first.result.identity.implementation_attempt_id == authority.attempt_id
+    assert first.result.outcome is DispatchOutcome.REMOTE_ACCEPTED
+    assert first.result.provider_reference == "task-retry-new"
+    assert first.result.tracking_complete is False
+    assert replay.result.provider_reference == first.result.provider_reference
+    assert replay.result.claim_incarnation == first.result.claim_incarnation
+    assert replay.result.tracking_complete is False
+    assert manager.get_binding(2223) == CloudTaskBinding("codex-cloud", "task-predecessor", alias)
+    assert client.submit_task.call_count == 1
+    fallback.assert_not_called()
 
 
 @patch("auto_coder.codex_cloud_client.CodexCloudClient")
