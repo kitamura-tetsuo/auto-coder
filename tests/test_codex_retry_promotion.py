@@ -24,6 +24,7 @@ from auto_coder.implementation_retirement import (
 )
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
+from auto_coder.issue_local_job import IssueLocalJobAdapter
 from auto_coder.issue_processor import _acknowledge_retry_projection, _process_issue_codex_cloud_mode
 from auto_coder.issue_stage_routing import ImplementationRetryRequest, IssueStageRoutingStore
 from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore
@@ -32,6 +33,7 @@ from auto_coder.retry_dispatch import RetryDispatchRepository
 from auto_coder.util.gh_cache import OpenGitHubEntities
 from auto_coder.util.github_request_outcome import GitHubApiOutcome
 
+from .test_local_issue_owner_recovery import retained_result
 from .test_pending_work_resumption import _github_error
 
 
@@ -355,7 +357,7 @@ def test_startup_rediscovers_unfinished_receipt_through_ordinary_scheduler(mock_
 
 
 @patch("auto_coder.codex_cloud_client.CodexCloudClient")
-def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_retained_state(mock_client_type, tmp_path, monkeypatch):
+def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_retained_state(mock_client_type, retained_result, tmp_path, monkeypatch):
     """REQ-006: exercise recovery ordering through the real engine entrypoint."""
     monkeypatch.setenv("HOME", str(tmp_path))
     authority = _authority("request-composed-startup")
@@ -380,9 +382,10 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
     )
     assert CloudManager("owner/repo").add_session(2223, "task-composed", "codex-cloud", "codex-alias")
 
-    jobs = LocalJobStore()
+    retained_engine, slots, jobs, _owner, _execution, checkpoint, _remote, _snapshot = retained_result
+    own_job = checkpoint.job_id
 
-    def retained_result(repository: str, issue: int, attempt: str) -> str:
+    def foreign_retained_result(repository: str, issue: int, attempt: str) -> str:
         owner, repo = repository.split("/", 1)
         identity = IssueAttemptIdentity(owner, repo, issue, attempt)
         guard = IssueDispatchGuard(tmp_path / f"{attempt}.sqlite3")
@@ -397,8 +400,7 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
         assert jobs.get(accepted.job_id).state is LocalJobState.RESULT_RECORDED
         return accepted.job_id
 
-    own_job = retained_result("owner/repo", 61, "own-retained")
-    foreign_job = retained_result("other/repo", 62, "foreign-retained")
+    foreign_job = foreign_retained_result("other/repo", 62, "foreign-retained")
     reopened = LocalJobStore(jobs.path)
 
     checkpoint_entered = Event()
@@ -415,9 +417,11 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
             assert release_checkpoint.wait(5)
             return OpenGitHubEntities()
 
-    github = CheckpointGithub()
+    github = retained_engine.github
+    github.get_open_entities_strict.side_effect = CheckpointGithub().get_open_entities_strict
     engine = AutomationEngine(github, config=AutomationConfig())
     engine.local_job_store = reopened
+    engine.implementation_slots = slots
     scheduled_identities: list[tuple[str, int]] = []
     original_schedule = engine._schedule_codex_retry_handoff
 
@@ -430,8 +434,13 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
     monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda _repository: pending)
     monkeypatch.setattr("auto_coder.automation_engine.install_asyncio_diagnostics", lambda _loop: None)
     monkeypatch.setattr("auto_coder.automation_engine.get_health_monitor", MagicMock())
-    monkeypatch.setattr(engine, "_resume_local_issue_publications", lambda *_args, **_kwargs: ())
     monkeypatch.setattr(engine, "_enqueue_pending_invalidations", AsyncMock())
+    monkeypatch.setattr(engine, "_get_authoritative_parent_number", lambda *_args: None)
+
+    def provider_reentry_forbidden(*_args, **_kwargs):
+        raise AssertionError("retained local result must not re-enter the provider")
+
+    monkeypatch.setattr(IssueLocalJobAdapter, "invoke", provider_reentry_forbidden)
 
     producer_entered = asyncio.Event()
     worker_entries = 0
@@ -466,7 +475,10 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
         assert not producer_entered.is_set()
         assert worker_entries == 0
         assert issue_poll_count == 0
-        assert reopened.get(own_job).state is LocalJobState.RESULT_RECORDED
+        settled = reopened.get(own_job)
+        assert settled is not None and settled.state is LocalJobState.SETTLED
+        publication = tuple(reopened.get_effect(own_job, settled.execution_incarnation, name) for name in ("commit", "push", "pr", "association"))
+        assert all(effect is not None and effect.state == "completed" for effect in publication)
         assert reopened.get(foreign_job).state is LocalJobState.RESULT_RECORDED
         assert engine.pending_work_scheduler is not None
         assert len(engine.pending_work_scheduler._handlers) == 6
@@ -492,6 +504,9 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
             await asyncio.sleep(0.01)
         assert worker_entries == 2
         assert issue_poll_count > 0
+        settled_after = reopened.get(own_job)
+        assert settled_after is not None and settled_after.state is LocalJobState.SETTLED
+        assert tuple(reopened.get_effect(own_job, settled_after.execution_incarnation, name) for name in ("commit", "push", "pr", "association")) == publication
         assert reopened.get(foreign_job).state is LocalJobState.RESULT_RECORDED
         completed = RetryDispatchRepository("owner/repo").get(authority.request_id)
         assert completed is not None and completed.handoff_complete
