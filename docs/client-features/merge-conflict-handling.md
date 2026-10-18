@@ -8,6 +8,11 @@ interpreting action strings or selecting a fallback provider. Existing Git,
 private-workspace, cloud journal and provider producers retain their locks and
 effect ownership.
 
+The public PR handler consumes the returned disposition and separate receipt,
+resulting-head, and synchronization facts. Diagnostic action strings remain
+visible to operators but cannot independently mark remediation complete or
+authorize merge.
+
 Local LLM PRs (including the explicit `auto-coder:local-llm` marker) resolve
 conflicts in one editable LLM execution without a separate analysis-only call.
 Before invoking the backend, the controller stages the current merge files,

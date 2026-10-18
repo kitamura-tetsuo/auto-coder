@@ -1,6 +1,6 @@
 # Current responsibility map
 
-Source snapshot: **`0769b84eaabcf2d0c6a80f6c62660bd179003e02`** (2026-10-18 UTC). [Scope and notation](README.md).
+Source snapshot: **`2c5624a`** (2026-10-18 UTC). [Scope and notation](README.md).
 
 This map identifies current owners and consumers. It is not a proposal to make every row a new service, queue or database.
 
@@ -16,35 +16,38 @@ This map identifies current owners and consumers. It is not a proposal to make e
 | Issue result publication | `issue_job_finalizer.py` | Exact artifact, continuation status and reconciled push/PR effects | No model rerun for publication recovery; associate only matching owner |
 | Local PR review correction | `pr_correction_job.py` | PR head, route, reserved allowance, repair claim and result | Job settlement versus independent repair validation |
 | CI observation conversion | `util/github_action.py` | Current-head evidence and in-progress/success classification | Shared consumers include candidate filtering and PR processing |
-| PR progress, repair and merge decisions | `pr_processor.py` | CI, mergeability, origin, review and cleanup evidence | Several independently durable authorities meet in one large module |
+| PR progress, repair and merge decisions | `pr_progress_policy.py`, `pr_processor.py` | Typed next route plus CI, mergeability, origin, review and cleanup evidence | Policy selects an existing executor; independently durable authorities still meet in orchestration |
+| Synchronous local CI repair execution | `local_ci_repair_execution.py`, wired by `pr_processor.py` | Exact-head authority, focused verification and candidate publication facts | A published candidate is not current-head CI or merge authority |
+| Base update and conflict execution | `base_update_execution.py`, wired by `pr_processor.py` | Existing Git/cloud producers and typed repair result | Preserve provider receipts, Git synchronization facts and actual PR base |
+| PR repair operation adapter | `pr_repair_dispatch.py`, wired by `pr_processor.py` | Immutable repair request and typed result | Does not choose provider, infer success from action text or own effects |
 | Two-tier review cycle | `pr_review_cycle.py`, `two_tier_pr_gate.py` | Claims, rounds, findings, publication and H/B/M/P completion | Reviewer result is not publication confirmation |
 
 ## Where responsibilities currently overlap
 
-`IssueRuntimeComposition` owns assembly rather than domain state, and `IssueImplementationService` owns orchestration rather than provider policy. The engine is still not only a queue reader: it also reconciles lifecycle state and filters PR candidates using CI. The PR processor is not only a merge executor: it performs CI interpretation, provider continuation, local repair, review application and cleanup coordination. This overlap is visible in the empty-CI reachability problem, where the candidate collector can prevent the handler from choosing conflict remediation.
+`IssueRuntimeComposition` owns assembly rather than domain state, and `IssueImplementationService` owns orchestration rather than provider policy. The engine is still not only a queue reader: it also reconciles lifecycle state and filters PR candidates using CI. The PR processor remains the composition point rather than only a merge executor: it invokes the extracted progress decision and repair executors, then coordinates provider continuation, review application and cleanup. This overlap is visible in the empty-CI reachability problem, where the candidate collector can prevent the handler from choosing conflict remediation.
 
 Local asynchronous execution has already been extracted for Issue implementation and PR review correction. Treating those components as absent would create an unnecessary rewrite. Equally, their existence does not mean the CI/conflict paths have adopted the same lifecycle.
 
 Publication and ownership are also split. An accepted provider task, a saved model result, a pushed branch and an associated PR can become durable at different times. No inspected call chain establishes one transaction across all of them.
 
-## Candidate extraction boundaries, not approved target design
+## Adopted bounded seams
 
-A useful first boundary is a PR progress decision that consumes explicit observations and produces a next action without redefining their producers. Another is an adapter boundary between a repair request and provider/local execution, preserving existing receipt and recovery semantics. Cleanup/retirement should remain a separate responsibility rather than being hidden in a generic successful-result handler.
+`pr_progress_policy` consumes explicit observations and selects an existing next executor without redefining evidence producers. `pr_repair_dispatch` carries the already-selected origin into synchronous local CI, base/conflict, and supported cloud execution, while the concrete producers retain receipts, Git work, and recovery semantics. Cleanup and retirement remain separate from a successful repair result.
 
-These are hypotheses to evaluate with the [test probes](refactoring-seams-and-tests.md), not new requirements for all providers. An event bus, database replacement, global state machine or security subsystem is not implied by this map.
+These seams are covered by the maintained [test probes](refactoring-seams-and-tests.md); they do not promise a common asynchronous lifecycle for every provider. An event bus, database replacement, global state machine or security subsystem is not implied by this map.
 
 Sources: [engine][engine], [implementation worker][worker], [Issue integration][issue], [dispatch][dispatch], [job state][jobs], [runner][runner], [local executor][local], [finalizer][finalizer], [correction][correction], [CI][ci], [PR processor][pr], [review cycle][cycle], [two-tier gate][gate].
 
-[engine]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/automation_engine.py
-[worker]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/issue_implementation_worker.py
-[issue]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/issue_processor.py
-[dispatch]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/issue_dispatch.py
-[jobs]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/local_job_handoff.py
-[runner]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/local_job_runner.py
-[local]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/issue_local_job.py
-[finalizer]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/issue_job_finalizer.py
-[correction]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/pr_correction_job.py
-[ci]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/util/github_action.py
-[pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/pr_processor.py
-[cycle]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/pr_review_cycle.py
-[gate]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/two_tier_pr_gate.py
+[engine]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/automation_engine.py
+[worker]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/issue_implementation_worker.py
+[issue]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/issue_processor.py
+[dispatch]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/issue_dispatch.py
+[jobs]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/local_job_handoff.py
+[runner]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/local_job_runner.py
+[local]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/issue_local_job.py
+[finalizer]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/issue_job_finalizer.py
+[correction]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/pr_correction_job.py
+[ci]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/util/github_action.py
+[pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/pr_processor.py
+[cycle]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/pr_review_cycle.py
+[gate]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/two_tier_pr_gate.py

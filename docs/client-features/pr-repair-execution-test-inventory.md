@@ -1,7 +1,7 @@
 # PR repair execution test inventory
 
-The permanent `pr_repair_contract` pytest group characterizes the supported
-PR-repair origins at revision `007e97cb8be80ccc98e8c4a2604b3b084c23d156`.
+The permanent `pr_repair_contract` pytest group verifies the supported
+PR-repair origins inspected at revision `2c5624a`.
 It is a controlled production-boundary regression suite, not a live-provider
 E2E claim. Run it through the repository test wrapper:
 
@@ -44,8 +44,8 @@ as a successful repair. Local test success, provider request acceptance, action
 wording, and `ACTION_FLAG` presentation artifacts do not establish current-head
 CI success or permission to merge.
 
-The action strings and flags are recorded because production still consumes
-some of them. Their removal belongs to later extraction work. This inventory
-does not introduce a new local job type, cloud journal, provider policy, test
+Some action strings and flags remain presentation or legacy caller surfaces,
+but typed operation results now own repair control flow. This inventory does
+not introduce a new local job type, cloud journal, provider policy, test
 exclusion, skip/xfail, or CI threshold change. Possible redesigns of terminal
 push failure and unreachable manual workflow dispatch are out of scope.
