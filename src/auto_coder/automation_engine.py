@@ -7598,11 +7598,7 @@ class AutomationEngine:
                             label_context=should_process,
                             implementation_slots=implementation_slots,
                             retry_authority=retry_authority,
-                            # Both daemon invalidations and explicit commands
-                            # must reach the same lazy durable authority.  A
-                            # daemon may process an invalidation before
-                            # start_automation has assembled its runner.
-                            local_job_store=self._get_local_job_store(),
+                            local_job_store=(self._get_local_job_store() if explicit_only or self.local_job_store is not None else None),
                             implementation_execution_id=implementation_slots.current_execution_id(ImplementationOwner("issue", item_number)) or "",
                         )
                         result.actions = dispatch.actions
@@ -8164,6 +8160,12 @@ class AutomationEngine:
         Returns:
             Processing result
         """
+        # Daemon intake may run before start_automation has assembled the
+        # repository runner. Establish the same lazy durable authority before
+        # dispatch routing decides between handoff and synchronous execution.
+        if candidate.type == "issue":
+            self._get_local_job_store()
+
         # Check if Jules mode should be used based on configuration
         if self.config.jules_mode is not None:
             jules_mode = self.config.jules_mode
