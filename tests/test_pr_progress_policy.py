@@ -2,6 +2,8 @@ from dataclasses import replace
 
 import pytest
 
+pytestmark = pytest.mark.pr_repair_contract
+
 from auto_coder.ci_observation import (
     CIConclusion,
     CIObservationSnapshot,

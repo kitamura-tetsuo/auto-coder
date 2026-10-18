@@ -1,6 +1,6 @@
 # Auto-Coder: as-is architecture
 
-Source snapshot: **`0769b84eaabcf2d0c6a80f6c62660bd179003e02`** (2026-10-18 UTC).
+Source snapshot: **`007e97cb8be80ccc98e8c4a2604b3b084c23d156`** (2026-10-18 UTC).
 
 These documents describe the inspected production code, not a target architecture or an implementation contract. All source links are pinned to the snapshot above. The diagrams deliberately include blocked, uncertain and partially completed paths; a drawn path is not evidence that a live provider integration succeeds.
 
@@ -33,13 +33,13 @@ Participants are responsibility groupings, not necessarily separate processes. A
 
 The normal Issue path now sends implementation-lane, refill, explicit-target, and stale-session recovery entries through `IssueImplementationService`. Ordinary provider selection is assembled by `OrdinaryIssueAdapterComposition`, while startup and accepted-retry/local-job recovery are assembled once per repository by `IssueRuntimeComposition`. Local Issue implementation and local PR review correction can transfer execution to durable jobs; local CI repair and conflict repair remain separate.
 
-Explicit-local review routing does not simply override every cloud association: an exact-PR cloud binding plus an explicit-local marker produces a conflict. `KNOWN_EMPTY` CI evidence is still converted to an in-progress result; candidate filtering can therefore prevent a PR from reaching the handler's conflict branch. These are current observations, not fixes introduced by this documentation update.
+Explicit-local review routing does not simply override every cloud association: an exact-PR cloud binding plus an explicit-local marker produces a conflict. `KNOWN_EMPTY` CI evidence remains non-passing, but candidate filtering admits an affirmatively conflicting PR when remediation is enabled so the handler can reach conflict repair. Other empty-CI candidates still wait. These are current observations, not fixes introduced by this documentation update.
 
 Model completion, job settlement, PR publication, effective review acceptance, observed merge and slot release remain distinct boundaries. In particular, accepted findings can prevent approval despite a raw reviewer PASS, and a successful `gh pr merge --auto` command need not mean GitHub has already merged the PR.
 
 ## Evidence and maintenance
 
-This refresh is based on static inspection at revision `0769b84eaabcf2d0c6a80f6c62660bd179003e02` and the maintained focused integration groups. Controlled integration coverage is not live production-GitHub, paid-provider, or operational deployment evidence; test probes in the refactoring document remain proposals unless explicitly identified as maintained tests.
+This refresh is based on static inspection at revision `007e97cb8be80ccc98e8c4a2604b3b084c23d156` and the maintained focused integration groups. Controlled integration coverage is not live production-GitHub, paid-provider, or operational deployment evidence; test probes in the refactoring document remain proposals unless explicitly identified as maintained tests.
 
 When refreshing a page, update its source snapshot, recheck its callers as well as its helpers, and retain the distinction between observed behavior and proposed changes. Do not repin old line numbers mechanically. Check both the daemon origin and explicit processing when reachability differs. Source symbols are listed beside pinned file links so they remain searchable without misleading line anchors.
 
@@ -47,8 +47,8 @@ The default project scope is accidental workspace/result corruption within trust
 
 Sources: [scheduler and entry points][engine], [Issue dispatch][dispatch], [local job state][jobs], [PR orchestration][pr], [CI evidence conversion][ci].
 
-[engine]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/automation_engine.py
-[dispatch]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/issue_dispatch.py
-[jobs]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/local_job_handoff.py
-[pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/pr_processor.py
-[ci]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/util/github_action.py
+[engine]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/automation_engine.py
+[dispatch]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/issue_dispatch.py
+[jobs]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/local_job_handoff.py
+[pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/pr_processor.py
+[ci]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/util/github_action.py

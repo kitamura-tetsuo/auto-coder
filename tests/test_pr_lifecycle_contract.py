@@ -41,6 +41,7 @@ from auto_coder.pr_processor import (
     PRReviewCoordinationResult,
     TwoTierGateInputs,
     _handle_pr_merge,
+    _start_mergeability_remediation,
 )
 from auto_coder.pr_repair_dispatch import PRRepairResult, RepairDisposition, RepairFactState, RepairOrigin
 from auto_coder.pr_review_cycle import VERDICT_FINDINGS, ContractSnapshot, Finding, PrReviewCycleRepository, RoundProvenance, StrongPolicyIdentity
@@ -49,7 +50,7 @@ from auto_coder.util.gh_cache import PullRequestRepairMetadata, ReviewThread, Re
 from auto_coder.util.github_action import GitHubActionsStatusResult, _check_github_actions_status
 from auto_coder.utils import CommandResult
 
-pytestmark = pytest.mark.pr_lifecycle_contract
+pytestmark = [pytest.mark.pr_lifecycle_contract, pytest.mark.pr_repair_contract]
 
 REPOSITORY = "owner/repo"
 PR_NUMBER = 2501
@@ -266,6 +267,84 @@ def test_public_conflict_facade_preserves_typed_remediation_result(
     assert status.retry_not_before == retry_not_before
     assert status.error == ("typed reason" if disposition is RepairDisposition.FAILED else None)
     merge.assert_not_called()
+
+
+@pytest.mark.parametrize("publication", ["not-needed", "succeeds", "fails-twice"])
+def test_base_update_publication_result_reaches_remediation_consumer(
+    tmp_path,
+    monkeypatch,
+    _use_real_commands,
+    publication,
+):
+    """REQ-002: real base-update publication controls remediation completion."""
+    repository = tmp_path / "repository"
+    remote = tmp_path / "remote.git"
+    repository.mkdir()
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "init", "-b", "main"], cwd=repository, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.com"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "Tests"], cwd=repository, check=True)
+    (repository / "shared.txt").write_text("common\n", encoding="utf-8")
+    subprocess.run(["git", "add", "shared.txt"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-m", "common"], cwd=repository, check=True, capture_output=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=repository, check=True)
+    subprocess.run(["git", "push", "-u", "origin", "main"], cwd=repository, check=True, capture_output=True)
+    subprocess.run(["git", "checkout", "-b", "feature"], cwd=repository, check=True, capture_output=True)
+    (repository / "feature.txt").write_text("feature\n", encoding="utf-8")
+    subprocess.run(["git", "add", "feature.txt"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-m", "feature"], cwd=repository, check=True, capture_output=True)
+    subprocess.run(["git", "push", "-u", "origin", "feature"], cwd=repository, check=True, capture_output=True)
+
+    if publication != "not-needed":
+        subprocess.run(["git", "checkout", "main"], cwd=repository, check=True, capture_output=True)
+        (repository / "base.txt").write_text("new base\n", encoding="utf-8")
+        subprocess.run(["git", "add", "base.txt"], cwd=repository, check=True)
+        subprocess.run(["git", "commit", "-m", "base advance"], cwd=repository, check=True, capture_output=True)
+        subprocess.run(["git", "push", "origin", "main"], cwd=repository, check=True, capture_output=True)
+        subprocess.run(["git", "checkout", "feature"], cwd=repository, check=True, capture_output=True)
+
+    monkeypatch.chdir(repository)
+    api = MagicMock()
+    api.pulls.get.return_value = {
+        "number": PR_NUMBER,
+        "body": "Closes #2501",
+        "head": {"ref": "feature", "sha": H1},
+        "base": {"ref": "main"},
+    }
+    failed_push = CommandResult(False, "", "publication rejected", 1)
+    successful_push = CommandResult(True, "", "", 0)
+    push_result = successful_push if publication == "succeeds" else failed_push
+
+    with (
+        patch("auto_coder.pr_processor.check_pr_repair_exhaustion", return_value=None),
+        patch("auto_coder.pr_processor.GitHubClient.get_instance", return_value=MagicMock(token="controlled-token")),
+        patch("auto_coder.pr_processor.get_ghapi_client", return_value=api),
+        patch("auto_coder.pr_processor._checkout_pr_branch", return_value=True),
+        patch("auto_coder.pr_processor.BranchManager", return_value=nullcontext()),
+        patch("auto_coder.pr_processor.git_push", return_value=push_result) as publish,
+        patch("auto_coder.pr_processor.time.sleep"),
+        patch("auto_coder.pr_processor._record_pr_stage") as record_stage,
+    ):
+        if publication == "fails-twice":
+            with pytest.raises(SystemExit) as terminal:
+                _start_mergeability_remediation(PR_NUMBER, "dirty", REPOSITORY)
+            assert terminal.value.code == 1
+            assert publish.call_count == 2
+            assert not any(call.args[3].value == "completed" for call in record_stage.call_args_list)
+            return
+
+        actions = _start_mergeability_remediation(PR_NUMBER, "dirty", REPOSITORY)
+
+    if publication == "not-needed":
+        publish.assert_not_called()
+        assert any("is up to date with main branch" in action for action in actions)
+        assert not any("Mergeability remediation completed" in action for action in actions)
+        assert "ACTION_FLAG:SKIP_ANALYSIS" not in actions
+    else:
+        publish.assert_called_once()
+        assert any("Pushed updated branch" in action for action in actions)
+        assert f"Mergeability remediation completed for PR #{PR_NUMBER}" in actions
+        assert "ACTION_FLAG:SKIP_ANALYSIS" in actions
 
 
 def _run_ci_consumer(snapshot, *, remote_head=H1, thread_state=None, body="Fixes #99", ledger=None):

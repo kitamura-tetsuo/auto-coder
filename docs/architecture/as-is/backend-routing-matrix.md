@@ -1,6 +1,6 @@
 # Backend routing and execution-path matrix
 
-Source snapshot: **`0769b84eaabcf2d0c6a80f6c62660bd179003e02`** (2026-10-18 UTC). [Scope and notation](README.md).
+Source snapshot: **`007e97cb8be80ccc98e8c4a2604b3b084c23d156`** (2026-10-18 UTC). [Scope and notation](README.md).
 
 Here "local" describes the controller-side execution/repair route or explicit-local marker. It does not, by itself, prove that model weights run on local hardware: a locally invoked client can use a configured inference transport. Model hosting, execution lifecycle and provider task ownership are different axes.
 
@@ -10,7 +10,7 @@ Here "local" describes the controller-side execution/repair route or explicit-lo
 | --- | --- | --- | --- |
 | New Issue implementation | Common dispatch normally accepts an `ISSUE_IMPLEMENTATION` durable job; executor and finalizer are separate | Provider adapters use their own submission/receipt tracking | Existing ownership is reconciled before choosing a new backend |
 | Existing PR review correction | Explicit-local route can accept `PR_REVIEW_CORRECTION` with captured head and reserved repair allowance | Authorized provider continuation through the PR route | Explicit-local plus an exact-PR cloud binding is `CONFLICT` |
-| PR CI failure | `_fix_pr_ci_with_local_llm` and related worktree/test/Actions path | Codex follow-up and provider-specific active-task handling | Not a generic local-job kind; origin, auto-fix and CI gates affect reachability |
+| PR CI failure | `_fix_pr_issues_with_testing` performs focused verification, then `_submit_ci_repair_candidate` commits and publishes | Codex follow-up and provider-specific active-task handling | A synchronized candidate still awaits full current-head CI; this is not a generic local-job kind |
 | PR conflict/base update | `_start_mergeability_remediation` and `_update_with_base_branch` participate in repair | Applicable provider-specific continuation/remediation branches | Do not infer parity across every provider from one helper name |
 | Local result publication | Issue finalizer checks artifact, non-force push, exact PR and association | Remote provider owns its task-specific implementation/publication behavior | Model exit alone is not confirmed publication |
 | Independent PR validation | Pinned-head review and accepted-findings/two-tier gates | Reviewer backend selection can be separate from implementation backend | Implementing a repair does not approve that repair |
@@ -41,9 +41,9 @@ The existence of a CI/conflict repair function does not prove a complete Issue-t
 
 Sources: [Issue policy/adapters][dispatch], [local jobs][jobs], [local executor][local], [Issue publication][finalizer], [PR routing and CI/conflict branches][pr], [local review correction][correction].
 
-[dispatch]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/issue_dispatch.py
-[jobs]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/local_job_handoff.py
-[local]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/issue_local_job.py
-[finalizer]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/issue_job_finalizer.py
-[pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/pr_processor.py
-[correction]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/pr_correction_job.py
+[dispatch]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/issue_dispatch.py
+[jobs]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/local_job_handoff.py
+[local]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/issue_local_job.py
+[finalizer]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/issue_job_finalizer.py
+[pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/pr_processor.py
+[correction]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/pr_correction_job.py

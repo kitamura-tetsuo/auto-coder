@@ -2,6 +2,10 @@
 
 from unittest.mock import Mock, patch
 
+import pytest
+
+pytestmark = pytest.mark.pr_repair_contract
+
 
 def _client():
     """A Mock GitHub client pre-configured so the stale-review-thread

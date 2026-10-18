@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+pytestmark = pytest.mark.pr_repair_contract
+
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.claude_usage_checker import ClaudeStrictUsageObservation
 from src.auto_coder.cloud_run import CloudRun
