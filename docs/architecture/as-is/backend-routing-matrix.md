@@ -1,6 +1,6 @@
 # Backend routing and execution-path matrix
 
-Source snapshot: **`007e97cb8be80ccc98e8c4a2604b3b084c23d156`** (2026-10-18 UTC). [Scope and notation](README.md).
+Source snapshot: **`2c5624a`** (2026-10-18 UTC). [Scope and notation](README.md).
 
 Here "local" describes the controller-side execution/repair route or explicit-local marker. It does not, by itself, prove that model weights run on local hardware: a locally invoked client can use a configured inference transport. Model hosting, execution lifecycle and provider task ownership are different axes.
 
@@ -10,8 +10,8 @@ Here "local" describes the controller-side execution/repair route or explicit-lo
 | --- | --- | --- | --- |
 | New Issue implementation | Common dispatch normally accepts an `ISSUE_IMPLEMENTATION` durable job; executor and finalizer are separate | Provider adapters use their own submission/receipt tracking | Existing ownership is reconciled before choosing a new backend |
 | Existing PR review correction | Explicit-local route can accept `PR_REVIEW_CORRECTION` with captured head and reserved repair allowance | Authorized provider continuation through the PR route | Explicit-local plus an exact-PR cloud binding is `CONFLICT` |
-| PR CI failure | `_fix_pr_issues_with_testing` performs focused verification, then `_submit_ci_repair_candidate` commits and publishes | Codex follow-up and provider-specific active-task handling | A synchronized candidate still awaits full current-head CI; this is not a generic local-job kind |
-| PR conflict/base update | `_start_mergeability_remediation` and `_update_with_base_branch` participate in repair | Applicable provider-specific continuation/remediation branches | Do not infer parity across every provider from one helper name |
+| PR CI failure | `LocalCIRepairExecution` (entered by `pr_processor.py`) performs focused verification, then the existing submission port commits and publishes | The typed repair adapter enters Codex follow-up and provider-specific active-task handling | A synchronized candidate still awaits full current-head CI; this is not a generic local-job kind |
+| PR conflict/base update | `BaseUpdateConflictExecutionService` carries the operation into existing Git/private-workspace producers | The same service carries applicable provider-specific continuation/remediation results | The service does not select providers or imply parity across them |
 | Local result publication | Issue finalizer checks artifact, non-force push, exact PR and association | Remote provider owns its task-specific implementation/publication behavior | Model exit alone is not confirmed publication |
 | Independent PR validation | Pinned-head review and accepted-findings/two-tier gates | Reviewer backend selection can be separate from implementation backend | Implementing a repair does not approve that repair |
 | Merge and slot retirement | Controller coordinates current-head merge and durable cleanup | GitHub supplies remote merge evidence | Command acceptance is not observed merge or released capacity |
@@ -35,15 +35,21 @@ Choosing cloud backends for new Issues changes future selection, not an already 
 
 Implementation, repair and validation configuration must be examined separately. This document records no configuration mutation and does not certify that all local starts have been disabled. The [CI candidate gate](pr-ci-and-repair.md) can prevent progress regardless of model hosting, so cloud-only operation does not by itself eliminate that failure mode.
 
-## What remains unproven by static inspection
+## Evidence and remaining limitation
 
-The existence of a CI/conflict repair function does not prove a complete Issue-to-merge local-LLM workflow. Actual evidence would require reaching it from the supported origin, producing a repair on the owned PR, observing new-head CI/review outcomes, and completing the applicable cleanup path. No such live end-to-end run is claimed in this refresh.
+Controlled production-entry integration tests reach local and cloud repair
+boundaries, retain durable cloud ownership across re-entry, observe a new head,
+and require current-head CI and independent review before merge. Git-sensitive
+cases use temporary repositories and provider/GitHub transports are controlled.
+No live provider, production GitHub, or continuously running daemon execution is
+claimed. Local CI and conflict repair also remain synchronous controller paths;
+this extraction does not make them restart-safe asynchronous jobs.
 
 Sources: [Issue policy/adapters][dispatch], [local jobs][jobs], [local executor][local], [Issue publication][finalizer], [PR routing and CI/conflict branches][pr], [local review correction][correction].
 
-[dispatch]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/issue_dispatch.py
-[jobs]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/local_job_handoff.py
-[local]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/issue_local_job.py
-[finalizer]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/issue_job_finalizer.py
-[pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/pr_processor.py
-[correction]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/pr_correction_job.py
+[dispatch]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/issue_dispatch.py
+[jobs]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/local_job_handoff.py
+[local]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/issue_local_job.py
+[finalizer]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/issue_job_finalizer.py
+[pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/pr_processor.py
+[correction]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/pr_correction_job.py

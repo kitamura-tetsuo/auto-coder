@@ -1,6 +1,6 @@
 # PR CI observation, reachability and repair
 
-Source snapshot: **`007e97cb8be80ccc98e8c4a2604b3b084c23d156`** (2026-10-18 UTC). [Scope and notation](README.md).
+Source snapshot: **`2c5624a`** (2026-10-18 UTC). [Scope and notation](README.md).
 
 ## C1. Candidate filtering and handler ordering are not the same gate
 
@@ -95,7 +95,7 @@ sequenceDiagram
     end
 ```
 
-Local CI repair can use local test results and Actions failure information; a
+Local CI repair is composed by `LocalCIRepairExecution` and can use local test results and Actions failure information; a
 passed focused test is not proof that GitHub CI passed. The synchronous handler
 enters `_fix_pr_issues_with_testing`, which rechecks the reported failures and
 runs focused verification before `_submit_ci_repair_candidate` commits and
@@ -104,18 +104,21 @@ CI validation. Conflict remediation and `_update_with_base_branch` also have
 their own result semantics. `success`, `attempt_started`, `should_continue` and
 synchronization results must not be collapsed into one generic completion flag.
 
-The existing CI-failure and conflict owners are now entered through
-`pr_repair_dispatch` requests and return typed dispositions. The adapter carries
+The existing CI-failure and conflict owners are entered through
+`pr_repair_dispatch` requests and return typed dispositions. Base updates and
+conflicts additionally cross `BaseUpdateConflictExecutionService`. The adapters carry
 the immutable PR head and the established cloud/local origin, but deliberately
 contains no provider-selection tree. Existing provider helpers, durable
 receipts, worktree operations, test runner, and Git helpers remain the effect
 owners; diagnostic action strings are not completion evidence.
 
-The durable local-job kinds in this snapshot cover Issue implementation and PR review correction, not all CI/conflict repairs. See [backend routing](backend-routing-matrix.md).
+The public PR handler consumes these results and preserves retry, receipt, resulting-head, and synchronization facts. A synchronized repaired head returns on a later controller entry for fresh CI and independent review; helper success does not lead directly to merge.
+
+The durable local-job kinds in this snapshot cover Issue implementation and PR review correction, not CI/conflict repairs. Those local paths remain synchronous and do not claim restart-safe inference or publication. See [backend routing](backend-routing-matrix.md).
 
 Sources: [CI conversion][ci] (`_check_github_actions_status`); [candidate collection][engine] (`_get_candidates`); [PR branches][pr] (`_handle_pr_merge`, `_start_mergeability_remediation`, `_fix_pr_issues_with_testing`, `_submit_ci_repair_candidate`, `_update_with_base_branch`); [local-job kinds][jobs].
 
-[ci]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/util/github_action.py
-[engine]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/automation_engine.py
-[pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/pr_processor.py
-[jobs]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/local_job_handoff.py
+[ci]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/util/github_action.py
+[engine]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/automation_engine.py
+[pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/pr_processor.py
+[jobs]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/local_job_handoff.py

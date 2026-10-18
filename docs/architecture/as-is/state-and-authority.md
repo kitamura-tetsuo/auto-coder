@@ -1,6 +1,6 @@
 # State, evidence and authority boundaries
 
-Source snapshot: **`0769b84eaabcf2d0c6a80f6c62660bd179003e02`** (2026-10-18 UTC). [Scope and notation](README.md).
+Source snapshot: **`2c5624a`** (2026-10-18 UTC). [Scope and notation](README.md).
 
 ## A fact needs a producer, not just a convenient flag
 
@@ -13,6 +13,7 @@ Source snapshot: **`0769b84eaabcf2d0c6a80f6c62660bd179003e02`** (2026-10-18 UTC)
 | Was an external submission accepted? | Provider-specific claim/receipt/reconciliation | Dispatch and retry recovery | Transport exception means nothing started |
 | Was this branch/PR published? | Expected remote head and exact PR observation/receipt | Publication finalizer | Model says it pushed, or local commit exists |
 | Is current CI usable? | Exact-head Actions/check observations | Candidate filter and PR processor | Empty list means success |
+| Did a PR repair start or publish? | `PRRepairResult` attempt, receipt, resulting-head and synchronization facts from the selected executor | PR orchestration and re-entry | Action text, helper return truthiness or a local commit alone |
 | Which review correction route is valid? | Explicit markers plus exact-PR binding and current head | Review repair admission | Source-Issue provider history alone |
 | Are accepted findings closed? | Durable accepted-findings projection and independent closure evidence | Effective application and final merge preflight | Raw PASS or ADDRESSED reply |
 | Is strong review complete? | Applicable H/B/M/P cycle plus accepted/publication state | Two-tier merge gate | STRONG_PENDING text or a completed model call |
@@ -42,15 +43,23 @@ The default local-job SQLite path is `~/.auto-coder/local_jobs.sqlite3`. Job rep
 
 Generation/slot state, local jobs, provider histories, retry state, review effects and post-merge intents are joined by orchestration and replay. `IssueImplementationService` joins admission to exact execution settlement, while `IssueRuntimeComposition` joins repository startup services; neither replaces those decisive stores. Their co-occurrence in one function does not create atomic commit semantics. Retain explicit unknown and accepted-but-incomplete states when moving code across boundaries.
 
+The PR repair adapter likewise creates no transaction. Its immutable request
+binds repository, PR, head, repair kind and the already-established origin;
+its result keeps receipt availability, candidate head and synchronization as
+separate facts. Reopening a cloud receipt store or returning to the controller
+therefore reuses the producer's durable identity rather than manufacturing a
+local fallback, and a synchronized new head must still pass fresh CI and
+independent review.
+
 This map concerns correctness under the project's existing trusted deployment boundaries. It does not turn prompt instructions or ordinary workspace isolation into proof that an adversarial process cannot publish or escape.
 
 Sources: [implementation worker][worker], [job evidence][jobs], [runner recovery][runner], [dispatch][dispatch], [publication][finalizer], [CI conversion][ci], [PR authority and cleanup][pr], [review cycle][cycle].
 
-[worker]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/issue_implementation_worker.py
-[jobs]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/local_job_handoff.py
-[runner]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/local_job_runner.py
-[dispatch]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/issue_dispatch.py
-[finalizer]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/issue_job_finalizer.py
-[ci]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/util/github_action.py
-[pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/pr_processor.py
-[cycle]: https://github.com/kitamura-tetsuo/auto-coder/blob/0769b84eaabcf2d0c6a80f6c62660bd179003e02/src/auto_coder/pr_review_cycle.py
+[worker]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/issue_implementation_worker.py
+[jobs]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/local_job_handoff.py
+[runner]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/local_job_runner.py
+[dispatch]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/issue_dispatch.py
+[finalizer]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/issue_job_finalizer.py
+[ci]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/util/github_action.py
+[pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/pr_processor.py
+[cycle]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/pr_review_cycle.py

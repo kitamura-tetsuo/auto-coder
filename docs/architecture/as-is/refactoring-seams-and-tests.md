@@ -1,25 +1,25 @@
-# Refactoring seams and characterization probes
+# Adopted repair seams and verification probes
 
-Source snapshot: **`007e97cb8be80ccc98e8c4a2604b3b084c23d156`** (2026-10-18 UTC). [Scope and notation](README.md).
+Source snapshot: **`2c5624a`** (2026-10-18 UTC). [Scope and notation](README.md).
 
-This page separates observed coupling from proposed work. It is not an approved implementation sequence, a new Issue contract or a claim that the listed probes already pass.
+This page records the bounded PR-repair seams used in production and separates maintained verification from still-proposed work. It is not a new Issue contract or evidence of live-provider execution.
 
 ## Candidate order and bounded completion checks
 
-| Stage proposal | Why this boundary is relevant now | Bounded completion evidence | Deliberately separate work |
+| Adopted stage | Production boundary | Bounded completion evidence | Deliberately separate work |
 | --- | --- | --- | --- |
-| Characterize PR entry and progress decisions | Candidate CI filtering and handler conflict ordering are separate gates | Exercise batch and explicit origins against the same captured observations and record where each stops | Do not reinterpret known-empty conflict admission as CI success or CI-failure-repair authority |
-| Extract PR observation-to-action decisions | `_handle_pr_merge` combines observation, repair, review and terminal effects | Equivalent next actions and deferrals for preserved cases, without moving receipt authority into guessed flags | No provider/slot-store redesign |
-| Isolate execution adapters at existing repair boundaries | Durable local review jobs and synchronous CI/conflict repair have different contracts | Preserve acceptance, uncertainty, ownership and replay behavior per adapter | Do not claim all repairs are asynchronous merely because the interface is shared |
+| Characterize PR entry and progress decisions | Candidate CI filtering and handler conflict ordering are separate gates | Maintained batch and explicit-origin cases record where each stops | Do not reinterpret known-empty conflict admission as CI success or CI-failure-repair authority |
+| Extract PR observation-to-action decisions | `pr_progress_policy` selects an existing executor from typed input | Maintained cases preserve next actions and deferrals without moving receipt authority into guessed flags | No provider/slot-store redesign |
+| Isolate execution adapters at existing repair boundaries | `pr_repair_dispatch`, `LocalCIRepairExecution` and `BaseUpdateConflictExecutionService` carry selected operations and results | Maintained cases preserve acceptance, uncertainty, ownership, publication and replay behavior | Synchronous CI/conflict repairs are not durable local jobs |
 | Reduce scheduler knowledge of PR internals | The engine currently filters some work before PR policy can decide | Demonstrate the selected decision owner and retained wake-up/deadline path | No required event-bus or full polling rewrite |
-| Integrate local CI/conflict execution incrementally | The durable local-job substrate already exists, but these repair paths do not uniformly use it | One supported repair origin reaches actual execution, result application and new-head validation | No need to wait for every unrelated engine cleanup |
+| Integrate local CI/conflict execution | Production entries invoke the extracted services while existing producers own effects | Local and cloud origins reach result application and new-head validation in controlled integration | No unrelated engine cleanup or asynchronous-local feature claim |
 
 A source-preserving extraction and an intentional bug fix need different expected outcomes. Record a known defect as such; do not freeze it into a permanent correctness requirement. Conversely, do not silently fix it inside a large mechanical move and lose the ability to identify the behavioral change.
 
-## Production-origin test probes to map before implementation
+## Production-origin verification map
 
 The PR-repair rows below are maintained by the `pr_repair_contract` group; the
-remaining rows are proposed probes. Use real in-process stores where their
+Issue implementation and local-job rows remain proposed probes. Use real in-process stores where their
 persisted state is the authority, and controlled external boundaries for
 provider/GitHub effects. A mock returning a chosen verdict cannot prove that
 the real producer establishes that verdict.
@@ -50,21 +50,21 @@ proof that every proposed probe above is implemented. Do not use filenames or
 helper-level mocks as a substitute for reading the scenario and its assertion
 boundary.
 
-This documentation refresh does not report an application test run, provider E2E run or fault-injection campaign. It introduces no runtime behavior change. Markdown/link and diagram-structure checks, when performed for the documentation commit, are not equivalent to rendering Mermaid or validating the production behavior.
+The maintained group is controlled integration, not a provider E2E, production-GitHub, or daemon campaign. Git cases use temporary repositories and external services stay controlled. Documentation checks are not substitutes for the production-boundary assertions in that group.
 
-## Questions a later implementation preflight must settle
+## Remaining boundaries
 
-Choose one authority for deciding the next PR action without making that consumer invent CI, ownership or publication evidence. Decide which synchronous repair path is being adapted and what its accepted/unknown/completed outcomes mean. Keep publication, independent validation and lifetime-slot retirement distinct. Existing capabilities should be integrated rather than reimplemented under a larger abstraction.
+The typed policy and execution adapters do not make synchronous local repair restart-safe, replace provider receipt stores, or combine publication, independent validation and lifetime-slot retirement. Those facts remain distinct and any future durable local CI/conflict work needs its own contract.
 
 An event-driven rewrite, provider replacement, global persistence migration and hostile-code sandbox are outside these bounded extraction proposals. A real missing capability should receive its own scoped implementation stage rather than being hidden behind a generic "unified lifecycle" interface.
 
 Sources: [engine origins][engine], [Issue dispatch][dispatch], [runner][runner], [Issue finalizer][finalizer], [PR decision/effect paths][pr].
 
-[dispatch-tests]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/tests/test_issue_dispatch.py
+[dispatch-tests]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/tests/test_issue_dispatch.py
 [repair-inventory]: ../../client-features/pr-repair-execution-test-inventory.md
-[job-tests]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/tests/test_local_job_handoff.py
-[engine]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/automation_engine.py
-[dispatch]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/issue_dispatch.py
-[runner]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/local_job_runner.py
-[finalizer]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/issue_job_finalizer.py
-[pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/007e97cb8be80ccc98e8c4a2604b3b084c23d156/src/auto_coder/pr_processor.py
+[job-tests]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/tests/test_local_job_handoff.py
+[engine]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/automation_engine.py
+[dispatch]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/issue_dispatch.py
+[runner]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/local_job_runner.py
+[finalizer]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/issue_job_finalizer.py
+[pr]: https://github.com/kitamura-tetsuo/auto-coder/blob/2c5624a/src/auto_coder/pr_processor.py
