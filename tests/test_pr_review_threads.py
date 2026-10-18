@@ -5,6 +5,7 @@ import pytest
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.pr_processor import (
+    PRActionList,
     _get_review_thread_gate_state,
     _handle_pr_merge,
     _merge_pr,
@@ -233,7 +234,7 @@ def test_has_unresolved_review_threads_helper(mock_github_client):
 @patch("auto_coder.pr_processor.LabelManager")
 @patch("auto_coder.pr_processor.GitHubClient.get_instance")
 def test_process_pr_for_merge_blocks_on_unresolved_threads(mock_gh_instance, mock_label_manager, mock_handle_merge):
-    mock_handle_merge.return_value = ["Skipping merge for PR #123 due to unresolved review threads"]
+    mock_handle_merge.return_value = PRActionList(("Skipping merge for PR #123 due to unresolved review threads",))
     context_mock = MagicMock()
     context_mock.__enter__.return_value = MagicMock()
     mock_label_manager.return_value = context_mock
@@ -253,7 +254,7 @@ def test_process_pr_for_merge_blocks_on_unresolved_threads(mock_gh_instance, moc
 @patch("auto_coder.pr_processor.LabelManager")
 @patch("auto_coder.pr_processor.GitHubClient.get_instance")
 def test_process_pr_for_merge_proceeds_when_resolved(mock_gh_instance, mock_label_manager, mock_handle_merge):
-    mock_handle_merge.return_value = ["Successfully merged PR #123"]
+    mock_handle_merge.return_value = PRActionList(("Successfully merged PR #123",))
     context_mock = MagicMock()
     lm_instance = MagicMock()
     context_mock.__enter__.return_value = lm_instance
