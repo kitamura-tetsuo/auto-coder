@@ -1407,6 +1407,16 @@ def _dispatch_local_ci_failure_repair(
     def execute() -> PRRepairResult:
         produced = operation()
 
+        if produced.repair_result is not None:
+            # Optional base update/conflict execution already classified the
+            # effect.  Preserve that authority while replacing its partial
+            # action stream with the enclosing CI executor's complete stream.
+            return replace(
+                produced.repair_result,
+                actions=produced.actions,
+                retry_not_before=(produced.retry_not_before if produced.retry_not_before is not None else produced.repair_result.retry_not_before),
+            )
+
         def result(disposition: RepairDisposition, reason: str = "") -> PRRepairResult:
             return PRRepairResult(
                 disposition=disposition,
@@ -2503,6 +2513,8 @@ def _process_pull_request_impl(
                 processed_pr.priority = processed_pr_result.priority
                 processed_pr.analysis = processed_pr_result.analysis
                 processed_pr.outcome = processed_pr_result.outcome
+                processed_pr.retry_not_before = processed_pr_result.retry_not_before
+                processed_pr.repair_result = processed_pr_result.repair_result
                 processed_pr.target_reason = processed_pr_result.target_reason
                 # Copy error if it was set
                 if processed_pr_result.error:
@@ -3736,7 +3748,10 @@ def _process_pr_for_merge(
             processed_pr.actions_taken = [*([projection_action] if projection_action else []), "Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
 
-        processed_pr.actions_taken = [*([projection_action] if projection_action else []), *_handle_pr_merge(github_client, repo_name, pr_data, config, {}, processed_pr)]
+        merge_actions = _handle_pr_merge(github_client, repo_name, pr_data, config, {}, processed_pr)
+        processed_pr.actions_taken = [*([projection_action] if projection_action else []), *merge_actions]
+        processed_pr.retry_not_before = merge_actions.retry_not_before
+        processed_pr.repair_result = merge_actions.repair_result
         if any("Successfully merged" in action for action in processed_pr.actions_taken):
             should_process.keep_label()
         return processed_pr
@@ -3796,6 +3811,8 @@ def _process_pr_for_fixes(
                 processed_pr.actions_taken = [*([projection_action] if projection_action else []), *actions]
                 processed_pr.error = processing_status.error
                 processed_pr.outcome = processing_status.outcome
+                processed_pr.retry_not_before = processing_status.retry_not_before
+                processed_pr.repair_result = processing_status.repair_result
                 processed_pr.target_reason = processing_status.target_reason
                 # Retain label on successful merge
                 if any("Successfully merged" in action for action in actions):
@@ -3844,6 +3861,13 @@ def _take_pr_actions(
         actions.adversarial_validation_error = getattr(merge_actions, "adversarial_validation_error", None)
         actions.quota_deferred = getattr(merge_actions, "quota_deferred", False)
         actions.retry_not_before = getattr(merge_actions, "retry_not_before", None)
+        actions.repair_attempt_started = getattr(merge_actions, "repair_attempt_started", False)
+        actions.resulting_head = getattr(merge_actions, "resulting_head", "")
+        actions.synchronized = getattr(merge_actions, "synchronized", None)
+        actions.repair_result = getattr(merge_actions, "repair_result", None)
+        if processing_status is not None:
+            processing_status.retry_not_before = actions.retry_not_before
+            processing_status.repair_result = actions.repair_result
         if actions.quota_deferred and processing_status is not None:
             processing_status.error = None
             processing_status.outcome = PRProcessingOutcome.DEFERRED
