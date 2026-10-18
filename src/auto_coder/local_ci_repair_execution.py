@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import math
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Callable, Iterator, Protocol, Sequence
 
 from .automation_config import AutomationConfig
 from .ci_repair_authority import CIRepairAuthority
+from .ci_repair_verification import FocusedVerification, dedupe_targets, follow_up_budget_exhausted
+from .exceptions import AutoCoderRetryableBackendError
 from .pr_repair_dispatch import PRRepairResult, RepairDisposition
 
 
@@ -19,6 +22,32 @@ class ActionResult(Protocol):
     retry_not_before: float | None
 
     def __iter__(self) -> Iterator[str]: ...
+
+
+class SubmissionResult(Protocol):
+    @property
+    def actions(self) -> tuple[str, ...]: ...
+
+    @property
+    def resulting_head(self) -> str: ...
+
+    @property
+    def synchronized(self) -> bool | None: ...
+
+
+@dataclass(frozen=True)
+class CorrectionPorts:
+    automatic_fix_enabled: Callable[[], bool]
+    current_backend: Callable[[], object | None]
+    high_score_backend: Callable[[], object | None]
+    initial_correction: Callable[[str, object | None, list[str], Callable[[], None]], Sequence[str]]
+    verify: Callable[[list[str]], FocusedVerification]
+    follow_up: Callable[[dict[str, object], list[dict[str, object]], object | None, Callable[[], None]], tuple[Sequence[str], str]]
+    new_work_allowed: Callable[[], bool]
+    pr_closed: Callable[[], bool]
+    submit: Callable[[], SubmissionResult]
+    defer_verification: Callable[[], bool]
+    trace_initial: Callable[[], None]
 
 
 @dataclass(frozen=True)
@@ -56,7 +85,8 @@ class LocalCIRepairPorts:
     update_base: Callable[[], ActionResult]
     summarize_checks: Callable[[Sequence[object]], tuple[str, list[str] | None]]
     read_logs: Callable[[Sequence[object]], str]
-    repair: Callable[[str, list[str] | None], PRRepairResult]
+    correction: CorrectionPorts
+    extract_failed_tests: Callable[[str], list[str]]
     trace_base_update: Callable[[str], None]
 
 
@@ -95,9 +125,9 @@ def execute_local_ci_repair(request: LocalCIRepairRequest, ports: LocalCIRepairP
                     actions.append(f"No specific failed checks found for PR #{request.pr_number}")
                     return LocalCIRepairResult(tuple(actions))
                 diagnostics, targets = ports.summarize_checks(request.failed_checks)
-                repair = ports.repair(diagnostics, targets)
-                actions.extend(repair.actions)
-                return _result_from_repair(actions, repair)
+                correction = execute_correction(request, diagnostics, targets, ports.correction, ports.extract_failed_tests)
+                actions.extend(correction.actions)
+                return _merge_correction_result(actions, correction)
 
             actions.append(f"[Policy] Performing base branch update for PR #{request.pr_number} before fixes " "(config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)")
             update = ports.update_base()
@@ -151,16 +181,104 @@ def execute_local_ci_repair(request: LocalCIRepairRequest, ports: LocalCIRepairP
             if not request.failed_checks:
                 actions.append(f"No specific failed checks found for PR #{request.pr_number}")
                 return LocalCIRepairResult(tuple(actions))
-            repair = ports.repair(ports.read_logs(request.failed_checks), None)
-            actions.extend(repair.actions)
-            return _result_from_repair(actions, repair)
+            correction = execute_correction(request, ports.read_logs(request.failed_checks), None, ports.correction, ports.extract_failed_tests)
+            actions.extend(correction.actions)
+            return _merge_correction_result(actions, correction)
 
 
-def _result_from_repair(actions: list[str], repair: PRRepairResult) -> LocalCIRepairResult:
+def _merge_correction_result(actions: list[str], correction: LocalCIRepairResult) -> LocalCIRepairResult:
     return LocalCIRepairResult(
         tuple(actions),
-        attempt_started=repair.attempt_started,
-        candidate_head=repair.resulting_head,
-        synchronized=(repair.synchronized if repair.synchronization_state.value == "available" else None),
-        failure_reason=repair.reason if repair.disposition is RepairDisposition.FAILED else "",
+        attempt_started=correction.attempt_started,
+        candidate_head=correction.candidate_head,
+        synchronized=correction.synchronized,
+        failure_reason=correction.failure_reason,
     )
+
+
+def execute_correction(
+    request: LocalCIRepairRequest,
+    diagnostics: str,
+    failed_tests: list[str] | None,
+    ports: CorrectionPorts,
+    extract_failed_tests: Callable[[str], list[str]],
+) -> LocalCIRepairResult:
+    """Compose correction, focused sweeps, follow-ups and publication."""
+    actions: list[str] = []
+    known_failures = dedupe_targets(failed_tests if failed_tests is not None else extract_failed_tests(diagnostics))
+    attempt_started = False
+    corrected = False
+
+    def mark_started() -> None:
+        nonlocal attempt_started, corrected
+        attempt_started = True
+        corrected = True
+
+    enabled = ports.automatic_fix_enabled()
+    current_backend = ports.current_backend() if enabled else None
+    high_score_backend = ports.high_score_backend() if enabled else None
+    history: list[dict[str, object]] = []
+    try:
+        if enabled:
+            ports.trace_initial()
+            actions.append(f"Starting PR issue fixing for PR #{request.pr_number} using GitHub Actions logs")
+            actions.extend(ports.initial_correction(diagnostics, high_score_backend, known_failures, mark_started))
+        else:
+            actions.append(f"Automatic test fix is disabled for PR #{request.pr_number}; skipping GitHub Actions fix")
+
+        verification = FocusedVerification()
+        if ports.defer_verification():
+            actions.append("Local verification deferred by operator until after merge; GitHub CI remains authoritative")
+        elif not known_failures:
+            actions.append("Local verification not performed: CI diagnostics identified no test file to select; full validation is left to CI")
+        else:
+            follow_ups = 0
+            while True:
+                verification = ports.verify(known_failures)
+                failing = verification.failed
+                if not failing:
+                    break
+                if not ports.automatic_fix_enabled():
+                    actions.append(f"Automatic test fix is disabled for PR #{request.pr_number}; skipping local test repair")
+                    break
+                if follow_up_budget_exhausted(request.config.MAX_FIX_ATTEMPTS, follow_ups):
+                    actions.append(f"Max fix attempts ({request.config.MAX_FIX_ATTEMPTS}) reached for PR #{request.pr_number}")
+                    break
+                if not ports.new_work_allowed():
+                    actions.append(f"Deferred another repair attempt for PR #{request.pr_number}: graceful shutdown is draining")
+                    break
+                if ports.pr_closed():
+                    actions.append(f"PR #{request.pr_number} is closed on GitHub. Aborting fix loop.")
+                    return LocalCIRepairResult(tuple(actions), attempt_started=attempt_started)
+                follow_ups += 1
+                if follow_ups >= 2 and high_score_backend and current_backend != high_score_backend:
+                    current_backend = high_score_backend
+                    actions.append(f"Switched to fallback backend for PR #{request.pr_number}")
+                follow_actions, response = ports.follow_up(failing[0].raw, history, current_backend, mark_started)
+                actions.extend(follow_actions)
+                if not response and not math.isfinite(float(request.config.MAX_FIX_ATTEMPTS)):
+                    actions.append(f"No local correction was produced for {failing[0].target}; stopping local repair")
+                    break
+                history.append({"attempt_number": follow_ups, "llm_output": response, "test_result": failing[0].raw})
+            actions.extend(verification.describe())
+            if verification.all_passed:
+                actions.append(f"All {len(verification.results)} known CI-failed test file(s) passed locally on the latest corrected state (focused scope only; full validation pending CI)")
+            else:
+                actions.append("Known CI-failed tests are not all verified locally; full validation pending CI")
+
+        if not ports.automatic_fix_enabled() or not corrected:
+            return LocalCIRepairResult(tuple(actions), attempt_started=attempt_started)
+        submission = ports.submit()
+        actions.extend(submission.actions)
+        return LocalCIRepairResult(
+            tuple(actions),
+            attempt_started=attempt_started,
+            candidate_head=submission.resulting_head,
+            synchronized=submission.synchronized,
+            failure_reason="local CI repair was not synchronized" if submission.synchronized is False else "",
+        )
+    except AutoCoderRetryableBackendError:
+        raise
+    except Exception as exc:
+        actions.append(f"Error fixing PR issues with testing for PR #{request.pr_number}: {exc}")
+        return LocalCIRepairResult(tuple(actions), attempt_started=attempt_started)

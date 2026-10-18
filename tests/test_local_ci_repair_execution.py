@@ -7,6 +7,7 @@ import pytest
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.ci_repair_authority import CIRepairAuthority
 from auto_coder.local_ci_repair_execution import (
+    CorrectionPorts,
     LocalCIRepairPorts,
     LocalCIRepairRequest,
     execute_local_ci_repair,
@@ -51,18 +52,20 @@ def _ports(events: list[str], *, allowed: bool = True, enabled: bool = True) -> 
         update_base=lambda: UpdateActions(PRRepairResult(RepairDisposition.NO_UPDATE_NEEDED)),
         summarize_checks=lambda _checks: ("lint failed", []),
         read_logs=lambda _checks: "lint failed",
-        repair=lambda _logs, _targets: (
-            events.append("repair")
-            or PRRepairResult(
-                RepairDisposition.APPLIED,
-                ("candidate published",),
-                attempt_started=True,
-                resulting_head_state=RepairFactState.AVAILABLE,
-                resulting_head="head-2",
-                synchronization_state=RepairFactState.AVAILABLE,
-                synchronized=True,
-            )
+        correction=CorrectionPorts(
+            automatic_fix_enabled=lambda: enabled,
+            current_backend=lambda: object(),
+            high_score_backend=lambda: object(),
+            initial_correction=lambda _logs, _manager, _targets, started: (started(), events.append("repair"), ("corrected",))[2],
+            verify=lambda _targets: __import__("auto_coder.ci_repair_verification", fromlist=["FocusedVerification"]).FocusedVerification(),
+            follow_up=lambda *_args: ((), ""),
+            new_work_allowed=lambda: True,
+            pr_closed=lambda: False,
+            submit=lambda: type("Submission", (), {"actions": ("candidate published",), "resulting_head": "head-2", "synchronized": True})(),
+            defer_verification=lambda: False,
+            trace_initial=lambda: None,
         ),
+        extract_failed_tests=lambda _logs: [],
         trace_base_update=lambda _result: None,
     )
 
@@ -114,15 +117,9 @@ def test_failed_publication_keeps_candidate_and_synchronization_facts_distinct()
     ports = _ports(events)
     ports = replace(
         ports,
-        repair=lambda _logs, _targets: PRRepairResult(
-            RepairDisposition.FAILED,
-            ("commit created", "push failed"),
-            reason="local CI repair was not synchronized",
-            attempt_started=True,
-            resulting_head_state=RepairFactState.AVAILABLE,
-            resulting_head="head-2",
-            synchronization_state=RepairFactState.AVAILABLE,
-            synchronized=False,
+        correction=replace(
+            ports.correction,
+            submit=lambda: type("Submission", (), {"actions": ("commit created", "push failed"), "resulting_head": "head-2", "synchronized": False})(),
         ),
     )
 
