@@ -259,9 +259,13 @@ def _run_base_update_operation(
                 actions.append(f"Failed to observe local candidate head for PR #{pr_number}")
                 record(RepairDisposition.FAILED, reason=actions[-1])
                 return actions
+            if not input_head or not head_branch:
+                actions.append(f"Deferred base-update publication for PR #{pr_number}: exact input head and destination branch are required")
+                record(RepairDisposition.DEFERRED, reason=actions[-1], resulting_head=candidate_head)
+                return actions
 
             # Push the updated branch using centralized helper with retry
-            push_result = git_push()
+            push_result = git_push(branch=f"HEAD:{head_branch}", expected_remote_sha=input_head)
             if push_result.success:
                 actions.append(f"Pushed updated branch for PR #{pr_number}")
                 # Signal to skip further LLM analysis for this PR in this run
@@ -287,7 +291,7 @@ def _run_base_update_operation(
                 # bounded retry cannot overwrite another actor's update.
                 logger.warning(f"First push attempt failed: {push_result.stderr}, retrying...")
                 time.sleep(2)
-                retry_push_result = git_push()
+                retry_push_result = git_push(branch=f"HEAD:{head_branch}", expected_remote_sha=input_head)
                 if retry_push_result.success:
                     actions.append(f"Pushed updated branch for PR #{pr_number} (after retry)")
                     actions.append("ACTION_FLAG:SKIP_ANALYSIS")
