@@ -1,9 +1,11 @@
 """Main CLI commands (process_issues, create_feature_issues, fix_to_pass_tests)."""
 
+import json
 import os
 import re
 import signal
 from contextlib import nullcontext
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import click
@@ -159,6 +161,7 @@ async def _run_process_issues_daemon(
 )
 @click.option("--github-webhook-secret", envvar="GITHUB_WEBHOOK_SECRET", help="GitHub Webhook Secret")
 @click.option("--sentry-webhook-secret", envvar="SENTRY_WEBHOOK_SECRET", help="Sentry Webhook Secret")
+@click.option("--result-file", type=click.Path(dir_okay=False, path_type=Path), help="Write the authoritative explicit-target outcome as JSON (operator automation only).")
 def process_issues(
     repo: Optional[str],
     github_token: Optional[str],
@@ -177,6 +180,7 @@ def process_issues(
     port: int,
     github_webhook_secret: Optional[str],
     sentry_webhook_secret: Optional[str],
+    result_file: Optional[Path],
     retry: bool = False,
     jules_mode: Optional[bool] = None,
     resume: bool = False,
@@ -511,6 +515,22 @@ def process_issues(
             "failed": "Failed",
         }
         final_outcome = result.get("target_outcome")
+        if result_file is not None:
+            result_file.parent.mkdir(parents=True, exist_ok=True)
+            result_file.write_text(
+                json.dumps(
+                    {
+                        "target_number": result.get("target_number"),
+                        "target_type": result.get("target_type"),
+                        "target_outcome": final_outcome,
+                        "target_reason": result.get("target_reason"),
+                        "target_actions": list(result.get("target_actions") or []),
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         completion_summary: Dict[str, Any] = {
             "Repository": repo_name,
             "Target": target_display,

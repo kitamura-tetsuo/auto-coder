@@ -4,9 +4,12 @@ These tests intentionally do not claim to be the credentialed live E2E.
 """
 
 import importlib.util
+import json
 import sys
+from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -51,3 +54,78 @@ def test_wait_requires_new_head_and_terminal_current_head_run():
     assert result.head == "h2"
     assert result.run_ids == (2,)
     assert result.conclusion == "success"
+
+
+def make_args(tmp_path, scenario="ci"):
+    return Namespace(
+        scenario=scenario,
+        repository="fixture-owner/disposable",
+        pr=42,
+        workspace=str(tmp_path),
+        backend="codex",
+        evidence=tmp_path / "evidence.json",
+        timeout=30,
+    )
+
+
+def test_harness_command_is_accepted_by_real_process_issues_parser(tmp_path):
+    from auto_coder.cli_commands_main import process_issues
+
+    args = make_args(tmp_path)
+    command = smoke.production_command(args, tmp_path / "result.json")
+
+    assert "--backend" not in command
+    with process_issues.make_context("process-issues", command[2:]) as context:
+        assert context.params["repo"] == args.repository
+        assert context.params["only_target"] == "42"
+        assert context.params["result_file"] == tmp_path / "result.json"
+
+
+def test_green_h2_with_deferred_authoritative_gate_is_not_passed(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    args = make_args(tmp_path)
+    before = smoke.Snapshot("h1", "base", True, (1,), "failure")
+    after = smoke.Snapshot("h2", "base", True, (2,), "success")
+    snapshots = iter((before, after, after))
+    observer = SimpleNamespace(snapshot=lambda _pr: next(snapshots), merge_state=lambda _pr: "open:clean")
+    monkeypatch.setenv("GITHUB_TOKEN", "redacted")
+    monkeypatch.setattr(smoke, "validate_target", lambda *_args: None)
+    monkeypatch.setattr(smoke, "verify_configured_local_backend", lambda *_args: None)
+    monkeypatch.setattr(smoke, "GitHubObserver", lambda *_args: observer)
+
+    calls = 0
+
+    def run(command, _workspace):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            Path(command[command.index("--result-file") + 1]).write_text(json.dumps({"target_number": 42, "target_type": "pr", "target_outcome": "deferred"}))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(smoke, "run_production", run)
+    evidence = smoke.run_smoke(args)
+
+    assert evidence.status == "FAILED"
+    assert evidence.gate_outcome == "deferred"
+    assert evidence.failure_phase == "independent_review_or_merge"
+
+
+def test_missing_auto_coder_executable_is_blocked(tmp_path):
+    with patch.object(smoke.subprocess, "run", side_effect=FileNotFoundError):
+        with pytest.raises(smoke.Blocked, match="executable is unavailable"):
+            smoke.run_production(["auto-coder"], tmp_path)
+
+
+def test_inaccessible_fixture_writes_redacted_blocked_evidence(tmp_path, monkeypatch):
+    from auto_coder.util.github_request_outcome import GitHubRequestError
+
+    args = make_args(tmp_path)
+    outcome = SimpleNamespace(status=404, classification=SimpleNamespace(value="not_found"))
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "ci", "--repository", args.repository, "--pr", "42", "--workspace", str(tmp_path), "--backend", "codex", "--evidence", str(args.evidence)])
+    monkeypatch.setattr(smoke, "run_smoke", lambda _args: (_ for _ in ()).throw(GitHubRequestError(outcome)))
+
+    assert smoke.main() == 2
+    artifact = json.loads(args.evidence.read_text())
+    assert artifact["status"] == "BLOCKED"
+    assert artifact["failure_phase"] == "preflight"
+    assert artifact["disposition"] == "designated GitHub repository or PR is inaccessible with the supplied credential"

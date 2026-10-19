@@ -11,8 +11,10 @@ The harness refuses `kitamura-tetsuo/auto-coder` and
 `kitamura-tetsuo/outliner`. Clone the disposable repository into a dedicated,
 clean workspace; do not point the harness at a workspace containing unrelated
 work. Keep normal Actions workflows enabled and configure the selected local
-backend in the usual Auto-Coder configuration. Export `GITHUB_TOKEN` with only
-the permissions needed for that disposable repository. No provider credential
+backend as the first ordinary-priority producer in the usual Auto-Coder
+configuration. The harness verifies that producer and uses the supported
+`process-issues` interface rather than attempting a command-line override. Export
+`GITHUB_TOKEN` with only the permissions needed for that disposable repository. No provider credential
 is written to the repository or evidence file.
 
 The fixture must have a normal pull-request workflow whose test result is
@@ -38,6 +40,8 @@ cannot target unrelated refs.
    local backend. It passes only after GitHub reports a different PR head H2
    and a successful pull-request Actions run whose `head_sha` is H2. A zero
    process exit, local test, model response, or push message is insufficient.
+   The second processing pass must also report an authoritative `success`
+   outcome; blocked, deferred, skipped, failed, or missing outcomes fail.
    Inspect `review_merge_result` for the independent review/merge disposition;
    a repository policy may leave a passing PR open.
 
