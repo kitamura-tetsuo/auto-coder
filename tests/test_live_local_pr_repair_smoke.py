@@ -81,6 +81,97 @@ def test_harness_command_is_accepted_by_real_process_issues_parser(tmp_path):
         assert context.params["result_file"] == tmp_path / "result.json"
 
 
+class BackendConfig:
+    def __init__(self, groups, backend_types):
+        self.groups = groups
+        self.backend_types = backend_types
+
+    def get_ordinary_priority_groups(self):
+        return self.groups
+
+    def get_backend_config(self, name):
+        backend_type = self.backend_types.get(name)
+        return SimpleNamespace(backend_type=backend_type) if backend_type else None
+
+
+@pytest.mark.parametrize(
+    ("requested", "config", "message"),
+    [
+        ("codex", BackendConfig([["gemini"], ["codex"]], {"gemini": "antigravity", "codex": "codex"}), "first ordinary backend"),
+        ("codex-cloud", BackendConfig([["codex-cloud"]], {"codex-cloud": "codex-cloud"}), "not a synchronous local editing backend"),
+    ],
+)
+def test_run_smoke_blocks_backend_mismatch_or_task_only_before_github_observation(tmp_path, monkeypatch, requested, config, message):
+    args = make_args(tmp_path)
+    args.backend = requested
+    monkeypatch.setenv("GITHUB_TOKEN", "redacted")
+    monkeypatch.setattr(smoke, "validate_target", lambda *_args: None)
+    monkeypatch.setattr(smoke, "get_llm_config", lambda **_kwargs: config)
+    monkeypatch.setattr(smoke, "GitHubObserver", lambda *_args: pytest.fail("fixture was observed before backend admission"))
+
+    with pytest.raises(smoke.Blocked, match=message):
+        smoke.run_smoke(args)
+
+
+def test_configured_first_synchronous_backend_is_admitted(monkeypatch):
+    config = BackendConfig([["gemini"], ["codex"]], {"gemini": "antigravity", "codex": "codex"})
+    monkeypatch.setattr(smoke, "get_llm_config", lambda **_kwargs: config)
+
+    smoke.verify_configured_local_backend("fixture-owner/disposable", "gemini")
+
+
+def make_run(head, event, status, conclusion, run_id):
+    return SimpleNamespace(head_sha=head, event=event, status=status, conclusion=conclusion, id=run_id, created_at=f"2026-10-19T00:00:{run_id:02d}Z")
+
+
+def snapshot_for_runs(runs):
+    observer = smoke.GitHubObserver.__new__(smoke.GitHubObserver)
+    observer.owner = "fixture-owner"
+    observer.repo = "disposable"
+    observer.api = SimpleNamespace(
+        pulls=SimpleNamespace(get=lambda *_args: SimpleNamespace(head=SimpleNamespace(sha="current"), base=SimpleNamespace(sha="base"), mergeable=True)),
+        actions=SimpleNamespace(list_workflow_runs_for_repo=lambda *_args, **_kwargs: SimpleNamespace(workflow_runs=runs)),
+    )
+    return observer.snapshot(42)
+
+
+def test_snapshot_ignores_old_head_failure_and_keeps_current_pending():
+    snapshot = snapshot_for_runs(
+        [
+            make_run("old", "pull_request", "completed", "failure", 1),
+            make_run("current", "pull_request", "in_progress", None, 2),
+        ]
+    )
+
+    assert snapshot.run_ids == (2,)
+    assert snapshot.conclusion == "pending"
+
+
+def test_snapshot_ignores_successful_push_when_current_pull_request_fails():
+    snapshot = snapshot_for_runs(
+        [
+            make_run("current", "push", "completed", "success", 1),
+            make_run("current", "pull_request", "completed", "failure", 2),
+        ]
+    )
+
+    assert snapshot.run_ids == (2,)
+    assert snapshot.conclusion == "failure"
+
+
+def test_snapshot_succeeds_only_when_all_current_pr_runs_pass():
+    snapshot = snapshot_for_runs(
+        [
+            make_run("current", "pull_request", "completed", "success", 1),
+            make_run("current", "pull_request_target", "completed", "neutral", 2),
+            make_run("current", "pull_request", "completed", "skipped", 3),
+        ]
+    )
+
+    assert snapshot.run_ids == (3, 2, 1)
+    assert snapshot.conclusion == "success"
+
+
 def test_green_h2_with_deferred_authoritative_gate_is_not_passed(tmp_path, monkeypatch):
     (tmp_path / ".git").mkdir()
     args = make_args(tmp_path)
