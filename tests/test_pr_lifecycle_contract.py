@@ -462,6 +462,7 @@ def test_base_update_publication_result_reaches_remediation_consumer(
     subprocess.run(["git", "add", feature_path], cwd=repository, check=True)
     subprocess.run(["git", "commit", "-m", "feature"], cwd=repository, check=True, capture_output=True)
     subprocess.run(["git", "push", "-u", "origin", "feature"], cwd=repository, check=True, capture_output=True)
+    feature_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository, check=True, capture_output=True, text=True).stdout.strip()
 
     if publication == "not-needed":
         subprocess.run(["git", "checkout", "main"], cwd=repository, check=True, capture_output=True)
@@ -487,7 +488,7 @@ def test_base_update_publication_result_reaches_remediation_consumer(
         "number": PR_NUMBER,
         "body": "<!-- auto-coder:local-llm -->\nCloses #2501" if publication.startswith("conflict-") else "Closes #2501",
         "author": {"login": "auto-coder"},
-        "head": {"ref": "feature", "sha": H1},
+        "head": {"ref": "feature", "sha": feature_head},
         "base": {"ref": "main"},
         "baseRefName": "main",
     }
@@ -530,16 +531,9 @@ def test_base_update_publication_result_reaches_remediation_consumer(
         patch("auto_coder.pr_processor.time.sleep"),
         patch("auto_coder.pr_processor._record_pr_stage") as record_stage,
     ):
-        if publication == "fails-twice":
-            with pytest.raises(SystemExit) as terminal:
-                _start_mergeability_remediation(PR_NUMBER, "dirty", REPOSITORY)
-            assert terminal.value.code == 1
-            assert publish.call_count == 2
-            assert not any(call.args[3].value == "completed" for call in record_stage.call_args_list)
-            merge.assert_not_called()
-            return
-
         actions = _start_mergeability_remediation(PR_NUMBER, "dirty", REPOSITORY)
+        failure_stages = list(record_stage.call_args_list)
+        unrelated = _start_mergeability_remediation(PR_NUMBER + 1, "dirty", REPOSITORY) if publication == "fails-twice" else None
 
     merge.assert_not_called()
     if publication == "not-needed":
@@ -559,6 +553,18 @@ def test_base_update_publication_result_reaches_remediation_consumer(
         assert any("Pushed updated branch" in action for action in actions)
         assert f"Mergeability remediation completed for PR #{PR_NUMBER}" in actions
         assert "ACTION_FLAG:SKIP_ANALYSIS" in actions
+    elif publication == "fails-twice":
+        assert publish.call_count == 2
+        assert actions.repair_result is not None
+        assert actions.repair_result.disposition is RepairDisposition.FAILED
+        assert actions.repair_result.synchronized is False
+        assert actions.repair_result.resulting_head == subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository, check=True, capture_output=True, text=True).stdout.strip()
+        assert any("after two push attempts" in action for action in actions)
+        assert not any(call.args[3].value == "completed" for call in failure_stages)
+        assert unrelated is not None
+        assert unrelated.repair_result is not None
+        assert unrelated.repair_result.disposition is RepairDisposition.NO_UPDATE_NEEDED
+        assert any(f"PR #{PR_NUMBER + 1} is up to date" in action for action in unrelated)
     else:
         publish.assert_not_called()
         assert actions.repair_result is not None
