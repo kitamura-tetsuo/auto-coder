@@ -7,6 +7,8 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Callable, Iterator, Protocol, Sequence
 
+from loguru import logger
+
 from .automation_config import AutomationConfig
 from .ci_repair_authority import CIRepairAuthority
 from .ci_repair_verification import FocusedVerification, dedupe_targets, follow_up_budget_exhausted
@@ -91,6 +93,38 @@ class LocalCIRepairPorts:
     trace_base_update: Callable[[str], None]
 
 
+def _record_base_update_trace(ports: LocalCIRepairPorts, result: str) -> None:
+    """Record a diagnostic without allowing observability to change execution."""
+    try:
+        ports.trace_base_update(result)
+    except Exception as exc:
+        logger.warning("Failed to record base-update diagnostic '{}': {}", result, exc)
+
+
+def _base_update_diagnostic(pr_number: int, result: PRRepairResult) -> tuple[str, str]:
+    """Render the operator action and trace result from typed producer facts."""
+    head = result.resulting_head if result.resulting_head_state is RepairFactState.AVAILABLE and result.resulting_head else "unknown"
+    synchronized = result.synchronized if result.synchronization_state is RepairFactState.AVAILABLE else None
+
+    if result.disposition is RepairDisposition.NO_UPDATE_NEEDED:
+        return "up_to_date", f"PR #{pr_number} is up to date with main branch; test failures are due to PR content"
+    if result.disposition is RepairDisposition.APPLIED:
+        if synchronized is True and head != "unknown":
+            return "pushed", f"Updated PR #{pr_number} with base branch at {head}; awaiting GitHub Actions"
+        synchronization = "unknown" if synchronized is None else "not synchronized"
+        return "applied_unconfirmed", f"Base update for PR #{pr_number} was applied but publication is {synchronization}; resulting head: {head}"
+    if result.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN:
+        receipt = result.receipt if result.receipt_state is RepairFactState.AVAILABLE and result.receipt else "unknown"
+        return "delegated", f"Base update for PR #{pr_number} was delegated and is pending evidence; receipt: {receipt}; resulting head: {head}"
+    if result.disposition is RepairDisposition.DEFERRED:
+        return "deferred", f"Base update for PR #{pr_number} is waiting for a later retry; resulting head: {head}"
+    if result.disposition is RepairDisposition.REFUSED:
+        return "refused", f"Base update for PR #{pr_number} was refused; resulting head: {head}"
+    if result.disposition is RepairDisposition.QUALITY_REFUSED:
+        return "quality_refused", f"Base update for PR #{pr_number} was refused by the quality gate; resulting head: {head}"
+    return "failed", f"Base update for PR #{pr_number} failed; resulting head: {head}"
+
+
 def execute_local_ci_repair(request: LocalCIRepairRequest, ports: LocalCIRepairPorts) -> LocalCIRepairResult:
     """Run branch preparation, optional base update, repair and publication.
 
@@ -121,7 +155,7 @@ def execute_local_ci_repair(request: LocalCIRepairRequest, ports: LocalCIRepairP
 
             if request.config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL:
                 actions.append(f"[Policy] Skipping base branch update for PR #{request.pr_number} " "(config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=True)")
-                ports.trace_base_update("skipped")
+                _record_base_update_trace(ports, "skipped")
                 if not request.failed_checks:
                     actions.append(f"No specific failed checks found for PR #{request.pr_number}")
                     return LocalCIRepairResult(tuple(actions))
@@ -148,29 +182,14 @@ def execute_local_ci_repair(request: LocalCIRepairRequest, ports: LocalCIRepairP
             }:
                 actions = [action for action in actions if action != "ACTION_FLAG:SKIP_ANALYSIS"]
 
+            trace_result, diagnostic = _base_update_diagnostic(request.pr_number, update_result)
+            actions.append(diagnostic)
+            _record_base_update_trace(ports, trace_result)
+
             if update_result.disposition is RepairDisposition.QUALITY_REFUSED:
-                return LocalCIRepairResult(tuple(actions), close_for_quality=True)
+                return LocalCIRepairResult(tuple(actions), close_for_quality=True, repair_result=update_result)
 
             if update_result.disposition is not RepairDisposition.NO_UPDATE_NEEDED:
-                if update_result.disposition in {
-                    RepairDisposition.APPLIED,
-                    RepairDisposition.ACCEPTED_OR_UNCERTAIN,
-                    RepairDisposition.DEFERRED,
-                    RepairDisposition.REFUSED,
-                }:
-                    actions.append(f"Updated PR #{request.pr_number} with base branch, skipping to next PR for GitHub Actions check")
-                    ports.trace_base_update("pushed")
-                    return LocalCIRepairResult(
-                        tuple(actions),
-                        attempt_started=update_result.attempt_started,
-                        candidate_head=update_result.resulting_head,
-                        synchronized=(update_result.synchronized if update_result.synchronization_state is RepairFactState.AVAILABLE else None),
-                        quota_deferred=update.quota_deferred,
-                        retry_not_before=update.retry_not_before if update.retry_not_before is not None else update_result.retry_not_before,
-                        repair_result=update_result,
-                    )
-                reason = update_result.reason or "base branch update failed"
-                actions.append(f"Base branch comparison or update failed for PR #{request.pr_number}")
                 return LocalCIRepairResult(
                     tuple(actions),
                     attempt_started=update_result.attempt_started,
@@ -178,12 +197,10 @@ def execute_local_ci_repair(request: LocalCIRepairRequest, ports: LocalCIRepairP
                     synchronized=(update_result.synchronized if update_result.synchronization_state is RepairFactState.AVAILABLE else None),
                     quota_deferred=update.quota_deferred,
                     retry_not_before=update.retry_not_before if update.retry_not_before is not None else update_result.retry_not_before,
-                    failure_reason=reason,
+                    failure_reason=(update_result.reason or "base branch update failed") if update_result.disposition is RepairDisposition.FAILED else "",
                     repair_result=update_result,
                 )
 
-            actions.append(f"PR #{request.pr_number} is up to date with main branch, test failures are due to PR content")
-            ports.trace_base_update("up_to_date")
             if not ports.automatic_fix_enabled():
                 actions.append(f"Automatic test fix is disabled for PR #{request.pr_number}; skipping test-failure repair")
                 return LocalCIRepairResult(tuple(actions))

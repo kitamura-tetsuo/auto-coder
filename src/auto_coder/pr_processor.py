@@ -6839,6 +6839,12 @@ def _handle_pr_merge(
                 "skipped": f"Skipped base branch update for PR #{pr_number}",
                 "pushed": f"Pushed updated branch for PR #{pr_number}",
                 "up_to_date": f"PR #{pr_number} is up to date",
+                "applied_unconfirmed": f"Applied base update for PR #{pr_number}; publication evidence is incomplete",
+                "delegated": f"Delegated base update for PR #{pr_number}; evidence is pending",
+                "deferred": f"Deferred base update for PR #{pr_number}",
+                "refused": f"Base update was refused for PR #{pr_number}",
+                "quality_refused": f"Base update failed quality checks for PR #{pr_number}",
+                "failed": f"Base update failed for PR #{pr_number}",
             }
             get_trace_logger().log(
                 "Update Base",

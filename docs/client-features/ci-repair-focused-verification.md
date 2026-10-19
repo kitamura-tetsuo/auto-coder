@@ -12,6 +12,14 @@ exact-head authority context encloses the first workspace mutation. The service
 returns attempt-start, candidate-head and synchronization facts independently;
 action text is not publication evidence.
 
+Base-update operator actions and the existing `Update Base` trace stage are
+classified at this consumer from the typed disposition and fact states. Only an
+`APPLIED` result with an available resulting head and confirmed synchronization
+is reported as `pushed`; no-op, delegated, deferred, refused, quality-refused,
+failed, and applied-without-publication-evidence results retain distinct labels.
+Unknown receipt, head, and synchronization facts are rendered as unknown, and a
+trace-recorder failure does not change the selected execution result or routing.
+
 The public PR handler passes that service result through the same typed repair
 boundary used by cloud and conflict owners. The resulting disposition, target
 head, synchronization certainty, and retry time are retained on the public
