@@ -61,6 +61,101 @@ def conflict_repository(tmp_path: Path) -> tuple[Path, dict[str, object]]:
     }
 
 
+def clean_update_repository(tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
+    """Create a PR branch that can merge a one-commit base advance cleanly."""
+    remote = tmp_path / "remote.git"
+    seed = tmp_path / "seed"
+    git(tmp_path, "init", "--bare", str(remote))
+    git(tmp_path, "init", "-b", "main", str(seed))
+    git(seed, "config", "user.email", "test@example.com")
+    git(seed, "config", "user.name", "Test")
+    (seed / "common.txt").write_text("common\n")
+    git(seed, "add", "common.txt")
+    git(seed, "commit", "-m", "initial")
+    git(seed, "remote", "add", "origin", str(remote))
+    git(seed, "push", "-u", "origin", "main")
+    git(seed, "checkout", "-b", "feature")
+    (seed / "feature.txt").write_text("feature\n")
+    git(seed, "add", "feature.txt")
+    git(seed, "commit", "-m", "feature")
+    git(seed, "push", "-u", "origin", "feature")
+    input_head = git(seed, "rev-parse", "HEAD").stdout.strip()
+    git(seed, "checkout", "main")
+    (seed / "base.txt").write_text("base\n")
+    git(seed, "add", "base.txt")
+    git(seed, "commit", "-m", "base advance")
+    git(seed, "push")
+    work = tmp_path / "work"
+    git(tmp_path, "clone", "--branch", "feature", str(remote), str(work))
+    git(work, "config", "user.email", "test@example.com")
+    git(work, "config", "user.name", "Test")
+    return (
+        work,
+        remote,
+        {
+            "number": 2552,
+            "head": {"ref": "feature", "sha": input_head},
+            "base": {"ref": "main"},
+        },
+    )
+
+
+@pytest.mark.parametrize("outcome", ["lost-response", "actor-advanced"])
+def test_clean_update_reconciles_failed_push_without_blind_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _use_real_commands: None,
+    outcome: str,
+) -> None:
+    work, remote, pr_data = clean_update_repository(tmp_path)
+    monkeypatch.chdir(work)
+    push_calls = 0
+    provider = MagicMock()
+
+    def controlled_push() -> CommandResult:
+        nonlocal push_calls
+        push_calls += 1
+        if outcome == "lost-response":
+            git(work, "push", "origin", "HEAD:feature")
+        else:
+            actor = tmp_path / "actor"
+            git(tmp_path, "clone", "--branch", "feature", str(remote), str(actor))
+            git(actor, "config", "user.email", "actor@example.com")
+            git(actor, "config", "user.name", "Actor")
+            (actor / "actor.txt").write_text("actor\n")
+            git(actor, "add", "actor.txt")
+            git(actor, "commit", "-m", "actor advance")
+            git(actor, "push", "origin", "feature")
+        return CommandResult(False, "", "controlled lost response", 1)
+
+    with (
+        patch("auto_coder.pr_processor.git_push", side_effect=controlled_push),
+        patch("auto_coder.pr_processor._dispatch_cloud_conflict_repair", provider),
+        patch("auto_coder.base_update_execution.time.sleep") as sleep,
+    ):
+        result = _update_with_base_branch("owner/repo", pr_data, AutomationConfig())
+
+    assert result.repair_result is not None
+    candidate = git(work, "rev-parse", "HEAD").stdout.strip()
+    remote_head = git(tmp_path, "--git-dir", str(remote), "rev-parse", "refs/heads/feature").stdout.strip()
+    assert result.repair_result.resulting_head == candidate
+    assert result.repair_result.input_head == pr_data["head"]["sha"]
+    assert result.repair_result.repository == "owner/repo"
+    assert result.repair_result.pr_number == 2552
+    assert push_calls == 1
+    sleep.assert_not_called()
+    provider.assert_not_called()
+    if outcome == "lost-response":
+        assert result.repair_result.disposition is RepairDisposition.APPLIED
+        assert result.repair_result.synchronized is True
+        assert remote_head == candidate
+    else:
+        assert result.repair_result.disposition is RepairDisposition.REFUSED
+        assert result.repair_result.synchronized is False
+        assert remote_head != candidate
+        assert git(work, "status", "--porcelain").stdout == ""
+
+
 @pytest.mark.parametrize(
     ("response", "resolve_file", "push_ok", "expected"),
     [

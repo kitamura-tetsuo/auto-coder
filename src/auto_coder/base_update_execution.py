@@ -8,7 +8,6 @@ display actions.
 
 from __future__ import annotations
 
-import sys
 import time
 from dataclasses import dataclass, replace
 from typing import Any, Callable
@@ -180,6 +179,30 @@ def _run_base_update_operation(
 
     target_branch = pr_data.get("base_branch") or pr_data.get("base", {}).get("ref") or config.MAIN_BRANCH
     input_head = pr_data.get("head", {}).get("sha", "")
+    head_branch = str(pr_data.get("head", {}).get("ref") or pr_data.get("head_branch") or "")
+
+    def observe_publication(candidate_head: str) -> tuple[str, str]:
+        """Observe the destination ref after an unsuccessful push response.
+
+        A failed transport result is not proof that the remote rejected the
+        update: the server may have accepted it before the response was lost.
+        Use a read-only Git observation so a retry is made only while the
+        destination is still the input head.
+        """
+        if not head_branch:
+            return "unknown", "PR head branch is unavailable"
+        observed = cmd.run_command(["git", "ls-remote", "--heads", "origin", f"refs/heads/{head_branch}"])
+        if not observed.success:
+            return "unknown", observed.stderr or "remote head observation failed"
+        fields = observed.stdout.split()
+        if not fields:
+            return "unknown", "remote head observation returned no destination ref"
+        remote_head = fields[0]
+        if remote_head == candidate_head:
+            return "published", remote_head
+        if input_head and remote_head == input_head:
+            return "unchanged", remote_head
+        return "changed", remote_head
 
     def record(disposition: Any, *, reason: str = "", resulting_head: str = "", synchronized: bool | None = None) -> None:
         """Attach the authoritative control result without interpreting display text."""
@@ -230,28 +253,61 @@ def _run_base_update_operation(
         if result.success:
             actions.append(f"Successfully merged {target_branch} branch into PR #{pr_number}")
 
+            candidate = cmd.run_command(["git", "rev-parse", "HEAD"])
+            candidate_head = candidate.stdout.strip() if candidate.success else ""
+            if not candidate_head:
+                actions.append(f"Failed to observe local candidate head for PR #{pr_number}")
+                record(RepairDisposition.FAILED, reason=actions[-1])
+                return actions
+
             # Push the updated branch using centralized helper with retry
             push_result = git_push()
             if push_result.success:
                 actions.append(f"Pushed updated branch for PR #{pr_number}")
                 # Signal to skip further LLM analysis for this PR in this run
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
-                head = cmd.run_command(["git", "rev-parse", "HEAD"])
-                record(RepairDisposition.APPLIED, resulting_head=head.stdout.strip() if head.success else "", synchronized=True)
+                record(RepairDisposition.APPLIED, resulting_head=candidate_head, synchronized=True)
             else:
-                # Push failed - try one more time after a brief pause
+                publication, detail = observe_publication(candidate_head)
+                if publication == "published":
+                    actions.append(f"Confirmed updated branch for PR #{pr_number} after the push response was lost")
+                    actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+                    record(RepairDisposition.APPLIED, resulting_head=candidate_head, synchronized=True)
+                    return actions
+                if publication == "changed":
+                    actions.append(f"Refused to retry base-update publication for PR #{pr_number}: destination advanced to {detail}")
+                    record(RepairDisposition.REFUSED, reason=actions[-1], resulting_head=candidate_head, synchronized=False)
+                    return actions
+                if publication == "unknown":
+                    actions.append(f"Deferred base-update publication for PR #{pr_number}: destination head is unknown ({detail})")
+                    record(RepairDisposition.DEFERRED, reason=actions[-1], resulting_head=candidate_head)
+                    return actions
+
+                # The destination is demonstrably still the input head, so one
+                # bounded retry cannot overwrite another actor's update.
                 logger.warning(f"First push attempt failed: {push_result.stderr}, retrying...")
                 time.sleep(2)
                 retry_push_result = git_push()
                 if retry_push_result.success:
                     actions.append(f"Pushed updated branch for PR #{pr_number} (after retry)")
                     actions.append("ACTION_FLAG:SKIP_ANALYSIS")
-                    head = cmd.run_command(["git", "rev-parse", "HEAD"])
-                    record(RepairDisposition.APPLIED, resulting_head=head.stdout.strip() if head.success else "", synchronized=True)
+                    record(RepairDisposition.APPLIED, resulting_head=candidate_head, synchronized=True)
                 else:
                     logger.error(f"Failed to push updated branch after retry: {retry_push_result.stderr}")
-                    logger.error("Exiting application due to git push failure")
-                    sys.exit(1)
+                    publication, detail = observe_publication(candidate_head)
+                    if publication == "published":
+                        actions.append(f"Confirmed updated branch for PR #{pr_number} after the retry response was lost")
+                        actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+                        record(RepairDisposition.APPLIED, resulting_head=candidate_head, synchronized=True)
+                    elif publication == "unchanged":
+                        actions.append(f"Failed to publish base update for PR #{pr_number} after two push attempts: {retry_push_result.stderr}")
+                        record(RepairDisposition.FAILED, reason=actions[-1], resulting_head=candidate_head, synchronized=False)
+                    elif publication == "changed":
+                        actions.append(f"Base-update publication for PR #{pr_number} was not confirmed: destination advanced to {detail}")
+                        record(RepairDisposition.REFUSED, reason=actions[-1], resulting_head=candidate_head, synchronized=False)
+                    else:
+                        actions.append(f"Deferred base-update publication for PR #{pr_number}: destination head is unknown ({detail})")
+                        record(RepairDisposition.DEFERRED, reason=actions[-1], resulting_head=candidate_head)
         else:
             # Merge conflict occurred, check if Jules PR
             actions.append(f"Merge conflict detected for PR #{pr_number}")

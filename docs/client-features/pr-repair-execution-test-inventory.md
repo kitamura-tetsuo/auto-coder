@@ -37,10 +37,12 @@ controlled, so their successful execution must not be described as live E2E.
 
 ## Preserved behavior and limitations
 
-These regressions preserve the existing repair behavior and process-exit
-policy. A clean base merge is complete only after publication; the currently
-terminal second push failure still propagates `SystemExit` and is not reported
-as a successful repair. Local test success, provider request acceptance, action
+These regressions preserve the existing repair behavior without allowing a
+single PR's publication failure to terminate Auto-Coder. A clean base merge is
+complete only after the destination branch is observed at the candidate commit;
+an unchanged destination permits the one bounded retry, a changed destination is
+not overwritten, and an unreadable destination remains deferred. Local test
+success, provider request acceptance, action
 wording, and `ACTION_FLAG` presentation artifacts do not establish current-head
 CI success or permission to merge.
 
