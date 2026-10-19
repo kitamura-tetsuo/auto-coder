@@ -13,9 +13,9 @@ clean workspace; do not point the harness at a workspace containing unrelated
 work. Keep normal Actions workflows enabled and configure the selected local
 backend as the first ordinary-priority producer in the usual Auto-Coder
 configuration. The harness verifies that producer and uses the supported
-`process-issues` interface rather than attempting a command-line override. Export
-`GITHUB_TOKEN` with only the permissions needed for that disposable repository. No provider credential
-is written to the repository or evidence file.
+`process-issues` interface rather than attempting a command-line override.
+Export `GITHUB_TOKEN` with only the permissions needed for that disposable
+repository. No provider credential is written to the repository or evidence file.
 
 The fixture must have a normal pull-request workflow whose test result is
 independent of the model. Use fixture-only branches and a unique prefix such as
