@@ -26,6 +26,15 @@ from .utils import VERBOSE_ENV_FLAG
 logger = get_logger(__name__)
 
 
+def _synchronize_codex_auth_secret_unless_skipped(skip: bool) -> None:
+    """Keep isolated operator runs outside the optional secret publisher."""
+    if skip:
+        return
+    from .github_secrets import synchronize_codex_auth_secret
+
+    synchronize_codex_auth_secret()
+
+
 def _force_exit_after_second_sigint() -> None:
     """Exit without asyncio's executor drain; this is the explicit unsafe path."""
     os._exit(130)
@@ -162,6 +171,7 @@ async def _run_process_issues_daemon(
 @click.option("--github-webhook-secret", envvar="GITHUB_WEBHOOK_SECRET", help="GitHub Webhook Secret")
 @click.option("--sentry-webhook-secret", envvar="SENTRY_WEBHOOK_SECRET", help="Sentry Webhook Secret")
 @click.option("--result-file", type=click.Path(dir_okay=False, path_type=Path), help="Write the authoritative explicit-target outcome as JSON (operator automation only).")
+@click.option("--skip-codex-auth-secret-sync", is_flag=True, help="Skip optional Codex auth publication for isolated operator runs.")
 def process_issues(
     repo: Optional[str],
     github_token: Optional[str],
@@ -181,6 +191,7 @@ def process_issues(
     github_webhook_secret: Optional[str],
     sentry_webhook_secret: Optional[str],
     result_file: Optional[Path],
+    skip_codex_auth_secret_sync: bool,
     retry: bool = False,
     jules_mode: Optional[bool] = None,
     resume: bool = False,
@@ -230,9 +241,7 @@ def process_issues(
 
     # Optional and deliberately failure-isolated: ordinary GitHub processing never
     # receives or reuses the dedicated Actions Secrets credential.
-    from .github_secrets import synchronize_codex_auth_secret
-
-    synchronize_codex_auth_secret()
+    _synchronize_codex_auth_secret_unless_skipped(skip_codex_auth_secret_sync)
 
     # Record resource usage and crash diagnostics for this (long running) session
     start_health_monitoring()
@@ -525,6 +534,8 @@ def process_issues(
                         "target_outcome": final_outcome,
                         "target_reason": result.get("target_reason"),
                         "target_actions": list(result.get("target_actions") or []),
+                        "selected_backend": primary_backend,
+                        "execution_origin": "ordinary-explicit-process-issues",
                     },
                     sort_keys=True,
                 )

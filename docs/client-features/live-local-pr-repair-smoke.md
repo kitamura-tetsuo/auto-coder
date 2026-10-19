@@ -22,6 +22,14 @@ independent of the model. Use fixture-only branches and a unique prefix such as
 `ac-live-smoke-<date>-`; record those branch names before beginning so cleanup
 cannot target unrelated refs.
 
+Add `<!-- auto-coder:local-llm -->` to each fixture PR body. This is the
+supported local ownership marker used by ordinary CI and conflict repair; a
+branch prefix alone is not attribution. The harness blocks before processing
+when the marker (or another supported local Auto-Coder identity) is absent.
+Both harness invocations explicitly disable optional Codex-auth secret
+synchronization, preventing an unrelated configured secret publisher from
+mutating another repository.
+
 ## CI-failure flow
 
 1. From the disposable repository's base, create a fixture branch containing a
@@ -70,7 +78,9 @@ cannot target unrelated refs.
 Retain the two redacted JSON files with the pilot record. They contain the
 repository and PR, backend/origin, H1/H2 and base identities, every pre/post
 current-head run ID and their aggregate conclusions, process result, merge
-disposition, and failure phase. Missing
+disposition, repair and gate actions, ownership disposition, and failure phase.
+The separate `.repair-result.json` and `.gate-result.json` artifacts preserve
+the production outcomes that feed that evidence. Missing
 credentials, repository, clean clone, failed-H1, or confirmed-conflict state is
 reported as `BLOCKED`, never as a pass.
 
