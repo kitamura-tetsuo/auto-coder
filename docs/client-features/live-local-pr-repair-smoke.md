@@ -64,8 +64,9 @@ cannot target unrelated refs.
 ## Results and reset
 
 Retain the two redacted JSON files with the pilot record. They contain the
-repository and PR, backend/origin, H1/H2 and base identities, pre/post run IDs
-and conclusions, process result, merge disposition, and failure phase. Missing
+repository and PR, backend/origin, H1/H2 and base identities, every pre/post
+current-head run ID and their aggregate conclusions, process result, merge
+disposition, and failure phase. Missing
 credentials, repository, clean clone, failed-H1, or confirmed-conflict state is
 reported as `BLOCKED`, never as a pass.
 

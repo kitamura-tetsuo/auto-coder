@@ -26,13 +26,13 @@ def test_production_repository_is_refused_before_live_work(repository, tmp_path)
 
 
 def test_ci_requires_terminal_failure_on_captured_head():
-    snapshot = smoke.Snapshot("h1", "b1", True, 7, "success")
+    snapshot = smoke.Snapshot("h1", "b1", True, (7,), "success")
     with pytest.raises(smoke.Blocked, match="terminal-failing"):
         smoke.require_initial_state("ci", snapshot)
 
 
 def test_known_empty_is_only_admitted_for_affirmative_conflict():
-    snapshot = smoke.Snapshot("h1", "b1", False, None, "KNOWN_EMPTY")
+    snapshot = smoke.Snapshot("h1", "b1", False, (), "KNOWN_EMPTY")
     smoke.require_initial_state("conflict", snapshot)
     with pytest.raises(smoke.Blocked):
         smoke.require_initial_state("ci", snapshot)
@@ -41,13 +41,13 @@ def test_known_empty_is_only_admitted_for_affirmative_conflict():
 def test_wait_requires_new_head_and_terminal_current_head_run():
     snapshots = iter(
         [
-            smoke.Snapshot("h1", "b1", False, 1, "failure"),
-            smoke.Snapshot("h2", "b1", True, 2, "in_progress"),
-            smoke.Snapshot("h2", "b1", True, 2, "success"),
+            smoke.Snapshot("h1", "b1", False, (1,), "failure"),
+            smoke.Snapshot("h2", "b1", True, (2,), "pending"),
+            smoke.Snapshot("h2", "b1", True, (2,), "success"),
         ]
     )
     observer = SimpleNamespace(snapshot=lambda _pr: next(snapshots))
     result = smoke.wait_for_result(observer, 42, "h1", 30, sleep=lambda _seconds: None)
     assert result.head == "h2"
-    assert result.run_id == 2
+    assert result.run_ids == (2,)
     assert result.conclusion == "success"

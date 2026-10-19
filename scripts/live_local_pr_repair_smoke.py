@@ -23,6 +23,7 @@ from auto_coder.util.gh_cache import get_ghapi_client
 
 FORBIDDEN_REPOSITORIES = frozenset({"kitamura-tetsuo/auto-coder", "kitamura-tetsuo/outliner"})
 TERMINAL = frozenset({"success", "failure", "cancelled", "timed_out", "action_required", "neutral", "skipped", "stale"})
+PASSING = frozenset({"success", "neutral", "skipped"})
 
 
 class Blocked(RuntimeError):
@@ -34,7 +35,7 @@ class Snapshot:
     head: str
     base: str
     mergeable: bool | None
-    run_id: int | None
+    run_ids: tuple[int, ...]
     conclusion: str
 
 
@@ -50,9 +51,9 @@ class Evidence:
     resulting_head: str
     captured_base: str
     resulting_base: str
-    pre_ci_run_id: int | None
+    pre_ci_run_ids: tuple[int, ...]
     pre_ci_conclusion: str
-    post_ci_run_id: int | None
+    post_ci_run_ids: tuple[int, ...]
     post_ci_conclusion: str
     repair_exit_code: int | None
     review_merge_result: str
@@ -62,7 +63,7 @@ class Evidence:
 
 class GitHubObserver:
     def __init__(self, token: str, repository: str) -> None:
-        self.api = get_ghapi_client(token, subsystem="live-local-pr-repair-smoke")
+        self.api = get_ghapi_client(token, subsystem="live-local-pr-repair-smoke", extra_headers={"Cache-Control": "no-cache"})
         self.owner, self.repo = repository.split("/", 1)
 
     def snapshot(self, pr_number: int) -> Snapshot:
@@ -72,9 +73,16 @@ class GitHubObserver:
         runs = self.api.actions.list_workflow_runs_for_repo(self.owner, self.repo, head_sha=head, per_page=100)
         candidates = [run for run in runs.workflow_runs if str(run.head_sha) == head and str(run.event) in {"pull_request", "pull_request_target"}]
         candidates.sort(key=lambda run: str(run.created_at), reverse=True)
-        run = candidates[0] if candidates else None
-        conclusion = "KNOWN_EMPTY" if run is None else str(run.conclusion or run.status or "unknown")
-        return Snapshot(head, base, pr.mergeable, int(run.id) if run else None, conclusion)
+        conclusions = tuple(str(run.conclusion or run.status or "unknown") for run in candidates)
+        if not conclusions:
+            conclusion = "KNOWN_EMPTY"
+        elif any(value not in TERMINAL for value in conclusions):
+            conclusion = "pending"
+        elif all(value in PASSING for value in conclusions):
+            conclusion = "success"
+        else:
+            conclusion = next(value for value in conclusions if value not in PASSING)
+        return Snapshot(head, base, pr.mergeable, tuple(int(run.id) for run in candidates), conclusion)
 
     def merge_state(self, pr_number: int) -> str:
         pr = self.api.pulls.get(self.owner, self.repo, pr_number)
@@ -161,9 +169,9 @@ def run_smoke(args: argparse.Namespace) -> Evidence:
         after.head,
         before.base,
         after.base,
-        before.run_id,
+        before.run_ids,
         before.conclusion,
-        after.run_id,
+        after.run_ids,
         after.conclusion,
         process.returncode if gate_exit in (None, 0) else gate_exit,
         merge_result,
@@ -185,7 +193,7 @@ def main() -> int:
     try:
         evidence = run_smoke(args)
     except Blocked as exc:
-        evidence = Evidence("BLOCKED", args.scenario, args.repository, args.pr, args.backend, "not started", "", "", "", "", None, "", None, "", None, "not observed", "preflight", str(exc))
+        evidence = Evidence("BLOCKED", args.scenario, args.repository, args.pr, args.backend, "not started", "", "", "", "", (), "", (), "", None, "not observed", "preflight", str(exc))
     args.evidence.parent.mkdir(parents=True, exist_ok=True)
     args.evidence.write_text(json.dumps(asdict(evidence), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"{evidence.status}: {evidence.disposition}")
