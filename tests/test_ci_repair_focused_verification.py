@@ -8,6 +8,8 @@ Only the provider boundary and GitHub/push boundaries are controlled.
 from __future__ import annotations
 
 import subprocess
+from contextlib import nullcontext
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, Dict, List
@@ -17,6 +19,8 @@ import pytest
 
 from src.auto_coder import pr_processor
 from src.auto_coder.automation_config import AutomationConfig
+from src.auto_coder.base_update_execution import BaseUpdateConflictExecutionService
+from src.auto_coder.ci_repair_authority import CIRepairAuthority
 from src.auto_coder.ci_repair_verification import (
     TargetStatus,
     classify_target_result,
@@ -24,7 +28,9 @@ from src.auto_coder.ci_repair_verification import (
     follow_up_budget_exhausted,
 )
 from src.auto_coder.invocation_admission import ci_repair_designated
+from src.auto_coder.pr_repair_dispatch import RepairDisposition, RepairFactState
 from src.auto_coder.prompt_loader import render_prompt
+from src.auto_coder.util.github_action import DetailedChecksResult
 from tests.ci_observation_fakes import authoritative_ci_status
 
 SCRIPT = r"""#!/bin/bash
@@ -325,6 +331,188 @@ def test_handle_pr_merge_origin_reaches_every_target_and_initial_correction(harn
     assert len(h.invocations()) == 8 and "UNSCOPED" not in h.invocations() and not h.sentinel.exists()
     assert (h.commits, h.pushes) == (1, 1)
     assert any("passed locally on the latest corrected state" in a for a in actions)
+
+
+class _TraceRecorder:
+    def __init__(self, *, fail: bool = False):
+        self.fail = fail
+        self.records: list[tuple[str, str, dict[str, object]]] = []
+
+    def log(self, stage: str, description: str, **fields: object) -> None:
+        if self.fail:
+            raise RuntimeError("trace unavailable")
+        self.records.append((stage, description, fields))
+
+
+def _run_production_base_update(
+    monkeypatch,
+    *,
+    commits_behind: int,
+    head_observation: str | None,
+    merge_succeeds: bool = True,
+    display_text: str | None = None,
+    trace_fails: bool = False,
+):
+    """Drive the real producer, local consumer, trace adapter, and public result."""
+    from unittest.mock import MagicMock
+
+    trace = _TraceRecorder(fail=trace_fails)
+    effects = {"fetch": 0, "merge": 0, "push": 0, "delegate": 0, "abort": 0}
+
+    def command(args, *unused_args, **unused_kwargs):
+        if args == ["git", "branch", "--show-current"]:
+            return SimpleNamespace(success=True, stdout="feature/x\n", stderr="", returncode=0)
+        if args == ["git", "fetch", "origin"]:
+            effects["fetch"] += 1
+            return SimpleNamespace(success=True, stdout="", stderr="", returncode=0)
+        if args[:3] == ["git", "rev-list", "--count"]:
+            return SimpleNamespace(success=True, stdout=f"{commits_behind}\n", stderr="", returncode=0)
+        if args[:2] == ["git", "merge"] and args[-1] != "--abort":
+            effects["merge"] += 1
+            return SimpleNamespace(success=merge_succeeds, stdout="", stderr="conflict" if not merge_succeeds else "", returncode=0 if merge_succeeds else 1)
+        if args == ["git", "merge", "--abort"]:
+            effects["abort"] += 1
+            return SimpleNamespace(success=True, stdout="", stderr="", returncode=0)
+        if args == ["git", "rev-parse", "HEAD"]:
+            return SimpleNamespace(success=head_observation is not None, stdout=f"{head_observation}\n" if head_observation else "", stderr="", returncode=0 if head_observation is not None else 1)
+        raise AssertionError(f"unexpected command: {args}")
+
+    def push(*unused_args, **unused_kwargs):
+        effects["push"] += 1
+        return SimpleNamespace(success=True, stdout="", stderr="", returncode=0)
+
+    def delegate(*unused_args, **unused_kwargs):
+        effects["delegate"] += 1
+        return pr_processor.CloudConflictDelegationResult(
+            delegated=False,
+            deferred=True,
+            reason="provider capacity pending",
+            retry_not_before=321.0,
+        )
+
+    original_execute = BaseUpdateConflictExecutionService.execute_base_update
+    produced_results = []
+
+    def execute_with_display(self, request, pr_data, config=None, github_client=None):
+        produced = original_execute(self, request, pr_data, config, github_client)
+        produced_results.append(produced)
+        return replace(produced, actions=(display_text,)) if display_text is not None else produced
+
+    pr = {
+        "number": 7,
+        "title": "t",
+        "body": "<!-- auto-coder:local-llm -->",
+        "head": {"ref": "feature/x", "sha": "input-head"},
+        "base": {"ref": "main"},
+    }
+    client = MagicMock()
+    client.get_pr_review_threads_strict.return_value = []
+    config = AutomationConfig(automatic_test_fix=False)
+    config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = False
+    authority = CIRepairAuthority(True, "current exact-head CI failure", "input-head")
+    with (
+        patch.object(pr_processor.cmd, "run_command", side_effect=command),
+        patch.object(pr_processor, "current_ci_failure_authority", return_value=nullcontext(authority)),
+        patch.object(pr_processor, "check_github_actions_and_exit_if_in_progress", return_value=True),
+        patch.object(pr_processor, "_get_mergeable_state", return_value={"mergeable": True}),
+        patch.object(pr_processor, "_is_jules_pr", return_value=False),
+        patch.object(pr_processor, "_is_dependabot_pr", return_value=False),
+        patch.object(pr_processor, "_is_local_llm_pr", return_value=True),
+        patch.object(pr_processor, "BranchManager"),
+        patch.object(pr_processor, "_check_github_actions_status", side_effect=authoritative_ci_status(success=False, ids=[1])),
+        patch.object(
+            pr_processor,
+            "get_detailed_checks_from_history",
+            return_value=MagicMock(spec=DetailedChecksResult, success=False, failed_checks=[{"id": 1, "name": "tests", "conclusion": "failure"}]),
+        ),
+        patch.object(pr_processor, "git_push", side_effect=push),
+        patch.object(pr_processor, "_resolve_cloud_conflict_origin", return_value=None),
+        patch.object(pr_processor, "_delegate_cloud_merge_conflict_repair_result", side_effect=delegate),
+        patch.object(pr_processor, "get_trace_logger", return_value=trace),
+        patch.object(BaseUpdateConflictExecutionService, "execute_base_update", execute_with_display),
+    ):
+        actions = pr_processor._handle_pr_merge(client, "o/r", pr, config, {})
+    assert len(produced_results) == 1
+    return actions, trace, effects, produced_results[0].repair
+
+
+@pytest.mark.parametrize(
+    ("commits_behind", "head", "merge_succeeds", "expected_disposition", "expected_trace", "action_text", "expected_effects"),
+    [
+        (1, "new-head", True, RepairDisposition.APPLIED, "pushed", "at new-head", {"fetch": 1, "merge": 1, "push": 1, "delegate": 0, "abort": 0}),
+        (1, None, True, RepairDisposition.APPLIED, "applied_unconfirmed", "resulting head: unknown", {"fetch": 1, "merge": 1, "push": 1, "delegate": 0, "abort": 0}),
+        (0, "input-head", True, RepairDisposition.NO_UPDATE_NEEDED, "up_to_date", "is up to date", {"fetch": 1, "merge": 0, "push": 0, "delegate": 0, "abort": 0}),
+        (1, None, False, RepairDisposition.DEFERRED, "deferred", "later retry", {"fetch": 1, "merge": 1, "push": 0, "delegate": 1, "abort": 1}),
+    ],
+)
+def test_production_base_update_diagnostics_preserve_source_facts(
+    monkeypatch,
+    commits_behind,
+    head,
+    merge_succeeds,
+    expected_disposition,
+    expected_trace,
+    action_text,
+    expected_effects,
+):
+    """REQ-004: production-created facts survive through trace and public result."""
+    actions, trace, effects, source_result = _run_production_base_update(
+        monkeypatch,
+        commits_behind=commits_behind,
+        head_observation=head,
+        merge_succeeds=merge_succeeds,
+        display_text="identical producer display text",
+    )
+
+    assert source_result.disposition is expected_disposition
+    assert source_result.resulting_head_state is (RepairFactState.AVAILABLE if head else RepairFactState.UNKNOWN)
+    assert source_result.retry_not_before == (321.0 if expected_disposition is RepairDisposition.DEFERRED else None)
+    assert actions.repair_result is not None, tuple(actions)
+    expected_public = RepairDisposition.REFUSED if expected_disposition is RepairDisposition.NO_UPDATE_NEEDED else expected_disposition
+    assert actions.repair_result.disposition is expected_public
+    assert actions.repair_result.retry_not_before == source_result.retry_not_before
+    assert any(action_text in action for action in actions)
+    expected_description = {
+        "pushed": "Pushed updated branch for PR #7",
+        "applied_unconfirmed": "Applied base update for PR #7; publication evidence is incomplete",
+        "up_to_date": "PR #7 is up to date",
+        "deferred": "Deferred base update for PR #7",
+    }[expected_trace]
+    assert trace.records == [
+        (
+            "Update Base",
+            expected_description,
+            {"item_type": "pr", "item_number": 7, "details": {"result": expected_trace}},
+        )
+    ]
+    assert effects == expected_effects
+
+
+def test_production_base_update_ignores_display_text_and_trace_failure(monkeypatch):
+    """REQ-004: display/trace diagnostics do not authorize or undo publication."""
+    first, first_trace, first_effects, first_source = _run_production_base_update(
+        monkeypatch,
+        commits_behind=1,
+        head_observation="new-head",
+        display_text="claims refusal",
+    )
+    second, second_trace, second_effects, second_source = _run_production_base_update(
+        monkeypatch,
+        commits_behind=1,
+        head_observation="new-head",
+        display_text="claims a push",
+        trace_fails=True,
+    )
+
+    assert first.repair_result is not None, tuple(first)
+    assert second.repair_result is not None, tuple(second)
+    assert replace(first.repair_result, actions=()) == replace(second.repair_result, actions=())
+    assert first_source == second_source
+    assert first.repair_result.disposition is RepairDisposition.APPLIED
+    assert first.repair_result.synchronized is True
+    assert [record[2]["details"] for record in first_trace.records] == [{"result": "pushed"}]
+    assert second_trace.records == []
+    assert first_effects == second_effects == {"fetch": 1, "merge": 1, "push": 1, "delegate": 0, "abort": 0}
 
 
 def test_production_extraction_selects_every_reported_file_including_missing(harness):

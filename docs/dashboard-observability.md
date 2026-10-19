@@ -1,5 +1,15 @@
 # Dashboard observability verification
 
+Local CI base-update diagnostics retain the durable `Update Base` stage and its
+`details.result` key while making the result value truthful to the typed repair
+consumer. Values now distinguish `pushed`, `up_to_date`, `delegated`, `deferred`,
+`refused`, `quality_refused`, `failed`, and `applied_unconfirmed` (as well as the
+existing policy `skipped`); only a synchronized applied result with a known head
+uses `pushed`. The display description follows that value and does not grant CI,
+review, publication, or merge authority. Run `bash scripts/test.sh
+tests/test_local_ci_repair_execution.py -k base_update` for the production
+consumer classifications and trace-recorder fault isolation.
+
 Current-head ordinary test-oracle-gap completion adds a bounded reviewer round
 inside the existing adversarial-validation invocation. It does not introduce a
 new processing origin, structured trace schema, durable resume path, or dashboard
