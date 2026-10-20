@@ -2812,6 +2812,12 @@ class AutomationEngine:
 
         def wake_pr_validation(job: Any) -> None:
             assert self._loop is not None
+            if job.kind is LocalJobKind.PR_CI_FAILURE:
+                wake = asyncio.run_coroutine_threadsafe(self.invalidate_entity(job.repository, "pr", job.target_number), self._loop)
+                wake.result()
+                claim = LocalJobClaim(job, True)
+                local_job_store.record_effect(claim, "ci-repair-publication-ready", "pending", "durable CI repair artifact awaits controller publication")
+                return
             phase = resume_pr_correction_publication(job, local_job_store)
             wake = asyncio.run_coroutine_threadsafe(self.invalidate_entity(job.repository, "pr", job.target_number), self._loop)
             wake.result()
