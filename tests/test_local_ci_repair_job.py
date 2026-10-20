@@ -24,7 +24,7 @@ from auto_coder.ci_observation import (
     WorkflowExecutionIdentity,
     WorkflowObservation,
 )
-from auto_coder.ci_repair_authority import CIRepairAuthority, evaluate_ci_repair_snapshot
+from auto_coder.ci_repair_authority import CIRepairAuthority, current_ci_failure_authority, evaluate_ci_repair_snapshot
 from auto_coder.ci_repair_verification import FocusedVerification, TargetResult, TargetStatus, verify_targets
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.local_ci_repair_execution import CorrectionPorts, LocalCIRepairRequest
@@ -264,6 +264,81 @@ def test_changed_head_at_pre_entry_barrier_records_no_start(tmp_path: Path, _use
     assert refused.provider_entered is False and refused.execution_incarnation == ""
     assert "head changed" in refused.diagnostic
     assert harness.editor_calls == 0
+    runner.close()
+
+
+@pytest.mark.parametrize(
+    ("status", "conclusion", "run_id"),
+    [
+        ("in_progress", None, "202"),
+        ("completed", "success", "202"),
+        ("completed", "failure", "303"),
+    ],
+    ids=["pending-same-generation", "green-same-generation", "different-failed-generation"],
+)
+def test_production_ci_authority_refuses_superseded_facts_before_entry(
+    status: str,
+    conclusion: str | None,
+    run_id: str,
+    tmp_path: Path,
+    _use_real_commands,
+) -> None:
+    """REQ-002/006: fresh production CI facts must match the retained failure generation."""
+    harness = Harness.create(tmp_path)
+    job_id = harness.offer_from_production_selection()
+    entered, release = Event(), Event()
+    remote_before = git(harness.remote, "rev-parse", "refs/heads/feature")
+    observed_ci: dict[str, str | None] = {"status": "completed", "conclusion": "failure", "run_id": "202"}
+
+    class Checks:
+        @staticmethod
+        def list_for_ref(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+            return {"check_runs": []}
+
+    class Actions:
+        @staticmethod
+        def list_workflow_runs_for_repo(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+            entered.set()
+            assert release.wait(5)
+            return {
+                "workflow_runs": [
+                    {
+                        "id": int(observed_ci["run_id"] or "0"),
+                        "workflow_id": 101,
+                        "run_attempt": 1,
+                        "head_sha": harness.head,
+                        "status": observed_ci["status"],
+                        "conclusion": observed_ci["conclusion"],
+                        "name": "tests",
+                        "path": ".github/workflows/tests.yml",
+                    }
+                ]
+            }
+
+    api = type("API", (), {"checks": Checks(), "actions": Actions()})()
+    adapter = harness.adapter()
+    adapter._ports = LocalCIRepairJobPorts(  # type: ignore[attr-defined]
+        source=adapter._ports.source,  # type: ignore[attr-defined]
+        github_client=adapter._ports.github_client,  # type: ignore[attr-defined]
+        authority=current_ci_failure_authority,
+        local_route=adapter._ports.local_route,  # type: ignore[attr-defined]
+        correction=adapter._ports.correction,  # type: ignore[attr-defined]
+    )
+    runner = harness.runner(adapter)
+
+    with patch("auto_coder.ci_repair_authority.get_ghapi_client", return_value=api):
+        assert runner.poll() == 1
+        assert entered.wait(5)
+        observed_ci.update(status=status, conclusion=conclusion, run_id=run_id)
+        release.set()
+        wait_until(lambda: runner.active_count() == 0)
+
+    refused = harness.store.get(job_id)
+    assert refused is not None and refused.state is LocalJobState.PENDING
+    assert refused.provider_entered is False and refused.execution_incarnation == ""
+    assert refused.diagnostic
+    assert harness.editor_calls == 0
+    assert git(harness.remote, "rev-parse", "refs/heads/feature") == remote_before
     runner.close()
 
 
