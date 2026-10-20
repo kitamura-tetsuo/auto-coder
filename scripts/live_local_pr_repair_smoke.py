@@ -19,7 +19,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
-from auto_coder.llm_backend_config import TASK_ONLY_BACKEND_TYPES, get_llm_config
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.llm_backend_config import TASK_ONLY_BACKEND_TYPES, get_llm_config, resolve_config_path
 from auto_coder.pr_processor import is_local_llm_pr
 from auto_coder.util.gh_cache import get_ghapi_client
 from auto_coder.util.github_request_outcome import GitHubRequestError
@@ -41,6 +42,8 @@ class Snapshot:
     run_ids: tuple[int, ...]
     conclusion: str
     local_attributed: bool = True
+    head_repository: str = ""
+    base_repository: str = ""
 
 
 @dataclass(frozen=True)
@@ -50,6 +53,20 @@ class ProcessingRecord:
     execution_origin: str
     actions: tuple[str, ...]
     disposition: str
+    invocation_id: str = ""
+    repository: str = ""
+    repair: dict[str, object] | None = None
+    final_gate: dict[str, object] | None = None
+    editing_invocations: tuple[dict[str, object], ...] = ()
+
+
+@dataclass(frozen=True)
+class FinalPRObservation:
+    state: str
+    merged: bool
+    head: str
+    base: str
+    merge_commit: str
 
 
 @dataclass(frozen=True)
@@ -77,6 +94,9 @@ class Evidence:
     repair_actions: tuple[str, ...] = ()
     ownership_disposition: str = ""
     gate_actions: tuple[str, ...] = ()
+    configured_primary_backend: str = ""
+    editing_invocations: tuple[dict[str, object], ...] = ()
+    gate_exit_code: int | None = None
 
 
 class GitHubObserver:
@@ -105,27 +125,55 @@ class GitHubObserver:
             "head": {"ref": str(pr.head.ref)},
             "user": {"login": str(pr.user.login)},
         }
-        return Snapshot(head, base, pr.mergeable, tuple(int(run.id) for run in candidates), conclusion, is_local_llm_pr(pr_data))
+        return Snapshot(
+            head,
+            base,
+            pr.mergeable,
+            tuple(int(run.id) for run in candidates),
+            conclusion,
+            is_local_llm_pr(pr_data),
+            str(getattr(getattr(pr.head, "repo", None), "full_name", "")),
+            str(getattr(getattr(pr.base, "repo", None), "full_name", "")),
+        )
 
-    def merge_state(self, pr_number: int) -> str:
+    def final_pr(self, pr_number: int) -> FinalPRObservation:
         pr = self.api.pulls.get(self.owner, self.repo, pr_number)
-        if bool(pr.merged):
-            return "merged"
-        return f"open:{str(pr.mergeable_state or 'unknown')}"
+        return FinalPRObservation(
+            state=str(pr.state),
+            merged=bool(pr.merged),
+            head=str(pr.head.sha),
+            base=str(pr.base.sha),
+            merge_commit=str(pr.merge_commit_sha or ""),
+        )
 
 
 def validate_target(repository: str, workspace: Path) -> None:
-    if repository in FORBIDDEN_REPOSITORIES:
+    normalized = repository.strip().lower().removesuffix(".git")
+    if normalized in FORBIDDEN_REPOSITORIES:
         raise Blocked("operator-designated repository must not be auto-coder or outliner")
     if len(repository.split("/")) != 2:
         raise Blocked("repository must be an owner/name pair")
-    if not workspace.is_dir() or not (workspace / ".git").exists():
-        raise Blocked("workspace must be an existing clone of the designated disposable repository")
-    if subprocess.run(["git", "status", "--porcelain"], cwd=workspace, text=True, capture_output=True, check=False).stdout.strip():
+    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=workspace, text=True, capture_output=True, check=False)
+    if top.returncode != 0 or Path(top.stdout.strip()).resolve() != workspace:
+        raise Blocked("workspace must be the top level of the designated disposable clone")
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=workspace, text=True, capture_output=True, check=False)
+    if status.returncode != 0:
+        raise Blocked("git status failed for the designated workspace")
+    if status.stdout.strip():
         raise Blocked("designated workspace has unrelated local changes")
+    for key in ("remote.origin.url", "remote.origin.pushurl"):
+        remote = subprocess.run(["git", "config", "--get", key], cwd=workspace, text=True, capture_output=True, check=False)
+        if key.endswith("pushurl") and remote.returncode != 0:
+            continue
+        value = remote.stdout.strip().lower().removesuffix(".git")
+        identity = value.split("github.com", 1)[-1].lstrip("/: ")
+        if remote.returncode != 0 or identity != normalized:
+            raise Blocked(f"workspace {key} does not identify the designated repository")
 
 
-def require_initial_state(scenario: str, before: Snapshot) -> None:
+def require_initial_state(scenario: str, before: Snapshot, repository: str = "") -> None:
+    if repository and (before.head_repository or before.base_repository) and (before.head_repository != repository or before.base_repository != repository):
+        raise Blocked("fixture PR head and base must belong to the designated repository")
     if not before.local_attributed:
         raise Blocked("PR is missing supported local Auto-Coder attribution; add <!-- auto-coder:local-llm --> to its body")
     if scenario == "ci" and before.conclusion not in {"failure", "cancelled", "timed_out", "action_required"}:
@@ -134,15 +182,17 @@ def require_initial_state(scenario: str, before: Snapshot) -> None:
         raise Blocked("conflict scenario requires GitHub to report the PR as conflicting")
 
 
-def verify_configured_local_backend(repository: str, requested_backend: str) -> None:
+def verify_configured_local_backend(repository: str, requested_backend: str, config_path: str | None = None) -> None:
     """Require the requested backend to be the actual first ordinary producer."""
-    config = get_llm_config(repo_name=repository)
+    config = get_llm_config(repo_name=repository, config_path=config_path)
     candidates = [name for group in config.get_ordinary_priority_groups() for name in group]
     if not candidates or candidates[0] != requested_backend:
         actual = candidates[0] if candidates else "none"
         raise Blocked(f"configured first ordinary backend is {actual!r}, not {requested_backend!r}")
-    backend = config.get_backend_config(requested_backend)
-    backend_type = (backend.backend_type if backend else None) or requested_backend
+    try:
+        backend_type = config.resolve_backend_type(requested_backend)
+    except ValueError as exc:
+        raise Blocked(f"configured backend {requested_backend!r} is not resolvable: {exc}") from exc
     if backend_type in TASK_ONLY_BACKEND_TYPES:
         raise Blocked(f"configured backend {requested_backend!r} is not a synchronous local editing backend")
 
@@ -166,9 +216,11 @@ def production_command(args: argparse.Namespace, result_file: Path) -> list[str]
     return command
 
 
-def run_production(command: list[str], workspace: Path) -> subprocess.CompletedProcess[str]:
+def run_production(command: list[str], workspace: Path, config_path: str) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(command, cwd=workspace, text=True, check=False)
+        child_env = os.environ.copy()
+        child_env["AUTO_CODER_CONFIG_PATH"] = config_path
+        return subprocess.run(command, cwd=workspace, text=True, check=False, env=child_env)
     except FileNotFoundError as exc:
         raise Blocked("the auto-coder executable is unavailable") from exc
 
@@ -178,19 +230,66 @@ def read_processing_record(result_file: Path, pr_number: int) -> ProcessingRecor
         result = json.loads(result_file.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise Blocked("processing did not produce an authoritative result artifact") from exc
+    if not isinstance(result, dict) or result.get("schema_version") != 1:
+        raise Blocked("processing result artifact has an unsupported schema")
     if result.get("target_number") != pr_number or result.get("target_type") != "pr":
         raise Blocked("processing result artifact target identity does not match the requested PR")
     outcome = result.get("target_outcome")
-    backend = result.get("selected_backend")
+    backend = result.get("configured_primary_backend")
     origin = result.get("execution_origin")
     actions = result.get("target_actions")
-    if not isinstance(outcome, str) or not isinstance(backend, str) or not isinstance(origin, str) or not isinstance(actions, list) or not all(isinstance(action, str) for action in actions):
+    invocation_id = result.get("invocation_id")
+    repository = result.get("repository")
+    if not isinstance(outcome, str) or not isinstance(backend, str) or not isinstance(origin, str) or not isinstance(actions, list) or not all(isinstance(action, str) for action in actions) or not isinstance(invocation_id, str) or not invocation_id or not isinstance(repository, str):
         raise Blocked("processing result artifact is missing authoritative execution fields")
     reason = result.get("target_reason")
-    return ProcessingRecord(outcome, backend, origin, tuple(actions), reason if isinstance(reason, str) else "")
+    repair = result.get("repair")
+    final_gate = result.get("final_gate")
+    invocations = result.get("editing_invocations")
+    if repair is not None and not isinstance(repair, dict):
+        raise Blocked("processing repair evidence has an invalid type")
+    if final_gate is not None and not isinstance(final_gate, dict):
+        raise Blocked("processing final-gate evidence has an invalid type")
+    if not isinstance(invocations, list) or not all(isinstance(item, dict) for item in invocations):
+        raise Blocked("processing editing-invocation evidence has an invalid type")
+    return ProcessingRecord(outcome, backend, origin, tuple(actions), reason if isinstance(reason, str) else "", invocation_id, repository, repair, final_gate, tuple(invocations))
 
 
-def late_blocked_evidence(args: argparse.Namespace, before: Snapshot, after: Snapshot, repair: ProcessingRecord, repair_exit: int, phase: str, disposition: str) -> Evidence:
+def repair_matches_run(record: ProcessingRecord, repository: str, pr_number: int, h1: str, h2: str, requested_backend: str) -> bool:
+    repair = record.repair or {}
+    witnessed_edit = any(item.get("backend_alias") == requested_backend and item.get("backend_type") not in TASK_ONLY_BACKEND_TYPES | {"unresolved"} and str(item.get("purpose", "")).startswith("local-") for item in record.editing_invocations)
+    return (
+        record.repository == repository
+        and repair.get("repository") == repository
+        and repair.get("pr_number") == pr_number
+        and repair.get("input_head") == h1
+        and repair.get("disposition") == "applied"
+        and repair.get("attempt_started") is True
+        and repair.get("resulting_head_state") == "available"
+        and repair.get("resulting_head") == h2
+        and repair.get("synchronization_state") == "available"
+        and repair.get("synchronized") is True
+        and witnessed_edit
+    )
+
+
+def gate_matches_run(record: ProcessingRecord, repository: str, pr_number: int, h2: str) -> bool:
+    gate = record.final_gate or {}
+    return record.repository == repository and gate.get("disposition") == "MERGE_COMPLETED" and gate.get("repository") == repository and gate.get("pr_number") == pr_number and gate.get("evaluated_head") == h2
+
+
+def late_blocked_evidence(
+    args: argparse.Namespace,
+    before: Snapshot,
+    after: Snapshot,
+    repair: ProcessingRecord,
+    repair_exit: int,
+    phase: str,
+    disposition: str,
+    gate: ProcessingRecord | None = None,
+    gate_exit: int | None = None,
+) -> Evidence:
+    gate = gate or ProcessingRecord("not_run", "", "", (), "")
     return Evidence(
         "BLOCKED",
         args.scenario,
@@ -207,13 +306,17 @@ def late_blocked_evidence(args: argparse.Namespace, before: Snapshot, after: Sna
         after.run_ids,
         after.conclusion,
         repair_exit,
-        "not_run",
+        gate.outcome,
         "not observed",
         phase,
         disposition,
         repair.backend,
         repair.actions,
         "accepted local Auto-Coder attribution",
+        gate.actions,
+        repair.backend,
+        repair.editing_invocations,
+        gate_exit,
     )
 
 
@@ -234,21 +337,31 @@ def run_smoke(args: argparse.Namespace) -> Evidence:
         raise Blocked("GITHUB_TOKEN is missing")
     workspace = Path(args.workspace).resolve()
     validate_target(args.repository, workspace)
-    verify_configured_local_backend(args.repository, args.backend)
+    if args.evidence.resolve().is_relative_to(workspace):
+        raise Blocked("evidence and processing artifacts must be outside the fixture workspace")
+    config_path = str(Path(args.config_path).resolve())
+    verify_configured_local_backend(args.repository, args.backend, config_path)
+    test_script_path = AutomationConfig(repo_name=args.repository).TEST_SCRIPT_PATH
+    test_script = workspace / test_script_path
+    if not test_script.is_file():
+        raise Blocked(f"configured TEST_SCRIPT_PATH is missing from fixture: {test_script_path}")
     observer = GitHubObserver(token, args.repository)
     before = observer.snapshot(args.pr)
-    require_initial_state(args.scenario, before)
+    require_initial_state(args.scenario, before, args.repository)
     repair_file = args.evidence.with_suffix(".repair-result.json")
     gate_file = args.evidence.with_suffix(".gate-result.json")
     repair_file.unlink(missing_ok=True)
     gate_file.unlink(missing_ok=True)
     command = production_command(args, repair_file)
-    process = run_production(command, workspace)
-    after = wait_for_result(observer, args.pr, before.head, args.timeout)
+    process = run_production(command, workspace, config_path)
     try:
         repair = read_processing_record(repair_file, args.pr)
     except Blocked as exc:
-        return late_blocked_evidence(args, before, after, ProcessingRecord("missing", "", "", (), ""), process.returncode, "repair_result", str(exc))
+        return late_blocked_evidence(args, before, before, ProcessingRecord("missing", "", "", (), ""), process.returncode, "repair_result", str(exc))
+    repair_data = repair.repair or {}
+    if process.returncode != 0 or repair_data.get("attempt_started") is not True or repair_data.get("disposition") != "applied":
+        return late_blocked_evidence(args, before, before, repair, process.returncode, "repair_result", "processing did not establish an applied local repair")
+    after = wait_for_result(observer, args.pr, before.head, args.timeout)
     gate_exit: int | None = None
     gate = ProcessingRecord("not_run", "", "", (), "")
     if process.returncode == 0 and after.head != before.head and after.conclusion == "success":
@@ -257,17 +370,20 @@ def run_smoke(args: argparse.Namespace) -> Evidence:
         # current-head review/merge gates consume GitHub's H2 observation.
         gate_command = production_command(args, gate_file)
         try:
-            gate_exit = run_production(gate_command, workspace).returncode
+            gate_exit = run_production(gate_command, workspace, config_path).returncode
             gate = read_processing_record(gate_file, args.pr)
         except Blocked as exc:
-            return late_blocked_evidence(args, before, after, repair, process.returncode, "independent_review_or_merge", str(exc))
+            return late_blocked_evidence(args, before, after, repair, process.returncode, "independent_review_or_merge", str(exc), gate, gate_exit)
     try:
-        merge_result = observer.merge_state(args.pr)
+        final_pr = observer.final_pr(args.pr)
     except GitHubRequestError:
-        return late_blocked_evidence(args, before, after, repair, process.returncode, "final_merge_observation", "final merge state is inaccessible with the supplied credential")
+        return late_blocked_evidence(args, before, after, repair, process.returncode, "final_merge_observation", "final merge state is inaccessible with the supplied credential", gate, gate_exit)
     changed = after.head != before.head
     ci_passed = after.conclusion == "success"
-    passed = process.returncode == 0 and changed and ci_passed and gate_exit == 0 and gate.outcome == "success"
+    repair_valid = repair_matches_run(repair, args.repository, args.pr, before.head, after.head, args.backend)
+    gate_valid = gate_matches_run(gate, args.repository, args.pr, after.head)
+    final_valid = final_pr.merged and final_pr.head == after.head and final_pr.state == "closed"
+    passed = process.returncode == 0 and changed and ci_passed and gate_exit == 0 and gate.outcome == "success" and repair_valid and gate_valid and final_valid
     phase = "" if passed else ("repair" if process.returncode else "publication_or_current_head_ci")
     if changed and ci_passed and (gate_exit not in (None, 0) or gate.outcome not in {"not_run", "success"}):
         phase = "independent_review_or_merge"
@@ -286,15 +402,18 @@ def run_smoke(args: argparse.Namespace) -> Evidence:
         before.conclusion,
         after.run_ids,
         after.conclusion,
-        process.returncode if gate_exit in (None, 0) else gate_exit,
+        process.returncode,
         gate.outcome,
-        merge_result,
+        json.dumps(asdict(final_pr), sort_keys=True),
         phase,
         "new head and current-head Actions success observed" if passed else "live gate not satisfied",
         repair.backend,
         repair.actions,
         "accepted local Auto-Coder attribution",
         gate.actions,
+        repair.backend,
+        repair.editing_invocations,
+        gate_exit,
     )
 
 
@@ -308,6 +427,9 @@ def main() -> int:
     parser.add_argument("--evidence", required=True, type=Path)
     parser.add_argument("--timeout", type=int, default=1800)
     args = parser.parse_args()
+    args.evidence = args.evidence.resolve()
+    args.evidence.parent.mkdir(parents=True, exist_ok=True)
+    args.config_path = resolve_config_path()
     try:
         evidence = run_smoke(args)
     except (Blocked, GitHubRequestError) as exc:

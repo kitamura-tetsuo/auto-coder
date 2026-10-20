@@ -7889,6 +7889,8 @@ class AutomationEngine:
                     result.outcome = pr_result.outcome
                     result.retry_not_before = pr_result.retry_not_before
                     result.target_reason = pr_result.target_reason
+                    result.repair_result = pr_result.repair_result
+                    result.final_gate = pr_result.final_gate
                     result.success = pr_result.outcome != PRProcessingOutcome.FAILED
                     result.target_outcome = {
                         PRProcessingOutcome.SUCCESS: ExplicitTargetOutcome.SUCCESS,
@@ -8474,6 +8476,8 @@ class AutomationEngine:
                         "target_outcome": result.target_outcome,
                         "target_actions": result.target_actions,
                         "target_reason": result.target_reason,
+                        "repair_result": result.repair_result,
+                        "final_gate": result.final_gate,
                     }
 
                 try:
@@ -8583,6 +8587,8 @@ class AutomationEngine:
                     if explicit_only:
                         result.target_actions = list(processing_result.actions)
                         result.target_reason = processing_result.target_reason or processing_result.error or (processing_result.actions[0] if processing_result.actions else None)
+                        result.repair_result = processing_result.repair_result
+                        result.final_gate = processing_result.final_gate
                         identity_matches = processing_result.number == number and processing_result.type == candidate.type
                         target_outcome = processing_result.target_outcome
                         if not identity_matches:

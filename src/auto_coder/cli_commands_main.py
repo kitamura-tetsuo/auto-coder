@@ -4,6 +4,7 @@ import json
 import os
 import re
 import signal
+import uuid
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -19,7 +20,9 @@ from .git_utils import extract_number_from_branch, get_current_branch
 from .health_monitor import get_health_monitor, start_health_monitoring
 from .llm_backend_config import TASK_ONLY_BACKEND_TYPES, get_llm_config, is_jules_mode_enabled, set_active_repo_name
 from .logger_config import get_logger, setup_logger
+from .pr_processing_evidence import SCHEMA_VERSION, begin_invocation_observation, observed_invocations, redacted_dict
 from .progress_footer import setup_progress_footer_logging
+from .security_utils import redact_data, redact_string
 from .util.gh_cache import GitHubClient
 from .utils import VERBOSE_ENV_FLAG
 
@@ -449,6 +452,7 @@ def process_issues(
 
     # If only_target is provided, parse and process a single item
     if only_target:
+        begin_invocation_observation()
         number = None
         target_type = None
         # If URL, extract number and type
@@ -529,13 +533,19 @@ def process_issues(
             result_file.write_text(
                 json.dumps(
                     {
+                        "schema_version": SCHEMA_VERSION,
+                        "invocation_id": uuid.uuid4().hex,
+                        "repository": repo_name,
                         "target_number": result.get("target_number"),
                         "target_type": result.get("target_type"),
                         "target_outcome": final_outcome,
-                        "target_reason": result.get("target_reason"),
-                        "target_actions": list(result.get("target_actions") or []),
-                        "selected_backend": primary_backend,
+                        "target_reason": redact_string(str(result.get("target_reason") or "")),
+                        "target_actions": redact_data(list(result.get("target_actions") or [])),
+                        "configured_primary_backend": primary_backend,
                         "execution_origin": "ordinary-explicit-process-issues",
+                        "repair": redacted_dict(result.get("repair_result")),
+                        "final_gate": redacted_dict(result.get("final_gate")),
+                        "editing_invocations": [redacted_dict(item) for item in observed_invocations()],
                     },
                     sort_keys=True,
                 )

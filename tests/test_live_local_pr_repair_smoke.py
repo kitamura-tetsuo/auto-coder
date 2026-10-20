@@ -57,14 +57,17 @@ def test_wait_requires_new_head_and_terminal_current_head_run():
 
 
 def make_args(tmp_path, scenario="ci"):
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    (tmp_path / "scripts" / "test.sh").write_text("#!/bin/sh\n")
     return Namespace(
         scenario=scenario,
         repository="fixture-owner/disposable",
         pr=42,
         workspace=str(tmp_path),
         backend="codex",
-        evidence=tmp_path / "evidence.json",
+        evidence=tmp_path.parent / f"{tmp_path.name}-evidence.json",
         timeout=30,
+        config_path=str(tmp_path / "llm_config.toml"),
     )
 
 
@@ -98,6 +101,16 @@ class BackendConfig:
     def get_backend_config(self, name):
         backend_type = self.backend_types.get(name)
         return SimpleNamespace(backend_type=backend_type) if backend_type else None
+
+    def resolve_backend_type(self, name):
+        current = name
+        visited = set()
+        while current not in {"codex", "antigravity", "codex-cloud", "jules"}:
+            if current in visited or current not in self.backend_types:
+                raise ValueError("unresolvable alias")
+            visited.add(current)
+            current = self.backend_types[current]
+        return current
 
 
 @pytest.mark.parametrize(
@@ -186,16 +199,42 @@ def test_snapshot_succeeds_only_when_all_current_pr_runs_pass():
     assert snapshot.conclusion == "success"
 
 
-def processing_artifact(outcome, actions=None):
+def processing_artifact(outcome, actions=None, *, repair=None, final_gate=None):
     return {
         "target_number": 42,
         "target_type": "pr",
         "target_outcome": outcome,
         "target_reason": f"{outcome} disposition",
         "target_actions": actions or [],
-        "selected_backend": "codex",
+        "schema_version": 1,
+        "invocation_id": f"invocation-{outcome}",
+        "repository": "fixture-owner/disposable",
+        "configured_primary_backend": "codex",
         "execution_origin": "ordinary-explicit-process-issues",
+        "repair": repair,
+        "final_gate": final_gate,
+        "editing_invocations": ([{"backend_alias": "codex", "backend_type": "codex", "model": "test-model", "purpose": "local-ci-repair"}] if repair else []),
     }
+
+
+def applied_repair():
+    return {
+        "repository": "fixture-owner/disposable",
+        "pr_number": 42,
+        "input_head": "h1",
+        "disposition": "applied",
+        "attempt_started": True,
+        "resulting_head_state": "available",
+        "resulting_head": "h2",
+        "synchronization_state": "available",
+        "synchronized": True,
+        "actions": ["published repaired head"],
+        "reason": "",
+    }
+
+
+def merged_gate():
+    return {"disposition": "MERGE_COMPLETED", "repository": "fixture-owner/disposable", "pr_number": 42, "evaluated_head": "h2", "evaluated_base": "base"}
 
 
 def test_conflict_without_local_attribution_is_blocked_before_processing(tmp_path, monkeypatch):
@@ -217,7 +256,7 @@ def test_green_h2_with_deferred_authoritative_gate_is_not_passed(tmp_path, monke
     before = smoke.Snapshot("h1", "base", True, (1,), "failure")
     after = smoke.Snapshot("h2", "base", True, (2,), "success")
     snapshots = iter((before, after, after))
-    observer = SimpleNamespace(snapshot=lambda _pr: next(snapshots), merge_state=lambda _pr: "open:clean")
+    observer = SimpleNamespace(snapshot=lambda _pr: next(snapshots), final_pr=lambda _pr: smoke.FinalPRObservation("open", False, "h2", "base", ""))
     monkeypatch.setenv("GITHUB_TOKEN", "redacted")
     monkeypatch.setattr(smoke, "validate_target", lambda *_args: None)
     monkeypatch.setattr(smoke, "verify_configured_local_backend", lambda *_args: None)
@@ -225,13 +264,13 @@ def test_green_h2_with_deferred_authoritative_gate_is_not_passed(tmp_path, monke
 
     calls = 0
 
-    def run(command, _workspace):
+    def run(command, _workspace, _config_path):
         nonlocal calls
         calls += 1
         if calls == 2:
             artifact = processing_artifact("deferred", ["review deferred"])
         else:
-            artifact = processing_artifact("success", ["published repaired head"])
+            artifact = processing_artifact("deferred", ["published repaired head"], repair=applied_repair())
         Path(command[command.index("--result-file") + 1]).write_text(json.dumps(artifact))
         return SimpleNamespace(returncode=0)
 
@@ -246,12 +285,57 @@ def test_green_h2_with_deferred_authoritative_gate_is_not_passed(tmp_path, monke
     assert evidence.gate_actions == ("review deferred",)
 
 
+def test_deferred_repair_processing_passes_only_with_applied_publication_and_matching_final_merge(tmp_path, monkeypatch):
+    args = make_args(tmp_path)
+    before = smoke.Snapshot("h1", "base", True, (1,), "failure")
+    after = smoke.Snapshot("h2", "base", True, (2,), "success")
+    snapshots = iter((before, after, after))
+    observer = SimpleNamespace(
+        snapshot=lambda _pr: next(snapshots),
+        final_pr=lambda _pr: smoke.FinalPRObservation("closed", True, "h2", "advanced-base", "merge-sha"),
+    )
+    monkeypatch.setenv("GITHUB_TOKEN", "redacted")
+    monkeypatch.setattr(smoke, "validate_target", lambda *_args: None)
+    monkeypatch.setattr(smoke, "verify_configured_local_backend", lambda *_args: None)
+    monkeypatch.setattr(smoke, "GitHubObserver", lambda *_args: observer)
+
+    def run(command, _workspace, _config_path):
+        is_repair = any(part.endswith(".repair-result.json") for part in command)
+        artifact = processing_artifact("deferred", ["published"], repair=applied_repair()) if is_repair else processing_artifact("success", ["merged"], final_gate=merged_gate())
+        Path(command[command.index("--result-file") + 1]).write_text(json.dumps(artifact))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(smoke, "run_production", run)
+    evidence = smoke.run_smoke(args)
+
+    assert evidence.status == "PASSED"
+    assert evidence.resulting_head == "h2"
+    assert '"merged": true' in evidence.review_merge_result
+
+
+def test_refused_repair_cannot_claim_an_independently_advanced_green_head(tmp_path, monkeypatch):
+    record = smoke.ProcessingRecord(
+        "deferred",
+        "codex",
+        "ordinary-explicit-process-issues",
+        (),
+        "refused",
+        "invocation",
+        "fixture-owner/disposable",
+        {**applied_repair(), "disposition": "refused", "attempt_started": False},
+        None,
+        (),
+    )
+
+    assert smoke.repair_matches_run(record, "fixture-owner/disposable", 42, "h1", "h2", "codex") is False
+
+
 def test_missing_gate_artifact_preserves_observed_repair_evidence(tmp_path, monkeypatch):
     args = make_args(tmp_path)
     before = smoke.Snapshot("h1", "base", True, (1,), "failure")
     after = smoke.Snapshot("h2", "base", True, (2,), "success")
     snapshots = iter((before, after, after))
-    observer = SimpleNamespace(snapshot=lambda _pr: next(snapshots), merge_state=lambda _pr: "open:clean")
+    observer = SimpleNamespace(snapshot=lambda _pr: next(snapshots), final_pr=lambda _pr: smoke.FinalPRObservation("open", False, "h2", "base", ""))
     monkeypatch.setenv("GITHUB_TOKEN", "redacted")
     monkeypatch.setattr(smoke, "validate_target", lambda *_args: None)
     monkeypatch.setattr(smoke, "verify_configured_local_backend", lambda *_args: None)
@@ -259,11 +343,11 @@ def test_missing_gate_artifact_preserves_observed_repair_evidence(tmp_path, monk
 
     calls = 0
 
-    def run(command, _workspace):
+    def run(command, _workspace, _config_path):
         nonlocal calls
         calls += 1
         if calls == 1:
-            Path(command[command.index("--result-file") + 1]).write_text(json.dumps(processing_artifact("success", ["published repaired head"])))
+            Path(command[command.index("--result-file") + 1]).write_text(json.dumps(processing_artifact("deferred", ["published repaired head"], repair=applied_repair())))
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(smoke, "run_production", run)
@@ -285,15 +369,16 @@ def test_final_merge_permission_failure_preserves_h1_h2_and_processing_records(t
     after = smoke.Snapshot("h2", "base", True, (2,), "success")
     snapshots = iter((before, after, after))
     outcome = SimpleNamespace(status=403, classification=SimpleNamespace(value="forbidden"))
-    observer = SimpleNamespace(snapshot=lambda _pr: next(snapshots), merge_state=lambda _pr: (_ for _ in ()).throw(GitHubRequestError(outcome)))
+    observer = SimpleNamespace(snapshot=lambda _pr: next(snapshots), final_pr=lambda _pr: (_ for _ in ()).throw(GitHubRequestError(outcome)))
     monkeypatch.setenv("GITHUB_TOKEN", "redacted")
     monkeypatch.setattr(smoke, "validate_target", lambda *_args: None)
     monkeypatch.setattr(smoke, "verify_configured_local_backend", lambda *_args: None)
     monkeypatch.setattr(smoke, "GitHubObserver", lambda *_args: observer)
 
-    def run(command, _workspace):
+    def run(command, _workspace, _config_path):
         result = "published repaired head" if any(part.endswith(".repair-result.json") for part in command) else "independent gate passed"
-        Path(command[command.index("--result-file") + 1]).write_text(json.dumps(processing_artifact("success", [result])))
+        artifact = processing_artifact("deferred", [result], repair=applied_repair()) if "published" in result else processing_artifact("success", [result], final_gate=merged_gate())
+        Path(command[command.index("--result-file") + 1]).write_text(json.dumps(artifact))
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(smoke, "run_production", run)
@@ -308,7 +393,7 @@ def test_final_merge_permission_failure_preserves_h1_h2_and_processing_records(t
 def test_missing_auto_coder_executable_is_blocked(tmp_path):
     with patch.object(smoke.subprocess, "run", side_effect=FileNotFoundError):
         with pytest.raises(smoke.Blocked, match="executable is unavailable"):
-            smoke.run_production(["auto-coder"], tmp_path)
+            smoke.run_production(["auto-coder"], tmp_path, str(tmp_path / "config.toml"))
 
 
 def test_inaccessible_fixture_writes_redacted_blocked_evidence(tmp_path, monkeypatch):
