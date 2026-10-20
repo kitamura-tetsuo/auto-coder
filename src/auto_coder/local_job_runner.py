@@ -292,6 +292,24 @@ class LocalJobRunner:
             elif job.state is LocalJobState.RUNNING and not job.provider_entered:
                 alive = runner_owner_alive(job.runner_owner)
                 if alive is False:
+                    try:
+                        artifact = self.store.get_execution_result_artifact(job.job_id, job.execution_incarnation)
+                    except RuntimeError:
+                        # An unavailable read is not evidence that no checkpoint exists.
+                        continue
+                    adapter = self.adapters.get(job.kind)
+                    validate = getattr(adapter, "validate_controller_completion", None) if adapter is not None else None
+                    if artifact is not None:
+                        try:
+                            valid = callable(validate) and bool(validate(job, artifact))
+                        except Exception:
+                            valid = False
+                        if valid and self.store.adopt_controller_result(job, artifact):
+                            refreshed = self.store.get(job.job_id)
+                            if refreshed is not None and self.store.recover_downstream_pending(refreshed):
+                                self._settle_recovered_handle(refreshed)
+                        # Present but invalid evidence remains retained for diagnosis.
+                        continue
                     self.store.release_dead_owner_claim(job, "previous runner owner is authoritatively dead")
 
     def _recover_continuation(self, job: LocalJobRecord) -> bool:
