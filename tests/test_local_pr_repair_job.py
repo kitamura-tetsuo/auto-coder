@@ -14,21 +14,25 @@ from auto_coder.ci_observation import (
     WorkflowObservation,
 )
 from auto_coder.ci_repair_authority import CIRepairAuthority
-from auto_coder.local_job_handoff import LocalJobKind, LocalJobOffer, LocalJobStore
+from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobStore
 from auto_coder.local_pr_repair_job import LocalPRRepairOffer, offer_local_pr_repair_job
 from auto_coder.pr_repair_dispatch import RepairKind
 
 pytestmark = pytest.mark.pr_repair_contract
 
 
-def snapshot(conclusion: CIConclusion = CIConclusion.FAILURE) -> CIObservationSnapshot:
+def snapshot(
+    conclusion: CIConclusion = CIConclusion.FAILURE,
+    availability: ObservationAvailability = ObservationAvailability.KNOWN,
+) -> CIObservationSnapshot:
+    facts = () if availability is ObservationAvailability.KNOWN_EMPTY else (WorkflowObservation(WorkflowExecutionIdentity("101", "202", 1), conclusion),)
     return CIObservationSnapshot(
         ObservationSubject("https://api.github.com", "owner/repo", 17, "H1"),
         ObservationRequest("github-actions", "complete"),
         "cycle-1",
         0,
-        ObservationAvailability.KNOWN,
-        (WorkflowObservation(WorkflowExecutionIdentity("101", "202", 1), conclusion),),
+        availability,
+        facts,
     )
 
 
@@ -104,6 +108,17 @@ def test_ci_without_complete_terminal_failure_is_not_admitted(tmp_path: Path, co
     assert offer_local_pr_repair_job(request(), client(), owner_admission=lambda _: True, ci_authority=authority, store=LocalJobStore(tmp_path / "jobs.sqlite3")) is None
 
 
+def test_known_empty_ci_does_not_grant_ci_failure_admission(tmp_path: Path) -> None:
+    observed = snapshot(availability=ObservationAvailability.KNOWN_EMPTY)
+    # Deliberately pass a contradictory ``allowed`` bit to prove the producer
+    # re-evaluates the complete snapshot rather than flattening availability.
+    authority = CIRepairAuthority(True, "incorrect aggregate", "H1", observed)
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+
+    assert offer_local_pr_repair_job(request(), client(), owner_admission=lambda _: True, ci_authority=authority, store=store) is None
+    assert store.discover_unsettled() == ()
+
+
 def test_known_empty_ci_does_not_block_affirmative_conflict(tmp_path: Path) -> None:
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
     accepted = offer_local_pr_repair_job(
@@ -125,6 +140,33 @@ def test_competing_review_correction_suppresses_branch_edit_job(tmp_path: Path) 
         store._insert(connection, competing, "review-incarnation")
         connection.commit()
     assert offer(store) is None
+
+
+def test_same_controller_progresses_once_after_review_blocker_settles(tmp_path: Path) -> None:
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    competing = LocalJobOffer(LocalJobKind.PR_REVIEW_CORRECTION, "owner/repo", 17, "review-attempt", "codex", "review")
+    with store._connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        store._insert(connection, competing, "review-incarnation")
+        connection.commit()
+
+    assert offer(store) is None
+    review_claim = store.claim(competing.job_id, "same-controller")
+    assert review_claim is not None and review_claim.acquired
+    artifact = store.persist_result_artifact(review_claim, InvocationOutcome.FAILED, "temporary blocker removed")
+    assert artifact is not None
+    assert store.record_result(review_claim, InvocationOutcome.FAILED, artifact.artifact_id)
+    assert store.mark_downstream_pending(review_claim)
+    assert store.settle(review_claim)
+
+    accepted = offer(store)
+    replay = offer(store)
+    assert accepted is not None and replay is not None
+    assert accepted.job_id == replay.job_id
+    repair_jobs = tuple(job for job in store.discover_unsettled() if job.kind is LocalJobKind.PR_CI_FAILURE)
+    assert [job.job_id for job in repair_jobs] == [accepted.job_id]
+    repair_claim = store.claim(accepted.job_id, "same-controller")
+    assert repair_claim is not None and repair_claim.acquired
 
 
 def test_failed_persistence_returns_no_acceptance(tmp_path: Path) -> None:
