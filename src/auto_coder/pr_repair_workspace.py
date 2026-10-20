@@ -95,8 +95,18 @@ class PRRepairWorkspaceProducer:
 
     @staticmethod
     def _files(root: Path) -> dict[str, FileIdentity]:
-        observed = IssueJobWorkspaceProducer.working_file_identities(root)
+        observed = IssueJobWorkspaceProducer.working_file_identities(root, maintained_disposable_directory_names=frozenset({"test-results"}))
         return {name: FileIdentity(value.checksum, value.mode, value.symlink) for name, value in observed.items()}
+
+    @classmethod
+    def _merge_head(cls, root: Path) -> str:
+        """Return a verified merge commit, distinguishing absence from corruption."""
+        merge_head_path = Path(cls._git(root, "rev-parse", "--git-path", "MERGE_HEAD"))
+        if not merge_head_path.is_absolute():
+            merge_head_path = root / merge_head_path
+        if not merge_head_path.exists():
+            return ""
+        return cls._git(root, "rev-parse", "--verify", "MERGE_HEAD^{commit}")
 
     @classmethod
     def _commit_files(cls, root: Path, commit: str) -> dict[str, FileIdentity]:
@@ -182,7 +192,7 @@ class PRRepairWorkspaceProducer:
         if record is None or record.execution_incarnation != prepared.execution_incarnation or Path(record.workspace_path).resolve() != prepared.workspace:
             raise PRRepairWorkspaceError("retained workspace binding changed before result capture")
         actual_head = self._git(prepared.workspace, "rev-parse", "HEAD")
-        merge_head = self._git(prepared.workspace, "rev-parse", "MERGE_HEAD", check=False)
+        merge_head = self._merge_head(prepared.workspace)
         if actual_head != prepared.authority.head_sha:
             raise PRRepairWorkspaceError("repair changed HEAD before publication")
         if record.kind is LocalJobKind.PR_MERGE_CONFLICT and completion_source == "controller_verified_merge" and merge_head != prepared.authority.base_identity:
@@ -191,8 +201,8 @@ class PRRepairWorkspaceProducer:
             raise PRRepairWorkspaceError("CI edit unexpectedly contains merge state")
         if completion_source not in {"model", "controller_verified_merge"} or (completion_source == "controller_verified_merge" and record.kind is not LocalJobKind.PR_MERGE_CONFLICT):
             raise PRRepairWorkspaceError("unsupported repair completion source")
-        if completion_source == "model" and record.provider_entered and not observed_output:
-            raise PRRepairWorkspaceError("entered model result has no final output")
+        if completion_source == "model" and not observed_output:
+            raise PRRepairWorkspaceError("model result has no final output")
         initial = self._commit_files(prepared.workspace, prepared.authority.head_sha)
         if initial != dict(prepared.source_files):
             raise PRRepairWorkspaceError("prepared source identity changed before result capture")
@@ -253,7 +263,7 @@ class PRRepairWorkspaceProducer:
             or manifest.actual_head != authority.head_sha
             or manifest.completion_source not in {"model", "controller_verified_merge"}
             or (manifest.completion_source == "controller_verified_merge" and record.kind is not LocalJobKind.PR_MERGE_CONFLICT)
-            or (manifest.completion_source == "model" and record.provider_entered and not manifest.observed_output)
+            or (manifest.completion_source == "model" and not manifest.observed_output)
             or Path(manifest.workspace).resolve() != Path(record.workspace_path).resolve()
             or manifest.remote != record.publication_remote
         ):
@@ -261,7 +271,7 @@ class PRRepairWorkspaceProducer:
         workspace = Path(manifest.workspace)
         if not workspace.is_dir() or self._git(workspace, "rev-parse", "HEAD") != manifest.actual_head:
             raise PRRepairWorkspaceError("retained result lineage is unavailable or changed")
-        if self._git(workspace, "rev-parse", "MERGE_HEAD", check=False) != manifest.merge_head:
+        if self._merge_head(workspace) != manifest.merge_head:
             raise PRRepairWorkspaceError("retained merge lineage changed")
         if tuple(sorted(self._files(workspace).items())) != manifest.workspace_files:
             raise PRRepairWorkspaceError("retained result files were altered")

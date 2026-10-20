@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import sqlite3
 import subprocess
@@ -330,3 +331,93 @@ def test_pre_ref_provenance_claim_migration_is_idempotent_and_fail_closed(tmp_pa
     new_claim = admitted(migrated, tmp_path, "c" * 40, "d" * 40, target=13)
     retained = LocalJobStore(store.path).get_pr_repair_claim(new_claim.record.job_id)
     assert retained is not None and (retained.head_ref, retained.base_ref) == ("feature", "main")
+
+
+def test_revalidation_distinguishes_absent_merge_head_from_malformed_lineage(tmp_path: Path, _use_real_commands) -> None:
+    repo, head, base = repository(tmp_path)
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    claim = admitted(store, tmp_path, head, base, target=14)
+    producer = PRRepairWorkspaceProducer(store, tmp_path / "workspaces")
+    prepared = producer.prepare(claim, PRRepairSource(repo))
+    (prepared.workspace / "feature.txt").write_text("edited\n")
+    manifest = producer.capture_result(claim, prepared, InvocationOutcome.COMPLETED, "ACTION_SUMMARY: edit")
+    artifact = store.persist_result_artifact(claim, InvocationOutcome.COMPLETED, manifest.to_json(), executor_token="runner")
+    assert artifact is not None and manifest.merge_head == ""
+
+    reopened = LocalJobStore(store.path)
+    assert PRRepairWorkspaceProducer(reopened, tmp_path / "workspaces").revalidate_result(reopened.get(claim.record.job_id), artifact)  # type: ignore[arg-type]
+    (prepared.workspace / ".git" / "MERGE_HEAD").write_text("not-an-object\n")
+    with pytest.raises(PRRepairWorkspaceError, match="Needed a single revision|expected a commit|unknown revision"):
+        PRRepairWorkspaceProducer(reopened, tmp_path / "workspaces").revalidate_result(reopened.get(claim.record.job_id), artifact)  # type: ignore[arg-type]
+
+
+def test_empty_unentered_model_completion_is_indeterminate_and_not_recovered(tmp_path: Path, _use_real_commands) -> None:
+    repo, head, base = repository(tmp_path)
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    claim = admitted_conflict(store, tmp_path, head, base, target=15)
+    producer = PRRepairWorkspaceProducer(store, tmp_path / "workspaces")
+    prepared = producer.prepare(claim, PRRepairSource(repo))
+    with pytest.raises(PRRepairWorkspaceError, match="model result has no final output"):
+        producer.capture_result(claim, prepared, InvocationOutcome.COMPLETED, "")
+
+    # Persist the exact counterexample as if written by the pre-fix producer.
+    valid_shape = producer.capture_result(claim, prepared, InvocationOutcome.COMPLETED, "ACTION_SUMMARY: old producer")
+    empty_model = replace(valid_shape, observed_output="")
+    artifact = store.persist_result_artifact(claim, InvocationOutcome.COMPLETED, empty_model.to_json(), executor_token=claim.record.runner_owner)
+    assert artifact is not None
+
+    class ValidationAdapter:
+        def validate_controller_completion(self, job, candidate):  # type: ignore[no-untyped-def]
+            try:
+                PRRepairWorkspaceProducer(reopened, tmp_path / "workspaces").revalidate_result(job, candidate)
+            except PRRepairWorkspaceError:
+                return False
+            return True
+
+        def authorize_provider_entry(self, _job):  # type: ignore[no-untyped-def]
+            return False
+
+        def invoke(self, _job):  # type: ignore[no-untyped-def]
+            raise AssertionError("indeterminate evidence must not run or recover")
+
+    reopened = LocalJobStore(store.path)
+    with pytest.raises(PRRepairWorkspaceError, match="authority does not match"):
+        producer.revalidate_result(reopened.get(claim.record.job_id), artifact)  # type: ignore[arg-type]
+    runner = LocalJobRunner(reopened, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.PR_MERGE_CONFLICT: ValidationAdapter()})
+    runner.recover_unsettled()
+    retained = reopened.get(claim.record.job_id)
+    assert retained is not None and retained.state is LocalJobState.RUNNING and not retained.result_reference
+    runner.close()
+
+
+@pytest.mark.parametrize("tamper", ["alter", "delete"])
+def test_maintained_fixture_in_disposable_named_directory_is_retained_and_revalidated(tmp_path: Path, _use_real_commands, tamper: str) -> None:
+    repo, _head, base = repository(tmp_path)
+    fixture_dir = repo / "tests" / "fixtures" / "test-results"
+    fixture_dir.mkdir(parents=True)
+    (fixture_dir / "existing.json").write_text('{"existing":true}\n')
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "tracked fixture directory")
+    head = git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "origin", "feature")
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    claim = admitted(store, tmp_path, head, base, target=16)
+    producer = PRRepairWorkspaceProducer(store, tmp_path / "workspaces")
+    prepared = producer.prepare(claim, PRRepairSource(repo))
+    new_fixture = prepared.workspace / "tests" / "fixtures" / "test-results" / "new.json"
+    contents = b'{"new":true}\n'
+    new_fixture.write_bytes(contents)
+    (prepared.workspace / "feature.txt").write_text("ordinary edit\n")
+    manifest = producer.capture_result(claim, prepared, InvocationOutcome.COMPLETED, "ACTION_SUMMARY: fixture")
+    expected = hashlib.sha256(contents).hexdigest()
+    assert dict(manifest.changed_files)["tests/fixtures/test-results/new.json"].checksum == expected  # type: ignore[union-attr]
+    assert dict(manifest.workspace_files)["tests/fixtures/test-results/new.json"].checksum == expected
+    artifact = store.persist_result_artifact(claim, InvocationOutcome.COMPLETED, manifest.to_json(), executor_token="runner")
+    assert artifact is not None
+
+    if tamper == "alter":
+        new_fixture.write_text('{"tampered":true}\n')
+    else:
+        new_fixture.unlink()
+    with pytest.raises(PRRepairWorkspaceError, match="files were altered"):
+        PRRepairWorkspaceProducer(LocalJobStore(store.path), tmp_path / "workspaces").revalidate_result(store.get(claim.record.job_id), artifact)  # type: ignore[arg-type]
