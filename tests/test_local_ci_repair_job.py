@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
@@ -34,6 +34,8 @@ from auto_coder.local_job_runner import LocalJobRunner
 from auto_coder.local_review_repair import LocalReviewRepairStore
 from auto_coder.pr_repair_dispatch import RepairDisposition, RepairKind
 from auto_coder.pr_repair_workspace import PRRepairSource, PRRepairWorkspaceProducer
+from auto_coder.util.github_action import DetailedChecksResult
+from tests.ci_observation_fakes import authoritative_ci_status
 
 pytestmark = pytest.mark.pr_repair_contract
 
@@ -140,6 +142,35 @@ class Harness:
         assert result is not None and result.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN
         return result.receipt
 
+    def offer_from_pr_handler(self) -> str:
+        """Drive the supported PR-processing origin through durable admission."""
+        from auto_coder import local_pr_repair_job
+
+        pr = metadata(self.head, self.base)
+        authority = CIRepairAuthority(True, "current exact-head CI failure", self.head, snapshot(self.head))
+        self.github.get_pr_review_threads_strict.return_value = []
+        with (
+            patch.object(pr_processor, "current_ci_failure_authority", return_value=nullcontext(authority)),
+            patch.object(pr_processor, "check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch.object(pr_processor, "_get_mergeable_state", return_value={"mergeable": True}),
+            patch.object(pr_processor, "_is_jules_pr", return_value=False),
+            patch.object(pr_processor, "_is_local_llm_pr", return_value=True),
+            patch.object(pr_processor, "_check_github_actions_status", side_effect=authoritative_ci_status(success=False, ids=[1])),
+            patch.object(
+                pr_processor,
+                "get_detailed_checks_from_history",
+                return_value=MagicMock(spec=DetailedChecksResult, success=False, failed_checks=[{"id": 1, "name": "tests", "conclusion": "failure"}]),
+            ),
+            patch.object(pr_processor, "_selected_local_backend_name", return_value="codex"),
+            patch.object(pr_processor, "check_pr_repair_exhaustion", return_value=None),
+            patch.object(local_pr_repair_job, "LocalJobStore", return_value=self.store),
+        ):
+            actions = pr_processor._handle_pr_merge(self.github, "owner/repo", pr, AutomationConfig(), {})
+        retained = tuple(job for job in self.store.discover_unsettled() if job.kind is LocalJobKind.PR_CI_FAILURE)
+        assert len(retained) == 1
+        assert any(retained[0].job_id in action for action in actions)
+        return retained[0].job_id
+
     @contextmanager
     def authority(self, _github: object, _repository: str, _number: int, expected_head: str):  # type: ignore[no-untyped-def]
         if self.barrier_entered is not None:
@@ -222,7 +253,7 @@ def test_production_selection_runs_focused_nonpublishing_job(mode: str, tmp_path
     """REQ-001/004-007: selection, offer, workspace, runner and artifact stay joined."""
     harness = Harness.create(tmp_path)
     harness.mode = mode
-    job_id = harness.offer_from_production_selection()
+    job_id = harness.offer_from_pr_handler()
     remote_before = git(harness.remote, "rev-parse", "refs/heads/feature")
     runner = harness.runner()
 
@@ -249,7 +280,7 @@ def test_production_selection_runs_focused_nonpublishing_job(mode: str, tmp_path
 def test_changed_head_at_pre_entry_barrier_records_no_start(tmp_path: Path, _use_real_commands) -> None:
     """REQ-002/003/006: superseding H after preparation produces zero provider entry."""
     harness = Harness.create(tmp_path)
-    job_id = harness.offer_from_production_selection()
+    job_id = harness.offer_from_pr_handler()
     harness.barrier_entered, harness.barrier_release = Event(), Event()
     runner = harness.runner()
 
@@ -285,7 +316,7 @@ def test_production_ci_authority_refuses_superseded_facts_before_entry(
 ) -> None:
     """REQ-002/006: fresh production CI facts must match the retained failure generation."""
     harness = Harness.create(tmp_path)
-    job_id = harness.offer_from_production_selection()
+    job_id = harness.offer_from_pr_handler()
     entered, release = Event(), Event()
     remote_before = git(harness.remote, "rev-parse", "refs/heads/feature")
     observed_ci: dict[str, str | None] = {"status": "completed", "conclusion": "failure", "run_id": "202"}
