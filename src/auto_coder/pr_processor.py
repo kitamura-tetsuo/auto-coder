@@ -1450,6 +1450,79 @@ def _dispatch_local_ci_failure_repair(
     return _dispatch_local_repair(request, execute)
 
 
+def _selected_local_backend_name() -> str:
+    """Return the already-selected local backend without choosing a fallback."""
+    try:
+        return str(get_llm_backend_manager().get_current_backend_identity()[0] or "")
+    except Exception:
+        return ""
+
+
+def _offer_selected_local_pr_repair(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    kind: RepairKind,
+    github_client: Any,
+    *,
+    ci_authority: Any = None,
+    conflict_eligible: bool = False,
+    store: Any = None,
+) -> PRRepairResult:
+    """Stop a selected local route at its durable first-effect boundary."""
+    from .local_pr_repair_job import LocalPRRepairOffer, local_pr_repair_evidence_identity, offer_local_pr_repair_job
+
+    head = pr_data.get("head") or {}
+    base = pr_data.get("base") or {}
+    head_sha = str(head.get("sha") or "")
+    base_identity = str(base.get("sha") or "")
+    evidence_identity = str(getattr(getattr(ci_authority, "snapshot", None), "cycle_id", "") or f"mergeability:{head_sha}:{base_identity}")
+    failed = tuple(getattr(ci_authority, "failure_identities", ()) or ())
+    operation_identity = local_pr_repair_evidence_identity(evidence_identity, head_sha, base_identity, kind, failed)
+    backend_name = _selected_local_backend_name()
+    request = LocalPRRepairOffer(
+        repository=repo_name,
+        pr_number=int(pr_data["number"]),
+        head_repository=str((head.get("repo") or {}).get("full_name") or ""),
+        head_ref=str(head.get("ref") or ""),
+        head_sha=head_sha,
+        base_repository=str((base.get("repo") or {}).get("full_name") or repo_name),
+        base_ref=str(base.get("ref") or ""),
+        base_identity=base_identity,
+        kind=kind,
+        backend_name=backend_name,
+        upstream_attempt=operation_identity,
+        upstream_incarnation=evidence_identity,
+        source_evidence_identity=evidence_identity,
+        invocation_input=json.dumps({"failed_check_identities": failed}, sort_keys=True),
+    )
+
+    def owner_allowed(_request: LocalPRRepairOffer) -> bool:
+        exhaustion = check_pr_repair_exhaustion(repo_name, int(pr_data["number"]))
+        return exhaustion is None or not exhaustion.is_exhausted
+
+    job = offer_local_pr_repair_job(
+        request,
+        github_client,
+        owner_admission=owner_allowed,
+        ci_authority=ci_authority,
+        conflict_eligible=conflict_eligible,
+        store=store,
+    )
+    if job is None:
+        return PRRepairResult(RepairDisposition.DEFERRED, reason="Local PR repair admission is unavailable or blocked")
+    return PRRepairResult(
+        RepairDisposition.ACCEPTED_OR_UNCERTAIN,
+        reason=f"Durably admitted local {kind.value} repair job {job.job_id}",
+        attempt_started=False,
+        receipt_state=RepairFactState.AVAILABLE,
+        receipt=job.job_id,
+        repository=repo_name,
+        pr_number=int(pr_data["number"]),
+        input_head=head_sha,
+        base_ref=str(base.get("ref") or ""),
+    )
+
+
 def _dispatch_local_conflict_repair(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -6889,6 +6962,13 @@ def _handle_pr_merge(
             correction=_local_ci_correction_ports(repo_name, pr_data, config),
             extract_failed_tests=extract_all_failed_tests,
             trace_base_update=trace_base_update,
+            admit=lambda authority: _offer_selected_local_pr_repair(
+                repo_name,
+                pr_data,
+                RepairKind.CI_FAILURE,
+                github_client,
+                ci_authority=authority,
+            ),
         )
         repair_result = _dispatch_local_ci_failure_repair(
             repo_name,
@@ -10588,65 +10668,24 @@ def _handle_definitive_merge_rejection(
             route_disposition.retry_not_before = cloud_repair.retry_not_before
         return False
 
-    if not _resolve_pr_merge_conflicts(repo_name, pr_number, config):
-        log_action(f"Failed to resolve merge conflicts for PR #{pr_number}")
-        _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.FAILED, {"effect": "merge-conflict", "backend": "local"})
-        try:
-            pr_data = {"number": pr_number, "body": pr_info.get("body", "")}
-            _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed (resolution failed)")
-        except Exception:
-            pass
-        return False
-
-    logger.info(f"Conflicts resolved for PR #{pr_number}, waiting for GitHub to update mergeable state")
-    log_action(f"Polling mergeable state for PR #{pr_number} after conflict resolution")
-
-    polling_succeeded = _poll_pr_mergeable(repo_name, pr_number, config)
-    if polling_succeeded:
-        logger.info(f"GitHub confirmed PR #{pr_number} is mergeable, attempting merge")
-    else:
-        logger.warning(f"Polling timed out for PR #{pr_number}, attempting merge anyway")
-
-    # Conflict resolution produced a new commit: the durable operation must
-    # target the PR's new current head, never the pre-resolution one.
-    try:
-        refreshed_pr = api.pulls.get(owner, repo, pr_number)
-        new_head_sha = refreshed_pr.get("head", {}).get("sha") or head_sha
-    except Exception:
-        refreshed_pr = pr_info
-        new_head_sha = head_sha
-
-    retry_result = try_merge(config.MERGE_METHOD.replace("--", ""), new_head_sha)
-    if retry_result.operation.effect(EffectName.MERGE).state is EffectState.CONFIRMED_COMPLETE:
-        log_action(f"Successfully merged PR #{pr_number} after conflict resolution")
-        return _finalize_merge_success(repo_name, pr_number, config.MERGE_METHOD)
-
-    if retry_result.kind is not AdapterOutcomeKind.DEFINITIVE_REJECTION:
-        log_action(f"Merge not completed for PR #{pr_number} after conflict resolution: {_describe_merge_operation_outcome(retry_result)}")
-        _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", Outcome.DEFERRED, {"examined_head": new_head_sha, "reason": "not a definitive rejection after conflict resolution", "detail": _describe_merge_operation_outcome(retry_result)})
-        return False
-
-    logger.warning(f"Merge failed for PR #{pr_number} even after conflict resolution")
-    log_action(f"Failed to merge PR #{pr_number} after conflict resolution", False, "Merge API failed")
-
-    allowed = _get_allowed_merge_methods(repo_name)
-    selected = config.MERGE_METHOD
-    if selected not in allowed:
-        for alt in [m for m in ["--squash", "--merge", "--rebase"] if m != selected and m in allowed]:
-            store.manual_reset_effect(identity, EffectName.MERGE)
-            alt_result = try_merge(alt.replace("--", ""), new_head_sha)
-            if alt_result.operation.effect(EffectName.MERGE).state is EffectState.CONFIRMED_COMPLETE:
-                return _finalize_merge_success(repo_name, pr_number, alt)
-
-    _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", Outcome.FAILED, {"examined_head": new_head_sha, "reason": "merge failed after conflict resolution"})
+    local_admission = _offer_selected_local_pr_repair(repo_name, pr_info, RepairKind.MERGE_CONFLICT, client, conflict_eligible=True)
+    accepted = local_admission.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN
+    _record_pr_stage(
+        pr_number,
+        "pr.repair-delegation",
+        f"pr#{pr_number} repair delegation",
+        Outcome.ACCEPTED_HANDOFF if accepted else Outcome.DEFERRED,
+        {
+            "effect": "merge-conflict",
+            "backend": "local",
+            "job_id": local_admission.receipt,
+            "reason": local_admission.reason,
+        },
+    )
+    log_action(local_admission.reason)
     if route_disposition is not None:
-        route_disposition.outcome = PRProcessingOutcome.FAILED
-        route_disposition.reason = "Definitive merge rejection after conflict resolution"
-    try:
-        pr_data = {"number": pr_number, "body": refreshed_pr.get("body", "")}
-        _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed (conflict resolution exhausted)")
-    except Exception:
-        pass
+        route_disposition.outcome = PRProcessingOutcome.DEFERRED
+        route_disposition.reason = local_admission.reason
     return False
 
 

@@ -1,6 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import MagicMock
+from threading import Barrier
+from time import sleep
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -16,7 +18,7 @@ from auto_coder.ci_observation import (
 from auto_coder.ci_repair_authority import CIRepairAuthority
 from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobStore
 from auto_coder.local_pr_repair_job import LocalPRRepairOffer, offer_local_pr_repair_job
-from auto_coder.pr_repair_dispatch import RepairKind
+from auto_coder.pr_repair_dispatch import RepairDisposition, RepairKind
 
 pytestmark = pytest.mark.pr_repair_contract
 
@@ -86,6 +88,55 @@ def test_racing_controllers_replay_one_durable_exact_head_envelope(tmp_path: Pat
     assert results[0].job_id == results[1].job_id
     assert len(LocalJobStore(path).discover_unsettled()) == 1
     assert LocalJobStore(path).claim(results[0].job_id).acquired is True
+
+
+@pytest.mark.parametrize("delayed_controller", [0, 1])
+def test_production_admission_contends_at_cas_and_replays_winner(tmp_path: Path, delayed_controller: int) -> None:
+    from auto_coder import pr_processor
+
+    path = tmp_path / "jobs.sqlite3"
+    checkpoint = Barrier(2)
+
+    class PausedStore(LocalJobStore):
+        def __init__(self, controller: int) -> None:
+            super().__init__(path)
+            self.controller = controller
+
+        def _pr_repair_cas_checkpoint(self) -> None:
+            checkpoint.wait(timeout=5)
+            if self.controller == delayed_controller:
+                sleep(0.05)
+
+    stores = (PausedStore(0), PausedStore(1))
+    observed = snapshot()
+    authority = CIRepairAuthority(True, "current exact-head CI failure", "H1", observed)
+    pr_data = client().get_pull_request_metadata_strict.return_value | {"number": 17}
+
+    def selected(store: LocalJobStore):
+        return pr_processor._offer_selected_local_pr_repair(
+            "owner/repo",
+            pr_data,
+            RepairKind.CI_FAILURE,
+            client(),
+            ci_authority=authority,
+            store=store,
+        )
+
+    with (
+        patch.object(pr_processor, "_selected_local_backend_name", return_value="codex"),
+        patch.object(pr_processor, "check_pr_repair_exhaustion", return_value=None),
+        ThreadPoolExecutor(max_workers=2) as pool,
+    ):
+        results = tuple(pool.map(selected, stores))
+
+    assert [result.disposition for result in results] == [RepairDisposition.ACCEPTED_OR_UNCERTAIN] * 2
+    assert results[0].receipt == results[1].receipt
+    reopened = LocalJobStore(path)
+    jobs = tuple(job for job in reopened.discover_unsettled() if job.kind is LocalJobKind.PR_CI_FAILURE)
+    assert [job.job_id for job in jobs] == [results[0].receipt]
+    with reopened._connect() as connection:
+        claims = connection.execute("SELECT job_id, head_sha, base_identity FROM local_pr_repair_claims").fetchall()
+    assert [(row["job_id"], row["head_sha"], row["base_identity"]) for row in claims] == [(results[0].receipt, "H1", "B1")]
 
 
 @pytest.mark.parametrize(

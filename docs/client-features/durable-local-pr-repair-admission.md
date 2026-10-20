@@ -7,6 +7,13 @@ identity read immediately before admission. CI admission additionally retains
 the complete terminal failed-check execution identities; an affirmative
 conflict observation is independent of empty CI evidence.
 
+The ordinary PR processor enters this boundary after selecting either its
+local CI route or its definitive local conflict route. An accepted envelope is
+an asynchronous handoff, so the selector does not continue into the former
+synchronous checkout/model operation. Re-entry recovers the same envelope;
+failed or blocked admission is deferred without falling through to local or
+cloud execution.
+
 The SQLite transaction returns an identical retained envelope for an exact
 replay and refuses a competing unsettled CI, conflict, or review-correction
 edit owner for the same PR. A changed head/base, fork origin, non-local route,

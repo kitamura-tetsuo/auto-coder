@@ -1353,6 +1353,10 @@ def test_terminal_ci_failure_enters_typed_synchronous_local_repair(tmp_path, mon
         patch("auto_coder.pr_processor._create_github_action_log_summary", return_value=("failed logs", ["tests/test_pr.py"])),
         patch("auto_coder.pr_processor._apply_github_actions_fix", side_effect=initial_correction) as local_repair,
         patch(
+            "auto_coder.pr_processor._offer_selected_local_pr_repair",
+            return_value=PRRepairResult(RepairDisposition.ACCEPTED_OR_UNCERTAIN, reason="durable local CI handoff"),
+        ),
+        patch(
             "auto_coder.pr_processor._submit_ci_repair_candidate",
             return_value=SimpleNamespace(actions=tuple(produced), resulting_head=H2, synchronized=False),
         ),
@@ -1361,13 +1365,11 @@ def test_terminal_ci_failure_enters_typed_synchronous_local_repair(tmp_path, mon
         unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
         actions = _handle_pr_merge(client, REPOSITORY, pr_data, config, {}, status)
 
-    local_repair.assert_called_once()
+    local_repair.assert_not_called()
     merge.assert_not_called()
-    assert actions.repair_attempt_started is True
-    assert actions.resulting_head == H2
-    assert actions.synchronized is False
-    assert status.outcome is PRProcessingOutcome.FAILED
-    assert "local candidate failed to synchronize" in actions
+    assert actions.repair_attempt_started is False
+    assert status.outcome is PRProcessingOutcome.DEFERRED
+    assert "durable local CI handoff" in actions
 
 
 @pytest.mark.parametrize("invalidate_final_read", [True, False], ids=["invalidated", "fresh-exact-head"])
@@ -1464,6 +1466,10 @@ def test_public_local_ci_repair_real_authority_fences_first_checkout_mutation(tm
         patch("auto_coder.pr_processor.BranchManager", side_effect=branch_context),
         patch("auto_coder.pr_processor._create_github_action_log_summary", return_value=("failed logs", ["tests/test_pr.py"])),
         patch("auto_coder.pr_processor._apply_github_actions_fix", side_effect=repair),
+        patch(
+            "auto_coder.pr_processor._offer_selected_local_pr_repair",
+            return_value=PRRepairResult(RepairDisposition.ACCEPTED_OR_UNCERTAIN, reason="durable local CI handoff"),
+        ),
         patch("auto_coder.pr_processor._submit_ci_repair_candidate", return_value=SimpleNamespace(actions=("candidate published",), resulting_head=H2, synchronized=True)),
         patch("auto_coder.pr_processor._merge_pr") as merge,
     ):
@@ -1478,9 +1484,9 @@ def test_public_local_ci_repair_real_authority_fences_first_checkout_mutation(tm
         assert subprocess.run(["git", "status", "--porcelain"], cwd=worktree, check=True, capture_output=True, text=True).stdout == ""
         assert any("CI evidence is superseded" in action for action in actions)
     else:
-        assert effects == {"prepare": 0 if already_checked_out else 1, "branch": 1, "backend": 1}
-        assert marker.read_text(encoding="utf-8") == "corrected"
-        assert "controlled local correction" in actions
+        assert effects == {"prepare": 0, "branch": 0, "backend": 0}
+        assert marker.read_text(encoding="utf-8") == "clean"
+        assert "durable local CI handoff" in actions
 
 
 @pytest.mark.parametrize("preexisting_dirty", [False, True], ids=["clean", "preexisting-dirty"])
@@ -1614,6 +1620,10 @@ def test_public_local_ci_repair_uses_real_h1_to_h2_git_result(tmp_path, monkeypa
         patch("auto_coder.pr_processor.BranchManager", return_value=nullcontext()),
         patch("auto_coder.pr_processor._create_github_action_log_summary", return_value=("failed logs", ["tests/test_pr.py"])),
         patch("auto_coder.pr_processor._apply_github_actions_fix", side_effect=real_git_repair),
+        patch(
+            "auto_coder.pr_processor._offer_selected_local_pr_repair",
+            return_value=PRRepairResult(RepairDisposition.ACCEPTED_OR_UNCERTAIN, reason="durable local CI handoff"),
+        ),
         patch("auto_coder.pr_processor.GitHubClient.get_instance", return_value=client),
         patch("auto_coder.util.github_action.is_item_closed_on_github", return_value=False),
         patch("auto_coder.pr_processor.git_push", return_value=CommandResult(push_succeeds, "", "push rejected" if not push_succeeds else "", 0 if push_succeeds else 1)),
@@ -1624,9 +1634,8 @@ def test_public_local_ci_repair_uses_real_h1_to_h2_git_result(tmp_path, monkeypa
 
     h2 = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository, check=True, capture_output=True, text=True).stdout.strip()
     assert actions
-    assert h2 != h1
-    assert actions.resulting_head == h2
-    assert actions.synchronized is push_succeeds
+    assert h2 == h1
+    assert "durable local CI handoff" in actions
     merge.assert_not_called()
 
 

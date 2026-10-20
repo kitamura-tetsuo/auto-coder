@@ -630,6 +630,7 @@ class LocalJobStore:
             return None
         try:
             with self._connect() as connection:
+                self._pr_repair_cas_checkpoint()
                 connection.execute("BEGIN IMMEDIATE")
                 existing = self._existing(connection, offer, admission.upstream_incarnation)
                 if existing is not None:
@@ -684,6 +685,9 @@ class LocalJobStore:
             return self.get(offer.job_id)
         except (OSError, sqlite3.Error, ValueError):
             return None
+
+    def _pr_repair_cas_checkpoint(self) -> None:
+        """Test seam immediately before the durable repair admission CAS."""
 
     def get(self, job_id: str) -> Optional[LocalJobRecord]:
         try:
