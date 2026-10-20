@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -120,6 +121,22 @@ def test_exact_remote_workspace_ignores_dirty_checkout_and_records_modes(tmp_pat
     assert verified.artifact_id == artifact.artifact_id
     executable.write_text("tampered\n")
     with pytest.raises(PRRepairWorkspaceError, match="files were altered"):
+        producer.revalidate_result(store.get(claim.record.job_id), artifact)  # type: ignore[arg-type]
+
+
+def test_revalidation_recomputes_changed_identities_from_retained_h(tmp_path: Path, _use_real_commands) -> None:
+    repo, head, base = repository(tmp_path)
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    claim = admitted(store, tmp_path, head, base)
+    producer = PRRepairWorkspaceProducer(store, tmp_path / "workspaces")
+    prepared = producer.prepare(claim, PRRepairSource(repo))
+    (prepared.workspace / "feature.txt").write_text("edited\n")
+    manifest = producer.capture_result(claim, prepared, InvocationOutcome.COMPLETED, "ACTION_SUMMARY: repaired")
+    forged = replace(manifest, changed_files=())
+    artifact = store.persist_result_artifact(claim, InvocationOutcome.COMPLETED, forged.to_json(), executor_token="runner")
+    assert artifact is not None
+
+    with pytest.raises(PRRepairWorkspaceError, match="changed-file identities are invalid"):
         producer.revalidate_result(store.get(claim.record.job_id), artifact)  # type: ignore[arg-type]
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import stat
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -97,6 +98,31 @@ class PRRepairWorkspaceProducer:
         observed = IssueJobWorkspaceProducer.working_file_identities(root)
         return {name: FileIdentity(value.checksum, value.mode, value.symlink) for name, value in observed.items()}
 
+    @classmethod
+    def _commit_files(cls, root: Path, commit: str) -> dict[str, FileIdentity]:
+        """Read the immutable source tree without checking it over retained output."""
+        result = subprocess.run(["git", "ls-tree", "-rz", "--full-tree", commit], cwd=root, capture_output=True)
+        if result.returncode != 0:
+            raise PRRepairWorkspaceError(result.stderr.decode(errors="replace").strip() or "retained source tree is unreadable")
+        files: dict[str, FileIdentity] = {}
+        for entry in (item for item in result.stdout.split(b"\0") if item):
+            metadata, encoded_name = entry.split(b"\t", 1)
+            mode_text, object_type, object_id = metadata.decode("ascii").split()
+            if object_type != "blob":
+                raise PRRepairWorkspaceError(f"unsupported source entry type: {object_type}")
+            contents = subprocess.run(["git", "cat-file", "blob", object_id], cwd=root, capture_output=True, check=True).stdout
+            mode = int(mode_text, 8)
+            files[encoded_name.decode("utf-8", errors="surrogateescape")] = FileIdentity(
+                hashlib.sha256(contents).hexdigest(),
+                0o777 if mode == 0o120000 else stat.S_IMODE(mode),
+                mode == 0o120000,
+            )
+        return files
+
+    @staticmethod
+    def _changed(initial: dict[str, FileIdentity], final: dict[str, FileIdentity]) -> tuple[tuple[str, FileIdentity | None], ...]:
+        return tuple((name, final.get(name)) for name in sorted(initial.keys() | final.keys()) if initial.get(name) != final.get(name))
+
     def prepare(self, claim: LocalJobClaim, source: PRRepairSource) -> PreparedPRRepairWorkspace:
         record = claim.record
         authority = self._store.get_pr_repair_claim(record.job_id)
@@ -138,7 +164,10 @@ class PRRepairWorkspaceProducer:
             owner_generation=None,
         ):
             raise PRRepairWorkspaceError("job authority changed before workspace binding")
-        return PreparedPRRepairWorkspace(record.job_id, record.execution_incarnation, workspace, authority, remote, tuple(sorted(self._files(workspace).items())))
+        source_files = self._commit_files(workspace, authority.head_sha)
+        if source_files != self._files(workspace):
+            raise PRRepairWorkspaceError("checked-out PR source does not match retained H tree")
+        return PreparedPRRepairWorkspace(record.job_id, record.execution_incarnation, workspace, authority, remote, tuple(sorted(source_files.items())))
 
     def capture_result(
         self,
@@ -160,9 +189,15 @@ class PRRepairWorkspaceProducer:
             raise PRRepairWorkspaceError("conflict result lacks the retained base merge lineage")
         if record.kind is LocalJobKind.PR_CI_FAILURE and merge_head:
             raise PRRepairWorkspaceError("CI edit unexpectedly contains merge state")
-        initial = dict(prepared.source_files)
+        if completion_source not in {"model", "controller_verified_merge"} or (completion_source == "controller_verified_merge" and record.kind is not LocalJobKind.PR_MERGE_CONFLICT):
+            raise PRRepairWorkspaceError("unsupported repair completion source")
+        if completion_source == "model" and record.provider_entered and not observed_output:
+            raise PRRepairWorkspaceError("entered model result has no final output")
+        initial = self._commit_files(prepared.workspace, prepared.authority.head_sha)
+        if initial != dict(prepared.source_files):
+            raise PRRepairWorkspaceError("prepared source identity changed before result capture")
         final = self._files(prepared.workspace)
-        changed = tuple((name, final.get(name)) for name in sorted(initial.keys() | final.keys()) if initial.get(name) != final.get(name))
+        changed = self._changed(initial, final)
         return PRRepairResultManifest(
             1,
             record.job_id,
@@ -207,8 +242,20 @@ class PRRepairWorkspaceProducer:
             or manifest.head_sha != authority.head_sha
             or manifest.base_sha != authority.base_identity
             or manifest.upstream_incarnation != authority.upstream_incarnation
+            or manifest.kind != record.kind.value
+            or manifest.repository != record.repository
+            or manifest.pr_number != record.target_number
+            or manifest.head_repository != authority.head_repository
+            or manifest.head_ref != authority.head_ref
+            or manifest.base_repository != authority.base_repository
+            or manifest.base_ref != authority.base_ref
             or manifest.outcome != artifact.outcome.value
+            or manifest.actual_head != authority.head_sha
+            or manifest.completion_source not in {"model", "controller_verified_merge"}
+            or (manifest.completion_source == "controller_verified_merge" and record.kind is not LocalJobKind.PR_MERGE_CONFLICT)
+            or (manifest.completion_source == "model" and record.provider_entered and not manifest.observed_output)
             or Path(manifest.workspace).resolve() != Path(record.workspace_path).resolve()
+            or manifest.remote != record.publication_remote
         ):
             raise PRRepairWorkspaceError("result manifest authority does not match the retained job")
         workspace = Path(manifest.workspace)
@@ -218,6 +265,9 @@ class PRRepairWorkspaceProducer:
             raise PRRepairWorkspaceError("retained merge lineage changed")
         if tuple(sorted(self._files(workspace).items())) != manifest.workspace_files:
             raise PRRepairWorkspaceError("retained result files were altered")
+        expected_changes = self._changed(self._commit_files(workspace, authority.head_sha), dict(manifest.workspace_files))
+        if manifest.changed_files != expected_changes:
+            raise PRRepairWorkspaceError("result manifest changed-file identities are invalid")
         expected_id = hashlib.sha256(json.dumps([artifact.job_id, artifact.execution_incarnation, artifact.outcome.value, artifact.output], separators=(",", ":")).encode()).hexdigest()
         if expected_id != artifact.artifact_id:
             raise PRRepairWorkspaceError("result artifact checksum is invalid")
