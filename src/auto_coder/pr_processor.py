@@ -114,6 +114,7 @@ from .local_ci_repair_execution import CorrectionPorts, LocalCIRepairPorts, Loca
 from .logger_config import get_gh_logger, get_logger
 from .ordinary_closure_evidence import ApplicationStatus, ClosureEvidenceRecord, EvidenceState, ObservedTarget, restore_ordinary_result
 from .pr_blocker_closure import _BLOCKER_ID_RE, _GAP_ID_RE
+from .pr_processing_evidence import FinalGateEvidence
 from .pr_progress_policy import CIEvidenceState, ProgressPhase, ProgressRoute, PRProgressInputs, PRProgressScope, select_pr_progress
 from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repair_target
 from .pr_repair_dispatch import (
@@ -1523,6 +1524,7 @@ class PRActionList(list[str]):
         self.resulting_head = ""
         self.synchronized: Optional[bool] = None
         self.repair_result: Optional[PRRepairResult] = None
+        self.final_gate: Optional[FinalGateEvidence] = None
 
 
 @dataclass(frozen=True)
@@ -2515,6 +2517,7 @@ def _process_pull_request_impl(
                 processed_pr.outcome = processed_pr_result.outcome
                 processed_pr.retry_not_before = processed_pr_result.retry_not_before
                 processed_pr.repair_result = processed_pr_result.repair_result
+                processed_pr.final_gate = processed_pr_result.final_gate
                 processed_pr.target_reason = processed_pr_result.target_reason
                 # Copy error if it was set
                 if processed_pr_result.error:
@@ -3752,6 +3755,7 @@ def _process_pr_for_merge(
         processed_pr.actions_taken = [*([projection_action] if projection_action else []), *merge_actions]
         processed_pr.retry_not_before = merge_actions.retry_not_before
         processed_pr.repair_result = merge_actions.repair_result
+        processed_pr.final_gate = merge_actions.final_gate
         if any("Successfully merged" in action for action in processed_pr.actions_taken):
             should_process.keep_label()
         return processed_pr
@@ -3813,6 +3817,7 @@ def _process_pr_for_fixes(
                 processed_pr.outcome = processing_status.outcome
                 processed_pr.retry_not_before = processing_status.retry_not_before
                 processed_pr.repair_result = processing_status.repair_result
+                processed_pr.final_gate = processing_status.final_gate
                 processed_pr.target_reason = processing_status.target_reason
                 # Retain label on successful merge
                 if any("Successfully merged" in action for action in actions):
@@ -3865,9 +3870,11 @@ def _take_pr_actions(
         actions.resulting_head = getattr(merge_actions, "resulting_head", "")
         actions.synchronized = getattr(merge_actions, "synchronized", None)
         actions.repair_result = getattr(merge_actions, "repair_result", None)
+        actions.final_gate = getattr(merge_actions, "final_gate", None)
         if processing_status is not None:
             processing_status.retry_not_before = actions.retry_not_before
             processing_status.repair_result = actions.repair_result
+            processing_status.final_gate = actions.final_gate
         if actions.quota_deferred and processing_status is not None:
             processing_status.error = None
             processing_status.outcome = PRProcessingOutcome.DEFERRED
@@ -6427,6 +6434,13 @@ def _coordinate_pr_review(
             processing_status.outcome = PRProcessingOutcome.SUCCESS
         _record_pr_stage(pr_number, "pr.merge-completion", f"pr#{pr_number} merge completion", Outcome.COMPLETED, {"review_disposition": ReviewDisposition.MERGE_COMPLETED.value})
         actions.disposition = ReviewDisposition.MERGE_COMPLETED
+        actions.final_gate = FinalGateEvidence(
+            disposition=ReviewDisposition.MERGE_COMPLETED.value,
+            repository=repo_name,
+            pr_number=pr_number,
+            evaluated_head=actions.scope.head_sha,
+            evaluated_base=actions.scope.base_sha,
+        )
         _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
 
         # Clean up old PRs if this is a Jules PR with a session ID

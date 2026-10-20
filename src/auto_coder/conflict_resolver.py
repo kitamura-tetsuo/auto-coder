@@ -346,6 +346,9 @@ def resolve_merge_conflicts_with_llm(
         if high_score_backend_manager:
             logger.info("Using high score backend for merge conflict resolution.")
             response = high_score_backend_manager.run_prompt(prompt)
+            from .pr_processing_evidence import record_editing_invocation
+
+            record_editing_invocation(high_score_backend_manager, "local-conflict-repair", repo_name or "")
         else:
             response = run_llm_prompt(prompt)
 

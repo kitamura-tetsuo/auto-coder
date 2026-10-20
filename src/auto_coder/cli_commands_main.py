@@ -1,9 +1,12 @@
 """Main CLI commands (process_issues, create_feature_issues, fix_to_pass_tests)."""
 
+import json
 import os
 import re
 import signal
+import uuid
 from contextlib import nullcontext
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import click
@@ -17,11 +20,22 @@ from .git_utils import extract_number_from_branch, get_current_branch
 from .health_monitor import get_health_monitor, start_health_monitoring
 from .llm_backend_config import TASK_ONLY_BACKEND_TYPES, get_llm_config, is_jules_mode_enabled, set_active_repo_name
 from .logger_config import get_logger, setup_logger
+from .pr_processing_evidence import SCHEMA_VERSION, begin_invocation_observation, observed_invocations, redacted_dict
 from .progress_footer import setup_progress_footer_logging
+from .security_utils import redact_data, redact_string
 from .util.gh_cache import GitHubClient
 from .utils import VERBOSE_ENV_FLAG
 
 logger = get_logger(__name__)
+
+
+def _synchronize_codex_auth_secret_unless_skipped(skip: bool) -> None:
+    """Keep isolated operator runs outside the optional secret publisher."""
+    if skip:
+        return
+    from .github_secrets import synchronize_codex_auth_secret
+
+    synchronize_codex_auth_secret()
 
 
 def _force_exit_after_second_sigint() -> None:
@@ -159,6 +173,8 @@ async def _run_process_issues_daemon(
 )
 @click.option("--github-webhook-secret", envvar="GITHUB_WEBHOOK_SECRET", help="GitHub Webhook Secret")
 @click.option("--sentry-webhook-secret", envvar="SENTRY_WEBHOOK_SECRET", help="Sentry Webhook Secret")
+@click.option("--result-file", type=click.Path(dir_okay=False, path_type=Path), help="Write the authoritative explicit-target outcome as JSON (operator automation only).")
+@click.option("--skip-codex-auth-secret-sync", is_flag=True, help="Skip optional Codex auth publication for isolated operator runs.")
 def process_issues(
     repo: Optional[str],
     github_token: Optional[str],
@@ -177,6 +193,8 @@ def process_issues(
     port: int,
     github_webhook_secret: Optional[str],
     sentry_webhook_secret: Optional[str],
+    result_file: Optional[Path],
+    skip_codex_auth_secret_sync: bool,
     retry: bool = False,
     jules_mode: Optional[bool] = None,
     resume: bool = False,
@@ -226,9 +244,7 @@ def process_issues(
 
     # Optional and deliberately failure-isolated: ordinary GitHub processing never
     # receives or reuses the dedicated Actions Secrets credential.
-    from .github_secrets import synchronize_codex_auth_secret
-
-    synchronize_codex_auth_secret()
+    _synchronize_codex_auth_secret_unless_skipped(skip_codex_auth_secret_sync)
 
     # Record resource usage and crash diagnostics for this (long running) session
     start_health_monitoring()
@@ -436,6 +452,7 @@ def process_issues(
 
     # If only_target is provided, parse and process a single item
     if only_target:
+        begin_invocation_observation()
         number = None
         target_type = None
         # If URL, extract number and type
@@ -511,6 +528,30 @@ def process_issues(
             "failed": "Failed",
         }
         final_outcome = result.get("target_outcome")
+        if result_file is not None:
+            result_file.parent.mkdir(parents=True, exist_ok=True)
+            result_file.write_text(
+                json.dumps(
+                    {
+                        "schema_version": SCHEMA_VERSION,
+                        "invocation_id": uuid.uuid4().hex,
+                        "repository": repo_name,
+                        "target_number": result.get("target_number"),
+                        "target_type": result.get("target_type"),
+                        "target_outcome": final_outcome,
+                        "target_reason": redact_string(str(result.get("target_reason") or "")),
+                        "target_actions": redact_data(list(result.get("target_actions") or [])),
+                        "configured_primary_backend": primary_backend,
+                        "execution_origin": "ordinary-explicit-process-issues",
+                        "repair": redacted_dict(result.get("repair_result")),
+                        "final_gate": redacted_dict(result.get("final_gate")),
+                        "editing_invocations": [redacted_dict(item) for item in observed_invocations()],
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         completion_summary: Dict[str, Any] = {
             "Repository": repo_name,
             "Target": target_display,

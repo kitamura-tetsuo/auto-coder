@@ -440,7 +440,7 @@ def _run_production_base_update(
     ("commits_behind", "head", "merge_succeeds", "expected_disposition", "expected_trace", "action_text", "expected_effects"),
     [
         (1, "new-head", True, RepairDisposition.APPLIED, "pushed", "at new-head", {"fetch": 1, "merge": 1, "push": 1, "delegate": 0, "abort": 0}),
-        (1, None, True, RepairDisposition.APPLIED, "applied_unconfirmed", "resulting head: unknown", {"fetch": 1, "merge": 1, "push": 1, "delegate": 0, "abort": 0}),
+        (1, None, True, RepairDisposition.FAILED, "failed", "Base update for PR #7 failed", {"fetch": 1, "merge": 1, "push": 0, "delegate": 0, "abort": 0}),
         (0, "input-head", True, RepairDisposition.NO_UPDATE_NEEDED, "up_to_date", "is up to date", {"fetch": 1, "merge": 0, "push": 0, "delegate": 0, "abort": 0}),
         (1, None, False, RepairDisposition.DEFERRED, "deferred", "later retry", {"fetch": 1, "merge": 1, "push": 0, "delegate": 1, "abort": 1}),
     ],
@@ -474,7 +474,7 @@ def test_production_base_update_diagnostics_preserve_source_facts(
     assert any(action_text in action for action in actions)
     expected_description = {
         "pushed": "Pushed updated branch for PR #7",
-        "applied_unconfirmed": "Applied base update for PR #7; publication evidence is incomplete",
+        "failed": "Base update failed for PR #7",
         "up_to_date": "PR #7 is up to date",
         "deferred": "Deferred base update for PR #7",
     }[expected_trace]

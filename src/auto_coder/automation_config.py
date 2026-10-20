@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from .issue_dispatch import DispatchResult
 from .logger_config import get_logger
+from .pr_processing_evidence import FinalGateEvidence
 from .pr_repair_dispatch import PRRepairResult
 
 logger = get_logger(__name__)
@@ -954,6 +955,8 @@ class CandidateProcessingResult:
     definitive_parent_refusal: bool = False
     retry_not_before: Optional[float] = None
     dispatch_result: Optional[DispatchResult] = None
+    repair_result: Optional[PRRepairResult] = None
+    final_gate: Optional[FinalGateEvidence] = None
 
 
 class PRProcessingOutcome(str, Enum):
@@ -1024,6 +1027,7 @@ class ProcessedPRResult:
     retry_not_before: Optional[float] = None
     repair_result: Optional[PRRepairResult] = None
     target_reason: Optional[str] = None
+    final_gate: Optional[FinalGateEvidence] = None
 
 
 @dataclass
@@ -1057,3 +1061,5 @@ class ProcessResult:
     target_outcome: Optional[str] = None
     target_actions: List[str] = field(default_factory=list)
     target_reason: Optional[str] = None
+    repair_result: Optional[PRRepairResult] = None
+    final_gate: Optional[FinalGateEvidence] = None
