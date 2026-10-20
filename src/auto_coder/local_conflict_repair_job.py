@@ -26,6 +26,19 @@ class MergePreparation:
     inspection: ConflictInspection
 
 
+def _classify_editor_output(response: str) -> InvocationOutcome:
+    """Accept only the backend's unambiguous success protocol."""
+    stripped = response.strip()
+    lines = tuple(line.strip() for line in stripped.splitlines() if line.strip())
+    if not stripped:
+        return InvocationOutcome.FAILED
+    if "CANNOT_FIX" in stripped.upper():
+        return InvocationOutcome.CANNOT_FIX
+    if len(lines) != 1 or not lines[0].startswith("ACTION_SUMMARY:") or not lines[0][len("ACTION_SUMMARY:") :].strip():
+        return InvocationOutcome.FAILED
+    return InvocationOutcome.COMPLETED
+
+
 class LocalConflictRepairJobAdapter:
     """Turn a retained H/B claim into immutable, nonpublishing result evidence."""
 
@@ -129,6 +142,15 @@ class LocalConflictRepairJobAdapter:
             prepared = self._workspaces.prepare(claim, self._source)
             merge = self._prepare_merge(prepared.workspace, prepared.authority.base_identity)
             if not merge.conflicted:
+                if merge.inspection.marker_paths:
+                    manifest = self._workspaces.capture_result(
+                        claim,
+                        prepared,
+                        InvocationOutcome.FAILED,
+                        "clean merge contains conflict-marker content",
+                        completion_source="controller_verified_merge",
+                    )
+                    return LocalJobExecutionResult(InvocationOutcome.FAILED, manifest.to_json(), "marker-bearing clean merge is nonpublishing")
                 manifest = self._workspaces.capture_result(claim, prepared, InvocationOutcome.COMPLETED, "clean exact-head merge", completion_source="controller_verified_merge")
                 return LocalJobExecutionResult(InvocationOutcome.COMPLETED, manifest.to_json(), "clean merge; editor not entered")
 
@@ -139,8 +161,8 @@ class LocalConflictRepairJobAdapter:
             if not checkpoint():
                 raise LocalJobProviderEntryRefused("provider-entry checkpoint failed")
             response = editor(self._prompt(job, metadata, "\n".join(merge.inspection.marker_paths)), prepared.workspace)
-            if not response or not response.strip() or response.strip() == "CANNOT_FIX":
-                outcome = InvocationOutcome.CANNOT_FIX if response and response.strip() == "CANNOT_FIX" else InvocationOutcome.FAILED
+            outcome = _classify_editor_output(response or "")
+            if outcome is not InvocationOutcome.COMPLETED:
                 manifest = self._workspaces.capture_result(claim, prepared, outcome, response or "missing model output")
                 return LocalJobExecutionResult(outcome, manifest.to_json(), "nonpublishing editor outcome")
             staged = self._git(prepared.workspace, "add", "-A")

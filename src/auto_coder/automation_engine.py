@@ -2806,12 +2806,24 @@ class AutomationEngine:
             concurrency = self.config.MAX_CONCURRENT_TASKS
         self._loop = asyncio.get_running_loop()
 
-        from .pr_correction_job import PRCorrectionJobAdapter, build_captured_executor, resume_pr_correction_publication
+        from .pr_correction_job import resume_pr_correction_publication
+        from .pr_local_job_runtime import build_pr_local_job_adapters
 
         local_job_store = LocalJobStore()
 
         def wake_pr_validation(job: Any) -> None:
             assert self._loop is not None
+            if job.kind is LocalJobKind.PR_MERGE_CONFLICT:
+                # Conflict artifacts deliberately remain pending for the
+                # separately authorized exact-head publisher. Merely wake the
+                # PR controller; do not reinterpret or settle its evidence.
+                existing = local_job_store.get_effect(job.job_id, job.execution_incarnation, "pr-conflict-result-wake")
+                if existing is not None and existing.state == "completed":
+                    return
+                wake = asyncio.run_coroutine_threadsafe(self.invalidate_entity(job.repository, "pr", job.target_number), self._loop)
+                wake.result()
+                local_job_store.record_effect(LocalJobClaim(job, True), "pr-conflict-result-wake", "completed", "durable conflict result scheduled for controller revalidation")
+                return
             phase = resume_pr_correction_publication(job, local_job_store)
             wake = asyncio.run_coroutine_threadsafe(self.invalidate_entity(job.repository, "pr", job.target_number), self._loop)
             wake.result()
@@ -2824,7 +2836,7 @@ class AutomationEngine:
             self.invocation_gate,
             repository=repo_name,
             capacity=max(1, concurrency),
-            adapters={LocalJobKind.PR_REVIEW_CORRECTION: PRCorrectionJobAdapter(self.github, build_captured_executor, local_job_store)},
+            adapters=build_pr_local_job_adapters(self.github, local_job_store),
             completion_wake=wake_pr_validation,
         )
 

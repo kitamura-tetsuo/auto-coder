@@ -15,6 +15,7 @@ from auto_coder.local_conflict_repair_job import LocalConflictRepairJobAdapter
 from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore, PRRepairAdmission
 from auto_coder.local_job_runner import LocalJobRunner
 from auto_coder.local_review_repair import LocalReviewRepairStore
+from auto_coder.pr_local_job_runtime import build_pr_local_job_adapters
 from auto_coder.pr_repair_dispatch import RepairDisposition, RepairKind
 from auto_coder.pr_repair_workspace import PRRepairSource, PRRepairWorkspaceProducer
 
@@ -185,6 +186,50 @@ def test_cannot_fix_and_leftover_markers_are_nonpublishing(
     assert git(root, "rev-parse", "HEAD").stdout.strip() == base
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        "Resolution attempted; unable to confirm completion",
+        "ACTION_SUMMARY: resolved\nCANNOT_FIX",
+        "ACTION_SUMMARY:",
+        "ACTION_SUMMARY: resolved\nextra unstructured text",
+    ],
+)
+def test_ambiguous_editor_output_is_nonpublishing_after_files_are_resolved(tmp_path: Path, _use_real_commands, response: str) -> None:
+    root, head, base = history(tmp_path)
+
+    def edit(_prompt: str, workspace: Path) -> str:
+        (workspace / "shared.txt").write_text("resolved\n")
+        return response
+
+    store, claim, _metadata, instance = adapter(tmp_path, root, head, base, edit)
+    result = instance.invoke_at_provider_entry(claim.record, lambda: store.mark_provider_entered(claim))
+    manifest = json.loads(result.output)
+    assert result.outcome is not InvocationOutcome.COMPLETED
+    assert manifest["outcome"] != InvocationOutcome.COMPLETED.value
+    assert not inspect_conflicts(Path(manifest["workspace"])).marker_paths
+
+
+def test_clean_merge_with_marker_bearing_base_is_nonpublishing(tmp_path: Path, _use_real_commands) -> None:
+    root, head, base = history(tmp_path, conflict=False)
+    git(root, "switch", "main")
+    marker_file = root / "generated.txt"
+    marker_file.write_text("<<<<<<< retained marker\nleft\n=======\nright\n>>>>>>> retained marker\n")
+    git(root, "add", ".")
+    git(root, "commit", "-m", "add marker-bearing generated file")
+    base = git(root, "rev-parse", "HEAD").stdout.strip()
+    git(root, "push", "origin", "main")
+    store, claim, _metadata, instance = adapter(tmp_path, root, head, base, lambda _prompt, _root: (_ for _ in ()).throw(AssertionError("editor called")))
+    result = instance.invoke_at_provider_entry(claim.record, lambda: (_ for _ in ()).throw(AssertionError("checkpoint called")))
+    manifest = json.loads(result.output)
+    inspection = inspect_conflicts(Path(manifest["workspace"]))
+    assert inspection.complete and inspection.marker_paths == ("generated.txt",)
+    assert result.outcome is InvocationOutcome.FAILED
+    assert manifest["completion_source"] == "controller_verified_merge"
+    assert manifest["outcome"] == InvocationOutcome.FAILED.value
+    assert store.get(claim.record.job_id).provider_entered is False  # type: ignore[union-attr]
+
+
 def test_root_scoped_inspection_never_treats_observation_failure_as_clean(tmp_path: Path, _use_real_commands) -> None:
     result = inspect_conflicts(tmp_path / "missing")
     assert not result.complete
@@ -242,20 +287,19 @@ def test_selected_local_origin_runs_through_runner_and_persists_exact_manifest(t
     assert admitted is not None and admitted.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN
     job = store.get(admitted.receipt)
     assert job is not None and job.state is LocalJobState.PENDING
-    adapter_instance = LocalConflictRepairJobAdapter(
+    adapters = build_pr_local_job_adapters(
+        github,
         store,
-        PRRepairSource(root),
-        lambda _repo, _number: metadata,
-        lambda _job, _metadata: True,
-        lambda _backend, _job: edit,
-        workspace_producer=PRRepairWorkspaceProducer(store, tmp_path / "workspaces"),
+        repository_path=root,
+        conflict_editor_factory=lambda _backend, _job: edit,
+        conflict_workspace_producer=PRRepairWorkspaceProducer(store, tmp_path / "workspaces"),
     )
     runner = LocalJobRunner(
         store,
         InvocationAdmissionGate(),
         repository="owner/repo",
         capacity=1,
-        adapters={LocalJobKind.PR_MERGE_CONFLICT: adapter_instance},
+        adapters=adapters,
     )
     assert runner.poll() == 1
     wait_until(lambda: runner.active_count() == 0)
