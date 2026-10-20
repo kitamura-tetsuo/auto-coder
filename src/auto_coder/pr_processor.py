@@ -1467,9 +1467,17 @@ def _offer_selected_local_pr_repair(
     ci_authority: Any = None,
     conflict_eligible: bool = False,
     store: Any = None,
-) -> PRRepairResult:
+) -> Optional[PRRepairResult]:
     """Stop a selected local route at its durable first-effect boundary."""
     from .local_pr_repair_job import LocalPRRepairOffer, local_pr_repair_evidence_identity, offer_local_pr_repair_job
+
+    # Some embedding callers supply a legacy authority adapter that predates
+    # complete CI snapshots.  Such an adapter cannot produce a durable offer;
+    # leave its established synchronous behavior intact.  The production
+    # authority always supplies a snapshot and therefore cannot bypass durable
+    # admission through this compatibility boundary.
+    if kind is RepairKind.CI_FAILURE and getattr(ci_authority, "snapshot", None) is None:
+        return None
 
     head = pr_data.get("head") or {}
     base = pr_data.get("base") or {}
@@ -10669,6 +10677,7 @@ def _handle_definitive_merge_rejection(
         return False
 
     local_admission = _offer_selected_local_pr_repair(repo_name, pr_info, RepairKind.MERGE_CONFLICT, client, conflict_eligible=True)
+    assert local_admission is not None
     accepted = local_admission.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN
     _record_pr_stage(
         pr_number,
