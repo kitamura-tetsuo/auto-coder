@@ -196,7 +196,14 @@ def observe_ci(api: Any, token: str, repository: str, pr_number: int, head_sha: 
                             successful_targets = tuple(target for target in explicit_targets if isinstance(target, str)) if isinstance(explicit_targets, list) else ()
                             facts.append(
                                 WorkflowObservation(
-                                    WorkflowExecutionIdentity(str(workflow_id), str(run_id), attempt), _conclusion(str(item.get("status") or ""), item.get("conclusion")), str(item.get("name") or ""), str(item.get("status") or "").lower() == "waiting", workflow_path, successful_targets
+                                    WorkflowExecutionIdentity(str(workflow_id), str(run_id), attempt),
+                                    _conclusion(str(item.get("status") or ""), item.get("conclusion")),
+                                    str(item.get("name") or ""),
+                                    str(item.get("status") or "").lower() == "waiting",
+                                    workflow_path,
+                                    successful_targets,
+                                    str(item.get("event") or ""),
+                                    str(item.get("status") or ""),
                                 )
                             )
                         else:

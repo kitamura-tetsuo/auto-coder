@@ -48,7 +48,9 @@ mutating another repository.
    ```console
    uv run python scripts/live_local_pr_repair_smoke.py ci \
      --repository OWNER/DISPOSABLE --pr 123 --workspace /tmp/ac-smoke-ci \
-     --backend codex --evidence /tmp/ac-smoke-ci-evidence.json
+     --backend codex --evidence /tmp/ac-smoke-ci-evidence.json \
+     --assertion-workflow .github/workflows/pr.yml \
+     --assertion-job fixture-oracle --assertion-step 'Run focused fixture assertion'
    ```
 
 3. The harness invokes ordinary explicit PR processing with the configured
@@ -76,12 +78,17 @@ mutating another repository.
    ```console
    uv run python scripts/live_local_pr_repair_smoke.py conflict \
      --repository OWNER/DISPOSABLE --pr 124 --workspace /tmp/ac-smoke-conflict \
-     --backend codex --evidence /tmp/ac-smoke-conflict-evidence.json
+     --backend codex --evidence /tmp/ac-smoke-conflict-evidence.json \
+     --assertion-workflow .github/workflows/pr.yml \
+     --assertion-job fixture-oracle --assertion-step 'Run focused fixture assertion'
    ```
 
 3. Inspect the repaired file in the published H2 as well as the evidence. The
    harness selects the existing base-update/conflict route, requires a changed
    remote head, and waits for fresh H2 Actions before reporting `PASSED`.
+   The named job and step must belong to the selected H2 PR workflow attempt
+   and complete successfully; skipped, neutral, missing, older-attempt, H1, or
+   unrelated successful checks do not prove that the fixture oracle executed.
 
 ## Results and reset
 
@@ -121,3 +128,8 @@ The deterministic suite validates the harness contract only. Until an operator
 supplies the disposable repositories, PRs, credentials, connected local
 provider, and review configuration and retains both positive records, live
 acceptance is **BLOCKED**.
+
+The editor collector observes the existing `llm.local-execution` dispatch
+boundary without changing its trace event names, facts, routing, or dashboard
+semantics. Consequently this pilot adds result-artifact evidence but requires
+no dashboard-observability contract or visualization change.

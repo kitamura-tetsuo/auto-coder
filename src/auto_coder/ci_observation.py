@@ -114,6 +114,8 @@ class WorkflowObservation:
     # Exact pytest targets are optional provider evidence.  An empty tuple must
     # never be inferred from aggregate workflow success.
     successful_test_targets: tuple[str, ...] = ()
+    event: str = ""
+    raw_status: str = ""
 
 
 @dataclass(frozen=True)

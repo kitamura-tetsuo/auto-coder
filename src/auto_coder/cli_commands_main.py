@@ -20,7 +20,7 @@ from .git_utils import extract_number_from_branch, get_current_branch
 from .health_monitor import get_health_monitor, start_health_monitoring
 from .llm_backend_config import TASK_ONLY_BACKEND_TYPES, get_llm_config, is_jules_mode_enabled, set_active_repo_name
 from .logger_config import get_logger, setup_logger
-from .pr_processing_evidence import SCHEMA_VERSION, begin_invocation_observation, observed_invocations, redacted_dict
+from .pr_processing_evidence import SCHEMA_VERSION, observe_pr_processing, observed_invocations, redacted_dict
 from .progress_footer import setup_progress_footer_logging
 from .security_utils import redact_data, redact_string
 from .util.gh_cache import GitHubClient
@@ -452,7 +452,6 @@ def process_issues(
 
     # If only_target is provided, parse and process a single item
     if only_target:
-        begin_invocation_observation()
         number = None
         target_type = None
         # If URL, extract number and type
@@ -474,12 +473,13 @@ def process_issues(
         # Run single-item processing with auto-detection if needed
         result = {}
         with Spinner(f"Processing {target_type if target_type else 'item'} #{number}...", show_timer=True) as spinner:
-            if target_type is None:
-                # Auto-detect the type; process_single reports failures in its result
-                # instead of raising, so the detection happens while building the candidate.
-                result = automation_engine.process_single(repo_name, "auto", number, jules_mode=configured_cloud_mode, explicit_only=True, force=operator_force, **({"retry": True} if retry else {}), **({"resume": True} if resume else {}))
-            else:
-                result = automation_engine.process_single(repo_name, target_type, number, jules_mode=configured_cloud_mode, explicit_only=True, force=operator_force, **({"retry": True} if retry else {}), **({"resume": True} if resume else {}))
+            with observe_pr_processing(repo_name, number):
+                if target_type is None:
+                    # Auto-detect the type; process_single reports failures in its result
+                    # instead of raising, so the detection happens while building the candidate.
+                    result = automation_engine.process_single(repo_name, "auto", number, jules_mode=configured_cloud_mode, explicit_only=True, force=operator_force, **({"retry": True} if retry else {}), **({"resume": True} if resume else {}))
+                else:
+                    result = automation_engine.process_single(repo_name, target_type, number, jules_mode=configured_cloud_mode, explicit_only=True, force=operator_force, **({"retry": True} if retry else {}), **({"resume": True} if resume else {}))
 
             diagnostics = list(result.get("errors") or [])
             resolved_type = result.get("target_type")

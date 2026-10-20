@@ -342,15 +342,15 @@ def resolve_merge_conflicts_with_llm(
             return actions
 
         # Call LLM to resolve conflicts
-        high_score_backend_manager = create_high_score_backend_manager()
-        if high_score_backend_manager:
-            logger.info("Using high score backend for merge conflict resolution.")
-            response = high_score_backend_manager.run_prompt(prompt)
-            from .pr_processing_evidence import record_editing_invocation
+        from .pr_processing_evidence import bind_pr_repair_purpose
 
-            record_editing_invocation(high_score_backend_manager, "local-conflict-repair", repo_name or "")
-        else:
-            response = run_llm_prompt(prompt)
+        high_score_backend_manager = create_high_score_backend_manager()
+        with bind_pr_repair_purpose(repo_name or "", pr_number, "local-conflict-repair"):
+            if high_score_backend_manager:
+                logger.info("Using high score backend for merge conflict resolution.")
+                response = high_score_backend_manager.run_prompt(prompt)
+            else:
+                response = run_llm_prompt(prompt)
 
         # Parse the response
         if response and response.strip() and response.strip() != "CANNOT_FIX":

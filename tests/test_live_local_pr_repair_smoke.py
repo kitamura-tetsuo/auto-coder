@@ -5,6 +5,7 @@ These tests intentionally do not claim to be the credentialed live E2E.
 
 import importlib.util
 import json
+import subprocess
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -32,6 +33,29 @@ def test_ci_requires_terminal_failure_on_captured_head():
     snapshot = smoke.Snapshot("h1", "b1", True, (7,), "success")
     with pytest.raises(smoke.Blocked, match="terminal-failing"):
         smoke.require_initial_state("ci", snapshot)
+
+
+def test_effective_rewritten_or_multiple_push_destinations_are_rejected(tmp_path, _use_real_commands):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "remote", "add", "origin", "https://github.com/fixture-owner/disposable.git"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "remote", "set-url", "--add", "--push", "origin", "https://github.com/unrelated/production.git"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "remote", "set-url", "--add", "--push", "origin", "https://github.com/fixture-owner/disposable.git"], check=True)
+
+    with pytest.raises(smoke.Blocked, match="outside the designated repository"):
+        smoke.validate_target("fixture-owner/disposable", tmp_path)
+
+    subprocess.run(["git", "-C", str(tmp_path), "remote", "set-url", "--delete", "--push", "origin", "https://github.com/unrelated/production.git"], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "url.https://github.com/unrelated/production.git.insteadOf", "https://github.com/fixture-owner/disposable.git"],
+        check=True,
+    )
+    with pytest.raises(smoke.Blocked, match="outside the designated repository"):
+        smoke.validate_target("fixture-owner/disposable", tmp_path)
+
+
+def test_missing_workspace_is_precisely_blocked(tmp_path):
+    with pytest.raises(smoke.Blocked, match="workspace directory is unavailable"):
+        smoke.validate_target("fixture-owner/disposable", tmp_path / "missing")
 
 
 def test_known_empty_is_only_admitted_for_affirmative_conflict():
@@ -68,6 +92,9 @@ def make_args(tmp_path, scenario="ci"):
         evidence=tmp_path.parent / f"{tmp_path.name}-evidence.json",
         timeout=30,
         config_path=str(tmp_path / "llm_config.toml"),
+        assertion_workflow=".github/workflows/pr.yml",
+        assertion_job="fixture",
+        assertion_step="Run fixture assertion",
     )
 
 
@@ -140,13 +167,24 @@ def test_configured_first_synchronous_backend_is_admitted(monkeypatch):
 
 
 def make_run(head, event, status, conclusion, run_id):
-    return SimpleNamespace(head_sha=head, event=event, status=status, conclusion=conclusion, id=run_id, created_at=f"2026-10-19T00:00:{run_id:02d}Z")
+    return {
+        "head_sha": head,
+        "event": event,
+        "status": status,
+        "conclusion": conclusion,
+        "id": run_id,
+        "workflow_id": 10,
+        "run_attempt": 1,
+        "name": "PR Tests",
+        "path": ".github/workflows/pr.yml",
+    }
 
 
 def snapshot_for_runs(runs):
     observer = smoke.GitHubObserver.__new__(smoke.GitHubObserver)
     observer.owner = "fixture-owner"
     observer.repo = "disposable"
+    observer.token = "token"
     observer.api = SimpleNamespace(
         pulls=SimpleNamespace(
             get=lambda *_args: SimpleNamespace(
@@ -157,7 +195,8 @@ def snapshot_for_runs(runs):
                 mergeable=True,
             )
         ),
-        actions=SimpleNamespace(list_workflow_runs_for_repo=lambda *_args, **_kwargs: SimpleNamespace(workflow_runs=runs)),
+        checks=SimpleNamespace(list_for_ref=lambda *_args, **_kwargs: {"check_runs": []}),
+        actions=SimpleNamespace(list_workflow_runs_for_repo=lambda *_args, **kwargs: {"workflow_runs": [run for run in runs if run["head_sha"] == kwargs.get("head_sha")] if kwargs.get("page", 1) == 1 else []}),
     )
     return observer.snapshot(42)
 
@@ -195,8 +234,47 @@ def test_snapshot_succeeds_only_when_all_current_pr_runs_pass():
         ]
     )
 
-    assert snapshot.run_ids == (3, 2, 1)
+    assert snapshot.run_ids == (1, 2, 3)
     assert snapshot.conclusion == "success"
+
+
+def test_fixture_assertion_requires_matching_h2_step_success():
+    observer = smoke.GitHubObserver.__new__(smoke.GitHubObserver)
+    observer.owner = "fixture-owner"
+    observer.repo = "disposable"
+    observer.api = SimpleNamespace(
+        actions=SimpleNamespace(
+            list_jobs_for_workflow_run_attempt=lambda *_args, **_kwargs: {
+                "jobs": [
+                    {
+                        "name": "fixture",
+                        "steps": [{"name": "Run fixture assertion", "status": "completed", "conclusion": "skipped"}],
+                    }
+                ]
+            }
+        )
+    )
+    snapshot = smoke.Snapshot(
+        "h2",
+        "base",
+        True,
+        (22,),
+        "success",
+        run_records=(
+            {
+                "workflow_id": "10",
+                "run_id": "22",
+                "attempt": 2,
+                "workflow_path": ".github/workflows/pr.yml",
+            },
+        ),
+    )
+
+    assertion = observer.assertion(snapshot, ".github/workflows/pr.yml", "fixture", "Run fixture assertion")
+
+    assert assertion.run_id == "22"
+    assert assertion.attempt == 2
+    assert assertion.conclusion == "skipped"
 
 
 def processing_artifact(outcome, actions=None, *, repair=None, final_gate=None):
@@ -213,7 +291,7 @@ def processing_artifact(outcome, actions=None, *, repair=None, final_gate=None):
         "execution_origin": "ordinary-explicit-process-issues",
         "repair": repair,
         "final_gate": final_gate,
-        "editing_invocations": ([{"backend_alias": "codex", "backend_type": "codex", "model": "test-model", "purpose": "local-ci-repair"}] if repair else []),
+        "editing_invocations": ([{"backend_alias": "codex", "backend_type": "codex", "model": "test-model", "purpose": "local-ci-repair", "status": "returned"}] if repair else []),
     }
 
 
@@ -256,7 +334,11 @@ def test_green_h2_with_deferred_authoritative_gate_is_not_passed(tmp_path, monke
     before = smoke.Snapshot("h1", "base", True, (1,), "failure")
     after = smoke.Snapshot("h2", "base", True, (2,), "success")
     snapshots = iter((before, after, after))
-    observer = SimpleNamespace(snapshot=lambda _pr: next(snapshots), final_pr=lambda _pr: smoke.FinalPRObservation("open", False, "h2", "base", ""))
+    observer = SimpleNamespace(
+        snapshot=lambda _pr: next(snapshots),
+        final_pr=lambda _pr: smoke.FinalPRObservation("open", False, "h2", "base", ""),
+        assertion=lambda *_args: smoke.AssertionObservation(status="completed", conclusion="success"),
+    )
     monkeypatch.setenv("GITHUB_TOKEN", "redacted")
     monkeypatch.setattr(smoke, "validate_target", lambda *_args: None)
     monkeypatch.setattr(smoke, "verify_configured_local_backend", lambda *_args: None)
@@ -293,6 +375,7 @@ def test_deferred_repair_processing_passes_only_with_applied_publication_and_mat
     observer = SimpleNamespace(
         snapshot=lambda _pr: next(snapshots),
         final_pr=lambda _pr: smoke.FinalPRObservation("closed", True, "h2", "advanced-base", "merge-sha"),
+        assertion=lambda *_args: smoke.AssertionObservation(status="completed", conclusion="success"),
     )
     monkeypatch.setenv("GITHUB_TOKEN", "redacted")
     monkeypatch.setattr(smoke, "validate_target", lambda *_args: None)
@@ -335,7 +418,11 @@ def test_missing_gate_artifact_preserves_observed_repair_evidence(tmp_path, monk
     before = smoke.Snapshot("h1", "base", True, (1,), "failure")
     after = smoke.Snapshot("h2", "base", True, (2,), "success")
     snapshots = iter((before, after, after))
-    observer = SimpleNamespace(snapshot=lambda _pr: next(snapshots), final_pr=lambda _pr: smoke.FinalPRObservation("open", False, "h2", "base", ""))
+    observer = SimpleNamespace(
+        snapshot=lambda _pr: next(snapshots),
+        final_pr=lambda _pr: smoke.FinalPRObservation("open", False, "h2", "base", ""),
+        assertion=lambda *_args: smoke.AssertionObservation(status="completed", conclusion="success"),
+    )
     monkeypatch.setenv("GITHUB_TOKEN", "redacted")
     monkeypatch.setattr(smoke, "validate_target", lambda *_args: None)
     monkeypatch.setattr(smoke, "verify_configured_local_backend", lambda *_args: None)
@@ -361,6 +448,42 @@ def test_missing_gate_artifact_preserves_observed_repair_evidence(tmp_path, monk
     assert evidence.repair_actions == ("published repaired head",)
 
 
+def test_polling_failure_preserves_latest_pending_h2_and_repair(tmp_path, monkeypatch):
+    from auto_coder.util.github_request_outcome import GitHubRequestError
+
+    args = make_args(tmp_path)
+    before = smoke.Snapshot("h1", "base", True, (1,), "failure")
+    pending = smoke.Snapshot("h2", "base", True, (2,), "pending")
+    outcome = SimpleNamespace(status=503, classification=SimpleNamespace(value="unavailable"))
+    snapshots = iter((before, pending))
+
+    def snapshot(_pr):
+        try:
+            return next(snapshots)
+        except StopIteration:
+            raise GitHubRequestError(outcome)
+
+    monkeypatch.setenv("GITHUB_TOKEN", "redacted")
+    monkeypatch.setattr(smoke, "validate_target", lambda *_args: None)
+    monkeypatch.setattr(smoke, "verify_configured_local_backend", lambda *_args: None)
+    monkeypatch.setattr(smoke, "GitHubObserver", lambda *_args: SimpleNamespace(snapshot=snapshot))
+
+    def run(command, _workspace, _config_path):
+        Path(command[command.index("--result-file") + 1]).write_text(json.dumps(processing_artifact("deferred", ["published repaired head"], repair=applied_repair())))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(smoke, "run_production", run)
+
+    evidence = smoke.run_smoke(args)
+
+    assert evidence.status == "BLOCKED"
+    assert evidence.failure_phase == "publication_or_current_head_ci"
+    assert (evidence.captured_head, evidence.resulting_head) == ("h1", "h2")
+    assert evidence.post_ci_conclusion == "pending"
+    assert evidence.repair_actions == ("published repaired head",)
+    assert evidence.repair_exit_code == 0
+
+
 def test_final_merge_permission_failure_preserves_h1_h2_and_processing_records(tmp_path, monkeypatch):
     from auto_coder.util.github_request_outcome import GitHubRequestError
 
@@ -369,7 +492,11 @@ def test_final_merge_permission_failure_preserves_h1_h2_and_processing_records(t
     after = smoke.Snapshot("h2", "base", True, (2,), "success")
     snapshots = iter((before, after, after))
     outcome = SimpleNamespace(status=403, classification=SimpleNamespace(value="forbidden"))
-    observer = SimpleNamespace(snapshot=lambda _pr: next(snapshots), final_pr=lambda _pr: (_ for _ in ()).throw(GitHubRequestError(outcome)))
+    observer = SimpleNamespace(
+        snapshot=lambda _pr: next(snapshots),
+        final_pr=lambda _pr: (_ for _ in ()).throw(GitHubRequestError(outcome)),
+        assertion=lambda *_args: smoke.AssertionObservation(status="completed", conclusion="success"),
+    )
     monkeypatch.setenv("GITHUB_TOKEN", "redacted")
     monkeypatch.setattr(smoke, "validate_target", lambda *_args: None)
     monkeypatch.setattr(smoke, "verify_configured_local_backend", lambda *_args: None)
@@ -401,7 +528,30 @@ def test_inaccessible_fixture_writes_redacted_blocked_evidence(tmp_path, monkeyp
 
     args = make_args(tmp_path)
     outcome = SimpleNamespace(status=404, classification=SimpleNamespace(value="not_found"))
-    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "ci", "--repository", args.repository, "--pr", "42", "--workspace", str(tmp_path), "--backend", "codex", "--evidence", str(args.evidence)])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(SCRIPT),
+            "ci",
+            "--repository",
+            args.repository,
+            "--pr",
+            "42",
+            "--workspace",
+            str(tmp_path),
+            "--backend",
+            "codex",
+            "--evidence",
+            str(args.evidence),
+            "--assertion-workflow",
+            args.assertion_workflow,
+            "--assertion-job",
+            args.assertion_job,
+            "--assertion-step",
+            args.assertion_step,
+        ],
+    )
     monkeypatch.setattr(smoke, "run_smoke", lambda _args: (_ for _ in ()).throw(GitHubRequestError(outcome)))
 
     assert smoke.main() == 2

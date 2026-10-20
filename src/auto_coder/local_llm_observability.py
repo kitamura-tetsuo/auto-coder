@@ -55,6 +55,21 @@ def observe_local_llm_call(*, backend: str, backend_type: str, provider: str | N
         "phase": "read-only" if is_noedit else "implementation",
     }
     label = f"Local LLM call: {backend}"
+    from .pr_processing_evidence import observe_editing_dispatch
+
+    def observe_dispatch(status: str) -> None:
+        observe_editing_dispatch(
+            backend=backend,
+            backend_type=backend_type,
+            provider=provider,
+            model=model,
+            invocation_id=invocation_id,
+            continuation=continuation,
+            is_noedit=is_noedit,
+            status=status,
+        )
+
+    observe_dispatch("started")
     collector.record_event(EventKind.STAGE_STARTED, "llm.local-execution", "local-backend", label=label, facts=facts, scope=scope)
     logger.info(
         "Local LLM call started: backend={} type={} provider={} model={} mode={} phase={} invocation_id={} repository={} target={} execution_id={}",
@@ -72,9 +87,11 @@ def observe_local_llm_call(*, backend: str, backend_type: str, provider: str | N
     try:
         yield
     except BaseException as exc:
+        observe_dispatch("failed")
         collector.record_event(EventKind.STAGE_RESULT, "llm.local-execution", "local-backend", label=label, outcome=Outcome.FAILED, facts={**facts, "error": type(exc).__name__}, scope=scope)
         logger.warning("Local LLM call failed: backend={} invocation_id={} error={}", backend, invocation_id, type(exc).__name__)
         raise
     else:
+        observe_dispatch("returned")
         collector.record_event(EventKind.STAGE_RESULT, "llm.local-execution", "local-backend", label=label, outcome=Outcome.COMPLETED, facts=facts, scope=scope)
         logger.info("Local LLM call returned: backend={} invocation_id={}", backend, invocation_id)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from typing import cast
@@ -42,33 +43,70 @@ class EditingInvocationEvidence:
     backend_type: str = ""
     model: str = ""
     purpose: str = ""
+    provider: str = ""
+    invocation_id: str = ""
+    continuation: bool = False
+    status: str = "started"
 
 
 _invocations: ContextVar[tuple[EditingInvocationEvidence, ...]] = ContextVar("pr_processing_invocations", default=())
+_target: ContextVar[tuple[str, int] | None] = ContextVar("pr_processing_target", default=None)
+_purpose: ContextVar[tuple[str, int, str] | None] = ContextVar("pr_repair_purpose", default=None)
 
 
 def begin_invocation_observation() -> None:
     _invocations.set(())
 
 
-def record_editing_invocation(manager: object | None, purpose: str, repository: str) -> None:
-    if manager is None:
-        return
-    getter = getattr(manager, "get_last_backend_and_model", None)
-    if not callable(getter):
-        return
-    backend, model = getter()
-    if not backend:
-        return
-    from .llm_backend_config import get_llm_config
-
-    config = get_llm_config(repo_name=repository)
+@contextmanager
+def observe_pr_processing(repository: str, target_number: int):
+    target_token = _target.set((repository, target_number))
+    _invocations.set(())
     try:
-        backend_type = config.resolve_backend_type(str(backend))
-    except ValueError:
-        backend_type = "unresolved"
+        yield
+    finally:
+        _target.reset(target_token)
+
+
+@contextmanager
+def bind_pr_repair_purpose(repository: str, pr_number: int, purpose: str):
+    token = _purpose.set((repository, pr_number, purpose))
+    try:
+        yield
+    finally:
+        _purpose.reset(token)
+
+
+def observe_editing_dispatch(
+    *,
+    backend: str,
+    backend_type: str,
+    provider: str | None,
+    model: str | None,
+    invocation_id: str,
+    continuation: bool,
+    is_noedit: bool,
+    status: str,
+) -> None:
+    target = _target.get()
+    purpose = _purpose.get()
+    if is_noedit or target is None or purpose is None or target[:2] != purpose[:2]:
+        return
     current = _invocations.get()
-    _invocations.set((*current, EditingInvocationEvidence(str(backend), backend_type, str(model or ""), purpose)))
+    evidence = EditingInvocationEvidence(
+        backend_alias=backend,
+        backend_type=backend_type,
+        model=model or "",
+        purpose=purpose[2],
+        provider=provider or "",
+        invocation_id=invocation_id,
+        continuation=continuation,
+        status=status,
+    )
+    if status == "started":
+        _invocations.set((*current, evidence))
+    elif current and current[-1].invocation_id == invocation_id:
+        _invocations.set((*current[:-1], evidence))
 
 
 def observed_invocations() -> tuple[EditingInvocationEvidence, ...]:

@@ -13,7 +13,7 @@ from .automation_config import AutomationConfig
 from .ci_repair_authority import CIRepairAuthority
 from .ci_repair_verification import FocusedVerification, dedupe_targets, follow_up_budget_exhausted
 from .exceptions import AutoCoderRetryableBackendError
-from .pr_processing_evidence import record_editing_invocation
+from .pr_processing_evidence import bind_pr_repair_purpose
 from .pr_repair_dispatch import PRRepairResult, RepairDisposition, RepairFactState
 
 
@@ -249,9 +249,8 @@ def execute_correction(
         if enabled:
             ports.trace_initial()
             actions.append(f"Starting PR issue fixing for PR #{request.pr_number} using GitHub Actions logs")
-            actions.extend(ports.initial_correction(diagnostics, high_score_backend, known_failures, mark_started))
-            if attempt_started:
-                record_editing_invocation(high_score_backend, "local-ci-repair", request.repository)
+            with bind_pr_repair_purpose(request.repository, request.pr_number, "local-ci-repair"):
+                actions.extend(ports.initial_correction(diagnostics, high_score_backend, known_failures, mark_started))
         else:
             actions.append(f"Automatic test fix is disabled for PR #{request.pr_number}; skipping GitHub Actions fix")
 
@@ -283,9 +282,8 @@ def execute_correction(
                 if follow_ups >= 2 and high_score_backend and current_backend != high_score_backend:
                     current_backend = high_score_backend
                     actions.append(f"Switched to fallback backend for PR #{request.pr_number}")
-                follow_actions, response = ports.follow_up(failing[0].raw, history, current_backend, mark_started)
-                if attempt_started:
-                    record_editing_invocation(current_backend, "local-ci-repair-follow-up", request.repository)
+                with bind_pr_repair_purpose(request.repository, request.pr_number, "local-ci-repair-follow-up"):
+                    follow_actions, response = ports.follow_up(failing[0].raw, history, current_backend, mark_started)
                 actions.extend(follow_actions)
                 if not response and not math.isfinite(float(request.config.MAX_FIX_ATTEMPTS)):
                     actions.append(f"No local correction was produced for {failing[0].target}; stopping local repair")

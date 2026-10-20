@@ -18,8 +18,11 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlparse
 
 from auto_coder.automation_config import AutomationConfig
+from auto_coder.ci_observation import ObservationAvailability, WorkflowObservation
+from auto_coder.github_ci_observer import ci_read_phase, observe_ci
 from auto_coder.llm_backend_config import TASK_ONLY_BACKEND_TYPES, get_llm_config, resolve_config_path
 from auto_coder.pr_processor import is_local_llm_pr
 from auto_coder.util.gh_cache import get_ghapi_client
@@ -44,6 +47,19 @@ class Snapshot:
     local_attributed: bool = True
     head_repository: str = ""
     base_repository: str = ""
+    availability: str = ObservationAvailability.KNOWN.value
+    run_records: tuple[dict[str, object], ...] = ()
+
+
+@dataclass(frozen=True)
+class AssertionObservation:
+    workflow_path: str = ""
+    run_id: str = ""
+    attempt: int | None = None
+    job: str = ""
+    step: str = ""
+    status: str = ""
+    conclusion: str = ""
 
 
 @dataclass(frozen=True)
@@ -97,23 +113,30 @@ class Evidence:
     configured_primary_backend: str = ""
     editing_invocations: tuple[dict[str, object], ...] = ()
     gate_exit_code: int | None = None
+    assertion: AssertionObservation | None = None
 
 
 class GitHubObserver:
     def __init__(self, token: str, repository: str) -> None:
         self.api = get_ghapi_client(token, subsystem="live-local-pr-repair-smoke", extra_headers={"Cache-Control": "no-cache"})
         self.owner, self.repo = repository.split("/", 1)
+        self.token = token
 
     def snapshot(self, pr_number: int) -> Snapshot:
         pr = self.api.pulls.get(self.owner, self.repo, pr_number)
         head = str(pr.head.sha)
         base = str(pr.base.sha)
-        runs = self.api.actions.list_workflow_runs_for_repo(self.owner, self.repo, head_sha=head, per_page=100)
-        candidates = [run for run in runs.workflow_runs if str(run.head_sha) == head and str(run.event) in {"pull_request", "pull_request_target"}]
-        candidates.sort(key=lambda run: str(run.created_at), reverse=True)
-        conclusions = tuple(str(run.conclusion or run.status or "unknown") for run in candidates)
-        if not conclusions:
+        with ci_read_phase("live-local-pr-repair-smoke"):
+            observation = observe_ci(self.api, self.token, f"{self.owner}/{self.repo}", pr_number, head)
+        workflows = tuple(fact for fact in observation.facts if isinstance(fact, WorkflowObservation))
+        candidates = tuple(fact for fact in workflows if fact.event in {"pull_request", "pull_request_target"})
+        conclusions = tuple(fact.conclusion.value for fact in observation.facts)
+        if observation.availability is ObservationAvailability.KNOWN_EMPTY:
             conclusion = "KNOWN_EMPTY"
+        elif not observation.complete:
+            conclusion = "incomplete"
+        elif not candidates:
+            conclusion = "missing_pr_workflow"
         elif any(value not in TERMINAL for value in conclusions):
             conclusion = "pending"
         elif all(value in PASSING for value in conclusions):
@@ -129,12 +152,58 @@ class GitHubObserver:
             head,
             base,
             pr.mergeable,
-            tuple(int(run.id) for run in candidates),
+            tuple(int(fact.execution.run_id) for fact in candidates),
             conclusion,
             is_local_llm_pr(pr_data),
             str(getattr(getattr(pr.head, "repo", None), "full_name", "")),
             str(getattr(getattr(pr.base, "repo", None), "full_name", "")),
+            observation.availability.value,
+            tuple(
+                {
+                    "workflow_id": fact.execution.workflow_id,
+                    "run_id": fact.execution.run_id,
+                    "attempt": fact.execution.attempt,
+                    "event": fact.event,
+                    "status": fact.raw_status,
+                    "conclusion": fact.conclusion.value,
+                    "workflow_path": fact.workflow_path,
+                }
+                for fact in candidates
+            ),
         )
+
+    def assertion(self, snapshot: Snapshot, workflow_path: str, job_name: str, step_name: str) -> AssertionObservation:
+        matches = [record for record in snapshot.run_records if record.get("workflow_path") == workflow_path]
+        attempts: list[int] = []
+        for record in matches:
+            attempt_value = record.get("attempt")
+            if isinstance(attempt_value, int):
+                attempts.append(attempt_value)
+        if not attempts:
+            return AssertionObservation(workflow_path=workflow_path, job=job_name, step=step_name, conclusion="missing")
+        latest_attempt = max(attempts)
+        current = [record for record in matches if record.get("attempt") == latest_attempt]
+        if len(current) != 1:
+            return AssertionObservation(workflow_path=workflow_path, job=job_name, step=step_name, conclusion="ambiguous")
+        run = current[0]
+        run_id = int(str(run["run_id"]))
+        attempt = int(str(run["attempt"]))
+        page = 1
+        while True:
+            payload = self.api.actions.list_jobs_for_workflow_run_attempt(self.owner, self.repo, run_id, attempt, per_page=100, page=page)
+            jobs = payload.get("jobs") if isinstance(payload, dict) else None
+            if not isinstance(jobs, list):
+                raise Blocked("fixture assertion jobs observation is unavailable")
+            for job in jobs:
+                if str(job.get("name") or "") != job_name:
+                    continue
+                for step in job.get("steps") or []:
+                    if str(step.get("name") or "") == step_name:
+                        return AssertionObservation(workflow_path, str(run_id), attempt, job_name, step_name, str(step.get("status") or ""), str(step.get("conclusion") or "unknown"))
+            if len(jobs) < 100:
+                break
+            page += 1
+        return AssertionObservation(workflow_path, str(run_id), attempt, job_name, step_name, conclusion="missing")
 
     def final_pr(self, pr_number: int) -> FinalPRObservation:
         pr = self.api.pulls.get(self.owner, self.repo, pr_number)
@@ -153,7 +222,12 @@ def validate_target(repository: str, workspace: Path) -> None:
         raise Blocked("operator-designated repository must not be auto-coder or outliner")
     if len(repository.split("/")) != 2:
         raise Blocked("repository must be an owner/name pair")
-    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=workspace, text=True, capture_output=True, check=False)
+    if not workspace.is_dir():
+        raise Blocked("designated workspace directory is unavailable")
+    try:
+        top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=workspace, text=True, capture_output=True, check=False)
+    except FileNotFoundError as exc:
+        raise Blocked("git executable or designated workspace is unavailable") from exc
     if top.returncode != 0 or Path(top.stdout.strip()).resolve() != workspace:
         raise Blocked("workspace must be the top level of the designated disposable clone")
     status = subprocess.run(["git", "status", "--porcelain"], cwd=workspace, text=True, capture_output=True, check=False)
@@ -161,14 +235,34 @@ def validate_target(repository: str, workspace: Path) -> None:
         raise Blocked("git status failed for the designated workspace")
     if status.stdout.strip():
         raise Blocked("designated workspace has unrelated local changes")
-    for key in ("remote.origin.url", "remote.origin.pushurl"):
-        remote = subprocess.run(["git", "config", "--get", key], cwd=workspace, text=True, capture_output=True, check=False)
-        if key.endswith("pushurl") and remote.returncode != 0:
-            continue
-        value = remote.stdout.strip().lower().removesuffix(".git")
-        identity = value.split("github.com", 1)[-1].lstrip("/: ")
-        if remote.returncode != 0 or identity != normalized:
-            raise Blocked(f"workspace {key} does not identify the designated repository")
+    for label, command in (
+        ("fetch URLs", ["git", "remote", "get-url", "--all", "origin"]),
+        ("push URLs", ["git", "remote", "get-url", "--push", "--all", "origin"]),
+    ):
+        remote = subprocess.run(command, cwd=workspace, text=True, capture_output=True, check=False)
+        destinations = [line.strip() for line in remote.stdout.splitlines() if line.strip()]
+        if remote.returncode != 0 or not destinations:
+            raise Blocked(f"workspace origin has no effective {label}")
+        for destination in destinations:
+            if github_repository_identity(destination) != normalized:
+                raise Blocked(f"workspace origin {label} include a destination outside the designated repository")
+
+
+def github_repository_identity(remote_url: str) -> str:
+    value = remote_url.strip()
+    if "://" not in value and ":" in value:
+        user_host, path = value.split(":", 1)
+        host = user_host.rsplit("@", 1)[-1]
+    else:
+        parsed = urlparse(value)
+        host = (parsed.hostname or "").lower()
+        path = parsed.path.lstrip("/")
+    if host != "github.com":
+        return ""
+    parts = path.removesuffix(".git").split("/")
+    if len(parts) != 2 or not all(parts):
+        return ""
+    return f"{parts[0]}/{parts[1]}".lower()
 
 
 def require_initial_state(scenario: str, before: Snapshot, repository: str = "") -> None:
@@ -257,7 +351,7 @@ def read_processing_record(result_file: Path, pr_number: int) -> ProcessingRecor
 
 def repair_matches_run(record: ProcessingRecord, repository: str, pr_number: int, h1: str, h2: str, requested_backend: str) -> bool:
     repair = record.repair or {}
-    witnessed_edit = any(item.get("backend_alias") == requested_backend and item.get("backend_type") not in TASK_ONLY_BACKEND_TYPES | {"unresolved"} and str(item.get("purpose", "")).startswith("local-") for item in record.editing_invocations)
+    witnessed_edit = any(item.get("backend_alias") == requested_backend and item.get("backend_type") not in TASK_ONLY_BACKEND_TYPES | {"unresolved"} and str(item.get("purpose", "")).startswith("local-") and item.get("status") == "returned" for item in record.editing_invocations)
     return (
         record.repository == repository
         and repair.get("repository") == repository
@@ -288,10 +382,11 @@ def late_blocked_evidence(
     disposition: str,
     gate: ProcessingRecord | None = None,
     gate_exit: int | None = None,
+    status: str = "BLOCKED",
 ) -> Evidence:
     gate = gate or ProcessingRecord("not_run", "", "", (), "")
     return Evidence(
-        "BLOCKED",
+        status,
         args.scenario,
         args.repository,
         args.pr,
@@ -320,11 +415,22 @@ def late_blocked_evidence(
     )
 
 
-def wait_for_result(observer: GitHubObserver, pr_number: int, old_head: str, timeout: int, sleep: Callable[[float], None] = time.sleep) -> Snapshot:
+def wait_for_result(
+    observer: GitHubObserver,
+    pr_number: int,
+    old_head: str,
+    timeout: int,
+    sleep: Callable[[float], None] = time.sleep,
+    on_observation: Callable[[Snapshot], None] | None = None,
+) -> Snapshot:
     deadline = time.monotonic() + timeout
     newest = observer.snapshot(pr_number)
+    if on_observation:
+        on_observation(newest)
     while time.monotonic() < deadline:
         newest = observer.snapshot(pr_number)
+        if on_observation:
+            on_observation(newest)
         if newest.head != old_head and newest.conclusion in TERMINAL:
             return newest
         sleep(10)
@@ -360,8 +466,29 @@ def run_smoke(args: argparse.Namespace) -> Evidence:
         return late_blocked_evidence(args, before, before, ProcessingRecord("missing", "", "", (), ""), process.returncode, "repair_result", str(exc))
     repair_data = repair.repair or {}
     if process.returncode != 0 or repair_data.get("attempt_started") is not True or repair_data.get("disposition") != "applied":
-        return late_blocked_evidence(args, before, before, repair, process.returncode, "repair_result", "processing did not establish an applied local repair")
-    after = wait_for_result(observer, args.pr, before.head, args.timeout)
+        return late_blocked_evidence(
+            args,
+            before,
+            before,
+            repair,
+            process.returncode,
+            "repair_result",
+            "processing did not establish an applied local repair",
+            status="FAILED" if repair_data.get("attempt_started") is True else "BLOCKED",
+        )
+    latest = [before]
+    try:
+        after = wait_for_result(observer, args.pr, before.head, args.timeout, on_observation=lambda value: latest.__setitem__(0, value))
+    except GitHubRequestError:
+        return late_blocked_evidence(
+            args,
+            before,
+            latest[0],
+            repair,
+            process.returncode,
+            "publication_or_current_head_ci",
+            "current-head CI observation became unavailable",
+        )
     gate_exit: int | None = None
     gate = ProcessingRecord("not_run", "", "", (), "")
     if process.returncode == 0 and after.head != before.head and after.conclusion == "success":
@@ -380,10 +507,25 @@ def run_smoke(args: argparse.Namespace) -> Evidence:
         return late_blocked_evidence(args, before, after, repair, process.returncode, "final_merge_observation", "final merge state is inaccessible with the supplied credential", gate, gate_exit)
     changed = after.head != before.head
     ci_passed = after.conclusion == "success"
+    try:
+        assertion = observer.assertion(after, args.assertion_workflow, args.assertion_job, args.assertion_step)
+    except (GitHubRequestError, Blocked):
+        return late_blocked_evidence(
+            args,
+            before,
+            after,
+            repair,
+            process.returncode,
+            "fixture_assertion",
+            "fixture assertion observation is unavailable",
+            gate,
+            gate_exit,
+        )
+    assertion_passed = assertion.status == "completed" and assertion.conclusion == "success"
     repair_valid = repair_matches_run(repair, args.repository, args.pr, before.head, after.head, args.backend)
     gate_valid = gate_matches_run(gate, args.repository, args.pr, after.head)
     final_valid = final_pr.merged and final_pr.head == after.head and final_pr.state == "closed"
-    passed = process.returncode == 0 and changed and ci_passed and gate_exit == 0 and gate.outcome == "success" and repair_valid and gate_valid and final_valid
+    passed = process.returncode == 0 and changed and ci_passed and assertion_passed and gate_exit == 0 and gate.outcome == "success" and repair_valid and gate_valid and final_valid
     phase = "" if passed else ("repair" if process.returncode else "publication_or_current_head_ci")
     if changed and ci_passed and (gate_exit not in (None, 0) or gate.outcome not in {"not_run", "success"}):
         phase = "independent_review_or_merge"
@@ -414,6 +556,7 @@ def run_smoke(args: argparse.Namespace) -> Evidence:
         repair.backend,
         repair.editing_invocations,
         gate_exit,
+        assertion,
     )
 
 
@@ -425,6 +568,9 @@ def main() -> int:
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--backend", required=True)
     parser.add_argument("--evidence", required=True, type=Path)
+    parser.add_argument("--assertion-workflow", required=True)
+    parser.add_argument("--assertion-job", required=True)
+    parser.add_argument("--assertion-step", required=True)
     parser.add_argument("--timeout", type=int, default=1800)
     args = parser.parse_args()
     args.evidence = args.evidence.resolve()
