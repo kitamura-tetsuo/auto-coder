@@ -10868,7 +10868,16 @@ def _local_ci_correction_ports(
 
     def focused(targets: List[str]) -> FocusedVerification:
         with ProgressStage("Running focused local checks"):
-            return verify_targets(targets, run_local_tests, config, workspace_root=workspace_root)
+            return verify_targets(
+                targets,
+                lambda selected_config, *, test_file: run_local_tests(
+                    selected_config,
+                    test_file=test_file,
+                    workspace_root=workspace_root,
+                ),
+                config,
+                workspace_root=workspace_root,
+            )
 
     def follow_up(raw: Dict[str, Any], history: List[Dict[str, object]], manager: object | None, started: Callable[[], None]) -> Tuple[Sequence[str], str]:
         return _apply_local_test_fix(repo_name, pr_data, config, raw, history, backend_manager=manager, on_invocation_started=started)  # type: ignore[arg-type]

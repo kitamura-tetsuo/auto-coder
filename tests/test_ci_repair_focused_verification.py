@@ -13,11 +13,11 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, Dict, List
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.auto_coder import pr_processor
+from src.auto_coder import fix_to_pass_tests_runner, pr_processor
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.base_update_execution import BaseUpdateConflictExecutionService
 from src.auto_coder.ci_observation import (
@@ -621,3 +621,72 @@ def test_focused_target_existence_is_bound_to_private_workspace(tmp_path: Path) 
 
     assert result.all_passed
     assert calls == ["selected.py"]
+
+
+def test_durable_focused_port_passes_private_workspace_to_runner(tmp_path: Path) -> None:
+    """REQ-001: production focused execution preserves the prepared workspace."""
+    workspace = tmp_path / "private"
+    workspace.mkdir()
+    (workspace / "selected.py").write_text("private\n", encoding="utf-8")
+    calls: list[Path | None] = []
+
+    def run(_config: object, *, test_file: str, workspace_root: Path | None = None, **_kwargs: object) -> dict[str, object]:
+        calls.append(workspace_root)
+        return {"success": True, "command": "scripts/test.sh", "test_file": test_file, "return_code": 0}
+
+    with patch.object(pr_processor, "run_local_tests", side_effect=run):
+        ports = pr_processor._local_ci_correction_ports(
+            "owner/repo",
+            {"number": 17},
+            AutomationConfig(),
+            captured_manager=object(),
+            workspace_root=workspace,
+        )
+        result = ports.verify(["selected.py"])
+
+    assert result.all_passed
+    assert calls == [workspace]
+
+
+def test_private_workspace_container_verification_fails_closed_without_mapping(tmp_path: Path) -> None:
+    """REQ-001: a target container cannot silently test its default checkout."""
+    executor = SimpleNamespace(run_command=MagicMock())
+    with (
+        patch.object(fix_to_pass_tests_runner, "get_target_container", return_value="auto-coder-repo"),
+        patch.object(fix_to_pass_tests_runner, "cmd", executor),
+    ):
+        result = fix_to_pass_tests_runner.run_local_tests(
+            AutomationConfig(),
+            test_file="selected.py",
+            workspace_root=tmp_path / "private",
+        )
+
+    assert result["success"] is False
+    assert result["return_code"] == -1
+    assert "not mapped" in str(result["errors"])
+    executor.run_command.assert_not_called()
+
+
+def test_private_workspace_container_verification_uses_explicit_workdir(tmp_path: Path) -> None:
+    """REQ-001: an established container mapping owns selected-file execution."""
+    mapped = Path("/job-workspaces/attempt-1")
+    executor = SimpleNamespace(
+        DEFAULT_TIMEOUTS={"test": 60},
+        run_command=MagicMock(return_value=SimpleNamespace(success=True, stdout="ok", stderr="", returncode=0)),
+    )
+    with (
+        patch.object(fix_to_pass_tests_runner, "get_target_container", return_value="auto-coder-repo"),
+        patch.object(fix_to_pass_tests_runner, "cmd", executor),
+    ):
+        result = fix_to_pass_tests_runner.run_local_tests(
+            AutomationConfig(),
+            test_file="selected.py",
+            workspace_root=tmp_path / "private",
+            container_workspace_root=mapped,
+        )
+
+    assert result["success"] is True
+    executor.run_command.assert_called_once_with(
+        ["docker", "exec", "--workdir", str(mapped), "auto-coder-repo", "bash", AutomationConfig().TEST_SCRIPT_PATH, "selected.py"],
+        timeout=60,
+    )

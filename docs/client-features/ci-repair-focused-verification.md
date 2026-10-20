@@ -70,6 +70,10 @@ actual GitHub CI remains required for merge. Regression:
   pass, never triggers a full run, and never creates a follow-up correction by itself.
   The aggregate "passed locally" report describes F only and requires every file in F to
   have passed on the latest corrected state.
+- Durable focused checks resolve both selected-file discovery and host execution against
+  the retained private workspace. If execution is configured for a target container,
+  the runner fails closed unless that workspace has an explicit container path; it never
+  tests the container's default checkout as a substitute.
 - Follow-up local corrections (using the still-failing focused result) share one budget
   of `MAX_FIX_ATTEMPTS` per invocation of the workflow across all of F; the initial
   CI-log correction is not counted. An unbounded configuration stays unbounded, but a

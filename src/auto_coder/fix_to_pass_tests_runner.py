@@ -216,7 +216,13 @@ def cleanup_llm_task_file(path: str = "./llm_task.md") -> None:
         logger.warning(f"Failed to remove {path}: {exc}")
 
 
-def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -> Dict[str, Any]:
+def run_local_tests(
+    config: AutomationConfig,
+    test_file: Optional[str] = None,
+    *,
+    workspace_root: Path | None = None,
+    container_workspace_root: Path | None = None,
+) -> Dict[str, Any]:
     """Run local tests using configured script or pytest fallback.
 
     If test_file is specified, only that test file will be run.
@@ -300,8 +306,21 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
 
                 target_container = get_target_container(config)
                 if target_container:
+                    if workspace_root is not None and container_workspace_root is None:
+                        return {
+                            "success": False,
+                            "output": "",
+                            "errors": "Private workspace is not mapped into the target container",
+                            "return_code": -1,
+                            "command": "",
+                            "test_file": test_file,
+                            "stability_issue": False,
+                        }
                     logger.info(f"Using target container: {target_container}")
-                    cmd_list = ["docker", "exec", target_container, "bash", config.TEST_SCRIPT_PATH, test_file]
+                    cmd_list = ["docker", "exec"]
+                    if container_workspace_root is not None:
+                        cmd_list.extend(["--workdir", str(container_workspace_root)])
+                    cmd_list.extend([target_container, "bash", config.TEST_SCRIPT_PATH, test_file])
                 else:
                     cmd_list = ["bash", config.TEST_SCRIPT_PATH, test_file]
 
