@@ -96,8 +96,9 @@ def offer(
 def test_racing_controllers_replay_one_durable_exact_head_envelope(tmp_path: Path) -> None:
     path = tmp_path / "jobs.sqlite3"
     stores = (LocalJobStore(path), LocalJobStore(path))
+    repair_store = LocalReviewRepairStore(tmp_path / "repairs.sqlite3")
     with ThreadPoolExecutor(max_workers=2) as pool:
-        results = tuple(pool.map(offer, stores))
+        results = tuple(pool.map(lambda store: offer(store, repair_store=repair_store), stores))
 
     assert results[0] is not None
     assert results[1] is not None
