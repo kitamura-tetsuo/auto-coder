@@ -160,6 +160,24 @@ class PRRepairAdmission:
 
 
 @dataclass(frozen=True)
+class RetainedPRRepairClaim:
+    """Immutable source identity persisted for one admitted PR repair job."""
+
+    job_id: str
+    repository: str
+    pr_number: int
+    head_repository: str
+    head_ref: str
+    head_sha: str
+    base_repository: str
+    base_ref: str
+    base_identity: str
+    repair_kind: str
+    source_evidence_identity: str
+    upstream_incarnation: str
+
+
+@dataclass(frozen=True)
 class LocalJobRecord:
     job_id: str
     kind: LocalJobKind
@@ -289,6 +307,10 @@ class LocalJobStore:
                 failed_check_identities_json TEXT NOT NULL,
                 created_at REAL NOT NULL)"""
             )
+            claim_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(local_pr_repair_claims)")}
+            for name in ("head_repository", "head_ref", "base_repository", "base_ref"):
+                if name not in claim_columns:
+                    connection.execute(f"ALTER TABLE local_pr_repair_claims ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")  # nosec B608: fixed names
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS local_job_effects (
                 job_id TEXT NOT NULL, execution_incarnation TEXT NOT NULL,
@@ -655,7 +677,10 @@ class LocalJobStore:
                 existing = self._existing(connection, offer, admission.upstream_incarnation)
                 if existing is not None:
                     retained_claim = connection.execute(
-                        "SELECT 1 FROM local_pr_repair_claims WHERE job_id=? AND head_sha=? " "AND base_identity=? AND repair_kind=? AND source_evidence_identity=? " "AND upstream_incarnation=? AND failed_check_identities_json=?",
+                        "SELECT 1 FROM local_pr_repair_claims WHERE job_id=? AND head_sha=? "
+                        "AND base_identity=? AND repair_kind=? AND source_evidence_identity=? "
+                        "AND upstream_incarnation=? AND failed_check_identities_json=? "
+                        "AND head_repository=? AND head_ref=? AND base_repository=? AND base_ref=?",
                         (
                             offer.job_id,
                             admission.head_sha,
@@ -664,6 +689,10 @@ class LocalJobStore:
                             admission.source_evidence_identity,
                             admission.upstream_incarnation,
                             json.dumps(admission.failed_check_identities, separators=(",", ":")),
+                            admission.head_repository,
+                            admission.head_ref,
+                            admission.base_repository,
+                            admission.base_ref,
                         ),
                     ).fetchone()
                     if retained_claim is None:
@@ -694,7 +723,11 @@ class LocalJobStore:
                     return None
                 self._insert(connection, offer, admission.upstream_incarnation)
                 connection.execute(
-                    "INSERT INTO local_pr_repair_claims " "(job_id, repository, pr_number, head_sha, base_identity, repair_kind, " "source_evidence_identity, upstream_incarnation, failed_check_identities_json, created_at) " "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO local_pr_repair_claims "
+                    "(job_id, repository, pr_number, head_sha, base_identity, repair_kind, "
+                    "source_evidence_identity, upstream_incarnation, failed_check_identities_json, created_at, "
+                    "head_repository, head_ref, base_repository, base_ref) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         offer.job_id,
                         offer.repository,
@@ -706,6 +739,10 @@ class LocalJobStore:
                         admission.upstream_incarnation,
                         json.dumps(admission.failed_check_identities, separators=(",", ":")),
                         time.time(),
+                        admission.head_repository,
+                        admission.head_ref,
+                        admission.base_repository,
+                        admission.base_ref,
                     ),
                 )
                 connection.commit()
@@ -721,6 +758,30 @@ class LocalJobStore:
             with self._connect() as connection:
                 row = connection.execute("SELECT * FROM local_jobs WHERE job_id=?", (job_id,)).fetchone()
             return self._record(row) if row is not None else None
+        except (OSError, sqlite3.Error, ValueError):
+            return None
+
+    def get_pr_repair_claim(self, job_id: str) -> Optional[RetainedPRRepairClaim]:
+        """Read the exact admitted PR H/B authority; legacy incomplete rows fail closed."""
+        try:
+            with self._connect() as connection:
+                row = connection.execute("SELECT * FROM local_pr_repair_claims WHERE job_id=?", (job_id,)).fetchone()
+            if row is None or not all(str(row[name]) for name in ("head_repository", "head_ref", "head_sha", "base_repository", "base_ref", "base_identity")):
+                return None
+            return RetainedPRRepairClaim(
+                str(row["job_id"]),
+                str(row["repository"]),
+                int(row["pr_number"]),
+                str(row["head_repository"]),
+                str(row["head_ref"]),
+                str(row["head_sha"]),
+                str(row["base_repository"]),
+                str(row["base_ref"]),
+                str(row["base_identity"]),
+                str(row["repair_kind"]),
+                str(row["source_evidence_identity"]),
+                str(row["upstream_incarnation"]),
+            )
         except (OSError, sqlite3.Error, ValueError):
             return None
 
@@ -1035,6 +1096,33 @@ class LocalJobStore:
             )
         except (OSError, sqlite3.Error, ValueError):
             return None
+
+    def get_execution_result_artifact(self, job_id: str, execution_incarnation: str) -> Optional[LocalJobResultArtifact]:
+        """Read one exact execution artifact, distinguishing absence from read failure."""
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT artifact_id, job_id, execution_incarnation, outcome, output " "FROM local_job_results WHERE job_id=? AND execution_incarnation=?",
+                    (job_id, execution_incarnation),
+                ).fetchone()
+            if row is None:
+                return None
+            return LocalJobResultArtifact(
+                str(row["artifact_id"]),
+                str(row["job_id"]),
+                str(row["execution_incarnation"]),
+                InvocationOutcome(row["outcome"]),
+                str(row["output"]),
+            )
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            raise RuntimeError("local execution artifact lookup failed") from exc
+
+    def adopt_controller_result(self, record: LocalJobRecord, artifact: LocalJobResultArtifact) -> bool:
+        """Fence a validated no-provider conflict result into its result checkpoint."""
+        if record.kind is not LocalJobKind.PR_MERGE_CONFLICT or record.provider_entered:
+            return False
+        claim = LocalJobClaim(record, True)
+        return self.record_result(claim, artifact.outcome, artifact.artifact_id, "recovered verified controller result", executor_token=record.runner_owner)
 
     def record_result(
         self,

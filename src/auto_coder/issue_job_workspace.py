@@ -77,7 +77,7 @@ class IssueJobWorkspaceProducer:
         return result.stdout.strip()
 
     @staticmethod
-    def working_file_identities(root: Path) -> dict[str, _FileIdentity]:
+    def working_file_identities(root: Path, *, maintained_disposable_directory_names: frozenset[str] = frozenset()) -> dict[str, _FileIdentity]:
         """Read working files without trusting model-controlled Git index flags."""
         tracked_result = subprocess.run(["git", "ls-files", "--cached", "-z"], cwd=root, capture_output=True, check=True)
         tracked = {os.fsdecode(path) for path in tracked_result.stdout.split(b"\0") if path}
@@ -89,7 +89,8 @@ class IssueJobWorkspaceProducer:
             for name in filenames + symlinked_directories:
                 path = Path(current) / name
                 relative = str(path.relative_to(root))
-                if relative not in tracked and any(part in DISPOSABLE_DIRECTORY_NAMES for part in Path(relative).parts):
+                disposable_maintained = any(parent.name in maintained_disposable_directory_names and str(parent) in tracked_directories for parent in Path(relative).parents)
+                if relative not in tracked and any(part in DISPOSABLE_DIRECTORY_NAMES for part in Path(relative).parts) and not disposable_maintained:
                     continue
                 if path.is_symlink():
                     contents = os.fsencode(os.readlink(path))
