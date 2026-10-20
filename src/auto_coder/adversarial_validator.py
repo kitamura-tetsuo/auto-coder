@@ -2810,6 +2810,20 @@ def _remaining_unverified_paths(result: AdversarialValidationResult, context: Ad
     return [path for path in context.unverified_files if path not in accounted]
 
 
+def _continue_reviewer_session(
+    backend_manager: BackendManager,
+    session_id: str,
+    prompt: str,
+    *,
+    retained_local: Optional[bool] = None,
+) -> str:
+    """Authorize retained local workspace reuse before continuing a reviewer session."""
+    is_retained_local = retained_local if retained_local is not None else bool(getattr(backend_manager, "has_retained_local_session", lambda _sid: False)(session_id))
+    if is_retained_local:
+        backend_manager.authorize_retained_local_session_reuse(session_id)
+    return backend_manager.continue_session(session_id, prompt, is_noedit=True)
+
+
 def _complete_changed_file_evidence(
     result: AdversarialValidationResult,
     context: AdversarialValidationContext,
@@ -2859,7 +2873,7 @@ def _complete_changed_file_evidence(
     initial_identity = backend_manager.get_current_backend_identity()
     validation_evidence.observe_prompt("evidence_completion", prompt, _manifest_input(context))
     try:
-        response = backend_manager.continue_session(session_id, prompt, is_noedit=True)
+        response = _continue_reviewer_session(backend_manager, session_id, prompt)
         current_identity = backend_manager.get_current_backend_identity()
     except Exception as exc:
         return AdversarialValidationResult(
@@ -3911,7 +3925,8 @@ def run_adversarial_validation(
     stored_session = registry.get(repo_name, pr_number, backend_name, backend_type, model_name) if backend_name else None
     # A local session can be resumed only while this manager still owns the
     # exact private worktree in which the provider created it.
-    can_continue_stored_session = backend_type.lower() in CLOUD_BACKEND_TYPES or (stored_session is not None and backend_manager.has_retained_local_session(stored_session.session_id))
+    stored_session_retained_local = bool(stored_session is not None and backend_type.lower() not in CLOUD_BACKEND_TYPES and backend_manager.has_retained_local_session(stored_session.session_id))
+    can_continue_stored_session = backend_type.lower() in CLOUD_BACKEND_TYPES or stored_session_retained_local
     if stored_session is not None:
         _populate_test_oracle_gap_requirement_text(stored_session.test_oracle_gaps, context.issue_requirements)
         persisted_resolved_paths = {entry.path for entry in _reusable_recovered_evidence(stored_session, context, head_sha)}
@@ -3980,7 +3995,12 @@ def run_adversarial_validation(
     with ProgressStage("Adversarial validation"):
         verify_execution_target("LLM invocation")
         if stored_session and stored_session.session_id and can_continue_stored_session:
-            response = backend_manager.continue_session(stored_session.session_id, prompt, is_noedit=True)
+            response = _continue_reviewer_session(
+                backend_manager,
+                stored_session.session_id,
+                prompt,
+                retained_local=stored_session_retained_local,
+            )
             was_resumed = getattr(backend_manager, "_last_continue_session_resumed", False)
         else:
             response = run_llm_prompt(prompt, backend_manager=backend_manager, is_noedit=True)
@@ -4064,7 +4084,7 @@ def run_adversarial_validation(
                 )
             else:
                 validation_evidence.observe_prompt("target_correction", correction_prompt, None)
-                correction_response = backend_manager.continue_session(correction_session_id, correction_prompt, is_noedit=True)
+                correction_response = _continue_reviewer_session(backend_manager, correction_session_id, correction_prompt)
                 if refresh_ci_status is not None:
                     ci_status = refresh_ci_status()
                 result = _parse_reviewer_response("target_correction", correction_response, result.test_oracle_gaps, closure_input, reviewer_provenance)
@@ -4125,7 +4145,7 @@ def run_adversarial_validation(
                             diagnostic_reason=test_res.target_selection_error,
                         )
                     validation_evidence.observe_prompt("target_selection_correction", correction_prompt, None)
-                    correction_response = backend_manager.continue_session(correction_session_id, correction_prompt, is_noedit=True)
+                    correction_response = _continue_reviewer_session(backend_manager, correction_session_id, correction_prompt)
                     if refresh_ci_status is not None:
                         ci_status = refresh_ci_status()
                     result = _parse_reviewer_response("target_selection_correction", correction_response, result.test_oracle_gaps, closure_input, reviewer_provenance)
@@ -4215,7 +4235,7 @@ def run_adversarial_validation(
                     with ProgressStage("Adversarial dynamic check follow-up"):
                         followup_session_id = getattr(backend_manager, "_last_session_id", None)
                         if isinstance(followup_session_id, str) and followup_session_id:
-                            followup_response = backend_manager.continue_session(followup_session_id, followup_prompt, is_noedit=True)
+                            followup_response = _continue_reviewer_session(backend_manager, followup_session_id, followup_prompt)
                         else:
                             # Never guess an implicit last session. A provider that did not
                             # expose an ID cannot safely retain dynamic-check context.
@@ -4297,10 +4317,16 @@ def run_adversarial_validation(
         try:
             verify_execution_target("test-oracle gap completion")
             completion_session_id = getattr(backend_manager, "_last_session_id", None)
-            can_continue_completion = isinstance(completion_session_id, str) and bool(completion_session_id) and (used_type.lower() in CLOUD_BACKEND_TYPES or backend_manager.has_retained_local_session(completion_session_id))
+            completion_retained_local = bool(isinstance(completion_session_id, str) and completion_session_id and used_type.lower() not in CLOUD_BACKEND_TYPES and backend_manager.has_retained_local_session(completion_session_id))
+            can_continue_completion = isinstance(completion_session_id, str) and bool(completion_session_id) and (used_type.lower() in CLOUD_BACKEND_TYPES or completion_retained_local)
             if can_continue_completion:
                 assert isinstance(completion_session_id, str)
-                completion_response = backend_manager.continue_session(completion_session_id, completion_prompt, is_noedit=True)
+                completion_response = _continue_reviewer_session(
+                    backend_manager,
+                    completion_session_id,
+                    completion_prompt,
+                    retained_local=completion_retained_local,
+                )
             else:
                 completion_response = run_llm_prompt(completion_prompt, backend_manager=backend_manager, is_noedit=True)
             verify_execution_target("test-oracle gap completion response")
