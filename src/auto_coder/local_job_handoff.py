@@ -18,7 +18,7 @@ from typing import Optional
 
 from .durable_repair_allowance import GenerationLifecycleState, RepairAllowanceLedger
 from .issue_dispatch import DispatchOutcome, IssueAttemptIdentity, IssueDispatchGuard
-from .local_review_repair import LocalReviewRepairRequest, LocalReviewRepairStore
+from .local_review_repair import LocalReviewRepairRequest, LocalReviewRepairStore, local_review_repair_db_path
 
 
 class LocalJobKind(str, Enum):
@@ -571,6 +571,19 @@ class LocalJobStore:
                 if existing is not None:
                     connection.commit()
                     return existing
+                competing = connection.execute(
+                    "SELECT 1 FROM local_jobs WHERE repository=? AND target_number=? " "AND kind IN (?, ?) AND state<>? LIMIT 1",
+                    (
+                        offer.repository,
+                        offer.target_number,
+                        LocalJobKind.PR_CI_FAILURE.value,
+                        LocalJobKind.PR_MERGE_CONFLICT.value,
+                        LocalJobState.SETTLED.value,
+                    ),
+                ).fetchone()
+                if competing is not None:
+                    connection.rollback()
+                    return None
                 current_generation = connection.execute(
                     "SELECT 1 FROM allowance.generations WHERE generation_id=? AND bundle_reference=? " "AND owning_identity='local-review-repair' AND lifecycle_state='RESERVED'",
                     (generation.generation_id, request.attempt_id),
@@ -595,7 +608,12 @@ class LocalJobStore:
         except (OSError, sqlite3.Error, ValueError):
             return None
 
-    def offer_pr_repair(self, offer: LocalJobOffer, admission: PRRepairAdmission) -> Optional[LocalJobRecord]:
+    def offer_pr_repair(
+        self,
+        offer: LocalJobOffer,
+        admission: PRRepairAdmission,
+        repair_store: LocalReviewRepairStore | None = None,
+    ) -> Optional[LocalJobRecord]:
         """Durably admit one exact-head local CI/conflict operation.
 
         The caller performs the final authoritative reads immediately before
@@ -629,7 +647,9 @@ class LocalJobStore:
         if not common_valid or not kind_valid:
             return None
         try:
+            repair_store = repair_store or LocalReviewRepairStore(local_review_repair_db_path(offer.repository))
             with self._connect() as connection:
+                self._attach(connection, repair_store.path, "review_repair")
                 self._pr_repair_cas_checkpoint()
                 connection.execute("BEGIN IMMEDIATE")
                 existing = self._existing(connection, offer, admission.upstream_incarnation)
@@ -663,6 +683,13 @@ class LocalJobStore:
                     ),
                 ).fetchone()
                 if competing is not None:
+                    connection.rollback()
+                    return None
+                competing_review_claim = connection.execute(
+                    "SELECT 1 FROM review_repair.local_review_repair_attempts " "WHERE repository=? AND pr_number=? " "AND phase IN ('executing', 'indeterminate', 'publication_pending') LIMIT 1",
+                    (offer.repository, offer.target_number),
+                ).fetchone()
+                if competing_review_claim is not None:
                     connection.rollback()
                     return None
                 self._insert(connection, offer, admission.upstream_incarnation)

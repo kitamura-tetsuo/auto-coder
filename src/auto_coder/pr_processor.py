@@ -1466,7 +1466,9 @@ def _offer_selected_local_pr_repair(
     *,
     ci_authority: Any = None,
     conflict_eligible: bool = False,
+    explicit_local_checkout: bool = False,
     store: Any = None,
+    repair_store: Any = None,
 ) -> Optional[PRRepairResult]:
     """Stop a selected local route at its durable first-effect boundary."""
     from .local_pr_repair_job import LocalPRRepairOffer, local_pr_repair_evidence_identity, offer_local_pr_repair_job
@@ -1483,9 +1485,12 @@ def _offer_selected_local_pr_repair(
     base = pr_data.get("base") or {}
     head_sha = str(head.get("sha") or "")
     base_identity = str(base.get("sha") or "")
-    evidence_identity = str(getattr(getattr(ci_authority, "snapshot", None), "cycle_id", "") or f"mergeability:{head_sha}:{base_identity}")
     failed = tuple(getattr(ci_authority, "failure_identities", ()) or ())
-    operation_identity = local_pr_repair_evidence_identity(evidence_identity, head_sha, base_identity, kind, failed)
+    # Observation cycle IDs identify one read, not one repair operation. Stable
+    # workflow execution identities make independently repeated current-head
+    # reads replay the same durable envelope across controller restarts.
+    evidence_identity = local_pr_repair_evidence_identity("", head_sha, base_identity, kind, failed)
+    operation_identity = evidence_identity
     backend_name = _selected_local_backend_name()
     request = LocalPRRepairOffer(
         repository=repo_name,
@@ -1504,8 +1509,25 @@ def _offer_selected_local_pr_repair(
         invocation_input=json.dumps({"failed_check_identities": failed}, sort_keys=True),
     )
 
-    def owner_allowed(_request: LocalPRRepairOffer) -> bool:
-        exhaustion = check_pr_repair_exhaustion(repo_name, int(pr_data["number"]))
+    def owner_allowed(_request: LocalPRRepairOffer, final_metadata: Dict[str, Any]) -> bool:
+        # Re-evaluate the selected origin on the same strict metadata read used
+        # for exact H/B admission. Cloud and dependency-bot ownership cannot be
+        # converted into local ownership merely because H/B stayed unchanged.
+        if kind is RepairKind.CI_FAILURE:
+            local_route = explicit_local_checkout or _is_local_llm_pr(final_metadata)
+        else:
+            local_route = explicit_local_checkout or not (
+                _is_codex_or_claude_pr(final_metadata)
+                or _is_jules_pr(final_metadata)
+                or _is_dependabot_pr(final_metadata)
+            )
+        if not local_route:
+            return False
+        exhaustion = check_pr_repair_exhaustion(
+            repo_name,
+            int(pr_data["number"]),
+            require_authoritative_snapshot=True,
+        )
         return exhaustion is None or not exhaustion.is_exhausted
 
     job = offer_local_pr_repair_job(
@@ -1515,6 +1537,7 @@ def _offer_selected_local_pr_repair(
         ci_authority=ci_authority,
         conflict_eligible=conflict_eligible,
         store=store,
+        repair_store=repair_store,
     )
     if job is None:
         return PRRepairResult(RepairDisposition.DEFERRED, reason="Local PR repair admission is unavailable or blocked")
@@ -6976,6 +6999,7 @@ def _handle_pr_merge(
                 RepairKind.CI_FAILURE,
                 github_client,
                 ci_authority=authority,
+                explicit_local_checkout=already_on_pr_branch,
             ),
         )
         repair_result = _dispatch_local_ci_failure_repair(
@@ -10676,7 +10700,13 @@ def _handle_definitive_merge_rejection(
             route_disposition.retry_not_before = cloud_repair.retry_not_before
         return False
 
-    local_admission = _offer_selected_local_pr_repair(repo_name, pr_info, RepairKind.MERGE_CONFLICT, client, conflict_eligible=True)
+    local_admission = _offer_selected_local_pr_repair(
+        repo_name,
+        pr_info,
+        RepairKind.MERGE_CONFLICT,
+        client,
+        conflict_eligible=True,
+    )
     assert local_admission is not None
     accepted = local_admission.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN
     _record_pr_stage(

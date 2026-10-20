@@ -65,6 +65,7 @@ def check_pr_repair_exhaustion(
     api_origin: str = "https://api.github.com",
     allowance_ledger: Optional[RepairAllowanceLedger] = None,
     blocker_ledger: Optional[CanonicalPRBlockerLedger] = None,
+    require_authoritative_snapshot: bool = False,
 ) -> Optional[PrRepairExhaustionInfo]:
     """Check whether a pull request has an active repair exhaustion hold.
 
@@ -79,12 +80,16 @@ def check_pr_repair_exhaustion(
         b_snapshot = b_ledger.get_snapshot(norm_origin, repo_name, pr_number, require_retained_state=False)
     except Exception as exc:
         logger.debug(f"Could not load canonical blocker ledger snapshot for {repo_name}#{pr_number}: {exc}")
+        if require_authoritative_snapshot:
+            raise
         b_snapshot = None
 
     try:
         a_snapshot = a_ledger.get_snapshot(norm_origin, repo_name, pr_number, require_retained_state=False)
     except Exception as exc:
         logger.debug(f"Could not load repair allowance snapshot for {repo_name}#{pr_number}: {exc}")
+        if require_authoritative_snapshot:
+            raise
         a_snapshot = None
 
     if a_snapshot is None:

@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 from .ci_repair_authority import CIRepairAuthority, evaluate_ci_repair_snapshot
 from .local_job_handoff import LocalJobKind, LocalJobOffer, LocalJobRecord, LocalJobStore, PRRepairAdmission
+from .local_review_repair import LocalReviewRepairStore
 from .pr_repair_dispatch import RepairKind
 
 
@@ -34,7 +35,7 @@ class LocalPRRepairOffer:
     invocation_input: str
 
 
-OwnerAdmission = Callable[[LocalPRRepairOffer], bool]
+OwnerAdmission = Callable[[LocalPRRepairOffer, dict[str, Any]], bool]
 
 
 def _evidence_identity(values: tuple[str, ...]) -> str:
@@ -49,6 +50,7 @@ def offer_local_pr_repair_job(
     ci_authority: CIRepairAuthority | None = None,
     conflict_eligible: bool = False,
     store: LocalJobStore | None = None,
+    repair_store: LocalReviewRepairStore | None = None,
 ) -> LocalJobRecord | None:
     """Reconfirm routing/target facts and atomically offer an exact operation."""
     if not request.backend_name or request.head_repository != request.repository or request.base_repository != request.repository:
@@ -69,7 +71,7 @@ def offer_local_pr_repair_job(
         )
         opened = str(metadata.get("state") or "").lower() == "open"
         unmerged = not bool(metadata.get("merged") or metadata.get("merged_at"))
-        locally_routed = owner_admission(request)
+        locally_routed = owner_admission(request, metadata)
     except Exception:
         return None
 
@@ -109,7 +111,7 @@ def offer_local_pr_repair_job(
         conflict_eligible,
         complete_failure,
     )
-    return (store or LocalJobStore()).offer_pr_repair(offer, admission)
+    return (store or LocalJobStore()).offer_pr_repair(offer, admission, repair_store)
 
 
 def local_pr_repair_evidence_identity(

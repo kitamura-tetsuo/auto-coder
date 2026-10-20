@@ -19,6 +19,13 @@ replay and refuses a competing unsettled CI, conflict, or review-correction
 edit owner for the same PR. A changed head/base, fork origin, non-local route,
 invalid owner allowance, incomplete evidence, contradictory replay, or storage
 failure is a deferral rather than permission to fall back to another backend.
+The final metadata read re-evaluates local-versus-cloud routing, and an
+unavailable allowance snapshot fails closed. Independent CI reads use the
+stable current-head workflow execution identities rather than their transient
+read-cycle UUID, so controllers and restarts recover the same envelope.
+Review-correction claims are included in the cross-store transaction even
+before their local-job envelope is transferred, and the reverse transfer also
+checks unsettled CI/conflict owners.
 Pending, running, and downstream-publication envelopes continue suppressing
 competing work. Historical envelopes are retained when branch identity later
 changes; they do not provide publication authority for the newer branch.
