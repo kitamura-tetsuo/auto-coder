@@ -1516,11 +1516,7 @@ def _offer_selected_local_pr_repair(
         if kind is RepairKind.CI_FAILURE:
             local_route = explicit_local_checkout or _is_local_llm_pr(final_metadata)
         else:
-            local_route = explicit_local_checkout or not (
-                _is_codex_or_claude_pr(final_metadata)
-                or _is_jules_pr(final_metadata)
-                or _is_dependabot_pr(final_metadata)
-            )
+            local_route = explicit_local_checkout or not (_is_codex_or_claude_pr(final_metadata) or _is_jules_pr(final_metadata) or _is_dependabot_pr(final_metadata))
         if not local_route:
             return False
         exhaustion = check_pr_repair_exhaustion(
