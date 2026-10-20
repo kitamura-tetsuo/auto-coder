@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
@@ -29,6 +29,7 @@ class DurableCICorrection:
     failed_tests: list[str] | None
     ports: CorrectionPorts
     extract_failed_tests: Callable[[str], list[str]]
+    execution_context: Callable[[], AbstractContextManager[object]] = nullcontext
 
 
 @dataclass(frozen=True)
@@ -87,25 +88,29 @@ class LocalCIRepairJobAdapter:
             try:
                 metadata = github.get_pull_request_metadata_strict(job.repository, job.target_number)  # type: ignore[attr-defined]
                 base = metadata.get("base") or {}
+                head = metadata.get("head") or {}
                 base_repo = (base.get("repo") or {}).get("full_name")
                 exact_base = base_repo == retained.base_repository and base.get("ref") == retained.base_ref and (base.get("sha") or base.get("identity")) == retained.base_identity
+                exact_head = (head.get("repo") or {}).get("full_name") == retained.head_repository and head.get("ref") == retained.head_ref and head.get("sha") == retained.head_sha
+                open_pr = metadata.get("state") == "open" and not metadata.get("merged_at") and not metadata.get("merged")
                 routed = self._ports.local_route(job, metadata)
             except Exception as exc:
                 raise LocalJobProviderEntryRefused(f"fresh PR route read unavailable: {exc}") from exc
-            if not exact_base or not routed:
-                raise LocalJobProviderEntryRefused("PR base or local repair route changed")
+            if not exact_head or not exact_base or not open_pr or not routed:
+                raise LocalJobProviderEntryRefused("PR head, base, open state, or local repair route changed")
             if not checkpoint():
                 raise LocalJobProviderEntryRefused("provider-entry checkpoint failed")
-            result = execute_correction_without_publication(
-                correction.request,
-                correction.diagnostics,
-                correction.failed_tests,
-                correction.ports,
-                correction.extract_failed_tests,
-            )
+            with correction.execution_context():
+                result = execute_correction_without_publication(
+                    correction.request,
+                    correction.diagnostics,
+                    correction.failed_tests,
+                    correction.ports,
+                    correction.extract_failed_tests,
+                )
 
         output = json.dumps(asdict(result), sort_keys=True, default=str)
-        changed = tuple(path for path, identity in self._workspace.capture_result(claim, prepared, InvocationOutcome.COMPLETED, output).changed_files if identity is not None)
+        changed = self._workspace.capture_result(claim, prepared, InvocationOutcome.COMPLETED, output).changed_files
         if result.failure_reason:
             outcome = InvocationOutcome.FAILED
         elif result.attempt_started and changed:

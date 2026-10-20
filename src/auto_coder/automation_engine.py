@@ -2824,7 +2824,7 @@ class AutomationEngine:
             self.invocation_gate,
             repository=repo_name,
             capacity=max(1, concurrency),
-            adapters={LocalJobKind.PR_REVIEW_CORRECTION: PRCorrectionJobAdapter(self.github, build_captured_executor, local_job_store)},
+            adapters=build_pr_local_job_adapters(self.github, self.config, local_job_store),
             completion_wake=wake_pr_validation,
         )
 
@@ -9470,3 +9470,24 @@ class AutomationEngine:
 
     # Constants
     FLAG_SKIP_ANALYSIS = "[SKIP_LLM_ANALYSIS]"
+
+
+def build_pr_local_job_adapters(github: Any, config: AutomationConfig, store: LocalJobStore, repository_path: Path | None = None) -> dict[LocalJobKind, Any]:
+    """Compose every production durable PR execution adapter."""
+    from .ci_repair_authority import current_ci_failure_authority
+    from .local_ci_repair_job import LocalCIRepairJobPorts, build_local_ci_repair_job_adapter
+    from .pr_correction_job import PRCorrectionJobAdapter, build_captured_executor
+    from .pr_processor import _is_local_llm_pr, build_durable_ci_correction
+    from .pr_repair_workspace import PRRepairSource
+
+    ci_ports = LocalCIRepairJobPorts(
+        source=lambda _job: PRRepairSource(repository_path or Path.cwd()),
+        github_client=lambda _job: github,
+        authority=current_ci_failure_authority,
+        local_route=lambda _job, metadata: _is_local_llm_pr(metadata),
+        correction=lambda job, prepared: build_durable_ci_correction(job, prepared, github, config),
+    )
+    return {
+        LocalJobKind.PR_REVIEW_CORRECTION: PRCorrectionJobAdapter(github, build_captured_executor, store),
+        LocalJobKind.PR_CI_FAILURE: build_local_ci_repair_job_adapter(store, ci_ports),
+    }

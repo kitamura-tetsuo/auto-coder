@@ -15,6 +15,7 @@ import pytest
 
 from auto_coder import pr_processor
 from auto_coder.automation_config import AutomationConfig
+from auto_coder.automation_engine import build_pr_local_job_adapters
 from auto_coder.ci_observation import (
     CIConclusion,
     CIObservationSnapshot,
@@ -192,7 +193,10 @@ class Harness:
         def initial(_diagnostics, _backend, _targets, started):  # type: ignore[no-untyped-def]
             self.editor_calls += 1
             started()
-            (prepared.workspace / "feature.txt").write_text("repaired\n", encoding="utf-8")
+            if self.mode == "deletion":
+                (prepared.workspace / "feature.txt").unlink()
+            else:
+                (prepared.workspace / "feature.txt").write_text("repaired\n", encoding="utf-8")
             return ("edited private workspace",)
 
         def run_selected(_config, *, test_file):  # type: ignore[no-untyped-def]
@@ -248,7 +252,7 @@ class Harness:
         )
 
 
-@pytest.mark.parametrize("mode", ["positive", "no_targets", "exhausted"])
+@pytest.mark.parametrize("mode", ["positive", "deletion", "no_targets", "exhausted"])
 def test_production_selection_runs_focused_nonpublishing_job(mode: str, tmp_path: Path, _use_real_commands) -> None:
     """REQ-001/004-007: selection, offer, workspace, runner and artifact stay joined."""
     harness = Harness.create(tmp_path)
@@ -265,8 +269,13 @@ def test_production_selection_runs_focused_nonpublishing_job(mode: str, tmp_path
     artifact = harness.store.get_result_artifact(completed.result_reference)
     assert artifact is not None
     verified = PRRepairWorkspaceProducer(harness.store, harness.root / "workspaces").revalidate_result(completed, artifact)
-    assert dict(verified.manifest.changed_files)["feature.txt"] is not None
-    assert Path(verified.manifest.workspace, "feature.txt").read_text(encoding="utf-8") == "repaired\n"
+    changed_feature = dict(verified.manifest.changed_files)["feature.txt"]
+    if mode == "deletion":
+        assert changed_feature is None
+        assert not Path(verified.manifest.workspace, "feature.txt").exists()
+    else:
+        assert changed_feature is not None
+        assert Path(verified.manifest.workspace, "feature.txt").read_text(encoding="utf-8") == "repaired\n"
     assert git(harness.remote, "rev-parse", "refs/heads/feature") == remote_before == harness.head
     assert harness.editor_calls == 1
     observed = json.loads(verified.manifest.observed_output)
@@ -274,6 +283,25 @@ def test_production_selection_runs_focused_nonpublishing_job(mode: str, tmp_path
         assert any("identified no test file" in action for action in observed["actions"])
     if mode == "exhausted":
         assert any("Max fix attempts (0) reached" in action for action in observed["actions"])
+    runner.close()
+
+
+def test_production_runner_composition_discovers_admitted_ci_job(tmp_path: Path, _use_real_commands) -> None:
+    """REQ-001: daemon composition registers and executes the captured CI adapter."""
+    harness = Harness.create(tmp_path)
+    job_id = harness.offer_from_pr_handler()
+    with (
+        patch("auto_coder.ci_repair_authority.current_ci_failure_authority", harness.authority),
+        patch("auto_coder.pr_processor.build_durable_ci_correction", side_effect=lambda job, prepared, *_args: harness.correction(job, prepared)),
+    ):
+        adapters = build_pr_local_job_adapters(harness.github, AutomationConfig(), harness.store, harness.controller)
+        runner = LocalJobRunner(harness.store, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters=adapters)
+        assert runner.poll() == 1
+        wait_until(lambda: runner.active_count() == 0)
+    completed = harness.store.get(job_id)
+    assert completed is not None and completed.invocation_outcome is InvocationOutcome.COMPLETED
+    assert harness.editor_calls == 1
+    assert harness.store.get_result_artifact(completed.result_reference) is not None
     runner.close()
 
 
@@ -370,6 +398,62 @@ def test_production_ci_authority_refuses_superseded_facts_before_entry(
     assert refused.diagnostic
     assert harness.editor_calls == 0
     assert git(harness.remote, "rev-parse", "refs/heads/feature") == remote_before
+    runner.close()
+
+
+@pytest.mark.parametrize("new_state", ["changed_head", "closed"])
+def test_newer_strict_metadata_refuses_entry(new_state: str, tmp_path: Path, _use_real_commands) -> None:
+    """REQ-002: the adapter must honor metadata newer than the authority read."""
+    harness = Harness.create(tmp_path)
+    job_id = harness.offer_from_pr_handler()
+    open_h = metadata(harness.head, harness.base)
+    newer = metadata("H2" if new_state == "changed_head" else harness.head, harness.base)
+    if new_state == "closed":
+        newer["state"] = "closed"
+    harness.github.get_pull_request_metadata_strict.side_effect = [open_h, newer]
+    adapter = harness.adapter()
+    adapter._ports = LocalCIRepairJobPorts(  # type: ignore[attr-defined]
+        source=adapter._ports.source,  # type: ignore[attr-defined]
+        github_client=adapter._ports.github_client,  # type: ignore[attr-defined]
+        authority=current_ci_failure_authority,
+        local_route=adapter._ports.local_route,  # type: ignore[attr-defined]
+        correction=adapter._ports.correction,  # type: ignore[attr-defined]
+    )
+    api = type(
+        "API",
+        (),
+        {
+            "checks": type("Checks", (), {"list_for_ref": lambda *_a, **_k: {"check_runs": []}})(),
+            "actions": type(
+                "Actions",
+                (),
+                {
+                    "list_workflow_runs_for_repo": lambda *_a, **_k: {
+                        "workflow_runs": [
+                            {
+                                "id": 202,
+                                "workflow_id": 101,
+                                "run_attempt": 1,
+                                "head_sha": harness.head,
+                                "status": "completed",
+                                "conclusion": "failure",
+                                "name": "tests",
+                                "path": ".github/workflows/tests.yml",
+                            }
+                        ]
+                    }
+                },
+            )(),
+        },
+    )()
+    runner = harness.runner(adapter)
+    with patch("auto_coder.ci_repair_authority.get_ghapi_client", return_value=api):
+        assert runner.poll() == 1
+        wait_until(lambda: runner.active_count() == 0)
+    refused = harness.store.get(job_id)
+    assert refused is not None and refused.state is LocalJobState.PENDING
+    assert not refused.provider_entered and harness.editor_calls == 0
+    assert "head, base, open state" in refused.diagnostic
     runner.close()
 
 
