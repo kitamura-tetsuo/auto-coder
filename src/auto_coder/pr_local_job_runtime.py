@@ -29,7 +29,10 @@ def build_pr_local_job_adapters(
     conflict = LocalConflictRepairJobAdapter(
         store,
         PRRepairSource((repository_path or Path.cwd()).resolve()),
-        github_client.get_pull_request_metadata_strict,
+        # Resolve the strict reader only when a conflict job actually runs.
+        # Lightweight engine embeddings that never admit PR repair jobs are
+        # not required to implement that production GitHub capability.
+        lambda repository, number: github_client.get_pull_request_metadata_strict(repository, number),
         conflict_route,
         conflict_editor_factory,
         workspace_producer=conflict_workspace_producer,
