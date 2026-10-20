@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import subprocess
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobStore, PRRepairAdmission
+from auto_coder.invocation_admission import InvocationAdmissionGate
+from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
+from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore, PRRepairAdmission
+from auto_coder.local_job_runner import LocalJobRunner
 from auto_coder.local_review_repair import LocalReviewRepairStore
 from auto_coder.pr_repair_workspace import PRRepairSource, PRRepairWorkspaceError, PRRepairWorkspaceProducer
 
@@ -188,3 +192,141 @@ def test_exact_unentered_controller_artifact_can_be_adopted_without_provider_ent
     assert store.adopt_controller_result(claim.record, artifact)
     retained = store.get(claim.record.job_id)
     assert retained is not None and not retained.provider_entered and retained.result_reference == artifact.artifact_id
+
+
+def _conflict_checkpoint(tmp_path: Path, *, target: int):
+    repo, head, _base = repository(tmp_path)
+    git(repo, "switch", "main")
+    (repo / "base.txt").write_text("advanced base\n")
+    git(repo, "commit", "-am", "advance base")
+    base = git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "origin", "main")
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    claim = admitted_conflict(store, tmp_path, head, base, target=target)
+    producer = PRRepairWorkspaceProducer(store, tmp_path / "workspaces")
+    prepared = producer.prepare(claim, PRRepairSource(repo))
+    git(prepared.workspace, "config", "user.email", "test@example.com")
+    git(prepared.workspace, "config", "user.name", "Test")
+    subprocess.run(["git", "merge", "--no-commit", base], cwd=prepared.workspace, check=True, capture_output=True)
+    manifest = producer.capture_result(claim, prepared, InvocationOutcome.COMPLETED, "", completion_source="controller_verified_merge")
+    return repo, store, claim, producer, prepared, manifest
+
+
+def test_restart_recovers_exact_unentered_conflict_artifact_without_repeating_work(tmp_path: Path, _use_real_commands) -> None:
+    repo, store, claim, _producer, prepared, manifest = _conflict_checkpoint(tmp_path, target=9)
+    peer = tmp_path / "peer"
+    peer.mkdir()
+    (peer / "sentinel").write_text("unchanged\n")
+    artifact = store.persist_result_artifact(claim, InvocationOutcome.COMPLETED, manifest.to_json(), executor_token=claim.record.runner_owner)
+    assert artifact is not None  # interruption occurs before record_result
+    merge_calls = 0
+
+    class RecoveryAdapter:
+        def validate_controller_completion(self, job, candidate):  # type: ignore[no-untyped-def]
+            assert job.execution_incarnation == claim.record.execution_incarnation
+            assert candidate.artifact_id == artifact.artifact_id
+            return PRRepairWorkspaceProducer(reopened, tmp_path / "workspaces").revalidate_result(job, candidate)
+
+        def authorize_provider_entry(self, _job):  # type: ignore[no-untyped-def]
+            raise AssertionError("recovery must not authorize a new provider")
+
+        def invoke(self, _job):  # type: ignore[no-untyped-def]
+            nonlocal merge_calls
+            merge_calls += 1
+            raise AssertionError("recovery must not repeat conflict work")
+
+    reopened = LocalJobStore(store.path)
+    runner = LocalJobRunner(
+        reopened,
+        InvocationAdmissionGate(),
+        repository="owner/repo",
+        capacity=1,
+        adapters={LocalJobKind.PR_MERGE_CONFLICT: RecoveryAdapter()},
+    )
+    runner.recover_unsettled()
+    runner.close()
+
+    recovered = reopened.get(claim.record.job_id)
+    assert recovered is not None
+    assert recovered.execution_incarnation == claim.record.execution_incarnation
+    assert recovered.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+    assert recovered.result_reference == artifact.artifact_id
+    assert reopened.get_execution_result_artifact(recovered.job_id, recovered.execution_incarnation) == artifact
+    assert manifest.head_sha == git(prepared.workspace, "rev-parse", "HEAD")
+    assert dict(manifest.workspace_files)["base.txt"].checksum != dict(prepared.source_files)["base.txt"].checksum
+    assert merge_calls == 0
+    assert (repo / "base.txt").read_text() == "advanced base\n"
+    assert (peer / "sentinel").read_text() == "unchanged\n"
+
+
+def test_restart_before_artifact_releases_unentered_claim_but_invalid_evidence_is_retained(tmp_path: Path, _use_real_commands, monkeypatch) -> None:
+    _repo, store, claim, producer, _prepared, manifest = _conflict_checkpoint(tmp_path, target=10)
+    reopened = LocalJobStore(store.path)
+
+    class RejectingAdapter:
+        def validate_controller_completion(self, job, artifact):  # type: ignore[no-untyped-def]
+            try:
+                producer.revalidate_result(job, artifact)
+            except PRRepairWorkspaceError:
+                return False
+            return True
+
+        def authorize_provider_entry(self, _job):  # type: ignore[no-untyped-def]
+            return False
+
+        def invoke(self, _job):  # type: ignore[no-untyped-def]
+            raise AssertionError("not invoked")
+
+    runner = LocalJobRunner(reopened, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.PR_MERGE_CONFLICT: RejectingAdapter()})
+    runner.recover_unsettled()
+    released = reopened.get(claim.record.job_id)
+    assert released is not None and released.state is LocalJobState.PENDING and released.execution_incarnation == ""
+    runner.close()
+
+    # A second execution with a present but invalid artifact remains attributable.
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("UPDATE local_jobs SET state='running', execution_incarnation=?, runner_owner=? WHERE job_id=?", (claim.record.execution_incarnation, claim.record.runner_owner, claim.record.job_id))
+    restarted_claim = replace(claim, record=replace(claim.record, state=LocalJobState.RUNNING))
+    invalid = store.persist_result_artifact(restarted_claim, InvocationOutcome.COMPLETED, replace(manifest, head_sha="0" * 40).to_json(), executor_token=claim.record.runner_owner)
+    assert invalid is not None
+    runner = LocalJobRunner(reopened, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.PR_MERGE_CONFLICT: RejectingAdapter()})
+    runner.recover_unsettled()
+    retained = reopened.get(claim.record.job_id)
+    assert retained is not None and retained.state is LocalJobState.RUNNING
+
+    monkeypatch.setattr(reopened, "get_execution_result_artifact", lambda *_args: (_ for _ in ()).throw(RuntimeError("unreadable")))
+    runner.recover_unsettled()
+    assert reopened.get(claim.record.job_id).state is LocalJobState.RUNNING  # type: ignore[union-attr]
+    runner.close()
+
+
+def test_pre_ref_provenance_claim_migration_is_idempotent_and_fail_closed(tmp_path: Path) -> None:
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    old_claim = admitted(store, tmp_path, "a" * 40, "b" * 40, target=11)
+    old_artifact = store.persist_result_artifact(old_claim, InvocationOutcome.INTERRUPTED, "legacy-output", executor_token="runner")
+    assert old_artifact is not None
+
+    issue_offer = LocalJobOffer(LocalJobKind.ISSUE_IMPLEMENTATION, "owner/repo", 12, "legacy-issue", "codex", "implement")
+    identity = IssueAttemptIdentity("owner", "repo", 12, "legacy-issue")
+    guard = IssueDispatchGuard(tmp_path / "dispatch.sqlite3")
+    assert guard.reserve(identity, CandidateHandoff("codex", "local")).admitted
+    assert store.offer_issue(issue_offer, identity, guard) is not None
+
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("CREATE TABLE old_claims AS SELECT job_id, repository, pr_number, head_sha, base_identity, repair_kind, " "source_evidence_identity, upstream_incarnation, failed_check_identities_json, created_at FROM local_pr_repair_claims")
+        connection.execute("DROP TABLE local_pr_repair_claims")
+        connection.execute("ALTER TABLE old_claims RENAME TO local_pr_repair_claims")
+
+    migrated = LocalJobStore(store.path)
+    assert migrated.get_pr_repair_claim(old_claim.record.job_id) is None
+    assert migrated.get(old_claim.record.job_id) == store.get(old_claim.record.job_id)
+    assert migrated.get_execution_result_artifact(old_claim.record.job_id, old_claim.record.execution_incarnation) == old_artifact
+    assert migrated.get(issue_offer.job_id) is not None
+    with sqlite3.connect(store.path) as connection:
+        row = connection.execute("SELECT head_sha, base_identity, head_repository, head_ref, base_repository, base_ref FROM local_pr_repair_claims WHERE job_id=?", (old_claim.record.job_id,)).fetchone()
+    assert row == ("a" * 40, "b" * 40, "", "", "", "")
+    assert LocalJobStore(store.path).get_pr_repair_claim(old_claim.record.job_id) is None
+
+    new_claim = admitted(migrated, tmp_path, "c" * 40, "d" * 40, target=13)
+    retained = LocalJobStore(store.path).get_pr_repair_claim(new_claim.record.job_id)
+    assert retained is not None and (retained.head_ref, retained.base_ref) == ("feature", "main")
