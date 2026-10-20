@@ -175,6 +175,7 @@ class RetainedPRRepairClaim:
     repair_kind: str
     source_evidence_identity: str
     upstream_incarnation: str
+    failed_check_identities: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -781,6 +782,7 @@ class LocalJobStore:
                 str(row["repair_kind"]),
                 str(row["source_evidence_identity"]),
                 str(row["upstream_incarnation"]),
+                tuple(str(value) for value in json.loads(str(row["failed_check_identities_json"]))),
             )
         except (OSError, sqlite3.Error, ValueError):
             return None

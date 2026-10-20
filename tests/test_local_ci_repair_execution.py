@@ -10,6 +10,7 @@ from auto_coder.local_ci_repair_execution import (
     CorrectionPorts,
     LocalCIRepairPorts,
     LocalCIRepairRequest,
+    execute_correction_without_publication,
     execute_local_ci_repair,
 )
 from auto_coder.pr_repair_dispatch import PRRepairResult, RepairDisposition, RepairFactState
@@ -237,3 +238,26 @@ def test_base_update_trace_failure_does_not_change_selected_result() -> None:
     assert result.candidate_head == "head-2"
     assert result.synchronized is True
     assert result.failure_reason == ""
+
+
+def test_durable_correction_never_calls_synchronous_submit() -> None:
+    """REQ-004/005: focused execution produces evidence, not publication."""
+    config = AutomationConfig()
+    events: list[str] = []
+    correction = replace(
+        _ports(events).correction,
+        submit=lambda: (_ for _ in ()).throw(AssertionError("durable execution must not publish")),
+    )
+
+    result = execute_correction_without_publication(
+        _request(config, checked_out=True),
+        "tests failed",
+        [],
+        correction,
+        lambda _diagnostics: [],
+    )
+
+    assert result.attempt_started is True
+    assert result.candidate_head == ""
+    assert result.synchronized is None
+    assert result.actions[-1] == "Local CI correction captured for controller-owned publication; full validation remains pending GitHub CI"

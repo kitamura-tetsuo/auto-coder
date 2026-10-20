@@ -35,6 +35,7 @@ from src.auto_coder.ci_repair_verification import (
     classify_target_result,
     dedupe_targets,
     follow_up_budget_exhausted,
+    verify_targets,
 )
 from src.auto_coder.invocation_admission import ci_repair_designated
 from src.auto_coder.pr_repair_dispatch import RepairDisposition, RepairFactState
@@ -603,3 +604,20 @@ def test_summary_builder_keeps_every_failed_job_and_file_identity():
     assert "tests/test_first.py" in summary
     assert files == ["tests/test_first.py", "tests/test_second.py"]
     assert len(summary) < 60000
+
+
+def test_focused_target_existence_is_bound_to_private_workspace(tmp_path: Path) -> None:
+    """REQ-001/004: a similarly named file in process cwd cannot authorize a run."""
+    workspace = tmp_path / "private"
+    workspace.mkdir()
+    (workspace / "selected.py").write_text("assert True\n", encoding="utf-8")
+    calls: list[str] = []
+
+    def runner(_config: object, *, test_file: str) -> dict[str, object]:
+        calls.append(test_file)
+        return {"success": True, "command": "scripts/test.sh", "test_file": test_file, "return_code": 0}
+
+    result = verify_targets(["selected.py"], runner, object(), workspace_root=workspace)
+
+    assert result.all_passed
+    assert calls == ["selected.py"]

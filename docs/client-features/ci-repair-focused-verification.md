@@ -12,6 +12,22 @@ exact-head authority context encloses the first workspace mutation. The service
 returns attempt-start, candidate-head and synchronization facts independently;
 action text is not publication evidence.
 
+Durably admitted CI repairs instead run through `LocalCIRepairJobAdapter` in
+the exact private workspace retained by their job. Read-only preparation may
+happen first, but the adapter repeats the open PR, base, local-route, selected
+terminal-failure-generation, and invalidation-fenced exact-head checks at the
+first provider effect. It checkpoints that exact execution incarnation before
+editing. A changed or unavailable fact therefore remains definitely unentered;
+an entered invocation with an unknown end is retained for reconciliation and
+is not replayed as a new model call.
+
+The durable adapter reuses the same bounded correction and focused selectors,
+with target existence resolved against the private workspace, but deliberately
+omits the synchronous submit port. Its typed completed, failed, or cannot-fix
+result and observed file manifest become the runner-owned artifact for later
+controller publication. Artifact settlement neither pushes the branch nor
+claims current-head GitHub CI success, merge authority, or PR-slot release.
+
 Base-update operator actions and the existing `Update Base` trace stage are
 classified at this consumer from the typed disposition and fact states. Only an
 `APPLIED` result with an available resulting head and confirmed synchronization
