@@ -61,6 +61,47 @@ def test_definitive_merge_rejection_preserves_cloud_wait_without_local_fallback(
     assert route.retry_not_before == cloud_result.get("retry_not_before")
 
 
+def test_definitive_local_conflict_selection_durably_hands_off_before_execution(tmp_path) -> None:
+    """REQ-001: the production conflict selector stops at durable admission."""
+    from auto_coder import local_pr_repair_job, pr_processor
+    from auto_coder.local_job_handoff import LocalJobKind, LocalJobStore
+
+    pr = {
+        "number": 2504,
+        "body": "<!-- auto-coder:local-llm -->",
+        "state": "open",
+        "merged_at": None,
+        "mergeable": False,
+        "head": {"ref": "feature", "sha": "H1", "repo": {"full_name": "owner/repo"}},
+        "base": {"ref": "main", "sha": "B1", "repo": {"full_name": "owner/repo"}},
+    }
+    api = MagicMock()
+    api.pulls.get.return_value = pr
+    github = MagicMock()
+    github.get_pull_request_metadata_strict.return_value = pr
+    jobs = LocalJobStore(tmp_path / "jobs.sqlite3")
+    route = pr_processor.MergeRouteDisposition()
+    merge_attempt = MagicMock()
+    with (
+        patch.object(pr_processor, "_is_jules_pr", return_value=False),
+        patch.object(pr_processor, "_is_dependabot_pr", return_value=False),
+        patch.object(pr_processor, "_dispatch_cloud_conflict_repair", return_value=PRRepairResult(RepairDisposition.REFUSED)),
+        patch.object(pr_processor, "_selected_local_backend_name", return_value="codex"),
+        patch.object(pr_processor, "check_pr_repair_exhaustion", return_value=None),
+        patch.object(local_pr_repair_job, "LocalJobStore", return_value=jobs),
+        patch.object(pr_processor, "_resolve_pr_merge_conflicts") as synchronous,
+    ):
+        for _ in range(2):
+            assert pr_processor._handle_definitive_merge_rejection("owner/repo", 2504, AutomationConfig(), github, api, "owner", "repo", MagicMock(), MagicMock(), merge_attempt, "H1", route) is False
+
+    synchronous.assert_not_called()
+    merge_attempt.assert_not_called()
+    retained = tuple(job for job in LocalJobStore(tmp_path / "jobs.sqlite3").discover_unsettled() if job.kind is LocalJobKind.PR_MERGE_CONFLICT)
+    assert len(retained) == 1
+    assert route.outcome is pr_processor.PRProcessingOutcome.DEFERRED
+    assert retained[0].repository == "owner/repo" and retained[0].target_number == 2504
+
+
 def test_adapter_preserves_structured_effect_evidence() -> None:
     expected = PRRepairResult(
         RepairDisposition.APPLIED,

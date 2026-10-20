@@ -18,12 +18,14 @@ from typing import Optional
 
 from .durable_repair_allowance import GenerationLifecycleState, RepairAllowanceLedger
 from .issue_dispatch import DispatchOutcome, IssueAttemptIdentity, IssueDispatchGuard
-from .local_review_repair import LocalReviewRepairRequest, LocalReviewRepairStore
+from .local_review_repair import LocalReviewRepairRequest, LocalReviewRepairStore, local_review_repair_db_path
 
 
 class LocalJobKind(str, Enum):
     ISSUE_IMPLEMENTATION = "issue_implementation"
     PR_REVIEW_CORRECTION = "pr_review_correction"
+    PR_CI_FAILURE = "pr_ci_failure"
+    PR_MERGE_CONFLICT = "pr_merge_conflict"
 
 
 class LocalJobState(str, Enum):
@@ -133,6 +135,28 @@ class LocalJobOffer:
             separators=(",", ":"),
         )
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class PRRepairAdmission:
+    """Authoritative facts retained with one exact-head PR repair offer."""
+
+    head_repository: str
+    head_ref: str
+    head_sha: str
+    base_repository: str
+    base_ref: str
+    base_identity: str
+    repair_kind: str
+    source_evidence_identity: str
+    upstream_incarnation: str
+    failed_check_identities: tuple[str, ...] = ()
+    pr_open: bool = False
+    pr_unmerged: bool = False
+    local_route: bool = False
+    owner_allowed: bool = False
+    conflict_eligible: bool = False
+    ci_complete_failure: bool = False
 
 
 @dataclass(frozen=True)
@@ -254,6 +278,16 @@ class LocalJobStore:
                 execution_incarnation TEXT NOT NULL, outcome TEXT NOT NULL,
                 output TEXT NOT NULL, created_at REAL NOT NULL,
                 UNIQUE(job_id, execution_incarnation))"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS local_pr_repair_claims (
+                job_id TEXT PRIMARY KEY, repository TEXT NOT NULL,
+                pr_number INTEGER NOT NULL, head_sha TEXT NOT NULL,
+                base_identity TEXT NOT NULL, repair_kind TEXT NOT NULL,
+                source_evidence_identity TEXT NOT NULL,
+                upstream_incarnation TEXT NOT NULL,
+                failed_check_identities_json TEXT NOT NULL,
+                created_at REAL NOT NULL)"""
             )
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS local_job_effects (
@@ -537,6 +571,19 @@ class LocalJobStore:
                 if existing is not None:
                     connection.commit()
                     return existing
+                competing = connection.execute(
+                    "SELECT 1 FROM local_jobs WHERE repository=? AND target_number=? " "AND kind IN (?, ?) AND state<>? LIMIT 1",
+                    (
+                        offer.repository,
+                        offer.target_number,
+                        LocalJobKind.PR_CI_FAILURE.value,
+                        LocalJobKind.PR_MERGE_CONFLICT.value,
+                        LocalJobState.SETTLED.value,
+                    ),
+                ).fetchone()
+                if competing is not None:
+                    connection.rollback()
+                    return None
                 current_generation = connection.execute(
                     "SELECT 1 FROM allowance.generations WHERE generation_id=? AND bundle_reference=? " "AND owning_identity='local-review-repair' AND lifecycle_state='RESERVED'",
                     (generation.generation_id, request.attempt_id),
@@ -560,6 +607,114 @@ class LocalJobStore:
             return self.get(offer.job_id)
         except (OSError, sqlite3.Error, ValueError):
             return None
+
+    def offer_pr_repair(
+        self,
+        offer: LocalJobOffer,
+        admission: PRRepairAdmission,
+        repair_store: LocalReviewRepairStore | None = None,
+    ) -> Optional[LocalJobRecord]:
+        """Durably admit one exact-head local CI/conflict operation.
+
+        The caller performs the final authoritative reads immediately before
+        this call.  This transaction retains those immutable facts with the
+        envelope and arbitrates all local edit ownership for the PR.
+        """
+        expected_kind = {
+            "ci_failure": LocalJobKind.PR_CI_FAILURE,
+            "merge_conflict": LocalJobKind.PR_MERGE_CONFLICT,
+        }.get(admission.repair_kind)
+        common_valid = (
+            expected_kind is offer.kind
+            and offer.repository == admission.base_repository
+            and admission.head_repository == offer.repository
+            and admission.pr_open
+            and admission.pr_unmerged
+            and admission.local_route
+            and admission.owner_allowed
+            and all(
+                (
+                    admission.head_ref,
+                    admission.head_sha,
+                    admission.base_ref,
+                    admission.base_identity,
+                    admission.source_evidence_identity,
+                    admission.upstream_incarnation,
+                )
+            )
+        )
+        kind_valid = admission.ci_complete_failure and bool(admission.failed_check_identities) if expected_kind is LocalJobKind.PR_CI_FAILURE else admission.conflict_eligible
+        if not common_valid or not kind_valid:
+            return None
+        try:
+            repair_store = repair_store or LocalReviewRepairStore(local_review_repair_db_path(offer.repository))
+            with self._connect() as connection:
+                self._attach(connection, repair_store.path, "review_repair")
+                self._pr_repair_cas_checkpoint()
+                connection.execute("BEGIN IMMEDIATE")
+                existing = self._existing(connection, offer, admission.upstream_incarnation)
+                if existing is not None:
+                    retained_claim = connection.execute(
+                        "SELECT 1 FROM local_pr_repair_claims WHERE job_id=? AND head_sha=? " "AND base_identity=? AND repair_kind=? AND source_evidence_identity=? " "AND upstream_incarnation=? AND failed_check_identities_json=?",
+                        (
+                            offer.job_id,
+                            admission.head_sha,
+                            admission.base_identity,
+                            admission.repair_kind,
+                            admission.source_evidence_identity,
+                            admission.upstream_incarnation,
+                            json.dumps(admission.failed_check_identities, separators=(",", ":")),
+                        ),
+                    ).fetchone()
+                    if retained_claim is None:
+                        connection.rollback()
+                        return None
+                    connection.commit()
+                    return existing
+                competing = connection.execute(
+                    "SELECT 1 FROM local_jobs WHERE repository=? AND target_number=? " "AND kind IN (?, ?, ?) AND state<>? LIMIT 1",
+                    (
+                        offer.repository,
+                        offer.target_number,
+                        LocalJobKind.PR_REVIEW_CORRECTION.value,
+                        LocalJobKind.PR_CI_FAILURE.value,
+                        LocalJobKind.PR_MERGE_CONFLICT.value,
+                        LocalJobState.SETTLED.value,
+                    ),
+                ).fetchone()
+                if competing is not None:
+                    connection.rollback()
+                    return None
+                competing_review_claim = connection.execute(
+                    "SELECT 1 FROM review_repair.local_review_repair_attempts " "WHERE repository=? AND pr_number=? " "AND phase IN ('executing', 'indeterminate', 'publication_pending') LIMIT 1",
+                    (offer.repository, offer.target_number),
+                ).fetchone()
+                if competing_review_claim is not None:
+                    connection.rollback()
+                    return None
+                self._insert(connection, offer, admission.upstream_incarnation)
+                connection.execute(
+                    "INSERT INTO local_pr_repair_claims " "(job_id, repository, pr_number, head_sha, base_identity, repair_kind, " "source_evidence_identity, upstream_incarnation, failed_check_identities_json, created_at) " "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        offer.job_id,
+                        offer.repository,
+                        offer.target_number,
+                        admission.head_sha,
+                        admission.base_identity,
+                        admission.repair_kind,
+                        admission.source_evidence_identity,
+                        admission.upstream_incarnation,
+                        json.dumps(admission.failed_check_identities, separators=(",", ":")),
+                        time.time(),
+                    ),
+                )
+                connection.commit()
+            return self.get(offer.job_id)
+        except (OSError, sqlite3.Error, ValueError):
+            return None
+
+    def _pr_repair_cas_checkpoint(self) -> None:
+        """Test seam immediately before the durable repair admission CAS."""
 
     def get(self, job_id: str) -> Optional[LocalJobRecord]:
         try:

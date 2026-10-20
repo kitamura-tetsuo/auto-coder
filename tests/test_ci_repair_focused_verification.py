@@ -20,6 +20,15 @@ import pytest
 from src.auto_coder import pr_processor
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.base_update_execution import BaseUpdateConflictExecutionService
+from src.auto_coder.ci_observation import (
+    CIConclusion,
+    CIObservationSnapshot,
+    ObservationAvailability,
+    ObservationRequest,
+    ObservationSubject,
+    WorkflowExecutionIdentity,
+    WorkflowObservation,
+)
 from src.auto_coder.ci_repair_authority import CIRepairAuthority
 from src.auto_coder.ci_repair_verification import (
     TargetStatus,
@@ -284,7 +293,7 @@ def test_prompt_templates_render_without_targets():
 
 @pytest.mark.parametrize("already_on_pr_branch", [True, False])
 def test_handle_pr_merge_origin_reaches_every_target_and_initial_correction(harness, already_on_pr_branch):
-    """Production entry: both initial and already-on-branch processing keep CI evidence and designation."""
+    """Production entry durably admits CI repair before checkout or correction."""
     from contextlib import nullcontext
     from unittest.mock import MagicMock
 
@@ -305,11 +314,32 @@ def test_handle_pr_merge_origin_reaches_every_target_and_initial_correction(harn
         return real_run(cmd_list, *a, **k)
 
     files = ["tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "tests/test_d.py", "tests/test_a.py"]
-    pr = {"number": 7, "title": "t", "body": "<!-- auto-coder:local-llm -->", "head": {"ref": branch, "sha": "h1"}, "base": {"ref": "main"}}
+    pr = {
+        "number": 7,
+        "title": "t",
+        "body": "<!-- auto-coder:local-llm -->",
+        "state": "open",
+        "merged_at": None,
+        "head": {"ref": branch, "sha": "h1", "repo": {"full_name": "o/r"}},
+        "base": {"ref": "main", "sha": "b1", "repo": {"full_name": "o/r"}},
+    }
     client = MagicMock()
     client.get_pr_review_threads_strict.return_value = []
-    authority = CIRepairAuthority(True, "current exact-head CI failure", "h1")
+    client.get_pull_request_metadata_strict.return_value = pr
+    observed = CIObservationSnapshot(
+        ObservationSubject("https://api.github.com", "o/r", 7, "h1"),
+        ObservationRequest("github-actions", "complete"),
+        "cycle-production",
+        0,
+        ObservationAvailability.KNOWN,
+        (WorkflowObservation(WorkflowExecutionIdentity("workflow", "run", 1), CIConclusion.FAILURE),),
+    )
+    authority = CIRepairAuthority(True, "current exact-head CI failure", "h1", observed)
     config = AutomationConfig()
+    from src.auto_coder import local_pr_repair_job
+    from src.auto_coder.local_job_handoff import LocalJobKind, LocalJobStore
+
+    jobs = LocalJobStore(h.repo.parent / "local-jobs.sqlite3")
     with (
         patch.object(pr_processor.cmd, "run_command", run_command),
         patch.object(pr_processor, "current_ci_failure_authority", return_value=nullcontext(authority)),
@@ -322,15 +352,20 @@ def test_handle_pr_merge_origin_reaches_every_target_and_initial_correction(harn
         patch.object(pr_processor, "_checkout_pr_branch", return_value=True),
         patch.object(pr_processor, "BranchManager"),
         patch.object(pr_processor, "_create_github_action_log_summary", return_value=("FAILED tests/test_c.py::test_it\nlint failed", files)),
+        patch.object(pr_processor, "_selected_local_backend_name", return_value="codex"),
+        patch.object(pr_processor, "check_pr_repair_exhaustion", return_value=None),
+        patch.object(local_pr_repair_job, "LocalJobStore", return_value=jobs),
     ):
+        first_actions = pr_processor._handle_pr_merge(client, "o/r", pr, config, {})
         actions = pr_processor._handle_pr_merge(client, "o/r", pr, config, {})
 
-    assert h.designated == [True, True]
-    assert "lint failed" in h.prompts[0]
-    assert h.invocations()[:4] == ["tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "tests/test_d.py"]
-    assert len(h.invocations()) == 8 and "UNSCOPED" not in h.invocations() and not h.sentinel.exists()
-    assert (h.commits, h.pushes) == (1, 1)
-    assert any("passed locally on the latest corrected state" in a for a in actions)
+    retained = tuple(job for job in LocalJobStore(h.repo.parent / "local-jobs.sqlite3").discover_unsettled() if job.kind is LocalJobKind.PR_CI_FAILURE)
+    assert len(retained) == 1
+    assert retained[0].repository == "o/r" and retained[0].target_number == 7
+    assert h.designated == [] and h.invocations() == [] and h.prompts == []
+    assert (h.commits, h.pushes) == (0, 0)
+    assert any(retained[0].job_id in action for action in first_actions)
+    assert any("Durably admitted local ci_failure repair job" in action for action in actions)
 
 
 class _TraceRecorder:

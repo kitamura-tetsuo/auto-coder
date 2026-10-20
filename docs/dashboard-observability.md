@@ -2637,3 +2637,12 @@ handoff success remains provider-entry evidence rather than model completion,
 publication, or merge evidence. Focused production-boundary coverage remains in
 `tests/test_issue_implementation_worker.py` and
 `tests/test_implementation_ownership.py`.
+Durable local PR CI/conflict admission (issue #2555) is observability-neutral:
+the ordinary local CI and definitive-conflict selectors now stop at a retained
+`LocalJobStore` envelope before execution but add no new processing origin or
+completed effect. Existing `pr.repair-delegation` stages remain authoritative
+only for their emitted accepted/deferred outcome; job admission is not
+publication, green CI, review clearance, or merge completion. Focused storage
+and production-boundary coverage is in `tests/test_local_pr_repair_job.py`,
+`tests/test_ci_repair_focused_verification.py`, and
+`tests/test_pr_repair_dispatch.py`.

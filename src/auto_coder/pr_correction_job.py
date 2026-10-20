@@ -112,6 +112,13 @@ def offer_pr_correction_job(
             and generation.generation_id == existing.owner_generation
         ):
             return existing
+    if retained is not None and retained.phase == "executing" and not retained.invocation_entered and not retained.local_job_id:
+        # A prior controller may have acquired the review owner but lost the
+        # cross-store race to another unsettled PR edit. Re-enter the atomic
+        # transfer instead of permanently stranding that valid retained claim.
+        payload = json.dumps(asdict(request), sort_keys=True, separators=(",", ":"))
+        offer = LocalJobOffer(LocalJobKind.PR_REVIEW_CORRECTION, request.repository, request.pr_number, request.attempt_id, backend_name, payload)
+        return store.offer_pr_correction(offer, request, repair_store, allowance_ledger)
     claim = repair_store.admit(request)
     if not claim.admitted:
         retained = repair_store.get(request, claim.attempt_id)

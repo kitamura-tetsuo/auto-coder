@@ -92,6 +92,7 @@ class LocalCIRepairPorts:
     correction: CorrectionPorts
     extract_failed_tests: Callable[[str], list[str]]
     trace_base_update: Callable[[str], None]
+    admit: Callable[[CIRepairAuthority], PRRepairResult | None] = lambda _authority: None
 
 
 def _record_base_update_trace(ports: LocalCIRepairPorts, result: str) -> None:
@@ -146,6 +147,11 @@ def execute_local_ci_repair(request: LocalCIRepairRequest, ports: LocalCIRepairP
     ) as authority:
         if not authority.allowed:
             return LocalCIRepairResult((f"Deferred local CI repair for PR #{request.pr_number}: {authority.reason}",))
+
+        admission = ports.admit(authority)
+        if admission is not None:
+            action = admission.reason or f"Durably admitted local CI repair for PR #{request.pr_number}"
+            return LocalCIRepairResult((action,), repair_result=admission)
 
         prepared = request.already_checked_out or ports.prepare_branch()
         if not prepared:
