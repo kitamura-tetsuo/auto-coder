@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Callable
 
@@ -16,6 +17,7 @@ def build_pr_repair_finalizer(
     github_client: Any,
     store: LocalJobStore,
     wake: Callable[[str, int, str], bool],
+    implementation_slots: Any | None = None,
 ):
     """Compose the exact-head publisher from production GitHub and wake ports."""
     from .pr_repair_finalizer import PRRepairJobFinalizer, PRRepairTargetObservation
@@ -38,7 +40,10 @@ def build_pr_repair_finalizer(
             True,
         )
 
-    return PRRepairJobFinalizer(store, observe, wake)
+    finish_execution = None
+    if implementation_slots is not None:
+        finish_execution = lambda record: implementation_slots.finish_execution_by_id(record.implementation_execution_id)
+    return PRRepairJobFinalizer(store, observe, wake, finish_execution=finish_execution)
 
 
 def build_pr_local_job_adapters(
@@ -63,6 +68,13 @@ def build_pr_local_job_adapters(
         build_durable_ci_correction,
     )
     from .pr_repair_guard import check_pr_repair_exhaustion
+
+    def explicit_local_checkout(job: Any) -> bool:
+        try:
+            payload = json.loads(job.invocation_input)
+        except (TypeError, ValueError):
+            return False
+        return isinstance(payload, dict) and payload.get("explicit_local_checkout") is True
 
     def conflict_route(_job: object, metadata: dict[str, Any]) -> bool:
         return not (_is_codex_or_claude_pr(metadata) or _is_jules_pr(metadata) or _is_dependabot_pr(metadata))
@@ -98,7 +110,7 @@ def build_pr_local_job_adapters(
         source=lambda _job: PRRepairSource(repository_path or Path.cwd()),
         github_client=lambda _job: github_client,
         authority=current_ci_failure_authority,
-        local_route=lambda _job, metadata: _is_local_llm_pr(metadata),
+        local_route=lambda job, metadata: explicit_local_checkout(job) or _is_local_llm_pr(metadata),
         correction=lambda job, prepared: build_durable_ci_correction(job, prepared, github_client, config),
     )
     return {

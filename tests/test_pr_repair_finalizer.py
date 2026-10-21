@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobStore, PRRepairAdmission
 from auto_coder.local_review_repair import LocalReviewRepairStore
 from auto_coder.pr_repair_finalizer import PRRepairJobFinalizer, PRRepairPublicationDisposition, PRRepairTargetObservation
@@ -47,9 +48,10 @@ def completed_job(
     kind: LocalJobKind = LocalJobKind.PR_CI_FAILURE,
     target: int = 7,
     edit: bool = True,
+    execution_id: str = "",
 ):
     store = LocalJobStore(tmp_path / f"jobs-{target}.sqlite3")
-    offer = LocalJobOffer(kind, "owner/repo", target, f"attempt-{target}", "codex", "repair")
+    offer = LocalJobOffer(kind, "owner/repo", target, f"attempt-{target}", "codex", "repair", execution_id)
     admission = PRRepairAdmission(
         "owner/repo",
         "feature",
@@ -90,6 +92,33 @@ def completed_job(
     assert artifact is not None
     assert store.record_result(claim, InvocationOutcome.COMPLETED, artifact.artifact_id, executor_token="runner")
     return store, claim, prepared, artifact
+
+
+def test_published_repair_retires_execution_but_preserves_owner(tmp_path: Path, _use_real_commands) -> None:
+    source, remote, head, base = repository(tmp_path)
+    slots = ImplementationSlotRepository("owner/repo", 2, tmp_path / "slots.json")
+    owner = ImplementationOwner("pr", 7)
+    execution_id = slots.start_execution(owner)
+    assert execution_id is not None
+    store, claim, _prepared, _artifact = completed_job(
+        tmp_path,
+        source,
+        head,
+        base,
+        execution_id=execution_id,
+    )
+    finalizer = PRRepairJobFinalizer(
+        store,
+        observer(remote, base),
+        lambda *_args: True,
+        finish_execution=lambda record: slots.finish_execution_by_id(record.implementation_execution_id),
+    )
+
+    result = finalizer.finalize(claim.record.job_id)
+
+    assert result.disposition is PRRepairPublicationDisposition.PUBLISHED
+    assert slots.active_execution_ids(owner) == ()
+    assert owner in slots.active_owners()
 
 
 def observer(remote: Path, base: str):

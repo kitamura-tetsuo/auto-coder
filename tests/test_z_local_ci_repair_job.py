@@ -307,6 +307,54 @@ def test_production_runner_composition_discovers_admitted_ci_job(tmp_path: Path,
     runner.close()
 
 
+def test_explicit_checked_out_jules_authority_survives_into_production_runner(tmp_path: Path, _use_real_commands) -> None:
+    harness = Harness.create(tmp_path)
+    jules = metadata(harness.head, harness.base)
+    jules["user"] = {"login": "google-labs-jules[bot]"}
+    jules["body"] = "Jules session: session-17"
+    harness.github.get_pull_request_metadata_strict.side_effect = lambda *_args: jules
+    authority = CIRepairAuthority(True, "current exact-head CI failure", harness.head, snapshot(harness.head))
+    with (
+        pr_processor.local_pr_repair_context(pr_processor.LocalPRRepairContext(harness.store, "execution-17")),
+        patch.object(pr_processor, "_selected_local_backend_name", return_value="codex"),
+        patch.object(pr_processor, "check_pr_repair_exhaustion", return_value=None),
+    ):
+        admitted = pr_processor._offer_selected_local_pr_repair(
+            "owner/repo",
+            jules,
+            RepairKind.CI_FAILURE,
+            harness.github,
+            ci_authority=authority,
+            explicit_local_checkout=True,
+            store=harness.store,
+            repair_store=LocalReviewRepairStore(tmp_path / "reviews.sqlite3"),
+        )
+    assert admitted is not None and admitted.disposition is RepairDisposition.DEFERRED
+
+    with (
+        patch("auto_coder.ci_repair_authority.current_ci_failure_authority", harness.authority),
+        patch(
+            "auto_coder.pr_processor.build_durable_ci_correction",
+            side_effect=lambda job, prepared, *_args: harness.correction(job, prepared),
+        ),
+    ):
+        adapters = build_pr_local_job_adapters(harness.github, AutomationConfig(), harness.store, harness.controller)
+        runner = LocalJobRunner(
+            harness.store,
+            InvocationAdmissionGate(),
+            repository="owner/repo",
+            capacity=1,
+            adapters=adapters,
+        )
+        assert runner.poll() == 1
+        wait_until(lambda: runner.active_count() == 0)
+
+    completed = harness.store.get(admitted.receipt)
+    assert completed is not None and completed.invocation_outcome is InvocationOutcome.COMPLETED
+    assert harness.editor_calls == 1
+    runner.close()
+
+
 def test_changed_head_at_pre_entry_barrier_records_no_start(tmp_path: Path, _use_real_commands) -> None:
     """REQ-002/003/006: superseding H after preparation produces zero provider entry."""
     harness = Harness.create(tmp_path)

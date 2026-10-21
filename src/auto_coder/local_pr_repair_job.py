@@ -34,6 +34,7 @@ class LocalPRRepairOffer:
     source_evidence_identity: str
     invocation_input: str
     implementation_execution_id: str = ""
+    explicit_local_checkout: bool = False
 
 
 OwnerAdmission = Callable[[LocalPRRepairOffer, dict[str, Any]], bool]

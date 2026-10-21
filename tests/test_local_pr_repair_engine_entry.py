@@ -82,6 +82,33 @@ def test_unified_pr_entry_retains_exact_execution_without_merge_or_slot_release(
     merge.assert_not_called()
 
 
+def test_linked_issue_owner_execution_is_transferred_to_pr_job(tmp_path: Path) -> None:
+    jobs = LocalJobStore(tmp_path / "jobs.sqlite3")
+    github = MagicMock()
+    linked_pr = _pr(17)
+    linked_pr["body"] = "Closes #10\n<!-- auto-coder:local-llm -->"
+    github.get_issue.return_value = {"number": 10, "state": "open"}
+    github.get_pull_request_metadata_strict.return_value = linked_pr
+    engine = AutomationEngine(github, AutomationConfig())
+    engine.local_job_store = jobs
+    engine.implementation_slots = ImplementationSlotRepository("owner/repo", 2, tmp_path / "slots.json")
+
+    with _production_scope(engine), _install_real_offer(engine, github):
+        result = engine._process_single_candidate_unified(
+            "owner/repo",
+            Candidate("pr", linked_pr, 0),
+            engine.config,
+            origin="worker",
+        )
+
+    assert result.repair_result is not None and result.repair_result.local_handoff is not None
+    execution_id = result.repair_result.local_handoff.implementation_execution_id
+    assert execution_id
+    assert engine.implementation_slots.active_execution_ids(ImplementationOwner("issue", 10)) == (execution_id,)
+    retained = jobs.pr_repair_for_execution("owner/repo", 17, execution_id)
+    assert retained is not None and retained.job_id == result.repair_result.local_handoff.job_id
+
+
 @pytest.mark.asyncio
 async def test_pr_worker_processes_second_candidate_while_independent_runner_is_model_blocked(tmp_path: Path, monkeypatch) -> None:
     jobs = LocalJobStore(tmp_path / "jobs.sqlite3")

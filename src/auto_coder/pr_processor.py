@@ -211,6 +211,9 @@ def local_pr_repair_context(context: Optional[LocalPRRepairContext]):
         _local_pr_repair_context.reset(token)
 
 
+_local_pr_repair_scope = local_pr_repair_context
+
+
 # Pending-work stage for a PR evaluation interrupted by a GitHub operational
 # failure (local admission deferral, throttle, authentication, or forbidden
 # response). Registered with the process-wide PendingWorkScheduler so a
@@ -1498,7 +1501,7 @@ def _offer_selected_local_pr_repair(
     from .pr_repair_dispatch import LocalPRRepairHandoff
 
     context = _local_pr_repair_context.get()
-    if context is None:
+    if context is None or not context.implementation_execution_id:
         return None
     if store is None:
         store = context.store
@@ -1538,6 +1541,7 @@ def _offer_selected_local_pr_repair(
         source_evidence_identity=evidence_identity,
         invocation_input=json.dumps({"failed_check_identities": failed, "failed_checks": list(failed_checks)}, sort_keys=True, default=str),
         implementation_execution_id=context.implementation_execution_id,
+        explicit_local_checkout=explicit_local_checkout,
     )
 
     def owner_allowed(_request: LocalPRRepairOffer, final_metadata: Dict[str, Any]) -> bool:
@@ -2450,7 +2454,7 @@ def process_pull_request(
     automatic recovery identity for a Jules PR closed for stale CI (Issue
     #2286). Omitting them preserves the historical unlinked behavior.
     """
-    with stale_jules_recovery_context(stage_routing, implementation_slots), local_pr_repair_context(local_repair_context):
+    with stale_jules_recovery_context(stage_routing, implementation_slots), _local_pr_repair_scope(local_repair_context):
         return _process_pull_request_impl(
             github_client,
             config,

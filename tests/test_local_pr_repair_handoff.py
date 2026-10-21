@@ -2,6 +2,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from auto_coder import pr_processor
+from auto_coder.automation_config import AutomationConfig, ProcessedPRResult
 from auto_coder.local_job_handoff import LocalJobKind, LocalJobStore
 from auto_coder.pr_processor import LocalPRRepairContext, local_pr_repair_context
 from auto_coder.pr_repair_dispatch import RepairDisposition, RepairKind
@@ -50,3 +51,23 @@ def test_public_offer_without_engine_execution_context_does_not_admit(tmp_path: 
         result = pr_processor._offer_selected_local_pr_repair("owner/repo", metadata(), RepairKind.MERGE_CONFLICT, github, conflict_eligible=True, store=store)
     assert result is None
     assert store.discover_unsettled() == ()
+
+
+def test_public_pr_entry_binds_optional_local_context_without_shadowing(tmp_path: Path) -> None:
+    expected = ProcessedPRResult(metadata(), ["processed"])
+    context = LocalPRRepairContext(LocalJobStore(tmp_path / "jobs.sqlite3"), "execution-17")
+
+    with patch.object(pr_processor, "_process_pull_request_impl", return_value=expected) as implementation:
+        assert pr_processor.process_pull_request(Mock(), AutomationConfig(), "owner/repo", metadata()) is expected
+        assert (
+            pr_processor.process_pull_request(
+                Mock(),
+                AutomationConfig(),
+                "owner/repo",
+                metadata(),
+                local_repair_context=context,
+            )
+            is expected
+        )
+
+    assert implementation.call_count == 2

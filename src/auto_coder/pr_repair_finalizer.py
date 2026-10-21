@@ -52,15 +52,24 @@ class PRRepairPublicationResult:
 
 TargetObserver = Callable[[str, int], PRRepairTargetObservation]
 InvalidationWake = Callable[[str, int, str], bool]
+ExecutionCompletion = Callable[[LocalJobRecord], None]
 
 
 class PRRepairJobFinalizer:
     """Controller boundary between retained repair output and a PR branch."""
 
-    def __init__(self, store: LocalJobStore, observe_target: TargetObserver, wake: InvalidationWake) -> None:
+    def __init__(
+        self,
+        store: LocalJobStore,
+        observe_target: TargetObserver,
+        wake: InvalidationWake,
+        *,
+        finish_execution: ExecutionCompletion | None = None,
+    ) -> None:
         self._store = store
         self._observe_target = observe_target
         self._wake = wake
+        self._finish_execution = finish_execution
         self._workspace = PRRepairWorkspaceProducer(store)
 
     @staticmethod
@@ -155,6 +164,7 @@ class PRRepairJobFinalizer:
             push_receipt = self._store.get_effect_strict(job_id, record.execution_incarnation, "push")
             wake_receipt = self._store.get_effect_strict(job_id, record.execution_incarnation, "ci_wake")
             if candidate and push_receipt is not None and push_receipt.state == "completed" and wake_receipt is not None and wake_receipt.state == "completed":
+                self._retire_execution(record)
                 return self._result(job_id, PRRepairPublicationDisposition.PUBLISHED, candidate)
             return self._result(job_id, PRRepairPublicationDisposition.REFUSED, candidate, "settled job lacks complete publication receipts")
 
@@ -204,7 +214,12 @@ class PRRepairJobFinalizer:
                 return self._result(job_id, PRRepairPublicationDisposition.PENDING, candidate, "wake acknowledgement was not retained")
         if record.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING and not self._store.settle(claim, "exact PR repair publication completed"):
             return self._result(job_id, PRRepairPublicationDisposition.PENDING, candidate, "job settlement is pending")
+        self._retire_execution(self._store.get(job_id) or record)
         return self._result(job_id, PRRepairPublicationDisposition.PUBLISHED, candidate)
+
+    def _retire_execution(self, record: LocalJobRecord) -> None:
+        if self._finish_execution is not None and record.implementation_execution_id:
+            self._finish_execution(record)
 
     def _candidate(self, job_id: str, incarnation: str) -> str:
         effect = self._store.get_effect_strict(job_id, incarnation, "commit")

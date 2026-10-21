@@ -2817,7 +2817,12 @@ class AutomationEngine:
             wake.result()
             return True
 
-        repair_finalizer = build_pr_repair_finalizer(self.github, local_job_store, wake_published_head)
+        repair_finalizer = build_pr_repair_finalizer(
+            self.github,
+            local_job_store,
+            wake_published_head,
+            self._get_implementation_slots(repo_name),
+        )
 
         def wake_pr_validation(job: Any) -> None:
             assert self._loop is not None
@@ -7912,7 +7917,7 @@ class AutomationEngine:
                         implementation_slots=self._get_implementation_slots(repo_name),
                         local_repair_context=LocalPRRepairContext(
                             self._get_local_job_store(),
-                            implementation_slots.current_execution_id(ImplementationOwner("pr", item_number)) or "",
+                            implementation_slots.current_execution_id(implementation_slots.resolve_owner("pr", candidate.data, self.github)) or "",
                         ),
                     )
                     result.actions = pr_result.actions_taken
