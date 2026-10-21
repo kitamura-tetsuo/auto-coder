@@ -726,6 +726,77 @@ class PendingWorkStore:
             logger.error("Could not schedule GitHub reevaluation obligation {}: {}", identity.key(), exc)
             raise PendingWorkPersistenceError("GitHub pending work could not be persisted") from exc
 
+    def ensure_reevaluation(
+        self,
+        identity: WorkIdentity,
+        effects: tuple[str, ...] = (),
+        now: float | None = None,
+    ) -> PendingObligation:
+        """Create a due obligation without disturbing an existing retry claim.
+
+        Recovery discovery is level-triggered and can run repeatedly.  Unlike
+        :meth:`schedule_reevaluation`, rediscovery must not reset a retained
+        deadline, retry count, operational block, or running claim.
+        """
+        self._require_owned(identity)
+        current_time = time.time() if now is None else now
+        try:
+            with _LOCK, self._connect() as connection:
+                self._require_stored_row_owned(connection, identity)
+                row = connection.execute(
+                    "SELECT reason,not_before,unfinished_effects,throttle_attempts,last_error,status " "FROM github_pending_work WHERE work_key=?",
+                    (identity.key(),),
+                ).fetchone()
+                if row is not None:
+                    prior_effects = tuple(json.loads(row[2]))
+                    merged = tuple(dict.fromkeys((*prior_effects, *effects)))
+                    if merged != prior_effects:
+                        connection.execute(
+                            "UPDATE github_pending_work SET unfinished_effects=?, updated_at=? WHERE work_key=?",
+                            (json.dumps(merged), current_time, identity.key()),
+                        )
+                    return PendingObligation(
+                        identity,
+                        PendingReason(row[0]),
+                        float(row[1]),
+                        merged,
+                        int(row[3]),
+                        str(row[4]),
+                        str(row[5]),
+                    )
+                obligation = PendingObligation(
+                    identity,
+                    PendingReason.ADMISSION_DEFERRED,
+                    current_time,
+                    tuple(dict.fromkeys(effects)),
+                    0,
+                    "",
+                    ObligationStatus.WAITING.value,
+                )
+                connection.execute(
+                    "INSERT INTO github_pending_work VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        identity.key(),
+                        identity.repository,
+                        identity.entity,
+                        identity.stage,
+                        identity.revision,
+                        obligation.reason.value,
+                        obligation.not_before,
+                        json.dumps(obligation.unfinished_effects),
+                        0,
+                        "",
+                        current_time,
+                        obligation.status,
+                    ),
+                )
+                return obligation
+        except PendingWorkOwnershipError:
+            raise
+        except Exception as exc:
+            logger.error("Could not ensure GitHub pending obligation {}: {}", identity.key(), exc)
+            raise PendingWorkPersistenceError("GitHub pending work could not be persisted") from exc
+
     def complete_effect(self, identity: WorkIdentity, effect: str) -> bool:
         """Confirm one durable effect without completing its independent siblings."""
         self._require_owned(identity)

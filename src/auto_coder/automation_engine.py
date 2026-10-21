@@ -2809,7 +2809,9 @@ class AutomationEngine:
         from .pr_correction_job import resume_pr_correction_publication
         from .pr_local_job_runtime import build_pr_local_job_adapters, build_pr_repair_finalizer
 
-        local_job_store = LocalJobStore()
+        # PR and Issue lanes must read the same durable authority used by
+        # admission and explicit recovery paths.
+        local_job_store = self._get_local_job_store()
 
         def wake_published_head(repository: str, number: int, _head_sha: str) -> bool:
             assert self._loop is not None
@@ -2819,10 +2821,23 @@ class AutomationEngine:
 
         repair_finalizer = build_pr_repair_finalizer(self.github, local_job_store, wake_published_head)
 
+        from .local_pr_repair_recovery import (
+            LOCAL_PR_REPAIR_FINALIZATION_STAGE,
+            LocalPRRepairFinalizationHandler,
+            rediscover_pr_repair_finalizations,
+        )
+
+        assert self.pending_work_scheduler is not None
+        self.pending_work_scheduler.register_handler(
+            LOCAL_PR_REPAIR_FINALIZATION_STAGE,
+            LocalPRRepairFinalizationHandler(repo_name, local_job_store, repair_finalizer),
+        )
+
         def wake_pr_validation(job: Any) -> None:
             assert self._loop is not None
             if job.kind in {LocalJobKind.PR_MERGE_CONFLICT, LocalJobKind.PR_CI_FAILURE}:
-                repair_finalizer.finalize(job.job_id)
+                rediscover_pr_repair_finalizations(repo_name, local_job_store, get_pending_work_store(repo_name))
+                self._wake_pending_work()
                 return
             phase = resume_pr_correction_publication(job, local_job_store)
             wake = asyncio.run_coroutine_threadsafe(self.invalidate_entity(job.repository, "pr", job.target_number), self._loop)
@@ -2840,16 +2855,14 @@ class AutomationEngine:
             completion_wake=wake_pr_validation,
         )
 
-        # Startup recovery observes retained intents and receipts; it never
-        # claims pending jobs or re-enters an editing provider.
-        await asyncio.to_thread(repair_finalizer.resume_all, repo_name)
-
         async def poll_local_jobs() -> None:
-            while True:
+            assert self._shutdown_event is not None
+            while not self._shutdown_event.is_set():
                 await asyncio.to_thread(local_job_runner.poll)
-                await asyncio.sleep(0.2)
-
-        local_job_task = asyncio.create_task(poll_local_jobs(), name="durable-local-job-runner")
+                try:
+                    await asyncio.wait_for(self._shutdown_event.wait(), timeout=0.2)
+                except asyncio.TimeoutError:
+                    pass
 
         logger.info(f"Starting automation for repository: {repo_name} with {concurrency} Issue workers and {concurrency} PR workers")
         self.issue_stage_routing.recover(repo_name)
@@ -2893,6 +2906,19 @@ class AutomationEngine:
             name="claude-followup-quota-recovery",
         )
 
+        # Reconcile accepted PR jobs before slot cleanup and before any fresh
+        # Issue/PR admission. This recovery-only entry never claims PENDING
+        # work or enters an editing provider.
+        await asyncio.to_thread(local_job_runner.recover_unsettled)
+        await asyncio.to_thread(repair_finalizer.resume_all, repo_name)
+        await asyncio.to_thread(
+            rediscover_pr_repair_finalizations,
+            repo_name,
+            local_job_store,
+            get_pending_work_store(repo_name),
+        )
+        self._wake_pending_work()
+
         if not self.is_draining:
             # Webhooks are not a durable event log. Recover work missed while
             # this process was offline (including open PR ownership, which
@@ -2905,6 +2931,8 @@ class AutomationEngine:
             # pool started below, which must not begin before recovery
             # succeeds.
             await self._perform_startup_reconciliation(repo_name)
+
+        local_job_task = asyncio.create_task(poll_local_jobs(), name="durable-local-job-runner")
 
         # Sync repo_name to environment for subprocesses (like test.sh)
         os.environ["REPO_NAME"] = repo_name
