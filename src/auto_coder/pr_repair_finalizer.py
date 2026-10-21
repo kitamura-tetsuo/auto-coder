@@ -12,7 +12,7 @@ from typing import Callable
 from .checkout_lock import checkout_lock
 from .git_branch import git_commit_with_retry
 from .git_commit import git_push
-from .local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobKind, LocalJobState, LocalJobStore
+from .local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobKind, LocalJobRecord, LocalJobState, LocalJobStore
 from .pr_repair_workspace import PRRepairResultManifest, PRRepairWorkspaceError, PRRepairWorkspaceProducer
 from .runtime_locks import ensure_lock_directory, file_lock, lock_path
 
@@ -130,9 +130,23 @@ class PRRepairJobFinalizer:
         if artifact is None or artifact.artifact_id != record.result_reference:
             return self._result(job_id, PRRepairPublicationDisposition.REFUSED, diagnostic="exact result artifact is unavailable")
         candidate = self._candidate(record.job_id, record.execution_incarnation)
-        verified = self._workspace.revalidate_result(record, artifact, candidate_sha=candidate)
+        recovery_candidate = candidate or self._pending_commit_candidate(record, artifact.artifact_id)
+        verified = self._workspace.revalidate_result(record, artifact, candidate_sha=recovery_candidate)
         manifest = verified.manifest
         workspace = Path(manifest.workspace)
+
+        if not candidate and recovery_candidate and recovery_candidate != manifest.head_sha:
+            expected_parents = [manifest.head_sha]
+            if record.kind is LocalJobKind.PR_MERGE_CONFLICT:
+                expected_parents.append(manifest.base_sha)
+            if not self._store.record_effect(
+                claim,
+                "commit",
+                "completed",
+                self._evidence(candidate_sha=recovery_candidate, artifact_id=verified.artifact_id, expected_parents=expected_parents),
+            ):
+                return self._result(job_id, PRRepairPublicationDisposition.PENDING, recovery_candidate, "recovered candidate checkpoint was not retained")
+            candidate = recovery_candidate
 
         if record.state is LocalJobState.SETTLED:
             push_receipt = self._store.get_effect_strict(job_id, record.execution_incarnation, "push")
@@ -162,7 +176,7 @@ class PRRepairJobFinalizer:
                 self._evidence(candidate_sha=candidate, expected_head=manifest.head_sha, head_ref=manifest.head_ref, artifact_id=verified.artifact_id),
             )
             if intent.inserted:
-                result = git_push(cwd=str(workspace), remote="origin", branch=f"{candidate}:refs/heads/{manifest.head_ref}", expected_remote_sha=manifest.head_sha)
+                result = git_push(cwd=str(workspace), remote="origin", branch=f"{candidate}:{manifest.head_ref}", expected_remote_sha=manifest.head_sha)
                 if not result.success:
                     self._store.record_effect(claim, "push", "indeterminate", intent.effect.evidence)
 
@@ -195,6 +209,16 @@ class PRRepairJobFinalizer:
             return ""
         value = self._decode(effect.evidence)
         return str(value.get("candidate_sha") or "")
+
+    def _pending_commit_candidate(self, record: LocalJobRecord, artifact_id: str) -> str:
+        """Find an uncheckpointed HEAD only through its exact commit intent."""
+        effect = self._store.get_effect_strict(record.job_id, record.execution_incarnation, "commit")
+        if effect is None or effect.state != "pending":
+            return ""
+        evidence = self._decode(effect.evidence)
+        if evidence.get("artifact_id") != artifact_id or not record.workspace_path:
+            return ""
+        return self._git(Path(record.workspace_path), "rev-parse", "HEAD")
 
     def _commit(self, claim: LocalJobClaim, manifest: PRRepairResultManifest, artifact_id: str) -> str:
         workspace = Path(manifest.workspace)
@@ -229,9 +253,15 @@ class PRRepairJobFinalizer:
                 self._store.record_effect(claim, "commit", "completed", self._evidence(candidate_sha=head, artifact_id=artifact_id, expected_parents=parents))
                 return head
             raise PRRepairWorkspaceError("commit intent is ambiguous and cannot be replayed")
-        self._git(workspace, "reset", "--mixed", "HEAD")
+        # A mixed reset destroys authenticated MERGE_HEAD. CI output has no merge
+        # metadata, so only that path sanitizes the possibly model-touched index.
+        if claim.record.kind is LocalJobKind.PR_CI_FAILURE:
+            self._git(workspace, "reset", "--mixed", "HEAD")
         if changed:
             self._git(workspace, "add", "-A", "--", *changed)
+        staged_tree = self._git(workspace, "write-tree")
+        if self._workspace._commit_files(workspace, staged_tree) != dict(manifest.workspace_files):
+            raise PRRepairWorkspaceError("staged tree does not match authenticated output")
         result = git_commit_with_retry(f"Auto-Coder: repair PR #{manifest.pr_number}", cwd=str(workspace), max_retries=0, allow_repair=False)
         if not result.success:
             raise PRRepairWorkspaceError(result.stderr or "strict repair commit failed")
