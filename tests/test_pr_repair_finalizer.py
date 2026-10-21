@@ -205,14 +205,24 @@ def test_restart_recovers_commit_before_lost_receipt_once(tmp_path: Path, _use_r
     commit_again.assert_not_called()
 
 
-def test_restart_reconciles_accepted_push_before_lost_receipt(tmp_path: Path, _use_real_commands, monkeypatch) -> None:
+@pytest.mark.parametrize("kind", [LocalJobKind.PR_CI_FAILURE, LocalJobKind.PR_MERGE_CONFLICT])
+def test_restart_reconciles_accepted_push_before_lost_receipt(tmp_path: Path, _use_real_commands, monkeypatch, kind: LocalJobKind) -> None:
     source, remote, head, base = repository(tmp_path)
-    store, claim, prepared, _artifact = completed_job(tmp_path, source, head, base, target=11)
+    if kind is LocalJobKind.PR_MERGE_CONFLICT:
+        git(source, "switch", "main")
+        (source / "shared.txt").write_text("advanced\n")
+        git(source, "add", ".")
+        git(source, "commit", "-m", "advance base")
+        base = git(source, "rev-parse", "HEAD")
+        git(source, "push", "origin", "main")
+    store, claim, prepared, _artifact = completed_job(tmp_path, source, head, base, kind=kind, target=11 + int(kind is LocalJobKind.PR_MERGE_CONFLICT))
     original_record = store.record_effect
     lose_receipt = True
     pushes = 0
+    wakes: list[str] = []
 
     from auto_coder.git_commit import git_push as real_push
+    from auto_coder.pr_repair_finalizer import git_commit_with_retry as real_commit
 
     def counted_push(**kwargs):  # type: ignore[no-untyped-def]
         nonlocal pushes
@@ -227,10 +237,15 @@ def test_restart_reconciles_accepted_push_before_lost_receipt(tmp_path: Path, _u
         return original_record(effect_claim, name, state, evidence)
 
     monkeypatch.setattr(store, "record_effect", record_without_first_push_receipt)
-    with patch("auto_coder.pr_repair_finalizer.git_push", side_effect=counted_push):
-        interrupted = PRRepairJobFinalizer(store, observer(remote, base), lambda *_args: True).finalize(claim.record.job_id)
+    wake = lambda _repository, _number, candidate: not wakes.append(candidate)
+    with (
+        patch("auto_coder.pr_repair_finalizer.git_push", side_effect=counted_push),
+        patch("auto_coder.pr_repair_finalizer.git_commit_with_retry", wraps=real_commit) as commits,
+        patch("auto_coder.git_branch.try_llm_commit_push") as model,
+    ):
+        interrupted = PRRepairJobFinalizer(store, observer(remote, base), wake).finalize(claim.record.job_id)
         reopened = LocalJobStore(store.path)
-        recovered = PRRepairJobFinalizer(reopened, observer(remote, base), lambda *_args: True)
+        recovered = PRRepairJobFinalizer(reopened, observer(remote, base), wake)
         first = recovered.finalize(claim.record.job_id)
         second = recovered.finalize(claim.record.job_id)
 
@@ -240,6 +255,9 @@ def test_restart_reconciles_accepted_push_before_lost_receipt(tmp_path: Path, _u
     assert first.candidate_sha == second.candidate_sha == candidate
     assert git(remote, "rev-parse", "refs/heads/feature") == candidate
     assert pushes == 1
+    assert commits.call_count == 1
+    assert wakes == [candidate]
+    model.assert_not_called()
 
 
 def test_commit_hook_index_rewrite_cannot_be_checkpointed_or_pushed(tmp_path: Path, _use_real_commands) -> None:
