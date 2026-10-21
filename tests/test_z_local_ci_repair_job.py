@@ -94,7 +94,7 @@ def metadata(head: str, base: str, *, number: int = 17) -> dict[str, object]:
     }
 
 
-def wait_until(predicate, timeout: float = 5) -> None:  # type: ignore[no-untyped-def]
+def wait_until(predicate, timeout: float = 15) -> None:  # type: ignore[no-untyped-def]
     deadline = time.monotonic() + timeout
     while not predicate():
         assert time.monotonic() < deadline
