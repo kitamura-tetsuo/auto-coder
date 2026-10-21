@@ -203,3 +203,96 @@ def test_restart_recovers_commit_before_lost_receipt_once(tmp_path: Path, _use_r
     assert git(remote, "rev-parse", "refs/heads/feature") == candidate
     assert reopened.get_effect_strict(claim.record.job_id, claim.record.execution_incarnation, "commit").evidence.find(artifact.artifact_id) >= 0  # type: ignore[union-attr]
     commit_again.assert_not_called()
+
+
+def test_restart_reconciles_accepted_push_before_lost_receipt(tmp_path: Path, _use_real_commands, monkeypatch) -> None:
+    source, remote, head, base = repository(tmp_path)
+    store, claim, prepared, _artifact = completed_job(tmp_path, source, head, base, target=11)
+    original_record = store.record_effect
+    lose_receipt = True
+    pushes = 0
+
+    from auto_coder.git_commit import git_push as real_push
+
+    def counted_push(**kwargs):  # type: ignore[no-untyped-def]
+        nonlocal pushes
+        pushes += 1
+        return real_push(**kwargs)
+
+    def record_without_first_push_receipt(effect_claim, name, state, evidence=""):  # type: ignore[no-untyped-def]
+        nonlocal lose_receipt
+        if lose_receipt and name == "push" and state == "completed":
+            lose_receipt = False
+            return False
+        return original_record(effect_claim, name, state, evidence)
+
+    monkeypatch.setattr(store, "record_effect", record_without_first_push_receipt)
+    with patch("auto_coder.pr_repair_finalizer.git_push", side_effect=counted_push):
+        interrupted = PRRepairJobFinalizer(store, observer(remote, base), lambda *_args: True).finalize(claim.record.job_id)
+        reopened = LocalJobStore(store.path)
+        recovered = PRRepairJobFinalizer(reopened, observer(remote, base), lambda *_args: True)
+        first = recovered.finalize(claim.record.job_id)
+        second = recovered.finalize(claim.record.job_id)
+
+    candidate = git(prepared.workspace, "rev-parse", "HEAD")
+    assert interrupted.disposition is PRRepairPublicationDisposition.PENDING
+    assert first.disposition is second.disposition is PRRepairPublicationDisposition.PUBLISHED
+    assert first.candidate_sha == second.candidate_sha == candidate
+    assert git(remote, "rev-parse", "refs/heads/feature") == candidate
+    assert pushes == 1
+
+
+def test_commit_hook_index_rewrite_cannot_be_checkpointed_or_pushed(tmp_path: Path, _use_real_commands) -> None:
+    source, remote, head, base = repository(tmp_path)
+    store, claim, prepared, _artifact = completed_job(tmp_path, source, head, base, target=12)
+    hook = prepared.workspace / git(prepared.workspace, "rev-parse", "--git-path", "hooks") / "post-commit"
+    hook.write_text(
+        "#!/bin/sh\n" "blob=$(printf evil | git hash-object -w --stdin)\n" "git update-index --cacheinfo 100644,$blob,feature.txt\n" "tree=$(git write-tree)\n" "parent=$(git rev-parse HEAD^)\n" "candidate=$(printf foreign | git commit-tree $tree -p $parent)\n" "git update-ref HEAD $candidate\n"
+    )
+    hook.chmod(0o755)
+
+    with patch("auto_coder.pr_repair_finalizer.git_push") as push:
+        result = PRRepairJobFinalizer(store, observer(remote, base), lambda *_args: True).finalize(claim.record.job_id)
+
+    assert result.disposition is PRRepairPublicationDisposition.PENDING
+    assert git(prepared.workspace, "rev-parse", "HEAD") != head
+    assert store.get_effect_strict(claim.record.job_id, claim.record.execution_incarnation, "commit").state == "pending"  # type: ignore[union-attr]
+    push.assert_not_called()
+    assert git(remote, "rev-parse", "refs/heads/feature") == head
+
+
+def test_pending_intent_rejects_same_parent_wrong_candidate_tree(tmp_path: Path, _use_real_commands) -> None:
+    source, remote, head, base = repository(tmp_path)
+    store, claim, prepared, artifact = completed_job(tmp_path, source, head, base, target=13)
+    intent = store.claim_effect_intent_if_absent(
+        claim,
+        "commit",
+        PRRepairJobFinalizer._evidence(artifact_id=artifact.artifact_id, expected_parents=[head], changed_files=["feature.txt"], head_ref="feature"),
+    )
+    assert intent.inserted
+    wrong = git(prepared.workspace, "commit-tree", f"{head}^{{tree}}", "-p", head, "-m", "foreign candidate")
+    git(prepared.workspace, "update-ref", "HEAD", wrong)
+
+    with patch("auto_coder.pr_repair_finalizer.git_push") as push:
+        result = PRRepairJobFinalizer(LocalJobStore(store.path), observer(remote, base), lambda *_args: True).finalize(claim.record.job_id)
+
+    assert result.disposition is PRRepairPublicationDisposition.PENDING
+    assert store.get_effect_strict(claim.record.job_id, claim.record.execution_incarnation, "commit").state == "pending"  # type: ignore[union-attr]
+    push.assert_not_called()
+
+
+def test_changed_origin_push_url_is_refused_before_commit_or_push(tmp_path: Path, _use_real_commands) -> None:
+    source, remote, head, base = repository(tmp_path)
+    store, claim, prepared, _artifact = completed_job(tmp_path, source, head, base, target=14)
+    unrelated = tmp_path / "unrelated.git"
+    git(tmp_path, "clone", "--bare", str(remote), str(unrelated))
+    git(prepared.workspace, "remote", "set-url", "--push", "origin", str(unrelated))
+
+    with patch("auto_coder.pr_repair_finalizer.git_push") as push, patch("auto_coder.pr_repair_finalizer.git_commit_with_retry") as commit:
+        result = PRRepairJobFinalizer(store, observer(remote, base), lambda *_args: True).finalize(claim.record.job_id)
+
+    assert result.disposition is PRRepairPublicationDisposition.REFUSED
+    assert git(remote, "rev-parse", "refs/heads/feature") == head
+    assert git(unrelated, "rev-parse", "refs/heads/feature") == head
+    commit.assert_not_called()
+    push.assert_not_called()

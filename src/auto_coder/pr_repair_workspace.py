@@ -280,6 +280,8 @@ class PRRepairWorkspaceProducer:
             raise PRRepairWorkspaceError("retained merge lineage changed")
         if tuple(sorted(self._files(workspace).items())) != manifest.workspace_files:
             raise PRRepairWorkspaceError("retained result files were altered")
+        if retained_candidate and self._commit_files(workspace, candidate_sha) != dict(manifest.workspace_files):
+            raise PRRepairWorkspaceError("retained candidate tree does not match the result artifact")
         expected_changes = self._changed(self._commit_files(workspace, authority.head_sha), dict(manifest.workspace_files))
         if manifest.changed_files != expected_changes:
             raise PRRepairWorkspaceError("result manifest changed-file identities are invalid")

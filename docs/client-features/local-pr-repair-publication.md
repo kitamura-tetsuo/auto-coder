@@ -13,6 +13,12 @@ repair a failure. Before its first push, the candidate SHA is durable and the pu
 intent is atomically inserted only if no prior intent exists. Publication uses an
 exact lease against the admitted head SHA.
 
+The daemon routes completed CI and conflict jobs directly through this finalizer
+and calls its recovery scan during startup. Before any commit or push, the retained
+workspace's effective `origin` push URL must still equal the URL captured with the
+artifact. Both newly created and recovered candidates are authenticated by their
+immutable committed tree as well as their parent lineage and working-file evidence.
+
 An interrupted or ambiguous push is recovered by observing the original PR ref.
 Only an exact match with the retained candidate confirms publication. Seeing the
 old head, a newer head, or an unavailable target never authorizes another push.

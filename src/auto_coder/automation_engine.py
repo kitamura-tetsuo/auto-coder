@@ -2807,28 +2807,22 @@ class AutomationEngine:
         self._loop = asyncio.get_running_loop()
 
         from .pr_correction_job import resume_pr_correction_publication
-        from .pr_local_job_runtime import build_pr_local_job_adapters
+        from .pr_local_job_runtime import build_pr_local_job_adapters, build_pr_repair_finalizer
 
         local_job_store = LocalJobStore()
 
+        def wake_published_head(repository: str, number: int, _head_sha: str) -> bool:
+            assert self._loop is not None
+            wake = asyncio.run_coroutine_threadsafe(self.invalidate_entity(repository, "pr", number), self._loop)
+            wake.result()
+            return True
+
+        repair_finalizer = build_pr_repair_finalizer(self.github, local_job_store, wake_published_head)
+
         def wake_pr_validation(job: Any) -> None:
             assert self._loop is not None
-            if job.kind is LocalJobKind.PR_MERGE_CONFLICT:
-                # Conflict artifacts deliberately remain pending for the
-                # separately authorized exact-head publisher. Merely wake the
-                # PR controller; do not reinterpret or settle its evidence.
-                existing = local_job_store.get_effect(job.job_id, job.execution_incarnation, "pr-conflict-result-wake")
-                if existing is not None and existing.state == "completed":
-                    return
-                wake = asyncio.run_coroutine_threadsafe(self.invalidate_entity(job.repository, "pr", job.target_number), self._loop)
-                wake.result()
-                local_job_store.record_effect(LocalJobClaim(job, True), "pr-conflict-result-wake", "completed", "durable conflict result scheduled for controller revalidation")
-                return
-            if job.kind is LocalJobKind.PR_CI_FAILURE:
-                wake = asyncio.run_coroutine_threadsafe(self.invalidate_entity(job.repository, "pr", job.target_number), self._loop)
-                wake.result()
-                claim = LocalJobClaim(job, True)
-                local_job_store.record_effect(claim, "ci-repair-publication-ready", "pending", "durable CI repair artifact awaits controller publication")
+            if job.kind in {LocalJobKind.PR_MERGE_CONFLICT, LocalJobKind.PR_CI_FAILURE}:
+                repair_finalizer.finalize(job.job_id)
                 return
             phase = resume_pr_correction_publication(job, local_job_store)
             wake = asyncio.run_coroutine_threadsafe(self.invalidate_entity(job.repository, "pr", job.target_number), self._loop)
@@ -2845,6 +2839,10 @@ class AutomationEngine:
             adapters=build_pr_local_job_adapters(self.github, self.config, local_job_store),
             completion_wake=wake_pr_validation,
         )
+
+        # Startup recovery observes retained intents and receipts; it never
+        # claims pending jobs or re-enters an editing provider.
+        await asyncio.to_thread(repair_finalizer.resume_all, repo_name)
 
         async def poll_local_jobs() -> None:
             while True:

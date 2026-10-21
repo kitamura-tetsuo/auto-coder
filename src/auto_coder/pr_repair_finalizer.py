@@ -135,6 +135,9 @@ class PRRepairJobFinalizer:
         manifest = verified.manifest
         workspace = Path(manifest.workspace)
 
+        if self._git(workspace, "remote", "get-url", "--push", "origin") != manifest.remote:
+            return self._result(job_id, PRRepairPublicationDisposition.REFUSED, candidate, "publication remote changed after artifact capture")
+
         if not candidate and recovery_candidate and recovery_candidate != manifest.head_sha:
             expected_parents = [manifest.head_sha]
             if record.kind is LocalJobKind.PR_MERGE_CONFLICT:
@@ -267,7 +270,7 @@ class PRRepairJobFinalizer:
             raise PRRepairWorkspaceError(result.stderr or "strict repair commit failed")
         candidate = self._git(workspace, "rev-parse", "HEAD")
         actual_parents = self._git(workspace, "show", "-s", "--format=%P", candidate).split()
-        if actual_parents != parents or tuple(sorted(self._workspace._files(workspace).items())) != manifest.workspace_files:
+        if actual_parents != parents or self._workspace._commit_files(workspace, candidate) != dict(manifest.workspace_files) or tuple(sorted(self._workspace._files(workspace).items())) != manifest.workspace_files:
             raise PRRepairWorkspaceError("commit hooks changed authenticated output or ancestry")
         if not self._store.record_effect(claim, "commit", "completed", self._evidence(candidate_sha=candidate, artifact_id=artifact_id, expected_parents=parents)):
             raise PRRepairWorkspaceError("candidate checkpoint was not retained")
