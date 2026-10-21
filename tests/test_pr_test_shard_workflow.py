@@ -150,8 +150,8 @@ def test_workflow_contract_and_aggregate_shell():
     shard = workflow["jobs"]["tests-shard"]
     assert shard["strategy"] == {"fail-fast": False, "matrix": {"group": [1, 2, 3, 4]}}
     test_step = next(step for step in shard["steps"] if step["name"].startswith("Run tests"))
-    assert test_step["timeout-minutes"] == 12
-    assert "--attempt-timeout 360" in test_step["run"]
+    assert test_step["timeout-minutes"] == 18
+    assert "--attempt-timeout 480" in test_step["run"]
     assert "--termination-grace 10" in test_step["run"]
     assert "--max-attempts 2" in test_step["run"]
     assert "scripts/run_pr_test_shard.py" in test_step["run"]
