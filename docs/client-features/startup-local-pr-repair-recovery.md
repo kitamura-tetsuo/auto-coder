@@ -14,6 +14,11 @@ pending-work scheduler declares the exact obligation eligible. If persisting a
 handler outcome temporarily fails after a dispatch, the running scheduler
 rechecks interrupted claims on later controller turns and resumes that same
 identity after storage recovers, without requiring another daemon restart.
+The startup barrier uses strict local-job enumeration: an unreadable database
+or undecodable row is retained as startup reconciliation work rather than
+being interpreted as an empty repository. The same pending-work controller
+retries that repository scan, and fresh provider polling and ordinary workers
+remain closed until a successful enumeration completes.
 
 Unfinished CI/conflict publication is represented by a stable pending-work
 identity containing the local job and execution incarnation. Repeated runner

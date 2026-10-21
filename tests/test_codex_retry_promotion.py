@@ -33,7 +33,7 @@ from auto_coder.issue_processor import (
 )
 from auto_coder.issue_stage_routing import ImplementationRetryRequest, IssueStageRoutingStore
 from auto_coder.llm_backend_config import LLMBackendConfiguration
-from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore, PRRepairAdmission
+from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore, LocalJobStoreUnavailable, PRRepairAdmission
 from auto_coder.local_job_runner import LocalJobRunner
 from auto_coder.local_pr_repair_recovery import LOCAL_PR_REPAIR_FINALIZATION_EFFECT, finalization_identity, rediscover_pr_repair_finalizations
 from auto_coder.local_review_repair import LocalReviewRepairStore
@@ -533,6 +533,21 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
     dead_pr_job = entered_pr_job("owner/repo", 72, LocalJobKind.PR_CI_FAILURE, "dead-owner", artifact=True)
     foreign_pr_job = entered_pr_job("other/repo", 73, LocalJobKind.PR_MERGE_CONFLICT, "dead-owner")
     reopened = LocalJobStore(jobs.path)
+    local_scan_entered = Event()
+    release_local_scan = Event()
+    strict_scans = 0
+    original_strict_discovery = reopened.discover_unsettled_strict
+
+    def temporarily_unavailable_local_jobs():
+        nonlocal strict_scans
+        strict_scans += 1
+        if strict_scans == 1:
+            local_scan_entered.set()
+            assert release_local_scan.wait(5)
+            raise LocalJobStoreUnavailable("temporary local-job read failure")
+        return original_strict_discovery()
+
+    monkeypatch.setattr(reopened, "discover_unsettled_strict", temporarily_unavailable_local_jobs)
 
     checkpoint_entered = Event()
     release_checkpoint = Event()
@@ -626,7 +641,13 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
 
     async def scenario():
         task = asyncio.create_task(engine.start_automation("owner/repo", concurrency=1))
+        assert await asyncio.to_thread(local_scan_entered.wait, 5)
+        assert not producer_entered.is_set()
+        assert worker_entries == 0
+        assert issue_poll_count == 0
+        release_local_scan.set()
         assert await asyncio.to_thread(checkpoint_entered.wait, 5)
+        assert strict_scans >= 2
         assert enumeration_calls == 2
         assert not producer_entered.is_set()
         assert worker_entries == 0

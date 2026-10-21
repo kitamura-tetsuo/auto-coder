@@ -129,8 +129,9 @@ class LocalJobRunner:
         self._recovering_start_notifications: set[int] = set()
         self._closed = False
 
-    def _discover_unsettled(self) -> tuple[LocalJobRecord, ...]:
-        return tuple(job for job in self.store.discover_unsettled() if job.repository == self.repository and job.kind in self.adapters and (self._job_ids is None or job.job_id in self._job_ids))
+    def _discover_unsettled(self, *, strict: bool = False) -> tuple[LocalJobRecord, ...]:
+        jobs = self.store.discover_unsettled_strict() if strict else self.store.discover_unsettled()
+        return tuple(job for job in jobs if job.repository == self.repository and job.kind in self.adapters and (self._job_ids is None or job.job_id in self._job_ids))
 
     def resume(self, job_id: str) -> None:
         """Run exactly one explicitly requested continuation, never a fresh job."""
@@ -261,9 +262,9 @@ class LocalJobRunner:
     def _reap_locked(self) -> None:
         self._active = {job_id: future for job_id, future in self._active.items() if not future.done()}
 
-    def recover_unsettled(self) -> None:
+    def recover_unsettled(self, *, strict: bool = False) -> None:
         """Reconcile retained checkpoints without scheduling a new invocation."""
-        for job in self._discover_unsettled():
+        for job in self._discover_unsettled(strict=strict):
             with self._lock:
                 active = self._active.get(job.job_id)
                 if active is not None and not active.done():

@@ -53,10 +53,11 @@ class LocalPRRepairFinalizationHandler:
         return self._run(obligation)
 
 
-def rediscover_pr_repair_finalizations(repository: str, jobs: LocalJobStore, pending: PendingWorkStore) -> tuple[WorkIdentity, ...]:
+def rediscover_pr_repair_finalizations(repository: str, jobs: LocalJobStore, pending: PendingWorkStore, *, strict: bool = False) -> tuple[WorkIdentity, ...]:
     """Ensure publication obligations for exact recoverable PR results."""
     identities = []
-    for job in jobs.discover_unsettled():
+    retained = jobs.discover_unsettled_strict() if strict else jobs.discover_unsettled()
+    for job in retained:
         if job.repository != repository or job.kind not in {LocalJobKind.PR_CI_FAILURE, LocalJobKind.PR_MERGE_CONFLICT} or job.state not in {LocalJobState.RESULT_RECORDED, LocalJobState.DOWNSTREAM_EFFECTS_PENDING}:
             continue
         identity = finalization_identity(repository, job.job_id, job.execution_incarnation)

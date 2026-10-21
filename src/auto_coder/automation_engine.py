@@ -124,7 +124,7 @@ from .jules_client import invalidate_jules_sessions_cache
 from .jules_engine import check_and_resume_or_archive_sessions, check_and_start_recurrent_jules_tasks
 from .label_manager import LabelManager
 from .llm_backend_config import active_repo_context, get_pr_review_allowlist_from_config, get_review_adjudicator_allowlist_from_config
-from .local_job_handoff import LocalJobClaim, LocalJobKind, LocalJobStore
+from .local_job_handoff import LocalJobClaim, LocalJobKind, LocalJobStore, LocalJobStoreUnavailable
 from .local_job_runner import LocalJobRunner
 from .logger_config import get_logger
 from .merge_operation_scheduler import get_merge_operation_scheduler
@@ -1058,6 +1058,7 @@ class AutomationEngine:
         # tracks invocations and never gates the daemon's own exit.
         self.invocation_gate = InvocationAdmissionGate()
         self.local_job_store: Optional[LocalJobStore] = None
+        self._pr_local_job_runner: Optional[LocalJobRunner] = None
         self._issue_job_runtimes: Dict[str, IssueJobRuntime] = {}
         self._issue_runtime_composition: Optional[IssueRuntimeComposition] = None
         # Full Jules discovery is deliberately delayed after startup.  Claiming
@@ -2854,6 +2855,7 @@ class AutomationEngine:
             adapters=build_pr_local_job_adapters(self.github, self.config, local_job_store),
             completion_wake=wake_pr_validation,
         )
+        self._pr_local_job_runner = local_job_runner
 
         async def poll_local_jobs() -> None:
             assert self._shutdown_event is not None
@@ -2905,18 +2907,6 @@ class AutomationEngine:
             self._claude_followup_recovery_loop(repo_name),
             name="claude-followup-quota-recovery",
         )
-
-        # Reconcile accepted PR jobs before slot cleanup and before any fresh
-        # Issue/PR admission. This recovery-only entry never claims PENDING
-        # work or enters an editing provider.
-        await asyncio.to_thread(local_job_runner.recover_unsettled)
-        await asyncio.to_thread(
-            rediscover_pr_repair_finalizations,
-            repo_name,
-            local_job_store,
-            get_pending_work_store(repo_name),
-        )
-        self._wake_pending_work()
 
         if not self.is_draining:
             # Webhooks are not a durable event log. Recover work missed while
@@ -3141,6 +3131,14 @@ class AutomationEngine:
             obligation = await asyncio.to_thread(get_pending_work_store(repo_name).defer, identity, exc, (STARTUP_RECONCILIATION_EFFECT,))
             logger.warning(f"Startup GitHub reconciliation for {repo_name} deferred ({obligation.reason.value}); " f"the daemon stays up and the pending-work scheduler will retry automatically " f"(next eligible at {obligation.not_before})")
             self._wake_pending_work()
+        except LocalJobStoreUnavailable as exc:
+            await asyncio.to_thread(
+                get_pending_work_store(repo_name).ensure_reevaluation,
+                identity,
+                (STARTUP_RECONCILIATION_EFFECT,),
+            )
+            logger.warning("Startup local-job reconciliation for {} deferred: {}", repo_name, exc)
+            self._wake_pending_work()
 
         assert self._startup_reconciliation_event is not None and self._shutdown_event is not None
         wait_ready = asyncio.ensure_future(self._startup_reconciliation_event.wait())
@@ -3160,6 +3158,22 @@ class AutomationEngine:
         retry, so a resumed scan always performs a complete fresh discovery
         rather than resuming from stale partial state.
         """
+        # Strict local-job enumeration is part of the admission barrier. An
+        # unavailable/corrupt authority is not equivalent to an empty store;
+        # the startup pending-work controller retries this whole phase.
+        if self._pr_local_job_runner is not None:
+            await asyncio.to_thread(self._pr_local_job_runner.recover_unsettled, strict=True)
+            from .local_pr_repair_recovery import rediscover_pr_repair_finalizations
+
+            await asyncio.to_thread(
+                rediscover_pr_repair_finalizations,
+                repo_name,
+                self._get_local_job_store(),
+                get_pending_work_store(repo_name),
+                strict=True,
+            )
+            self._wake_pending_work()
+
         # Discover open PR ownership before releasing startup reservations. A
         # PR linked only by branch metadata has no Issue timeline event and
         # may not have been recorded if the previous process stopped before

@@ -43,6 +43,10 @@ class InvocationOutcome(str, Enum):
     INTERRUPTED = "interrupted"
 
 
+class LocalJobStoreUnavailable(RuntimeError):
+    """Authoritative local-job enumeration could not be established."""
+
+
 class StartNotificationState(str, Enum):
     """Durable delivery knowledge for a local Issue start notification."""
 
@@ -798,11 +802,18 @@ class LocalJobStore:
     def discover_unsettled(self) -> tuple[LocalJobRecord, ...]:
         """Return recoverable jobs; RUNNING means reconcile, never auto-reissue."""
         try:
+            return self.discover_unsettled_strict()
+        except LocalJobStoreUnavailable:
+            return ()
+
+    def discover_unsettled_strict(self) -> tuple[LocalJobRecord, ...]:
+        """Return unsettled jobs or prove that authoritative enumeration failed."""
+        try:
             with self._connect() as connection:
                 rows = connection.execute("SELECT * FROM local_jobs WHERE state<>? ORDER BY created_at", (LocalJobState.SETTLED.value,)).fetchall()
             return tuple(self._record(row) for row in rows)
-        except (OSError, sqlite3.Error, ValueError):
-            return ()
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            raise LocalJobStoreUnavailable("Local-job storage could not be enumerated") from exc
 
     def retained_issue_execution_ids(self, repository: str) -> frozenset[str]:
         """Read durable execution responsibility strictly for slot reclamation."""
