@@ -3,13 +3,42 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .local_conflict_repair_job import EditorFactory, LocalConflictRepairJobAdapter, build_conflict_editor
 from .local_job_handoff import LocalJobKind, LocalJobStore
 from .local_job_runner import LocalJobDomainAdapter
 from .pr_correction_job import PRCorrectionJobAdapter, build_captured_executor
 from .pr_repair_workspace import PRRepairSource, PRRepairWorkspaceProducer
+
+
+def build_pr_repair_finalizer(
+    github_client: Any,
+    store: LocalJobStore,
+    wake: Callable[[str, int, str], bool],
+):
+    """Compose the exact-head publisher from production GitHub and wake ports."""
+    from .pr_repair_finalizer import PRRepairJobFinalizer, PRRepairTargetObservation
+
+    def observe(repository: str, number: int) -> PRRepairTargetObservation:
+        metadata = github_client.get_pull_request_metadata_strict(repository, number)
+        head = metadata.get("head") or {}
+        base = metadata.get("base") or {}
+        return PRRepairTargetObservation(
+            repository,
+            number,
+            str((head.get("repo") or {}).get("full_name") or ""),
+            str(head.get("ref") or ""),
+            str(head.get("sha") or ""),
+            str((base.get("repo") or {}).get("full_name") or ""),
+            str(base.get("ref") or ""),
+            str(base.get("sha") or base.get("identity") or ""),
+            str(metadata.get("state") or "").lower() == "open",
+            bool(metadata.get("merged") or metadata.get("merged_at")),
+            True,
+        )
+
+    return PRRepairJobFinalizer(store, observe, wake)
 
 
 def build_pr_local_job_adapters(
