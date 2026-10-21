@@ -137,3 +137,59 @@ async def test_pr_worker_processes_second_candidate_while_independent_runner_is_
             runner.close(wait=True)
             worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
+
+
+def test_explicit_pr_entry_retains_one_job_and_target_scoped_runner_ignores_unrelated_work(tmp_path: Path) -> None:
+    jobs = LocalJobStore(tmp_path / "jobs.sqlite3")
+    github = MagicMock()
+    github.get_pull_request_metadata_strict.side_effect = lambda _repo, number: _pr(number)
+    engine = AutomationEngine(github, AutomationConfig())
+    engine.local_job_store = jobs
+    engine.implementation_slots = ImplementationSlotRepository("owner/repo", 3, tmp_path / "slots.json")
+    engine.implementation_slots.resolve_owner = MagicMock(side_effect=lambda _kind, data, _github: ImplementationOwner("pr", data["number"]))  # type: ignore[method-assign]
+    engine._check_and_handle_closed_branch = MagicMock(return_value=True)
+    engine._create_candidate_from_single = MagicMock(side_effect=lambda _repo, _kind, number, **_kwargs: Candidate("pr", _pr(number), 0))
+
+    with _production_scope(engine), _install_real_offer(engine, github):
+        explicit = engine.process_single("owner/repo", "pr", 17, explicit_only=True)
+        unrelated = engine._process_single_candidate_unified("owner/repo", Candidate("pr", _pr(18), 0), engine.config, origin="worker")
+        repeated = engine.process_single("owner/repo", "pr", 17, explicit_only=True)
+
+    assert explicit["errors"] == []
+    target_jobs = [job for job in jobs.discover_unsettled() if job.target_number == 17]
+    assert len(target_jobs) == 1
+    target_id = target_jobs[0].job_id
+    assert unrelated.repair_result is not None and unrelated.repair_result.local_handoff is not None
+    unrelated_id = unrelated.repair_result.local_handoff.job_id
+    assert repeated["errors"] == []
+    assert [job.job_id for job in jobs.discover_unsettled() if job.target_number == 17] == [target_id]
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class TargetAdapter:
+        def authorize_provider_entry(self, _job):
+            return True
+
+        def invoke(self, _job):
+            entered.set()
+            assert release.wait(5)
+            return LocalJobExecutionResult(InvocationOutcome.COMPLETED, "ACTION_SUMMARY: target repaired")
+
+    runner = LocalJobRunner(
+        jobs,
+        InvocationAdmissionGate(),
+        repository="owner/repo",
+        capacity=1,
+        adapters={LocalJobKind.PR_MERGE_CONFLICT: TargetAdapter()},
+        job_ids=frozenset({target_id}),
+    )
+    try:
+        assert runner.poll() == 1
+        assert entered.wait(2)
+        assert jobs.get(target_id).state is LocalJobState.RUNNING  # type: ignore[union-attr]
+        assert jobs.get(unrelated_id).state is LocalJobState.PENDING  # type: ignore[union-attr]
+        assert runner.poll() == 0
+    finally:
+        release.set()
+        runner.close(wait=True)
