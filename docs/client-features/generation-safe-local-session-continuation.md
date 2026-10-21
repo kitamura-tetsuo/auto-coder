@@ -7,11 +7,13 @@ directory. Adapters without that capability fail before provider submission, and
 an explicit continuation is never replaced by a fresh task or another backend.
 
 The manager retains the provider session, invocation identity, private root,
-caller identity, and preceding turn evidence together. Before each later turn it
-requires positive writer settlement and consumes an exact generation-specific
-live-root reuse decision. Missing, denied, stale, mismatched, released, or
-concurrently active state fails closed. Path equality and a session string are not
-substitutes for the retained binding.
+caller identity, and preceding turn evidence together. Before each later turn
+(including same-run adversarial-review continuations such as changed-file
+evidence completion, dynamic-check target correction, dynamic-check follow-up,
+and test-oracle-gap completion) it requires positive writer settlement and
+consumes an exact generation-specific live-root reuse decision. Missing,
+denied, stale, mismatched, released, or concurrently active state fails closed.
+Path equality and a session string are not substitutes for the retained binding.
 
 Every admitted continuation creates a new local execution boundary and resolves
 its effective edit mode again. Its own provider completion, session identity, and

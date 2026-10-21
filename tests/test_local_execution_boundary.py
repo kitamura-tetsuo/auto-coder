@@ -854,3 +854,331 @@ def test_codex_supervised_setup_failure_never_starts_provider(tmp_path: Path, fa
             )
         )
     assert boundary.evidence().backend_outcome is BackendOutcome.UNKNOWN
+
+
+def test_adversarial_validation_retains_and_authorizes_local_session_across_all_continuations(
+    tmp_path: Path,
+    _use_real_commands: None,
+) -> None:
+    import json
+    import subprocess
+
+    from src.auto_coder.adversarial_validator import (
+        AdversarialValidationContext,
+        FileDiffEvidence,
+        IssueRequirement,
+        _stable_test_oracle_gap_id,
+        run_adversarial_validation,
+    )
+    from src.auto_coder.automation_config import AutomationConfig
+    from src.auto_coder.reviewer_session_registry import ReviewerSessionRegistry, TestOracleGap
+
+    class MultiTurnMuseReviewer:
+        supports_retained_local_continuation = True
+        use_noedit_options = True
+        model_name = "muse-spark-1.3"
+        config_backend = SimpleNamespace(backend_type="muse")
+
+        def __init__(self, responses: list[str]) -> None:
+            self._responses = iter(responses)
+            self.session_id: str | None = None
+            self.fresh_prompts: list[str] = []
+            self.continued_prompts: list[tuple[str, str, bool]] = []
+
+        def clear_last_session_id(self) -> None:
+            self.session_id = None
+
+        def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
+            boundary = get_current_local_execution_boundary()
+            assert boundary is not None
+            self.session_id = "muse-review-session-1"
+            self.fresh_prompts.append(prompt)
+            boundary.record_writer_completion(boundary.binding.invocation_id)
+            boundary.record_violation_observation(boundary.binding.invocation_id)
+            return next(self._responses)
+
+        def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
+            boundary = get_current_local_execution_boundary()
+            assert boundary is not None
+            self.session_id = session_id
+            self.continued_prompts.append((session_id, prompt, is_noedit))
+            boundary.record_writer_completion(boundary.binding.invocation_id)
+            boundary.record_violation_observation(boundary.binding.invocation_id)
+            return next(self._responses)
+
+        def get_last_session_id(self) -> str | None:
+            return self.session_id
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+    write_target_test_script(
+        repository,
+        "#!/bin/bash\n" 'if [[ "$1" == *"missing"* ]]; then\n' "  echo 'collected 0 items'\n" "  exit 5\n" "fi\n" "echo '1 passed'\n" "exit 0\n",
+    )
+    (repository / "tests").mkdir(exist_ok=True)
+    (repository / "tests" / "test_feature.py").write_text("def test_ok():\n    assert True\n")
+    (repository / "src").mkdir(exist_ok=True)
+    (repository / "src" / "feature.py").write_text("value = 1\n")
+    subprocess.run(["git", "add", "."], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-qm", "initial"], cwd=repository, check=True)
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    prior_sha = "a" * 40
+
+    gap_id = _stable_test_oracle_gap_id("REQ-001", "Feature.apply", "Rejected input preserves state.")
+    gap = TestOracleGap(
+        gap_id=gap_id,
+        requirement_id="REQ-001",
+        requirement_text="Feature must preserve state.",
+        authoritative_boundary="Feature.apply",
+        invariant="Rejected input preserves state.",
+        plausible_incorrect_implementation="Mutate state before validation.",
+        why_tests_still_pass="No direct test.",
+        material_consequence="Corrupted state.",
+        focused_regression_scenario="Call Feature.apply with invalid input and assert state is unchanged.",
+        anchor_path="src/feature.py",
+        anchor_line=1,
+        status="RESOLVED",
+        resolution_evidence="Historical H1 evidence.",
+        resolution_head_sha=prior_sha,
+    )
+    resolved_gap_dict = {
+        "gap_id": gap_id,
+        "requirement_id": "REQ-001",
+        "authoritative_boundary": "Feature.apply",
+        "invariant": "Rejected input preserves state.",
+        "plausible_incorrect_implementation": "Mutate state before validation.",
+        "why_tests_still_pass": "No direct test.",
+        "material_consequence": "Corrupted state.",
+        "focused_regression_scenario": "Call Feature.apply with invalid input and assert state is unchanged.",
+        "anchor_path": "src/feature.py",
+        "anchor_line": 1,
+        "anchor_side": "RIGHT",
+        "anchor_start_line": None,
+        "discovery_phase": "REREVIEW",
+        "rereview_exception_reason": "NONE",
+        "rereview_exception_evidence": "",
+        "status": "RESOLVED",
+        "resolution_evidence": (f"tests/test_feature.py exercises Feature.apply at {head_sha} " "and asserts rejected input preserves state."),
+    }
+
+    initial_reply = json.dumps(
+        {
+            "result": "PASS",
+            "summary": "Initial pass with incomplete file evidence",
+            "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "src/feature.py inspected"}],
+            "findings": [],
+            "test_oracle_gaps": [resolved_gap_dict],
+        }
+    )
+    evidence_completion_reply = json.dumps(
+        {
+            "result": "INCONCLUSIVE",
+            "summary": "Recovered extra.py; requesting dynamic check on invalid path first",
+            "dynamic_check_requested": "client/src/components/YjsTableView.test.ts",
+            "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "src/feature.py and extra.py inspected"}],
+            "evidence_recovery": [
+                {
+                    "path": "src/extra.py",
+                    "source": "GitHub REST pull-request files representation",
+                    "status": "RECOVERED",
+                    "evidence": "Complete controller patch reviewed",
+                    "requirement_ids": ["REQ-001"],
+                }
+            ],
+            "findings": [],
+            "test_oracle_gaps": [resolved_gap_dict],
+        }
+    )
+    target_correction_reply = json.dumps(
+        {
+            "result": "INCONCLUSIVE",
+            "summary": "Corrected target to valid pytest file",
+            "dynamic_check_requested": "tests/test_feature.py",
+            "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "src/feature.py inspected"}],
+            "findings": [],
+            "test_oracle_gaps": [resolved_gap_dict],
+        }
+    )
+    dynamic_followup_reply = json.dumps(
+        {
+            "result": "PASS",
+            "summary": "Dynamic check passed",
+            "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "tests/test_feature.py passed"}],
+            "findings": [],
+            "test_oracle_gaps": [],
+        }
+    )
+    gap_completion_reply = json.dumps(
+        {
+            "result": "PASS",
+            "summary": "Gap resolved on current head",
+            "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "tests/test_feature.py passed"}],
+            "findings": [],
+            "test_oracle_gaps": [resolved_gap_dict],
+        }
+    )
+    rereview_continued_reply = json.dumps(
+        {
+            "result": "PASS",
+            "summary": "Rereview resumed retained local session",
+            "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Verified in retained session"}],
+            "findings": [],
+            "test_oracle_gaps": [resolved_gap_dict],
+        }
+    )
+
+    client = MultiTurnMuseReviewer(
+        [
+            initial_reply,
+            evidence_completion_reply,
+            target_correction_reply,
+            dynamic_followup_reply,
+            gap_completion_reply,
+            rereview_continued_reply,
+        ]
+    )
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        manager = BackendManager(
+            default_backend="muse-spark",
+            default_client=client,
+            factories={"muse-spark": lambda: client},
+            order=["muse-spark"],
+            automatic_session_resume=False,
+        )
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    from src.auto_coder.reviewer_session_registry import ReviewerSession
+
+    registry.save(
+        ReviewerSession(
+            repository="owner/repo",
+            pr_number=5711,
+            backend_name="muse-spark",
+            backend_type="muse",
+            model_name="muse-spark-1.3",
+            session_id="unretained-prior-session",
+            last_head_sha=prior_sha,
+            test_oracle_gaps=[gap],
+        )
+    )
+
+    validation_context = AdversarialValidationContext(
+        repo_name="owner/repo",
+        pr_number=5711,
+        pr_title="Fix feature",
+        pr_body="Fixes #1",
+        pr_diff="diff --git a/src/feature.py b/src/feature.py\n+value = 1",
+        changed_tests=["tests/test_feature.py"],
+        all_changed_files=["src/feature.py", "src/extra.py"],
+        unverified_files=["src/extra.py"],
+        controller_file_evidence=[FileDiffEvidence(path="src/extra.py", patch="+extra = 1", is_complete=True)],
+        issue_context="Issue specification: Feature must preserve state.",
+        issue_requirements=[IssueRequirement("REQ-001", "Feature must preserve state.")],
+        validation_snapshot="snapshot-5711",
+    )
+    config = AutomationConfig()
+    config.TEST_SCRIPT_PATH = str(repository / "scripts" / "test.sh")
+
+    token = bind_command_execution_cwd(str(repository))
+    try:
+        with (
+            patch("src.auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context),
+            patch("src.auto_coder.adversarial_validator.validation_snapshot_is_current", return_value=True),
+        ):
+            first_result = run_adversarial_validation(
+                "owner/repo",
+                {"number": 5711, "head": {"sha": head_sha}, "base": {"sha": prior_sha}},
+                config,
+                backend_manager=manager,
+                session_registry=registry,
+                execution_cwd=str(repository),
+            )
+            assert first_result.result == "PASS"
+            assert len(client.fresh_prompts) == 1
+            # 4 continuations in run 1: evidence_completion, target_correction, dynamic_check_followup, gap_completion
+            assert len(client.continued_prompts) == 4
+            assert all(sid == "muse-review-session-1" and is_noedit for sid, _, is_noedit in client.continued_prompts)
+
+            # Run 2 with the same retained session in registry: resumes initial review via _continue_reviewer_session
+            validation_context_clean = AdversarialValidationContext(
+                repo_name="owner/repo",
+                pr_number=5711,
+                pr_title="Fix feature",
+                pr_body="Fixes #1",
+                pr_diff="diff --git a/src/feature.py b/src/feature.py\n+value = 1",
+                changed_tests=["tests/test_feature.py"],
+                all_changed_files=["src/feature.py"],
+                issue_context="Issue specification: Feature must preserve state.",
+                issue_requirements=[IssueRequirement("REQ-001", "Feature must preserve state.")],
+                validation_snapshot="snapshot-5711",
+            )
+            with patch("src.auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context_clean):
+                second_result = run_adversarial_validation(
+                    "owner/repo",
+                    {"number": 5711, "head": {"sha": head_sha}, "base": {"sha": prior_sha}},
+                    config,
+                    backend_manager=manager,
+                    session_registry=registry,
+                    execution_cwd=str(repository),
+                )
+            assert second_result.result == "PASS"
+            assert len(client.fresh_prompts) == 1
+            assert len(client.continued_prompts) == 5
+    finally:
+        reset_command_execution_cwd(token)
+        manager.close()
+
+    # Also verify target_selection_correction continuation on a retained local session
+    selection_client = MultiTurnMuseReviewer(
+        [
+            json.dumps(
+                {
+                    "result": "INCONCLUSIVE",
+                    "summary": "Select missing pytest node",
+                    "dynamic_check_requested": "tests/test_feature.py::test_missing",
+                    "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "src/feature.py inspected"}],
+                    "findings": [],
+                    "test_oracle_gaps": [],
+                }
+            ),
+            target_correction_reply,
+            dynamic_followup_reply,
+        ]
+    )
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        selection_manager = BackendManager(
+            default_backend="muse-spark",
+            default_client=selection_client,
+            factories={"muse-spark": lambda: selection_client},
+            order=["muse-spark"],
+            automatic_session_resume=False,
+        )
+    token = bind_command_execution_cwd(str(repository))
+    try:
+        with patch(
+            "src.auto_coder.adversarial_validator.build_adversarial_validation_context",
+            return_value=validation_context_clean,
+        ):
+            selection_result = run_adversarial_validation(
+                "owner/repo",
+                {"number": 5712, "head": {"sha": head_sha}, "base": {"sha": prior_sha}},
+                config,
+                backend_manager=selection_manager,
+                session_registry=ReviewerSessionRegistry(tmp_path / "selection-sessions.json"),
+                execution_cwd=str(repository),
+            )
+        assert selection_result.result == "PASS"
+        assert len(selection_client.fresh_prompts) == 1
+        # 2 continuations: target_selection_correction + dynamic_check_followup
+        assert len(selection_client.continued_prompts) == 2
+    finally:
+        reset_command_execution_cwd(token)
+        selection_manager.close()

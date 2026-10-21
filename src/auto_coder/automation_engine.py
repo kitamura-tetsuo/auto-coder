@@ -2824,6 +2824,12 @@ class AutomationEngine:
                 wake.result()
                 local_job_store.record_effect(LocalJobClaim(job, True), "pr-conflict-result-wake", "completed", "durable conflict result scheduled for controller revalidation")
                 return
+            if job.kind is LocalJobKind.PR_CI_FAILURE:
+                wake = asyncio.run_coroutine_threadsafe(self.invalidate_entity(job.repository, "pr", job.target_number), self._loop)
+                wake.result()
+                claim = LocalJobClaim(job, True)
+                local_job_store.record_effect(claim, "ci-repair-publication-ready", "pending", "durable CI repair artifact awaits controller publication")
+                return
             phase = resume_pr_correction_publication(job, local_job_store)
             wake = asyncio.run_coroutine_threadsafe(self.invalidate_entity(job.repository, "pr", job.target_number), self._loop)
             wake.result()
@@ -2836,7 +2842,7 @@ class AutomationEngine:
             self.invocation_gate,
             repository=repo_name,
             capacity=max(1, concurrency),
-            adapters=build_pr_local_job_adapters(self.github, local_job_store),
+            adapters=build_pr_local_job_adapters(self.github, self.config, local_job_store),
             completion_wake=wake_pr_validation,
         )
 
@@ -9482,3 +9488,10 @@ class AutomationEngine:
 
     # Constants
     FLAG_SKIP_ANALYSIS = "[SKIP_LLM_ANALYSIS]"
+
+
+def build_pr_local_job_adapters(github: Any, config: AutomationConfig, store: LocalJobStore, repository_path: Path | None = None) -> dict[LocalJobKind, Any]:
+    """Compose every production durable PR execution adapter."""
+    from .pr_local_job_runtime import build_pr_local_job_adapters as compose_adapters
+
+    return compose_adapters(github, config, store, repository_path=repository_path)

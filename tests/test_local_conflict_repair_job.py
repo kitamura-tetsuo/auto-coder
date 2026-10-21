@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from auto_coder.automation_config import AutomationConfig
 from auto_coder.conflict_resolver import inspect_conflicts
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.local_conflict_repair_job import LocalConflictRepairJobAdapter
@@ -289,6 +290,7 @@ def test_selected_local_origin_runs_through_runner_and_persists_exact_manifest(t
     assert job is not None and job.state is LocalJobState.PENDING
     adapters = build_pr_local_job_adapters(
         github,
+        AutomationConfig(),
         store,
         repository_path=root,
         conflict_editor_factory=lambda _backend, _job: edit,
