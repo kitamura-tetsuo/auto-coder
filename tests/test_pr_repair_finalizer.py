@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobStore, PRRepairAdmission
+from auto_coder.github_pending_work import PendingWorkScheduler, PendingWorkStore
+from auto_coder.invocation_admission import InvocationAdmissionGate
+from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore, PRRepairAdmission
+from auto_coder.local_job_runner import LocalJobRunner
+from auto_coder.local_pr_repair_recovery import (
+    LOCAL_PR_REPAIR_FINALIZATION_EFFECT,
+    LocalPRRepairFinalizationHandler,
+    rediscover_pr_repair_finalizations,
+)
 from auto_coder.local_review_repair import LocalReviewRepairStore
 from auto_coder.pr_repair_finalizer import PRRepairJobFinalizer, PRRepairPublicationDisposition, PRRepairTargetObservation
 from auto_coder.pr_repair_workspace import PRRepairSource, PRRepairWorkspaceProducer
@@ -245,19 +253,109 @@ def test_restart_reconciles_accepted_push_before_lost_receipt(tmp_path: Path, _u
     ):
         interrupted = PRRepairJobFinalizer(store, observer(remote, base), wake).finalize(claim.record.job_id)
         reopened = LocalJobStore(store.path)
+        startup_runner = LocalJobRunner(
+            reopened,
+            InvocationAdmissionGate(),
+            repository="owner/repo",
+            capacity=1,
+            adapters={kind: MagicMock()},
+        )
+        startup_runner.recover_unsettled()
+        startup_runner.close()
+        foreign_offer = LocalJobOffer(kind, "other/repo", 91, "foreign-attempt", "codex", "foreign repair")
+        foreign_admission = PRRepairAdmission(
+            "other/repo",
+            "feature",
+            head,
+            "other/repo",
+            "main",
+            base,
+            "ci_failure" if kind is LocalJobKind.PR_CI_FAILURE else "merge_conflict",
+            "foreign-evidence",
+            "foreign-incarnation",
+            ("checks / tests",) if kind is LocalJobKind.PR_CI_FAILURE else (),
+            True,
+            True,
+            True,
+            True,
+            kind is LocalJobKind.PR_MERGE_CONFLICT,
+            kind is LocalJobKind.PR_CI_FAILURE,
+        )
+        assert reopened.offer_pr_repair(foreign_offer, foreign_admission, LocalReviewRepairStore(tmp_path / "foreign-review.sqlite3")) is not None
+        foreign_claim = reopened.claim(foreign_offer.job_id, "foreign-runner")
+        assert foreign_claim is not None and reopened.mark_provider_entered(foreign_claim)
+        foreign_artifact = reopened.persist_result_artifact(foreign_claim, InvocationOutcome.COMPLETED, "foreign-result")
+        assert foreign_artifact is not None
+        assert reopened.record_result(foreign_claim, InvocationOutcome.COMPLETED, foreign_artifact.artifact_id)
+        foreign_before = reopened.get(foreign_offer.job_id)
         recovered = PRRepairJobFinalizer(reopened, observer(remote, base), wake)
-        first = recovered.finalize(claim.record.job_id)
-        second = recovered.finalize(claim.record.job_id)
+        pending = PendingWorkStore(tmp_path / "pending.sqlite3")
+        identities = rediscover_pr_repair_finalizations("owner/repo", reopened, pending)
+        assert len(identities) == 1
+        obligation = pending.get(identities[0])
+        assert obligation is not None
+        handler = LocalPRRepairFinalizationHandler("owner/repo", reopened, recovered)
+        first_outcome = handler.dispatch(obligation)
+        pending.complete_effect(identities[0], first_outcome.completed_effects[0])
+        second_outcome = handler.recover(obligation)
 
     candidate = git(prepared.workspace, "rev-parse", "HEAD")
     assert interrupted.disposition is PRRepairPublicationDisposition.PENDING
-    assert first.disposition is second.disposition is PRRepairPublicationDisposition.PUBLISHED
-    assert first.candidate_sha == second.candidate_sha == candidate
+    assert first_outcome.completed_effects == second_outcome.completed_effects == (LOCAL_PR_REPAIR_FINALIZATION_EFFECT,)
+    assert pending.get(identities[0]) is None
     assert git(remote, "rev-parse", "refs/heads/feature") == candidate
     assert pushes == 1
     assert commits.call_count == 1
     assert wakes == [candidate]
+    settled = reopened.get(claim.record.job_id)
+    assert settled is not None and settled.state is LocalJobState.SETTLED
+    assert settled.execution_incarnation == claim.record.execution_incarnation
+    assert reopened.get(foreign_offer.job_id) == foreign_before
     model.assert_not_called()
+
+
+def test_same_finalization_controller_retries_after_observation_recovers(tmp_path: Path, _use_real_commands) -> None:
+    source, remote, head, base = repository(tmp_path)
+    jobs, claim, prepared, _artifact = completed_job(tmp_path, source, head, base, target=19)
+    pending = PendingWorkStore(tmp_path / "pending.sqlite3")
+    identity = rediscover_pr_repair_finalizations("owner/repo", jobs, pending)[0]
+    observation_available = False
+    observation_calls = 0
+
+    def temporarily_failing_observer(repository_name: str, number: int) -> PRRepairTargetObservation:
+        nonlocal observation_calls
+        observation_calls += 1
+        if not observation_available:
+            raise RuntimeError("temporary observation failure")
+        return observer(remote, base)(repository_name, number)
+
+    wakes: list[str] = []
+    finalizer = PRRepairJobFinalizer(jobs, temporarily_failing_observer, lambda _repository, _number, candidate: not wakes.append(candidate))
+    handler = LocalPRRepairFinalizationHandler("owner/repo", jobs, finalizer)
+    scheduler = PendingWorkScheduler(pending, repository="owner/repo")
+    retained = pending.get(identity)
+    assert retained is not None
+
+    failed = handler.dispatch(retained)
+    scheduler._apply_outcome(identity, failed)
+    rediscover_pr_repair_finalizations("owner/repo", jobs, pending)
+    after_rediscovery = pending.get(identity)
+    assert failed.completed_effects == ()
+    assert after_rediscovery == retained
+    assert jobs.get(claim.record.job_id).state is LocalJobState.RESULT_RECORDED
+
+    observation_available = True
+    recovered = handler.dispatch(after_rediscovery)
+    scheduler._apply_outcome(identity, recovered)
+
+    assert recovered.completed_effects == (LOCAL_PR_REPAIR_FINALIZATION_EFFECT,)
+    assert pending.get(identity) is None
+    settled = jobs.get(claim.record.job_id)
+    assert settled is not None and settled.state is LocalJobState.SETTLED
+    assert settled.execution_incarnation == claim.record.execution_incarnation
+    assert git(remote, "rev-parse", "refs/heads/feature") == git(prepared.workspace, "rev-parse", "HEAD")
+    assert observation_calls >= 3
+    assert len(wakes) == 1
 
 
 def test_commit_hook_index_rewrite_cannot_be_checkpointed_or_pushed(tmp_path: Path, _use_real_commands) -> None:
