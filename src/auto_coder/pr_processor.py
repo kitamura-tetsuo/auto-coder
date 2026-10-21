@@ -10868,13 +10868,15 @@ def _local_ci_correction_ports(
 
     def focused(targets: List[str]) -> FocusedVerification:
         with ProgressStage("Running focused local checks"):
+
+            def run_selected(selected_config: AutomationConfig, *, test_file: str) -> Dict[str, Any]:
+                if workspace_root is None:
+                    return run_local_tests(selected_config, test_file=test_file)
+                return run_local_tests(selected_config, test_file=test_file, workspace_root=workspace_root)
+
             return verify_targets(
                 targets,
-                lambda selected_config, *, test_file: run_local_tests(
-                    selected_config,
-                    test_file=test_file,
-                    workspace_root=workspace_root,
-                ),
+                run_selected,
                 config,
                 workspace_root=workspace_root,
             )
