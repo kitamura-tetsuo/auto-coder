@@ -233,7 +233,7 @@ class PRRepairWorkspaceProducer:
             tuple(sorted(final.items())),
         )
 
-    def revalidate_result(self, record: LocalJobRecord, artifact: LocalJobResultArtifact) -> VerifiedPRRepairResult:
+    def revalidate_result(self, record: LocalJobRecord, artifact: LocalJobResultArtifact, *, candidate_sha: str = "") -> VerifiedPRRepairResult:
         if artifact.job_id != record.job_id or artifact.execution_incarnation != record.execution_incarnation:
             raise PRRepairWorkspaceError("result artifact belongs to another execution")
         try:
@@ -269,9 +269,14 @@ class PRRepairWorkspaceProducer:
         ):
             raise PRRepairWorkspaceError("result manifest authority does not match the retained job")
         workspace = Path(manifest.workspace)
-        if not workspace.is_dir() or self._git(workspace, "rev-parse", "HEAD") != manifest.actual_head:
+        actual_head = self._git(workspace, "rev-parse", "HEAD") if workspace.is_dir() else ""
+        expected_parents = [manifest.head_sha]
+        if record.kind is LocalJobKind.PR_MERGE_CONFLICT:
+            expected_parents.append(manifest.base_sha)
+        retained_candidate = bool(candidate_sha) and actual_head == candidate_sha and self._git(workspace, "show", "-s", "--format=%P", candidate_sha).split() == expected_parents
+        if not workspace.is_dir() or (actual_head != manifest.actual_head and not retained_candidate):
             raise PRRepairWorkspaceError("retained result lineage is unavailable or changed")
-        if self._merge_head(workspace) != manifest.merge_head:
+        if not retained_candidate and self._merge_head(workspace) != manifest.merge_head:
             raise PRRepairWorkspaceError("retained merge lineage changed")
         if tuple(sorted(self._files(workspace).items())) != manifest.workspace_files:
             raise PRRepairWorkspaceError("retained result files were altered")

@@ -53,6 +53,25 @@ def test_issue_offer_is_durable_idempotent_and_attempt_bound(tmp_path: Path) -> 
     assert second.job_id != accepted.job_id
 
 
+def test_effect_intent_claim_is_insert_only_and_strictly_readable(tmp_path: Path) -> None:
+    store, guard, identity, _, offer = _issue_offer(tmp_path)
+    assert store.offer_issue(offer, identity, guard) is not None
+    claim = store.claim(offer.job_id)
+    assert claim is not None and claim.acquired
+    artifact = store.persist_result_artifact(claim, InvocationOutcome.COMPLETED, "result")
+    assert artifact is not None
+    assert store.record_result(claim, InvocationOutcome.COMPLETED, artifact.artifact_id)
+
+    first = store.claim_effect_intent_if_absent(claim, "push", "candidate-one")
+    retained = store.claim_effect_intent_if_absent(claim, "push", "candidate-two")
+
+    assert first.inserted is True
+    assert retained.inserted is False
+    assert retained.effect == first.effect
+    assert store.get_effect_strict(claim.record.job_id, claim.record.execution_incarnation, "push") == first.effect
+    assert store.get_effect_strict(claim.record.job_id, claim.record.execution_incarnation, "missing") is None
+
+
 def test_issue_job_evidence_reads_exact_target_without_mutating_jobs(tmp_path: Path) -> None:
     store, guard, identity, _, offer = _issue_offer(tmp_path)
     accepted = store.offer_issue(offer, identity, guard)

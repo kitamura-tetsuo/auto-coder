@@ -233,6 +233,14 @@ class LocalJobEffect:
 
 
 @dataclass(frozen=True)
+class EffectIntentClaim:
+    """Result of an atomic first-effect-intent claim."""
+
+    effect: LocalJobEffect
+    inserted: bool
+
+
+@dataclass(frozen=True)
 class LocalIssueJobEvidence:
     """Read-only diagnostic projection of one attributable Issue job."""
 
@@ -1246,6 +1254,60 @@ class LocalJobStore:
             return LocalJobEffect(str(row["job_id"]), str(row["execution_incarnation"]), str(row["name"]), str(row["state"]), str(row["evidence"])) if row is not None else None
         except (OSError, sqlite3.Error):
             return None
+
+    def get_effect_strict(self, job_id: str, execution_incarnation: str, name: str) -> Optional[LocalJobEffect]:
+        """Read an effect while distinguishing confirmed absence from failure."""
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT job_id, execution_incarnation, name, state, evidence FROM local_job_effects " "WHERE job_id=? AND execution_incarnation=? AND name=?",
+                    (job_id, execution_incarnation, name),
+                ).fetchone()
+            return LocalJobEffect(str(row["job_id"]), str(row["execution_incarnation"]), str(row["name"]), str(row["state"]), str(row["evidence"])) if row is not None else None
+        except (OSError, sqlite3.Error) as exc:
+            raise RuntimeError("local job effect lookup failed") from exc
+
+    def claim_effect_intent_if_absent(self, claim: LocalJobClaim, name: str, evidence: str) -> EffectIntentClaim:
+        """Atomically fence the first authorization for an external effect.
+
+        Existing evidence is returned unchanged.  In particular, pending and
+        indeterminate attempts are never refreshed into permission to resend.
+        """
+        if not claim.acquired or not name:
+            raise RuntimeError("invalid effect intent claim")
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                current = connection.execute(
+                    "SELECT 1 FROM local_jobs WHERE job_id=? AND execution_incarnation=? AND state IN (?, ?)",
+                    (claim.record.job_id, claim.record.execution_incarnation, LocalJobState.RESULT_RECORDED.value, LocalJobState.DOWNSTREAM_EFFECTS_PENDING.value),
+                ).fetchone()
+                if current is None:
+                    connection.rollback()
+                    raise RuntimeError("job execution no longer owns downstream effects")
+                row = connection.execute(
+                    "SELECT job_id, execution_incarnation, name, state, evidence FROM local_job_effects WHERE job_id=? AND execution_incarnation=? AND name=?",
+                    (claim.record.job_id, claim.record.execution_incarnation, name),
+                ).fetchone()
+                inserted = row is None
+                if inserted:
+                    connection.execute(
+                        "INSERT INTO local_job_effects VALUES (?, ?, ?, ?, ?, ?)",
+                        (claim.record.job_id, claim.record.execution_incarnation, name, "pending", evidence, time.time()),
+                    )
+                    row = connection.execute(
+                        "SELECT job_id, execution_incarnation, name, state, evidence FROM local_job_effects WHERE job_id=? AND execution_incarnation=? AND name=?",
+                        (claim.record.job_id, claim.record.execution_incarnation, name),
+                    ).fetchone()
+                connection.commit()
+            if row is None:
+                raise RuntimeError("effect intent was not retained")
+            return EffectIntentClaim(
+                LocalJobEffect(str(row["job_id"]), str(row["execution_incarnation"]), str(row["name"]), str(row["state"]), str(row["evidence"])),
+                inserted,
+            )
+        except (OSError, sqlite3.Error) as exc:
+            raise RuntimeError("local job effect intent claim failed") from exc
 
     def settle(self, claim: LocalJobClaim, diagnostic: str = "") -> bool:
         return self._transition(

@@ -150,7 +150,13 @@ def _is_isort_error(error_output: str) -> bool:
     return "isort" in s and ("would reorder" in s or "imports are in the wrong order" in s or "unbalanced tuple" in s or "wrong order" in s or "linted wrong file" in s)
 
 
-def git_commit_with_retry(commit_message: str, cwd: Optional[str] = None, max_retries: int = 1) -> CommandResult:
+def git_commit_with_retry(
+    commit_message: str,
+    cwd: Optional[str] = None,
+    max_retries: int = 1,
+    *,
+    allow_repair: bool = True,
+) -> CommandResult:
     """
     Commit changes with automatic handling of formatter hook failures.
 
@@ -168,6 +174,13 @@ def git_commit_with_retry(commit_message: str, cwd: Optional[str] = None, max_re
         CommandResult with the result of the commit operation
     """
     cmd = CommandExecutor()
+
+    # Publication of an already authenticated artifact must never become a
+    # second editing turn.  Hooks are deliberately still run by ``git commit``;
+    # their failure is returned verbatim and no formatter, re-stage, or model
+    # fallback is entered.
+    if not allow_repair:
+        return cmd.run_command(["git", "commit", "-m", commit_message], cwd=cwd)
 
     for attempt in range(max_retries + 1):
         result = cmd.run_command(["git", "commit", "-m", commit_message], cwd=cwd)

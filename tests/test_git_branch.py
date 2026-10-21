@@ -38,6 +38,23 @@ class TestGitCommitWithRetry:
             call_args = mock_cmd.run_command.call_args
             assert call_args[0][0] == ["git", "commit", "-m", "Test commit message"]
 
+    def test_strict_commit_never_enters_formatter_or_model_repair(self):
+        """Authenticated publication returns the first hook failure unchanged."""
+        failure = CommandResult(success=False, stdout="", stderr="Formatting issues detected", returncode=1)
+        with (
+            patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor,
+            patch("src.auto_coder.git_branch.try_llm_commit_push") as model,
+            patch("src.auto_coder.git_branch.try_llm_dprint_fallback") as formatter_model,
+        ):
+            mock_executor.return_value.run_command.return_value = failure
+
+            result = git_commit_with_retry("verified repair", max_retries=9, allow_repair=False)
+
+        assert result is failure
+        mock_executor.return_value.run_command.assert_called_once_with(["git", "commit", "-m", "verified repair"], cwd=None)
+        model.assert_not_called()
+        formatter_model.assert_not_called()
+
     def test_commit_with_dprint_error_and_retry(self):
         """Test commit with dprint formatting error triggers retry."""
         with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
