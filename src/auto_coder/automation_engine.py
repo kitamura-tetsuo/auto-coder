@@ -2910,7 +2910,6 @@ class AutomationEngine:
         # Issue/PR admission. This recovery-only entry never claims PENDING
         # work or enters an editing provider.
         await asyncio.to_thread(local_job_runner.recover_unsettled)
-        await asyncio.to_thread(repair_finalizer.resume_all, repo_name)
         await asyncio.to_thread(
             rediscover_pr_repair_finalizations,
             repo_name,

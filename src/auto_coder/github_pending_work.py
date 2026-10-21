@@ -1138,6 +1138,13 @@ class PendingWorkScheduler:
                 self._wake_event.clear()
                 if shutdown_event.is_set():
                     return
+                # A failed outcome-store write can leave a durable RUNNING row
+                # after its in-memory dispatch has exited. Re-scan interrupted
+                # claims on every controller turn so repaired storage can
+                # resume the same identity without requiring a daemon restart.
+                # _claim_and_run's in-flight guard excludes genuinely active
+                # dispatches from this recovery path.
+                await self._recover_interrupted()
                 await self._dispatch_due()
         finally:
             # Cancelling here (rather than letting them run loose) keeps a

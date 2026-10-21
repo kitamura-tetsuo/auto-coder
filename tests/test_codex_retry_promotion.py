@@ -590,6 +590,10 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
     monkeypatch.setattr("auto_coder.local_ci_repair_job.LocalCIRepairJobAdapter.invoke", provider_reentry_forbidden)
     monkeypatch.setattr("auto_coder.local_conflict_repair_job.LocalConflictRepairJobAdapter.invoke", provider_reentry_forbidden)
     monkeypatch.setattr(
+        "auto_coder.pr_repair_finalizer.PRRepairJobFinalizer.resume_all",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("startup must not bypass retained publication backpressure")),
+    )
+    monkeypatch.setattr(
         "auto_coder.local_job_runner.runner_owner_alive",
         lambda owner: True if owner == "live-owner" else None if owner == "unknown-owner" else False,
     )

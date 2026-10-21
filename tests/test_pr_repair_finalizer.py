@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from auto_coder.github_pending_work import PendingWorkScheduler, PendingWorkStore
+from auto_coder.github_pending_work import PendingReason, PendingWorkPersistenceError, PendingWorkScheduler, PendingWorkStore
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore, PRRepairAdmission
 from auto_coder.local_job_runner import LocalJobRunner
 from auto_coder.local_pr_repair_recovery import (
     LOCAL_PR_REPAIR_FINALIZATION_EFFECT,
+    LOCAL_PR_REPAIR_FINALIZATION_STAGE,
     LocalPRRepairFinalizationHandler,
     rediscover_pr_repair_finalizations,
 )
@@ -314,7 +316,7 @@ def test_restart_reconciles_accepted_push_before_lost_receipt(tmp_path: Path, _u
     model.assert_not_called()
 
 
-def test_same_finalization_controller_retries_after_observation_recovers(tmp_path: Path, _use_real_commands) -> None:
+def test_same_finalization_controller_retries_after_outcome_store_and_observation_recover(tmp_path: Path, _use_real_commands, monkeypatch) -> None:
     source, remote, head, base = repository(tmp_path)
     jobs, claim, prepared, _artifact = completed_job(tmp_path, source, head, base, target=19)
     pending = PendingWorkStore(tmp_path / "pending.sqlite3")
@@ -332,29 +334,83 @@ def test_same_finalization_controller_retries_after_observation_recovers(tmp_pat
     wakes: list[str] = []
     finalizer = PRRepairJobFinalizer(jobs, temporarily_failing_observer, lambda _repository, _number, candidate: not wakes.append(candidate))
     handler = LocalPRRepairFinalizationHandler("owner/repo", jobs, finalizer)
-    scheduler = PendingWorkScheduler(pending, repository="owner/repo")
+    scheduler = PendingWorkScheduler(pending, repository="owner/repo", poll_interval=0.01)
+    scheduler.register_handler(LOCAL_PR_REPAIR_FINALIZATION_STAGE, handler)
     retained = pending.get(identity)
     assert retained is not None
+    original_mark_waiting = PendingWorkStore.mark_waiting
+    failed_writes = 0
 
-    failed = handler.dispatch(retained)
-    scheduler._apply_outcome(identity, failed)
-    rediscover_pr_repair_finalizations("owner/repo", jobs, pending)
-    after_rediscovery = pending.get(identity)
-    assert failed.completed_effects == ()
-    assert after_rediscovery == retained
-    assert jobs.get(claim.record.job_id).state is LocalJobState.RESULT_RECORDED
+    def fail_first_outcome_write(store: PendingWorkStore, work_identity):  # type: ignore[no-untyped-def]
+        nonlocal failed_writes, observation_available
+        if work_identity == identity and failed_writes == 0:
+            failed_writes += 1
+            observation_available = True
+            raise PendingWorkPersistenceError("temporary outcome write failure")
+        return original_mark_waiting(store, work_identity)
 
-    observation_available = True
-    recovered = handler.dispatch(after_rediscovery)
-    scheduler._apply_outcome(identity, recovered)
+    monkeypatch.setattr(PendingWorkStore, "mark_waiting", fail_first_outcome_write)
 
-    assert recovered.completed_effects == (LOCAL_PR_REPAIR_FINALIZATION_EFFECT,)
+    async def run_same_controller() -> None:
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(scheduler.run(shutdown))
+        for _ in range(500):
+            current = jobs.get(claim.record.job_id)
+            if current is not None and current.state is LocalJobState.SETTLED and pending.get(identity) is None:
+                break
+            await asyncio.sleep(0.01)
+        shutdown.set()
+        await task
+
+    asyncio.run(run_same_controller())
+
+    assert failed_writes == 1
     assert pending.get(identity) is None
     settled = jobs.get(claim.record.job_id)
     assert settled is not None and settled.state is LocalJobState.SETTLED
     assert settled.execution_incarnation == claim.record.execution_incarnation
     assert git(remote, "rev-parse", "refs/heads/feature") == git(prepared.workspace, "rev-parse", "HEAD")
     assert observation_calls >= 3
+    assert len(wakes) == 1
+
+
+def test_operationally_blocked_finalization_waits_for_explicit_retry(tmp_path: Path, _use_real_commands) -> None:
+    source, remote, head, base = repository(tmp_path)
+    jobs, claim, _prepared, _artifact = completed_job(tmp_path, source, head, base, target=20)
+    pending = PendingWorkStore(tmp_path / "pending.sqlite3")
+    identity = rediscover_pr_repair_finalizations("owner/repo", jobs, pending)[0]
+    pending.block(identity, PendingReason.AUTHENTICATION, "operator credentials required")
+    wakes: list[str] = []
+    handler = LocalPRRepairFinalizationHandler(
+        "owner/repo",
+        jobs,
+        PRRepairJobFinalizer(jobs, observer(remote, base), lambda _repository, _number, candidate: not wakes.append(candidate)),
+    )
+    scheduler = PendingWorkScheduler(pending, repository="owner/repo", poll_interval=0.01)
+    scheduler.register_handler(LOCAL_PR_REPAIR_FINALIZATION_STAGE, handler)
+
+    async def run_controller() -> None:
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(scheduler.run(shutdown))
+        await asyncio.sleep(0.05)
+        assert git(remote, "rev-parse", "refs/heads/feature") == head
+        assert jobs.get(claim.record.job_id).state is LocalJobState.RESULT_RECORDED
+        blocked = pending.get(identity)
+        assert blocked is not None and blocked.reason is PendingReason.AUTHENTICATION
+        assert scheduler.manual_retry(identity) is not None
+        for _ in range(500):
+            current = jobs.get(claim.record.job_id)
+            if current is not None and current.state is LocalJobState.SETTLED and pending.get(identity) is None:
+                break
+            await asyncio.sleep(0.01)
+        shutdown.set()
+        await task
+
+    asyncio.run(run_controller())
+
+    settled = jobs.get(claim.record.job_id)
+    assert settled is not None and settled.state is LocalJobState.SETTLED
+    assert settled.execution_incarnation == claim.record.execution_incarnation
     assert len(wakes) == 1
 
 

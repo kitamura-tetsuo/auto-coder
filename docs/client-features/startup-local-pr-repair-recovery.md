@@ -7,6 +7,14 @@ the runner performs recovery-only checkpoint reconciliation and the exact-head
 publisher observes retained CI/conflict results. Provider polling starts only
 after the startup reconciliation barrier.
 
+Startup only rediscovers publication obligations; it does not invoke the
+finalizer directly. Retained retry deadlines and operational blocks therefore
+remain authoritative across restart, and publication begins only when the
+pending-work scheduler declares the exact obligation eligible. If persisting a
+handler outcome temporarily fails after a dispatch, the running scheduler
+rechecks interrupted claims on later controller turns and resumes that same
+identity after storage recovers, without requiring another daemon restart.
+
 Unfinished CI/conflict publication is represented by a stable pending-work
 identity containing the local job and execution incarnation. Repeated runner
 notifications and restart scans only ensure that identity exists: they do not
