@@ -582,7 +582,15 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
         assert all(effect is not None and effect.state == "completed" for effect in publication)
         assert reopened.get(foreign_job).state is LocalJobState.RESULT_RECORDED
         assert engine.pending_work_scheduler is not None
-        assert len(engine.pending_work_scheduler._handlers) == 6
+        assert set(engine.pending_work_scheduler._handlers) == {
+            "startup-reconciliation",
+            "pr-processing",
+            "issue-processing",
+            "codex-retry-handoff",
+            "validation-publication",
+            "decomposition-validation-publication",
+            "local-pr-repair-finalization",
+        }
         assert scheduled_identities == [(authority.request_id, 2223)]
 
         # Repeating the same recovery turn retains one durable identity rather
@@ -595,7 +603,7 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
         assert len(set(scheduled_identities)) == 1
         if matching:
             assert matching[0].unfinished_effects == (CODEX_RETRY_HANDOFF_EFFECT,)
-        assert len(engine.pending_work_scheduler._handlers) == 6
+        assert len(engine.pending_work_scheduler._handlers) == 7
 
         release_checkpoint.set()
         await asyncio.wait_for(producer_entered.wait(), 5)
