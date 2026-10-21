@@ -128,6 +128,7 @@ class Harness:
     def offer_from_production_selection(self) -> str:
         authority = CIRepairAuthority(True, "current exact-head CI failure", self.head, snapshot(self.head))
         with (
+            pr_processor.local_pr_repair_context(pr_processor.LocalPRRepairContext(self.store, "execution-17")),
             patch.object(pr_processor, "_selected_local_backend_name", return_value="codex"),
             patch.object(pr_processor, "check_pr_repair_exhaustion", return_value=None),
         ):
@@ -140,7 +141,7 @@ class Harness:
                 store=self.store,
                 repair_store=LocalReviewRepairStore(self.root / "reviews.sqlite3"),
             )
-        assert result is not None and result.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN
+        assert result is not None and result.disposition is RepairDisposition.DEFERRED
         return result.receipt
 
     def offer_from_pr_handler(self) -> str:
@@ -151,6 +152,7 @@ class Harness:
         authority = CIRepairAuthority(True, "current exact-head CI failure", self.head, snapshot(self.head))
         self.github.get_pr_review_threads_strict.return_value = []
         with (
+            pr_processor.local_pr_repair_context(pr_processor.LocalPRRepairContext(self.store, "execution-17")),
             patch.object(pr_processor, "current_ci_failure_authority", return_value=nullcontext(authority)),
             patch.object(pr_processor, "check_github_actions_and_exit_if_in_progress", return_value=True),
             patch.object(pr_processor, "_get_mergeable_state", return_value={"mergeable": True}),

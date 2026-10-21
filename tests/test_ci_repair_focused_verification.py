@@ -342,6 +342,7 @@ def test_handle_pr_merge_origin_reaches_every_target_and_initial_correction(harn
 
     jobs = LocalJobStore(h.repo.parent / "local-jobs.sqlite3")
     with (
+        pr_processor.local_pr_repair_context(pr_processor.LocalPRRepairContext(jobs, "execution-7")),
         patch.object(pr_processor.cmd, "run_command", run_command),
         patch.object(pr_processor, "current_ci_failure_authority", return_value=nullcontext(authority)),
         patch.object(pr_processor, "check_github_actions_and_exit_if_in_progress", return_value=True),

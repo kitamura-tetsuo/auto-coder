@@ -83,6 +83,7 @@ def test_definitive_local_conflict_selection_durably_hands_off_before_execution(
     route = pr_processor.MergeRouteDisposition()
     merge_attempt = MagicMock()
     with (
+        pr_processor.local_pr_repair_context(pr_processor.LocalPRRepairContext(jobs, "execution-2504")),
         patch.object(pr_processor, "_is_jules_pr", return_value=False),
         patch.object(pr_processor, "_is_dependabot_pr", return_value=False),
         patch.object(pr_processor, "_dispatch_cloud_conflict_repair", return_value=PRRepairResult(RepairDisposition.REFUSED)),
