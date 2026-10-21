@@ -3695,6 +3695,27 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
                 log_action(error_msg, False)
                 return actions
 
+            # A complete authoritative H/B snapshot can be handed directly to
+            # the durable local conflict runner.  Do this before any checkout
+            # so normal mergeability remediation cannot mutate the controller
+            # repository while preparing an admitted local repair.
+            head = pr_details.get("head") or {}
+            base = pr_details.get("base") or {}
+            durable_snapshot = bool(head.get("sha") and head.get("ref") and (head.get("repo") or {}).get("full_name") and base.get("sha") and base.get("ref") and (base.get("repo") or {}).get("full_name"))
+            selected_local = not (_is_codex_or_claude_pr(pr_details) or _is_jules_pr(pr_details) or _is_dependabot_pr(pr_details))
+            if durable_snapshot and selected_local:
+                admission = _offer_selected_local_pr_repair(
+                    repo_name,
+                    {**pr_details, "number": pr_number},
+                    RepairKind.MERGE_CONFLICT,
+                    GitHubClient.get_instance(),
+                    conflict_eligible=True,
+                )
+                if admission is not None:
+                    actions.repair_result = admission
+                    actions.append(admission.reason)
+                    return actions
+
         except Exception as e:
             error_msg = f"Failed to get PR #{pr_number} details via GhApi: {e}"
             actions.append(error_msg)

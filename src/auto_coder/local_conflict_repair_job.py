@@ -16,6 +16,7 @@ from .prompt_loader import render_prompt
 
 MetadataReader = Callable[[str, int], dict[str, Any]]
 RouteAuthority = Callable[[LocalJobRecord, dict[str, Any]], bool]
+RemediationAuthority = Callable[[LocalJobRecord, dict[str, Any]], bool]
 ConflictEditor = Callable[[str, Path], str]
 EditorFactory = Callable[[str, LocalJobRecord], ConflictEditor]
 
@@ -48,6 +49,7 @@ class LocalConflictRepairJobAdapter:
         source: PRRepairSource,
         metadata_reader: MetadataReader,
         route_authority: RouteAuthority,
+        remediation_authority: RemediationAuthority,
         editor_factory: EditorFactory,
         *,
         workspace_producer: PRRepairWorkspaceProducer | None = None,
@@ -56,6 +58,7 @@ class LocalConflictRepairJobAdapter:
         self._source = source
         self._metadata_reader = metadata_reader
         self._route_authority = route_authority
+        self._remediation_authority = remediation_authority
         self._editor_factory = editor_factory
         self._workspaces = workspace_producer or PRRepairWorkspaceProducer(store)
 
@@ -75,7 +78,7 @@ class LocalConflictRepairJobAdapter:
                 and str(base.get("sha") or base.get("identity") or "") == authority.base_identity
             )
             live = str(metadata.get("state") or "").lower() == "open" and not bool(metadata.get("merged") or metadata.get("merged_at"))
-            return live and exact and self._route_authority(job, metadata), metadata
+            return live and exact and self._route_authority(job, metadata) and self._remediation_authority(job, metadata), metadata
         except Exception:
             return False, {}
 

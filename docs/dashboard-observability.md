@@ -138,6 +138,10 @@ split event is visible in the mounted detail view while the execution remains
 blocked for unresolved defects; splitting alone never renders a merge success.
 
 Local conflict repair retains the existing remediation stage and schema.
+Normal local conflict remediation now stops at durable admission before any
+controller checkout, while execution-time authority revocation remains visible
+through the existing deferred local-job and remediation events; no event schema
+or dashboard view changes are required.
 Typed CI/conflict repair dispatch is observability-neutral: it wraps the same
 production effect owners and preserves the existing `pr.repair-delegation` and
 `pr.mergeability-remediation` stages, outcomes, and detail keys. No processing

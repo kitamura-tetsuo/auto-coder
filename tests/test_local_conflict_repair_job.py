@@ -10,13 +10,15 @@ from unittest.mock import Mock, patch
 import pytest
 
 from auto_coder.automation_config import AutomationConfig
+from auto_coder.codex_pr_attribution import AttributionDisposition
 from auto_coder.conflict_resolver import inspect_conflicts
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.local_conflict_repair_job import LocalConflictRepairJobAdapter
 from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore, PRRepairAdmission
-from auto_coder.local_job_runner import LocalJobRunner
+from auto_coder.local_job_runner import LocalJobProviderEntryRefused, LocalJobRunner
 from auto_coder.local_review_repair import LocalReviewRepairStore
 from auto_coder.pr_local_job_runtime import build_pr_local_job_adapters
+from auto_coder.pr_processor import _start_mergeability_remediation
 from auto_coder.pr_repair_dispatch import RepairDisposition, RepairKind
 from auto_coder.pr_repair_workspace import PRRepairSource, PRRepairWorkspaceProducer
 
@@ -86,6 +88,7 @@ def adapter(tmp_path: Path, root: Path, head: str, base: str, editor):  # type: 
         store,
         PRRepairSource(root),
         lambda _repo, _number: metadata,
+        lambda _job, _metadata: True,
         lambda _job, _metadata: True,
         lambda _backend, _job: editor,
         workspace_producer=PRRepairWorkspaceProducer(store, tmp_path / "workspaces"),
@@ -244,11 +247,12 @@ def wait_until(predicate, timeout: float = 5) -> None:  # type: ignore[no-untype
         time.sleep(0.01)
 
 
-def test_selected_local_origin_runs_through_runner_and_persists_exact_manifest(tmp_path: Path, _use_real_commands) -> None:
+def test_selected_local_origin_runs_through_runner_and_persists_exact_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     """The production selection seam must connect admission to durable execution."""
     from auto_coder import pr_processor
 
     root, head, base = history(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
     review_store = LocalReviewRepairStore(tmp_path / "reviews.sqlite3")
     metadata = {
@@ -288,23 +292,31 @@ def test_selected_local_origin_runs_through_runner_and_persists_exact_manifest(t
     assert admitted is not None and admitted.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN
     job = store.get(admitted.receipt)
     assert job is not None and job.state is LocalJobState.PENDING
-    adapters = build_pr_local_job_adapters(
-        github,
-        AutomationConfig(),
-        store,
-        repository_path=root,
-        conflict_editor_factory=lambda _backend, _job: edit,
-        conflict_workspace_producer=PRRepairWorkspaceProducer(store, tmp_path / "workspaces"),
-    )
-    runner = LocalJobRunner(
-        store,
-        InvocationAdmissionGate(),
-        repository="owner/repo",
-        capacity=1,
-        adapters=adapters,
-    )
-    assert runner.poll() == 1
-    wait_until(lambda: runner.active_count() == 0)
+    with (
+        patch("auto_coder.pr_repair_guard.check_pr_repair_exhaustion", return_value=None),
+        patch("auto_coder.cloud_manager.CloudManager.read_bindings_strict", return_value={}),
+        patch(
+            "auto_coder.codex_pr_attribution.CodexPrAttributionRepository.get",
+            return_value=Mock(disposition=AttributionDisposition.UNRESOLVED),
+        ),
+    ):
+        adapters = build_pr_local_job_adapters(
+            github,
+            AutomationConfig(),
+            store,
+            repository_path=root,
+            conflict_editor_factory=lambda _backend, _job: edit,
+            conflict_workspace_producer=PRRepairWorkspaceProducer(store, tmp_path / "workspaces"),
+        )
+        runner = LocalJobRunner(
+            store,
+            InvocationAdmissionGate(),
+            repository="owner/repo",
+            capacity=1,
+            adapters=adapters,
+        )
+        assert runner.poll() == 1
+        wait_until(lambda: runner.active_count() == 0)
     completed = store.get(job.job_id)
     assert completed is not None and completed.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
     artifact = store.get_result_artifact(completed.result_reference)
@@ -318,6 +330,164 @@ def test_selected_local_origin_runs_through_runner_and_persists_exact_manifest(t
     assert git(root, "rev-parse", "HEAD").stdout.strip() == base
     assert git(root, "ls-remote", "origin", "refs/heads/feature").stdout.split()[0] == head
     runner.close()
+
+
+def test_normal_mergeability_remediation_admits_and_runs_in_private_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    """Normal conflict processing reaches durable admission before checkout."""
+    root, head_sha, base_sha = history(tmp_path)
+    peer_head = git(root, "rev-parse", "HEAD").stdout.strip()
+    peer_contents = (root / "shared.txt").read_text()
+    remote_head = git(root, "rev-parse", "origin/feature").stdout.strip()
+    metadata = {
+        "number": 7,
+        "state": "open",
+        "merged": False,
+        "title": "Conflict",
+        "body": "",
+        "user": {"login": "human"},
+        "head": {"repo": {"full_name": "owner/repo"}, "ref": "feature", "sha": head_sha},
+        "base": {"repo": {"full_name": "owner/repo"}, "ref": "main", "sha": base_sha},
+    }
+    github = Mock(token="token")
+    github.get_pull_request_metadata_strict.return_value = metadata
+    api = Mock()
+    api.pulls.get.return_value = metadata
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(root)
+
+    def edit(_prompt: str, workspace: Path) -> str:
+        (workspace / "shared.txt").write_text("resolved\n")
+        return "ACTION_SUMMARY: resolved conflict"
+
+    with (
+        patch("auto_coder.pr_processor.GitHubClient.get_instance", return_value=github),
+        patch("auto_coder.pr_processor.get_ghapi_client", return_value=api),
+        patch("auto_coder.pr_processor._selected_local_backend_name", return_value="codex"),
+        patch("auto_coder.pr_processor.check_pr_repair_exhaustion", return_value=None),
+        patch("auto_coder.pr_processor._checkout_pr_branch") as checkout,
+    ):
+        actions = _start_mergeability_remediation(7, "DIRTY", "owner/repo")
+
+    assert actions.repair_result is not None
+    assert actions.repair_result.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN
+    checkout.assert_not_called()
+    store = LocalJobStore()
+    job = store.get(actions.repair_result.receipt)
+    assert job is not None and job.state is LocalJobState.PENDING
+    with patch("auto_coder.pr_repair_guard.check_pr_repair_exhaustion", return_value=None):
+        adapters = build_pr_local_job_adapters(
+            github,
+            AutomationConfig(),
+            store,
+            repository_path=root,
+            conflict_editor_factory=lambda _backend, _job: edit,
+            conflict_workspace_producer=PRRepairWorkspaceProducer(store, tmp_path / "workspaces"),
+        )
+        runner = LocalJobRunner(store, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters=adapters)
+        assert runner.poll() == 1
+        wait_until(lambda: runner.active_count() == 0)
+    completed = store.get(job.job_id)
+    assert completed is not None and completed.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+    assert git(root, "rev-parse", "HEAD").stdout.strip() == peer_head
+    assert (root / "shared.txt").read_text() == peer_contents
+    assert git(root, "rev-parse", "origin/feature").stdout.strip() == remote_head
+
+
+@pytest.mark.parametrize("authority", ["disabled", "exhausted", "unavailable", "cloud", "codex"])
+def test_production_adapter_refreshes_revocable_authority_before_preparation(tmp_path: Path, _use_real_commands, authority: str) -> None:
+    root, head_sha, base_sha = history(tmp_path)
+    store, claim, metadata, _instance = adapter(tmp_path, root, head_sha, base_sha, lambda _prompt, _root: "ACTION_SUMMARY: unexpected")
+    github = Mock()
+    github.get_pull_request_metadata_strict.return_value = metadata
+    config = Mock(ENABLE_MERGEABILITY_REMEDIATION=authority != "disabled")
+    allowance = patch("auto_coder.pr_repair_guard.check_pr_repair_exhaustion", return_value=Mock(is_exhausted=True) if authority == "exhausted" else None)
+    if authority == "unavailable":
+        allowance = patch("auto_coder.pr_repair_guard.check_pr_repair_exhaustion", side_effect=OSError("unreadable"))
+    with (
+        allowance,
+        patch("auto_coder.cloud_manager.CloudManager.read_bindings_strict", return_value={"7": Mock()} if authority == "cloud" else {}),
+        patch(
+            "auto_coder.codex_pr_attribution.CodexPrAttributionRepository.get",
+            return_value=Mock(disposition=AttributionDisposition.VERIFIED if authority == "codex" else AttributionDisposition.UNRESOLVED),
+        ),
+    ):
+        production = build_pr_local_job_adapters(github, config, store, repository_path=root)[LocalJobKind.PR_MERGE_CONFLICT]
+        assert production.authorize_provider_entry(claim.record) is False
+
+
+def test_production_adapter_rechecks_cloud_binding_at_final_entry(tmp_path: Path, _use_real_commands) -> None:
+    root, head_sha, base_sha = history(tmp_path)
+    editor_calls = 0
+
+    def edit(_prompt: str, _root: Path) -> str:
+        nonlocal editor_calls
+        editor_calls += 1
+        return "ACTION_SUMMARY: unexpected"
+
+    store, claim, metadata, _instance = adapter(tmp_path, root, head_sha, base_sha, edit)
+    github = Mock()
+    github.get_pull_request_metadata_strict.return_value = metadata
+    with (
+        patch("auto_coder.pr_repair_guard.check_pr_repair_exhaustion", return_value=None),
+        patch("auto_coder.cloud_manager.CloudManager.read_bindings_strict", side_effect=({}, {"7": Mock()})),
+        patch(
+            "auto_coder.codex_pr_attribution.CodexPrAttributionRepository.get",
+            return_value=Mock(disposition=AttributionDisposition.UNRESOLVED),
+        ),
+    ):
+        production = build_pr_local_job_adapters(
+            github,
+            Mock(ENABLE_MERGEABILITY_REMEDIATION=True),
+            store,
+            repository_path=root,
+            conflict_editor_factory=lambda _backend, _job: edit,
+            conflict_workspace_producer=PRRepairWorkspaceProducer(store, tmp_path / "production-workspaces"),
+        )[LocalJobKind.PR_MERGE_CONFLICT]
+        assert production.authorize_provider_entry(claim.record) is True
+        with pytest.raises(LocalJobProviderEntryRefused):
+            production.invoke_at_provider_entry(claim.record, lambda: True)
+    assert editor_calls == 0
+    assert store.get(claim.record.job_id).provider_entered is False
+
+
+@pytest.mark.parametrize("final_allowance", [Mock(is_exhausted=True), OSError("unreadable")])
+def test_production_adapter_rechecks_allowance_at_final_entry(tmp_path: Path, _use_real_commands, final_allowance: object) -> None:
+    root, head_sha, base_sha = history(tmp_path)
+    editor_calls = 0
+
+    def edit(_prompt: str, _root: Path) -> str:
+        nonlocal editor_calls
+        editor_calls += 1
+        return "ACTION_SUMMARY: unexpected"
+
+    store, claim, metadata, _instance = adapter(tmp_path, root, head_sha, base_sha, edit)
+    github = Mock()
+    github.get_pull_request_metadata_strict.return_value = metadata
+    allowance_effects: tuple[object, object]
+    if isinstance(final_allowance, BaseException):
+        allowance_effects = (None, final_allowance)
+    else:
+        allowance_effects = (None, final_allowance)
+    with (
+        patch("auto_coder.pr_repair_guard.check_pr_repair_exhaustion", side_effect=allowance_effects),
+        patch("auto_coder.cloud_manager.CloudManager.read_bindings_strict", return_value={}),
+        patch(
+            "auto_coder.codex_pr_attribution.CodexPrAttributionRepository.get",
+            return_value=Mock(disposition=AttributionDisposition.UNRESOLVED),
+        ),
+    ):
+        production = build_pr_local_job_adapters(
+            github,
+            Mock(ENABLE_MERGEABILITY_REMEDIATION=True),
+            store,
+            repository_path=root,
+            conflict_editor_factory=lambda _backend, _job: edit,
+            conflict_workspace_producer=PRRepairWorkspaceProducer(store, tmp_path / "production-workspaces"),
+        )[LocalJobKind.PR_MERGE_CONFLICT]
+        assert production.authorize_provider_entry(claim.record) is True
+        with pytest.raises(LocalJobProviderEntryRefused):
+            production.invoke_at_provider_entry(claim.record, lambda: True)
+    assert editor_calls == 0
 
 
 def test_runner_rechecks_advanced_base_at_held_provider_entry(tmp_path: Path, _use_real_commands) -> None:
@@ -421,6 +591,7 @@ def test_reopened_runner_never_replays_unconfirmed_entered_editor(tmp_path: Path
         PRRepairSource(root),
         lambda _repo, _number: metadata,
         lambda _job, _metadata: True,
+        lambda _job, _metadata: True,
         lambda _backend, _job: edit,
         workspace_producer=PRRepairWorkspaceProducer(store, tmp_path / "workspaces"),
     )
@@ -445,6 +616,7 @@ def test_reopened_runner_never_replays_unconfirmed_entered_editor(tmp_path: Path
         reopened,
         PRRepairSource(root),
         lambda _repo, _number: metadata,
+        lambda _job, _metadata: True,
         lambda _job, _metadata: True,
         lambda _backend, _job: edit,
         workspace_producer=PRRepairWorkspaceProducer(reopened, tmp_path / "workspaces"),
