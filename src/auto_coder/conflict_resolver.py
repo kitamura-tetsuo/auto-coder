@@ -3,9 +3,12 @@
 import json
 import os
 import re
+import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from auto_coder.backend_manager import run_llm_noedit_prompt, run_llm_prompt
@@ -37,6 +40,57 @@ class ConflictResolutionResult(list[str]):
     def __init__(self) -> None:
         super().__init__()
         self.disposition = ConflictPublicationDisposition.FAILED
+
+
+@dataclass(frozen=True)
+class ConflictInspection:
+    """Complete, root-scoped evidence that a merge snapshot is resolved."""
+
+    complete: bool
+    unmerged_paths: tuple[str, ...] = ()
+    marker_paths: tuple[str, ...] = ()
+    reason: str = ""
+
+
+def inspect_conflicts(root: Path) -> ConflictInspection:
+    """Inspect Git and changed files without relying on the process cwd.
+
+    Observation errors are deliberately distinct from a clean result.  This is
+    the strict variant used by durable jobs; the legacy presentation helper
+    below retains its existing interface.
+    """
+    try:
+        unmerged = subprocess.run(
+            ["git", "diff", "--name-only", "--diff-filter=U", "-z"],
+            cwd=root,
+            capture_output=True,
+            check=False,
+        )
+        changed = subprocess.run(
+            ["git", "diff", "HEAD", "--name-only", "-z"],
+            cwd=root,
+            capture_output=True,
+            check=False,
+        )
+        if unmerged.returncode or changed.returncode:
+            return ConflictInspection(False, reason="git conflict observation failed")
+        unresolved = tuple(sorted(item.decode("utf-8", "surrogateescape") for item in unmerged.stdout.split(b"\0") if item))
+        markers: list[str] = []
+        for encoded in (item for item in changed.stdout.split(b"\0") if item):
+            name = encoded.decode("utf-8", "surrogateescape")
+            path = root / name
+            try:
+                if path.is_file() and re.search(
+                    rb"^(?:<{7}(?: |$)|={7}$|>{7}(?: |$)|\|{7}(?: |$))",
+                    path.read_bytes(),
+                    re.MULTILINE,
+                ):
+                    markers.append(name)
+            except OSError as exc:
+                return ConflictInspection(False, unresolved, tuple(sorted(markers)), f"cannot inspect {name}: {exc}")
+        return ConflictInspection(True, unresolved, tuple(sorted(markers)))
+    except OSError as exc:
+        return ConflictInspection(False, reason=f"conflict observation unavailable: {exc}")
 
 
 def _push_updated_branch_with_retry(pr_number: int, commit_message: Optional[str] = None) -> List[str]:

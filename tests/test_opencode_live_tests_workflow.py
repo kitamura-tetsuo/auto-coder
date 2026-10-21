@@ -90,8 +90,8 @@ def test_ordinary_pr_tests_workflow_budgets_preserved():
     assert shard["strategy"] == {"fail-fast": False, "matrix": {"group": [1, 2, 3, 4]}}
 
     test_step = next(s for s in shard["steps"] if s["name"].startswith("Run tests with coverage"))
-    assert test_step["timeout-minutes"] == 12
-    assert "--attempt-timeout 360" in test_step["run"]
+    assert test_step["timeout-minutes"] == 18
+    assert "--attempt-timeout 480" in test_step["run"]
     assert "--termination-grace 10" in test_step["run"]
     assert "--max-attempts 2" in test_step["run"]
     assert "scripts/run_pr_test_shard.py" in test_step["run"]

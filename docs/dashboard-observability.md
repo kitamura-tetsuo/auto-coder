@@ -138,6 +138,10 @@ split event is visible in the mounted detail view while the execution remains
 blocked for unresolved defects; splitting alone never renders a merge success.
 
 Local conflict repair retains the existing remediation stage and schema.
+Normal local conflict remediation now stops at durable admission before any
+controller checkout, while execution-time authority revocation remains visible
+through the existing deferred local-job and remediation events; no event schema
+or dashboard view changes are required.
 Typed CI/conflict repair dispatch is observability-neutral: it wraps the same
 production effect owners and preserves the existing `pr.repair-delegation` and
 `pr.mergeability-remediation` stages, outcomes, and detail keys. No processing
@@ -2331,6 +2335,17 @@ schemas. Existing `llm.local-execution` completion remains required; allocating 
 state is not review clearance. Run `bash scripts/test.sh tests/test_opencode_noedit_live.py`
 with the pinned CLI to verify real no-edit startup and refusal of stale session roots.
 See [Invocation-local filesystem confinement](client-features/invocation-filesystem-confinement.md).
+
+# Durable local conflict-repair execution
+
+Issue #2558 changes the execution and recovery boundary behind an already
+accepted local merge-conflict job, but adds no dashboard event schema or new
+processing stage. The adapter's result remains a durable local-job artifact;
+external publication and the existing `pr.mergeability-remediation` outcome stay
+owned by downstream controller code. `tests/test_local_conflict_repair_job.py`
+exercises exact H/B merge evidence, editor-entry refusal after authority changes,
+and controller-produced clean completion without treating any of those states as
+an externally published repair.
 
 # Attempt-bound local job evidence
 

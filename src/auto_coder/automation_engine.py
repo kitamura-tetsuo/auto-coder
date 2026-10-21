@@ -2806,12 +2806,24 @@ class AutomationEngine:
             concurrency = self.config.MAX_CONCURRENT_TASKS
         self._loop = asyncio.get_running_loop()
 
-        from .pr_correction_job import PRCorrectionJobAdapter, build_captured_executor, resume_pr_correction_publication
+        from .pr_correction_job import resume_pr_correction_publication
+        from .pr_local_job_runtime import build_pr_local_job_adapters
 
         local_job_store = LocalJobStore()
 
         def wake_pr_validation(job: Any) -> None:
             assert self._loop is not None
+            if job.kind is LocalJobKind.PR_MERGE_CONFLICT:
+                # Conflict artifacts deliberately remain pending for the
+                # separately authorized exact-head publisher. Merely wake the
+                # PR controller; do not reinterpret or settle its evidence.
+                existing = local_job_store.get_effect(job.job_id, job.execution_incarnation, "pr-conflict-result-wake")
+                if existing is not None and existing.state == "completed":
+                    return
+                wake = asyncio.run_coroutine_threadsafe(self.invalidate_entity(job.repository, "pr", job.target_number), self._loop)
+                wake.result()
+                local_job_store.record_effect(LocalJobClaim(job, True), "pr-conflict-result-wake", "completed", "durable conflict result scheduled for controller revalidation")
+                return
             if job.kind is LocalJobKind.PR_CI_FAILURE:
                 wake = asyncio.run_coroutine_threadsafe(self.invalidate_entity(job.repository, "pr", job.target_number), self._loop)
                 wake.result()
@@ -9480,20 +9492,6 @@ class AutomationEngine:
 
 def build_pr_local_job_adapters(github: Any, config: AutomationConfig, store: LocalJobStore, repository_path: Path | None = None) -> dict[LocalJobKind, Any]:
     """Compose every production durable PR execution adapter."""
-    from .ci_repair_authority import current_ci_failure_authority
-    from .local_ci_repair_job import LocalCIRepairJobPorts, build_local_ci_repair_job_adapter
-    from .pr_correction_job import PRCorrectionJobAdapter, build_captured_executor
-    from .pr_processor import _is_local_llm_pr, build_durable_ci_correction
-    from .pr_repair_workspace import PRRepairSource
+    from .pr_local_job_runtime import build_pr_local_job_adapters as compose_adapters
 
-    ci_ports = LocalCIRepairJobPorts(
-        source=lambda _job: PRRepairSource(repository_path or Path.cwd()),
-        github_client=lambda _job: github,
-        authority=current_ci_failure_authority,
-        local_route=lambda _job, metadata: _is_local_llm_pr(metadata),
-        correction=lambda job, prepared: build_durable_ci_correction(job, prepared, github, config),
-    )
-    return {
-        LocalJobKind.PR_REVIEW_CORRECTION: PRCorrectionJobAdapter(github, build_captured_executor, store),
-        LocalJobKind.PR_CI_FAILURE: build_local_ci_repair_job_adapter(store, ci_ports),
-    }
+    return compose_adapters(github, config, store, repository_path=repository_path)
