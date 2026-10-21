@@ -235,6 +235,8 @@ def execute_correction(
     failed_tests: list[str] | None,
     ports: CorrectionPorts,
     extract_failed_tests: Callable[[str], list[str]],
+    *,
+    publish: bool = True,
 ) -> LocalCIRepairResult:
     """Compose correction, focused sweeps, follow-ups and publication."""
     actions: list[str] = []
@@ -305,6 +307,9 @@ def execute_correction(
 
         if not ports.automatic_fix_enabled() or not corrected:
             return LocalCIRepairResult(tuple(actions), attempt_started=attempt_started)
+        if not publish:
+            actions.append("Local CI correction captured for controller-owned publication; full validation remains pending GitHub CI")
+            return LocalCIRepairResult(tuple(actions), attempt_started=attempt_started)
         submission = ports.submit()
         actions.extend(submission.actions)
         return LocalCIRepairResult(
@@ -318,4 +323,15 @@ def execute_correction(
         raise
     except Exception as exc:
         actions.append(f"Error fixing PR issues with testing for PR #{request.pr_number}: {exc}")
-        return LocalCIRepairResult(tuple(actions), attempt_started=attempt_started)
+        return LocalCIRepairResult(tuple(actions), attempt_started=attempt_started, failure_reason=str(exc))
+
+
+def execute_correction_without_publication(
+    request: LocalCIRepairRequest,
+    diagnostics: str,
+    failed_tests: list[str] | None,
+    ports: CorrectionPorts,
+    extract_failed_tests: Callable[[str], list[str]],
+) -> LocalCIRepairResult:
+    """Run the established bounded correction loop without committing or pushing."""
+    return execute_correction(request, diagnostics, failed_tests, ports, extract_failed_tests, publish=False)

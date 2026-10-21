@@ -116,11 +116,18 @@ def classify_target_result(target: str, raw: Dict[str, Any]) -> TargetResult:
     return TargetResult(target, TargetStatus.FAILED, "", raw)
 
 
-def verify_targets(targets: Iterable[str], runner: Callable[..., Dict[str, Any]], config: Any) -> FocusedVerification:
+def verify_targets(
+    targets: Iterable[str],
+    runner: Callable[..., Dict[str, Any]],
+    config: Any,
+    *,
+    workspace_root: str | os.PathLike[str] | None = None,
+) -> FocusedVerification:
     """Run every distinct target through the explicit-file runner; never unscoped."""
     verification = FocusedVerification()
     for target in dedupe_targets(targets):
-        if not os.path.exists(target):
+        target_path = os.path.join(os.fspath(workspace_root), target) if workspace_root is not None else target
+        if not os.path.exists(target_path):
             verification.results.append(TargetResult(target, TargetStatus.UNVERIFIED, "target file not found in the working tree"))
             continue
         try:

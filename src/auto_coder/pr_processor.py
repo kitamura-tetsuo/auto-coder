@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import zipfile
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -1469,6 +1470,7 @@ def _offer_selected_local_pr_repair(
     explicit_local_checkout: bool = False,
     store: Any = None,
     repair_store: Any = None,
+    failed_checks: Sequence[object] = (),
 ) -> Optional[PRRepairResult]:
     """Stop a selected local route at its durable first-effect boundary."""
     from .local_pr_repair_job import LocalPRRepairOffer, local_pr_repair_evidence_identity, offer_local_pr_repair_job
@@ -1506,7 +1508,7 @@ def _offer_selected_local_pr_repair(
         upstream_attempt=operation_identity,
         upstream_incarnation=evidence_identity,
         source_evidence_identity=evidence_identity,
-        invocation_input=json.dumps({"failed_check_identities": failed}, sort_keys=True),
+        invocation_input=json.dumps({"failed_check_identities": failed, "failed_checks": list(failed_checks)}, sort_keys=True, default=str),
     )
 
     def owner_allowed(_request: LocalPRRepairOffer, final_metadata: Dict[str, Any]) -> bool:
@@ -6996,6 +6998,7 @@ def _handle_pr_merge(
                 github_client,
                 ci_authority=authority,
                 explicit_local_checkout=already_on_pr_branch,
+                failed_checks=tuple(failed_checks),
             ),
         )
         repair_result = _dispatch_local_ci_failure_repair(
@@ -10832,10 +10835,19 @@ def _fix_pr_issues_with_testing(
     return actions
 
 
-def _local_ci_correction_ports(repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig) -> CorrectionPorts:
+def _local_ci_correction_ports(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+    *,
+    captured_manager: object | None = None,
+    workspace_root: Path | None = None,
+) -> CorrectionPorts:
     pr_number = pr_data["number"]
 
     def get_current() -> Optional[BackendManager]:
+        if captured_manager is not None:
+            return captured_manager  # type: ignore[return-value]
         try:
             return get_llm_backend_manager()
         except Exception as exc:
@@ -10843,6 +10855,8 @@ def _local_ci_correction_ports(repo_name: str, pr_data: Dict[str, Any], config: 
             return None
 
     def get_high_score() -> Optional[BackendManager]:
+        if captured_manager is not None:
+            return captured_manager  # type: ignore[return-value]
         try:
             return create_high_score_backend_manager()
         except Exception as exc:
@@ -10854,7 +10868,18 @@ def _local_ci_correction_ports(repo_name: str, pr_data: Dict[str, Any], config: 
 
     def focused(targets: List[str]) -> FocusedVerification:
         with ProgressStage("Running focused local checks"):
-            return verify_targets(targets, run_local_tests, config)
+
+            def run_selected(selected_config: AutomationConfig, *, test_file: str) -> Dict[str, Any]:
+                if workspace_root is None:
+                    return run_local_tests(selected_config, test_file=test_file)
+                return run_local_tests(selected_config, test_file=test_file, workspace_root=workspace_root)
+
+            return verify_targets(
+                targets,
+                run_selected,
+                config,
+                workspace_root=workspace_root,
+            )
 
     def follow_up(raw: Dict[str, Any], history: List[Dict[str, object]], manager: object | None, started: Callable[[], None]) -> Tuple[Sequence[str], str]:
         return _apply_local_test_fix(repo_name, pr_data, config, raw, history, backend_manager=manager, on_invocation_started=started)  # type: ignore[arg-type]
@@ -10879,6 +10904,46 @@ def _local_ci_correction_ports(repo_name: str, pr_data: Dict[str, Any], config: 
         defer_verification=lambda: os.environ.get("AUTO_CODER_DEFER_LOCAL_TESTS") == "1",
         trace_initial=lambda: get_trace_logger().log("Fixing Issues", f"Fixing PR #{pr_number} using GHA logs", item_type="pr", item_number=pr_number),
     )
+
+
+def build_durable_ci_correction(job: Any, prepared: Any, github_client: Any, config: AutomationConfig) -> Any:
+    """Rebuild an admitted CI correction from its captured backend and request."""
+    from .cli_helpers import build_backend_manager
+    from .llm_backend_config import active_repo_context, get_llm_config
+    from .local_ci_repair_job import DurableCICorrection
+    from .utils import bind_command_execution_cwd, reset_command_execution_cwd
+
+    try:
+        payload = json.loads(job.invocation_input)
+        failed_checks = payload["failed_checks"]
+        if not isinstance(failed_checks, list) or not failed_checks:
+            return None
+        pr_data = github_client.get_pull_request_metadata_strict(job.repository, job.target_number)
+        with active_repo_context(job.repository):
+            backend_config = get_llm_config(repo_name=job.repository)
+            manager = build_backend_manager(
+                selected_backends=[job.backend_name],
+                primary_backend=job.backend_name,
+                models={job.backend_name: backend_config.get_model_for_backend(job.backend_name) or job.backend_name},
+                automatic_session_resume=False,
+            )
+        diagnostics = _get_github_actions_logs(job.repository, config, failed_checks, pr_data)
+        failed_tests = extract_all_failed_tests(diagnostics)
+    except Exception:
+        return None
+
+    @contextmanager
+    def execution_context():  # type: ignore[no-untyped-def]
+        with active_repo_context(job.repository):
+            token = bind_command_execution_cwd(str(prepared.workspace))
+            try:
+                yield
+            finally:
+                reset_command_execution_cwd(token)
+
+    request = LocalCIRepairRequest(job.repository, job.target_number, prepared.authority.head_sha, prepared.authority.head_ref, True, tuple(failed_checks), config, github_client)
+    ports = _local_ci_correction_ports(job.repository, pr_data, config, captured_manager=manager, workspace_root=prepared.workspace)
+    return DurableCICorrection(request, diagnostics, failed_tests, ports, extract_all_failed_tests, execution_context)
 
 
 def _submit_ci_repair_candidate(repo_name: str, pr_number: int) -> CIRepairSubmission:
