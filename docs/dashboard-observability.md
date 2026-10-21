@@ -2661,3 +2661,7 @@ publication, green CI, review clearance, or merge completion. Focused storage
 and production-boundary coverage is in `tests/test_local_pr_repair_job.py`,
 `tests/test_ci_repair_focused_verification.py`, and
 `tests/test_pr_repair_dispatch.py`.
+
+## Durable local PR CI/conflict handoff
+
+Ordinary local CI-failure and merge-conflict routing now returns a typed `DEFERRED` repair handoff after the exact-head job and implementation-execution binding are durable. Existing PR repair-delegation and base-update traces remain authoritative: admission is active-job evidence only, never publication, passing CI, approval, merge, or slot retirement. The independently polled repository runner and exact-head finalizer produce later execution and publication evidence, followed by a fresh PR evaluation.

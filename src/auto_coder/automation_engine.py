@@ -130,7 +130,7 @@ from .logger_config import get_logger
 from .merge_operation_scheduler import get_merge_operation_scheduler
 from .merge_operation_state import MergeOperation
 from .parent_issue_reconciliation import ParentDeclarationStatus, ParentOperationalError, ParentSpecificationError, parse_parent_declaration
-from .pr_processor import PR_PROCESSING_STAGE
+from .pr_processor import PR_PROCESSING_STAGE, LocalPRRepairContext
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
 from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
@@ -2809,7 +2809,7 @@ class AutomationEngine:
         from .pr_correction_job import resume_pr_correction_publication
         from .pr_local_job_runtime import build_pr_local_job_adapters, build_pr_repair_finalizer
 
-        local_job_store = LocalJobStore()
+        local_job_store = self._get_local_job_store()
 
         def wake_published_head(repository: str, number: int, _head_sha: str) -> bool:
             assert self._loop is not None
@@ -7628,6 +7628,19 @@ class AutomationEngine:
             from .issue_dispatch import DispatchOutcome
 
             local_job_owns_execution = candidate.type == "issue" and result.dispatch_result is not None and result.dispatch_result.outcome is DispatchOutcome.LOCAL_ACCEPTED
+            if candidate.type == "pr" and not inherited_execution:
+                try:
+                    retained = self._get_local_job_store().pr_repair_for_execution(repo_name, item_number, execution_id)
+                except RuntimeError as exc:
+                    retained = None
+                    local_job_owns_execution = True
+                    result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                    result.error = f"Cannot confirm local PR repair ownership transfer: {exc}"
+                if retained is not None:
+                    handoff = result.repair_result.local_handoff if result.repair_result is not None else None
+                    if handoff is not None and (handoff.job_id != retained.job_id or handoff.implementation_execution_id != execution_id):
+                        result.error = "Durable local PR repair handoff identity does not match its retained execution"
+                    local_job_owns_execution = True
             if not inherited_execution and not local_job_owns_execution:
                 slots.finish_execution(owner, execution_id)
                 if result.cloud_submission_not_started is True:
@@ -7897,6 +7910,10 @@ class AutomationEngine:
                         adversarial_validation_scheduler=self.adversarial_validation_scheduler,
                         stage_routing=self.issue_stage_routing,
                         implementation_slots=self._get_implementation_slots(repo_name),
+                        local_repair_context=LocalPRRepairContext(
+                            self._get_local_job_store(),
+                            implementation_slots.current_execution_id(ImplementationOwner("pr", item_number)) or "",
+                        ),
                     )
                     result.actions = pr_result.actions_taken
                     # Check if there was an error during processing
