@@ -15,6 +15,7 @@ import pytest
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.ci_observation import CIConclusion
 from auto_coder.ci_repair_authority import evaluate_ci_repair_snapshot
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.local_job_handoff import LocalJobKind, LocalJobState, LocalJobStore
 from auto_coder.local_job_runner import LocalJobRunner
@@ -38,6 +39,10 @@ def _remote_observer(remote: Path, base: str):  # type: ignore[no-untyped-def]
 
 def test_ci_public_origin_runs_claim_artifact_publication_and_fresh_head_gate(tmp_path: Path, _use_real_commands) -> None:
     harness = Harness.create(tmp_path)
+    slots = ImplementationSlotRepository("owner/repo", 2, tmp_path / "slots.json")
+    owner = ImplementationOwner("pr", 17)
+    harness.implementation_execution_id = slots.start_execution(owner) or ""
+    assert harness.implementation_execution_id
     job_id = harness.offer_from_pr_handler()
     wakes: list[str] = []
     runner = harness.runner()
@@ -54,7 +59,12 @@ def test_ci_public_origin_runs_claim_artifact_publication_and_fresh_head_gate(tm
     git(Path(verified.manifest.workspace), "config", "user.email", "test@example.com")
     git(Path(verified.manifest.workspace), "config", "user.name", "Test")
 
-    finalizer = PRRepairJobFinalizer(harness.store, _remote_observer(harness.remote, harness.base), lambda _repo, _number, head: not wakes.append(head))
+    finalizer = PRRepairJobFinalizer(
+        harness.store,
+        _remote_observer(harness.remote, harness.base),
+        lambda _repo, _number, head: not wakes.append(head),
+        finish_execution=lambda record: slots.finish_execution_by_id(record.implementation_execution_id),
+    )
     publication = finalizer.finalize(job_id)
     runner.close()
 
@@ -63,6 +73,7 @@ def test_ci_public_origin_runs_claim_artifact_publication_and_fresh_head_gate(tm
     assert git(harness.remote, "rev-parse", "refs/heads/feature") == publication.candidate_sha
     assert wakes == [publication.candidate_sha]
     assert harness.store.get(job_id).state is LocalJobState.SETTLED  # type: ignore[union-attr]
+    assert slots.active_execution_ids(owner) == ()
     # Publication is not a gate result: a pending H2 remains ineligible, while
     # a fresh terminal-success observation for exactly H2 is independently usable.
     pending_allowed, _ = evaluate_ci_repair_snapshot(harness_snapshot(publication.candidate_sha, CIConclusion.PENDING))
@@ -103,9 +114,13 @@ def test_conflict_public_origin_runs_real_merge_artifact_and_exact_h2_publicatio
     api.pulls.get.return_value = metadata_value
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.chdir(root)
+    slots = ImplementationSlotRepository("owner/repo", 2, tmp_path / "slots.json")
+    owner = ImplementationOwner("pr", 7)
+    execution_id = slots.start_execution(owner)
+    assert execution_id
 
     with (
-        pr_processor.local_pr_repair_context(pr_processor.LocalPRRepairContext(LocalJobStore(), "execution-7")),
+        pr_processor.local_pr_repair_context(pr_processor.LocalPRRepairContext(LocalJobStore(), execution_id)),
         patch("auto_coder.pr_processor.GitHubClient.get_instance", return_value=github),
         patch("auto_coder.pr_processor.get_ghapi_client", return_value=api),
         patch("auto_coder.pr_processor._selected_local_backend_name", return_value="codex"),
@@ -143,7 +158,12 @@ def test_conflict_public_origin_runs_real_merge_artifact_and_exact_h2_publicatio
     assert retained is not None
     git(Path(retained.workspace_path), "config", "user.email", "test@example.com")
     git(Path(retained.workspace_path), "config", "user.name", "Test")
-    publication = PRRepairJobFinalizer(store, _remote_observer(remote, base), lambda _repo, _number, h2: not wakes.append(h2)).finalize(job.job_id)
+    publication = PRRepairJobFinalizer(
+        store,
+        _remote_observer(remote, base),
+        lambda _repo, _number, h2: not wakes.append(h2),
+        finish_execution=lambda record: slots.finish_execution_by_id(record.implementation_execution_id),
+    ).finalize(job.job_id)
     runner.close()
     assert publication.disposition is PRRepairPublicationDisposition.PUBLISHED
     assert editor_calls == 1
@@ -154,3 +174,4 @@ def test_conflict_public_origin_runs_real_merge_artifact_and_exact_h2_publicatio
     assert conflict_git(root, "rev-parse", "HEAD").stdout.strip() == unrelated_head
     assert wakes == [publication.candidate_sha]
     assert store.get(job.job_id).state is LocalJobState.SETTLED  # type: ignore[union-attr]
+    assert slots.active_execution_ids(owner) == ()
