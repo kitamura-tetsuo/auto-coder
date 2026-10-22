@@ -33,8 +33,10 @@ from auto_coder.issue_processor import (
 )
 from auto_coder.issue_stage_routing import ImplementationRetryRequest, IssueStageRoutingStore
 from auto_coder.llm_backend_config import LLMBackendConfiguration
-from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore
+from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore, LocalJobStoreUnavailable, PRRepairAdmission
 from auto_coder.local_job_runner import LocalJobRunner
+from auto_coder.local_pr_repair_recovery import LOCAL_PR_REPAIR_FINALIZATION_EFFECT, finalization_identity, rediscover_pr_repair_finalizations
+from auto_coder.local_review_repair import LocalReviewRepairStore
 from auto_coder.retry_dispatch import RetryDispatchRepository
 from auto_coder.util.gh_cache import OpenGitHubEntities
 from auto_coder.util.github_request_outcome import GitHubApiOutcome
@@ -496,7 +498,56 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
         return accepted.job_id
 
     foreign_job = foreign_retained_result("other/repo", 62, "foreign-retained")
+
+    def entered_pr_job(repository: str, number: int, kind: LocalJobKind, owner: str, *, artifact: bool = False) -> str:
+        offer = LocalJobOffer(kind, repository, number, f"pr-attempt-{number}", "codex", "retained PR input")
+        admission = PRRepairAdmission(
+            repository,
+            "feature",
+            f"{number:040x}",
+            repository,
+            "main",
+            f"{number + 1:040x}",
+            "ci_failure" if kind is LocalJobKind.PR_CI_FAILURE else "merge_conflict",
+            f"evidence-{number}",
+            f"upstream-{number}",
+            (f"check-{number}",) if kind is LocalJobKind.PR_CI_FAILURE else (),
+            True,
+            True,
+            True,
+            True,
+            kind is LocalJobKind.PR_MERGE_CONFLICT,
+            kind is LocalJobKind.PR_CI_FAILURE,
+        )
+        accepted = jobs.offer_pr_repair(offer, admission, LocalReviewRepairStore(tmp_path / f"review-{number}.sqlite3"))
+        assert accepted is not None
+        claim = jobs.claim(accepted.job_id, owner)
+        assert claim is not None and jobs.mark_provider_entered(claim)
+        if artifact:
+            result = jobs.persist_result_artifact(claim, InvocationOutcome.COMPLETED, "retained exact result")
+            assert result is not None
+        return accepted.job_id
+
+    live_pr_job = entered_pr_job("owner/repo", 70, LocalJobKind.PR_CI_FAILURE, "live-owner")
+    unknown_pr_job = entered_pr_job("owner/repo", 71, LocalJobKind.PR_MERGE_CONFLICT, "unknown-owner")
+    dead_pr_job = entered_pr_job("owner/repo", 72, LocalJobKind.PR_CI_FAILURE, "dead-owner", artifact=True)
+    foreign_pr_job = entered_pr_job("other/repo", 73, LocalJobKind.PR_MERGE_CONFLICT, "dead-owner")
     reopened = LocalJobStore(jobs.path)
+    local_scan_entered = Event()
+    release_local_scan = Event()
+    strict_scans = 0
+    original_strict_discovery = reopened.discover_unsettled_strict
+
+    def temporarily_unavailable_local_jobs():
+        nonlocal strict_scans
+        strict_scans += 1
+        if strict_scans == 1:
+            local_scan_entered.set()
+            assert release_local_scan.wait(5)
+            raise LocalJobStoreUnavailable("temporary local-job read failure")
+        return original_strict_discovery()
+
+    monkeypatch.setattr(reopened, "discover_unsettled_strict", temporarily_unavailable_local_jobs)
 
     checkpoint_entered = Event()
     release_checkpoint = Event()
@@ -532,6 +583,15 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
     monkeypatch.setattr(engine, "_schedule_codex_retry_handoff", record_schedule)
     monkeypatch.setattr(engine, "_rediscover_codex_retry_handoff", record_rediscovery)
     pending = PendingWorkStore(tmp_path / "pending.db")
+    dead = reopened.get(dead_pr_job)
+    assert dead is not None
+    finalization = finalization_identity("owner/repo", dead_pr_job, dead.execution_incarnation)
+    retained_deadline = pending.defer(
+        finalization,
+        _github_error(GitHubApiOutcome.PRIMARY_THROTTLED),
+        (LOCAL_PR_REPAIR_FINALIZATION_EFFECT,),
+        governor_deadline=time.time() + 300,
+    )
     monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda _repository: pending)
     monkeypatch.setattr("auto_coder.automation_engine.install_asyncio_diagnostics", lambda _loop: None)
     monkeypatch.setattr("auto_coder.automation_engine.get_health_monitor", MagicMock())
@@ -542,6 +602,16 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
         raise AssertionError("retained local result must not re-enter the provider")
 
     monkeypatch.setattr(IssueLocalJobAdapter, "invoke", provider_reentry_forbidden)
+    monkeypatch.setattr("auto_coder.local_ci_repair_job.LocalCIRepairJobAdapter.invoke", provider_reentry_forbidden)
+    monkeypatch.setattr("auto_coder.local_conflict_repair_job.LocalConflictRepairJobAdapter.invoke", provider_reentry_forbidden)
+    monkeypatch.setattr(
+        "auto_coder.pr_repair_finalizer.PRRepairJobFinalizer.resume_all",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("startup must not bypass retained publication backpressure")),
+    )
+    monkeypatch.setattr(
+        "auto_coder.local_job_runner.runner_owner_alive",
+        lambda owner: True if owner == "live-owner" else None if owner == "unknown-owner" else False,
+    )
 
     producer_entered = asyncio.Event()
     worker_entries = 0
@@ -571,7 +641,13 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
 
     async def scenario():
         task = asyncio.create_task(engine.start_automation("owner/repo", concurrency=1))
+        assert await asyncio.to_thread(local_scan_entered.wait, 5)
+        assert not producer_entered.is_set()
+        assert worker_entries == 0
+        assert issue_poll_count == 0
+        release_local_scan.set()
         assert await asyncio.to_thread(checkpoint_entered.wait, 5)
+        assert strict_scans >= 2
         assert enumeration_calls == 2
         assert not producer_entered.is_set()
         assert worker_entries == 0
@@ -581,8 +657,26 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
         publication = tuple(reopened.get_effect(own_job, settled.execution_incarnation, name) for name in ("commit", "push", "pr", "association"))
         assert all(effect is not None and effect.state == "completed" for effect in publication)
         assert reopened.get(foreign_job).state is LocalJobState.RESULT_RECORDED
+        assert reopened.get(live_pr_job).state is LocalJobState.RUNNING
+        assert reopened.get(unknown_pr_job).state is LocalJobState.RUNNING
+        assert reopened.get(dead_pr_job).state in {LocalJobState.RESULT_RECORDED, LocalJobState.DOWNSTREAM_EFFECTS_PENDING}
+        assert reopened.get(foreign_pr_job).state is LocalJobState.RUNNING
+        rediscover_pr_repair_finalizations("owner/repo", reopened, pending)
+        rediscover_pr_repair_finalizations("owner/repo", reopened, pending)
+        preserved = pending.get(finalization)
+        assert preserved is not None
+        assert preserved.not_before == retained_deadline.not_before
+        assert preserved.throttle_attempts == retained_deadline.throttle_attempts
         assert engine.pending_work_scheduler is not None
-        assert len(engine.pending_work_scheduler._handlers) == 6
+        assert set(engine.pending_work_scheduler._handlers) == {
+            "startup-reconciliation",
+            "pr-processing",
+            "issue-processing",
+            "codex-retry-handoff",
+            "validation-publication",
+            "decomposition-validation-publication",
+            "local-pr-repair-finalization",
+        }
         assert scheduled_identities == [(authority.request_id, 2223)]
 
         # Repeating the same recovery turn retains one durable identity rather
@@ -595,7 +689,7 @@ def test_composed_startup_holds_admission_across_failed_enumeration_and_reopens_
         assert len(set(scheduled_identities)) == 1
         if matching:
             assert matching[0].unfinished_effects == (CODEX_RETRY_HANDOFF_EFFECT,)
-        assert len(engine.pending_work_scheduler._handlers) == 6
+        assert len(engine.pending_work_scheduler._handlers) == 7
 
         release_checkpoint.set()
         await asyncio.wait_for(producer_entered.wait(), 5)

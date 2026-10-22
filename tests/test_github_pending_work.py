@@ -66,6 +66,39 @@ def test_admission_deferral_does_not_spend_throttle_attempt(tmp_path):
     assert result.not_before == 200
 
 
+def test_recovery_rediscovery_preserves_existing_backpressure_and_claim(tmp_path):
+    store = PendingWorkStore(tmp_path / "pending.db")
+    identity = WorkIdentity("acme/widgets", "local-job:abc", "local-pr-repair-finalization", "incarnation")
+    retained = store.defer(
+        identity,
+        _error(GitHubApiOutcome.SECONDARY_THROTTLED),
+        ("existing",),
+        governor_deadline=250,
+        now=100,
+    )
+    store.mark_running(identity)
+
+    rediscovered = store.ensure_reevaluation(identity, ("finalize",), now=150)
+
+    assert rediscovered.reason is retained.reason
+    assert rediscovered.not_before == 250
+    assert rediscovered.throttle_attempts == 1
+    assert rediscovered.status == ObligationStatus.RUNNING.value
+    assert rediscovered.unfinished_effects == ("existing", "finalize")
+
+
+def test_recovery_rediscovery_creates_due_obligation_once(tmp_path):
+    store = PendingWorkStore(tmp_path / "pending.db")
+    identity = WorkIdentity("acme/widgets", "local-job:abc", "local-pr-repair-finalization", "incarnation")
+
+    created = store.ensure_reevaluation(identity, ("finalize",), now=100)
+    repeated = store.ensure_reevaluation(identity, ("finalize",), now=200)
+
+    assert created == repeated
+    assert repeated.not_before == 100
+    assert repeated.unfinished_effects == ("finalize",)
+
+
 def test_admission_deferral_without_a_trustworthy_retry_at_still_waits_a_second(tmp_path):
     """REQ-001: a now-or-earlier/unknown retry_at must never permit immediate retry."""
     store = PendingWorkStore(tmp_path / "pending.db")
