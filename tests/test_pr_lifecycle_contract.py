@@ -581,14 +581,15 @@ def test_base_update_publication_result_reaches_remediation_consumer(
             assert "ACTION_FLAG:SKIP_ANALYSIS" not in actions
 
 
-def _run_ci_consumer(snapshot, *, remote_head=H1, thread_state=None, body="Fixes #99", ledger=None):
+def _run_ci_consumer(snapshot, *, head=H1, remote_head=None, thread_state=None, body="Fixes #99", ledger=None):
     """Enter the merge route while controlling only provider/effect boundaries."""
     config = AutomationConfig()
     config.AUTO_MERGE = True
     config.ENABLE_ADVERSARIAL_VALIDATION = ledger is not None
     config.pr_adversarial_validation = ledger is not None
     config.pr_review_thread_gate = thread_state is not None
-    pr_data = {"number": PR_NUMBER, "body": body, "labels": [], "head": {"ref": "feature", "sha": H1}}
+    remote_head = head if remote_head is None else remote_head
+    pr_data = {"number": PR_NUMBER, "body": body, "labels": [], "head": {"ref": "feature", "sha": head}}
     client = MagicMock(token="controlled-token")
     client.get_pull_request.return_value = {"head": {"sha": remote_head}}
     cycles = iter(range(20))

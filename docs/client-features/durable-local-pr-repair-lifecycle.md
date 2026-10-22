@@ -33,6 +33,11 @@ be reconciled from exact workspace and remote observations without invoking the
 model again. Unknown remote state never authorizes a blind replacement push,
 and a stale head/base makes the retained repair non-publishing.
 
+A definite `FAILED`, `INTERRUPTED`, or `CANNOT_FIX` result is different from an
+unknown entered invocation. Finalization preserves its retained result evidence,
+settles the exact edit claim, and retires that execution without publishing, so
+a later independently authorized repair is not blocked by orphaned capacity.
+
 The controlled regression inventory uses temporary Git repositories and SQLite
 stores; it is not live GitHub/provider evidence. Credentialed smoke remains
 opt-in and restricted to the operator-designated disposable profile. No such

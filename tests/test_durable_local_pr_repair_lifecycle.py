@@ -14,19 +14,50 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.ci_observation import CIConclusion
-from auto_coder.ci_repair_authority import evaluate_ci_repair_snapshot
+from auto_coder.entity_invalidation import DurableInvalidationQueue, EntityIdentity
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.local_job_handoff import LocalJobKind, LocalJobState, LocalJobStore
 from auto_coder.local_job_runner import LocalJobRunner
 from auto_coder.pr_local_job_runtime import build_pr_local_job_adapters
+from auto_coder.pr_processor import ClaimedReviewThreadGateState
 from auto_coder.pr_repair_finalizer import PRRepairJobFinalizer, PRRepairPublicationDisposition, PRRepairTargetObservation
 from auto_coder.pr_repair_workspace import PRRepairWorkspaceProducer
+from auto_coder.util.gh_cache import ReviewThread
 from tests.test_local_conflict_repair_job import git as conflict_git
 from tests.test_local_conflict_repair_job import history
 from tests.test_z_local_ci_repair_job import Harness, git, metadata, wait_until
 
 pytestmark = pytest.mark.pr_repair_contract
+
+
+def _assert_fresh_h2_gates(h2: str, invalidations: DurableInvalidationQueue, pr_number: int) -> None:
+    """Drive the normal post-wake PR entry with stale and current evidence."""
+    from auto_coder.ci_observation import ObservationAvailability
+    from tests.test_pr_lifecycle_contract import _run_ci_consumer, _snapshot
+
+    claimed = invalidations.claim("owner/repo")
+    assert claimed is not None and claimed.identity == EntityIdentity("owner/repo", "pr", pr_number)
+
+    stale_green = _snapshot(ObservationAvailability.KNOWN, CIConclusion.SUCCESS)
+    _, stale_merge, _, _ = _run_ci_consumer(stale_green, head=h2)
+    stale_merge.assert_not_called()
+
+    pending_h2 = _snapshot(ObservationAvailability.KNOWN, CIConclusion.PENDING, head_sha=h2)
+    _, pending_merge, _, _ = _run_ci_consumer(pending_h2, head=h2)
+    pending_merge.assert_not_called()
+
+    green_h2 = _snapshot(ObservationAvailability.KNOWN, CIConclusion.SUCCESS, head_sha=h2)
+    blocked = ClaimedReviewThreadGateState(
+        blocking_unresolved=(ReviewThread(id="h2-blocking-thread"),),
+        has_blocking_unresolved=True,
+    )
+    _, review_blocked_merge, _, _ = _run_ci_consumer(green_h2, head=h2, thread_state=blocked)
+    review_blocked_merge.assert_not_called()
+
+    actions, eligible_merge, _, _ = _run_ci_consumer(green_h2, head=h2, thread_state=ClaimedReviewThreadGateState())
+    eligible_merge.assert_called_once()
+    assert actions.disposition.value == "MERGE_COMPLETED"
 
 
 def _remote_observer(remote: Path, base: str):  # type: ignore[no-untyped-def]
@@ -45,6 +76,7 @@ def test_ci_public_origin_runs_claim_artifact_publication_and_fresh_head_gate(tm
     assert harness.implementation_execution_id
     job_id = harness.offer_from_pr_handler()
     wakes: list[str] = []
+    invalidations = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
     runner = harness.runner()
 
     assert runner.poll() == 1
@@ -62,7 +94,7 @@ def test_ci_public_origin_runs_claim_artifact_publication_and_fresh_head_gate(tm
     finalizer = PRRepairJobFinalizer(
         harness.store,
         _remote_observer(harness.remote, harness.base),
-        lambda _repo, _number, head: not wakes.append(head),
+        lambda repository, number, head: not wakes.append(head) and invalidations.invalidate(EntityIdentity(repository, "pr", number)),
         finish_execution=lambda record: slots.finish_execution_by_id(record.implementation_execution_id),
     )
     publication = finalizer.finalize(job_id)
@@ -74,17 +106,7 @@ def test_ci_public_origin_runs_claim_artifact_publication_and_fresh_head_gate(tm
     assert wakes == [publication.candidate_sha]
     assert harness.store.get(job_id).state is LocalJobState.SETTLED  # type: ignore[union-attr]
     assert slots.active_execution_ids(owner) == ()
-    # Publication is not a gate result: a pending H2 remains ineligible, while
-    # a fresh terminal-success observation for exactly H2 is independently usable.
-    pending_allowed, _ = evaluate_ci_repair_snapshot(harness_snapshot(publication.candidate_sha, CIConclusion.PENDING))
-    green_allowed, _ = evaluate_ci_repair_snapshot(harness_snapshot(publication.candidate_sha, CIConclusion.SUCCESS))
-    assert pending_allowed is False and green_allowed is False
-
-
-def harness_snapshot(head: str, conclusion: CIConclusion):  # type: ignore[no-untyped-def]
-    from tests.test_z_local_ci_repair_job import snapshot
-
-    return snapshot(head, conclusion)
+    _assert_fresh_h2_gates(publication.candidate_sha, invalidations, 17)
 
 
 def test_conflict_public_origin_runs_real_merge_artifact_and_exact_h2_publication(
@@ -154,6 +176,7 @@ def test_conflict_public_origin_runs_real_merge_artifact_and_exact_h2_publicatio
         wait_until(lambda: runner.active_count() == 0)
 
     wakes: list[str] = []
+    invalidations = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
     retained = store.get(job.job_id)
     assert retained is not None
     git(Path(retained.workspace_path), "config", "user.email", "test@example.com")
@@ -161,7 +184,7 @@ def test_conflict_public_origin_runs_real_merge_artifact_and_exact_h2_publicatio
     publication = PRRepairJobFinalizer(
         store,
         _remote_observer(remote, base),
-        lambda _repo, _number, h2: not wakes.append(h2),
+        lambda repository, number, h2: not wakes.append(h2) and invalidations.invalidate(EntityIdentity(repository, "pr", number)),
         finish_execution=lambda record: slots.finish_execution_by_id(record.implementation_execution_id),
     ).finalize(job.job_id)
     runner.close()
@@ -175,3 +198,4 @@ def test_conflict_public_origin_runs_real_merge_artifact_and_exact_h2_publicatio
     assert wakes == [publication.candidate_sha]
     assert store.get(job.job_id).state is LocalJobState.SETTLED  # type: ignore[union-attr]
     assert slots.active_execution_ids(owner) == ()
+    _assert_fresh_h2_gates(publication.candidate_sha, invalidations, 7)
