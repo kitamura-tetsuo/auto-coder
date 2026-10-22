@@ -188,6 +188,9 @@ def test_cannot_fix_settles_edit_claim_and_retires_only_execution(tmp_path: Path
     assert store.get(offer.job_id).state is LocalJobState.SETTLED  # type: ignore[union-attr]
     assert slots.active_execution_ids(owner) == ()
     assert owner in slots.active_owners()
+    next_execution = slots.start_execution(owner)
+    assert next_execution is not None
+    slots.finish_execution(owner, next_execution)
 
 
 def test_stale_artifact_settles_edit_claim_and_retires_only_execution(tmp_path: Path, _use_real_commands) -> None:
@@ -211,6 +214,9 @@ def test_stale_artifact_settles_edit_claim_and_retires_only_execution(tmp_path: 
     assert store.get(claim.record.job_id).state is LocalJobState.SETTLED  # type: ignore[union-attr]
     assert slots.active_execution_ids(owner) == ()
     assert owner in slots.active_owners()
+    next_execution = slots.start_execution(owner)
+    assert next_execution is not None
+    slots.finish_execution(owner, next_execution)
 
 
 def observer(remote: Path, base: str):
