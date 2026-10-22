@@ -116,6 +116,7 @@ class Harness:
     barrier_entered: Event | None = None
     barrier_release: Event | None = None
     mode: str = "positive"
+    implementation_execution_id: str = "execution-17"
 
     @classmethod
     def create(cls, tmp_path: Path) -> "Harness":
@@ -128,7 +129,7 @@ class Harness:
     def offer_from_production_selection(self) -> str:
         authority = CIRepairAuthority(True, "current exact-head CI failure", self.head, snapshot(self.head))
         with (
-            pr_processor.local_pr_repair_context(pr_processor.LocalPRRepairContext(self.store, "execution-17")),
+            pr_processor.local_pr_repair_context(pr_processor.LocalPRRepairContext(self.store, self.implementation_execution_id)),
             patch.object(pr_processor, "_selected_local_backend_name", return_value="codex"),
             patch.object(pr_processor, "check_pr_repair_exhaustion", return_value=None),
         ):
@@ -152,7 +153,7 @@ class Harness:
         authority = CIRepairAuthority(True, "current exact-head CI failure", self.head, snapshot(self.head))
         self.github.get_pr_review_threads_strict.return_value = []
         with (
-            pr_processor.local_pr_repair_context(pr_processor.LocalPRRepairContext(self.store, "execution-17")),
+            pr_processor.local_pr_repair_context(pr_processor.LocalPRRepairContext(self.store, self.implementation_execution_id)),
             patch.object(pr_processor, "current_ci_failure_authority", return_value=nullcontext(authority)),
             patch.object(pr_processor, "check_github_actions_and_exit_if_in_progress", return_value=True),
             patch.object(pr_processor, "_get_mergeable_state", return_value={"mergeable": True}),

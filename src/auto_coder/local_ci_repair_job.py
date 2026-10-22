@@ -17,6 +17,7 @@ from .local_ci_repair_execution import (
 )
 from .local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobKind, LocalJobRecord, LocalJobStore
 from .local_job_runner import LocalJobExecutionResult, LocalJobProviderEntryRefused
+from .pr_processing_evidence import begin_invocation_observation, observed_invocations
 from .pr_repair_workspace import PreparedPRRepairWorkspace, PRRepairSource, PRRepairWorkspaceProducer
 
 
@@ -69,6 +70,7 @@ class LocalCIRepairJobAdapter:
         raise LocalJobProviderEntryRefused("CI repair entry requires the runner checkpoint callback")
 
     def invoke_at_provider_entry(self, job: LocalJobRecord, checkpoint: Callable[[], bool]) -> LocalJobExecutionResult:
+        begin_invocation_observation()
         claim = self._claim(job)
         retained = self._store.get_pr_repair_claim(job.job_id)
         if retained is None or not retained.failed_check_identities:
@@ -110,14 +112,15 @@ class LocalCIRepairJobAdapter:
                 )
 
         output = json.dumps(asdict(result), sort_keys=True, default=str)
-        changed = self._workspace.capture_result(claim, prepared, InvocationOutcome.COMPLETED, output).changed_files
+        invocations = observed_invocations()
+        changed = self._workspace.capture_result(claim, prepared, InvocationOutcome.COMPLETED, output, editing_invocations=invocations).changed_files
         if result.failure_reason:
             outcome = InvocationOutcome.FAILED
         elif result.attempt_started and changed:
             outcome = InvocationOutcome.COMPLETED
         else:
             outcome = InvocationOutcome.CANNOT_FIX
-        manifest = self._workspace.capture_result(claim, prepared, outcome, output)
+        manifest = self._workspace.capture_result(claim, prepared, outcome, output, editing_invocations=invocations)
         diagnostic = "publication pending" if outcome is InvocationOutcome.COMPLETED else "no publishable correction"
         return LocalJobExecutionResult(outcome, manifest.to_json(), diagnostic)
 

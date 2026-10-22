@@ -10,7 +10,7 @@ This page records the bounded PR-repair seams used in production and separates m
 | --- | --- | --- | --- |
 | Characterize PR entry and progress decisions | Candidate CI filtering and handler conflict ordering are separate gates | Maintained batch and explicit-origin cases record where each stops | Do not reinterpret known-empty conflict admission as CI success or CI-failure-repair authority |
 | Extract PR observation-to-action decisions | `pr_progress_policy` selects an existing executor from typed input | Maintained cases preserve next actions and deferrals without moving receipt authority into guessed flags | No provider/slot-store redesign |
-| Isolate execution adapters at existing repair boundaries | `pr_repair_dispatch`, `execute_local_ci_repair` and `BaseUpdateConflictExecutionService` carry selected operations and results | Maintained cases preserve acceptance, uncertainty, ownership, publication and replay behavior | Synchronous CI/conflict repairs are not durable local jobs |
+| Isolate execution adapters at existing repair boundaries | `pr_repair_dispatch` carries selection into durable CI/conflict admission and existing cloud paths | Maintained cases preserve acceptance, uncertainty, ownership, publication and replay behavior | Publication still does not authorize merge |
 | Reduce scheduler knowledge of PR internals | The engine currently filters some work before PR policy can decide | Demonstrate the selected decision owner and retained wake-up/deadline path | No required event-bus or full polling rewrite |
 | Integrate local CI/conflict execution | Production entries invoke the extracted services while existing producers own effects | Local and cloud origins reach result application and new-head validation in controlled integration | No unrelated engine cleanup or asynchronous-local feature claim |
 
@@ -54,7 +54,7 @@ The maintained group is controlled integration, not a provider E2E, production-G
 
 ## Remaining boundaries
 
-The typed policy and execution adapters do not make synchronous local repair restart-safe, replace provider receipt stores, or combine publication, independent validation and lifetime-slot retirement. Those facts remain distinct and any future durable local CI/conflict work needs its own contract.
+The durable adapters do not make an unknown entered provider resumable, replace provider receipt stores, or combine publication, independent validation and lifetime-slot retirement. Those facts remain distinct.
 
 An event-driven rewrite, provider replacement, global persistence migration and hostile-code sandbox are outside these bounded extraction proposals. A real missing capability should receive its own scoped implementation stage rather than being hidden behind a generic "unified lifecycle" interface.
 

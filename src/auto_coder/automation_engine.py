@@ -3355,6 +3355,38 @@ class AutomationEngine:
         current = store.get(job.job_id)
         if current is None:
             raise RuntimeError("Accepted local PR repair job disappeared")
+        publication = finalizer.finalize(job.job_id)
+        candidate_sha = str(getattr(publication, "candidate_sha", ""))
+        artifact = store.get_execution_result_artifact(job.job_id, current.execution_incarnation)
+        if artifact is not None:
+            try:
+                from .pr_processing_evidence import restore_editing_invocations
+                from .pr_repair_workspace import PRRepairWorkspaceProducer
+
+                verified = PRRepairWorkspaceProducer(store).revalidate_result(current, artifact, candidate_sha=candidate_sha)
+                restore_editing_invocations(verified.manifest.editing_invocations)
+            except Exception:
+                logger.opt(exception=True).warning("Could not project retained editing evidence for local PR repair {}", job.job_id)
+        from .pr_repair_dispatch import PRRepairResult, RepairDisposition, RepairFactState
+
+        publication_disposition = getattr(getattr(publication, "disposition", None), "value", "")
+        if publication_disposition == "published":
+            result.repair_result = PRRepairResult(
+                RepairDisposition.APPLIED,
+                tuple(result.actions),
+                "Exact local PR repair candidate was published; fresh PR validation remains required",
+                attempt_started=True,
+                receipt_state=RepairFactState.AVAILABLE,
+                receipt=job.job_id,
+                resulting_head_state=RepairFactState.AVAILABLE,
+                resulting_head=candidate_sha,
+                synchronization_state=RepairFactState.AVAILABLE,
+                synchronized=True,
+                repository=repo_name,
+                pr_number=int(result.number or 0),
+                input_head=handoff.input_head,
+                local_handoff=handoff,
+            )
         result.target_outcome = ExplicitTargetOutcome.DEFERRED
         result.success = False
         result.target_reason = f"Local PR repair job {job.job_id} is {current.state.value}; fresh PR validation remains required"

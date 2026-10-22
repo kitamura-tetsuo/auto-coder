@@ -133,8 +133,14 @@ class PRRepairJobFinalizer:
         claim = LocalJobClaim(record, True)
         if record.invocation_outcome is InvocationOutcome.CANNOT_FIX:
             return self._finish_terminal(record, PRRepairPublicationDisposition.CANNOT_FIX, "local PR repair cannot fix the selected failure")
+        if record.invocation_outcome in {InvocationOutcome.FAILED, InvocationOutcome.INTERRUPTED}:
+            return self._finish_terminal(
+                record,
+                PRRepairPublicationDisposition.REFUSED,
+                f"local PR repair ended with retained {record.invocation_outcome.value} evidence",
+            )
         if record.invocation_outcome is not InvocationOutcome.COMPLETED:
-            return self._result(job_id, PRRepairPublicationDisposition.REFUSED, diagnostic="result is not completed")
+            return self._result(job_id, PRRepairPublicationDisposition.PENDING, diagnostic="result outcome is unavailable")
         artifact = self._store.get_execution_result_artifact(job_id, record.execution_incarnation)
         if artifact is None or artifact.artifact_id != record.result_reference:
             return self._result(job_id, PRRepairPublicationDisposition.REFUSED, diagnostic="exact result artifact is unavailable")

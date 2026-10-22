@@ -1,7 +1,8 @@
 # PR repair execution test inventory
 
 The permanent `pr_repair_contract` pytest group verifies the supported
-PR-repair origins inspected at revision `2c5624a`.
+PR-repair origins inspected through revision `328011e` and the durable
+integration completed by Issue #2562.
 It is a controlled production-boundary regression suite, not a live-provider
 E2E claim. Run it through the repository test wrapper:
 
@@ -15,8 +16,8 @@ bash scripts/test.sh -m pr_repair_contract
 | --- | --- | --- | --- |
 | Ordinary candidate collection | `AutomationEngine._get_candidates` and `select_pr_progress` | `_process_single_candidate_unified` into `_handle_pr_merge` | `tests/test_pr_lifecycle_contract.py`, `tests/test_pr_progress_policy.py` |
 | Explicit PR processing | `_handle_pr_merge` current-head CI and mergeability checks | `_start_mergeability_remediation`, CI repair dispatch, and typed processing outcome | `tests/test_pr_lifecycle_contract.py`, `tests/test_pr_mergeability_remediation.py` |
-| Local CI failure | `current_ci_failure_authority` and automatic-fix/origin gates | synchronous local test/fix, Git commit/push evidence, and `PRRepairResult` consumption | `tests/test_ci_repair_authority.py`, `tests/test_pr_lifecycle_contract.py` |
-| Local conflict | mergeability remediation and local-origin selection | real temporary Git conflict/private workspace, publication, and typed applied/failed result | `tests/test_local_conflict_workspace.py`, `tests/test_cloud_conflict_delegation.py` |
+| Local CI failure | `current_ci_failure_authority` and automatic-fix/origin gates | durable admission, private-workspace runner artifact, exact-head finalizer, and fresh-head invalidation | `tests/test_z_local_ci_repair_job.py`, `tests/test_pr_repair_workspace.py`, `tests/test_pr_repair_finalizer.py` |
+| Local conflict | mergeability remediation and local-origin selection | durable admission, real temporary Git conflict/private workspace, exact-head publication, and typed result | `tests/test_local_conflict_repair_job.py`, `tests/test_pr_repair_finalizer.py` |
 | Existing cloud conflict owner | cloud-origin resolution and durable delivery reservation | send/reconcile/replay receipt and deferred or accepted typed result | `tests/test_cloud_conflict_delegation.py`, `tests/test_pr_lifecycle_contract.py` |
 | Jules CI or conflict owner | existing session and retirement admission | provider continuation through typed repair dispatch | `tests/test_pr_lifecycle_contract.py`, `tests/test_cloud_conflict_delegation.py` |
 | Base update | branch preparation and commits-behind check | no-op, clean merge/push, Git failure, dependency-bot exclusion, cloud delegation, or unresolved local conflict | `tests/test_pr_mergeability_remediation.py`, `tests/test_cloud_conflict_delegation.py`, `tests/test_local_conflict_workspace.py` |
@@ -30,7 +31,10 @@ repair authority nor merge authority.
 
 Persistence-sensitive cloud cases use the production delivery store in a
 temporary directory. Git-sensitive cases use temporary repositories and the
-private-workspace integration. The lifecycle cases include observable
+private-workspace integration. Editing observations made on the runner thread
+are part of the immutable repair manifest and are restored only from the same
+verified job/execution artifact when an explicit caller reports its result.
+The lifecycle cases include observable
 head-change and durable-send ordering checkpoints and same-controller reentry
 after a temporary wait. External GitHub and provider transports remain
 controlled, so their successful execution must not be described as live E2E.

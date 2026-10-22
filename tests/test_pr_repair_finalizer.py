@@ -193,6 +193,61 @@ def test_cannot_fix_settles_edit_claim_and_retires_only_execution(tmp_path: Path
     slots.finish_execution(owner, next_execution)
 
 
+@pytest.mark.parametrize("outcome", [InvocationOutcome.FAILED, InvocationOutcome.INTERRUPTED])
+def test_definite_terminal_failure_settles_claim_and_retires_execution(tmp_path: Path, outcome: InvocationOutcome) -> None:
+    slots = ImplementationSlotRepository("owner/repo", 2, tmp_path / "slots.json")
+    owner = ImplementationOwner("pr", 7)
+    execution_id = slots.start_execution(owner)
+    assert execution_id is not None
+    store = LocalJobStore(tmp_path / "terminal-failure.sqlite3")
+    offer = LocalJobOffer(LocalJobKind.PR_MERGE_CONFLICT, "owner/repo", 7, "attempt-7", "codex", "repair", execution_id)
+    admission = PRRepairAdmission(
+        "owner/repo",
+        "feature",
+        "H1",
+        "owner/repo",
+        "main",
+        "B1",
+        "merge_conflict",
+        "evidence-7",
+        "upstream-7",
+        conflict_eligible=True,
+        pr_open=True,
+        pr_unmerged=True,
+        local_route=True,
+        owner_allowed=True,
+    )
+    assert store.offer_pr_repair(offer, admission) is not None
+    claim = store.claim(offer.job_id, "runner")
+    assert claim is not None and claim.acquired
+    artifact = store.persist_result_artifact(claim, outcome, f"retained {outcome.value} evidence", executor_token="runner")
+    assert artifact is not None
+    assert store.record_result(claim, outcome, artifact.artifact_id, executor_token="runner")
+    finalizer = PRRepairJobFinalizer(
+        store,
+        MagicMock(),
+        MagicMock(),
+        finish_execution=lambda record: slots.finish_execution_by_id(record.implementation_execution_id),
+    )
+
+    first = finalizer.finalize(offer.job_id)
+    reopened = LocalJobStore(store.path)
+    second = PRRepairJobFinalizer(
+        reopened,
+        MagicMock(),
+        MagicMock(),
+        finish_execution=lambda record: slots.finish_execution_by_id(record.implementation_execution_id),
+    ).finalize(offer.job_id)
+
+    assert first.disposition is second.disposition is PRRepairPublicationDisposition.REFUSED
+    retained = reopened.get(offer.job_id)
+    assert retained is not None and retained.state is LocalJobState.SETTLED
+    assert retained.result_reference == artifact.artifact_id
+    assert reopened.get_result_artifact(artifact.artifact_id).output == f"retained {outcome.value} evidence"  # type: ignore[union-attr]
+    assert slots.active_execution_ids(owner) == ()
+    assert slots.start_execution(owner) is not None
+
+
 def test_stale_artifact_settles_edit_claim_and_retires_only_execution(tmp_path: Path, _use_real_commands) -> None:
     source, remote, head, base = repository(tmp_path)
     slots = ImplementationSlotRepository("owner/repo", 2, tmp_path / "slots.json")

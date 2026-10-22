@@ -12,6 +12,7 @@ from pathlib import Path
 from .checkout_lock import checkout_lock
 from .issue_job_workspace import IssueJobWorkspaceProducer
 from .local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobKind, LocalJobRecord, LocalJobResultArtifact, LocalJobStore, RetainedPRRepairClaim
+from .pr_processing_evidence import EditingInvocationEvidence
 
 
 class PRRepairWorkspaceError(RuntimeError):
@@ -64,6 +65,7 @@ class PRRepairResultManifest:
     merge_head: str
     changed_files: tuple[tuple[str, FileIdentity | None], ...]
     workspace_files: tuple[tuple[str, FileIdentity], ...]
+    editing_invocations: tuple[EditingInvocationEvidence, ...] = ()
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
@@ -187,6 +189,7 @@ class PRRepairWorkspaceProducer:
         observed_output: str,
         *,
         completion_source: str = "model",
+        editing_invocations: tuple[EditingInvocationEvidence, ...] = (),
     ) -> PRRepairResultManifest:
         record = self._store.get(claim.record.job_id)
         if record is None or record.execution_incarnation != prepared.execution_incarnation or Path(record.workspace_path).resolve() != prepared.workspace:
@@ -231,6 +234,7 @@ class PRRepairWorkspaceProducer:
             merge_head,
             changed,
             tuple(sorted(final.items())),
+            editing_invocations,
         )
 
     def revalidate_result(self, record: LocalJobRecord, artifact: LocalJobResultArtifact, *, candidate_sha: str = "") -> VerifiedPRRepairResult:
@@ -240,6 +244,7 @@ class PRRepairWorkspaceProducer:
             raw = json.loads(artifact.output)
             raw["changed_files"] = tuple((name, FileIdentity(**identity) if identity is not None else None) for name, identity in raw["changed_files"])
             raw["workspace_files"] = tuple((name, FileIdentity(**identity)) for name, identity in raw["workspace_files"])
+            raw["editing_invocations"] = tuple(EditingInvocationEvidence(**item) for item in raw.get("editing_invocations", ()))
             manifest = PRRepairResultManifest(**raw)
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise PRRepairWorkspaceError("result artifact is not a valid PR repair manifest") from exc

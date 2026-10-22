@@ -14,6 +14,7 @@ from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, Is
 from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore, PRRepairAdmission
 from auto_coder.local_job_runner import LocalJobRunner
 from auto_coder.local_review_repair import LocalReviewRepairStore
+from auto_coder.pr_processing_evidence import EditingInvocationEvidence
 from auto_coder.pr_repair_workspace import PRRepairSource, PRRepairWorkspaceError, PRRepairWorkspaceProducer
 
 
@@ -112,7 +113,14 @@ def test_exact_remote_workspace_ignores_dirty_checkout_and_records_modes(tmp_pat
     executable.write_text("#!/bin/sh\n")
     executable.chmod(0o755)
     os.symlink("tool.sh", prepared.workspace / "tool-link")
-    manifest = producer.capture_result(claim, prepared, InvocationOutcome.COMPLETED, "ACTION_SUMMARY: repaired")
+    invocation = EditingInvocationEvidence("codex", "codex", "gpt-test", "local-ci-repair")
+    manifest = producer.capture_result(
+        claim,
+        prepared,
+        InvocationOutcome.COMPLETED,
+        "ACTION_SUMMARY: repaired",
+        editing_invocations=(invocation,),
+    )
     changed = dict(manifest.changed_files)
     assert changed["feature.txt"] is None
     assert changed["tool.sh"] is not None and changed["tool.sh"].mode == 0o755
@@ -124,6 +132,7 @@ def test_exact_remote_workspace_ignores_dirty_checkout_and_records_modes(tmp_pat
     assert artifact is not None
     verified = producer.revalidate_result(store.get(claim.record.job_id), artifact)  # type: ignore[arg-type]
     assert verified.artifact_id == artifact.artifact_id
+    assert verified.manifest.editing_invocations == (invocation,)
     executable.write_text("tampered\n")
     with pytest.raises(PRRepairWorkspaceError, match="files were altered"):
         producer.revalidate_result(store.get(claim.record.job_id), artifact)  # type: ignore[arg-type]
