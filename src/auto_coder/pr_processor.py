@@ -10971,7 +10971,11 @@ def build_durable_ci_correction(job: Any, prepared: Any, github_client: Any, con
 
     try:
         payload = json.loads(job.invocation_input)
-        failed_checks = payload["failed_checks"]
+        captured_input = payload.get("invocation_input")
+        if not isinstance(captured_input, str):
+            return None
+        captured = json.loads(captured_input)
+        failed_checks = captured["failed_checks"]
         if not isinstance(failed_checks, list) or not failed_checks:
             return None
         pr_data = github_client.get_pull_request_metadata_strict(job.repository, job.target_number)

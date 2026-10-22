@@ -7521,6 +7521,43 @@ class AutomationEngine:
                 result.target_outcome = ExplicitTargetOutcome.DEFERRED
                 result.actions = ["Deferred - graceful shutdown began before implementation ownership admission"]
                 return result
+            if explicit_only and candidate.type == "pr" and not force:
+                retained = self._get_local_job_store().unsettled_pr_repair(repo_name, item_number)
+                if retained is not None:
+                    retained_execution = retained.implementation_execution_id
+                    if retained_execution and retained_execution in slots.active_execution_ids(owner):
+                        from .pr_repair_dispatch import LocalPRRepairHandoff, PRRepairResult, RepairDisposition, RepairKind
+
+                        claim = self._get_local_job_store().get_pr_repair_claim(retained.job_id)
+                        if claim is None:
+                            result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                            result.error = "Cannot attach explicit processing to retained PR repair authority"
+                            return result
+                        kind = RepairKind.CI_FAILURE if retained.kind is LocalJobKind.PR_CI_FAILURE else RepairKind.MERGE_CONFLICT
+                        attached_handoff = LocalPRRepairHandoff(
+                            retained.job_id,
+                            repo_name,
+                            item_number,
+                            kind,
+                            claim.head_sha,
+                            claim.base_identity,
+                            retained_execution,
+                        )
+                        reason = f"Attached explicit processing to retained local PR repair job {retained.job_id}"
+                        result.repair_result = PRRepairResult(
+                            RepairDisposition.DEFERRED,
+                            (reason,),
+                            reason,
+                            repository=repo_name,
+                            pr_number=item_number,
+                            input_head=claim.head_sha,
+                            base_ref=claim.base_ref,
+                            local_handoff=attached_handoff,
+                        )
+                        result.actions = [reason]
+                        result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                        result.target_reason = reason
+                        return result
             execution_id = slots.current_execution_id(owner) if continue_execution else None
             inherited_execution = execution_id is not None
             owner_existed_before_admission = owner in slots.active_owners()
@@ -8835,6 +8872,8 @@ class AutomationEngine:
                     target_outcome=result.target_outcome or ExplicitTargetOutcome.FAILED.value,
                     target_actions=result.target_actions,
                     target_reason=result.target_reason,
+                    repair_result=result.repair_result,
+                    final_gate=result.final_gate,
                 )
                 if result.target_outcome is None:
                     diagnostic = f"Explicit processing produced no outcome for target #{number}"

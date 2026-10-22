@@ -230,13 +230,18 @@ def test_explicit_pr_entry_retains_one_job_and_target_scoped_runner_ignores_unre
         target_id = target_jobs[0].job_id
         assert jobs.get(target_id).state is LocalJobState.RUNNING  # type: ignore[union-attr]
         assert jobs.get(unrelated_id).state is LocalJobState.PENDING  # type: ignore[union-attr]
+        assert engine.implementation_slots.active_execution_ids(ImplementationOwner("pr", 17)) == (target_jobs[0].implementation_execution_id,)
+        repeated = engine.process_single("owner/repo", "pr", 17, explicit_only=True)
         release.set()
         explicit_thread.join(5)
         assert not explicit_thread.is_alive()
-        repeated = engine.process_single("owner/repo", "pr", 17, explicit_only=True)
 
     assert explicit_result["errors"] == []
     assert repeated["errors"] == []
+    repeated_repair = repeated["repair_result"]
+    assert repeated_repair is not None, repeated
+    assert repeated_repair.local_handoff is not None
+    assert repeated_repair.local_handoff.job_id == target_id
     assert invocations == 1
     assert [job.job_id for job in jobs.discover_unsettled() if job.target_number == 17] == [target_id]
     assert jobs.get(unrelated_id).state is LocalJobState.PENDING  # type: ignore[union-attr]

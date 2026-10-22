@@ -307,6 +307,57 @@ def test_production_runner_composition_discovers_admitted_ci_job(tmp_path: Path,
     runner.close()
 
 
+def test_production_runner_decodes_failed_checks_captured_by_handler(tmp_path: Path, _use_real_commands) -> None:
+    """REQ-001: the production builder reconstructs the nested admitted request."""
+    harness = Harness.create(tmp_path)
+    job_id = harness.offer_from_pr_handler()
+    captured_checks: list[object] = []
+
+    def correction_ports(_repo, _pr, _config, *, captured_manager, workspace_root):  # type: ignore[no-untyped-def]
+        assert captured_manager is manager
+        correction = harness.correction(MagicMock(), MagicMock(workspace=Path(workspace_root)))
+
+        def initial(diagnostics, backend, targets, started):  # type: ignore[no-untyped-def]
+            captured_checks.extend(targets)
+            return correction.ports.initial_correction(diagnostics, backend, targets, started)
+
+        return CorrectionPorts(
+            automatic_fix_enabled=correction.ports.automatic_fix_enabled,
+            current_backend=correction.ports.current_backend,
+            high_score_backend=correction.ports.high_score_backend,
+            initial_correction=initial,
+            verify=correction.ports.verify,
+            follow_up=correction.ports.follow_up,
+            new_work_allowed=correction.ports.new_work_allowed,
+            pr_closed=correction.ports.pr_closed,
+            submit=correction.ports.submit,
+            defer_verification=correction.ports.defer_verification,
+            trace_initial=correction.ports.trace_initial,
+        )
+
+    manager = MagicMock()
+    backend_config = MagicMock()
+    backend_config.get_model_for_backend.return_value = "model"
+    with (
+        patch("auto_coder.ci_repair_authority.current_ci_failure_authority", harness.authority),
+        patch("auto_coder.cli_helpers.build_backend_manager", return_value=manager),
+        patch("auto_coder.llm_backend_config.get_llm_config", return_value=backend_config),
+        patch("auto_coder.pr_processor._get_github_actions_logs", return_value="feature.txt failed"),
+        patch("auto_coder.pr_processor.extract_all_failed_tests", return_value=["feature.txt"]),
+        patch("auto_coder.pr_processor._local_ci_correction_ports", side_effect=correction_ports),
+    ):
+        adapters = build_pr_local_job_adapters(harness.github, AutomationConfig(), harness.store, harness.controller)
+        runner = LocalJobRunner(harness.store, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters=adapters)
+        assert runner.poll() == 1
+        wait_until(lambda: runner.active_count() == 0)
+
+    completed = harness.store.get(job_id)
+    assert completed is not None and completed.invocation_outcome is InvocationOutcome.COMPLETED
+    assert captured_checks == ["feature.txt"]
+    assert harness.editor_calls == 1
+    runner.close()
+
+
 def test_explicit_checked_out_jules_authority_survives_into_production_runner(tmp_path: Path, _use_real_commands) -> None:
     harness = Harness.create(tmp_path)
     jules = metadata(harness.head, harness.base)
