@@ -130,7 +130,7 @@ from .logger_config import get_logger
 from .merge_operation_scheduler import get_merge_operation_scheduler
 from .merge_operation_state import MergeOperation
 from .parent_issue_reconciliation import ParentDeclarationStatus, ParentOperationalError, ParentSpecificationError, parse_parent_declaration
-from .pr_processor import PR_PROCESSING_STAGE
+from .pr_processor import PR_PROCESSING_STAGE, LocalPRRepairContext
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
 from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
@@ -2820,7 +2820,12 @@ class AutomationEngine:
             wake.result()
             return True
 
-        repair_finalizer = build_pr_repair_finalizer(self.github, local_job_store, wake_published_head)
+        repair_finalizer = build_pr_repair_finalizer(
+            self.github,
+            local_job_store,
+            wake_published_head,
+            self._get_implementation_slots(repo_name),
+        )
 
         from .local_pr_repair_recovery import (
             LOCAL_PR_REPAIR_FINALIZATION_STAGE,
@@ -3301,6 +3306,60 @@ class AutomationEngine:
                 result.target_reason = f"Local implementation publication deferred: {publication.diagnostic}"
         result.actions.append(result.target_reason)
         result.error = None if result.success else result.target_reason
+
+    def _complete_explicit_local_pr_repair(self, repo_name: str, result: CandidateProcessingResult) -> None:
+        """Wake and observe only the durable PR job accepted by ``--only``."""
+        from .pr_local_job_runtime import build_pr_local_job_adapters, build_pr_repair_finalizer
+
+        repair = result.repair_result
+        handoff = repair.local_handoff if repair is not None else None
+        if handoff is None:
+            return
+        store = self._get_local_job_store()
+        job = store.get(handoff.job_id)
+        if job is None or job.repository != repo_name or job.target_number != result.number or job.kind not in {LocalJobKind.PR_CI_FAILURE, LocalJobKind.PR_MERGE_CONFLICT} or job.implementation_execution_id != handoff.implementation_execution_id:
+            raise RuntimeError("Accepted local PR repair job does not match the explicit target")
+        slots = self._get_implementation_slots(repo_name)
+
+        def wake_published_head(repository: str, number: int, head_sha: str) -> bool:
+            if repository != repo_name or number != result.number or not head_sha:
+                return False
+            try:
+                transition = self.invalidations.invalidate_with_transition(EntityIdentity(repository, "pr", number))
+                self.review_adjudications.mark_unavailable(repository, number, f"PR repair published {head_sha}")
+            except Exception:
+                logger.opt(exception=True).error(f"Could not retain explicit PR #{number} publication invalidation")
+                return False
+            if transition.accepted and self._loop is not None and self._invalidation_wake_event is not None:
+                self._loop.call_soon_threadsafe(self._invalidation_wake_event.set)
+            return transition.accepted
+
+        finalizer = build_pr_repair_finalizer(self.github, store, wake_published_head, slots)
+        runner = LocalJobRunner(
+            store,
+            self.invocation_gate,
+            repository=repo_name,
+            capacity=1,
+            adapters=build_pr_local_job_adapters(self.github, self.config, store),
+            completion_wake=lambda completed: finalizer.finalize(completed.job_id),
+            job_ids=frozenset({job.job_id}),
+        )
+        try:
+            runner.poll()
+            while runner.active_count():
+                time.sleep(0.1)
+            runner.recover_unsettled()
+            runner.wake_downstream()
+        finally:
+            runner.close(wait=True)
+        current = store.get(job.job_id)
+        if current is None:
+            raise RuntimeError("Accepted local PR repair job disappeared")
+        result.target_outcome = ExplicitTargetOutcome.DEFERRED
+        result.success = False
+        result.target_reason = f"Local PR repair job {job.job_id} is {current.state.value}; fresh PR validation remains required"
+        result.actions.append(result.target_reason)
+        result.error = None
 
     async def _reconcile_open_github_entities(self, repo_name: str) -> None:
         """One attempt at recovery through the normal invalidation path.
@@ -7462,6 +7521,43 @@ class AutomationEngine:
                 result.target_outcome = ExplicitTargetOutcome.DEFERRED
                 result.actions = ["Deferred - graceful shutdown began before implementation ownership admission"]
                 return result
+            if explicit_only and candidate.type == "pr" and not force:
+                retained = self._get_local_job_store().unsettled_pr_repair(repo_name, item_number)
+                if retained is not None:
+                    retained_execution = retained.implementation_execution_id
+                    if retained_execution and retained_execution in slots.active_execution_ids(owner):
+                        from .pr_repair_dispatch import LocalPRRepairHandoff, PRRepairResult, RepairDisposition, RepairKind
+
+                        claim = self._get_local_job_store().get_pr_repair_claim(retained.job_id)
+                        if claim is None:
+                            result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                            result.error = "Cannot attach explicit processing to retained PR repair authority"
+                            return result
+                        kind = RepairKind.CI_FAILURE if retained.kind is LocalJobKind.PR_CI_FAILURE else RepairKind.MERGE_CONFLICT
+                        attached_handoff = LocalPRRepairHandoff(
+                            retained.job_id,
+                            repo_name,
+                            item_number,
+                            kind,
+                            claim.head_sha,
+                            claim.base_identity,
+                            retained_execution,
+                        )
+                        reason = f"Attached explicit processing to retained local PR repair job {retained.job_id}"
+                        result.repair_result = PRRepairResult(
+                            RepairDisposition.DEFERRED,
+                            (reason,),
+                            reason,
+                            repository=repo_name,
+                            pr_number=item_number,
+                            input_head=claim.head_sha,
+                            base_ref=claim.base_ref,
+                            local_handoff=attached_handoff,
+                        )
+                        result.actions = [reason]
+                        result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                        result.target_reason = reason
+                        return result
             execution_id = slots.current_execution_id(owner) if continue_execution else None
             inherited_execution = execution_id is not None
             owner_existed_before_admission = owner in slots.active_owners()
@@ -7669,6 +7765,19 @@ class AutomationEngine:
             from .issue_dispatch import DispatchOutcome
 
             local_job_owns_execution = candidate.type == "issue" and result.dispatch_result is not None and result.dispatch_result.outcome is DispatchOutcome.LOCAL_ACCEPTED
+            if candidate.type == "pr" and not inherited_execution:
+                try:
+                    retained = self._get_local_job_store().pr_repair_for_execution(repo_name, item_number, execution_id)
+                except RuntimeError as exc:
+                    retained = None
+                    local_job_owns_execution = True
+                    result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                    result.error = f"Cannot confirm local PR repair ownership transfer: {exc}"
+                if retained is not None:
+                    handoff = result.repair_result.local_handoff if result.repair_result is not None else None
+                    if handoff is not None and (handoff.job_id != retained.job_id or handoff.implementation_execution_id != execution_id):
+                        result.error = "Durable local PR repair handoff identity does not match its retained execution"
+                    local_job_owns_execution = True
             if not inherited_execution and not local_job_owns_execution:
                 slots.finish_execution(owner, execution_id)
                 if result.cloud_submission_not_started is True:
@@ -7938,6 +8047,10 @@ class AutomationEngine:
                         adversarial_validation_scheduler=self.adversarial_validation_scheduler,
                         stage_routing=self.issue_stage_routing,
                         implementation_slots=self._get_implementation_slots(repo_name),
+                        local_repair_context=LocalPRRepairContext(
+                            self._get_local_job_store(),
+                            implementation_slots.current_execution_id(implementation_slots.resolve_owner("pr", candidate.data, self.github)) or "",
+                        ),
                     )
                     result.actions = pr_result.actions_taken
                     # Check if there was an error during processing
@@ -8640,6 +8753,8 @@ class AutomationEngine:
 
                     if explicit_only and candidate.type == processing_result.type == "issue" and processing_result.number == number and processing_result.dispatch_result is not None and processing_result.dispatch_result.outcome is DispatchOutcome.LOCAL_ACCEPTED:
                         self._complete_explicit_local_issue(repo_name, processing_result)
+                    if explicit_only and candidate.type == processing_result.type == "pr" and processing_result.number == number and processing_result.repair_result is not None and processing_result.repair_result.local_handoff is not None:
+                        self._complete_explicit_local_pr_repair(repo_name, processing_result)
 
                     if explicit_only:
                         result.target_actions = list(processing_result.actions)
@@ -8757,6 +8872,8 @@ class AutomationEngine:
                     target_outcome=result.target_outcome or ExplicitTargetOutcome.FAILED.value,
                     target_actions=result.target_actions,
                     target_reason=result.target_reason,
+                    repair_result=result.repair_result,
+                    final_gate=result.final_gate,
                 )
                 if result.target_outcome is None:
                     diagnostic = f"Explicit processing produced no outcome for target #{number}"

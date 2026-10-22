@@ -128,6 +128,7 @@ class Harness:
     def offer_from_production_selection(self) -> str:
         authority = CIRepairAuthority(True, "current exact-head CI failure", self.head, snapshot(self.head))
         with (
+            pr_processor.local_pr_repair_context(pr_processor.LocalPRRepairContext(self.store, "execution-17")),
             patch.object(pr_processor, "_selected_local_backend_name", return_value="codex"),
             patch.object(pr_processor, "check_pr_repair_exhaustion", return_value=None),
         ):
@@ -140,7 +141,7 @@ class Harness:
                 store=self.store,
                 repair_store=LocalReviewRepairStore(self.root / "reviews.sqlite3"),
             )
-        assert result is not None and result.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN
+        assert result is not None and result.disposition is RepairDisposition.DEFERRED
         return result.receipt
 
     def offer_from_pr_handler(self) -> str:
@@ -151,6 +152,7 @@ class Harness:
         authority = CIRepairAuthority(True, "current exact-head CI failure", self.head, snapshot(self.head))
         self.github.get_pr_review_threads_strict.return_value = []
         with (
+            pr_processor.local_pr_repair_context(pr_processor.LocalPRRepairContext(self.store, "execution-17")),
             patch.object(pr_processor, "current_ci_failure_authority", return_value=nullcontext(authority)),
             patch.object(pr_processor, "check_github_actions_and_exit_if_in_progress", return_value=True),
             patch.object(pr_processor, "_get_mergeable_state", return_value={"mergeable": True}),
@@ -302,6 +304,105 @@ def test_production_runner_composition_discovers_admitted_ci_job(tmp_path: Path,
     assert completed is not None and completed.invocation_outcome is InvocationOutcome.COMPLETED
     assert harness.editor_calls == 1
     assert harness.store.get_result_artifact(completed.result_reference) is not None
+    runner.close()
+
+
+def test_production_runner_decodes_failed_checks_captured_by_handler(tmp_path: Path, _use_real_commands) -> None:
+    """REQ-001: the production builder reconstructs the nested admitted request."""
+    harness = Harness.create(tmp_path)
+    job_id = harness.offer_from_pr_handler()
+    captured_checks: list[object] = []
+
+    def correction_ports(_repo, _pr, _config, *, captured_manager, workspace_root):  # type: ignore[no-untyped-def]
+        assert captured_manager is manager
+        correction = harness.correction(MagicMock(), MagicMock(workspace=Path(workspace_root)))
+
+        def initial(diagnostics, backend, targets, started):  # type: ignore[no-untyped-def]
+            captured_checks.extend(targets)
+            return correction.ports.initial_correction(diagnostics, backend, targets, started)
+
+        return CorrectionPorts(
+            automatic_fix_enabled=correction.ports.automatic_fix_enabled,
+            current_backend=correction.ports.current_backend,
+            high_score_backend=correction.ports.high_score_backend,
+            initial_correction=initial,
+            verify=correction.ports.verify,
+            follow_up=correction.ports.follow_up,
+            new_work_allowed=correction.ports.new_work_allowed,
+            pr_closed=correction.ports.pr_closed,
+            submit=correction.ports.submit,
+            defer_verification=correction.ports.defer_verification,
+            trace_initial=correction.ports.trace_initial,
+        )
+
+    manager = MagicMock()
+    backend_config = MagicMock()
+    backend_config.get_model_for_backend.return_value = "model"
+    with (
+        patch("auto_coder.ci_repair_authority.current_ci_failure_authority", harness.authority),
+        patch("auto_coder.cli_helpers.build_backend_manager", return_value=manager),
+        patch("auto_coder.llm_backend_config.get_llm_config", return_value=backend_config),
+        patch("auto_coder.pr_processor._get_github_actions_logs", return_value="feature.txt failed"),
+        patch("auto_coder.pr_processor.extract_all_failed_tests", return_value=["feature.txt"]),
+        patch("auto_coder.pr_processor._local_ci_correction_ports", side_effect=correction_ports),
+    ):
+        adapters = build_pr_local_job_adapters(harness.github, AutomationConfig(), harness.store, harness.controller)
+        runner = LocalJobRunner(harness.store, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters=adapters)
+        assert runner.poll() == 1
+        wait_until(lambda: runner.active_count() == 0)
+
+    completed = harness.store.get(job_id)
+    assert completed is not None and completed.invocation_outcome is InvocationOutcome.COMPLETED
+    assert captured_checks == ["feature.txt"]
+    assert harness.editor_calls == 1
+    runner.close()
+
+
+def test_explicit_checked_out_jules_authority_survives_into_production_runner(tmp_path: Path, _use_real_commands) -> None:
+    harness = Harness.create(tmp_path)
+    jules = metadata(harness.head, harness.base)
+    jules["user"] = {"login": "google-labs-jules[bot]"}
+    jules["body"] = "Jules session: session-17"
+    harness.github.get_pull_request_metadata_strict.side_effect = lambda *_args: jules
+    authority = CIRepairAuthority(True, "current exact-head CI failure", harness.head, snapshot(harness.head))
+    with (
+        pr_processor.local_pr_repair_context(pr_processor.LocalPRRepairContext(harness.store, "execution-17")),
+        patch.object(pr_processor, "_selected_local_backend_name", return_value="codex"),
+        patch.object(pr_processor, "check_pr_repair_exhaustion", return_value=None),
+    ):
+        admitted = pr_processor._offer_selected_local_pr_repair(
+            "owner/repo",
+            jules,
+            RepairKind.CI_FAILURE,
+            harness.github,
+            ci_authority=authority,
+            explicit_local_checkout=True,
+            store=harness.store,
+            repair_store=LocalReviewRepairStore(tmp_path / "reviews.sqlite3"),
+        )
+    assert admitted is not None and admitted.disposition is RepairDisposition.DEFERRED
+
+    with (
+        patch("auto_coder.ci_repair_authority.current_ci_failure_authority", harness.authority),
+        patch(
+            "auto_coder.pr_processor.build_durable_ci_correction",
+            side_effect=lambda job, prepared, *_args: harness.correction(job, prepared),
+        ),
+    ):
+        adapters = build_pr_local_job_adapters(harness.github, AutomationConfig(), harness.store, harness.controller)
+        runner = LocalJobRunner(
+            harness.store,
+            InvocationAdmissionGate(),
+            repository="owner/repo",
+            capacity=1,
+            adapters=adapters,
+        )
+        assert runner.poll() == 1
+        wait_until(lambda: runner.active_count() == 0)
+
+    completed = harness.store.get(admitted.receipt)
+    assert completed is not None and completed.invocation_outcome is InvocationOutcome.COMPLETED
+    assert harness.editor_calls == 1
     runner.close()
 
 

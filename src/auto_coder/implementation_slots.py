@@ -14,7 +14,7 @@ import uuid
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterator, NoReturn, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterator, NoReturn, Optional, cast
 
 from .cloud_manager import claude_session_alias
 from .issue_context import extract_lifecycle_branch_issue_number, extract_lifecycle_directive_issue_references
@@ -998,6 +998,33 @@ class ImplementationSlotRepository:
     def current_execution_id(self, owner: ImplementationOwner) -> Optional[str]:
         """Return this thread's enclosing execution for reentrant lifecycle work."""
         return getattr(self._execution_context, "owners", {}).get(owner.key)
+
+    def finish_execution_by_id(self, execution_id: str) -> None:
+        """Retire one globally unique execution while preserving its owner."""
+        if not execution_id:
+            return
+        with self._state_lock():
+            owners = self._read()
+            matches: list[tuple[str, Dict[str, object], list[Dict[str, object]]]] = []
+            for owner_key, record in owners.items():
+                executions = record.setdefault("executions", [])
+                if not isinstance(executions, list) or any(not isinstance(value, dict) or not isinstance(value.get("id"), str) for value in executions):
+                    raise ImplementationSlotUnavailable("Cannot safely parse active implementation executions")
+                typed_executions = cast(list[Dict[str, object]], executions)
+                if any(value["id"] == execution_id for value in typed_executions):
+                    matches.append((owner_key, record, typed_executions))
+            if len(matches) > 1:
+                raise ImplementationSlotUnavailable("Implementation execution identity is not unique")
+            if matches:
+                owner_key, record, executions = matches[0]
+                record["executions"] = [value for value in executions if value["id"] != execution_id]
+                self._increment_activity_revision(record)
+                if record.get("admission_pending", False):
+                    record["admission_established"] = True
+                self._write(owners)
+                active = getattr(self._execution_context, "owners", {})
+                if active.get(owner_key) == execution_id:
+                    active.pop(owner_key, None)
 
     def active_execution_ids(self, owner: ImplementationOwner) -> tuple[str, ...]:
         """Return durable active execution identities for an owner."""

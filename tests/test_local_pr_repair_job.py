@@ -26,6 +26,14 @@ from auto_coder.pr_repair_dispatch import RepairDisposition, RepairKind
 pytestmark = pytest.mark.pr_repair_contract
 
 
+@pytest.fixture(autouse=True)
+def _engine_execution_context(tmp_path: Path):
+    from auto_coder import pr_processor
+
+    with pr_processor.local_pr_repair_context(pr_processor.LocalPRRepairContext(LocalJobStore(tmp_path / "context-jobs.sqlite3"), "execution-17")):
+        yield
+
+
 def snapshot(
     conclusion: CIConclusion = CIConclusion.FAILURE,
     availability: ObservationAvailability = ObservationAvailability.KNOWN,
@@ -131,15 +139,16 @@ def test_production_admission_contends_at_cas_and_replays_winner(tmp_path: Path,
     pr_data = client().get_pull_request_metadata_strict.return_value | {"number": 17}
 
     def selected(store: LocalJobStore):
-        return pr_processor._offer_selected_local_pr_repair(
-            "owner/repo",
-            pr_data,
-            RepairKind.CI_FAILURE,
-            client(),
-            ci_authority=authority,
-            store=store,
-            repair_store=repair_store,
-        )
+        with pr_processor.local_pr_repair_context(pr_processor.LocalPRRepairContext(store, "execution-17")):
+            return pr_processor._offer_selected_local_pr_repair(
+                "owner/repo",
+                pr_data,
+                RepairKind.CI_FAILURE,
+                client(),
+                ci_authority=authority,
+                store=store,
+                repair_store=repair_store,
+            )
 
     with (
         patch.object(pr_processor, "_selected_local_backend_name", return_value="codex"),
@@ -148,7 +157,7 @@ def test_production_admission_contends_at_cas_and_replays_winner(tmp_path: Path,
     ):
         results = tuple(pool.map(selected, stores))
 
-    assert [result.disposition for result in results] == [RepairDisposition.ACCEPTED_OR_UNCERTAIN] * 2
+    assert [result.disposition for result in results] == [RepairDisposition.DEFERRED] * 2
     assert results[0].receipt == results[1].receipt
     reopened = LocalJobStore(path)
     jobs = tuple(job for job in reopened.discover_unsettled() if job.kind is LocalJobKind.PR_CI_FAILURE)
@@ -269,7 +278,7 @@ def test_production_admission_defers_when_allowance_read_fails_then_progresses(t
         accepted = pr_processor._offer_selected_local_pr_repair("owner/repo", pr_data, RepairKind.CI_FAILURE, client(), ci_authority=authority, store=store)
 
     assert deferred is not None and deferred.disposition is RepairDisposition.DEFERRED
-    assert accepted is not None and accepted.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN
+    assert accepted is not None and accepted.disposition is RepairDisposition.DEFERRED
     assert len(store.discover_unsettled()) == 1
     assert unavailable.get_snapshot.call_count == 1
     assert available.get_snapshot.call_count == 1
@@ -331,7 +340,7 @@ def test_repeated_production_ci_reads_with_distinct_cycles_replay_one_job(tmp_pa
         )
 
     assert first is not None and second is not None
-    assert first.disposition is second.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN
+    assert first.disposition is second.disposition is RepairDisposition.DEFERRED
     assert first.receipt == second.receipt
     assert len(LocalJobStore(path).discover_unsettled()) == 1
 

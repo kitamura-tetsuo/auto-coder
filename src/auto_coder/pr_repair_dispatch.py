@@ -41,6 +41,19 @@ class RepairFactState(str, Enum):
 
 
 @dataclass(frozen=True)
+class LocalPRRepairHandoff:
+    """Identity of an accepted durable local repair, not its completion."""
+
+    job_id: str
+    repository: str
+    pr_number: int
+    kind: RepairKind
+    input_head: str
+    base_identity: str
+    implementation_execution_id: str
+
+
+@dataclass(frozen=True)
 class PRRepairRequest:
     repository: str
     pr_number: int
@@ -76,6 +89,7 @@ class PRRepairResult:
     pr_number: int = 0
     input_head: str = ""
     base_ref: str = ""
+    local_handoff: LocalPRRepairHandoff | None = None
 
     @property
     def stops_processing(self) -> bool:

@@ -52,15 +52,24 @@ class PRRepairPublicationResult:
 
 TargetObserver = Callable[[str, int], PRRepairTargetObservation]
 InvalidationWake = Callable[[str, int, str], bool]
+ExecutionCompletion = Callable[[LocalJobRecord], None]
 
 
 class PRRepairJobFinalizer:
     """Controller boundary between retained repair output and a PR branch."""
 
-    def __init__(self, store: LocalJobStore, observe_target: TargetObserver, wake: InvalidationWake) -> None:
+    def __init__(
+        self,
+        store: LocalJobStore,
+        observe_target: TargetObserver,
+        wake: InvalidationWake,
+        *,
+        finish_execution: ExecutionCompletion | None = None,
+    ) -> None:
         self._store = store
         self._observe_target = observe_target
         self._wake = wake
+        self._finish_execution = finish_execution
         self._workspace = PRRepairWorkspaceProducer(store)
 
     @staticmethod
@@ -123,7 +132,7 @@ class PRRepairJobFinalizer:
             return self._result(job_id, PRRepairPublicationDisposition.PENDING, diagnostic="job has no completed result")
         claim = LocalJobClaim(record, True)
         if record.invocation_outcome is InvocationOutcome.CANNOT_FIX:
-            return self._result(job_id, PRRepairPublicationDisposition.CANNOT_FIX)
+            return self._finish_terminal(record, PRRepairPublicationDisposition.CANNOT_FIX, "local PR repair cannot fix the selected failure")
         if record.invocation_outcome is not InvocationOutcome.COMPLETED:
             return self._result(job_id, PRRepairPublicationDisposition.REFUSED, diagnostic="result is not completed")
         artifact = self._store.get_execution_result_artifact(job_id, record.execution_incarnation)
@@ -155,12 +164,13 @@ class PRRepairJobFinalizer:
             push_receipt = self._store.get_effect_strict(job_id, record.execution_incarnation, "push")
             wake_receipt = self._store.get_effect_strict(job_id, record.execution_incarnation, "ci_wake")
             if candidate and push_receipt is not None and push_receipt.state == "completed" and wake_receipt is not None and wake_receipt.state == "completed":
+                self._retire_execution(record)
                 return self._result(job_id, PRRepairPublicationDisposition.PUBLISHED, candidate)
             return self._result(job_id, PRRepairPublicationDisposition.REFUSED, candidate, "settled job lacks complete publication receipts")
 
         observed = self._observe_target(record.repository, record.target_number)
         if not self._matches_target(observed, manifest, candidate=candidate):
-            return self._result(job_id, PRRepairPublicationDisposition.STALE, candidate, "PR target or publication ownership changed")
+            return self._finish_terminal(record, PRRepairPublicationDisposition.STALE, "PR target or publication ownership changed", candidate)
 
         if not candidate:
             candidate = self._commit(claim, manifest, verified.artifact_id)
@@ -172,7 +182,7 @@ class PRRepairJobFinalizer:
             # Re-observe immediately before claiming the single send permission.
             observed = self._observe_target(record.repository, record.target_number)
             if not self._matches_target(observed, manifest) or observed.head_sha != manifest.head_sha:
-                return self._result(job_id, PRRepairPublicationDisposition.STALE, candidate, "remote head changed before push")
+                return self._finish_terminal(record, PRRepairPublicationDisposition.STALE, "remote head changed before push", candidate)
             intent = self._store.claim_effect_intent_if_absent(
                 claim,
                 "push",
@@ -204,7 +214,35 @@ class PRRepairJobFinalizer:
                 return self._result(job_id, PRRepairPublicationDisposition.PENDING, candidate, "wake acknowledgement was not retained")
         if record.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING and not self._store.settle(claim, "exact PR repair publication completed"):
             return self._result(job_id, PRRepairPublicationDisposition.PENDING, candidate, "job settlement is pending")
+        self._retire_execution(self._store.get(job_id) or record)
         return self._result(job_id, PRRepairPublicationDisposition.PUBLISHED, candidate)
+
+    def _retire_execution(self, record: LocalJobRecord) -> None:
+        if self._finish_execution is not None and record.implementation_execution_id:
+            self._finish_execution(record)
+
+    def _finish_terminal(
+        self,
+        record: LocalJobRecord,
+        disposition: PRRepairPublicationDisposition,
+        diagnostic: str,
+        candidate: str = "",
+    ) -> PRRepairPublicationResult:
+        """Settle terminal repair work before releasing its exact execution."""
+        claim = LocalJobClaim(record, True)
+        if record.state is LocalJobState.RESULT_RECORDED:
+            if not self._store.mark_downstream_pending(claim):
+                return self._result(record.job_id, PRRepairPublicationDisposition.PENDING, candidate, "terminal disposition retention is pending")
+            record = self._store.get(record.job_id) or record
+            claim = LocalJobClaim(record, True)
+        if record.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING:
+            if not self._store.settle(claim, diagnostic):
+                return self._result(record.job_id, PRRepairPublicationDisposition.PENDING, candidate, "terminal job settlement is pending")
+            record = self._store.get(record.job_id) or record
+        if record.state is not LocalJobState.SETTLED:
+            return self._result(record.job_id, PRRepairPublicationDisposition.PENDING, candidate, "terminal job state is unavailable")
+        self._retire_execution(record)
+        return self._result(record.job_id, disposition, candidate, diagnostic)
 
     def _candidate(self, job_id: str, incarnation: str) -> str:
         effect = self._store.get_effect_strict(job_id, incarnation, "commit")

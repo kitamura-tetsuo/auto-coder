@@ -17,6 +17,7 @@ import threading
 import time
 import zipfile
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -112,6 +113,7 @@ from .issue_stage_routing import IMPLEMENTATION_STAGE, ImplementationRetryReques
 from .label_manager import LabelManager, LabelOperationError, filter_legacy_auto_coder_label
 from .llm_backend_config import get_pr_review_allowlist_from_config, get_review_adjudicator_allowlist_from_config
 from .local_ci_repair_execution import CorrectionPorts, LocalCIRepairPorts, LocalCIRepairRequest, LocalCIRepairResult, execute_correction, execute_local_ci_repair
+from .local_job_handoff import LocalJobStore
 from .logger_config import get_gh_logger, get_logger
 from .ordinary_closure_evidence import ApplicationStatus, ClosureEvidenceRecord, EvidenceState, ObservedTarget, restore_ordinary_result
 from .pr_blocker_closure import _BLOCKER_ID_RE, _GAP_ID_RE
@@ -189,6 +191,28 @@ from .utils import CommandExecutor, CommandResult, bind_command_execution_cwd, g
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
+
+
+@dataclass(frozen=True)
+class LocalPRRepairContext:
+    store: LocalJobStore
+    implementation_execution_id: str
+
+
+_local_pr_repair_context: ContextVar[Optional[LocalPRRepairContext]] = ContextVar("local_pr_repair_context", default=None)
+
+
+@contextmanager
+def local_pr_repair_context(context: Optional[LocalPRRepairContext]):
+    token = _local_pr_repair_context.set(context)
+    try:
+        yield
+    finally:
+        _local_pr_repair_context.reset(token)
+
+
+_local_pr_repair_scope = local_pr_repair_context
+
 
 # Pending-work stage for a PR evaluation interrupted by a GitHub operational
 # failure (local admission deferral, throttle, authentication, or forbidden
@@ -1474,6 +1498,13 @@ def _offer_selected_local_pr_repair(
 ) -> Optional[PRRepairResult]:
     """Stop a selected local route at its durable first-effect boundary."""
     from .local_pr_repair_job import LocalPRRepairOffer, local_pr_repair_evidence_identity, offer_local_pr_repair_job
+    from .pr_repair_dispatch import LocalPRRepairHandoff
+
+    context = _local_pr_repair_context.get()
+    if context is None or not context.implementation_execution_id:
+        return None
+    if store is None:
+        store = context.store
 
     # Some embedding callers supply a legacy authority adapter that predates
     # complete CI snapshots.  Such an adapter cannot produce a durable offer;
@@ -1509,6 +1540,8 @@ def _offer_selected_local_pr_repair(
         upstream_incarnation=evidence_identity,
         source_evidence_identity=evidence_identity,
         invocation_input=json.dumps({"failed_check_identities": failed, "failed_checks": list(failed_checks)}, sort_keys=True, default=str),
+        implementation_execution_id=context.implementation_execution_id,
+        explicit_local_checkout=explicit_local_checkout,
     )
 
     def owner_allowed(_request: LocalPRRepairOffer, final_metadata: Dict[str, Any]) -> bool:
@@ -1540,7 +1573,7 @@ def _offer_selected_local_pr_repair(
     if job is None:
         return PRRepairResult(RepairDisposition.DEFERRED, reason="Local PR repair admission is unavailable or blocked")
     return PRRepairResult(
-        RepairDisposition.ACCEPTED_OR_UNCERTAIN,
+        RepairDisposition.DEFERRED,
         reason=f"Durably admitted local {kind.value} repair job {job.job_id}",
         attempt_started=False,
         receipt_state=RepairFactState.AVAILABLE,
@@ -1549,6 +1582,7 @@ def _offer_selected_local_pr_repair(
         pr_number=int(pr_data["number"]),
         input_head=head_sha,
         base_ref=str(base.get("ref") or ""),
+        local_handoff=LocalPRRepairHandoff(job.job_id, repo_name, int(pr_data["number"]), kind, head_sha, base_identity, context.implementation_execution_id),
     )
 
 
@@ -2410,6 +2444,7 @@ def process_pull_request(
     adversarial_validation_scheduler: Optional[AdversarialValidationScheduler] = None,
     stage_routing: Optional[IssueStageRoutingStore] = None,
     implementation_slots: Optional[ImplementationSlotRepository] = None,
+    local_repair_context: Optional[LocalPRRepairContext] = None,
 ) -> ProcessedPRResult:
     """Process a single pull request with priority order.
 
@@ -2419,7 +2454,7 @@ def process_pull_request(
     automatic recovery identity for a Jules PR closed for stale CI (Issue
     #2286). Omitting them preserves the historical unlinked behavior.
     """
-    with stale_jules_recovery_context(stage_routing, implementation_slots):
+    with stale_jules_recovery_context(stage_routing, implementation_slots), _local_pr_repair_scope(local_repair_context):
         return _process_pull_request_impl(
             github_client,
             config,
@@ -10936,7 +10971,11 @@ def build_durable_ci_correction(job: Any, prepared: Any, github_client: Any, con
 
     try:
         payload = json.loads(job.invocation_input)
-        failed_checks = payload["failed_checks"]
+        captured_input = payload.get("invocation_input")
+        if not isinstance(captured_input, str):
+            return None
+        captured = json.loads(captured_input)
+        failed_checks = captured["failed_checks"]
         if not isinstance(failed_checks, list) or not failed_checks:
             return None
         pr_data = github_client.get_pull_request_metadata_strict(job.repository, job.target_number)

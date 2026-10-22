@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from auto_coder import pr_processor
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.codex_pr_attribution import AttributionDisposition
 from auto_coder.conflict_resolver import inspect_conflicts
@@ -276,6 +277,7 @@ def test_selected_local_origin_runs_through_runner_and_persists_exact_manifest(t
         return "ACTION_SUMMARY: runner resolved"
 
     with (
+        pr_processor.local_pr_repair_context(pr_processor.LocalPRRepairContext(store, "execution-7")),
         patch.object(pr_processor, "_selected_local_backend_name", return_value="codex"),
         patch.object(pr_processor, "check_pr_repair_exhaustion", return_value=None),
     ):
@@ -289,7 +291,7 @@ def test_selected_local_origin_runs_through_runner_and_persists_exact_manifest(t
             repair_store=review_store,
         )
 
-    assert admitted is not None and admitted.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN
+    assert admitted is not None and admitted.disposition is RepairDisposition.DEFERRED
     job = store.get(admitted.receipt)
     assert job is not None and job.state is LocalJobState.PENDING
     with (
@@ -360,6 +362,7 @@ def test_normal_mergeability_remediation_admits_and_runs_in_private_workspace(tm
         return "ACTION_SUMMARY: resolved conflict"
 
     with (
+        pr_processor.local_pr_repair_context(pr_processor.LocalPRRepairContext(LocalJobStore(), "execution-7")),
         patch("auto_coder.pr_processor.GitHubClient.get_instance", return_value=github),
         patch("auto_coder.pr_processor.get_ghapi_client", return_value=api),
         patch("auto_coder.pr_processor._selected_local_backend_name", return_value="codex"),
@@ -369,7 +372,7 @@ def test_normal_mergeability_remediation_admits_and_runs_in_private_workspace(tm
         actions = _start_mergeability_remediation(7, "DIRTY", "owner/repo")
 
     assert actions.repair_result is not None
-    assert actions.repair_result.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN
+    assert actions.repair_result.disposition is RepairDisposition.DEFERRED
     checkout.assert_not_called()
     store = LocalJobStore()
     job = store.get(actions.repair_result.receipt)

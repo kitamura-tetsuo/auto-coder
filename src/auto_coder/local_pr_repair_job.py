@@ -33,6 +33,8 @@ class LocalPRRepairOffer:
     upstream_incarnation: str
     source_evidence_identity: str
     invocation_input: str
+    implementation_execution_id: str = ""
+    explicit_local_checkout: bool = False
 
 
 OwnerAdmission = Callable[[LocalPRRepairOffer, dict[str, Any]], bool]
@@ -92,7 +94,7 @@ def offer_local_pr_repair_job(
 
     kind = LocalJobKind.PR_CI_FAILURE if request.kind is RepairKind.CI_FAILURE else LocalJobKind.PR_MERGE_CONFLICT
     payload = json.dumps(asdict(request), sort_keys=True, separators=(",", ":"), default=lambda value: value.value)
-    offer = LocalJobOffer(kind, request.repository, request.pr_number, request.upstream_attempt, request.backend_name, payload)
+    offer = LocalJobOffer(kind, request.repository, request.pr_number, request.upstream_attempt, request.backend_name, payload, request.implementation_execution_id)
     admission = PRRepairAdmission(
         request.head_repository,
         request.head_ref,

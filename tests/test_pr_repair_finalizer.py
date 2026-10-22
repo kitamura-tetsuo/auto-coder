@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from auto_coder.github_pending_work import PendingReason, PendingWorkPersistenceError, PendingWorkScheduler, PendingWorkStore
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore, PRRepairAdmission
 from auto_coder.local_job_runner import LocalJobRunner
@@ -57,9 +58,10 @@ def completed_job(
     kind: LocalJobKind = LocalJobKind.PR_CI_FAILURE,
     target: int = 7,
     edit: bool = True,
+    execution_id: str = "",
 ):
     store = LocalJobStore(tmp_path / f"jobs-{target}.sqlite3")
-    offer = LocalJobOffer(kind, "owner/repo", target, f"attempt-{target}", "codex", "repair")
+    offer = LocalJobOffer(kind, "owner/repo", target, f"attempt-{target}", "codex", "repair", execution_id)
     admission = PRRepairAdmission(
         "owner/repo",
         "feature",
@@ -100,6 +102,121 @@ def completed_job(
     assert artifact is not None
     assert store.record_result(claim, InvocationOutcome.COMPLETED, artifact.artifact_id, executor_token="runner")
     return store, claim, prepared, artifact
+
+
+def test_published_repair_retires_execution_but_preserves_owner(tmp_path: Path, _use_real_commands) -> None:
+    source, remote, head, base = repository(tmp_path)
+    slots = ImplementationSlotRepository("owner/repo", 2, tmp_path / "slots.json")
+    owner = ImplementationOwner("pr", 7)
+    execution_id = slots.start_execution(owner)
+    assert execution_id is not None
+    store, claim, _prepared, _artifact = completed_job(
+        tmp_path,
+        source,
+        head,
+        base,
+        execution_id=execution_id,
+    )
+    finalizer = PRRepairJobFinalizer(
+        store,
+        observer(remote, base),
+        lambda *_args: True,
+        finish_execution=lambda record: slots.finish_execution_by_id(record.implementation_execution_id),
+    )
+
+    result = finalizer.finalize(claim.record.job_id)
+
+    assert result.disposition is PRRepairPublicationDisposition.PUBLISHED
+    assert slots.active_execution_ids(owner) == ()
+    assert owner in slots.active_owners()
+
+
+def test_failed_publication_invalidation_remains_retryable_without_wake_receipt(tmp_path: Path, _use_real_commands) -> None:
+    source, remote, head, base = repository(tmp_path)
+    store, claim, _prepared, _artifact = completed_job(tmp_path, source, head, base)
+
+    result = PRRepairJobFinalizer(store, observer(remote, base), lambda *_args: False).finalize(claim.record.job_id)
+
+    assert result.disposition is PRRepairPublicationDisposition.PENDING
+    retained = store.get(claim.record.job_id)
+    assert retained is not None and retained.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+    wake = store.get_effect_strict(retained.job_id, retained.execution_incarnation, "ci_wake")
+    assert wake is not None and wake.state == "pending"
+
+
+def test_cannot_fix_settles_edit_claim_and_retires_only_execution(tmp_path: Path) -> None:
+    slots = ImplementationSlotRepository("owner/repo", 2, tmp_path / "slots.json")
+    owner = ImplementationOwner("pr", 7)
+    execution_id = slots.start_execution(owner)
+    assert execution_id is not None
+    store = LocalJobStore(tmp_path / "cannot-fix.sqlite3")
+    offer = LocalJobOffer(LocalJobKind.PR_MERGE_CONFLICT, "owner/repo", 7, "attempt-7", "codex", "repair", execution_id)
+    admission = PRRepairAdmission(
+        "owner/repo",
+        "feature",
+        "H1",
+        "owner/repo",
+        "main",
+        "B1",
+        "merge_conflict",
+        "evidence-7",
+        "upstream-7",
+        (),
+        True,
+        True,
+        True,
+        True,
+        True,
+        False,
+    )
+    assert store.offer_pr_repair(offer, admission) is not None
+    claim = store.claim(offer.job_id, "runner")
+    assert claim is not None and claim.acquired
+    artifact = store.persist_result_artifact(claim, InvocationOutcome.CANNOT_FIX, "CANNOT_FIX", executor_token="runner")
+    assert artifact is not None
+    assert store.record_result(claim, InvocationOutcome.CANNOT_FIX, artifact.artifact_id, executor_token="runner")
+    finalizer = PRRepairJobFinalizer(
+        store,
+        MagicMock(),
+        MagicMock(),
+        finish_execution=lambda record: slots.finish_execution_by_id(record.implementation_execution_id),
+    )
+
+    result = finalizer.finalize(offer.job_id)
+
+    assert result.disposition is PRRepairPublicationDisposition.CANNOT_FIX
+    assert store.get(offer.job_id).state is LocalJobState.SETTLED  # type: ignore[union-attr]
+    assert slots.active_execution_ids(owner) == ()
+    assert owner in slots.active_owners()
+    next_execution = slots.start_execution(owner)
+    assert next_execution is not None
+    slots.finish_execution(owner, next_execution)
+
+
+def test_stale_artifact_settles_edit_claim_and_retires_only_execution(tmp_path: Path, _use_real_commands) -> None:
+    source, remote, head, base = repository(tmp_path)
+    slots = ImplementationSlotRepository("owner/repo", 2, tmp_path / "slots.json")
+    owner = ImplementationOwner("pr", 7)
+    execution_id = slots.start_execution(owner)
+    assert execution_id is not None
+    store, claim, _prepared, _artifact = completed_job(tmp_path, source, head, base, execution_id=execution_id)
+    git(remote, "update-ref", "refs/heads/feature", base)
+    finalizer = PRRepairJobFinalizer(
+        store,
+        observer(remote, base),
+        MagicMock(),
+        finish_execution=lambda record: slots.finish_execution_by_id(record.implementation_execution_id),
+    )
+
+    result = finalizer.finalize(claim.record.job_id)
+
+    assert result.disposition is PRRepairPublicationDisposition.STALE
+    assert store.get(claim.record.job_id).state is LocalJobState.SETTLED  # type: ignore[union-attr]
+    assert slots.active_execution_ids(owner) == ()
+    assert owner in slots.active_owners()
+    next_execution = slots.start_execution(owner)
+    assert next_execution is not None
+    slots.finish_execution(owner, next_execution)
 
 
 def observer(remote: Path, base: str):

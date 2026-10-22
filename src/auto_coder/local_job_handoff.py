@@ -824,6 +824,34 @@ class LocalJobStore:
             ).fetchall()
         return frozenset(str(row[0]) for row in rows)
 
+    def pr_repair_for_execution(self, repository: str, pr_number: int, execution_id: str) -> Optional[LocalJobRecord]:
+        """Strictly find the unsettled PR repair owning an implementation execution."""
+        try:
+            with self._connect() as connection:
+                rows = connection.execute(
+                    "SELECT * FROM local_jobs WHERE repository=? AND target_number=? AND kind IN (?, ?) AND state<>? AND implementation_execution_id=?",
+                    (repository, pr_number, LocalJobKind.PR_CI_FAILURE.value, LocalJobKind.PR_MERGE_CONFLICT.value, LocalJobState.SETTLED.value, execution_id),
+                ).fetchall()
+            if len(rows) > 1:
+                raise RuntimeError("multiple local PR repair jobs own one execution")
+            return self._record(rows[0]) if rows else None
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            raise RuntimeError("local PR repair execution lookup failed") from exc
+
+    def unsettled_pr_repair(self, repository: str, pr_number: int) -> Optional[LocalJobRecord]:
+        """Strictly find the single retained edit claim for one PR."""
+        try:
+            with self._connect() as connection:
+                rows = connection.execute(
+                    "SELECT * FROM local_jobs WHERE repository=? AND target_number=? AND kind IN (?, ?) AND state<>?",
+                    (repository, pr_number, LocalJobKind.PR_CI_FAILURE.value, LocalJobKind.PR_MERGE_CONFLICT.value, LocalJobState.SETTLED.value),
+                ).fetchall()
+            if len(rows) > 1:
+                raise RuntimeError("multiple unsettled local PR repair jobs target one PR")
+            return self._record(rows[0]) if rows else None
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            raise RuntimeError("local PR repair target lookup failed") from exc
+
     def issue_job_evidence(self, repository: str, issue_number: int) -> tuple[LocalIssueJobEvidence, ...]:
         """Read all retained jobs and effects for one exact repository/Issue.
 
