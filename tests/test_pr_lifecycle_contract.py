@@ -618,6 +618,56 @@ def _run_ci_consumer(snapshot, *, head=H1, remote_head=None, thread_state=None, 
     return actions, merge, failure_consumer, local_verification
 
 
+def run_public_ci_consumer(snapshot, *, head, pr_number=PR_NUMBER, thread_state=None):
+    """Re-enter the public PR processor for one independently observed head."""
+    snapshot = replace(snapshot, subject=replace(snapshot.subject, pr_number=pr_number))
+    config = AutomationConfig()
+    config.AUTO_MERGE = True
+    config.pr_review_thread_gate = thread_state is not None
+    pr_data = {
+        "number": pr_number,
+        "body": "Fixes #99",
+        "labels": [],
+        "state": "open",
+        "user": {"login": "human"},
+        "head": {"ref": "feature", "sha": head},
+        "base": {"ref": "main"},
+    }
+    client = MagicMock(token="controlled-token")
+    client.get_pull_request.return_value = {"head": {"sha": head}}
+    cycles = iter(range(20))
+
+    def observe(*_args, **_kwargs):
+        return replace(snapshot, cycle_id=f"{snapshot.cycle_id}-{next(cycles)}")
+
+    conclusions = {fact.conclusion for fact in snapshot.facts}
+    github_checks = GitHubActionsStatusResult(
+        success=snapshot.availability is ObservationAvailability.KNOWN and conclusions == {CIConclusion.SUCCESS},
+        in_progress=CIConclusion.PENDING in conclusions,
+        observation=snapshot,
+    )
+
+    with (
+        patch("auto_coder.util.github_action.get_ghapi_client", return_value=MagicMock()),
+        patch("auto_coder.util.github_action.GitHubClient.get_instance", return_value=client),
+        patch("auto_coder.util.github_action.observe_ci", side_effect=observe),
+        patch("auto_coder.pr_processor._check_github_actions_status", return_value=github_checks),
+        patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as unsafe,
+        patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+        patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=thread_state is not None),
+        patch("auto_coder.pr_processor._is_pr_adversarial_validation_enabled", return_value=False),
+        patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=thread_state or ClaimedReviewThreadGateState()),
+        patch("auto_coder.pr_processor._verify_pending_local_correction"),
+        patch("auto_coder.pr_processor.check_pr_repair_exhaustion", return_value=None),
+        patch("auto_coder.pr_processor.ci_observation_merge_authority", return_value=nullcontext(True)),
+        patch("auto_coder.pr_processor._merge_pr", return_value=True) as merge,
+        patch("auto_coder.pr_processor.get_detailed_checks_from_history") as failure_consumer,
+    ):
+        unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
+        result = process_pull_request(client, config, REPOSITORY, pr_data)
+    return result, merge, failure_consumer
+
+
 @pytest.mark.parametrize(
     "snapshot",
     [
