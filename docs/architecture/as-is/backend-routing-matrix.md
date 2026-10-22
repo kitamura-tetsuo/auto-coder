@@ -1,6 +1,6 @@
 # Backend routing and execution-path matrix
 
-Source snapshot: **`2c5624a`** (2026-10-18 UTC). [Scope and notation](README.md).
+Source snapshot: **`39cc4c0`** (2026-10-22 UTC). [Scope and notation](README.md).
 
 Here "local" describes the controller-side execution/repair route or explicit-local marker. It does not, by itself, prove that model weights run on local hardware: a locally invoked client can use a configured inference transport. Model hosting, execution lifecycle and provider task ownership are different axes.
 
@@ -10,9 +10,9 @@ Here "local" describes the controller-side execution/repair route or explicit-lo
 | --- | --- | --- | --- |
 | New Issue implementation | Common dispatch normally accepts an `ISSUE_IMPLEMENTATION` durable job; executor and finalizer are separate | Provider adapters use their own submission/receipt tracking | Existing ownership is reconciled before choosing a new backend |
 | Existing PR review correction | Explicit-local route can accept `PR_REVIEW_CORRECTION` with captured head and reserved repair allowance | Authorized provider continuation through the PR route | Explicit-local plus an exact-PR cloud binding is `CONFLICT` |
-| PR CI failure | `_handle_pr_merge` builds the request/ports and calls `execute_local_ci_repair`; eligible correction calls `execute_correction`, whose submission port commits and publishes | The typed repair adapter enters Codex follow-up and provider-specific active-task handling | A synchronized candidate still awaits full current-head CI; this is not a generic local-job kind |
-| PR conflict/base update | `BaseUpdateConflictExecutionService` carries the operation into existing Git/private-workspace producers | The same service carries applicable provider-specific continuation/remediation results | The service does not select providers or imply parity across them |
-| Local result publication | Issue finalizer checks artifact, non-force push, exact PR and association | Remote provider owns its task-specific implementation/publication behavior | Model exit alone is not confirmed publication |
+| PR CI failure | `_handle_pr_merge` admits `PR_CI_FAILURE`; `LocalCIRepairJobAdapter` runs focused correction in the retained workspace | Existing cloud continuation remains provider-owned | Job/result success is not H2 publication or current-head CI |
+| PR conflict/base update | Affirmative local conflict admits `PR_MERGE_CONFLICT`; `LocalConflictRepairJobAdapter` retains H1/B lineage | Existing provider continuation remains provider-owned | A base update that changes H requires fresh routing before correction |
+| Local result publication | `PRRepairJobFinalizer` verifies the artifact, commits, exact-head pushes, observes H2, records receipt, and wakes processing | Remote provider owns task-specific publication | Pending finalization and confirmed H2 are distinct; model exit proves neither |
 | Independent PR validation | Pinned-head review and accepted-findings/two-tier gates | Reviewer backend selection can be separate from implementation backend | Implementing a repair does not approve that repair |
 | Merge and slot retirement | Controller coordinates current-head merge and durable cleanup | GitHub supplies remote merge evidence | Command acceptance is not observed merge or released capacity |
 
@@ -41,9 +41,7 @@ Controlled production-entry integration tests reach local and cloud repair
 boundaries, retain durable cloud ownership across re-entry, observe a new head,
 and require current-head CI and independent review before merge. Git-sensitive
 cases use temporary repositories and provider/GitHub transports are controlled.
-No live provider, production GitHub, or continuously running daemon execution is
-claimed. Local CI and conflict repair also remain synchronous controller paths;
-this extraction does not make them restart-safe asynchronous jobs.
+No live provider, production GitHub, or continuously running daemon execution is claimed. The joined deterministic group is `tests/test_durable_local_pr_repair_lifecycle.py`; failure and reentry boundaries remain in the focused runner/finalizer suites. An entered provider without supported continuation remains pending for operator reconciliation.
 
 Sources: [Issue policy/adapters][dispatch], [local jobs][jobs], [local executor][local], [Issue publication][finalizer], [PR routing and CI/conflict branches][pr], [local review correction][correction].
 

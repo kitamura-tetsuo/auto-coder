@@ -1,6 +1,6 @@
 # PR CI observation, reachability and repair
 
-Source snapshot: **`2c5624a`** (2026-10-18 UTC). [Scope and notation](README.md).
+Source snapshot: **`39cc4c0`** (2026-10-22 UTC). [Scope and notation](README.md).
 
 ## C1. Candidate filtering and handler ordering are not the same gate
 
@@ -69,64 +69,49 @@ The PR processor contains no-run/workflow-dispatch handling with durable claims 
 
 Reachability matters: the current `KNOWN_EMPTY` conversion can stop execution before a later no-run branch. The existence of that branch does not establish a universal escape from an empty CI snapshot.
 
-## C3. CI and conflict repair are not generic local jobs
+## C3. Eligible local CI and conflict repairs are durable jobs
 
 ```mermaid
 sequenceDiagram
-    participant P as PR processor
-    participant O as Origin, ownership and continuation evidence
-    participant C as Cloud provider continuation
-    participant L as Local worktree repair path
-    participant G as GitHub CI and PR head
-    P->>O: Resolve current repair origin and active work
-    alt Applicable provider task is active
-        P-->>P: Wait without duplicate repair submission
-    else Codex-owned CI failure with authorized continuation
-        P->>C: Request same-owner follow-up
-        C-->>P: Accepted, deferred or uncertain result
-        P->>O: Retain receipt/claim and notification progress
-    else Authorized non-Codex local repair with auto-fix enabled
-        P->>L: Establish PR execution authority and update from base
-        L->>L: execute_local_ci_repair
-        alt Base update is skipped or reports no update needed
-            L->>L: execute_correction and focused verification
-            L->>G: _submit_ci_repair_candidate commits and publishes candidate
-        else Base update has a terminal repair disposition
-            L-->>P: Return typed base/conflict result without correction
-        end
-        L-->>P: Repair/synchronization result; full CI remains pending
-    else Missing origin, unknown authority or manual-only path
-        P-->>P: Skip/defer/report the applicable reason
-    end
+    participant P as Ordinary or explicit PR processor
+    participant A as Durable admission and implementation slot
+    participant R as LocalJobRunner and private workspace
+    participant F as PRRepairJobFinalizer
+    participant G as GitHub head and independent gates
+    P->>A: Reconfirm exact H1/B, local route and owner
+    A-->>P: Persist PR_CI_FAILURE or PR_MERGE_CONFLICT job
+    R->>A: Claim and checkpoint provider entry
+    R->>R: Edit exact private H1/B workspace and run focused tests
+    R->>A: Persist immutable result artifact
+    F->>A: Verify job/execution/artifact lineage
+    F->>G: Exact-head push and observe H2
+    F->>A: Persist receipt, wake and settle execution
+    G-->>P: Fresh H2 CI, review/thread and merge observations
 ```
 
-Local CI repair can use local test results and Actions failure information; a
-passed focused test is not proof that GitHub CI passed. `_handle_pr_merge`
-constructs `LocalCIRepairRequest` and `LocalCIRepairPorts`, then enters
-`execute_local_ci_repair`. When base update is skipped, that function summarizes
-the failed checks and calls `execute_correction`; when base update is enabled,
-it first invokes the `_update_with_base_branch` port and calls
-`execute_correction` only after a `NO_UPDATE_NEEDED` result. Other terminal
-base/conflict dispositions return directly to the handler. Correction runs the
-focused verification before the submission port (`_submit_ci_repair_candidate`)
-commits and publishes the candidate. The retained
-`_fix_pr_issues_with_testing` function is a forwarding surface that calls
-`execute_correction`; it is not the normal handler entry. A synchronized new
-head still awaits full current-head CI validation. `success`, `attempt_started`,
-`should_continue` and synchronization results must not be collapsed into one
-generic completion flag.
+Both ordinary `_handle_pr_merge` selection and explicit target processing stop
+at the same durable offer for eligible local routes. The runner claims that
+exact envelope; CI and conflict adapters prepare private workspaces and retain
+model output plus witnessed editing identity in the immutable artifact. Cloud
+continuations, review correction and base-update routing keep their existing
+owners and are not converted by this path.
 
-The existing CI-failure and conflict owners are entered through
-`pr_repair_dispatch` requests and return typed dispositions. Base updates and
-conflicts additionally cross `BaseUpdateConflictExecutionService`. The adapters carry
-the immutable PR head and the established cloud/local origin, but deliberately
-contain no provider-selection tree. Existing provider helpers, durable
-receipts, worktree operations, test runner, and Git helpers remain the effect
-owners; diagnostic action strings are not completion evidence.
+Provider entry without confirmed continuation support is **unable to resume**
+and remains reconciliation-pending; it is never permission for a second model
+invocation. A confirmed artifact whose commit, push receipt, or wake is
+incomplete is **pending finalization** and can be replayed without model entry.
+Only exact remote observation of the candidate establishes **confirmed H2**.
+H2 then invalidates older observations: current-head CI, review/thread/two-tier
+acceptance, observed merge, and lifetime retirement remain independent facts.
 
-The public PR handler consumes these results and preserves retry, receipt, resulting-head, and synchronization facts. A synchronized repaired head returns on a later controller entry for fresh CI and independent review; helper success does not lead directly to merge.
-
-The durable local-job kinds in this snapshot cover Issue implementation and PR review correction, not CI/conflict repairs. Those local paths remain synchronous and do not claim restart-safe inference or publication. See [backend routing](backend-routing-matrix.md).
+The maintained joined positive group is
+`tests/test_durable_local_pr_repair_lifecycle.py`. Focused failure/reentry
+coverage remains in `tests/test_z_local_ci_repair_job.py`,
+`tests/test_local_conflict_repair_job.py`, and
+`tests/test_pr_repair_finalizer.py`; see the [bounded inventory](../../client-features/pr-repair-execution-test-inventory.md).
+These controlled GitHub/provider transports are not the unavailable opt-in live
+profile. See also [backend routing](backend-routing-matrix.md) and the
+[feature lifecycle](../../client-features/durable-local-pr-repair-lifecycle.md).
 
 Sources: [CI conversion][ci] (`_check_github_actions_status`); [candidate collection][engine] (`_get_candidates`); [PR branches][pr] (`_handle_pr_merge`, `_start_mergeability_remediation`, `_fix_pr_issues_with_testing`, `_submit_ci_repair_candidate`, `_update_with_base_branch`); [local CI execution][local-ci] (`execute_local_ci_repair`, `execute_correction`); [local-job kinds][jobs].
 

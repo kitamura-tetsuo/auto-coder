@@ -1,6 +1,6 @@
 # Auto-Coder: as-is architecture
 
-Source snapshot: **`2c5624a`** (2026-10-18 UTC).
+Source snapshot: **`39cc4c0`** (2026-10-22 UTC).
 
 These documents describe the inspected production code, not a target architecture or an implementation contract. All source links are pinned to the snapshot above. The diagrams deliberately include blocked, uncertain and partially completed paths; a drawn path is not evidence that a live provider integration succeeds.
 
@@ -14,7 +14,7 @@ These documents describe the inspected production code, not a target architectur
 | Which ownership survives a worker return? | [Ownership and resumption](issue-ownership-and-resumption.md) |
 | How are providers selected and fallback bounded? | [Provider dispatch](issue-provider-dispatch.md) |
 | How are retries and uncertain submissions recovered? | [Retry and recovery](issue-retry-and-recovery.md) |
-| Where can CI prevent repair from being reached? | [CI and repair](pr-ci-and-repair.md) |
+| How do durable local CI/conflict repair and fresh-head gates interact? | [CI and repair](pr-ci-and-repair.md) |
 | What does review acceptance actually authorize? | [Adversarial validation](pr-adversarial-validation.md) |
 | How do strong audit, closure and publication interact? | [Two-tier review](pr-two-tier-review.md) |
 | When are merge effects and slot release complete? | [Merge and recovery](pr-merge-and-recovery.md) |
@@ -31,7 +31,7 @@ Participants are responsibility groupings, not necessarily separate processes. A
 
 ## Material changes from the previous snapshot
 
-The normal Issue path now sends implementation-lane, refill, explicit-target, and stale-session recovery entries through `IssueImplementationService`. Ordinary provider selection is assembled by `OrdinaryIssueAdapterComposition`, while startup and accepted-retry/local-job recovery are assembled once per repository by `IssueRuntimeComposition`. Local Issue implementation and local PR review correction can transfer execution to durable jobs. Synchronous local CI repair and base/conflict execution remain separate production paths, but now enter typed execution services and return typed repair evidence to PR orchestration.
+The normal Issue path now sends implementation-lane, refill, explicit-target, and stale-session recovery entries through `IssueImplementationService`. Ordinary provider selection is assembled by `OrdinaryIssueAdapterComposition`, while startup and accepted-retry/local-job recovery are assembled once per repository by `IssueRuntimeComposition`. Local Issue implementation and local PR review correction can transfer execution to durable jobs. Eligible local CI and conflict repair now transfer an exact-head execution to `PR_CI_FAILURE` or `PR_MERGE_CONFLICT` jobs. Their runner artifacts, exact-head publication receipts, startup recovery, and fresh-head validation remain separate authority phases.
 
 Explicit-local review routing does not simply override every cloud association: an exact-PR cloud binding plus an explicit-local marker produces a conflict. `KNOWN_EMPTY` CI evidence remains non-passing, but candidate filtering admits an affirmatively conflicting PR when remediation is enabled so the handler can reach conflict repair. Other empty-CI candidates still wait. These are current observations, not fixes introduced by this documentation update.
 
@@ -39,7 +39,7 @@ Model completion, job settlement, PR publication, effective review acceptance, o
 
 ## Evidence and maintenance
 
-This refresh is based on static inspection at revision `2c5624a` and controlled integration runs of the maintained `pr_repair_contract` group. That evidence is not a live production-GitHub, paid-provider, daemon, or operational deployment run; probes in the refactoring document remain proposals unless explicitly identified as maintained tests.
+This refresh is based on static inspection through revision `39cc4c0` and the bounded controlled tests listed in the [repair execution inventory](../../client-features/pr-repair-execution-test-inventory.md). That evidence is not a live production-GitHub, paid-provider, daemon, or operational deployment run; probes in the refactoring document remain proposals unless explicitly identified as maintained tests.
 
 When refreshing a page, update its source snapshot, recheck its callers as well as its helpers, and retain the distinction between observed behavior and proposed changes. Do not repin old line numbers mechanically. Check both the daemon origin and explicit processing when reachability differs. Source symbols are listed beside pinned file links so they remain searchable without misleading line anchors.
 
