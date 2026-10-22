@@ -3279,7 +3279,21 @@ class AutomationEngine:
         if job is None or job.repository != repo_name or job.target_number != result.number or job.kind not in {LocalJobKind.PR_CI_FAILURE, LocalJobKind.PR_MERGE_CONFLICT} or job.implementation_execution_id != handoff.implementation_execution_id:
             raise RuntimeError("Accepted local PR repair job does not match the explicit target")
         slots = self._get_implementation_slots(repo_name)
-        finalizer = build_pr_repair_finalizer(self.github, store, lambda *_args: True, slots)
+
+        def wake_published_head(repository: str, number: int, head_sha: str) -> bool:
+            if repository != repo_name or number != result.number or not head_sha:
+                return False
+            try:
+                transition = self.invalidations.invalidate_with_transition(EntityIdentity(repository, "pr", number))
+                self.review_adjudications.mark_unavailable(repository, number, f"PR repair published {head_sha}")
+            except Exception:
+                logger.opt(exception=True).error(f"Could not retain explicit PR #{number} publication invalidation")
+                return False
+            if transition.accepted and self._loop is not None and self._invalidation_wake_event is not None:
+                self._loop.call_soon_threadsafe(self._invalidation_wake_event.set)
+            return transition.accepted
+
+        finalizer = build_pr_repair_finalizer(self.github, store, wake_published_head, slots)
         runner = LocalJobRunner(
             store,
             self.invocation_gate,

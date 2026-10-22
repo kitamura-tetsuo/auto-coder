@@ -6,4 +6,4 @@ The ordinary PR worker releases its transient processing and checkout scopes aft
 
 A missing or contradictory durable ownership read is fail-closed: the execution is retained rather than being retired while a committed handoff may exist. Repeated observations use the stable current-head operation identity and cannot infer success from an offer.
 
-Standalone explicit PR processing immediately drives only its accepted job through the production local runner composition. It may wait for that exact job, but it never drains unrelated retained work and still reports the handoff as deferred until fresh PR validation establishes the post-publication outcome.
+Standalone explicit PR processing immediately drives only its accepted job through the production local runner composition. It may wait for that exact job, but it never drains unrelated retained work. Successful H2 publication durably records a repository-scoped PR invalidation before acknowledging the wake, and the handoff remains deferred until fresh PR validation establishes the post-publication outcome.

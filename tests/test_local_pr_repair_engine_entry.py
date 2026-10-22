@@ -12,6 +12,7 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig, Candidate, ProcessedPRResult, PRProcessingOutcome
 from auto_coder.automation_engine import AutomationEngine
+from auto_coder.entity_invalidation import DurableInvalidationQueue, EntityIdentity
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobState, LocalJobStore
@@ -117,6 +118,7 @@ async def test_pr_worker_processes_second_candidate_while_independent_runner_is_
     engine = AutomationEngine(github, AutomationConfig())
     engine.local_job_store = jobs
     engine.implementation_slots = ImplementationSlotRepository("owner/repo", 3, tmp_path / "slots.json")
+    engine.invalidations = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
     engine.implementation_slots.resolve_owner = MagicMock(side_effect=lambda _kind, data, _github: ImplementationOwner("pr", data["number"]))  # type: ignore[method-assign]
     entered = threading.Event()
     release = threading.Event()
@@ -194,6 +196,11 @@ def test_explicit_pr_entry_retains_one_job_and_target_scoped_runner_ignores_unre
 
     explicit_result: dict[str, object] = {}
 
+    def finalizer_factory(_github, _store, wake, _slots):  # type: ignore[no-untyped-def]
+        finalizer = MagicMock()
+        finalizer.finalize.side_effect = lambda _job_id: wake("owner/repo", 17, "H2")
+        return finalizer
+
     with (
         _production_scope(engine),
         _install_real_offer(engine, github),
@@ -201,6 +208,7 @@ def test_explicit_pr_entry_retains_one_job_and_target_scoped_runner_ignores_unre
             "auto_coder.pr_local_job_runtime.build_pr_local_job_adapters",
             return_value={LocalJobKind.PR_MERGE_CONFLICT: TargetAdapter()},
         ),
+        patch("auto_coder.pr_local_job_runtime.build_pr_repair_finalizer", side_effect=finalizer_factory),
     ):
         unrelated = engine._process_single_candidate_unified(
             "owner/repo",
@@ -232,3 +240,5 @@ def test_explicit_pr_entry_retains_one_job_and_target_scoped_runner_ignores_unre
     assert invocations == 1
     assert [job.job_id for job in jobs.discover_unsettled() if job.target_number == 17] == [target_id]
     assert jobs.get(unrelated_id).state is LocalJobState.PENDING  # type: ignore[union-attr]
+    invalidation = engine.invalidations.claim("owner/repo")
+    assert invalidation is not None and invalidation.identity == EntityIdentity("owner/repo", "pr", 17)

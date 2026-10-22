@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
-from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobStore, PRRepairAdmission
+from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore, PRRepairAdmission
 from auto_coder.local_review_repair import LocalReviewRepairStore
 from auto_coder.pr_repair_finalizer import PRRepairJobFinalizer, PRRepairPublicationDisposition, PRRepairTargetObservation
 from auto_coder.pr_repair_workspace import PRRepairSource, PRRepairWorkspaceProducer
@@ -119,6 +119,19 @@ def test_published_repair_retires_execution_but_preserves_owner(tmp_path: Path, 
     assert result.disposition is PRRepairPublicationDisposition.PUBLISHED
     assert slots.active_execution_ids(owner) == ()
     assert owner in slots.active_owners()
+
+
+def test_failed_publication_invalidation_remains_retryable_without_wake_receipt(tmp_path: Path, _use_real_commands) -> None:
+    source, remote, head, base = repository(tmp_path)
+    store, claim, _prepared, _artifact = completed_job(tmp_path, source, head, base)
+
+    result = PRRepairJobFinalizer(store, observer(remote, base), lambda *_args: False).finalize(claim.record.job_id)
+
+    assert result.disposition is PRRepairPublicationDisposition.PENDING
+    retained = store.get(claim.record.job_id)
+    assert retained is not None and retained.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+    wake = store.get_effect_strict(retained.job_id, retained.execution_incarnation, "ci_wake")
+    assert wake is not None and wake.state == "pending"
 
 
 def observer(remote: Path, base: str):
