@@ -140,6 +140,9 @@ class LocalConflictRepairJobAdapter:
         )
 
     def invoke_at_provider_entry(self, job: LocalJobRecord, checkpoint: Callable[[], bool]) -> LocalJobExecutionResult:
+        from .pr_processing_evidence import begin_invocation_observation, observed_invocations
+
+        begin_invocation_observation()
         claim = LocalJobClaim(job, True)
         try:
             prepared = self._workspaces.prepare(claim, self._source)
@@ -166,14 +169,14 @@ class LocalConflictRepairJobAdapter:
             response = editor(self._prompt(job, metadata, "\n".join(merge.inspection.marker_paths)), prepared.workspace)
             outcome = _classify_editor_output(response or "")
             if outcome is not InvocationOutcome.COMPLETED:
-                manifest = self._workspaces.capture_result(claim, prepared, outcome, response or "missing model output")
+                manifest = self._workspaces.capture_result(claim, prepared, outcome, response or "missing model output", editing_invocations=observed_invocations())
                 return LocalJobExecutionResult(outcome, manifest.to_json(), "nonpublishing editor outcome")
             staged = self._git(prepared.workspace, "add", "-A")
             inspection = inspect_conflicts(prepared.workspace)
             if staged.returncode or not inspection.complete or inspection.unmerged_paths or inspection.marker_paths:
-                manifest = self._workspaces.capture_result(claim, prepared, InvocationOutcome.FAILED, response)
+                manifest = self._workspaces.capture_result(claim, prepared, InvocationOutcome.FAILED, response, editing_invocations=observed_invocations())
                 return LocalJobExecutionResult(InvocationOutcome.FAILED, manifest.to_json(), inspection.reason or "unresolved conflict state")
-            manifest = self._workspaces.capture_result(claim, prepared, InvocationOutcome.COMPLETED, response)
+            manifest = self._workspaces.capture_result(claim, prepared, InvocationOutcome.COMPLETED, response, editing_invocations=observed_invocations())
             return LocalJobExecutionResult(InvocationOutcome.COMPLETED, manifest.to_json(), "resolution ready for downstream publication")
         except LocalJobProviderEntryRefused:
             raise
@@ -207,10 +210,14 @@ def build_conflict_editor(backend_name: str, job: LocalJobRecord) -> ConflictEdi
         )
 
     def edit(prompt: str, root: Path) -> str:
+        from .pr_processing_evidence import record_editing_invocation
+
         with active_repo_context(job.repository):
             token = bind_command_execution_cwd(str(root))
             try:
-                return manager.run_prompt(prompt)
+                response = manager.run_prompt(prompt)
+                record_editing_invocation(manager, "local-conflict-repair", job.repository)
+                return response
             finally:
                 reset_command_execution_cwd(token)
 

@@ -25,6 +25,9 @@ class RepairEvidence:
     synchronized: bool = False
     actions: tuple[str, ...] = ()
     reason: str = ""
+    job_id: str = ""
+    execution_incarnation: str = ""
+    implementation_execution_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -75,9 +78,15 @@ def observed_invocations() -> tuple[EditingInvocationEvidence, ...]:
     return _invocations.get()
 
 
+def restore_editing_invocations(invocations: tuple[EditingInvocationEvidence, ...]) -> None:
+    """Project verified worker observations into an attached explicit caller."""
+    _invocations.set(invocations)
+
+
 def project_repair(result: PRRepairResult | None) -> RepairEvidence | None:
     if result is None:
         return None
+    handoff = result.local_handoff
     return RepairEvidence(
         repository=result.repository,
         pr_number=result.pr_number,
@@ -90,6 +99,9 @@ def project_repair(result: PRRepairResult | None) -> RepairEvidence | None:
         synchronized=result.synchronized,
         actions=result.actions,
         reason=result.reason,
+        job_id=handoff.job_id if handoff is not None else "",
+        execution_incarnation="",
+        implementation_execution_id=handoff.implementation_execution_id if handoff is not None else "",
     )
 
 
