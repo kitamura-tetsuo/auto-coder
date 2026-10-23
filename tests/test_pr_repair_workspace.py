@@ -146,7 +146,7 @@ def test_overlapping_real_slot_coordination_preserves_pr_repair_result_identity(
     repositories = [ImplementationSlotRepository("owner/repo", 1, tmp_path / name / "slots.json") for name in ("first-coordinator", "second-coordinator")]
     owners = [ImplementationOwner("issue", number) for number in (2579, 2580)]
     original_mkdir = Path.mkdir
-    establishment_entered = threading.Barrier(3)
+    establishment_entered = {owner.number: threading.Event() for owner in owners}
     release_establishment = {owner.number: threading.Event() for owner in owners}
     establishment_complete = {owner.number: threading.Event() for owner in owners}
     intercepted_threads = set()
@@ -157,7 +157,7 @@ def test_overlapping_real_slot_coordination_preserves_pr_repair_result_identity(
         if thread.name.startswith("slot-") and thread.name not in intercepted_threads and path.parent == runtime / "locks":
             intercepted_threads.add(thread.name)
             owner_number = int(thread.name.removeprefix("slot-"))
-            establishment_entered.wait(timeout=2)
+            establishment_entered[owner_number].set()
             assert release_establishment[owner_number].wait(timeout=2)
         return original_mkdir(path, *args, **kwargs)
 
@@ -167,17 +167,18 @@ def test_overlapping_real_slot_coordination_preserves_pr_repair_result_identity(
         try:
             execution_id = repository.start_execution(owner)
             assert execution_id is not None
-            establishment_complete[owner.number].set()
             repository.finish_execution(owner, execution_id)
+            establishment_complete[owner.number].set()
         except BaseException as exc:
             failures.append(exc)
 
     threads = [threading.Thread(target=coordinate, args=pair, name=f"slot-{pair[1].number}") for pair in zip(repositories, owners)]
     previous_umask = os.umask(0o022)
     try:
-        for thread in threads:
-            thread.start()
-        establishment_entered.wait(timeout=2)
+        threads[0].start()
+        assert establishment_entered[owners[0].number].wait(timeout=2)
+        threads[1].start()
+        assert establishment_entered[owners[1].number].wait(timeout=2)
         release_establishment[owners[0].number].set()
         assert establishment_complete[owners[0].number].wait(timeout=2)
         release_establishment[owners[1].number].set()
@@ -210,7 +211,8 @@ def test_overlapping_real_slot_coordination_preserves_pr_repair_result_identity(
         for release in release_establishment.values():
             release.set()
         for thread in threads:
-            thread.join(timeout=5)
+            if thread.ident is not None:
+                thread.join(timeout=5)
         os.umask(previous_umask)
 
 
