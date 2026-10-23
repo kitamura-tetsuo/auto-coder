@@ -16,9 +16,9 @@ Fail-closed by construction:
 - A thread is only "claimed" when an eligible root AND an explicit versioned
   marker are both present; ordinary discussion never counts.
 - Resolution requires a fresh, valid ``ADDRESSED`` disposition for the exact
-  thread, the PR head unchanged since validation, a successfully recorded
-  resolver explanation, and a confirmed GitHub resolve mutation. Any failure
-  at any step leaves the thread unresolved.
+  thread, the PR head unchanged since validation, a durably pending closure
+  receipt, and a confirmed GitHub resolve mutation. Unknown effects or failed
+  receipt cleanup remain explicit unfinished work even if GitHub is resolved.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ import json
 import os
 import re
 import threading
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, List, Optional, Sequence, Set
 
@@ -37,21 +37,19 @@ from .canonical_pr_blocker_ledger import BlockerLedgerSnapshot
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .review_feedback_marker import reply_claims_review_addressed
+from .review_thread_closure_receipt import CLOSURE_RECEIPT_PREFIX, closure_receipt_lock, observe_closure_receipt, parse_owned_receipt, put_receipt
+from .runtime_locks import LockAcquisitionTimeout
 from .util.gh_cache import ReviewThread
 from .utils import is_same_github_login
 
 logger = get_logger(__name__)
 
-RESOLVER_EXPLANATION_MARKER = "<!-- auto-coder-review-thread-resolved:v1 -->"
-
-# Posted into the affected GitHub thread itself as an independent durability
-# layer for a stale-resolution blocker: unlike the local JSON registry, a
-# GitHub comment survives a local disk failure or process restart, because
-# it lives in a different failure domain (REQ-006, REQ-008).
+# Legacy immutable risk events remain readable alongside mutable receipts.
+# Both live on GitHub independently of local registry persistence.
 STALE_BLOCKER_MARKER = "<!-- auto-coder-stale-review-thread-blocker:v1 -->"
 STALE_BLOCKER_CLEARED_MARKER = "<!-- auto-coder-stale-review-thread-blocker-cleared:v1 -->"
 
-# Second line appended to a freshly-posted STALE_BLOCKER_MARKER, recording the
+# Second line of a historical STALE_BLOCKER_MARKER, recording the
 # PR head the blocker was posted against. A later scan compares this to the
 # PR's *current* head: if nothing has changed, the marker cannot represent an
 # actual stale resolution (staleness only exists relative to a head that has
@@ -62,10 +60,6 @@ STALE_BLOCKER_CLEARED_MARKER = "<!-- auto-coder-stale-review-thread-blocker-clea
 # pending, matching the previous, more conservative behavior.
 _STALE_BLOCKER_HEAD_LINE_PREFIX = "<!-- resolved-against-head: "
 _STALE_BLOCKER_HEAD_RE = re.compile(re.escape(_STALE_BLOCKER_HEAD_LINE_PREFIX) + r"(?P<sha>\S+) -->$")
-
-
-def _format_stale_blocker_marker(head_sha: str) -> str:
-    return f"{STALE_BLOCKER_MARKER}\n{_STALE_BLOCKER_HEAD_LINE_PREFIX}{head_sha} -->"
 
 
 # Bounded attempts to revert a stale resolution (REQ-006/REQ-008): a single
@@ -118,6 +112,7 @@ class StaleReviewThreadBlocker:
     thread_id: str = ""
     state: str = "rollback_required"
     root_comment_database_id: Optional[int] = None
+    receipt_operation_key: str = ""
 
 
 class StaleReviewThreadRegistry:
@@ -162,7 +157,7 @@ class StaleReviewThreadRegistry:
             data[self._key(repository, thread_id)] = asdict(StaleReviewThreadBlocker(repository=repository, pr_number=pr_number, thread_id=thread_id))
             self._save(data)
 
-    def record_marker_cleanup(self, repository: str, pr_number: int, thread_id: str, root_comment_database_id: int) -> None:
+    def record_marker_cleanup(self, repository: str, pr_number: int, thread_id: str, root_comment_database_id: int, *, receipt_operation_key: str = "") -> None:
         """Persist that rollback succeeded and only marker cleanup remains."""
         with self._lock:
             data = self._load()
@@ -173,11 +168,12 @@ class StaleReviewThreadRegistry:
                     thread_id=thread_id,
                     state="marker_cleanup_required",
                     root_comment_database_id=root_comment_database_id,
+                    receipt_operation_key=receipt_operation_key,
                 )
             )
             self._save(data)
 
-    def record_rollback_transition(self, repository: str, pr_number: int, thread_id: str, root_comment_database_id: Optional[int]) -> None:
+    def record_rollback_transition(self, repository: str, pr_number: int, thread_id: str, root_comment_database_id: Optional[int], *, receipt_operation_key: str = "") -> None:
         """Persist an ambiguous rollback transition before mutating GitHub.
 
         If the process cannot durably record the mutation's outcome afterward,
@@ -193,6 +189,7 @@ class StaleReviewThreadRegistry:
                     thread_id=thread_id,
                     state="rollback_transition",
                     root_comment_database_id=root_comment_database_id,
+                    receipt_operation_key=receipt_operation_key,
                 )
             )
             self._save(data)
@@ -225,6 +222,9 @@ class StaleReviewThreadRegistry:
                 raise StaleReviewThreadRegistryError(f"Stale-review-thread registry at {self.path} contains a malformed entry for key {key!r}")
             state = value.get("state", "rollback_required")
             root_comment_database_id = value.get("root_comment_database_id")
+            receipt_operation_key = value.get("receipt_operation_key", "")
+            if not isinstance(receipt_operation_key, str):
+                raise StaleReviewThreadRegistryError(f"Stale-review-thread registry at {self.path} contains invalid receipt-operation data for key {key!r}")
             if not isinstance(state, str) or state not in {"rollback_required", "rollback_transition", "marker_cleanup_required"}:
                 raise StaleReviewThreadRegistryError(f"Stale-review-thread registry at {self.path} contains an invalid state for key {key!r}")
             if root_comment_database_id is not None and (not isinstance(root_comment_database_id, int) or isinstance(root_comment_database_id, bool)):
@@ -239,6 +239,7 @@ class StaleReviewThreadRegistry:
                         thread_id=str(value["thread_id"]),
                         state=str(state),
                         root_comment_database_id=root_comment_database_id if isinstance(root_comment_database_id, int) else None,
+                        receipt_operation_key=receipt_operation_key,
                     )
                 )
         return records
@@ -255,9 +256,13 @@ class StaleReviewThreadRegistry:
         """Return ambiguous transitions for authoritative reconciliation."""
         return {record.thread_id: record.root_comment_database_id for record in self._records_for_pr(repository, pr_number) if record.state == "rollback_transition"}
 
+    def receipt_operation_keys_for_pr(self, repository: str, pr_number: int) -> dict[str, str]:
+        """Bind cleanup authority to the operation whose rollback was recorded."""
+        return {record.thread_id: record.receipt_operation_key for record in self._records_for_pr(repository, pr_number) if record.receipt_operation_key}
+
 
 def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: int) -> tuple[dict[str, Optional[int]], List[str], List[ReviewThread]]:
-    """Scan every resolved review thread for an active ``STALE_BLOCKER_MARKER``.
+    """Scan resolved threads for pending receipts and legacy risk events.
 
     Returns ``(pending, incomplete_thread_ids, threads)``. ``pending`` maps a
     confirmed-blocked thread ID to its root comment's database ID (for
@@ -287,8 +292,8 @@ def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: i
     only in ``incomplete_thread_ids`` so the caller fails closed for merge
     processing (REQ-008) without mutating them from partial evidence.
 
-    A freshly-posted ``STALE_BLOCKER_MARKER`` records the PR head it was
-    posted against (see ``_format_stale_blocker_marker``). If that recorded
+    A head-bound legacy ``STALE_BLOCKER_MARKER`` records the PR head it was
+    posted against. If that recorded
     head still equals the PR's *current* head, nothing has changed since the
     marker was posted, so it cannot represent an actual stale resolution
     (staleness is only meaningful relative to a head that has since moved):
@@ -337,6 +342,15 @@ def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: i
             continue
         comments = thread.comments or []
         root_comment_database_id = comments[0].database_id if comments else None
+        # Mutable receipts are independent risk records, not chronological
+        # BLOCKER/CLEARED events: editing a comment does not change its position.
+        if any((comment.body or "").lstrip().startswith(CLOSURE_RECEIPT_PREFIX) for comment in comments):
+            receipt = parse_owned_receipt(thread, _trusted_marker_author())
+            if receipt is not None:
+                if receipt.api_origin != "https://api.github.com" or receipt.repository.casefold() != repo_name.casefold() or receipt.pr_number != pr_number:
+                    raise RuntimeError(f"Closure receipt namespace does not match {repo_name}#{pr_number}")
+                if receipt.phase == "PENDING" and receipt.validated_head_sha != _current_head():
+                    pending[thread.id] = root_comment_database_id
         # None = no active blocker marker seen yet; "" = a legacy/headless
         # blocker marker (always pending); otherwise the head it was posted
         # against.
@@ -374,6 +388,70 @@ def retry_pending_stale_review_thread_rollbacks(
     pr_number: int,
     registry: Optional[StaleReviewThreadRegistry] = None,
 ) -> List[str]:
+    """Serialize recovery with ordinary closure and publication rollback."""
+    try:
+        with closure_receipt_lock(repo_name, pr_number):
+            return _retry_pending_stale_review_thread_rollbacks(github_client, repo_name, pr_number, registry)
+    except (LockAcquisitionTimeout, OSError) as exc:
+        raise StaleReviewThreadRegistryError(f"Closure receipt recovery is deferred for {repo_name}#{pr_number}: {exc}") from exc
+
+
+def _finish_rollback_markers(
+    github_client: Any,
+    repo_name: str,
+    pr_number: int,
+    thread_id: str,
+    root_comment_database_id: int,
+    *,
+    confirmed_rollback_operation_key: str = "",
+) -> bool:
+    """Retire observed rollback obligations; return whether newer work remains."""
+    observation = observe_closure_receipt(github_client, repo_name, pr_number, thread_id, root_comment_database_id)
+    receipt = observation.receipt
+    newer_operation = receipt is not None and bool(confirmed_rollback_operation_key) and receipt.operation_key != confirmed_rollback_operation_key
+    if newer_operation:
+        # Cleanup of an older operation cannot rewrite a newer receipt.
+        pass
+    elif receipt is not None and not observation.thread.is_resolved and receipt.phase != "ROLLED_BACK":
+        observation = put_receipt(github_client, observation, replace(receipt, phase="ROLLED_BACK"))
+    elif receipt is not None and observation.thread.is_resolved and receipt.phase == "PENDING":
+        # A durable confirmed rollback may finish its own old receipt after
+        # another actor legitimately resolves the thread. It cannot authorize
+        # another unresolve or retire a different pending operation.
+        if not confirmed_rollback_operation_key:
+            raise RuntimeError(f"Thread {thread_id} has a pending resolved receipt; rollback cleanup cannot clear it")
+        observation = put_receipt(
+            github_client,
+            observation,
+            replace(receipt, phase="ROLLED_BACK"),
+            confirmed_rollback_operation_key=confirmed_rollback_operation_key,
+        )
+
+    legacy_active = False
+    for comment in observation.thread.comments:
+        if not is_same_github_login(comment.author_login, observation.authenticated_login):
+            continue
+        body = (comment.body or "").strip()
+        if body == STALE_BLOCKER_CLEARED_MARKER:
+            legacy_active = False
+        elif body == STALE_BLOCKER_MARKER or body.startswith(f"{STALE_BLOCKER_MARKER}\n"):
+            legacy_active = True
+    if legacy_active:
+        if newer_operation:
+            # The old cleanup does not own a newer receipt or its legacy risk.
+            return True
+        # Mixed histories retain a separate legacy obligation. A completed
+        # mutable receipt cannot silently cancel that event.
+        github_client.reply_to_review_thread(repo_name, pr_number, root_comment_database_id, STALE_BLOCKER_CLEARED_MARKER)
+    return newer_operation and receipt is not None and receipt.phase == "PENDING" and observation.thread.is_resolved
+
+
+def _retry_pending_stale_review_thread_rollbacks(
+    github_client: Any,
+    repo_name: str,
+    pr_number: int,
+    registry: Optional[StaleReviewThreadRegistry] = None,
+) -> List[str]:
     """Retry every persisted stale-resolution rollback for this PR.
 
     Called on every processing run so a rollback failure from an earlier run
@@ -390,6 +468,7 @@ def retry_pending_stale_review_thread_rollbacks(
     local_pending = registry.pending_for_pr(repo_name, pr_number)
     marker_cleanup_pending = registry.marker_cleanup_pending_for_pr(repo_name, pr_number)
     rollback_transitions = registry.rollback_transitions_for_pr(repo_name, pr_number)
+    receipt_operation_keys = registry.receipt_operation_keys_for_pr(repo_name, pr_number)
     try:
         github_pending, incomplete_thread_ids, github_threads = _find_github_stale_blockers(github_client, repo_name, pr_number)
     except StaleReviewThreadRegistryError:
@@ -410,6 +489,10 @@ def retry_pending_stale_review_thread_rollbacks(
 
     all_pending: dict[str, Optional[int]] = dict.fromkeys(local_pending, None)
     all_pending.update(github_pending)
+    for thread_id, root_id in tuple(all_pending.items()):
+        matches = [thread for thread in github_threads if thread.id == thread_id]
+        if root_id is None and len(matches) == 1 and matches[0].comments:
+            all_pending[thread_id] = matches[0].comments[0].database_id
     for thread_id in marker_cleanup_pending:
         # A confirmed rollback owns this old marker. It must never attach to
         # a later legitimate resolution and authorize another unresolve.
@@ -420,8 +503,17 @@ def retry_pending_stale_review_thread_rollbacks(
     still_blocked: List[str] = []
     for thread_id, cleanup_root_comment_database_id in marker_cleanup_pending.items():
         try:
-            github_client.reply_to_review_thread(repo_name, pr_number, cleanup_root_comment_database_id, STALE_BLOCKER_CLEARED_MARKER)
+            newer_pending = _finish_rollback_markers(
+                github_client,
+                repo_name,
+                pr_number,
+                thread_id,
+                cleanup_root_comment_database_id,
+                confirmed_rollback_operation_key=receipt_operation_keys.get(thread_id, ""),
+            )
             registry.clear(repo_name, thread_id)
+            if newer_pending:
+                still_blocked.append(thread_id)
         except Exception as exc:
             logger.error(f"Could not finish stale-marker cleanup for rolled-back thread {thread_id} on PR #{pr_number}: {exc}")
             still_blocked.append(thread_id)
@@ -444,12 +536,7 @@ def retry_pending_stale_review_thread_rollbacks(
         # without ever issuing another unresolve against this thread.
         if transition_root_comment_database_id is not None:
             try:
-                github_client.reply_to_review_thread(
-                    repo_name,
-                    pr_number,
-                    transition_root_comment_database_id,
-                    STALE_BLOCKER_CLEARED_MARKER,
-                )
+                _finish_rollback_markers(github_client, repo_name, pr_number, thread_id, transition_root_comment_database_id)
             except Exception as exc:
                 logger.error(f"Confirmed thread {thread_id} unresolved on PR #{pr_number} but could not post the cleared marker: {exc}")
                 try:
@@ -458,6 +545,7 @@ def retry_pending_stale_review_thread_rollbacks(
                         pr_number,
                         thread_id,
                         transition_root_comment_database_id,
+                        receipt_operation_key=receipt_operation_keys.get(thread_id, ""),
                     )
                 except Exception as persist_exc:
                     logger.error(f"Could not record marker cleanup for reconciled thread {thread_id} on PR #{pr_number}; " f"the fail-closed rollback transition remains: {persist_exc}")
@@ -470,8 +558,23 @@ def retry_pending_stale_review_thread_rollbacks(
             still_blocked.append(thread_id)
 
     for thread_id, root_comment_database_id in all_pending.items():
+        exact_matches = [thread for thread in github_threads if thread.id == thread_id]
+        if len(exact_matches) != 1 or root_comment_database_id is None:
+            logger.error(f"Could not confirm the exact thread/root before stale rollback of {thread_id} on PR #{pr_number}")
+            still_blocked.append(thread_id)
+            continue
+        operation_key = receipt_operation_keys.get(thread_id, "")
+        if root_comment_database_id is not None:
+            try:
+                observation = observe_closure_receipt(github_client, repo_name, pr_number, thread_id, root_comment_database_id)
+                if observation.receipt is not None:
+                    operation_key = observation.receipt.operation_key
+            except Exception as exc:
+                logger.error(f"Could not reconcile receipt before stale rollback of thread {thread_id} on PR #{pr_number}: {exc}")
+                still_blocked.append(thread_id)
+                continue
         try:
-            registry.record_rollback_transition(repo_name, pr_number, thread_id, root_comment_database_id)
+            registry.record_rollback_transition(repo_name, pr_number, thread_id, root_comment_database_id, receipt_operation_key=operation_key)
         except Exception as exc:
             raise StaleReviewThreadRegistryError(f"Could not durably prepare stale rollback of thread {thread_id} on PR #{pr_number}: {exc}") from exc
 
@@ -488,11 +591,11 @@ def retry_pending_stale_review_thread_rollbacks(
 
         if root_comment_database_id is not None:
             try:
-                github_client.reply_to_review_thread(repo_name, pr_number, root_comment_database_id, STALE_BLOCKER_CLEARED_MARKER)
+                _finish_rollback_markers(github_client, repo_name, pr_number, thread_id, root_comment_database_id)
             except Exception as exc:
                 logger.error(f"Reverted thread {thread_id} on PR #{pr_number} but could not post the cleared marker: {exc}")
                 try:
-                    registry.record_marker_cleanup(repo_name, pr_number, thread_id, root_comment_database_id)
+                    registry.record_marker_cleanup(repo_name, pr_number, thread_id, root_comment_database_id, receipt_operation_key=operation_key)
                 except Exception as persist_exc:
                     logger.error(f"Could not record marker cleanup for thread {thread_id} on PR #{pr_number}; the fail-closed rollback transition remains: {persist_exc}")
                 still_blocked.append(thread_id)
@@ -502,6 +605,27 @@ def retry_pending_stale_review_thread_rollbacks(
         except Exception as exc:
             logger.error(f"Reverted thread {thread_id} on PR #{pr_number} but could not clear its local registry entry: {exc}")
             still_blocked.append(thread_id)
+    # A resolved pending receipt can also mean that resolve succeeded but its
+    # response or terminal update was lost. Recover that effect at the exact
+    # current head without supplying a new independent disposition or resolve.
+    handled_thread_ids = set(all_pending) | set(marker_cleanup_pending) | set(rollback_transitions) | set(still_blocked)
+    for thread in github_threads:
+        if thread.id in handled_thread_ids or not thread.is_resolved or not any((comment.body or "").lstrip().startswith(CLOSURE_RECEIPT_PREFIX) for comment in thread.comments):
+            continue
+        try:
+            root_id = thread.comments[0].database_id
+            if root_id is None:
+                raise RuntimeError("Resolved receipt thread has no root identity")
+            observation = observe_closure_receipt(github_client, repo_name, pr_number, thread.id, root_id)
+            receipt = observation.receipt
+            if receipt is not None and receipt.phase == "PENDING":
+                current_head = github_client.get_pull_request_head_sha_strict(repo_name, pr_number)
+                if not observation.thread.is_resolved or current_head != receipt.validated_head_sha:
+                    raise RuntimeError("Pending receipt no longer has a confirmed current-head resolution")
+                put_receipt(github_client, observation, replace(receipt, phase="RESOLVED"))
+        except Exception as exc:
+            logger.error(f"Could not finish resolved receipt for thread {thread.id} on PR #{pr_number}: {exc}")
+            still_blocked.append(thread.id)
     return still_blocked
 
 
@@ -721,25 +845,6 @@ def _find_claimed_thread(claimed: Sequence[ClaimedReviewThread], thread_id: str)
     return None
 
 
-def _format_resolver_explanation(disposition: ReviewThreadDisposition) -> str:
-    return "\n".join(
-        [
-            RESOLVER_EXPLANATION_MARKER,
-            "### Auto-Coder independent validator verification",
-            "",
-            "This finding was independently verified as addressed against the current PR head.",
-            "",
-            "**Rationale**",
-            "",
-            disposition.rationale or "(no rationale provided)",
-            "",
-            "**Evidence**",
-            "",
-            disposition.evidence or "(no evidence provided)",
-        ]
-    )
-
-
 def resolve_addressed_review_threads(
     github_client: Any,
     repo_name: str,
@@ -880,6 +985,28 @@ def reopen_review_threads_after_publication_failure(
     resolved_thread_ids: Sequence[str],
     registry: Optional[StaleReviewThreadRegistry] = None,
 ) -> List[str]:
+    """Serialize publication rollback; the ordinary caller owns the whole cycle.
+
+    The PR orchestrator holds this reentrant lock through closure and review
+    publication, so its required rollback cannot lose ownership in between.
+    Standalone contending callers receive no confirmed IDs and must retry.
+    """
+    try:
+        with closure_receipt_lock(repo_name, pr_number):
+            return _reopen_review_threads_after_publication_failure(github_client, repo_name, pr_number, claimed, resolved_thread_ids, registry)
+    except (LockAcquisitionTimeout, OSError) as exc:
+        logger.warning(f"Publication-failure rollback is deferred for {repo_name}#{pr_number}: {exc}")
+        return []
+
+
+def _reopen_review_threads_after_publication_failure(
+    github_client: Any,
+    repo_name: str,
+    pr_number: int,
+    claimed: Sequence[ClaimedReviewThread],
+    resolved_thread_ids: Sequence[str],
+    registry: Optional[StaleReviewThreadRegistry] = None,
+) -> List[str]:
     """Reopen threads resolved by a verdict that failed durable publication.
 
     A durable rollback transition is recorded before each mutation. If the
@@ -891,12 +1018,21 @@ def reopen_review_threads_after_publication_failure(
     for thread_id in resolved_thread_ids:
         claimed_thread = _find_claimed_thread(claimed, thread_id)
         root_comment_database_id = claimed_thread.root_comment_database_id if claimed_thread is not None else None
+        operation_key = ""
+        if root_comment_database_id is not None:
+            try:
+                observation = observe_closure_receipt(github_client, repo_name, pr_number, thread_id, root_comment_database_id)
+                if observation.receipt is not None:
+                    operation_key = observation.receipt.operation_key
+            except Exception as exc:
+                logger.error(f"Could not observe receipt before publication-failure rollback of thread {thread_id} on PR #{pr_number}: {exc}")
         try:
             rollback_registry.record_rollback_transition(
                 repo_name,
                 pr_number,
                 thread_id,
                 root_comment_database_id,
+                receipt_operation_key=operation_key,
             )
         except Exception as exc:
             logger.error(f"Could not durably prepare publication-failure rollback for thread {thread_id} on PR #{pr_number}: {exc}")
@@ -919,6 +1055,16 @@ def reopen_review_threads_after_publication_failure(
                 logger.error(f"Could not persist publication-failure rollback for thread {thread_id} on PR #{pr_number}: {persist_exc}")
             continue
 
+        if root_comment_database_id is not None:
+            try:
+                _finish_rollback_markers(github_client, repo_name, pr_number, thread_id, root_comment_database_id)
+            except Exception as exc:
+                logger.error(f"Reopened thread {thread_id} on PR #{pr_number} but could not finish its receipt: {exc}")
+                try:
+                    rollback_registry.record_marker_cleanup(repo_name, pr_number, thread_id, root_comment_database_id, receipt_operation_key=operation_key)
+                except Exception as persist_exc:
+                    logger.error(f"Could not persist receipt cleanup after publication-failure rollback of thread {thread_id}: {persist_exc}")
+                continue
         try:
             rollback_registry.clear(repo_name, thread_id)
         except Exception as exc:

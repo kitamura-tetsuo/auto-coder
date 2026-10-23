@@ -2352,6 +2352,16 @@ class GitHubClient:
         api = get_ghapi_client(self.token)
         api.pulls.create_reply_for_review_comment(owner, repo, pr_number, root_comment_database_id, body=body)
 
+    def update_review_thread_comment(self, repo_name: str, comment_database_id: int, body: str) -> None:
+        """Update one observed review reply and require exact mutation confirmation."""
+        if not isinstance(comment_database_id, int) or isinstance(comment_database_id, bool) or comment_database_id <= 0:
+            raise ValueError("A positive observed review-comment identity is required")
+        owner, repo = repo_name.split("/")
+        api = get_ghapi_client(self.token)
+        response = api.pulls.update_review_comment(owner, repo, comment_database_id, body=body)
+        if not isinstance(response, dict) or not isinstance(response.get("id"), int) or isinstance(response.get("id"), bool) or response.get("id") != comment_database_id or response.get("body") != body:
+            raise RuntimeError(f"GitHub did not confirm the exact update of review comment {comment_database_id}")
+
     def resolve_review_thread(self, thread_id: str) -> None:
         """Resolve a GitHub PR review thread via the ``resolveReviewThread`` mutation.
 

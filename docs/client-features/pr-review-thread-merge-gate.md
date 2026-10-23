@@ -14,5 +14,5 @@
         - "Linked issue attempt counters are not incremented."
         - "The condition is treated as deferred processing rather than an execution failure."
         - "Future runs re-check the review threads and merge once all threads are resolved."
-      - "Resolved review threads (isResolved == True) and normal PR conversation comments do not block merge."
+      - "Resolved review threads (isResolved == True) and normal PR conversation comments do not by themselves block merge. Pending stale-resolution recovery, unavailable authoritative thread data and unfinished independent closure effects still block their processing invocation. In particular, a confirmed resolve with failed closure-receipt cleanup remains an unfinished closure; the receipt is effect evidence and never substitutes for the independent review or final merge gates. See independent-review-thread-completion-validation.md for the reusable reply and legacy-marker lifecycle."
       - "Applies generically to all PRs handled by Auto-Coder."

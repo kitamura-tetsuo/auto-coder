@@ -8,9 +8,11 @@ blocker ledger before executing GitHub resolve mutations.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, List, Optional, Sequence, Set, Tuple
 
 from .adversarial_validator import ReviewThreadDisposition
@@ -26,18 +28,15 @@ from .canonical_pr_blocker_ledger import (
     UnknownBlockerReferenceError,
 )
 from .logger_config import get_logger
+from .review_thread_closure_receipt import ClosureReceipt, closure_receipt_lock, observe_closure_receipt, put_receipt
 from .review_thread_validation import (
-    RESOLVER_EXPLANATION_MARKER,
-    STALE_BLOCKER_CLEARED_MARKER,
-    STALE_BLOCKER_MARKER,
     UNRESOLVE_ROLLBACK_MAX_ATTEMPTS,
     ClaimedReviewThread,
     StaleReviewThreadRegistry,
     StaleReviewThreadResolutionError,
     _find_claimed_thread,
-    _format_resolver_explanation,
-    _format_stale_blocker_marker,
 )
+from .runtime_locks import LockAcquisitionTimeout
 from .util.github_request_outcome import normalize_api_origin
 
 logger = get_logger(__name__)
@@ -112,7 +111,7 @@ class ThreadClosureOutcome:
 
     @property
     def completed(self) -> bool:
-        return self.decision == "ADDRESSED" and self.acceptance_state == "CONFIRMED" and self.effect_state == "CONFIRMED"
+        return self.decision == "ADDRESSED" and self.acceptance_state == "CONFIRMED" and self.effect_state == "CONFIRMED" and self.cleanup_warning is None
 
 
 @dataclass(frozen=True, eq=False)
@@ -509,6 +508,72 @@ def execute_durable_thread_closures(
     expected_ledger_revision: Optional[int] = None,
     claimed_threads: Sequence[ClaimedReviewThread] = (),
 ) -> ClosureExecutionResult:
+    """Serialize receipt observation and effects across all local PR callers."""
+    try:
+        with closure_receipt_lock(repo_name, pr_number, api_origin=api_origin):
+            return _execute_durable_thread_closures(
+                github_client,
+                repo_name,
+                pr_number,
+                validated_head_sha,
+                evaluations,
+                ledger=ledger,
+                api_origin=api_origin,
+                stale_registry=stale_registry,
+                expected_ledger_revision=expected_ledger_revision,
+                claimed_threads=claimed_threads,
+            )
+    except (LockAcquisitionTimeout, OSError) as exc:
+        selected_ids = tuple(dict.fromkeys(e.thread_id for e in evaluations if e.thread_id))
+        logger.warning(f"Closure receipt processing deferred for {repo_name}#{pr_number}: {exc}")
+        return ClosureExecutionResult(
+            unresolved_thread_ids=selected_ids,
+            errors=tuple(f"{thread_id}|receipt-lock|{exc}" for thread_id in selected_ids),
+        )
+
+
+def _closure_operation_key(evaluations: Sequence[ClosureEvaluationResult]) -> str:
+    """Bind effects to stable accepted scope, never to retry or model wording."""
+    scopes = []
+    for evaluation in evaluations:
+        candidate = evaluation.candidate
+        scopes.append(
+            {
+                "api_origin": candidate.api_origin,
+                "repository": candidate.repository.casefold(),
+                "pr_number": candidate.pr_number,
+                "thread_id": candidate.thread_id,
+                "root_id": candidate.root_comment_database_id,
+                "head": candidate.reviewed_head_sha,
+                "base": candidate.reviewed_base_sha,
+                "manifest": candidate.requirement_manifest_revision,
+                "blocker_id": evaluation.evaluated_blocker_id,
+                "category": candidate.category,
+                "boundary": candidate.authoritative_boundary,
+                "requirements": sorted(candidate.requirement_ids),
+                "finding": candidate.original_finding,
+                "scope": candidate.accepted_scope_description,
+                "concerns": sorted(candidate.owned_concern_ids),
+                "owners": sorted(candidate.known_blocker_ids_for_thread),
+            }
+        )
+    encoded = sorted(json.dumps(scope, sort_keys=True, separators=(",", ":")) for scope in scopes)
+    return hashlib.sha256(json.dumps(encoded, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _execute_durable_thread_closures(
+    github_client: Any,
+    repo_name: str,
+    pr_number: int,
+    validated_head_sha: str,
+    evaluations: Sequence[ClosureEvaluationResult],
+    *,
+    ledger: Optional[CanonicalPRBlockerLedger] = None,
+    api_origin: str = "https://api.github.com",
+    stale_registry: Optional[StaleReviewThreadRegistry] = None,
+    expected_ledger_revision: Optional[int] = None,
+    claimed_threads: Sequence[ClaimedReviewThread] = (),
+) -> ClosureExecutionResult:
     """Persist accepted closures to the ledger and resolve eligible review threads.
 
     Implements:
@@ -658,6 +723,17 @@ def execute_durable_thread_closures(
     resolved_thread_ids: list[str] = []
 
     for thread_id in eligible_thread_ids:
+        try:
+            pending_recovery = set(rollback_registry.pending_for_pr(repo_name, pr_number)) | set(rollback_registry.marker_cleanup_pending_for_pr(repo_name, pr_number)) | set(rollback_registry.rollback_transitions_for_pr(repo_name, pr_number))
+        except Exception as exc:
+            errors.append(f"{thread_id}|receipt-reconciliation|Could not inspect prior rollback recovery: {exc}")
+            continue
+        if thread_id in pending_recovery:
+            # A stable operation key is reused across same-head cycles. Finish
+            # old durable cleanup before re-arming it so historical proof can
+            # never retire the risk from a newer cycle of the same operation.
+            errors.append(f"{thread_id}|receipt-reconciliation|Prior rollback recovery must complete before another closure")
+            continue
         claimed_thread = _find_claimed_thread(claimed_threads, thread_id)
         if claimed_thread is None:
             logger.warning(f"Thread {thread_id} was not claimed for this run; ignoring")
@@ -668,30 +744,72 @@ def execute_durable_thread_closures(
             errors.append(f"{thread_id}|root-identity|Root comment identity is unavailable")
             continue
 
-        matching_eval = next((e for e in persisted_evaluations if e.thread_id == thread_id), None)
-        disp = ReviewThreadDisposition(
+        owned_evaluations = tuple(e for e in persisted_evaluations if e.thread_id == thread_id)
+        matching_eval = owned_evaluations[0]
+        pending_receipt = ClosureReceipt(
+            api_origin=norm_origin,
+            repository=repo_name,
+            pr_number=pr_number,
             thread_id=thread_id,
-            status="ADDRESSED",
-            rationale=matching_eval.rationale if matching_eval else "",
-            evidence=matching_eval.evidence if matching_eval else "",
+            root_comment_database_id=claimed_thread.root_comment_database_id,
+            operation_key=_closure_operation_key(owned_evaluations),
+            validated_head_sha=validated_head_sha,
+            phase="PENDING",
+            rationale=matching_eval.rationale,
+            evidence=matching_eval.evidence,
         )
-
-        # Post resolver explanation
         try:
-            github_client.reply_to_review_thread(
+            observation = observe_closure_receipt(
+                github_client,
                 repo_name,
                 pr_number,
+                thread_id,
                 claimed_thread.root_comment_database_id,
-                _format_resolver_explanation(disp),
+                api_origin=norm_origin,
             )
         except Exception as exc:
-            logger.error(f"Failed to record resolver explanation for thread {thread_id}: {exc}")
-            errors.append(f"{thread_id}|explanation-publication|{exc}")
+            logger.error(f"Could not reconcile closure receipt for thread {thread_id}: {exc}")
+            errors.append(f"{thread_id}|receipt-reconciliation|{exc}")
             continue
 
-        # Re-check immediately before durability marker and resolve mutation (REQ-006, AC-009)
+        receipt = observation.receipt
+        same_operation = receipt is not None and receipt.operation_key == pending_receipt.operation_key and receipt.validated_head_sha == validated_head_sha
+        if receipt is not None and receipt.phase == "PENDING" and not same_operation:
+            if observation.thread.is_resolved:
+                errors.append(f"{thread_id}|receipt-reconciliation|An older pending resolution requires rollback reconciliation")
+                continue
+            try:
+                observation = put_receipt(github_client, observation, replace(receipt, phase="ROLLED_BACK"))
+            except Exception as exc:
+                errors.append(f"{thread_id}|receipt-reconciliation|Could not retire the confirmed previous rollback: {exc}")
+                continue
+
+        # A fresh independent decision and an exact remote observation, not the
+        # receipt alone, allow an accepted-but-unacknowledged effect to settle.
+        if same_operation and observation.thread.is_resolved and receipt is not None and receipt.phase in ("PENDING", "RESOLVED"):
+            if not _head_is_still_current():
+                errors.append(f"{thread_id}|head-verification|PR head changed while reconciling the confirmed resolution")
+                continue
+            if receipt.phase == "PENDING":
+                try:
+                    put_receipt(github_client, observation, replace(receipt, phase="RESOLVED"))
+                except Exception as exc:
+                    errors.append(f"{thread_id}|marker-cleanup|{exc}")
+            resolved_thread_ids.append(thread_id)
+            continue
+
+        # Every actual resolve gets a currently observable pending guard. A
+        # completed receipt from an earlier cycle is deliberately re-armed.
+        try:
+            observation = put_receipt(github_client, observation, pending_receipt)
+        except Exception as exc:
+            logger.error(f"Could not durably record pending resolution for thread {thread_id}: {exc}")
+            errors.append(f"{thread_id}|intent-publication|{exc}")
+            continue
+
         if not _head_is_still_current():
             logger.warning(f"PR head changed before resolve mutation on thread {thread_id}")
+            errors.append(f"{thread_id}|head-verification|PR head changed before resolve mutation")
             return ClosureExecutionResult(
                 accepted_closures=tuple(persisted_evaluations),
                 resolved_thread_ids=tuple(resolved_thread_ids),
@@ -699,19 +817,6 @@ def execute_durable_thread_closures(
                 persisted_blocker_transitions=tuple(persisted_blockers),
                 errors=tuple(errors),
             )
-
-        # Durability-before-risk: record intent marker on GitHub BEFORE resolve mutation
-        try:
-            github_client.reply_to_review_thread(
-                repo_name,
-                pr_number,
-                claimed_thread.root_comment_database_id,
-                _format_stale_blocker_marker(validated_head_sha),
-            )
-        except Exception as exc:
-            logger.error(f"Could not durably record resolve-intent for thread {thread_id}; skipping mutation: {exc}")
-            errors.append(f"{thread_id}|intent-publication|{exc}")
-            continue
 
         # Resolve mutation
         try:
@@ -729,6 +834,7 @@ def execute_durable_thread_closures(
                     pr_number,
                     thread_id,
                     claimed_thread.root_comment_database_id,
+                    receipt_operation_key=pending_receipt.operation_key,
                 )
             except Exception as transition_exc:
                 logger.error(f"Could not record rollback transition for thread {thread_id}: {transition_exc}")
@@ -751,19 +857,15 @@ def execute_durable_thread_closures(
                     pass
                 raise StaleReviewThreadResolutionError(thread_id, repo_name, pr_number) from last_exc
 
-            # Rollback succeeded: close out marker
+            # Rollback succeeded: retire risk in the same owned reply.
             if claimed_thread.root_comment_database_id is not None:
                 try:
-                    github_client.reply_to_review_thread(
-                        repo_name,
-                        pr_number,
-                        claimed_thread.root_comment_database_id,
-                        STALE_BLOCKER_CLEARED_MARKER,
-                    )
+                    put_receipt(github_client, observation, replace(pending_receipt, phase="ROLLED_BACK"))
                 except Exception as exc:
-                    logger.error(f"Rolled back thread {thread_id} but failed to post cleared marker: {exc}")
+                    logger.error(f"Rolled back thread {thread_id} but failed to update its receipt: {exc}")
+                    errors.append(f"{thread_id}|marker-cleanup|{exc}")
                     try:
-                        rollback_registry.record_marker_cleanup(repo_name, pr_number, thread_id, claimed_thread.root_comment_database_id)
+                        rollback_registry.record_marker_cleanup(repo_name, pr_number, thread_id, claimed_thread.root_comment_database_id, receipt_operation_key=pending_receipt.operation_key)
                     except Exception:
                         pass
                 else:
@@ -780,17 +882,12 @@ def execute_durable_thread_closures(
                 errors=tuple(errors),
             )
 
-        # Success: close out marker
+        # Success: update the existing reply instead of appending housekeeping.
         if claimed_thread.root_comment_database_id is not None:
             try:
-                github_client.reply_to_review_thread(
-                    repo_name,
-                    pr_number,
-                    claimed_thread.root_comment_database_id,
-                    STALE_BLOCKER_CLEARED_MARKER,
-                )
+                put_receipt(github_client, observation, replace(pending_receipt, phase="RESOLVED"))
             except Exception as exc:
-                logger.error(f"Resolved thread {thread_id} but failed to post cleared marker: {exc}")
+                logger.error(f"Resolved thread {thread_id} but failed to complete its receipt: {exc}")
                 errors.append(f"{thread_id}|marker-cleanup|{exc}")
 
         resolved_thread_ids.append(thread_id)

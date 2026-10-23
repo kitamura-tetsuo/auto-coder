@@ -39,6 +39,7 @@ from auto_coder.review_thread_validation import (
     render_claimed_review_threads_section,
     resolve_addressed_review_threads,
 )
+from tests.test_review_thread_validation import _closure_client
 
 
 @pytest.fixture
@@ -179,7 +180,7 @@ class TestAS001ReplayWrongRationaleFrom2132:
         assert eval_nav.effective_status == "ADDRESSED"
 
         # 4. Execute durable closures and verify thread resolution effect
-        client = MagicMock()
+        client = _closure_client(claimed)
         client.get_pull_request_head_sha_strict.return_value = "head-1"
 
         result = execute_durable_thread_closures(
@@ -292,7 +293,7 @@ class TestAS002FixSubsetWithoutChangingGoalposts:
         assert full_evaluations[0].effective_status == "ADDRESSED"
 
         # Execute closure
-        client = MagicMock()
+        client = _closure_client(claimed)
         client.get_pull_request_head_sha_strict.return_value = "head-1"
         exec_res = execute_durable_thread_closures(
             client,
@@ -655,7 +656,7 @@ class TestAS004GroupedRootAndIndependentAggregateVerdict:
 
         evaluations = adjudicate_claimed_thread_closures(candidates, [disp_compound, disp_alias_a], snapshot=snap)
 
-        client = MagicMock()
+        client = _closure_client(claimed)
         client.get_pull_request_head_sha_strict.return_value = "head-1"
 
         exec_res = execute_durable_thread_closures(
@@ -750,7 +751,7 @@ class TestAS005NewerEvidenceWinsAndFailedWritesDoNotResolve:
         )
         assert snap_newer.ledger_revision > snap.ledger_revision
 
-        client = MagicMock()
+        client = _closure_client(claimed)
         client.get_pull_request_head_sha_strict.return_value = "head-1"
 
         # Release the old completion with expected_ledger_revision from old snap (or newer rev required)
@@ -812,7 +813,7 @@ class TestAS005NewerEvidenceWinsAndFailedWritesDoNotResolve:
         failing_ledger.get_snapshot.return_value = snap
         failing_ledger.record_transition.side_effect = OSError("Disk I/O error on commit")
 
-        client = MagicMock()
+        client = _closure_client(claimed)
         client.get_pull_request_head_sha_strict.return_value = "head-1"
 
         exec_res = execute_durable_thread_closures(
