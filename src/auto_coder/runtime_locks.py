@@ -119,23 +119,22 @@ def ensure_lock_directory(path: Path, shared_gid: Optional[int] = None) -> None:
     current = base
     try:
         base.mkdir(parents=True, exist_ok=True)
-        old_umask = os.umask(0)
-        try:
-            for part in directory.relative_to(base).parts:
-                current /= part
-                try:
-                    current.mkdir(mode=0o2770)
-                except FileExistsError:
-                    continue
-                try:
-                    os.chown(current, -1, shared_gid)
-                except OSError:
-                    pass
-                try:
-                    os.chmod(current, 0o2770)
-                except OSError:
-                    pass
-        finally:
-            os.umask(old_umask)
+        for part in directory.relative_to(base).parts:
+            current /= part
+            try:
+                current.mkdir(mode=0o2770)
+            except FileExistsError:
+                continue
+            try:
+                os.chown(current, -1, shared_gid)
+            except OSError:
+                pass
+            try:
+                # mkdir's mode is filtered by the caller's umask. Apply the
+                # requested shared mode directly to this newly created path
+                # instead of changing the process-wide umask.
+                os.chmod(current, 0o2770)
+            except OSError:
+                pass
     except OSError as exc:
         raise RuntimeError(f"Cannot establish shared runtime lock directory '{current}': {exc}") from exc
