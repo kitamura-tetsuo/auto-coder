@@ -447,6 +447,65 @@ def _remote_head(root: Path, head_ref: str) -> tuple[bool, str]:
     return True, fields[0] if fields else ""
 
 
+def _has_commit(root: Path, sha: str) -> bool:
+    if not sha:
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+            cwd=root,
+            capture_output=True,
+        )
+        return result.returncode == 0
+    except (OSError, ValueError):
+        return False
+
+
+def _ensure_head_commit_available(root: Path, request: LocalReviewRepairRequest) -> None:
+    if _has_commit(root, request.head_sha):
+        return
+    try:
+        has_remote = (
+            subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                cwd=root,
+                capture_output=True,
+            ).returncode
+            == 0
+        )
+        if not has_remote:
+            return
+        if request.head_ref:
+            subprocess.run(
+                [
+                    "git",
+                    "fetch",
+                    "--no-tags",
+                    "origin",
+                    f"+refs/heads/{request.head_ref}:refs/remotes/origin/{request.head_ref}",
+                ],
+                cwd=root,
+                capture_output=True,
+                timeout=60,
+            )
+        if not _has_commit(root, request.head_sha):
+            subprocess.run(
+                ["git", "fetch", "--no-tags", "origin", request.head_sha],
+                cwd=root,
+                capture_output=True,
+                timeout=60,
+            )
+        if not _has_commit(root, request.head_sha) and request.pr_number:
+            subprocess.run(
+                ["git", "fetch", "--no-tags", "origin", f"pull/{request.pr_number}/head"],
+                cwd=root,
+                capture_output=True,
+                timeout=60,
+            )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def _resume_publication(
     request: LocalReviewRepairRequest,
     store: LocalReviewRepairStore,
@@ -504,15 +563,17 @@ def execute_local_review_repair(
     local_job_id: str = "",
     provider_entry_authorizer: Optional[Callable[[], bool]] = None,
     provider_entry_checkpoint: Optional[Callable[[], bool]] = None,
+    root: Optional[Path] = None,
 ) -> LocalReviewRepairOutcome:
     """Run one fenced correction in a detached exact-head checkout and publish it."""
     if request.head_repository != request.repository:
         return LocalReviewRepairOutcome("not_admitted", "foreign-head pull requests are not eligible")
+    repo_root = (root or Path.cwd()).resolve()
     store = store or LocalReviewRepairStore(local_review_repair_db_path(request.repository))
     if executor is None and accepted_claim is None:
         retained = store.get_publication_pending(request)
         if retained is not None:
-            outcome = _resume_publication(request, store, retained, Path.cwd())
+            outcome = _resume_publication(request, store, retained, repo_root)
             if outcome.published and allowance_authority is not None:
                 allowance_authority.mark_completion(code_changed=True, evidence=f"local correction published as {retained.result_sha}")
             return outcome
@@ -525,20 +586,20 @@ def execute_local_review_repair(
         if claim.phase == "publication_pending":
             record = store.get(request, claim.attempt_id)
             if record is not None:
-                outcome = _resume_publication(request, store, record, Path.cwd())
+                outcome = _resume_publication(request, store, record, repo_root)
                 if outcome.published and allowance_authority is not None:
                     allowance_authority.mark_completion(code_changed=True, evidence=f"local correction published as {record.result_sha}")
                 return outcome
         return LocalReviewRepairOutcome(claim.phase, f"retained local correction phase: {claim.phase}")
     assert executor is not None
 
-    root = Path.cwd()
+    _ensure_head_commit_available(repo_root, request)
     worktree = tempfile.mkdtemp(prefix=f"auto_coder_review_{request.pr_number}_")
     preserve_worktree = False
     try:
         added = subprocess.run(
             ["git", "worktree", "add", "--detach", worktree, request.head_sha],
-            cwd=root,
+            cwd=repo_root,
             capture_output=True,
             text=True,
         )
@@ -614,7 +675,7 @@ def execute_local_review_repair(
         return LocalReviewRepairOutcome("awaiting_validation", f"published {result_sha} to {request.head_ref}; independent validation is required", executed=True, published=True)
     finally:
         if not preserve_worktree:
-            subprocess.run(["git", "worktree", "remove", "--force", worktree], cwd=root, capture_output=True)
+            subprocess.run(["git", "worktree", "remove", "--force", worktree], cwd=repo_root, capture_output=True)
             try:
                 os.rmdir(worktree)
             except OSError:

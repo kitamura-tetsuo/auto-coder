@@ -967,3 +967,64 @@ def test_validated_gap_matches_stable_identity_and_uses_current_instructions():
     assert "TOG-other" not in request.prompt
     assert len(request.feedback_identities) == 1
     assert result.local_phase == "pending"
+
+
+def test_execute_fetches_missing_head_commit_from_origin(tmp_path: Path, monkeypatch, _use_custom_subprocess_mock) -> None:
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "--bare")
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    _git(staging, "init")
+    _git(staging, "config", "user.name", "Test User")
+    _git(staging, "config", "user.email", "test@example.com")
+    (staging / "file.txt").write_text("initial\n", encoding="utf-8")
+    _git(staging, "add", "file.txt")
+    _git(staging, "commit", "-m", "initial")
+    _git(staging, "remote", "add", "origin", f"file://{origin}")
+    _git(staging, "push", "origin", "HEAD:refs/heads/main")
+
+    local = tmp_path / "local"
+    local.mkdir()
+    _git(local, "init")
+    _git(local, "config", "user.name", "Test User")
+    _git(local, "config", "user.email", "test@example.com")
+    _git(local, "remote", "add", "origin", f"file://{origin}")
+    _git(local, "fetch", "origin", "main")
+    _git(local, "checkout", "-b", "main", "origin/main")
+
+    # Staging commits and pushes feature-1 after local is already set up
+    (staging / "file.txt").write_text("branch edit\n", encoding="utf-8")
+    _git(staging, "add", "file.txt")
+    _git(staging, "commit", "-m", "branch commit")
+    head_sha = _git(staging, "rev-parse", "HEAD")
+    _git(staging, "push", "origin", "HEAD:refs/heads/feature-1")
+
+    result = subprocess.run(["git", "cat-file", "-e", f"{head_sha}^{{commit}}"], cwd=local, capture_output=True)
+    assert result.returncode != 0
+
+    monkeypatch.chdir(local)
+    database = tmp_path / "repairs.sqlite3"
+    request = replace(
+        _request(),
+        head_ref="feature-1",
+        head_sha=head_sha,
+    )
+
+    executed_worktrees = []
+
+    def executor(_req, worktree):
+        executed_worktrees.append(worktree)
+        return "CANNOT_FIX"
+
+    outcome = execute_local_review_repair(
+        request,
+        store=LocalReviewRepairStore(database),
+        executor=executor,
+        root=local,
+    )
+
+    assert len(executed_worktrees) == 1
+    assert outcome.phase == "terminal_failure"
+    assert outcome.executed is True
