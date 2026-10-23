@@ -64,6 +64,16 @@ def test_failed_attempt_is_separate_from_publication_and_retry_guidance() -> Non
     assert store.reads == 1
 
 
+def test_paused_current_attempt_guides_same_session_resume() -> None:
+    paused = replace(job("attempt-1", "generation", InvocationOutcome.FAILED), state=LocalJobState.PAUSED, invocation_outcome=None, diagnostic="timeout")
+    result = explain_already_owned(EvidenceStore((LocalIssueJobEvidence(paused),)), "owner/repo", 42, "generation", "execution")
+
+    assert result.status == "known" and result.current_attempt == "attempt-1"
+    assert "invocation=paused reason='timeout'" in result.message
+    assert "--only https://github.com/owner/repo/issues/42 --resume" in result.message
+    assert "--retry" not in result.message
+
+
 def test_completed_local_result_and_confirmed_publication_are_distinct() -> None:
     unpublished = LocalIssueJobEvidence(job("attempt-1", "generation", InvocationOutcome.COMPLETED, execution="old"))
     published_job = job("attempt-2", "generation", InvocationOutcome.COMPLETED, execution="current")

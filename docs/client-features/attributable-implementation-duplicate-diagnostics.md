@@ -24,3 +24,7 @@ command for a distinct operator-requested attempt, while explaining that it
 does not guarantee session/edit resumption or bypass readiness, authority,
 ownership, dependency, or provider gates. Live work must be inspected and
 reconciled before replacement is considered.
+
+An authoritatively bound paused job is reported as `invocation=paused` with a
+bounded reason and the exact `--only <issue> --resume` command for its retained
+edits and session. Its diagnostic does not recommend a distinct `--retry` attempt.

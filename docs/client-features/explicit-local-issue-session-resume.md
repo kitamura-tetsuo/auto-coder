@@ -23,6 +23,26 @@ Older jobs without the actual provider-root/writer binding cannot safely resume.
 Already recorded failure/interruption results retain their terminal disposition;
 this option does not turn them into another implementation attempt.
 
+New durable Muse Issue invocations preserve their actual provider repository under
+the job's execution directory. A timeout or controller interruption with a known
+session and positively stopped writers checkpoints `paused`, retaining edits,
+session, attempt, execution incarnation, and implementation ownership without
+creating a terminal failure artifact. `--only <issue> --resume` continues that
+same session in that same repository; repeated interruptions remain resumable.
+Typed provider usage limits and retryable transport interruptions follow the same
+retention path when the session/root and writer-settlement evidence are available.
+A paused job may resume while its original daemon is alive because its stopped
+writers and paused-state compare-and-replace fence prevent concurrent execution.
+Running jobs still require the previous controller to be dead. A hard controller
+crash leaves its durable root available to the existing dead-owner resume path.
+The controller never automatically resets the original timeout budget or starts
+a replacement implementation. `--retry` remains a distinct fresh attempt.
+
+Ordinary non-timeout failures and legacy terminal artifacts retain their existing
+disposition. A workspace already deleted by an older controller cannot be restored
+from a session identifier alone. Missing roots, live/unknown writers, and changed
+Issue authority continue to refuse resumption without fresh-session fallback.
+
 An atomic claim replaces the executor token and runner owner while preserving
 the job, attempt, execution incarnation, implementation owner, and workspace.
 Concurrent commands and delayed writes by the prior executor cannot authorize
@@ -38,6 +58,13 @@ instructions to inspect retained edits and complete the task and relevant tests.
 Only a confirmed final response after writer settlement can hand files back to
 the retained publication workspace and enter the ordinary result/finalizer path.
 Failure preserves the retained workspace and a reconciliation reason.
+
+After process loss, Muse may report its orphaned predecessor's cancellation while
+the new turn is being admitted. The transport correlates that historical terminal
+only to the exact predecessor recorded for the same job/backend/attempt/session
+and workspace. It cannot complete the new turn or authorize its result. Unknown
+turns and foreign sessions still fail; the new turn must produce its own confirmed
+terminal and assistant output.
 
 Historical live-inventory rows can outlive their earlier Muse turn. They are
 never removed or marked successful merely because the resumed host reports an
@@ -74,3 +101,9 @@ tests/test_explicit_issue_resume.py tests/test_explicit_local_issue_completion.p
 tests/test_local_job_runner.py tests/test_local_job_continuation.py
 tests/test_muse_msp.py tests/test_process_issues_cloud_only.py` for the bounded
 regressions, including the real protocol-host continuation and mounted detail view.
+
+`bash scripts/test.sh tests/test_issue_interruption_resume.py` exercises timeout,
+repeated timeout, and a killed controller followed by a reopened store and the real
+MSP transport. Each case asserts one session start, exact-session resumption,
+preserved partial edits, unchanged attempt/incarnation, and publication of both
+the original and continued edits to a real local Git remote.

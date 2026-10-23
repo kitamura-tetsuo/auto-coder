@@ -112,6 +112,14 @@ unknown and preserves the root. `tests/test_muse_msp.py::test_muse_failed_invoca
 checks a real nonzero host exit and absence of provider dispatch on preparation
 failure; dispatch/result trace outcomes and dashboard error pairing are unchanged.
 
+Accepted durable Issue jobs retain their unfinished provider clone in their
+execution directory. Timeouts and interruptions with a retained session become
+`paused` after writer settlement, with no completed/failed result artifact and no
+publication. Explicit `--only <issue> --resume` keeps that session, root, and attempt
+and grants one new continuation budget. This durable-job policy takes precedence
+over temporary-root disposal for standalone calls described above. See
+`explicit-local-issue-session-resume.md` and `tests/test_issue_interruption_resume.py`.
+
 No-edit validation and recovery remain bound to the captured worktree and
 worktree-private Git directory. Its snapshot and Git trace detect both final and
 transient mutation, and recovery never replays unrelated or newer refs. Editable

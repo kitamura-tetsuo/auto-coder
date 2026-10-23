@@ -31,6 +31,7 @@ class LocalJobKind(str, Enum):
 class LocalJobState(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
+    PAUSED = "paused"
     RESULT_RECORDED = "result_recorded"
     DOWNSTREAM_EFFECTS_PENDING = "downstream_effects_pending"
     SETTLED = "settled"
@@ -1460,12 +1461,14 @@ class LocalJobStore:
 
     def claim_explicit_resume(self, job: LocalJobRecord, continuation: LocalJobContinuation, runner_owner: str, executor_token: str) -> bool:
         """Fence one operator continuation without changing the attempt or workspace."""
+        if job.state not in {LocalJobState.RUNNING, LocalJobState.PAUSED}:
+            return False
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
-                "UPDATE local_jobs SET runner_owner=? WHERE job_id=? AND execution_incarnation=? AND runner_owner=? AND state=? AND provider_entered=1 "
+                "UPDATE local_jobs SET runner_owner=?, state=?, diagnostic='', updated_at=? WHERE job_id=? AND execution_incarnation=? AND runner_owner=? AND state=? AND provider_entered=1 AND result_reference='' "
                 "AND EXISTS (SELECT 1 FROM local_job_continuations c WHERE c.job_id=local_jobs.job_id AND c.execution_incarnation=local_jobs.execution_incarnation AND c.executor_token=? AND c.state<>?)",
-                (runner_owner, job.job_id, job.execution_incarnation, job.runner_owner, LocalJobState.RUNNING.value, continuation.executor_token, ContinuationState.FINAL_CONFIRMED.value),
+                (runner_owner, LocalJobState.RUNNING.value, time.time(), job.job_id, job.execution_incarnation, job.runner_owner, job.state.value, continuation.executor_token, ContinuationState.FINAL_CONFIRMED.value),
             )
             if cursor.rowcount != 1:
                 connection.rollback()
@@ -1473,6 +1476,27 @@ class LocalJobStore:
             connection.execute(
                 "UPDATE local_job_continuations SET executor_token=?, state=?, frontier=frontier+1, candidate_frontier=NULL, candidate_output='', final_output='', reconciliation_reason='', updated_at=? WHERE job_id=?",
                 (executor_token, ContinuationState.FOREGROUND.value, time.time(), job.job_id),
+            )
+            connection.commit()
+        return True
+
+    def pause_continuation(self, job: LocalJobRecord, executor_token: str, reason: str) -> bool:
+        """Retain an unfinished invocation for an explicit same-session turn."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "UPDATE local_jobs SET state=?, diagnostic=?, updated_at=? WHERE job_id=? AND execution_incarnation=? AND state=? AND result_reference='' "
+                "AND EXISTS (SELECT 1 FROM local_job_continuations c WHERE c.job_id=local_jobs.job_id AND c.execution_incarnation=local_jobs.execution_incarnation "
+                "AND c.executor_token=? AND c.provider_session<>'' AND c.provider_workspace<>'' AND c.state<>?) "
+                "AND NOT EXISTS (SELECT 1 FROM local_job_results r WHERE r.job_id=local_jobs.job_id AND r.execution_incarnation=local_jobs.execution_incarnation)",
+                (LocalJobState.PAUSED.value, reason, time.time(), job.job_id, job.execution_incarnation, LocalJobState.RUNNING.value, executor_token, ContinuationState.FINAL_CONFIRMED.value),
+            )
+            if cursor.rowcount != 1:
+                connection.rollback()
+                return False
+            connection.execute(
+                "UPDATE local_job_continuations SET state=?, reconciliation_reason=?, updated_at=? WHERE job_id=? AND executor_token=?",
+                (ContinuationState.RECONCILIATION_REQUIRED.value, reason, time.time(), job.job_id, executor_token),
             )
             connection.commit()
         return True

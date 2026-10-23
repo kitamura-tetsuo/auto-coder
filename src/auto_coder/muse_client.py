@@ -34,6 +34,7 @@ from .muse_background_observation import (
     decode_muse_msp_frame,
     detect_muse_background_support,
     persist_muse_observation,
+    recover_muse_observation,
 )
 from .muse_diagnostics import MuseInvocationObserver, TimedFrame
 from .prompt_loader import render_prompt
@@ -1156,11 +1157,21 @@ class MuseClient(LLMClientBase):
         final_output: Optional[str] = None
         final_continuation_frontier: Optional[int] = None
         invocation_error: Optional[BaseException] = None
+        predecessor_turn: Optional[str] = None
         try:
             logger.warning("LLM invocation: Muse Code MSP host is being called. Keep LLM calls minimized.")
             diag.enter_phase("host_startup")
             retained_observer = current_muse_job_observation()
             if retained_observer is not None and session_id is not None:
+                previous = recover_muse_observation(retained_observer.store, retained_observer.job.job_id)
+                if previous is not None and (
+                    previous.binding.provider_session == session_id
+                    and previous.binding.backend_name == retained_observer.job.backend_name
+                    and previous.binding.execution_incarnation == retained_observer.job.execution_incarnation
+                    and previous.binding.upstream_attempt == retained_observer.job.upstream_attempt
+                    and previous.binding.workspace.resolve() == Path(retained_observer.job.workspace_path).resolve()
+                ):
+                    predecessor_turn = _nonempty_str(previous.foreground_turn)
                 if not retained_observer.store.bind_continuation_writer(retained_observer.job.job_id, retained_observer.executor_token, cwd, "ambiguous:host-launch"):
                     raise RuntimeError("Muse resumed host launch could not be fenced")
             process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=os.name == "posix", bufsize=0)
@@ -1341,6 +1352,10 @@ class MuseClient(LLMClientBase):
                         )
                     params_obj = event.get("params")
                     if event.get("method") != "turn/completed":
+                        continue
+                    if predecessor_turn is not None and isinstance(params_obj, dict) and params_obj.get("turnId") == predecessor_turn and predecessor_turn != turn_id and params_obj.get("sessionId") == canonical_id:
+                        # A resumed host can reconcile its orphaned predecessor
+                        # after acknowledging the new turn. It cannot complete it.
                         continue
                     if not isinstance(params_obj, dict) or params_obj.get("turnId") != turn_id:
                         raise RuntimeError("Muse MSP terminal belongs to an incompatible turn")

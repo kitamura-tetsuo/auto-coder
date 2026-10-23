@@ -79,7 +79,7 @@ class IssueJobRuntime:
         runner = self.new_runner(capacity=1, job_ids=frozenset({job_id}))
         try:
             live_external_owner = job.runner_owner != runner.runner_id and job.state in {LocalJobState.RUNNING, LocalJobState.RESULT_RECORDED} and runner_owner_alive(job.runner_owner) is True
-            if resume and job.state is LocalJobState.RUNNING and not job.result_reference:
+            if resume and job.state in {LocalJobState.RUNNING, LocalJobState.PAUSED} and not job.result_reference:
                 runner.resume(job_id)
             elif not live_external_owner:
                 runner.poll()

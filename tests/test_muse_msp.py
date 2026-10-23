@@ -131,6 +131,8 @@ for line in sys.stdin:
         last_session = sid
         pending = [{"kind":"approval","approvalId":"pending-1","viewCursor":"cursor-1"}] if method == "session/resume" and os.environ.get("MSP_PENDING_RESUME") else []
         emit({"jsonrpc":"2.0","id":frame["id"],"result":{"session":session,"pendingRequests":pending}})
+        if method == "session/resume" and os.environ.get("MSP_REPLAY_PREDECESSOR"):
+            emit({"jsonrpc":"2.0","method":"turn/completed","params":{"sessionId":os.environ.get("MSP_REPLAY_SESSION",sid),"turnId":os.environ["MSP_REPLAY_PREDECESSOR"],"terminal":"cancelled"}})
         if os.environ.get("MSP_STOP_READING"):
             time.sleep(10)
     elif method == "session/setApprovalMode":

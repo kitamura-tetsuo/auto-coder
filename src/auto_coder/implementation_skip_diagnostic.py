@@ -42,6 +42,8 @@ def _describe(evidence: LocalIssueJobEvidence) -> str:
             invocation = "invocation=pending"
         elif job.state is LocalJobState.RUNNING:
             invocation = "invocation=running" if job.provider_entered else "invocation=pending-provider-entry"
+        elif job.state is LocalJobState.PAUSED:
+            invocation = f"invocation=paused reason={_bounded_reason(job.diagnostic)!r}"
         else:
             invocation = "invocation=unknown"
     else:
@@ -106,6 +108,9 @@ def explain_already_owned(
 
     live = any(item.job.state in {LocalJobState.PENDING, LocalJobState.RUNNING, LocalJobState.RESULT_RECORDED, LocalJobState.DOWNSTREAM_EFFECTS_PENDING} for item in current)
     guidance = "Inspect and reconcile the live/pending owned work before considering a replacement. " if live else ""
+    if len(current) == 1 and current[0].job.state is LocalJobState.PAUSED:
+        guidance = f"Continue the retained edits and provider session with `auto-coder process-issues --only https://github.com/{repository}/issues/{issue_number} --resume`."
+        retry = ""
     return ImplementationSkipDiagnostic(" ".join(part for part in (prefix, current_text, history, guidance + retry) if part), status, current_attempt)
 
 

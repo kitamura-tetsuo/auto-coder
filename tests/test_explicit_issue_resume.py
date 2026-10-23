@@ -23,6 +23,7 @@ from auto_coder.issue_local_job import IssueLocalJobAdapter, issue_job_authoriza
 from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 from auto_coder.local_job_handoff import ContinuationState, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore
 from auto_coder.local_job_runner import LocalJobRunner, current_runner_owner
+from auto_coder.muse_background_observation import MuseBackgroundObservation, MuseObservationBinding, persist_muse_observation
 
 from .test_dashboard_observability import _assert_required_stage_visible, _mounted_detail
 from .test_issue_job_workspace import git, repository
@@ -170,8 +171,13 @@ def test_confirmed_resume_result_is_recovered_without_provider_call(tmp_path, mo
     runner.close(wait=True)
 
 
-def test_resume_claim_fences_competing_controller_and_old_executor(tmp_path, _use_real_commands):
+@pytest.mark.parametrize("paused", [False, True])
+def test_resume_claim_fences_competing_controller_and_old_executor(tmp_path, _use_real_commands, paused):
     _, store, _, job, _ = retained_job(tmp_path)
+    if paused:
+        assert store.pause_continuation(job, job.runner_owner, "interrupted")
+        job = store.get(job.job_id)
+        assert job is not None and job.state is LocalJobState.PAUSED
     continuation = store.get_continuation(job.job_id)
     assert continuation is not None
     assert store.claim_explicit_resume(job, continuation, current_runner_owner(), "new-token")
@@ -186,9 +192,22 @@ def test_resume_claim_fences_competing_controller_and_old_executor(tmp_path, _us
 
 @patch("auto_coder.dashboard.ui")
 @pytest.mark.parametrize("backend", ["muse", "muse-retained"])
-@pytest.mark.parametrize("refusal, reason", [(None, None), ("MSP_WRONG_RESUME_ID", "Muse MSP resumed a different session identity"), ("MSP_STORED_WORKSPACE", "Muse MSP session belongs to an incompatible workspace"), ("MSP_RESUME_MODEL", "Muse MSP session omitted or uses an incompatible model")])
+@pytest.mark.parametrize(
+    "refusal, reason",
+    [
+        (None, None),
+        ("MSP_REPLAY_PREDECESSOR", None),
+        ("MSP_REPLAY_UNKNOWN", "Muse MSP terminal belongs to an incompatible turn"),
+        ("MSP_REPLAY_SESSION", "Muse MSP terminal belongs to an incompatible turn"),
+        ("MSP_WRONG_RESUME_ID", "Muse MSP resumed a different session identity"),
+        ("MSP_STORED_WORKSPACE", "Muse MSP session belongs to an incompatible workspace"),
+        ("MSP_RESUME_MODEL", "Muse MSP session omitted or uses an incompatible model"),
+    ],
+)
 def test_only_resume_uses_retained_muse_session_and_publishes(mock_ui, tmp_path, monkeypatch, _use_real_commands, _use_real_sleep, refusal, reason, backend):
     source, store, slots, job, provider = retained_job(tmp_path, backend)
+    observation = MuseBackgroundObservation(MuseObservationBinding(backend, "retained/session", job.execution_incarnation, job.upstream_attempt, Path(job.workspace_path)), "retained-predecessor", foreground_state="running")
+    assert persist_muse_observation(store, job.job_id, job.runner_owner, observation)
     host = _host(tmp_path)
     log = tmp_path / "msp.jsonl"
     monkeypatch.chdir(source)
@@ -201,7 +220,14 @@ def test_only_resume_uses_retained_muse_session_and_publishes(mock_ui, tmp_path,
     monkeypatch.setenv("MSP_BACKGROUND_GATE", str(gate))
     monkeypatch.setenv("MSP_BACKGROUND_ITEM", "1")
     monkeypatch.setenv("MSP_NATIVE_ANSWER", "ACTION_SUMMARY: resumed implementation")
-    if refusal:
+    if refusal == "MSP_REPLAY_PREDECESSOR":
+        monkeypatch.setenv("MSP_REPLAY_PREDECESSOR", "retained-predecessor")
+    elif refusal == "MSP_REPLAY_UNKNOWN":
+        monkeypatch.setenv("MSP_REPLAY_PREDECESSOR", "foreign-turn")
+    elif refusal == "MSP_REPLAY_SESSION":
+        monkeypatch.setenv("MSP_REPLAY_PREDECESSOR", "retained-predecessor")
+        monkeypatch.setenv("MSP_REPLAY_SESSION", "foreign-session")
+    elif refusal:
         monkeypatch.setenv(refusal, "incompatible")
     config = LLMBackendConfiguration(backends={backend: BackendConfig(name=backend, backend_type="muse", model="muse-spark-1.3", timeout=10)})
     monkeypatch.setattr("auto_coder.llm_backend_config.get_llm_config", lambda **_kwargs: config)
@@ -219,11 +245,13 @@ def test_only_resume_uses_retained_muse_session_and_publishes(mock_ui, tmp_path,
     traces = get_trace_collector()
     traces.clear()
     result = engine.process_single("owner/repo", "issue", 41, explicit_only=True, resume=True)
-    if refusal:
+    if reason:
         assert result["target_outcome"] == "deferred"
         assert result["target_reason"] == f"Cannot resume Issue #41: {reason}"
         frames = [json.loads(line)["frame"] for line in log.read_text().splitlines()]
-        assert not any(frame.get("method") in {"session/start", "turn/start"} for frame in frames)
+        assert not any(frame.get("method") == "session/start" for frame in frames)
+        if refusal not in {"MSP_REPLAY_UNKNOWN", "MSP_REPLAY_SESSION"}:
+            assert not any(frame.get("method") == "turn/start" for frame in frames)
         assert store.get(job.job_id).state is LocalJobState.RUNNING
         assert store.get_continuation(job.job_id).final_output == ""
         assert (provider / "partial.txt").read_text() == "retained edit\n"

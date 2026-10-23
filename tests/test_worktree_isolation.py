@@ -289,7 +289,9 @@ def test_insufficient_capacity_refuses_before_context_copy(tmp_path: Path, monke
     original_mkdtemp = worktree_utils.tempfile.mkdtemp
 
     def create_parent(**kwargs: str) -> str:
-        result = original_mkdtemp(dir=tmp_path, **kwargs)
+        if kwargs.get("dir") is None:
+            kwargs["dir"] = str(tmp_path)
+        result = original_mkdtemp(**kwargs)
         parents.append(Path(result))
         return result
 

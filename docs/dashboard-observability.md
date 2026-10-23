@@ -2574,6 +2574,31 @@ retained interrupted job, drives the actual MSP host, checkpoints its edits,
 and mounts the Issue detail diagram. Publication replay and refusal controls
 must not appear as successful provider re-entry.
 
+Durable Muse Issue interruptions and timeouts with a retained session/root and
+proven writer settlement emit `issue.local-session-pause` from `local-backend`
+with DEFERRED. Facts retain `job_id`, `backend`, `provider_session`, and the bounded
+reason. The job becomes `paused`, keeping its implementation execution and files;
+it has no terminal result artifact and cannot publish or trigger validation.
+Explicit `--resume` atomically reclaims that same job/session/root and emits the
+existing resume/finalization outcomes. A live or unknown old writer still refuses
+continuation. Ordinary duplicate diagnostics direct paused work to `--resume`.
+
+Run `bash scripts/test.sh tests/test_issue_interruption_resume.py
+'tests/test_explicit_local_issue_completion.py::test_explicit_issue_waits_for_local_execution_and_finalization[continuation_timeout]'
+tests/test_implementation_skip_diagnostic.py` for real protocol-host timeout,
+repeated interruption, killed-controller/store-reopen continuity, exact remote
+file publication, single session creation, executor identity preservation,
+pause-to-mounted-Issue detail, honest deferred completion, and resume guidance.
+Existing generic stage rendering displays the new pause event; no structured
+event fields or renderer shapes change.
+
+The exact-session resume tests also exercise an orphaned predecessor terminal
+reported during admission. Only a terminal correlated to the durable predecessor
+can be treated as historical evidence; unknown-turn and foreign-session controls
+still defer. Existing resume trace outcomes reflect the new turn's actual result,
+never the predecessor's cancellation. Usage-limit retention and resumption share
+the pause event and are covered by `tests/test_issue_interruption_resume.py`.
+
 `process-issues --only` runs only the exact accepted local Issue job and waits
 through controller-owned publication. `issue.dispatch.local-job` still denotes
 ACCEPTED_HANDOFF. The finalizer emits `issue.local-publication-finalization`

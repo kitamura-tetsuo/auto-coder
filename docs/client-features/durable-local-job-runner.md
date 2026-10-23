@@ -44,6 +44,16 @@ does not wait on work whose minimal durable checkpoint is complete. Empty
 provider output remains an actual checkpointed result; provider exceptions and
 interruptions are recorded as distinct outcomes.
 
+Durable Muse Issue timeouts and interruptions are resumable when their session,
+provider root, and positive writer settlement are available. The runner instead
+checkpoints `paused`, settles the invocation admission handle, retains the exact
+implementation execution, and emits `issue.local-session-pause` with DEFERRED.
+No result artifact, downstream wake, or publication is authorized by pausing.
+Ordinary polling leaves paused work retained for an explicit `--only --resume`;
+its atomic claim changes the executor token and returns the same job to running.
+Repeated pauses and controller-crash recovery preserve the original attempt and
+files. `tests/test_issue_interruption_resume.py` covers the production path.
+
 The daemon's `InvocationAdmissionGate` is checked before a claim. Graceful
 drain therefore leaves queued work pending while protecting already-admitted
 provider calls through their result checkpoint. A failed result or downstream

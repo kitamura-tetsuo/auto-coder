@@ -46,11 +46,18 @@ takeover. Stale tokens and replaced execution incarnations remain fenced. An
 expired invocation budget cannot prevent settlement of an already recorded
 failure; it still forbids a new automatic provider turn.
 
+New durable Muse Issue timeouts/interruption checkpoints use `paused` with no
+terminal artifact, retaining the provider repository for explicit same-session
+resumption. The negative-result recovery above continues to apply to genuine
+terminal failures and previously recorded artifacts. See
+`explicit-local-issue-session-resume.md` for the continuation contract.
+
 Run `bash scripts/test.sh tests/test_local_job_runner.py
 tests/test_local_job_continuation.py` for timeout/interruption recovery, incomplete
 result checkpoints, live/unknown writers, descendant writers, and executor fences.
 `tests/test_explicit_local_issue_completion.py::test_explicit_issue_waits_for_local_execution_and_finalization[continuation_timeout]`
-also crosses the production adapter, private workspace, runner, finalizer, trace,
-and mounted dashboard view, asserting failure without publication or another
-backend call.
+also crosses the production adapter, private workspace, runner, trace, and mounted
+dashboard view, asserting paused/deferred status without publication or another
+backend call. `tests/test_issue_interruption_resume.py` verifies that preserved
+edits subsequently reach successful publication through the same session.
 

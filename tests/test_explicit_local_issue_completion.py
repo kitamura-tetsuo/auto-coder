@@ -16,7 +16,7 @@ from auto_coder.implementation_skip_diagnostic import explain_already_owned
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.issue_dispatch import CandidateHandoff, DispatchOutcome, DispatchResult, IssueAttemptIdentity, IssueDispatchGuard
 from auto_coder.issue_local_job import IssueLocalJobAdapter, issue_job_authorization_ports
-from auto_coder.local_job_handoff import ContinuationState, InvocationOutcome, LocalJobClaim, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore
+from auto_coder.local_job_handoff import ContinuationState, LocalJobClaim, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore
 from auto_coder.local_job_runner import LocalJobRunner
 from auto_coder.utils import CommandExecutor
 
@@ -254,7 +254,7 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
             external_runner.close(wait=True)
     assert not thread.is_alive()
     assert len(results) == 1
-    expected = "success" if behavior in {"published", "no_change"} else "failed" if behavior in {"failed", "continuation_timeout", "cannot_fix", "fetch_failed"} else "deferred"
+    expected = "success" if behavior in {"published", "no_change"} else "failed" if behavior in {"failed", "cannot_fix", "fetch_failed"} else "deferred"
     assert results[0]["target_outcome"] == expected
     assert results[0]["target_type"] == "issue"
     assert results[0]["target_number"] == 41
@@ -267,15 +267,17 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
     assert git(source, "rev-parse", "HEAD") == shared_head
     job = store.get(accepted.job_id)
     assert job
-    if behavior in {"published", "no_change", "failed", "continuation_timeout", "cannot_fix", "fetch_failed"}:
+    if behavior in {"published", "no_change", "failed", "cannot_fix", "fetch_failed"}:
         assert job.state is LocalJobState.SETTLED
         assert slots.active_execution_ids(owner) == ()
     if behavior == "continuation_timeout":
         continuation = store.get_continuation(job.job_id)
-        assert continuation is not None and continuation.state is ContinuationState.FAILED
+        assert continuation is not None and continuation.state is ContinuationState.RECONCILIATION_REQUIRED
         assert continuation.final_output == ""
-        assert job.invocation_outcome is InvocationOutcome.FAILED
-        assert "AutoCoderTimeoutError" in store.get_result_artifact(job.result_reference).output
+        assert job.state is LocalJobState.PAUSED
+        assert job.invocation_outcome is None and job.result_reference == ""
+        assert "AutoCoderTimeoutError" in job.diagnostic
+        assert slots.active_execution_ids(owner) == (execution,)
         assert store.get_effect(job.job_id, job.execution_incarnation, "commit") is None
         assert store.get_effect(job.job_id, job.execution_incarnation, "push") is None
         assert published == []
@@ -304,19 +306,21 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
         assert job.state is LocalJobState.PENDING
         assert not job.provider_entered
     finalizations = [event for event in traces.get_snapshot(repository="owner/repo", item_type="issue", item_number=41).events if event.stage_id == "issue.local-publication-finalization" and event.facts.get("job_id") == accepted.job_id]
-    if behavior in {"refused", "newer_generation"}:
+    if behavior in {"refused", "newer_generation", "continuation_timeout"}:
         assert finalizations == []
     else:
         assert len(finalizations) == 1
         assert finalizations[0].origin == "explicit-single-target"
         assert finalizations[0].facts["job_id"] == accepted.job_id
-        assert finalizations[0].facts["disposition"] == ("pending" if behavior == "publication_pending" else "failed" if behavior in {"fetch_failed", "continuation_timeout"} else behavior)
-        assert finalizations[0].outcome == ("completed" if behavior in {"published", "no_change"} else "failed" if behavior in {"failed", "continuation_timeout", "cannot_fix", "fetch_failed"} else "deferred")
+        assert finalizations[0].facts["disposition"] == ("pending" if behavior == "publication_pending" else "failed" if behavior == "fetch_failed" else behavior)
+        assert finalizations[0].outcome == ("completed" if behavior in {"published", "no_change"} else "failed" if behavior in {"failed", "cannot_fix", "fetch_failed"} else "deferred")
     with patch("auto_coder.dashboard.ui") as mock_ui:
         diagram = _mounted_detail(mock_ui, "issue", 41)
     _assert_required_stage_visible(diagram, "local completion")
-    if behavior not in {"refused", "newer_generation"}:
+    if behavior not in {"refused", "newer_generation", "continuation_timeout"}:
         _assert_required_stage_visible(diagram, "publication finalization")
+    if behavior == "continuation_timeout":
+        _assert_required_stage_visible(diagram, "session paused")
     assert f"outcome: {'completed' if expected == 'success' else expected}" in diagram
     if behavior in {"published", "no_change", "failed", "continuation_timeout", "cannot_fix", "publication_pending"}:
         replay = engine.process_single("owner/repo", "issue", 41, explicit_only=True, force=True)

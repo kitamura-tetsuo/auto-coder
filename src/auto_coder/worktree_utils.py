@@ -682,6 +682,7 @@ def isolated_local_llm_worktree(
     is_noedit: bool = False,
     ownership: Optional[LocalWorkspaceOwnership] = None,
     require_handoff_authorization: bool = False,
+    persistent_root: Optional[Path] = None,
 ) -> Generator[str, None, None]:
     """Bind a Git-backed invocation to an independently cloned private repository."""
     target = _resolve_target(base_cwd)
@@ -689,7 +690,9 @@ def isolated_local_llm_worktree(
         yield str(target)
         return
 
-    parent = Path(tempfile.mkdtemp(prefix="auto_coder_llm_"))
+    if persistent_root is not None:
+        persistent_root.mkdir(parents=True, exist_ok=True)
+    parent = Path(tempfile.mkdtemp(prefix="auto_coder_llm_", dir=persistent_root))
     workspace = parent / "repository"
     execution_token = None
     binding_token = None
@@ -708,6 +711,7 @@ def isolated_local_llm_worktree(
         shutil.rmtree(parent, ignore_errors=True)
         raise
 
+    handed_off = False
     try:
         binding_token = _CURRENT_LOCAL_WORKSPACE.set(snapshot.binding)
         execution_token = bind_command_execution_cwd(str(workspace))
@@ -717,6 +721,7 @@ def isolated_local_llm_worktree(
             if require_handoff_authorization and not snapshot.binding.ownership.handoff_authorized and _result_has_file_delta(workspace, snapshot.binding):
                 raise WorkspaceHandoffError("successful generation-bound handoff evidence is missing")
             sync_worktree_changes_back(workspace, snapshot.binding.caller_root, snapshot.binding)
+        handed_off = True
     finally:
         # Handoff is finished or abandoned even if the provider or application
         # failed. External execution owners still control writer settlement.
@@ -727,7 +732,11 @@ def isolated_local_llm_worktree(
             reset_command_execution_cwd(execution_token)
         if binding_token is not None:
             _CURRENT_LOCAL_WORKSPACE.reset(binding_token)
-        if snapshot is not None and snapshot.binding.ownership.can_dispose:
+        if persistent_root is not None and not handed_off:
+            # The durable job owns this root after interruption or controller
+            # death. Never register an in-process finalizer that can erase it.
+            logger.warning("Preserving unfinished durable implementation workspace {}", workspace)
+        elif snapshot is not None and snapshot.binding.ownership.can_dispose:
             shutil.rmtree(parent, ignore_errors=True)
         elif snapshot is not None:
             logger.warning("Retaining private workspace {} until all owners release it", workspace)

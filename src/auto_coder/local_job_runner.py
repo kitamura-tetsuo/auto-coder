@@ -7,12 +7,15 @@ import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Protocol
 
 from loguru import logger
 
+from .exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError
+from .execution_trace import EventKind, Outcome, current_scope, get_trace_collector, run_with_scope
 from .invocation_admission import InvocationAdmissionGate, InvocationHandle, install_invocation_gate, reset_invocation_gate
 from .local_job_handoff import ContinuationState, InvocationOutcome, LocalJobClaim, LocalJobContinuation, LocalJobKind, LocalJobRecord, LocalJobState, LocalJobStore
 from .security_utils import redact_string
@@ -159,9 +162,9 @@ class LocalJobRunner:
         job = self.store.get(job_id)
         if job is None or job.repository != self.repository or job.kind not in self.adapters or (self._job_ids is not None and job_id not in self._job_ids):
             raise RuntimeError("Retained job does not match the resume target")
-        if job.state is not LocalJobState.RUNNING or not job.provider_entered:
+        if job.state not in {LocalJobState.RUNNING, LocalJobState.PAUSED} or not job.provider_entered:
             raise RuntimeError("Retained job has no unfinished provider invocation")
-        if runner_owner_alive(job.runner_owner) is not False:
+        if job.state is LocalJobState.RUNNING and runner_owner_alive(job.runner_owner) is not False:
             raise RuntimeError("Previous runner is live or its liveness is unknown")
         continuation = self.store.get_continuation(job_id)
         if continuation is None or not continuation.provider_session:
@@ -206,9 +209,39 @@ class LocalJobRunner:
                 raise RuntimeError("Resumed result could not be durably checkpointed")
             handle.begin_checkpointing("resumed_result")
             handle.confirm_settled(f"resumed-result:{job_id}")
-        except Exception as exc:
-            self.store.retain_reconciliation_reason(job_id, token, redact_string(f"Explicit resume failed: {type(exc).__name__}: {exc}")[:2000])
+        except BaseException as exc:
+            if self._pause_interrupted_continuation(current, token, exc, handle):
+                return
+            retained = self.store.retain_reconciliation_reason(job_id, token, redact_string(f"Explicit resume failed: {type(exc).__name__}: {exc}")[:2000])
+            handle.begin_checkpointing("resume_failed")
+            failed = self.store.get_continuation(job_id)
+            if retained and failed is not None and failed.executor_token == token and writer_group_settled(failed.writer_owner):
+                handle.confirm_settled(f"resume-failed:{job_id}:{token}")
             raise
+
+    def _pause_interrupted_continuation(self, job: LocalJobRecord, token: str, error: BaseException, handle: InvocationHandle) -> bool:
+        if job.kind is not LocalJobKind.ISSUE_IMPLEMENTATION or (isinstance(error, Exception) and not isinstance(error, (AutoCoderTimeoutError, AutoCoderUsageLimitError, AutoCoderRetryableBackendError))):
+            return False
+        continuation = self.store.get_continuation(job.job_id)
+        if continuation is None or continuation.executor_token != token or not Path(continuation.provider_workspace).is_dir() or not writer_group_settled(continuation.writer_owner):
+            return False
+        reason = redact_string(f"{type(error).__name__}: {error}; resume with --only {job.target_number} --resume")[:2000]
+        if not self.store.pause_continuation(job, token, reason):
+            return False
+        handle.begin_checkpointing("paused")
+        handle.confirm_settled(f"paused:{job.job_id}:{token}")
+        with self._lock:
+            self._checkpoint_handles.pop(job.execution_incarnation, None)
+        collector = get_trace_collector()
+        scope = current_scope()
+        same_target = scope is not None and (scope.repository, scope.item_type, scope.item_number) == (job.repository, "issue", job.target_number)
+        with nullcontext() if same_target else collector.start_execution(job.repository, "issue", job.target_number, origin="local-backend", stage_id="issue.local-session-pause", label="Implementation session paused") as execution:
+            collector.record_event(
+                EventKind.STAGE_RESULT, stage_id="issue.local-session-pause", origin="local-backend", label="Implementation session paused", outcome=Outcome.DEFERRED, facts={"job_id": job.job_id, "backend": job.backend_name, "provider_session": continuation.provider_session, "reason": reason}
+            )
+            if execution is not None:
+                execution.set_outcome(Outcome.DEFERRED)
+        return True
 
     def _checkpoint_continuation_result(self, job: LocalJobRecord, result: LocalJobExecutionResult, token: str) -> bool:
         claim = LocalJobClaim(job, True)
@@ -252,7 +285,7 @@ class LocalJobRunner:
                     handle.confirm_settled(f"claim-lost:{job.job_id}")
                     continue
                 self._checkpoint_handles[claim.record.execution_incarnation] = handle
-                future = self._executor.submit(self._execute, claim, handle)
+                future = self._executor.submit(run_with_scope, current_scope(), self._execute, claim, handle)
                 self._active[job.job_id] = future
                 scheduled += 1
             return scheduled
@@ -451,10 +484,10 @@ class LocalJobRunner:
                 self.store.release_unentered_claim(claim, str(exc))
                 self._checkpoint_without_provider(handle, claim, "authorization_denied")
                 return
-            except Exception as exc:
-                result = LocalJobExecutionResult(InvocationOutcome.FAILED, f"{type(exc).__name__}: {exc}", "provider raised")
             except BaseException as exc:
-                result = LocalJobExecutionResult(InvocationOutcome.INTERRUPTED, f"{type(exc).__name__}: {exc}", "provider interrupted")
+                if self._pause_interrupted_continuation(claim.record, claim.record.runner_owner, exc, handle):
+                    return
+                result = LocalJobExecutionResult(InvocationOutcome.FAILED if isinstance(exc, Exception) else InvocationOutcome.INTERRUPTED, f"{type(exc).__name__}: {exc}", "provider raised" if isinstance(exc, Exception) else "provider interrupted")
 
             if result.definitely_not_started:
                 self.store.release_unentered_claim(claim, result.diagnostic or result.output)

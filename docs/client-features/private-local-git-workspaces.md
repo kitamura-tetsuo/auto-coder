@@ -28,6 +28,13 @@ invocation. Cleanup removes only that invocation's temporary clone after executi
 and edit handoff have finished; non-Git operations continue to use their original
 working directory.
 
+For accepted durable Muse Issue jobs, the provider clone and source snapshot live
+under the job's execution directory instead of the system temporary directory.
+Failure or interruption preserves this root without registering a process-local
+cleanup callback. It therefore survives manager disposal and controller death.
+Normal successful handoff retains the existing ownership-based cleanup. Other
+backend invocations keep their existing temporary-root lifecycle.
+
 Supervised read-only backends receive an invocation-owned runtime HOME and TMPDIR,
 just as editable backends do. CLI bookkeeping may write there without granting
 write access to the private source, Git metadata, caller, or shared provider state.
