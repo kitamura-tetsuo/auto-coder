@@ -1,3 +1,4 @@
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
@@ -5,6 +6,7 @@ import pytest
 
 from auto_coder.adversarial_validator import CHANGE_PROVENANCE_CLARIFICATION_MARKER, ReviewThreadDisposition
 from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER
+from auto_coder.review_thread_closure_receipt import parse_owned_receipt
 from auto_coder.review_thread_validation import (
     STALE_BLOCKER_CLEARED_MARKER,
     STALE_BLOCKER_MARKER,
@@ -37,6 +39,41 @@ def _comment(author, body, database_id=1, author_id=None):
     if author_id is None:
         author_id = {CODEX_LOGIN: CODEX_ID, REVIEWER_APP_LOGIN: REVIEWER_APP_ID}.get(author, 999999999)
     return ReviewThreadComment(database_id=database_id, body=body, author_login=author, author_id=author_id)
+
+
+def _closure_client(claimed=None):
+    """Keep remote thread effects observable across strict fixture reads."""
+    if claimed is None:
+        claimed = [ClaimedReviewThread(thread_id="t1", root_comment_database_id=42)]
+    threads = [_thread(thread.thread_id, False, [_comment(CODEX_LOGIN, "finding", database_id=thread.root_comment_database_id)]) for thread in claimed]
+    client = MagicMock()
+    client.get_authenticated_user_login.return_value = "auto-coder[bot]"
+    client.get_pull_request_head_sha_strict.return_value = "sha1"
+    client.get_pr_review_threads_strict.side_effect = lambda _repo, _pr: deepcopy(threads)
+
+    def reply(_repo, _pr, root_id, body):
+        target = next(thread for thread in threads if thread.comments[0].database_id == root_id)
+        comment_id = max(comment.database_id or 0 for thread in threads for comment in thread.comments) + 1
+        comment = _comment("auto-coder[bot]", body, database_id=comment_id)
+        comment.in_reply_to_id = root_id
+        target.comments.append(comment)
+
+    def update(_repo, comment_id, body):
+        target = next(comment for thread in threads for comment in thread.comments if comment.database_id == comment_id)
+        target.body = body
+
+    def resolve(thread_id):
+        next(thread for thread in threads if thread.id == thread_id).is_resolved = True
+
+    def unresolve(thread_id):
+        next(thread for thread in threads if thread.id == thread_id).is_resolved = False
+
+    client.reply_to_review_thread.side_effect = reply
+    client.update_review_thread_comment.side_effect = update
+    client.resolve_review_thread.side_effect = resolve
+    client.unresolve_review_thread.side_effect = unresolve
+    client.remote_threads = threads
+    return client
 
 
 class TestClassifyReviewThreads:
@@ -305,7 +342,7 @@ class TestResolveAddressedReviewThreads:
         return ReviewThreadDisposition(thread_id=thread_id, status=status, rationale="Verified the fix directly", evidence="Reproduced the original failing path; now passes")
 
     def test_addressed_thread_is_resolved(self):
-        client = MagicMock()
+        client = _closure_client()
         client.get_pull_request_head_sha_strict.return_value = "sha1"
         claimed = [self._claimed()]
         dispositions = [self._disposition()]
@@ -313,13 +350,14 @@ class TestResolveAddressedReviewThreads:
         resolved = resolve_addressed_review_threads(client, "owner/repo", 1, "sha1", claimed, dispositions)
 
         assert resolved == ["t1"]
-        # Resolver explanation, the pre-resolve durability marker, and the
-        # post-resolve cleared marker.
-        assert client.reply_to_review_thread.call_count == 3
+        # One pending receipt carries the explanation and is completed in place.
+        client.reply_to_review_thread.assert_called_once()
+        client.update_review_thread_comment.assert_called_once()
+        assert parse_owned_receipt(client.remote_threads[0], "auto-coder[bot]").phase == "RESOLVED"
         client.resolve_review_thread.assert_called_once_with("t1")
 
     def test_still_valid_disposition_is_never_resolved(self):
-        client = MagicMock()
+        client = _closure_client()
         client.get_pull_request_head_sha_strict.return_value = "sha1"
         claimed = [self._claimed()]
         dispositions = [self._disposition(status="STILL_VALID")]
@@ -330,7 +368,7 @@ class TestResolveAddressedReviewThreads:
         client.resolve_review_thread.assert_not_called()
 
     def test_inconclusive_disposition_is_never_resolved(self):
-        client = MagicMock()
+        client = _closure_client()
         client.get_pull_request_head_sha_strict.return_value = "sha1"
         claimed = [self._claimed()]
         dispositions = [self._disposition(status="INCONCLUSIVE")]
@@ -342,7 +380,7 @@ class TestResolveAddressedReviewThreads:
 
     def test_head_changed_since_validation_blocks_resolution(self):
         """AC-009: the PR advanced to a new head before resolution runs."""
-        client = MagicMock()
+        client = _closure_client()
         client.get_pull_request_head_sha_strict.return_value = "sha2-newer"
         claimed = [self._claimed()]
         dispositions = [self._disposition()]
@@ -356,7 +394,7 @@ class TestResolveAddressedReviewThreads:
     def test_cached_h1_cannot_hide_authoritative_h2_before_resolution(self):
         """[P1] REQ-006/AC-009: the ordinary cached PR read may still expose
         H1, but only the uncached authoritative H2 may drive resolution."""
-        client = MagicMock()
+        client = _closure_client()
         client.get_pull_request.return_value = {"head": {"sha": "sha1"}}
         client.get_pull_request_head_sha_strict.return_value = "sha2-newer"
         claimed = [self._claimed()]
@@ -370,7 +408,7 @@ class TestResolveAddressedReviewThreads:
         client.resolve_review_thread.assert_not_called()
 
     def test_head_lookup_failure_fails_closed(self):
-        client = MagicMock()
+        client = _closure_client()
         client.get_pull_request_head_sha_strict.side_effect = Exception("network error")
         claimed = [self._claimed()]
         dispositions = [self._disposition()]
@@ -382,7 +420,7 @@ class TestResolveAddressedReviewThreads:
 
     def test_reply_failure_prevents_resolution(self):
         """AC-010: recording the explanation must succeed before resolving."""
-        client = MagicMock()
+        client = _closure_client()
         client.get_pull_request_head_sha_strict.return_value = "sha1"
         client.reply_to_review_thread.side_effect = Exception("GitHub API error")
         claimed = [self._claimed()]
@@ -395,7 +433,7 @@ class TestResolveAddressedReviewThreads:
 
     def test_resolve_mutation_failure_leaves_thread_unresolved(self):
         """AC-010: the resolve mutation itself failing must not be masked as success."""
-        client = MagicMock()
+        client = _closure_client()
         client.get_pull_request_head_sha_strict.return_value = "sha1"
         client.resolve_review_thread.side_effect = Exception("mutation rejected")
         claimed = [self._claimed()]
@@ -409,7 +447,7 @@ class TestResolveAddressedReviewThreads:
         """A disposition for a thread ID never listed as claimed must be ignored,
         never resolved (only threads the run actually offered for adjudication
         may be auto-resolved)."""
-        client = MagicMock()
+        client = _closure_client()
         client.get_pull_request_head_sha_strict.return_value = "sha1"
         claimed: list[ClaimedReviewThread] = []
         dispositions = [self._disposition(thread_id="unknown-thread")]
@@ -420,7 +458,7 @@ class TestResolveAddressedReviewThreads:
         client.resolve_review_thread.assert_not_called()
 
     def test_no_addressed_dispositions_short_circuits_without_head_lookup(self):
-        client = MagicMock()
+        client = _closure_client()
         claimed = [self._claimed()]
         dispositions = [self._disposition(status="STILL_VALID")]
 
@@ -430,7 +468,7 @@ class TestResolveAddressedReviewThreads:
         client.get_pull_request_head_sha_strict.assert_not_called()
 
     def test_missing_disposition_is_preserved_as_an_unfinished_outcome(self):
-        client = MagicMock()
+        client = _closure_client()
         claimed = [self._claimed("t1", 1), self._claimed("t2", 2)]
 
         report = resolve_addressed_review_threads(
@@ -457,12 +495,14 @@ class TestResolveAddressedReviewThreads:
         assert missing.reason == "Disposition omitted from validator response"
 
     def test_effect_failure_retains_exact_phase_and_successful_sibling(self):
-        client = MagicMock()
+        client = _closure_client([self._claimed("t1", 1), self._claimed("t2", 2)])
         client.get_pull_request_head_sha_strict.return_value = "sha1"
+        successful_reply = client.reply_to_review_thread.side_effect
 
         def reply(_repo, _pr, root_id, _body):
             if root_id == 2:
                 raise RuntimeError("reply refused")
+            successful_reply(_repo, _pr, root_id, _body)
 
         client.reply_to_review_thread.side_effect = reply
         claimed = [self._claimed("t1", 1), self._claimed("t2", 2)]
@@ -484,11 +524,11 @@ class TestResolveAddressedReviewThreads:
         assert unfinished[0].decision == "ADDRESSED"
         assert unfinished[0].acceptance_state == "CONFIRMED"
         assert unfinished[0].effect_state == "UNCONFIRMED"
-        assert unfinished[0].phase == "explanation-publication"
-        assert unfinished[0].reason == "reply refused"
+        assert unfinished[0].phase == "intent-publication"
+        assert "did not confirm" in unfinished[0].reason
 
     def test_two_independent_addressed_threads_both_resolved(self):
-        client = MagicMock()
+        client = _closure_client([self._claimed("t1", 1), self._claimed("t2", 2)])
         client.get_pull_request_head_sha_strict.return_value = "sha1"
         claimed = [self._claimed("t1", 1), self._claimed("t2", 2)]
         dispositions = [self._disposition("t1"), self._disposition("t2")]
@@ -502,7 +542,7 @@ class TestResolveAddressedReviewThreads:
         """AC-009: the first head lookup passes (H1), but the PR advances to
         H2 before the resolve mutation — re-checked immediately before that
         mutation, not just once at the start of the loop."""
-        client = MagicMock()
+        client = _closure_client()
         client.get_pull_request_head_sha_strict.side_effect = [
             "sha1",  # initial check before the loop
             "sha2-newer",  # re-check right before resolving
@@ -522,7 +562,7 @@ class TestResolveAddressedReviewThreads:
         post-mutation re-check finds the head has since moved. The
         resolution must be reverted (unresolve_review_thread) and the thread
         must not be reported as resolved."""
-        client = MagicMock()
+        client = _closure_client()
         client.get_pull_request_head_sha_strict.side_effect = [
             "sha1",  # initial check before the loop
             "sha1",  # pre-mutation re-check
@@ -540,13 +580,22 @@ class TestResolveAddressedReviewThreads:
     def test_rollback_retries_and_succeeds_on_a_later_attempt(self):
         """The first two unresolve attempts fail, the third succeeds: the
         thread is still not reported as resolved, and no exception escapes."""
-        client = MagicMock()
+        client = _closure_client()
         client.get_pull_request_head_sha_strict.side_effect = [
             "sha1",
             "sha1",
             "sha2-newer",
         ]
-        client.unresolve_review_thread.side_effect = [Exception("transient error 1"), Exception("transient error 2"), None]
+        successful_unresolve = client.unresolve_review_thread.side_effect
+        failures = iter([RuntimeError("transient error 1"), RuntimeError("transient error 2"), None])
+
+        def unresolve(thread_id):
+            error = next(failures)
+            if error is not None:
+                raise error
+            successful_unresolve(thread_id)
+
+        client.unresolve_review_thread.side_effect = unresolve
         claimed = [self._claimed()]
         dispositions = [self._disposition()]
 
@@ -560,7 +609,7 @@ class TestResolveAddressedReviewThreads:
         outcome. The GitHub thread is durably resolved against a stale head,
         so the failure must surface as a blocking exception rather than being
         silently absorbed."""
-        client = MagicMock()
+        client = _closure_client()
         client.get_pull_request_head_sha_strict.side_effect = [
             "sha1",
             "sha1",
@@ -579,7 +628,7 @@ class TestResolveAddressedReviewThreads:
     def test_exhausted_rollback_persists_a_blocker(self):
         """[P1] Exhausting rollback attempts must persist the failure, not
         just raise an in-memory exception, so it survives past this run."""
-        client = MagicMock()
+        client = _closure_client()
         client.get_pull_request_head_sha_strict.side_effect = [
             "sha1",
             "sha1",
@@ -599,7 +648,7 @@ class TestResolveAddressedReviewThreads:
         """[P1] An independent GitHub-side marker must be posted too, so the
         blocker survives even a local registry write failure combined with
         a process restart."""
-        client = MagicMock()
+        client = _closure_client()
         client.get_pull_request_head_sha_strict.side_effect = [
             "sha1",
             "sha1",
@@ -612,9 +661,10 @@ class TestResolveAddressedReviewThreads:
         with pytest.raises(StaleReviewThreadResolutionError):
             resolve_addressed_review_threads(client, "owner/repo", 1, "sha1", claimed, dispositions)
 
-        marker_calls = [call for call in client.reply_to_review_thread.call_args_list if "auto-coder-stale-review-thread-blocker:v1" in call.args[3]]
+        marker_calls = [call for call in client.reply_to_review_thread.call_args_list if "auto-coder-review-thread-closure:v1" in call.args[3]]
         assert len(marker_calls) == 1
         assert marker_calls[0].args[2] == 42  # root_comment_database_id
+        assert parse_owned_receipt(client.remote_threads[0], "auto-coder[bot]").phase == "PENDING"
 
     def test_pre_resolve_marker_post_failure_skips_thread_without_resolving(self):
         """[P2] Durability-before-risk: if the pre-resolve intent marker
@@ -622,12 +672,9 @@ class TestResolveAddressedReviewThreads:
         "resolved-but-possibly-stale" state in the first place — the resolve
         mutation must not even be attempted, and the thread stays unresolved
         (which the ordinary unresolved-thread gate already handles safely)."""
-        client = MagicMock()
+        client = _closure_client()
         client.get_pull_request_head_sha_strict.return_value = "sha1"
-        client.reply_to_review_thread.side_effect = [
-            None,  # resolver explanation succeeds
-            Exception("could not post durable pre-resolve marker"),
-        ]
+        client.reply_to_review_thread.side_effect = RuntimeError("could not post durable pre-resolve receipt")
         claimed = [self._claimed()]
         dispositions = [self._disposition()]
 
@@ -644,7 +691,7 @@ class TestResolveAddressedReviewThreads:
         invocation (empty in-memory state, new registry) can still discover
         the durable GitHub-side record and refuse to treat the thread as
         settled."""
-        client = MagicMock()
+        client = _closure_client()
         client.get_pull_request_head_sha_strict.side_effect = [
             "sha1",
             "sha1",
@@ -661,24 +708,15 @@ class TestResolveAddressedReviewThreads:
 
         # The pre-resolve durable marker was posted before the risky resolve
         # mutation, independent of the local registry write that failed above.
-        marker_calls = [call for call in client.reply_to_review_thread.call_args_list if "auto-coder-stale-review-thread-blocker:v1" in call.args[3]]
+        marker_calls = [call for call in client.reply_to_review_thread.call_args_list if "auto-coder-review-thread-closure:v1" in call.args[3]]
         assert len(marker_calls) == 1
 
         # A fresh process invocation (new registry, no in-memory state) must
         # still discover the durable GitHub-side marker independently.
         fresh_registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
-        fresh_client = MagicMock()
-        fresh_client.get_authenticated_user_login.return_value = "agent[bot]"
-        fresh_client.get_pr_review_threads_strict.return_value = [
-            _thread(
-                "t1",
-                True,
-                [
-                    _comment(CODEX_LOGIN, "finding", database_id=42),
-                    _comment("agent[bot]", "<!-- auto-coder-stale-review-thread-blocker:v1 -->"),
-                ],
-            )
-        ]
+        fresh_client = _closure_client()
+        fresh_client.remote_threads[:] = deepcopy(client.remote_threads)
+        fresh_client.get_pull_request_head_sha_strict.return_value = "sha2-newer"
         fresh_client.unresolve_review_thread.side_effect = Exception("still failing")
 
         still_blocked = retry_pending_stale_review_thread_rollbacks(fresh_client, "owner/repo", 1, registry=fresh_registry)
@@ -690,7 +728,7 @@ class TestResolveAddressedReviewThreads:
         permissions, ...) must not turn into a silently-continuing ordinary
         exception — this run must still fail closed with
         StaleReviewThreadResolutionError."""
-        client = MagicMock()
+        client = _closure_client()
         client.get_pull_request_head_sha_strict.side_effect = [
             "sha1",
             "sha1",
@@ -820,9 +858,9 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         after the exact thread is authoritatively confirmed unresolved."""
         path = tmp_path / "stale.json"
         registry = StaleReviewThreadRegistry(path=path)
-        first_client = MagicMock()
+        first_client = _closure_client([ClaimedReviewThread(thread_id="thread-1", root_comment_database_id=101)])
         first_client.get_pull_request_head_sha_strict.side_effect = ["sha1", "sha1", "sha2"]
-        first_client.reply_to_review_thread.side_effect = [None, None, Exception("CLEAR failed")]
+        first_client.update_review_thread_comment.side_effect = RuntimeError("receipt cleanup failed")
         claimed = [ClaimedReviewThread(thread_id="thread-1", root_comment_database_id=101)]
         dispositions = [ReviewThreadDisposition(thread_id="thread-1", status="ADDRESSED", rationale="fixed", evidence="verified")]
 
@@ -841,18 +879,9 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         first_client.unresolve_review_thread.assert_called_once_with("thread-1")
         assert StaleReviewThreadRegistry(path=path).rollback_transitions_for_pr("owner/repo", 42) == {"thread-1": 101}
 
-        fresh_client = MagicMock()
-        fresh_client.get_authenticated_user_login.return_value = "auto-coder[bot]"
-        fresh_client.get_pr_review_threads_strict.return_value = [
-            _thread(
-                "thread-1",
-                False,
-                [
-                    _comment(CODEX_LOGIN, "finding", database_id=101),
-                    _comment("auto-coder[bot]", f"{STALE_BLOCKER_MARKER}\n<!-- resolved-against-head: sha1 -->"),
-                ],
-            )
-        ]
+        fresh_client = _closure_client([ClaimedReviewThread(thread_id="thread-1", root_comment_database_id=101)])
+        fresh_client.remote_threads[:] = deepcopy(first_client.remote_threads)
+        fresh_client.get_pull_request_head_sha_strict.return_value = "sha2"
 
         still_blocked = retry_pending_stale_review_thread_rollbacks(
             fresh_client,
@@ -863,7 +892,9 @@ class TestRetryPendingStaleReviewThreadRollbacks:
 
         assert still_blocked == []
         fresh_client.unresolve_review_thread.assert_not_called()
-        fresh_client.reply_to_review_thread.assert_called_once_with("owner/repo", 42, 101, STALE_BLOCKER_CLEARED_MARKER)
+        fresh_client.reply_to_review_thread.assert_not_called()
+        fresh_client.update_review_thread_comment.assert_called_once()
+        assert parse_owned_receipt(fresh_client.remote_threads[0], "auto-coder[bot]").phase == "ROLLED_BACK"
 
     def test_retry_path_dual_cleanup_failure_keeps_fail_closed_transition(self, tmp_path):
         """The GitHub-only retry path establishes the same transition before
@@ -897,14 +928,14 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         is reconciled as still resolved and retries the guarded rollback."""
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         registry.record_rollback_transition("owner/repo", 42, "thread-1", 101)
-        client = MagicMock()
-        client.get_pr_review_threads_strict.return_value = [_thread("thread-1", True, [_comment(CODEX_LOGIN, "finding", database_id=101)])]
+        client = _closure_client([ClaimedReviewThread(thread_id="thread-1", root_comment_database_id=101)])
+        client.remote_threads[0].is_resolved = True
 
         still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
 
         assert still_blocked == []
         client.unresolve_review_thread.assert_called_once_with("thread-1")
-        client.reply_to_review_thread.assert_called_once_with("owner/repo", 42, 101, STALE_BLOCKER_CLEARED_MARKER)
+        client.reply_to_review_thread.assert_not_called()
         assert registry.rollback_transitions_for_pr("owner/repo", 42) == {}
 
     def test_restart_retires_transition_when_unresolve_succeeded_before_crash(self, tmp_path):
@@ -912,14 +943,13 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         persistence is reconciled from the exact unresolved thread state."""
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         registry.record_rollback_transition("owner/repo", 42, "thread-1", 101)
-        client = MagicMock()
-        client.get_pr_review_threads_strict.return_value = [_thread("thread-1", False, [_comment(CODEX_LOGIN, "finding", database_id=101)])]
+        client = _closure_client([ClaimedReviewThread(thread_id="thread-1", root_comment_database_id=101)])
 
         still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
 
         assert still_blocked == []
         client.unresolve_review_thread.assert_not_called()
-        client.reply_to_review_thread.assert_called_once_with("owner/repo", 42, 101, STALE_BLOCKER_CLEARED_MARKER)
+        client.reply_to_review_thread.assert_not_called()
         assert registry.rollback_transitions_for_pr("owner/repo", 42) == {}
 
     @pytest.mark.parametrize(
@@ -953,13 +983,9 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         marker cleanup, never attach the old H1 intent to that resolution."""
         path = tmp_path / "stale.json"
         registry = StaleReviewThreadRegistry(path=path)
-        first_client = MagicMock()
+        first_client = _closure_client([ClaimedReviewThread(thread_id="thread-1", root_comment_database_id=101)])
         first_client.get_pull_request_head_sha_strict.side_effect = ["sha1", "sha1", "sha2"]
-        first_client.reply_to_review_thread.side_effect = [
-            None,  # resolver explanation
-            None,  # H1 blocker intent
-            Exception("CLEAR write failed after confirmed rollback"),
-        ]
+        first_client.update_review_thread_comment.side_effect = RuntimeError("receipt cleanup failed after confirmed rollback")
         claimed = [ClaimedReviewThread(thread_id="thread-1", root_comment_database_id=101)]
         dispositions = [ReviewThreadDisposition(thread_id="thread-1", status="ADDRESSED", rationale="fixed", evidence="verified")]
 
@@ -977,19 +1003,11 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         first_client.unresolve_review_thread.assert_called_once_with("thread-1")
         assert registry.marker_cleanup_pending_for_pr("owner/repo", 42) == {"thread-1": 101}
 
-        fresh_client = MagicMock()
-        fresh_client.get_authenticated_user_login.return_value = "auto-coder[bot]"
+        fresh_client = _closure_client([ClaimedReviewThread(thread_id="thread-1", root_comment_database_id=101)])
+        fresh_client.remote_threads[:] = deepcopy(first_client.remote_threads)
+        # A later actor has legitimately resolved the thread at H3.
+        fresh_client.remote_threads[0].is_resolved = True
         fresh_client.get_pull_request_head_sha_strict.return_value = "sha3"
-        fresh_client.get_pr_review_threads_strict.return_value = [
-            _thread(
-                "thread-1",
-                True,
-                [
-                    _comment(CODEX_LOGIN, "finding", database_id=101),
-                    _comment("auto-coder[bot]", f"{STALE_BLOCKER_MARKER}\n<!-- resolved-against-head: sha1 -->"),
-                ],
-            )
-        ]
 
         still_blocked = retry_pending_stale_review_thread_rollbacks(
             fresh_client,
@@ -1000,12 +1018,8 @@ class TestRetryPendingStaleReviewThreadRollbacks:
 
         assert still_blocked == []
         fresh_client.unresolve_review_thread.assert_not_called()
-        fresh_client.reply_to_review_thread.assert_called_once_with(
-            "owner/repo",
-            42,
-            101,
-            "<!-- auto-coder-stale-review-thread-blocker-cleared:v1 -->",
-        )
+        fresh_client.reply_to_review_thread.assert_not_called()
+        fresh_client.update_review_thread_comment.assert_called_once()
         assert StaleReviewThreadRegistry(path=path).marker_cleanup_pending_for_pr("owner/repo", 42) == {}
 
     def test_marker_matching_current_head_is_not_stale_despite_missing_cleared_reply(self, tmp_path):
@@ -1161,25 +1175,44 @@ class TestRetryPendingStaleReviewThreadRollbacks:
     def test_successful_retry_clears_the_blocker(self, tmp_path):
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         registry.record("owner/repo", 42, "thread-1")
-        client = MagicMock()  # unresolve_review_thread succeeds (no exception)
-        client.get_pr_review_threads_strict.return_value = []
+        client = _closure_client([ClaimedReviewThread(thread_id="thread-1", root_comment_database_id=1)])
+        client.remote_threads[0].is_resolved = True
 
         still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
 
         assert still_blocked == []
         assert registry.pending_for_pr("owner/repo", 42) == []
+        assert client.remote_threads[0].is_resolved is False
+        client.unresolve_review_thread.assert_called_once_with("thread-1")
+        client.reply_to_review_thread.assert_not_called()
+
+    def test_local_pending_missing_target_stays_blocked_without_mutation(self, tmp_path):
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        registry.record("owner/repo", 42, "thread-1")
+        client = _closure_client([])
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == ["thread-1"]
+        assert registry.pending_for_pr("owner/repo", 42) == ["thread-1"]
+        client.unresolve_review_thread.assert_not_called()
+        client.resolve_review_thread.assert_not_called()
+        client.reply_to_review_thread.assert_not_called()
+        client.update_review_thread_comment.assert_not_called()
 
     def test_failed_retry_keeps_the_blocker_pending(self, tmp_path):
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         registry.record("owner/repo", 42, "thread-1")
-        client = MagicMock()
-        client.get_pr_review_threads_strict.return_value = []
+        client = _closure_client([ClaimedReviewThread(thread_id="thread-1", root_comment_database_id=1)])
+        client.remote_threads[0].is_resolved = True
         client.unresolve_review_thread.side_effect = Exception("still failing")
 
         still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
 
         assert still_blocked == ["thread-1"]
         assert registry.pending_for_pr("owner/repo", 42) == ["thread-1"]
+        assert client.remote_threads[0].is_resolved is True
+        client.unresolve_review_thread.assert_called_once_with("thread-1")
 
     def test_second_run_retries_and_succeeds_where_first_failed(self, tmp_path):
         """Models two separate processing runs: the first run's rollback
@@ -1187,17 +1220,21 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         registry.record("owner/repo", 42, "thread-1")
 
-        failing_client = MagicMock()
-        failing_client.get_pr_review_threads_strict.return_value = []
+        claimed = [ClaimedReviewThread(thread_id="thread-1", root_comment_database_id=1)]
+        failing_client = _closure_client(claimed)
+        failing_client.remote_threads[0].is_resolved = True
         failing_client.unresolve_review_thread.side_effect = Exception("still failing")
         first_run_result = retry_pending_stale_review_thread_rollbacks(failing_client, "owner/repo", 42, registry=registry)
         assert first_run_result == ["thread-1"]
+        failing_client.unresolve_review_thread.assert_called_once_with("thread-1")
 
-        succeeding_client = MagicMock()
-        succeeding_client.get_pr_review_threads_strict.return_value = []
+        succeeding_client = _closure_client(claimed)
+        succeeding_client.remote_threads[:] = deepcopy(failing_client.remote_threads)
         second_run_result = retry_pending_stale_review_thread_rollbacks(succeeding_client, "owner/repo", 42, registry=registry)
         assert second_run_result == []
         assert registry.pending_for_pr("owner/repo", 42) == []
+        assert succeeding_client.remote_threads[0].is_resolved is False
+        succeeding_client.unresolve_review_thread.assert_called_once_with("thread-1")
 
     def test_github_side_marker_alone_is_discovered_and_blocks(self, tmp_path):
         """[P1] A blocker that exists only as a GitHub marker reply (e.g. the

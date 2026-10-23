@@ -52,6 +52,9 @@ from auto_coder.pr_processor import (
 from auto_coder.util.gh_cache import GitHubClient, ReviewThread, ReviewThreadComment
 from auto_coder.util.github_action import GitHubActionsStatusResult
 from tests.ci_observation_fakes import authoritative_ci_status
+from tests.test_review_thread_closure_receipt import BASE, HEAD, PR_NUMBER, REPOSITORY, THREAD_ID
+from tests.test_review_thread_closure_receipt import receipt_scenario as receipt_scenario
+from tests.test_review_thread_validation import _closure_client
 
 
 def codex_review_summary(status: str, reviewed_sha: str = "original1") -> dict[str, object]:
@@ -72,6 +75,212 @@ def test_take_pr_actions_preserves_structured_adversarial_failure() -> None:
 
     assert actions.adversarial_validation_error == "Malformed validator review anchor"
     assert actions == ["Adversarial review publication blocked PR #100"]
+
+
+@pytest.mark.parametrize("failure_mode", ["publication-retry", "receipt-cleanup-observability", "publication-rollback-storage-loss"])
+def test_real_thread_closure_reuses_reply_after_pr_publication_failure(receipt_scenario, monkeypatch, tmp_path, failure_mode):
+    """Publication retry reuses the reply; unfinished receipt cleanup stays blocked."""
+    from auto_coder.adversarial_validator import ReviewThreadDisposition
+    from auto_coder.execution_trace import Outcome
+    from auto_coder.pr_processor import _record_pr_stage
+    from auto_coder.review_thread_validation import StaleReviewThreadRegistry, StaleReviewThreadRegistryError, classify_review_threads, retry_pending_stale_review_thread_rollbacks
+    from auto_coder.runtime_locks import LockAcquisitionTimeout
+    from tests.test_review_thread_closure_receipt import API_ORIGIN, REVIEWER_ID
+
+    scenario = receipt_scenario
+    cleanup_failure = failure_mode == "receipt-cleanup-observability"
+    rollback_storage_loss = failure_mode == "publication-rollback-storage-loss"
+    scenario.transport.reject_patches = cleanup_failure
+    registry_path = tmp_path / "initial-process-rollback.json"
+    local_storage_failure = False
+
+    def registry_for_current_process():
+        return StaleReviewThreadRegistry(path=registry_path)
+
+    if rollback_storage_loss:
+        original_transition = StaleReviewThreadRegistry.record_rollback_transition
+        original_record = StaleReviewThreadRegistry.record
+
+        def record_transition(registry, *args, **kwargs):
+            if local_storage_failure:
+                raise OSError("Rollback transition storage unavailable")
+            return original_transition(registry, *args, **kwargs)
+
+        def record_pending(registry, *args, **kwargs):
+            if local_storage_failure:
+                raise OSError("Rollback obligation storage unavailable")
+            return original_record(registry, *args, **kwargs)
+
+        monkeypatch.setattr(StaleReviewThreadRegistry, "record_rollback_transition", record_transition)
+        monkeypatch.setattr(StaleReviewThreadRegistry, "record", record_pending)
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    client = scenario.client()
+    issue = {"number": 42, "title": "Retry counter", "body": "## Requirements\nREQ-001: Reset the retry counter before each retry."}
+    pr_data = {
+        "number": PR_NUMBER,
+        "state": "open",
+        "user": {"login": "owner"},
+        "body": "Fixes #42",
+        "labels": [],
+        "head": {"ref": "feature-retry", "sha": HEAD},
+        "base": {"ref": "main", "sha": BASE},
+    }
+    validation = AdversarialValidationResult(
+        result="PASS",
+        summary="The retry counter correction is independently verified",
+        thread_dispositions=[
+            ReviewThreadDisposition(
+                thread_id=THREAD_ID,
+                status="ADDRESSED",
+                rationale="src/retry.py now resets the counter before each retry",
+                evidence="src/retry.py: retry counter reset verified by tests/test_retry.py",
+            )
+        ],
+    )
+    config = AutomationConfig()
+    config.AUTO_MERGE = True
+
+    def claimed_state(current_client, *_args, **_kwargs):
+        threads = current_client.get_pr_review_threads_strict(REPOSITORY, PR_NUMBER)
+        snapshot = scenario.ledger().get_snapshot(API_ORIGIN, REPOSITORY, PR_NUMBER, require_retained_state=True)
+        classification = classify_review_threads(threads, {REVIEWER_ID}, snapshot=snapshot)
+        return ClaimedReviewThreadGateState(
+            claimed=classification.claimed,
+            unresolved=tuple(thread for thread in threads if not thread.is_resolved),
+            has_blocking_unresolved=bool(classification.blocking_unresolved_count),
+        )
+
+    def merge_completed(*_args, **_kwargs):
+        assert publish.call_count == 2
+        assert scenario.transport.resolved is True
+        assert scenario.transport.effects.count("resolve") == 2
+        return True
+
+    def publish_review(*_args, **_kwargs):
+        nonlocal local_storage_failure
+        if not cleanup_failure and publish.call_count == 1:
+            effects_before = list(scenario.transport.effects)
+            recovery_errors = []
+
+            def attempt_recovery():
+                try:
+                    retry_pending_stale_review_thread_rollbacks(scenario.client(), REPOSITORY, PR_NUMBER, registry=scenario.registry())
+                except Exception as exc:
+                    recovery_errors.append(exc)
+
+            worker = Thread(target=attempt_recovery, daemon=True)
+            worker.start()
+            worker.join(timeout=5)
+            assert not worker.is_alive(), "Recovery did not return within the bounded lock wait"
+            assert len(recovery_errors) == 1
+            assert isinstance(recovery_errors[0], StaleReviewThreadRegistryError)
+            assert isinstance(recovery_errors[0].__cause__, LockAcquisitionTimeout)
+            assert "Closure receipt recovery is deferred" in str(recovery_errors[0])
+            assert scenario.transport.effects == effects_before
+            assert scenario.transport.resolved is True
+            if rollback_storage_loss:
+                local_storage_failure = True
+                scenario.transport.reject_unresolves = True
+            return ReviewPublicationResult(False, "APPROVE", "transient reviewer App failure")
+        return ReviewPublicationResult(True, "APPROVE", "")
+
+    monkeypatch.setattr("auto_coder.review_thread_validation.StaleReviewThreadRegistry", registry_for_current_process)
+    monkeypatch.setattr("auto_coder.pr_blocker_closure.StaleReviewThreadRegistry", registry_for_current_process)
+    monkeypatch.setattr("auto_coder.pr_processor.StaleReviewThreadRegistry", registry_for_current_process)
+    with (
+        patch.object(GitHubClient, "get_issue", return_value=issue),
+        patch.object(GitHubClient, "get_issue_strict", return_value=issue),
+        patch.object(GitHubClient, "get_issue_comments_strict", return_value=[]),
+        patch.object(GitHubClient, "get_pull_request", return_value=pr_data),
+        patch.object(GitHubClient, "get_pull_request_metadata_strict", return_value=pr_data),
+        patch.object(GitHubClient, "get_pr_comments", return_value=[]),
+        patch.object(GitHubClient, "get_pr_comments_strict", return_value=[]),
+        patch.object(GitHubClient, "get_pr_reviews_strict", return_value=[]),
+        patch("auto_coder.pr_processor.CanonicalPRBlockerLedger", side_effect=scenario.ledger),
+        patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+        patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+        patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
+        patch("auto_coder.pr_processor._get_claimed_review_thread_state", side_effect=claimed_state),
+        patch("auto_coder.pr_processor._get_published_adversarial_validation_status", return_value=(None, None)),
+        patch("auto_coder.pr_processor._get_published_adversarial_validation_comment", return_value=(None, None)),
+        patch("auto_coder.pr_processor.run_adversarial_validation", return_value=validation) as run_validation,
+        patch("auto_coder.pr_processor.publish_adversarial_review", side_effect=publish_review) as publish,
+        patch("auto_coder.pr_processor.isolated_pr_head_worktree"),
+        patch("auto_coder.pr_processor._record_pr_stage", wraps=_record_pr_stage) as record_stage,
+        patch("auto_coder.pr_processor._merge_pr", side_effect=merge_completed) as merge_pr,
+    ):
+        first_actions = _handle_pr_merge(client, REPOSITORY, pr_data, config, {})
+        if cleanup_failure:
+            assert scenario.transport.resolved is True
+            assert scenario.transport.effects.count("resolve") == 1
+            assert scenario.transport.effects.count("unresolve") == 0
+            assert len(scenario.transport.posts) == 1
+            run_validation.assert_called_once()
+            publish.assert_called_once()
+            merge_pr.assert_not_called()
+            assert any("Review-thread closure incomplete" in action for action in first_actions), first_actions
+            assert any("closure remains unfinished" in action for action in first_actions), first_actions
+            events = [event for event in record_stage.call_args_list if event.args[1] == "pr.review-thread-closure"]
+            assert len(events) == 1
+            assert events[0].args[:4] == (PR_NUMBER, "pr.review-thread-closure", f"pr#{PR_NUMBER} review-thread closure", Outcome.BLOCKED)
+            assert events[0].args[4] == {
+                "confirmed_count": 1,
+                "unfinished_count": 1,
+                "unfinished": [
+                    {
+                        "thread_id": THREAD_ID,
+                        "phase": "marker-cleanup",
+                        "reason": "GitHub did not confirm the exact closure receipt publication",
+                        "decision": "ADDRESSED",
+                        "acceptance_state": "CONFIRMED",
+                        "effect_state": "CONFIRMED",
+                    }
+                ],
+            }
+            assert not any(event.args[1] == "pr.merge-completion" for event in record_stage.call_args_list)
+            return
+        assert any("publication blocked" in action for action in first_actions), first_actions
+        merge_pr.assert_not_called()
+        assert scenario.transport.effects.count("resolve") == 1
+        assert len(scenario.transport.posts) == 1
+        if rollback_storage_loss:
+            assert scenario.transport.resolved is True
+            assert scenario.transport.effects.count("unresolve") == 0
+            assert scenario.transport.unresolve_attempts > 0
+            assert registry_for_current_process().pending_for_pr(REPOSITORY, PR_NUMBER) == []
+            assert registry_for_current_process().rollback_transitions_for_pr(REPOSITORY, PR_NUMBER) == {}
+            local_storage_failure = False
+            registry_path = tmp_path / "reconstructed-process-rollback.json"
+            assert not registry_path.exists()
+            reconstructed_client = scenario.client()
+
+            blocked_actions = _handle_pr_merge(reconstructed_client, REPOSITORY, pr_data, config, {})
+
+            assert any("could not be reverted" in action for action in blocked_actions), blocked_actions
+            assert scenario.transport.resolved is True
+            assert scenario.transport.effects.count("resolve") == 1
+            assert scenario.transport.effects.count("unresolve") == 0
+            assert len(scenario.transport.posts) == 1
+            run_validation.assert_called_once()
+            publish.assert_called_once()
+            merge_pr.assert_not_called()
+            scenario.transport.reject_unresolves = False
+            second_actions = _handle_pr_merge(reconstructed_client, REPOSITORY, pr_data, config, {})
+        else:
+            assert any("Reopened 1 review thread" in action for action in first_actions), first_actions
+            assert scenario.transport.resolved is False
+            assert scenario.transport.effects.count("unresolve") == 1
+            second_actions = _handle_pr_merge(client, REPOSITORY, pr_data, config, {})
+
+    assert run_validation.call_count == 2
+    assert publish.call_count == 2
+    assert scenario.transport.resolved is True
+    assert scenario.transport.effects.count("resolve") == 2
+    assert scenario.transport.effects.count("unresolve") == 1
+    assert len(scenario.transport.posts) == 1
+    assert scenario.transport.patches
+    merge_pr.assert_called_once()
+    assert any(f"Successfully merged PR #{PR_NUMBER}" in action for action in second_actions), second_actions
 
 
 class TestCodexReviewState:
@@ -4303,13 +4512,18 @@ class TestClaimedReviewThreadValidationFlow:
                 )
             ],
         )
-        client = MagicMock()
+        client = _closure_client([claimed])
+        client.get_pull_request_head_sha_strict.return_value = head_sha
         client.get_pr_comments.return_value = []
         client.get_issue.return_value = {"number": 99, "title": "Contract", "body": "Required behavior"}
         client.get_pull_request.return_value = {"head": {"sha": head_sha}}
         config = AutomationConfig()
         config.AUTO_MERGE = True
         pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": head_sha}}
+
+        def confirmed_resolution(*_args, **_kwargs):
+            client.resolve_review_thread(claimed.thread_id)
+            return [claimed.thread_id]
 
         with (
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
@@ -4326,7 +4540,7 @@ class TestClaimedReviewThreadValidationFlow:
                     ReviewPublicationResult(True, "APPROVE", ""),
                 ],
             ) as publish,
-            patch("auto_coder.pr_processor.resolve_addressed_review_threads", return_value=["provenance-1"]),
+            patch("auto_coder.pr_processor.resolve_addressed_review_threads", side_effect=confirmed_resolution),
             patch("auto_coder.pr_processor.isolated_pr_head_worktree"),
             patch("auto_coder.pr_processor._merge_pr", return_value=True) as merge_pr,
         ):
@@ -4370,13 +4584,18 @@ class TestClaimedReviewThreadValidationFlow:
                 )
             ],
         )
-        client = MagicMock()
+        client = _closure_client([claimed])
+        client.get_pull_request_head_sha_strict.return_value = head_sha
         client.get_pr_comments.return_value = []
         client.get_issue.return_value = {"number": 99, "title": "Contract", "body": "Required behavior"}
         client.get_pull_request.return_value = {"head": {"sha": head_sha}}
         config = AutomationConfig()
         config.AUTO_MERGE = True
         pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": head_sha}}
+
+        def confirmed_resolution(*_args, **_kwargs):
+            client.resolve_review_thread(claimed.thread_id)
+            return [claimed.thread_id]
 
         with (
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
@@ -4399,7 +4618,7 @@ class TestClaimedReviewThreadValidationFlow:
                     ReviewPublicationResult(True, "APPROVE", ""),
                 ],
             ),
-            patch("auto_coder.pr_processor.resolve_addressed_review_threads", return_value=["provenance-1"]) as resolve_threads,
+            patch("auto_coder.pr_processor.resolve_addressed_review_threads", side_effect=confirmed_resolution) as resolve_threads,
             patch("auto_coder.pr_processor.isolated_pr_head_worktree"),
             patch("auto_coder.pr_processor._merge_pr", return_value=True) as merge_pr,
         ):
@@ -4532,7 +4751,7 @@ class TestClaimedReviewThreadValidationFlow:
         unresolved-thread state can no longer be trusted for this PR — and
         must stop blocking only once a later retry is confirmed."""
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        from auto_coder.review_thread_validation import StaleReviewThreadRegistry
+        from auto_coder.review_thread_validation import ClaimedReviewThread, StaleReviewThreadRegistry
 
         StaleReviewThreadRegistry().record("owner/repo", 123, "thread-1")
 
@@ -4541,8 +4760,9 @@ class TestClaimedReviewThreadValidationFlow:
         pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": "123abc456"}}
 
         # Run 1: the blocker is still there and the rollback retry still fails.
-        client = MagicMock()
-        client.get_pr_review_threads_strict.return_value = []
+        claimed = [ClaimedReviewThread(thread_id="thread-1", root_comment_database_id=1)]
+        client = _closure_client(claimed)
+        client.remote_threads[0].is_resolved = True
         client.unresolve_review_thread.side_effect = Exception("still failing")
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
@@ -4550,16 +4770,19 @@ class TestClaimedReviewThreadValidationFlow:
         mock_merge_pr.assert_not_called()
         mock_exit_if_in_progress.assert_not_called()  # blocked before even reaching CI checks
         assert StaleReviewThreadRegistry().pending_for_pr("owner/repo", 123) == ["thread-1"]
+        client.unresolve_review_thread.assert_called_once_with("thread-1")
 
         # Run 2: this time the retry succeeds, clearing the blocker; normal
         # processing (CI checks, etc.) resumes.
         mock_exit_if_in_progress.return_value = True
-        client2 = MagicMock()  # unresolve_review_thread succeeds
-        client2.get_pr_review_threads_strict.return_value = []
+        client2 = _closure_client(claimed)
+        client2.remote_threads[0].is_resolved = True
         _handle_pr_merge(client2, "owner/repo", pr_data, config, {})
 
         mock_exit_if_in_progress.assert_called_once()
         assert StaleReviewThreadRegistry().pending_for_pr("owner/repo", 123) == []
+        assert client2.remote_threads[0].is_resolved is False
+        client2.unresolve_review_thread.assert_called_once_with("thread-1")
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress")
     @patch("auto_coder.pr_processor._merge_pr")

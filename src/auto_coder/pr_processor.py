@@ -168,6 +168,7 @@ from .review_capture.pr_adversarial_audit import (
     record_effect,
     record_reused,
 )
+from .review_thread_closure_receipt import closure_receipt_lock
 from .review_thread_validation import (
     ClaimedReviewThread,
     StaleReviewThreadRegistry,
@@ -6318,7 +6319,10 @@ def _coordinate_pr_review(
                         processing_status.error = str(e)
                         processing_status.outcome = PRProcessingOutcome.FAILED
 
-                with attempt_repository.serialized_transition():
+                # Keep closure effects, review publication, and any rollback in
+                # one receipt ownership interval. Nested helper locks reenter;
+                # startup recovery must not interleave while we publish.
+                with attempt_repository.serialized_transition(), closure_receipt_lock(repo_name, pr_number):
                     attempt_is_superseded = attempt_repository.latest_sequence(pr_number, head_sha) > attempt.sequence
                     if attempt_is_superseded:
                         actions.append(f"Ignored late adversarial-validation attempt {attempt.attempt_id}: a newer attempt is already applicable")

@@ -429,6 +429,28 @@ schema migration is required. Run `bash scripts/test.sh
 tests/test_review_thread_validation.py tests/test_pr_blocker_closure.py
 tests/test_adversarial_validation_pr_flow.py` for producer, wrapper, and production
 consumer coverage.
+Issue #2577 retains this event and its fields for the reusable closure reply.
+If GitHub confirms resolution but the receipt's completion update cannot be
+confirmed, production emits `pr.review-thread-closure` with `BLOCKED`,
+`confirmed_count: 1`, `unfinished_count: 1`, and one unfinished entry carrying
+`phase: marker-cleanup`, the publication failure reason, `decision: ADDRESSED`,
+`acceptance_state: CONFIRMED` and `effect_state: CONFIRMED`. The two counts can
+overlap because a confirmed native resolution still has unfinished cleanup.
+The semantic PASS is retained, but this invocation cannot merge and emits no
+`pr.merge-completion`. The existing timeline/detail projection already exposes
+these fields and blocked outcomes, so no event schema or renderer change is
+needed. The production-emission oracle is
+`tests/test_adversarial_validation_pr_flow.py::test_real_thread_closure_reuses_reply_after_pr_publication_failure[receipt-cleanup-observability]`;
+its `publication-retry` companion verifies real closure, review-publication
+failure, reopening and retry through the same single comment identity. The
+`publication-rollback-storage-loss` case combines failed publication, failed
+local rollback writes and failed native reopening, then reconstructs the client
+and empty registry. The retained `ROLLBACK_REQUIRED` receipt keeps processing
+at the existing stale-rollback gate without further validation, publication or
+merge until reopening succeeds. This recovery uses the same blocked outcome
+and dashboard projection; it adds no event field or renderer state. Run these
+cases with `bash scripts/test.sh
+tests/test_adversarial_validation_pr_flow.py::test_real_thread_closure_reuses_reply_after_pr_publication_failure`.
 Browser spec citations (`.spec.ts` and JavaScript/module variants) now satisfy the
 test-evidence recognition step without requiring the words `test` or `oracle`.
 `tests/test_pr_blocker_closure.py::test_oracle_closure_recognizes_cited_browser_spec`

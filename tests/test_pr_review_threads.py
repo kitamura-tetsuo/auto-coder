@@ -524,6 +524,29 @@ def test_reply_to_review_thread_failure_propagates(mock_github_client):
             mock_github_client.reply_to_review_thread("owner/repo", 5, 100, "explanation body")
 
 
+def test_update_review_thread_comment_uses_exact_observed_reply(mock_github_client):
+    with patch("auto_coder.util.gh_cache.get_ghapi_client") as get_api:
+        get_api.return_value.pulls.update_review_comment.return_value = {"id": 100, "body": "updated receipt"}
+        mock_github_client.update_review_thread_comment("owner/repo", 100, "updated receipt")
+        get_api.return_value.pulls.update_review_comment.assert_called_once_with("owner", "repo", 100, body="updated receipt")
+
+
+@pytest.mark.parametrize("response", [None, {}, {"id": 101, "body": "updated receipt"}, {"id": 100, "body": "old receipt"}, {"id": True, "body": "updated receipt"}])
+def test_update_review_thread_comment_requires_exact_confirmation(mock_github_client, response):
+    with patch("auto_coder.util.gh_cache.get_ghapi_client") as get_api:
+        get_api.return_value.pulls.update_review_comment.return_value = response
+        with pytest.raises(RuntimeError, match="did not confirm the exact update"):
+            mock_github_client.update_review_thread_comment("owner/repo", 100, "updated receipt")
+
+
+@pytest.mark.parametrize("comment_id", [None, True, 0, -1, "100"])
+def test_update_review_thread_comment_rejects_unobserved_identity(mock_github_client, comment_id):
+    with patch("auto_coder.util.gh_cache.get_ghapi_client") as get_api:
+        with pytest.raises(ValueError, match="positive observed"):
+            mock_github_client.update_review_thread_comment("owner/repo", comment_id, "updated receipt")
+        get_api.assert_not_called()
+
+
 def test_unresolve_review_thread_success(mock_github_client):
     mock_github_client.graphql_query.return_value = {"data": {"unresolveReviewThread": {"thread": {"id": "t1", "isResolved": False}}}}
     mock_github_client.unresolve_review_thread("t1")  # should not raise

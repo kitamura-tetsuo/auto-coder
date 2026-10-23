@@ -70,6 +70,7 @@ from tests.test_accepted_finding_bridge import (  # noqa: F401  (env is a shared
 from tests.test_effective_decision_application import RouterClient, reviewer_for
 
 REVIEWER_LOGIN = "auto-coder-reviewer[bot]"
+CONTROLLER_LOGIN = "auto-coder-controller[bot]"
 
 
 @dataclass
@@ -149,6 +150,7 @@ class Flow:
     thread_id: str = "PRRT_accepted"
     root_id: int = 5391105725
     root_body: str = ""
+    thread_replies: list[ReviewThreadComment] = field(default_factory=list)
     model_responses: list[str] = field(default_factory=list)
     provider: FakeProvider = field(default_factory=FakeProvider)
     router: Optional[RouterClient] = None
@@ -206,7 +208,8 @@ class Flow:
         if not self.root_body:
             return self.extra_threads + published
         resolved = self.thread_resolved or (self.resolve_on_approve and any(review["event"] == "APPROVE" for review in self.reviews))
-        return self.extra_threads + published + (ReviewThread(id=self.thread_id, is_resolved=resolved, comments=[ReviewThreadComment(database_id=self.root_id, author_login=REVIEWER_LOGIN, body=self.root_body)]),)
+        comments = [ReviewThreadComment(database_id=self.root_id, author_login=REVIEWER_LOGIN, body=self.root_body), *(replace(reply) for reply in self.thread_replies)]
+        return self.extra_threads + published + (ReviewThread(id=self.thread_id, is_resolved=resolved, comments=comments),)
 
     def pr_data(self) -> dict[str, Any]:
         body = "<!-- auto-coder:local-llm -->\nFixes #2401" if self.origin == "local" else "Fixes #2401"
@@ -218,7 +221,10 @@ class Flow:
         mp = self.monkeypatch
         env = self.env
         client = self.client
+        client.get_authenticated_user_login.return_value = CONTROLLER_LOGIN
         client.get_pr_review_threads_strict.side_effect = lambda *_a, **_k: list(self.threads())
+        client.reply_to_review_thread.side_effect = self._reply_to_thread
+        client.update_review_thread_comment.side_effect = self._update_thread_comment
         client.resolve_review_thread.side_effect = lambda thread: self._set_thread_resolved(thread, self.resolve_on_approve)
         client.unresolve_review_thread.side_effect = lambda thread: self._set_thread_resolved(thread, False)
         client.get_pr_comments.return_value = []
@@ -377,6 +383,17 @@ class Flow:
     def _set_thread_resolved(self, thread: str, resolved: bool) -> None:
         assert thread == self.thread_id
         self.thread_resolved = resolved
+
+    def _reply_to_thread(self, repository: str, pr_number: int, root_id: int, body: str) -> None:
+        assert (repository, pr_number, root_id) == (REPO, self.pr, self.root_id)
+        comment_id = max(comment.database_id or 0 for thread in self.threads() for comment in thread.comments) + 1
+        self.thread_replies.append(ReviewThreadComment(database_id=comment_id, author_login=CONTROLLER_LOGIN, body=body, in_reply_to_id=root_id))
+
+    def _update_thread_comment(self, repository: str, comment_id: int, body: str) -> None:
+        assert repository == REPO
+        matches = [comment for comment in self.thread_replies if comment.database_id == comment_id]
+        assert len(matches) == 1
+        matches[0].body = body
 
     def _published_status(self) -> Optional[str]:
         """What GitHub durably holds: the newest review this test's transport accepted, else the arranged status."""
@@ -1548,14 +1565,14 @@ def test_unconfirmed_decision_write_prevents_every_dependent_effect(flow_env: En
     def fail_write(*_args: object, **_kwargs: object) -> None:
         raise OSError("disk full")
 
-    monkeypatch.setattr(EffectiveDecisionStore, "_write", fail_write)
-    actions = flow.run()
+    with monkeypatch.context() as failing_write:
+        failing_write.setattr(EffectiveDecisionStore, "_write", fail_write)
+        actions = flow.run()
 
     assert flow.reviews == [] and flow.handoffs == 0 and flow.merge.call_count == 0, actions
     assert any("could not be retained" in action and "no dependent review effect was emitted" in action for action in actions)
     assert flow.status.outcome is PRProcessingOutcome.FAILED
     assert actions.disposition.value == "OPERATIONAL_FAILURE"
-    monkeypatch.undo()
     assert flow.retained() is None
 
 
