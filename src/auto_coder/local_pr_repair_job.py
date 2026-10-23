@@ -14,7 +14,15 @@ from typing import Any, Callable
 from .ci_repair_authority import CIRepairAuthority, evaluate_ci_repair_snapshot
 from .local_job_handoff import LocalJobKind, LocalJobOffer, LocalJobRecord, LocalJobStore, PRRepairAdmission
 from .local_review_repair import LocalReviewRepairStore
+from .logger_config import get_logger
 from .pr_repair_dispatch import RepairKind
+
+logger = get_logger(__name__)
+
+
+@dataclass
+class LocalPRRepairAdmissionDiagnostic:
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -53,10 +61,20 @@ def offer_local_pr_repair_job(
     conflict_eligible: bool = False,
     store: LocalJobStore | None = None,
     repair_store: LocalReviewRepairStore | None = None,
+    diagnostic: LocalPRRepairAdmissionDiagnostic | None = None,
 ) -> LocalJobRecord | None:
     """Reconfirm routing/target facts and atomically offer an exact operation."""
-    if not request.backend_name or request.head_repository != request.repository or request.base_repository != request.repository:
+
+    def refuse(reason: str) -> LocalJobRecord | None:
+        if diagnostic is not None:
+            diagnostic.reason = reason
+        logger.warning("Local PR repair admission deferred for {}#{} ({}): {}", request.repository, request.pr_number, request.kind.value, reason)
         return None
+
+    if not request.backend_name:
+        return refuse("No local PR repair backend is configured")
+    if request.head_repository != request.repository or request.base_repository != request.repository:
+        return refuse("PR head/base repository does not match the local repair repository")
     try:
         metadata = github_client.get_pull_request_metadata_strict(request.repository, request.pr_number)
         head = metadata.get("head") or {}
@@ -74,23 +92,32 @@ def offer_local_pr_repair_job(
         opened = str(metadata.get("state") or "").lower() == "open"
         unmerged = not bool(metadata.get("merged") or metadata.get("merged_at"))
         locally_routed = owner_admission(request, metadata)
-    except Exception:
-        return None
+    except Exception as exc:
+        return refuse(f"PR metadata or owner verification is unavailable ({type(exc).__name__})")
+
+    if not opened or not unmerged:
+        return refuse("PR is closed or already merged")
+    if not exact:
+        return refuse("PR head/base identity changed before admission")
+    if not locally_routed:
+        return refuse("Local repair ownership or repair allowance does not permit admission")
 
     failed: tuple[str, ...] = ()
     complete_failure = False
     if request.kind is RepairKind.CI_FAILURE:
         if ci_authority is None or ci_authority.head_sha != request.head_sha or not ci_authority.allowed or ci_authority.snapshot is None:
-            return None
+            return refuse("Complete current-head CI failure authority is unavailable")
         complete_failure, _ = evaluate_ci_repair_snapshot(ci_authority.snapshot)
         failed = ci_authority.failure_identities
+        if not complete_failure or not failed:
+            return refuse("CI snapshot does not establish a complete terminal failure")
     elif request.kind is RepairKind.MERGE_CONFLICT:
         # Conflict eligibility must come from the caller's final authoritative
         # mergeability/remediation read; CI emptiness is intentionally ignored.
         if not conflict_eligible:
-            return None
+            return refuse("Current merge-conflict eligibility is unavailable")
     else:
-        return None
+        return refuse("Unsupported local PR repair kind")
 
     kind = LocalJobKind.PR_CI_FAILURE if request.kind is RepairKind.CI_FAILURE else LocalJobKind.PR_MERGE_CONFLICT
     payload = json.dumps(asdict(request), sort_keys=True, separators=(",", ":"), default=lambda value: value.value)
@@ -113,7 +140,10 @@ def offer_local_pr_repair_job(
         conflict_eligible,
         complete_failure,
     )
-    return (store or LocalJobStore()).offer_pr_repair(offer, admission, repair_store)
+    job = (store or LocalJobStore()).offer_pr_repair(offer, admission, repair_store)
+    if job is None:
+        return refuse("Local repair persistence or competing edit ownership prevented admission")
+    return job
 
 
 def local_pr_repair_evidence_identity(

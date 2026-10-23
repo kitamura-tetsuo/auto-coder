@@ -2723,6 +2723,31 @@ and production-boundary coverage is in `tests/test_local_pr_repair_job.py`,
 
 Ordinary local CI-failure and merge-conflict routing now returns a typed `DEFERRED` repair handoff after the exact-head job and implementation-execution binding are durable. Existing PR repair-delegation and base-update traces remain authoritative: admission is active-job evidence only, never publication, passing CI, approval, merge, or slot retirement. The independently polled repository runner and exact-head finalizer produce later execution and publication evidence, followed by a fresh PR evaluation.
 
+The production producer records `pr.repair-delegation` with
+`effect=local-pr-repair-admission`, `repair_kind`, `backend`, `admission_status`
+(`admitted` or `deferred`), `job_id`, and `reason`. Both cases have outcome
+`DEFERRED`: only an admitted job has a job ID, and neither outcome means provider
+entry, a completed repair, publication, or merge. A healthy ledger's absent
+optional namespace permits a first repair; corrupt/unreadable state still refuses
+admission. The selected backend comes from `[backend_for_failed_pr].order` or the
+ordinary selector's local candidates without initializing a client. An empty
+candidate set has an explicit reason instead of a generic blocked-admission loop.
+The generic mounted detail renderer and structured event schema are unchanged.
+
+Runnable production-to-view coverage:
+
+```bash
+bash scripts/test.sh tests/test_local_pr_repair_admission_regression.py
+```
+
+`test_first_local_repair_admission_replays_and_reaches_mounted_detail` covers
+real first-use CI/conflict admission, a cloud-only ordinary pool with a configured
+local repair alias, retained execution identity, duplicate observation, no provider
+entry, and the mounted stage. `test_refused_admission_preserves_reason_in_mounted_detail`
+covers corruption of either ledger and an explicitly disabled repair pool, with no
+job/receipt and the original refusal reason in the collected stage. Strict guard
+regressions additionally preserve exhaustion and required-state errors.
+
 ## Local PR repair startup recovery
 
 The existing pending-work snapshot reports retained local PR repair

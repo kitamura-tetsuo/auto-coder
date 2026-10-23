@@ -12,12 +12,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional, Sequence
 
-from .canonical_pr_blocker_ledger import BlockerDisposition, CanonicalPRBlockerLedger
+from .canonical_pr_blocker_ledger import BlockerDisposition, BlockerLedgerUninitializedError, CanonicalPRBlockerLedger
 from .durable_repair_allowance import (
     OUTSTANDING_LIFECYCLE_STATES,
     GenerationLifecycleState,
     RepairAllowanceLedger,
     RepairAllowanceStatus,
+    RepairAllowanceUninitializedError,
 )
 from .logger_config import get_logger
 from .util.github_request_outcome import normalize_api_origin
@@ -78,6 +79,8 @@ def check_pr_repair_exhaustion(
 
     try:
         b_snapshot = b_ledger.get_snapshot(norm_origin, repo_name, pr_number, require_retained_state=False)
+    except BlockerLedgerUninitializedError:
+        b_snapshot = None
     except Exception as exc:
         logger.debug(f"Could not load canonical blocker ledger snapshot for {repo_name}#{pr_number}: {exc}")
         if require_authoritative_snapshot:
@@ -86,6 +89,8 @@ def check_pr_repair_exhaustion(
 
     try:
         a_snapshot = a_ledger.get_snapshot(norm_origin, repo_name, pr_number, require_retained_state=False)
+    except RepairAllowanceUninitializedError:
+        a_snapshot = None
     except Exception as exc:
         logger.debug(f"Could not load repair allowance snapshot for {repo_name}#{pr_number}: {exc}")
         if require_authoritative_snapshot:

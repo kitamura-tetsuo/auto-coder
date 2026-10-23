@@ -1642,12 +1642,12 @@ def _dispatch_local_ci_failure_repair(
     return _dispatch_local_repair(request, execute)
 
 
-def _selected_local_backend_name() -> str:
-    """Return the already-selected local backend without choosing a fallback."""
-    try:
-        return str(get_llm_backend_manager().get_current_backend_identity()[0] or "")
-    except Exception:
-        return ""
+def _selected_local_backend_name(repo_name: Optional[str] = None) -> str:
+    """Select from the local repair policy without constructing an LLM client."""
+    from .llm_backend_config import get_llm_config
+
+    candidates = get_llm_config(repo_name=repo_name).get_local_pr_repair_backends()
+    return candidates[0] if candidates else ""
 
 
 def _offer_selected_local_pr_repair(
@@ -1664,7 +1664,7 @@ def _offer_selected_local_pr_repair(
     failed_checks: Sequence[object] = (),
 ) -> Optional[PRRepairResult]:
     """Stop a selected local route at its durable first-effect boundary."""
-    from .local_pr_repair_job import LocalPRRepairOffer, local_pr_repair_evidence_identity, offer_local_pr_repair_job
+    from .local_pr_repair_job import LocalPRRepairAdmissionDiagnostic, LocalPRRepairOffer, local_pr_repair_evidence_identity, offer_local_pr_repair_job
     from .pr_repair_dispatch import LocalPRRepairHandoff
 
     context = _local_pr_repair_context.get()
@@ -1691,7 +1691,7 @@ def _offer_selected_local_pr_repair(
     # reads replay the same durable envelope across controller restarts.
     evidence_identity = local_pr_repair_evidence_identity("", head_sha, base_identity, kind, failed)
     operation_identity = evidence_identity
-    backend_name = _selected_local_backend_name()
+    backend_name = _selected_local_backend_name(repo_name)
     request = LocalPRRepairOffer(
         repository=repo_name,
         pr_number=int(pr_data["number"]),
@@ -1728,6 +1728,7 @@ def _offer_selected_local_pr_repair(
         )
         return exhaustion is None or not exhaustion.is_exhausted
 
+    diagnostic = LocalPRRepairAdmissionDiagnostic()
     job = offer_local_pr_repair_job(
         request,
         github_client,
@@ -1736,12 +1737,21 @@ def _offer_selected_local_pr_repair(
         conflict_eligible=conflict_eligible,
         store=store,
         repair_store=repair_store,
+        diagnostic=diagnostic,
+    )
+    reason = f"Durably admitted local {kind.value} repair job {job.job_id}" if job is not None else f"Local PR repair admission deferred: {diagnostic.reason}"
+    _record_pr_stage(
+        int(pr_data["number"]),
+        "pr.repair-delegation",
+        f"pr#{pr_data['number']} local repair admission",
+        Outcome.DEFERRED,
+        {"effect": "local-pr-repair-admission", "repair_kind": kind.value, "backend": backend_name, "admission_status": "admitted" if job is not None else "deferred", "job_id": job.job_id if job is not None else "", "reason": reason},
     )
     if job is None:
-        return PRRepairResult(RepairDisposition.DEFERRED, reason="Local PR repair admission is unavailable or blocked")
+        return PRRepairResult(RepairDisposition.DEFERRED, reason=reason)
     return PRRepairResult(
         RepairDisposition.DEFERRED,
-        reason=f"Durably admitted local {kind.value} repair job {job.job_id}",
+        reason=reason,
         attempt_started=False,
         receipt_state=RepairFactState.AVAILABLE,
         receipt=job.job_id,

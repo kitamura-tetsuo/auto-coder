@@ -431,6 +431,9 @@ class LLMBackendConfiguration:
     backend_for_noedit_order: List[str] = field(default_factory=list)
     backend_for_noedit_default: Optional[str] = None
     backend_for_noedit_explicit: bool = False
+    # Local PR CI/conflict repair selection is independent of remote Issue dispatch.
+    backend_for_failed_pr_order: List[str] = field(default_factory=list)
+    backend_for_failed_pr_explicit: bool = False
     # Fallback backend configuration for failed PRs
     backend_with_high_score: Optional[BackendConfig] = None
     backend_with_high_score_order: List[str] = field(default_factory=list)
@@ -578,6 +581,11 @@ class LLMBackendConfiguration:
         backend_selector_explicit = "order" in backend_data or "priority_groups" in backend_data
         backend_selector_kind = "priority_groups" if "priority_groups" in backend_data else "order" if "order" in backend_data else None
         backend_order = _validate_identifiers(backend_data["order"], "backend.order") if "order" in backend_data else []
+        backend_for_failed_pr_explicit = "backend_for_failed_pr" in data
+        failed_pr_data = data.get("backend_for_failed_pr", {})
+        if not isinstance(failed_pr_data, dict) or (backend_for_failed_pr_explicit and set(failed_pr_data) != {"order"}):
+            raise ValueError("backend_for_failed_pr must be a TOML table containing only order")
+        backend_for_failed_pr_order = _validate_identifiers(failed_pr_data.get("order", []), "backend_for_failed_pr.order")
         backend_priority_groups: List[List[str]] = []
         if "priority_groups" in backend_data:
             raw_groups = backend_data["priority_groups"]
@@ -762,6 +770,7 @@ class LLMBackendConfiguration:
             "backend_cloud",
             "message_backend",
             "backend_for_noedit",
+            "backend_for_failed_pr",
             "backends",
             "backend_with_high_score",
             "backend_with_high_score_cloud",
@@ -933,6 +942,8 @@ class LLMBackendConfiguration:
             backend_priority_groups=backend_priority_groups,
             backend_selector_explicit=backend_selector_explicit,
             backend_selector_kind=backend_selector_kind,
+            backend_for_failed_pr_order=backend_for_failed_pr_order,
+            backend_for_failed_pr_explicit=backend_for_failed_pr_explicit,
             default_backend=default_backend,
             quota_selection_strategy=quota_selection_strategy,
             backends=backends,
@@ -961,6 +972,7 @@ class LLMBackendConfiguration:
         # Resolve the public selector during loading so malformed aliases/types
         # cannot survive until a mutating startup path.
         config.get_ordinary_priority_groups()
+        config.get_local_pr_repair_backends()
         return config
 
     def save_to_file(self, config_path: Optional[str] = None) -> None:
@@ -1387,6 +1399,8 @@ class LLMBackendConfiguration:
             "backend_for_noedit": {"order": self.backend_for_noedit_order, "default": self.backend_for_noedit_default or self.default_backend},
             "backends": backend_data,
         }
+        if self.backend_for_failed_pr_explicit or self.backend_for_failed_pr_order:
+            data["backend_for_failed_pr"] = {"order": self.backend_for_failed_pr_order}
 
         # Add backend_with_high_score section if configured
         if backend_with_high_score_data:
@@ -1497,6 +1511,25 @@ class LLMBackendConfiguration:
             if retained:
                 result.append(retained)
         return result
+
+    def get_local_pr_repair_backends(self) -> List[str]:
+        """Resolve configured local repair candidates without constructing clients."""
+        explicit = self.backend_for_failed_pr_explicit or bool(self.backend_for_failed_pr_order)
+        candidates = self.backend_for_failed_pr_order if explicit else [name for group in self.get_ordinary_priority_groups() for name in group]
+        selected: List[str] = []
+        for name in candidates:
+            backend = self.get_backend_config(name)
+            if backend is None:
+                raise ValueError(f"backend_for_failed_pr references unresolvable backend '{name}'")
+            if not backend.enabled:
+                continue
+            if self.resolve_backend_type(name) in TASK_ONLY_BACKEND_TYPES:
+                if explicit:
+                    raise ValueError(f"backend_for_failed_pr requires a local backend; '{name}' is task-only")
+                continue
+            if name not in selected:
+                selected.append(name)
+        return selected
 
     def resolve_backend_type(self, backend_name: str) -> str:
         """Resolve an alias to a supported executable implementation type."""

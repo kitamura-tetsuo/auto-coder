@@ -271,6 +271,10 @@ class BlockerLedgerUnavailableError(BlockerLedgerError):
     """Storage is unreadable, corrupt, unsupported version, or missing retained state."""
 
 
+class BlockerLedgerUninitializedError(BlockerLedgerUnavailableError):
+    """A readable ledger has no namespace for an optional first-use read."""
+
+
 class StaleLedgerRevisionError(BlockerLedgerError):
     """Compare-and-set failed because current ledger revision did not match expected revision."""
 
@@ -623,7 +627,7 @@ class CanonicalPRBlockerLedger:
                 if ns_row is None:
                     if require_retained_state:
                         raise BlockerLedgerUnavailableError(f"Required retained state is missing for namespace {key}")
-                    raise BlockerLedgerUnavailableError(f"Namespace {key} is uninitialized")
+                    raise BlockerLedgerUninitializedError(f"Namespace {key} is uninitialized")
 
                 ledger_rev, ns_created, ns_updated, _ = ns_row
 

@@ -297,6 +297,10 @@ class RepairAllowanceUnavailableError(RepairAllowanceError):
     """Storage is unreadable, corrupt, unsupported version, or missing retained state."""
 
 
+class RepairAllowanceUninitializedError(RepairAllowanceUnavailableError):
+    """A readable ledger has no namespace for an optional first-use read."""
+
+
 class StaleRepairAllowanceEpochError(RepairAllowanceError):
     """Compare-and-set failed because the current namespace epoch did not match expected."""
 
@@ -608,7 +612,7 @@ class RepairAllowanceLedger:
                 if ns_row is None:
                     if require_retained_state:
                         raise RepairAllowanceUnavailableError(f"Required retained state is missing for namespace {key}")
-                    raise RepairAllowanceUnavailableError(f"Namespace {key} is uninitialized")
+                    raise RepairAllowanceUninitializedError(f"Namespace {key} is uninitialized")
                 epoch, ns_created, ns_updated = ns_row
 
                 cursor = conn.execute(

@@ -30,6 +30,14 @@ Before outbound ticket creation, generation admission, or repair dispatch, the c
 checks whether any open canonical blocker has exhausted its failure allowance via
 `check_pr_repair_exhaustion()`.
 
+Strict admission distinguishes an absent optional PR namespace in a healthy ledger
+from unavailable storage. The former is a normal first-use state and does not
+create a namespace; corruption, unsupported schema, unreadable storage, and a
+missing namespace requested as required retained state still fail closed. When
+only the allowance namespace exists, its exhausted blockers still prevent repair.
+`tests/test_local_pr_repair_admission_regression.py` covers the four initial
+namespace combinations, corruption of either ledger, and retained exhaustion.
+
 ### Stopped Production Origins
 
 Exhaustion stops every production repair origin:

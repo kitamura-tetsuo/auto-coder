@@ -1,5 +1,16 @@
 # Mandatory production-to-view dashboard observability regressions
 
+Local CI/conflict repair admission emits `pr.repair-delegation` with
+`effect=local-pr-repair-admission`. A healthy first-use namespace can produce a
+durable job even when ordinary Issue dispatch is cloud-only; the facts retain the
+selected local backend, repair kind, admitted/deferred status, job ID, and reason.
+The stage remains `DEFERRED` while the job awaits execution. Corrupt ledgers and
+missing configured local capacity retain explicit refusal reasons with no job ID.
+`tests/test_local_pr_repair_admission_regression.py` drives the production producer,
+real configuration and SQLite stores, and mounted detail projection for CI,
+conflict, corrupt-storage, and disabled-backend cases. Run
+`bash scripts/test.sh tests/test_local_pr_repair_admission_regression.py`.
+
 `tests/test_muse_retained_result.py` recovers a retained candidate through the
 production Issue resume route without another editing-model call and verifies
 that `llm.muse-retained-task-reconciliation` reaches the mounted Issue detail
