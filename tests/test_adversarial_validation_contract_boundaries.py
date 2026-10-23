@@ -91,7 +91,8 @@ def _make_gap(
     )
 
 
-def test_as_001_documentation_defect_independence() -> None:
+@pytest.mark.parametrize("duplicate_binding", ["gap_identity", "concrete_scope"])
+def test_as_001_documentation_defect_independence(duplicate_binding: str) -> None:
     """AS-001: Documentation defect is an implementation finding under doc requirement;
 
     runtime rendering behavior lacking tests is a TOG under rendering requirement.
@@ -122,7 +123,7 @@ def test_as_001_documentation_defect_independence() -> None:
         invariant="Suppressed change-provenance emission is omitted from log output",
         anchor_path="src/snapshot.py",
     )
-    # 3. Supposed duplicate finding for REQ-001 runtime behavior solely due to missing tests
+    # 3. The same rendering obligation repeated as a missing-test finding.
     finding_rendering_missing_tests = _make_finding(
         requirement_id="REQ-001",
         violated_requirement="Render truthful snapshots",
@@ -131,7 +132,9 @@ def test_as_001_documentation_defect_independence() -> None:
         test_gap="Existing tests do not assert suppression",
         anchor_path="src/snapshot.py",
         finding_identity="missing-test-rendering",
-        correction_identity="add-test-rendering",
+        correction_identity=gap_rendering.gap_id if duplicate_binding == "gap_identity" else "add-test-rendering",
+        reachability=gap_rendering.authoritative_boundary,
+        required_behavior=gap_rendering.invariant,
     )
 
     result = AdversarialValidationResult(
@@ -155,6 +158,7 @@ def test_as_001_documentation_defect_independence() -> None:
     # 2. Test-oracle gap for runtime snapshot rendering under REQ-001
     assert len(normalized.open_test_oracle_gaps) == 1
     assert normalized.open_test_oracle_gaps[0].requirement_id == "REQ-001"
+    assert normalized.open_test_oracle_gaps[0].gap_id == gap_rendering.gap_id
 
     # 3. No implementation finding for runtime rendering behavior solely due to missing tests
     assert not any(f.requirement_id == "REQ-001" for f in normalized.findings)
@@ -177,6 +181,46 @@ def test_as_001_documentation_defect_independence() -> None:
     assert normalized_after_fix.result == "NEEDS_TESTS"
     assert normalized_after_fix.needs_tests is True
     assert normalized_after_fix.needs_fix is False
+
+
+def test_same_requirement_and_path_preserve_distinct_runtime_test_obligations() -> None:
+    context = AdversarialValidationContext(
+        all_changed_files=["src/snapshot.py"],
+        issue_requirements=[IssueRequirement("REQ-001", "Render truthful snapshots, suppress change-provenance emission when complete, and reject malformed metadata.")],
+    )
+    gap_rendering = _make_gap(
+        boundary="SnapshotRenderer.render",
+        invariant="Suppressed change-provenance emission is omitted from log output",
+        anchor_path="src/snapshot.py",
+    )
+    finding_metadata_missing_tests = _make_finding(
+        actual_behavior="No dedicated regression test covers malformed snapshot metadata rejection",
+        counterexample="Untested metadata validation",
+        test_gap="Existing tests do not assert malformed metadata rejection",
+        anchor_path="src/snapshot.py",
+        finding_identity="missing-test-metadata",
+        correction_identity="add-test-metadata",
+        reachability="SnapshotMetadata.validate",
+        required_behavior="Malformed snapshot metadata is rejected before any state mutation",
+    )
+    result = AdversarialValidationResult(
+        result="NEEDS_FIX",
+        summary="Independent runtime test obligations",
+        findings=[finding_metadata_missing_tests],
+        test_oracle_gaps=[gap_rendering],
+        requirement_coverage=[RequirementCoverageEntry("REQ-001", "VIOLATED", "Missing metadata validation test")],
+    )
+
+    normalized = _apply_coverage_and_verdict_precedence(result, context)
+
+    assert normalized.findings == []
+    assert normalized.result == "NEEDS_TESTS"
+    assert len(normalized.open_test_oracle_gaps) == 2
+    assert {gap.authoritative_boundary for gap in normalized.open_test_oracle_gaps} == {"SnapshotRenderer.render", "SnapshotMetadata.validate"}
+    assert len({gap.gap_id for gap in normalized.open_test_oracle_gaps}) == 2
+    assert gap_rendering.gap_id in {gap.gap_id for gap in normalized.open_test_oracle_gaps}
+    assert {gap.requirement_id for gap in normalized.open_test_oracle_gaps} == {"REQ-001"}
+    assert {gap.anchor_path for gap in normalized.open_test_oracle_gaps} == {"src/snapshot.py"}
 
 
 def test_as_002_explicit_test_deliverable_vs_runtime_requirement() -> None:

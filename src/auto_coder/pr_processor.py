@@ -856,9 +856,6 @@ def _resume_saved_ordinary_correction(
     pr_number = int(pr_data["number"])
     head_sha = str((pr_data.get("head") or {}).get("sha") or "")
     base_sha = str((pr_data.get("base") or {}).get("sha") or "")
-    status, error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, head_sha)
-    if error or status not in {None, "PASS", "BLOCKED", "NEEDS_FIX", "NEEDS_TESTS"}:
-        return False
     try:
         store = EffectiveDecisionStore(repo_name)
         retained = store.load(pr_number)
@@ -869,6 +866,13 @@ def _resume_saved_ordinary_correction(
             return False
         attempts = AdversarialValidationAttemptRepository(repo_name)
         ordinary = retained.ordinary_correction if retained is not None and retained.head_sha == head_sha else None
+        if ordinary is None and inputs is None:
+            # No current typed or legacy closure evidence can own recovery.
+            # Leave publication observation to the ordinary admission path.
+            return False
+        status, error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, head_sha)
+        if error or status not in {None, "PASS", "BLOCKED", "NEEDS_FIX", "NEEDS_TESTS"}:
+            return False
         legacy = None
         if ordinary is None and status == "BLOCKED" and inputs is not None:
             evidence = inputs.gate.closure_evidence()
@@ -4871,7 +4875,10 @@ def _assess_saved_review_state(
         projection = project_accepted_findings(bridge, target, claimed_review_threads)
         retained = EffectiveDecisionStore(repo_name).load(target.pr_number)
         changed_ordinary_inputs = ""
-        if github_client is not None and inputs is None and retained is not None and retained.ordinary_correction is not None and not retained.ordinary_correction.requires_strong_policy:
+        # A completed PASS follows saved-verdict clearance and explicit fresh
+        # admission. Replay-specific binding checks belong to unfinished
+        # ordinary evidence, not an already consumed clearance result.
+        if github_client is not None and inputs is None and retained is not None and retained.ordinary_correction is not None and not retained.ordinary_correction.requires_strong_policy and (retained.status != "PASS" or retained.next_action != EffectiveNextAction.NONE.value):
             metadata = _strict_pull_request_target(github_client, repo_name, target.pr_number)
             if (metadata["head"]["sha"], metadata["base"]["sha"]) != (target.head_sha, target.base_sha):
                 return SavedReviewAssessment(SAVED_REVIEW_WAIT, "the live PR target changed during saved-decision assessment", projection)

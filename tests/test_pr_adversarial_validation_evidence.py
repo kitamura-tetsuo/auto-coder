@@ -627,7 +627,7 @@ def _scenario_outcome(tmp_path, monkeypatch, store, *, kind: str):
     actions = scenario.run()
     evaluation = scenario.evaluation()
     github_calls = [call[0] for call in scenario.client.method_calls]
-    # Each run builds its own checkout, so only the head SHA legitimately differs.
+    # Normalize presentation-only invocation IDs; retain all context fingerprints.
     normalized_actions = [action.replace(scenario.head_sha[:8], "<head>") for action in actions]
     prompts = [
         re.sub(
@@ -642,7 +642,12 @@ def _scenario_outcome(tmp_path, monkeypatch, store, *, kind: str):
 
 @pytest.mark.parametrize("kind", ["pass", "unknown", "exception", "refusal"])
 def test_recorder_health_never_changes_validation_behavior(tmp_path, monkeypatch, kind):
+    # Commit IDs feed the controller's validation snapshot and correction context.
+    # Recorder health must be compared with identical authoritative inputs.
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2000-01-01T00:00:00+0000")
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2000-01-01T00:00:00+0000")
     outcomes = {}
+    heads = set()
     for mode in ("healthy", "write_failure", "unavailable", "size_limited"):
         with pytest.MonkeyPatch.context() as mp:
             store = ReviewAuditStore(audit_root=tmp_path / mode / "audit")
@@ -656,6 +661,7 @@ def test_recorder_health_never_changes_validation_behavior(tmp_path, monkeypatch
                 mp.setattr(validation_evidence, "MAX_RECORD_BYTES", 3000)
             scenario, outcome = _scenario_outcome(tmp_path / mode, mp, store, kind=kind)
             outcomes[mode] = outcome
+            heads.add(scenario.head_sha)
             if mode in ("healthy", "size_limited"):
                 record = scenario.evaluation()
                 found = ReviewAuditStore(audit_root=store._audit_root).get_validation_evidence(REPO_NAME, str(PR_NUMBER), attempt_id=record.native_report["attempt_id"])
@@ -666,6 +672,7 @@ def test_recorder_health_never_changes_validation_behavior(tmp_path, monkeypatch
                 assert payload["final"]["verdict"] == record.native_verdict
                 if kind == "exception":
                     assert payload["final"]["kind"] == "exception"
+    assert len(heads) == 1
     assert outcomes["write_failure"] == outcomes["healthy"] == outcomes["unavailable"] == outcomes["size_limited"]
     if kind == "pass":
         assert outcomes["healthy"][3] == "PASS" and outcomes["healthy"][2] == ["fresh"]

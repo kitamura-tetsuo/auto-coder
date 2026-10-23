@@ -48,6 +48,9 @@ and `--force` all reach it, for local-origin and cloud-origin repairs alike.
   mismatched result applicable. The invocation binding survives an empty
   canonical-reference context. Readable changed inputs or missing legacy
   bindings get one persisted recovery admission; unavailable inputs wait.
+  These replay-specific input checks apply to unfinished ordinary evidence. A
+  completed PASS with no pending action continues through saved-verdict clearance
+  checks and remains eligible for an explicitly forced fresh review.
 
 ## Saved headlines are not clearance
 

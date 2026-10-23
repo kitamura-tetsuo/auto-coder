@@ -138,6 +138,10 @@ def test_incremental_rereview_semantic_cases_use_production_prompt_and_record_ex
     assert "TOG-original-oracle" in rendered
     assert "Stable Issue Requirement Manifest:\nManifest mode: explicit\n- REQ-001:" in rendered
     assert "Do not rely on access to a previous provider conversation" in " ".join(rendered.split())
+    for case in cases:
+        case_prompt = module.render({"vars": case["vars"]})
+        assert "CONTROLLER CORRECTION REFERENCES:\nnull\n" in case_prompt
+        assert "$correction_references" not in case_prompt
 
     record = json.loads((target / "execution-record.json").read_text())
     assert record["local_real_model_executed"] is False
