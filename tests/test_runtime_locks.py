@@ -1,12 +1,13 @@
 import fcntl
 import os
+import stat
 import threading
 from pathlib import Path
 
 import pytest
 
 from auto_coder.cloud_run import CloudRun, CloudRunRepository
-from auto_coder.runtime_locks import LockAcquisitionTimeout, file_lock, lock_path, runtime_root
+from auto_coder.runtime_locks import LockAcquisitionTimeout, ensure_lock_directory, file_lock, lock_path, runtime_root
 
 
 def test_runtime_root_unset_and_empty_use_home(monkeypatch, tmp_path):
@@ -42,6 +43,94 @@ def test_production_store_keeps_explicit_state_separate_from_runtime(monkeypatch
     assert repository.lock_path.is_file()
     assert repository.lock_path.parent == runtime / "locks/owner/repo"
     assert list(state.parent.glob("*.lock")) == []
+
+
+@pytest.mark.parametrize("incoming_umask", [0o022, 0o077])
+def test_overlapping_shared_directory_creation_never_changes_process_umask(monkeypatch, tmp_path, incoming_umask):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    probe_directory = tmp_path / "unrelated"
+    probe_directory.mkdir()
+    monkeypatch.setenv("AUTO_CODER_RUNTIME_ROOT", str(runtime))
+    original_mkdir = Path.mkdir
+    both_creators_entered = threading.Barrier(3)
+    release_creators = threading.Event()
+
+    def controlled_mkdir(path, *args, **kwargs):
+        if path.parent == runtime / "locks":
+            both_creators_entered.wait(timeout=2)
+            assert release_creators.wait(timeout=2)
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", controlled_mkdir)
+    previous_umask = os.umask(incoming_umask)
+    failures = []
+
+    def establish(name):
+        try:
+            ensure_lock_directory(runtime / "locks" / name / "state.lock", os.getgid())
+        except BaseException as exc:
+            failures.append(exc)
+
+    threads = [threading.Thread(target=establish, args=(name,)) for name in ("first", "second")]
+    try:
+        for thread in threads:
+            thread.start()
+        both_creators_entered.wait(timeout=2)
+        during = probe_directory / "during"
+        descriptor = os.open(during, os.O_CREAT | os.O_WRONLY, 0o666)
+        os.close(descriptor)
+        release_creators.set()
+        for thread in threads:
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+        after = probe_directory / "after"
+        descriptor = os.open(after, os.O_CREAT | os.O_WRONLY, 0o666)
+        os.close(descriptor)
+    finally:
+        release_creators.set()
+        for thread in threads:
+            thread.join(timeout=2)
+        observed_umask = os.umask(previous_umask)
+
+    assert failures == []
+    assert observed_umask == incoming_umask
+    expected_mode = 0o666 & ~incoming_umask
+    assert stat.S_IMODE(during.stat().st_mode) == expected_mode
+    assert stat.S_IMODE(after.stat().st_mode) == expected_mode
+    assert stat.S_IMODE((runtime / "locks" / "first").stat().st_mode) == 0o2770
+    assert stat.S_IMODE((runtime / "locks" / "second").stat().st_mode) == 0o2770
+
+
+def test_shared_directory_existing_paths_and_creation_failure_preserve_permissions_and_umask(monkeypatch, tmp_path):
+    runtime = tmp_path / "runtime"
+    existing = runtime / "locks"
+    existing.mkdir(parents=True, mode=0o700)
+    existing.chmod(0o700)
+    monkeypatch.setenv("AUTO_CODER_RUNTIME_ROOT", str(runtime))
+    previous_umask = os.umask(0o027)
+    try:
+        ensure_lock_directory(existing / "owner" / "state.lock", os.getgid())
+        observed_after_existing = os.umask(0o027)
+
+        original_mkdir = Path.mkdir
+
+        def failing_mkdir(path, *args, **kwargs):
+            if path == existing / "failure":
+                raise PermissionError("denied")
+            return original_mkdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", failing_mkdir)
+        with pytest.raises(RuntimeError, match="Cannot establish shared runtime lock directory"):
+            ensure_lock_directory(existing / "failure" / "state.lock", os.getgid())
+        observed_after_failure = os.umask(0o027)
+    finally:
+        os.umask(previous_umask)
+
+    assert observed_after_existing == 0o027
+    assert observed_after_failure == 0o027
+    assert stat.S_IMODE(existing.stat().st_mode) == 0o700
+    assert stat.S_IMODE((existing / "owner").stat().st_mode) == 0o2770
 
 
 def test_file_lock_reentry_keeps_outer_file_locked(tmp_path):

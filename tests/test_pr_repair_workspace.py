@@ -4,11 +4,13 @@ import hashlib
 import os
 import sqlite3
 import subprocess
+import threading
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
 from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore, PRRepairAdmission
@@ -136,6 +138,50 @@ def test_exact_remote_workspace_ignores_dirty_checkout_and_records_modes(tmp_pat
     executable.write_text("tampered\n")
     with pytest.raises(PRRepairWorkspaceError, match="files were altered"):
         producer.revalidate_result(store.get(claim.record.job_id), artifact)  # type: ignore[arg-type]
+
+
+def test_overlapping_real_slot_coordination_preserves_pr_repair_result_identity(tmp_path: Path, monkeypatch, _use_real_commands) -> None:
+    monkeypatch.setenv("AUTO_CODER_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    repositories = [ImplementationSlotRepository("owner/repo", 1, tmp_path / name / "slots.json") for name in ("first-coordinator", "second-coordinator")]
+    owners = [ImplementationOwner("issue", number) for number in (2579, 2580)]
+    coordinating = threading.Barrier(2)
+    failures = []
+
+    def coordinate(repository, owner):
+        try:
+            execution_id = repository.start_execution(owner)
+            assert execution_id is not None
+            with repository.serialize(owner):
+                coordinating.wait(timeout=2)
+            repository.finish_execution(owner, execution_id)
+        except BaseException as exc:
+            failures.append(exc)
+
+    threads = [threading.Thread(target=coordinate, args=pair) for pair in zip(repositories, owners)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+    assert failures == []
+
+    repo, head, base = repository(tmp_path)
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    claim = admitted(store, tmp_path, head, base, target=2579)
+    producer = PRRepairWorkspaceProducer(store, tmp_path / "workspaces")
+    prepared = producer.prepare(claim, PRRepairSource(repo))
+    (prepared.workspace / "feature.txt").write_text("coordinated repair\n")
+    manifest = producer.capture_result(claim, prepared, InvocationOutcome.COMPLETED, "ACTION_SUMMARY: repaired")
+    artifact = store.persist_result_artifact(claim, InvocationOutcome.COMPLETED, manifest.to_json(), executor_token="runner")
+
+    assert artifact is not None
+    assert manifest.head_sha == head
+    assert manifest.base_sha == base
+    assert dict(prepared.source_files)["feature.txt"].mode == 0o644
+    assert dict(manifest.changed_files)["feature.txt"].mode == 0o644  # type: ignore[union-attr]
+    reopened = LocalJobStore(store.path)
+    verified = PRRepairWorkspaceProducer(reopened, tmp_path / "workspaces").revalidate_result(reopened.get(claim.record.job_id), artifact)  # type: ignore[arg-type]
+    assert verified.artifact_id == artifact.artifact_id
 
 
 def test_revalidation_recomputes_changed_identities_from_retained_h(tmp_path: Path, _use_real_commands) -> None:
