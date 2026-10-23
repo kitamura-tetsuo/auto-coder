@@ -28,3 +28,29 @@ no synthetic continuation state. This store remains an evidence boundary only:
 reads and replays do not call a provider, recreate a workspace, allocate another
 attempt, publish, release domain ownership, or settle downstream effects.
 
+An exact recorded `failed` or `interrupted` invocation can finish without a
+successful assistant response. Before making its downstream failure disposition
+eligible, the runner positively verifies that the retained host lifetime and
+every live member of its process group have ended, then checkpoints the matching
+negative continuation state. A dead group leader alone, missing writer identity,
+or unreadable process evidence cannot authorize settlement. The original result
+artifact, session, task history, and attempt remain intact; no final assistant
+output or successful background-task result is manufactured. This also recovers
+older jobs stranded at `result_recorded` after a Muse timeout, including when the
+provider workspace has already been disposed. The finalizer releases only the
+transferred active execution and retains normal implementation-owner policy.
+
+Recovery of a result artifact or downstream checkpoint uses the continuation's
+current executor token, which can differ from the original runner owner after
+takeover. Stale tokens and replaced execution incarnations remain fenced. An
+expired invocation budget cannot prevent settlement of an already recorded
+failure; it still forbids a new automatic provider turn.
+
+Run `bash scripts/test.sh tests/test_local_job_runner.py
+tests/test_local_job_continuation.py` for timeout/interruption recovery, incomplete
+result checkpoints, live/unknown writers, descendant writers, and executor fences.
+`tests/test_explicit_local_issue_completion.py::test_explicit_issue_waits_for_local_execution_and_finalization[continuation_timeout]`
+also crosses the production adapter, private workspace, runner, finalizer, trace,
+and mounted dashboard view, asserting failure without publication or another
+backend call.
+

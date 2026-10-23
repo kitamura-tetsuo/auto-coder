@@ -10,12 +10,13 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ExplicitTargetOutcome
 from auto_coder.automation_engine import AutomationEngine
+from auto_coder.exceptions import AutoCoderTimeoutError
 from auto_coder.execution_trace import get_trace_collector
 from auto_coder.implementation_skip_diagnostic import explain_already_owned
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.issue_dispatch import CandidateHandoff, DispatchOutcome, DispatchResult, IssueAttemptIdentity, IssueDispatchGuard
 from auto_coder.issue_local_job import IssueLocalJobAdapter, issue_job_authorization_ports
-from auto_coder.local_job_handoff import LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore
+from auto_coder.local_job_handoff import ContinuationState, InvocationOutcome, LocalJobClaim, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore
 from auto_coder.local_job_runner import LocalJobRunner
 from auto_coder.utils import CommandExecutor
 
@@ -29,6 +30,7 @@ from .test_issue_job_workspace import git, repository
         "published",
         "no_change",
         "failed",
+        "continuation_timeout",
         "refused",
         "newer_generation",
         "publication_pending",
@@ -167,6 +169,13 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
             assert not (job_workspace / "unrelated.txt").exists()
         entered.set()
         assert release.wait(10)
+        if behavior == "continuation_timeout":
+            job = store.get(accepted.job_id)
+            assert job is not None
+            assert store.bind_continuation(LocalJobClaim(job, True), "muse/timed-out", job.runner_owner, deadline_at=0.0)
+            assert store.bind_continuation_writer(job.job_id, job.runner_owner, job_workspace, "process:999999999:1")
+            assert store.observe_continuation_task(job.job_id, job.runner_owner, "unfinished-tool", "running")
+            raise AutoCoderTimeoutError("Muse MSP invocation timed out after 7200 seconds")
         if behavior == "failed":
             raise RuntimeError("implementation failed")
         if behavior == "cannot_fix":
@@ -245,7 +254,7 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
             external_runner.close(wait=True)
     assert not thread.is_alive()
     assert len(results) == 1
-    expected = "success" if behavior in {"published", "no_change"} else "failed" if behavior in {"failed", "cannot_fix", "fetch_failed"} else "deferred"
+    expected = "success" if behavior in {"published", "no_change"} else "failed" if behavior in {"failed", "continuation_timeout", "cannot_fix", "fetch_failed"} else "deferred"
     assert results[0]["target_outcome"] == expected
     assert results[0]["target_type"] == "issue"
     assert results[0]["target_number"] == 41
@@ -258,9 +267,19 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
     assert git(source, "rev-parse", "HEAD") == shared_head
     job = store.get(accepted.job_id)
     assert job
-    if behavior in {"published", "no_change", "failed", "cannot_fix", "fetch_failed"}:
+    if behavior in {"published", "no_change", "failed", "continuation_timeout", "cannot_fix", "fetch_failed"}:
         assert job.state is LocalJobState.SETTLED
         assert slots.active_execution_ids(owner) == ()
+    if behavior == "continuation_timeout":
+        continuation = store.get_continuation(job.job_id)
+        assert continuation is not None and continuation.state is ContinuationState.FAILED
+        assert continuation.final_output == ""
+        assert job.invocation_outcome is InvocationOutcome.FAILED
+        assert "AutoCoderTimeoutError" in store.get_result_artifact(job.result_reference).output
+        assert store.get_effect(job.job_id, job.execution_incarnation, "commit") is None
+        assert store.get_effect(job.job_id, job.execution_incarnation, "push") is None
+        assert published == []
+        assert engine.invocation_gate.snapshot().unsettled == ()
     if behavior == "published":
         assert "Published PR #91" in results[0]["target_reason"]
         assert git(remote, "show", f"{job.work_branch}:value.txt") == "implemented"
@@ -291,15 +310,15 @@ def test_explicit_issue_waits_for_local_execution_and_finalization(tmp_path, mon
         assert len(finalizations) == 1
         assert finalizations[0].origin == "explicit-single-target"
         assert finalizations[0].facts["job_id"] == accepted.job_id
-        assert finalizations[0].facts["disposition"] == ("pending" if behavior == "publication_pending" else "failed" if behavior == "fetch_failed" else behavior)
-        assert finalizations[0].outcome == ("completed" if behavior in {"published", "no_change"} else "failed" if behavior in {"failed", "cannot_fix", "fetch_failed"} else "deferred")
+        assert finalizations[0].facts["disposition"] == ("pending" if behavior == "publication_pending" else "failed" if behavior in {"fetch_failed", "continuation_timeout"} else behavior)
+        assert finalizations[0].outcome == ("completed" if behavior in {"published", "no_change"} else "failed" if behavior in {"failed", "continuation_timeout", "cannot_fix", "fetch_failed"} else "deferred")
     with patch("auto_coder.dashboard.ui") as mock_ui:
         diagram = _mounted_detail(mock_ui, "issue", 41)
     _assert_required_stage_visible(diagram, "local completion")
     if behavior not in {"refused", "newer_generation"}:
         _assert_required_stage_visible(diagram, "publication finalization")
     assert f"outcome: {'completed' if expected == 'success' else expected}" in diagram
-    if behavior in {"published", "no_change", "failed", "cannot_fix", "publication_pending"}:
+    if behavior in {"published", "no_change", "failed", "continuation_timeout", "cannot_fix", "publication_pending"}:
         replay = engine.process_single("owner/repo", "issue", 41, explicit_only=True, force=True)
         assert replay["target_outcome"] == expected
         assert calls == ["implement"]

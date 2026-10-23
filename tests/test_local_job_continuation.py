@@ -234,6 +234,30 @@ def test_waiting_takeover_blocks_stale_completion_and_downstream_eligibility(tmp
     assert reopened.discover_pending_continuations() == (continuation,)
 
 
+@pytest.mark.parametrize("outcome", [InvocationOutcome.FAILED, InvocationOutcome.INTERRUPTED])
+def test_negative_result_settlement_preserves_executor_and_artifact_fences(tmp_path: Path, outcome: InvocationOutcome) -> None:
+    store, offer, claim = _running_job(tmp_path)
+    stale = store.bind_continuation(claim, "session-1", "executor-old")
+    assert stale is not None
+    assert store.take_over_continuation(offer.job_id, "executor-old", "executor-current", expected_runner_owner=claim.record.runner_owner)
+    artifact = store.persist_result_artifact(claim, outcome, "provider stopped unsuccessfully", executor_token="executor-current")
+    assert artifact is not None
+    assert store.record_result(claim, outcome, artifact.artifact_id, executor_token="executor-current")
+    recorded = store.get(offer.job_id)
+    current = store.get_continuation(offer.job_id)
+    assert recorded is not None and current is not None
+    assert not store.confirm_unsuccessful_continuation(recorded, stale)
+    assert not store.mark_downstream_pending(claim, executor_token="executor-current")
+    assert store.confirm_unsuccessful_continuation(recorded, current)
+    assert not store.mark_downstream_pending(claim, executor_token="executor-old")
+    assert not store.recover_downstream_pending(recorded, executor_token="executor-old")
+    assert store.recover_downstream_pending(recorded, executor_token="executor-current")
+    terminal = store.get_continuation(offer.job_id)
+    assert terminal is not None and terminal.state is ContinuationState(outcome.value)
+    assert terminal.final_output == ""
+    assert store.get_result_artifact(artifact.artifact_id).output == "provider stopped unsuccessfully"
+
+
 def test_replaced_job_lineage_rejects_every_old_continuation_authority(tmp_path: Path) -> None:
     store, offer, first_claim = _running_job(tmp_path)
     assert store.bind_continuation(first_claim, "session-1", "executor-old") is not None

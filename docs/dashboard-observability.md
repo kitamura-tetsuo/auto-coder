@@ -2448,6 +2448,23 @@ local-job admission and downstream completion events remain unchanged. Run
 tests/test_local_job_continuation.py` to exercise the production recovery
 entry, contested fencing, deadline refusal, and recovered downstream boundary.
 
+Recorded Muse timeout/interruption results now reach their existing negative
+finalization boundary once the retained host and its process group are proven
+stopped. They emit `issue.local-publication-finalization` with disposition
+`failed` or `interrupted` and outcome `FAILED`, rather than remaining deferred
+while waiting for a successful assistant result that cannot exist. No new origin,
+event schema, outcome value, or dashboard renderer is added. A live or unverified
+writer still leaves the job pending; failure never authorizes PR publication.
+Recovery uses the retained continuation executor token for both artifact and
+downstream checkpoints, preserving takeover fencing.
+
+Run `bash scripts/test.sh
+'tests/test_explicit_local_issue_completion.py::test_explicit_issue_waits_for_local_execution_and_finalization[continuation_timeout]'
+tests/test_local_job_runner.py tests/test_local_job_continuation.py` for the
+production adapter/runner/finalizer path, exact execution release, unchanged
+single-target failure event, mounted Issue detail, replay without a second
+backend call, and live/unknown/descendant-writer refusal controls.
+
 ## Durable local runner execution
 
 Runner admission and recovery are now restricted to the explicitly supplied

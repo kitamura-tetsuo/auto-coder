@@ -21,7 +21,7 @@ from src.auto_coder.invocation_admission import InvocationAdmissionGate
 from src.auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
 from src.auto_coder.issue_local_job import IssueJobAuthorizationPorts, IssueLocalJobAdapter
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
-from src.auto_coder.local_job_handoff import ContinuationState, LocalJobKind, LocalJobOffer, LocalJobStore
+from src.auto_coder.local_job_handoff import ContinuationState, InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobStore
 from src.auto_coder.local_job_runner import LocalJobRunner
 from src.auto_coder.local_review_repair import LocalReviewRepairRequest, LocalReviewRepairStore, admit_local_repair_allowance
 from src.auto_coder.local_session_continuation import LocalContinuationError
@@ -650,10 +650,18 @@ def test_issue_adapter_runner_delivers_gate_controlled_muse_background_result(tm
     continuation = store.get_continuation(offer.job_id)
     assert continuation is not None and continuation.provider_session == "opaque/provider/session"
     if late_activity:
-        assert completed is not None and completed.state.value == "result_recorded"
-        assert continuation.state is not ContinuationState.FINAL_CONFIRMED
+        assert completed is not None and completed.state.value == "downstream_effects_pending"
+        artifact = store.get_result_artifact(completed.result_reference)
+        assert artifact is not None and artifact.outcome is InvocationOutcome.FAILED
+        assert artifact.output == "RuntimeError: Muse final output became stale while newer session activity remained unresolved"
+        assert continuation.state is ContinuationState.FAILED
         assert continuation.final_output == ""
-        assert wakes == []
+        observation = recover_muse_observation(store, offer.job_id)
+        assert observation is not None and any(task.task_id == "late-background-task" and task.state == "running" for task in observation.tasks)
+        while not wakes:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        assert wakes == [offer.job_id]
         runner.close(wait=True)
         return
     assert completed is not None and completed.state.value == "downstream_effects_pending"

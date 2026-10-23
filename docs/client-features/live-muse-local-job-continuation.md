@@ -25,6 +25,13 @@ result delivery, timeout, cancellation, and unknown settlement remain failures o
 reconciliation work. Ordinary non-Muse and single-turn Muse calls retain their
 existing behavior.
 
+Once a failed or interrupted invocation has a durable negative result and its
+host process group is positively stopped, the runner can notify downstream
+failure handling without confirming a successful final assistant output. A
+late-activity rejection therefore retains the unresolved task observations and
+records the actual error as a failed artifact; it does not publish the stale
+assistant candidate. Unknown writer settlement continues to block this path.
+
 Notifications received with or after the final session snapshot remain authoritative.
 The shutdown drain folds and persists them before candidate confirmation, so a newer
 turn or background task invalidates an older assistant candidate instead of being
@@ -43,7 +50,9 @@ both domain-adapter regressions.
 additionally starts at accepted Issue-job admission and crosses the production
 adapter, private workspace, runner, Muse transport, durable wait, final artifact,
 and downstream wake. Its adverse variant emits post-snapshot activity and proves
-that the same production route does not promote the stale result.
+that the same production route retains the unresolved task evidence, rejects the
+stale assistant result, and delivers only the recorded negative disposition after
+writer settlement.
 `test_pr_correction_adapter_runner_delivers_gate_controlled_muse_background_result`
 starts at correction allowance and job admission, then crosses the production PR
 adapter, exact-head worktree, Muse transport, runner checkpoint, correction outcome,

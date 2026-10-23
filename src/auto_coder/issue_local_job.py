@@ -166,7 +166,7 @@ class IssueLocalJobAdapter:
     def validate_resume(self, job: LocalJobRecord, continuation: LocalJobContinuation) -> None:
         """Refuse reuse until both the controller and every old writer are gone."""
         from .llm_backend_config import get_llm_config
-        from .local_job_runner import runner_owner_alive
+        from .local_job_runner import runner_owner_alive, writer_group_settled
 
         if get_llm_config(repo_name=job.repository).resolve_backend_type(job.backend_name) != "muse":
             raise RuntimeError("Explicit session resumption currently supports Muse only")
@@ -174,21 +174,8 @@ class IssueLocalJobAdapter:
             raise RuntimeError("Retained session lacks its provider workspace or writer identity")
         if runner_owner_alive(continuation.writer_owner) is not False:
             raise RuntimeError("Previous Muse host is live or its liveness is unknown")
-        # The host starts a new process group; a dead leader does not prove that
-        # background shell tools have stopped writing the retained repository.
-        group = continuation.writer_owner.split(":")[1]
-        for entry in Path("/proc").iterdir():
-            if not entry.name.isdigit():
-                continue
-            try:
-                stat = (entry / "stat").read_text()
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                raise RuntimeError("Previous Muse writer settlement cannot be verified") from exc
-            fields = stat[stat.rindex(")") + 2 :].split()
-            if fields[2] == group and fields[0] != "Z":
-                raise RuntimeError("Previous Muse process group still has live writers")
+        if not writer_group_settled(continuation.writer_owner):
+            raise RuntimeError("Previous Muse process group still has live or unverified writers")
         workspace = Path(continuation.provider_workspace)
         producer = IssueJobWorkspaceProducer(self._store)
         if not workspace.is_dir() or not Path(job.workspace_path).is_dir():

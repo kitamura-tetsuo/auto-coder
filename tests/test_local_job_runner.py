@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
+import signal
 import sqlite3
+import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from multiprocessing import get_context
@@ -136,6 +140,127 @@ def test_runner_promotes_transformed_domain_result_under_muse_continuation_fence
     _wait(lambda: wakes == [job_id])
     assert adapter.calls == 1
     runner.close()
+
+
+@pytest.mark.parametrize("outcome", [InvocationOutcome.FAILED, InvocationOutcome.INTERRUPTED])
+@pytest.mark.parametrize("writer_owner", ["process:999999999:1", "unknown", "live"])
+@pytest.mark.parametrize("recorded", [False, True])
+def test_unsuccessful_continuation_recovery_requires_settled_writers(tmp_path: Path, outcome: InvocationOutcome, writer_owner: str, recorded: bool) -> None:
+    """A timed-out Muse job must settle its failure without confirming success."""
+    from auto_coder.local_job_runner import current_runner_owner
+
+    store, job_id = _accepted(tmp_path, "timeout-muse")
+    dead_owner = "process:999999998:1"
+    claim = store.claim(job_id, dead_owner)
+    assert claim is not None and claim.acquired
+    assert store.mark_provider_entered(claim)
+    assert store.bind_workspace(
+        claim,
+        workspace_path=tmp_path.resolve(),
+        source_commit="a" * 40,
+        source_ref="main",
+        work_branch="issue-42",
+        publication_remote="origin",
+        owner_incarnation="owner-1",
+        owner_generation=None,
+    )
+    assert store.bind_continuation(claim, "muse/timed-out", dead_owner, deadline_at=0.0)
+    writer = current_runner_owner() if writer_owner == "live" else writer_owner
+    assert store.bind_continuation_writer(job_id, dead_owner, tmp_path, writer)
+    assert store.observe_continuation_task(job_id, dead_owner, "unfinished-task", "running")
+    artifact = store.persist_result_artifact(claim, outcome, "Muse invocation timed out", executor_token=dead_owner)
+    assert artifact is not None
+    if recorded:
+        assert store.record_result(claim, outcome, artifact.artifact_id, "provider raised", executor_token=dead_owner)
+    wakes: list[str] = []
+    gate = InvocationAdmissionGate()
+    adapter = BarrierAdapter()
+    reopened = LocalJobStore(store.path)
+    runner = LocalJobRunner(reopened, gate, repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter}, completion_wake=lambda job: wakes.append(job.job_id))
+    try:
+        assert runner.poll() == 0
+        recovered = reopened.get(job_id)
+        continuation = reopened.get_continuation(job_id)
+        assert recovered is not None and continuation is not None
+        assert recovered.invocation_outcome is outcome
+        assert recovered.result_reference == artifact.artifact_id
+        assert continuation.final_output == ""
+        assert adapter.calls == 0
+        if writer_owner == "process:999999999:1":
+            assert recovered.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+            assert continuation.state is ContinuationState(outcome.value)
+            _wait(lambda: wakes == [job_id])
+        else:
+            assert recovered.state is LocalJobState.RESULT_RECORDED
+            assert continuation.state is ContinuationState.FOREGROUND
+            assert wakes == []
+    finally:
+        runner.close(wait=True)
+
+
+@pytest.mark.parametrize("recorded", [False, True])
+def test_confirmed_result_recovery_uses_retained_executor_token(tmp_path: Path, recorded: bool) -> None:
+    """Recovery tokens differ from the original dead runner after takeover."""
+    store, job_id = _accepted(tmp_path, "confirmed-muse-recovery")
+    dead_owner = "process:999999999:1"
+    claim = store.claim(job_id, dead_owner)
+    assert claim is not None and claim.acquired
+    assert store.mark_provider_entered(claim)
+    assert store.bind_workspace(
+        claim,
+        workspace_path=tmp_path.resolve(),
+        source_commit="a" * 40,
+        source_ref="main",
+        work_branch="issue-42",
+        publication_remote="origin",
+        owner_incarnation="owner-1",
+        owner_generation=None,
+    )
+    token = "recovery-executor"
+    assert store.bind_continuation(claim, "muse/confirmed", token)
+    assert store.record_candidate_output(job_id, token, 0, "ACTION_SUMMARY: implemented")
+    assert store.confirm_final_output(job_id, token, 0)
+    artifact = store.persist_result_artifact(claim, InvocationOutcome.COMPLETED, "domain:implemented", executor_token=token)
+    assert artifact is not None
+    if recorded:
+        assert store.record_result(claim, InvocationOutcome.COMPLETED, artifact.artifact_id, executor_token=token)
+    adapter = BarrierAdapter()
+    runner = LocalJobRunner(LocalJobStore(store.path), InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter})
+    try:
+        runner.recover_unsettled()
+        recovered = store.get(job_id)
+        assert recovered is not None and recovered.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+        assert recovered.result_reference == artifact.artifact_id
+        assert recovered.runner_owner == dead_owner
+        assert store.get_continuation(job_id).executor_token == token
+        assert adapter.calls == 0
+    finally:
+        runner.close(wait=True)
+
+
+def test_dead_host_with_live_descendant_does_not_confirm_writer_settlement(_use_real_commands) -> None:
+    from auto_coder.local_job_runner import process_owner, writer_group_settled
+
+    host = subprocess.Popen(
+        [sys.executable, "-c", "import subprocess,sys; child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); print(child.pid,flush=True); sys.stdin.readline()"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        assert host.stdout is not None and host.stdin is not None
+        descendant = int(host.stdout.readline())
+        owner = process_owner(host.pid)
+        host.stdin.write("exit\n")
+        host.stdin.flush()
+        assert host.wait(timeout=5) == 0
+        assert Path(f"/proc/{descendant}").exists()
+        assert not writer_group_settled(owner)
+    finally:
+        os.killpg(host.pid, signal.SIGKILL)
+        host.communicate(timeout=5)
+    _wait(lambda: writer_group_settled(owner))
 
 
 def test_dead_owner_recovery_reuses_retained_session_and_original_deadline(tmp_path: Path) -> None:

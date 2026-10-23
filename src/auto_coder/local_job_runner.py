@@ -14,7 +14,7 @@ from typing import Callable, Optional, Protocol
 from loguru import logger
 
 from .invocation_admission import InvocationAdmissionGate, InvocationHandle, install_invocation_gate, reset_invocation_gate
-from .local_job_handoff import ContinuationState, InvocationOutcome, LocalJobClaim, LocalJobKind, LocalJobRecord, LocalJobState, LocalJobStore
+from .local_job_handoff import ContinuationState, InvocationOutcome, LocalJobClaim, LocalJobContinuation, LocalJobKind, LocalJobRecord, LocalJobState, LocalJobStore
 from .security_utils import redact_string
 
 
@@ -88,6 +88,27 @@ def runner_owner_alive(owner: str) -> Optional[bool]:
     if observed is None:
         return False if not os.path.exists(f"/proc/{pid}") else None
     return observed == parts[2]
+
+
+def writer_group_settled(owner: str) -> bool:
+    """Prove the recorded host lifetime and all its descendant writers ended."""
+    if runner_owner_alive(owner) is not False:
+        return False
+    group = owner.split(":")[1]
+    try:
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                stat = (entry / "stat").read_text()
+            except FileNotFoundError:
+                continue
+            fields = stat[stat.rindex(")") + 2 :].split()
+            if fields[2] == group and fields[0] != "Z":
+                return False
+    except (OSError, ValueError, IndexError):
+        return False
+    return True
 
 
 class LocalJobRunner:
@@ -270,7 +291,9 @@ class LocalJobRunner:
                 if active is not None and not active.done():
                     continue
             if job.state is LocalJobState.RUNNING and job.provider_entered:
-                if self.store.recover_recorded_result(job, executor_token=job.runner_owner):
+                continuation = self.store.get_continuation(job.job_id)
+                token = continuation.executor_token if continuation is not None else job.runner_owner
+                if self.store.recover_recorded_result(job, executor_token=token):
                     refreshed = self.store.get(job.job_id)
                     if refreshed is None:
                         continue
@@ -288,7 +311,10 @@ class LocalJobRunner:
                 else:
                     continue
             if job.state is LocalJobState.RESULT_RECORDED:
-                if self.store.recover_downstream_pending(job):
+                continuation = self.store.get_continuation(job.job_id)
+                self._confirm_unsuccessful_continuation(job, continuation)
+                token = continuation.executor_token if continuation is not None else job.runner_owner
+                if self.store.recover_downstream_pending(job, executor_token=token):
                     self._settle_recovered_handle(job)
             elif job.state is LocalJobState.RUNNING and not job.provider_entered:
                 alive = runner_owner_alive(job.runner_owner)
@@ -307,11 +333,21 @@ class LocalJobRunner:
                             valid = False
                         if valid and self.store.adopt_controller_result(job, artifact):
                             refreshed = self.store.get(job.job_id)
-                            if refreshed is not None and self.store.recover_downstream_pending(refreshed):
+                            if refreshed is not None and self.store.recover_downstream_pending(refreshed, executor_token=job.runner_owner):
                                 self._settle_recovered_handle(refreshed)
                         # Present but invalid evidence remains retained for diagnosis.
                         continue
                     self.store.release_dead_owner_claim(job, "previous runner owner is authoritatively dead")
+
+    def _confirm_unsuccessful_continuation(self, job: LocalJobRecord, continuation: LocalJobContinuation | None) -> None:
+        if (
+            continuation is not None
+            and continuation.execution_incarnation == job.execution_incarnation
+            and job.invocation_outcome in {InvocationOutcome.FAILED, InvocationOutcome.INTERRUPTED}
+            and continuation.state is not ContinuationState.FINAL_CONFIRMED
+            and writer_group_settled(continuation.writer_owner)
+        ):
+            self.store.confirm_unsuccessful_continuation(job, continuation)
 
     def _recover_continuation(self, job: LocalJobRecord) -> bool:
         continuation = self.store.get_continuation(job.job_id)
@@ -441,6 +477,9 @@ class LocalJobRunner:
             ):
                 handle.record_checkpoint_attempt_failed("local job result checkpoint failed")
                 return
+            recorded = self.store.get(claim.record.job_id)
+            if recorded is not None:
+                self._confirm_unsuccessful_continuation(recorded, self.store.get_continuation(recorded.job_id))
             if not self.store.mark_downstream_pending(claim, executor_token=claim.record.runner_owner):
                 handle.record_checkpoint_attempt_failed("downstream eligibility checkpoint failed")
                 return
