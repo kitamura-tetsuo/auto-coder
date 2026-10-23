@@ -141,47 +141,77 @@ def test_exact_remote_workspace_ignores_dirty_checkout_and_records_modes(tmp_pat
 
 
 def test_overlapping_real_slot_coordination_preserves_pr_repair_result_identity(tmp_path: Path, monkeypatch, _use_real_commands) -> None:
-    monkeypatch.setenv("AUTO_CODER_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("AUTO_CODER_RUNTIME_ROOT", str(runtime))
     repositories = [ImplementationSlotRepository("owner/repo", 1, tmp_path / name / "slots.json") for name in ("first-coordinator", "second-coordinator")]
     owners = [ImplementationOwner("issue", number) for number in (2579, 2580)]
-    coordinating = threading.Barrier(2)
+    original_mkdir = Path.mkdir
+    establishment_entered = threading.Barrier(3)
+    release_establishment = {owner.number: threading.Event() for owner in owners}
+    establishment_complete = {owner.number: threading.Event() for owner in owners}
+    intercepted_threads = set()
     failures = []
+
+    def controlled_mkdir(path, *args, **kwargs):
+        thread = threading.current_thread()
+        if thread.name.startswith("slot-") and thread.name not in intercepted_threads and path.parent == runtime / "locks":
+            intercepted_threads.add(thread.name)
+            owner_number = int(thread.name.removeprefix("slot-"))
+            establishment_entered.wait(timeout=2)
+            assert release_establishment[owner_number].wait(timeout=2)
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", controlled_mkdir)
 
     def coordinate(repository, owner):
         try:
             execution_id = repository.start_execution(owner)
             assert execution_id is not None
-            with repository.serialize(owner):
-                coordinating.wait(timeout=2)
+            establishment_complete[owner.number].set()
             repository.finish_execution(owner, execution_id)
         except BaseException as exc:
             failures.append(exc)
 
-    threads = [threading.Thread(target=coordinate, args=pair) for pair in zip(repositories, owners)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=5)
-        assert not thread.is_alive()
-    assert failures == []
+    threads = [threading.Thread(target=coordinate, args=pair, name=f"slot-{pair[1].number}") for pair in zip(repositories, owners)]
+    previous_umask = os.umask(0o022)
+    try:
+        for thread in threads:
+            thread.start()
+        establishment_entered.wait(timeout=2)
+        release_establishment[owners[0].number].set()
+        assert establishment_complete[owners[0].number].wait(timeout=2)
+        release_establishment[owners[1].number].set()
+        for thread in threads:
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+        assert failures == []
+        for slot_repository, owner in zip(repositories, owners):
+            with slot_repository.serialize(owner):
+                pass
 
-    repo, head, base = repository(tmp_path)
-    store = LocalJobStore(tmp_path / "jobs.sqlite3")
-    claim = admitted(store, tmp_path, head, base, target=2579)
-    producer = PRRepairWorkspaceProducer(store, tmp_path / "workspaces")
-    prepared = producer.prepare(claim, PRRepairSource(repo))
-    (prepared.workspace / "feature.txt").write_text("coordinated repair\n")
-    manifest = producer.capture_result(claim, prepared, InvocationOutcome.COMPLETED, "ACTION_SUMMARY: repaired")
-    artifact = store.persist_result_artifact(claim, InvocationOutcome.COMPLETED, manifest.to_json(), executor_token="runner")
+        repo, head, base = repository(tmp_path)
+        store = LocalJobStore(tmp_path / "jobs.sqlite3")
+        claim = admitted(store, tmp_path, head, base, target=2579)
+        producer = PRRepairWorkspaceProducer(store, tmp_path / "workspaces")
+        prepared = producer.prepare(claim, PRRepairSource(repo))
+        (prepared.workspace / "feature.txt").write_text("coordinated repair\n")
+        manifest = producer.capture_result(claim, prepared, InvocationOutcome.COMPLETED, "ACTION_SUMMARY: repaired")
+        artifact = store.persist_result_artifact(claim, InvocationOutcome.COMPLETED, manifest.to_json(), executor_token="runner")
 
-    assert artifact is not None
-    assert manifest.head_sha == head
-    assert manifest.base_sha == base
-    assert dict(prepared.source_files)["feature.txt"].mode == 0o644
-    assert dict(manifest.changed_files)["feature.txt"].mode == 0o644  # type: ignore[union-attr]
-    reopened = LocalJobStore(store.path)
-    verified = PRRepairWorkspaceProducer(reopened, tmp_path / "workspaces").revalidate_result(reopened.get(claim.record.job_id), artifact)  # type: ignore[arg-type]
-    assert verified.artifact_id == artifact.artifact_id
+        assert artifact is not None
+        assert manifest.head_sha == head
+        assert manifest.base_sha == base
+        assert dict(prepared.source_files)["feature.txt"].mode == 0o644
+        assert dict(manifest.changed_files)["feature.txt"].mode == 0o644  # type: ignore[union-attr]
+        reopened = LocalJobStore(store.path)
+        verified = PRRepairWorkspaceProducer(reopened, tmp_path / "workspaces").revalidate_result(reopened.get(claim.record.job_id), artifact)  # type: ignore[arg-type]
+        assert verified.artifact_id == artifact.artifact_id
+    finally:
+        for release in release_establishment.values():
+            release.set()
+        for thread in threads:
+            thread.join(timeout=5)
+        os.umask(previous_umask)
 
 
 def test_revalidation_recomputes_changed_identities_from_retained_h(tmp_path: Path, _use_real_commands) -> None:
