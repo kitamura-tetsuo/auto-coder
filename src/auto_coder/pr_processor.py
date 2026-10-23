@@ -36,10 +36,12 @@ from .accepted_finding_bridge import AMBIGUOUS, BINDING_CURRENT, AcceptedFinding
 from .adversarial_validation_attempts import AdversarialValidationAttempt, AdversarialValidationAttemptRepository
 from .adversarial_validation_scheduler import AdversarialValidationScheduler
 from .adversarial_validator import (
+    AdversarialValidationContext,
     AdversarialValidationResult,
     accepted_finding_dispositions,
     adversarial_validation_codex_feedback_marker,
     adversarial_validation_comment_marker,
+    build_adversarial_validation_context,
     count_adversarial_validation_comments,
     default_accepted_finding_bridge,
     format_adversarial_finding_comment,
@@ -60,7 +62,7 @@ from .bounded_repair_bundle import (
     validate_repair_handoff_bundle,
 )
 from .branch_manager import BranchManager
-from .canonical_pr_blocker_ledger import CanonicalPRBlockerLedger
+from .canonical_pr_blocker_ledger import BlockerLedgerSnapshot, CanonicalPRBlockerLedger
 from .checkout_lock import checkout_lock, serialize_checkout
 from .ci_repair_authority import current_ci_failure_authority
 from .ci_repair_verification import FocusedVerification, dedupe_targets, follow_up_budget_exhausted, verify_targets
@@ -72,8 +74,10 @@ from .dispatch_claim_store import DispatchIdentity, DispatchOutcome, get_dispatc
 from .effective_decision_application import (
     HANDOFF_DISPATCHED,
     HANDOFF_PENDING,
+    HANDOFF_WAITING,
     PUBLICATION_CONFIRMED,
     WAIT_ALLOWANCE_EXHAUSTED,
+    WAIT_ASSOCIATION_EVIDENCE,
     WAIT_INDETERMINATE,
     WAIT_ROUTE_UNAVAILABLE,
     AcceptanceFence,
@@ -81,6 +85,7 @@ from .effective_decision_application import (
     DecisionApplication,
     DecisionRetentionError,
     EffectiveDecisionStore,
+    OrdinaryCorrectionEvidence,
     RetainedDecision,
     ReviewDisposition,
     build_retained_record,
@@ -92,6 +97,7 @@ from .effective_decision_application import (
     evidence_revision,
     outstanding_records,
     raw_ordinary_clear,
+    retain_ordinary_correction,
     saved_pass_is_clearance,
     settle_accepted_gaps,
 )
@@ -529,6 +535,27 @@ def _capture_ordinary_closure_input(repo_name: str, pr_number: int, inputs: TwoT
     )
 
 
+def _capture_ordinary_correction_authority(repo_name: str, pr_number: int, inputs: TwoTierGateInputs, attempt: AdversarialValidationAttempt) -> OrdinaryCorrectionEvidence:
+    """Capture applicable authority before the reviewer, even without a closure extension."""
+    snapshot = inputs.gate.state.snapshot(pr_number)
+    strong = snapshot.accepted_strong_round
+    return OrdinaryCorrectionEvidence(
+        repository=repo_name,
+        pr_number=pr_number,
+        head_sha=inputs.head_sha,
+        base_sha=inputs.base_sha,
+        contract_identity=inputs.contract.identity,
+        policy_identity=inputs.policy.identity,
+        open_epoch=snapshot.open_epoch,
+        attempt_id=attempt.attempt_id,
+        attempt_sequence=attempt.sequence,
+        strong_round_id=strong.round_id if strong is not None else "",
+        audited_head_sha=strong.head_sha if strong is not None else "",
+        finding_set_revision=snapshot.finding_set_revision,
+        requires_strong_policy=True,
+    )
+
+
 def _strict_pull_request_target(github_client: Any, repo_name: str, pr_number: int) -> Dict[str, Any]:
     """Current live PR metadata (head and base identity included), read past every cache; fails closed."""
     metadata = github_client.get_pull_request_metadata_strict(repo_name, pr_number)
@@ -562,6 +589,40 @@ class _ClosureTargetObserver:
             raise RuntimeError("the strong tier is not configured")
         self.inputs = inputs
         return ObservedTarget(metadata["head"]["sha"], metadata["base"]["sha"], inputs.contract, inputs.policy)
+
+
+class _OrdinaryCorrectionInputsChanged(RuntimeError):
+    """Readable ordinary inputs require a fresh, bounded current-target decision."""
+
+
+def _current_ordinary_correction_inputs(github_client: Any, repo_name: str, metadata: Dict[str, Any], config: AutomationConfig) -> AdversarialValidationContext:
+    context = build_adversarial_validation_context(repo_name, metadata, config, github_client, bypass_cache=True)
+    if context.requirement_manifest_error or context.evidence_retrieval_error or not context.validation_snapshot or not context.requirement_manifest_identity:
+        raise RuntimeError("the current ordinary validation inputs could not be reconfirmed")
+    return context
+
+
+def _ordinary_target_binding(github_client: Any, repo_name: str, pr_number: int, ordinary: OrdinaryCorrectionEvidence, config: AutomationConfig) -> Tuple[str, str, str, str]:
+    """Observe current target authority without enabling an optional Strong tier.
+
+    Evidence captured with the Strong policy requires that policy to remain
+    observable. Without that optional tier, the ordinary invocation's exact
+    Requirements/diff snapshot supplies independent current-input authority.
+    """
+    metadata = _strict_pull_request_target(github_client, repo_name, pr_number)
+    inputs = _two_tier_gate_inputs(github_client, repo_name, metadata)
+    if inputs is None and ordinary.requires_strong_policy:
+        raise RuntimeError("the captured Strong policy is no longer observable")
+    if inputs is None:
+        supplied = ordinary.restore().correction_reference_context
+        current = _current_ordinary_correction_inputs(github_client, repo_name, metadata, config)
+        if (
+            supplied is None
+            or (supplied.repository, supplied.pr_number, supplied.head_sha, supplied.base_sha) != (repo_name, pr_number, metadata["head"]["sha"], metadata["base"]["sha"])
+            or (supplied.validation_snapshot, supplied.requirement_manifest_identity) != (current.validation_snapshot, current.requirement_manifest_identity)
+        ):
+            raise _OrdinaryCorrectionInputsChanged("the ordinary Requirements or validation snapshot changed or lacks a retained invocation binding")
+    return metadata["head"]["sha"], metadata["base"]["sha"], inputs.contract.identity if inputs is not None else ordinary.contract_identity, inputs.policy.identity if inputs is not None else ordinary.policy_identity
 
 
 def _closure_attempt_spent(repo_name: str, pr_number: int, head_sha: str, finding_set_revision: int) -> bool:
@@ -747,17 +808,16 @@ def _resume_closure_before_admission(
         actions.append(f"Skipping merge for PR #{pr_number}: strong-audit identity could not be resolved: {exc}")
         _record_pr_stage(pr_number, "pr.strong-audit-gate", f"pr#{pr_number} strong-audit gate", Outcome.DEFERRED, {"reason": str(exc), "phase": "identity-resolution"})
         return None, True
-    if inputs is None:
-        return None, False
-    if _resume_saved_ordinary_correction(github_client, repo_name, ProcessedPRResult(pr_data=pr_data), inputs, actions, processing_status, config):
-        return None, True
-    if _repair_strong_findings_before_validation(github_client, repo_name, pr_data, inputs, actions, processing_status, config):
-        return None, True
-    try:
-        resumption = _resume_retained_closure(repo_name, pr_number, head_sha, inputs, github_client)
-    except Exception as exc:  # an unreadable owning store retains the pending work; it never authorizes or erases it
-        resumption = RetainedClosureResumption(unavailable=True, reason=f"the owning review state could not be read: {exc}")
-    if resumption.unavailable and not force:
+    resumption = None
+    if inputs is not None:
+        try:
+            # A retained closure assessment owns completed corrective work.
+            # Reconcile it before an older ordinary/Strong correction can
+            # overwrite that work or redispatch the completed generation.
+            resumption = _resume_retained_closure(repo_name, pr_number, head_sha, inputs, github_client)
+        except Exception as exc:  # an unreadable owning store retains the pending work; it never authorizes or erases it
+            resumption = RetainedClosureResumption(unavailable=True, reason=f"the owning review state could not be read: {exc}")
+    if resumption is not None and resumption.unavailable and not force:
         actions.append(f"Retained closure evidence for PR #{pr_number} is pending: {resumption.reason}; no reviewer was admitted and the same evidence will be resumed when it is observable again")
         _record_pr_stage(pr_number, "pr.ordinary-closure", f"pr#{pr_number} ordinary closure", Outcome.DEFERRED, {"head": head_sha, "reason": resumption.reason, "evidence_status": "UNAVAILABLE", "additional_model_execution": False})
         actions.quota_deferred = True  # type: ignore[attr-defined]
@@ -767,6 +827,12 @@ def _resume_closure_before_admission(
             processing_status.outcome = PRProcessingOutcome.DEFERRED
             processing_status.retry_not_before = actions.retry_not_before  # type: ignore[attr-defined]
         return resumption, True
+    if resumption is not None and resumption.ordinary_pass_retained:
+        return resumption, False
+    if _resume_saved_ordinary_correction(github_client, repo_name, ProcessedPRResult(pr_data=pr_data), inputs, actions, processing_status, config, force=force):
+        return None, True
+    if inputs is not None and _repair_strong_findings_before_validation(github_client, repo_name, pr_data, inputs, actions, processing_status, config):
+        return None, True
     return resumption, False
 
 
@@ -774,95 +840,195 @@ def _resume_saved_ordinary_correction(
     github_client: Any,
     repo_name: str,
     pr: ProcessedPRResult,
-    inputs: TwoTierGateInputs,
+    inputs: Optional[TwoTierGateInputs],
     actions: List[str],
     processing_status: Optional[ProcessedPRResult],
     config: AutomationConfig,
+    force: bool = False,
 ) -> bool:
-    """Recover an actionable ordinary result hidden by a published closure-only BLOCKED decision.
+    """Resume retained ordinary correction before reviewer admission, including force.
 
-    Only the newest published attempt at the unchanged head/base/contract/policy
-    can supply corrective evidence. An incomplete closure extension does not
-    erase that attempt's independently valid ordinary findings. This recovery
-    never authorizes approval or closure and never starts another reviewer.
+    The normalized producing result survives missing closure data and interrupted
+    publication. Reacquired target, attempt and accepted-source authority govern
+    every replay; neither a GitHub headline nor an audit capture supplies evidence.
     """
     pr_data = pr.pr_data
     pr_number = int(pr_data["number"])
-    status, error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, inputs.head_sha)
-    if error or status != "BLOCKED":
-        return False
+    head_sha = str((pr_data.get("head") or {}).get("sha") or "")
+    base_sha = str((pr_data.get("base") or {}).get("sha") or "")
     try:
-        evidence = inputs.gate.closure_evidence()
-        published_sequence = evidence.attempts.latest_published_sequence(pr_number, inputs.head_sha)
-        record = next((item for item in evidence.evidence.for_pr(pr_number) if item.attempt_sequence == published_sequence and item.head_sha == inputs.head_sha), None)
-        snapshot = inputs.gate.state.snapshot(pr_number)
-        strong = snapshot.accepted_strong_round
-        if record is None or strong is None or record.ordinary.result not in {"NEEDS_FIX", "NEEDS_TESTS"}:
+        store = EffectiveDecisionStore(repo_name)
+        retained = store.load(pr_number)
+        if retained is not None and retained.head_sha == head_sha and retained.status == "PASS" and retained.next_action == EffectiveNextAction.NONE.value:
+            # The lifecycle already consumed this result as clearance. Its
+            # optional accepted-gap representation is not a saved correction;
+            # pending closure publication keeps its own attempt authority.
             return False
-        if (record.repository, record.base_sha, record.contract_identity, record.policy_identity, record.open_epoch, record.round_id, record.finding_set_revision) != (
-            repo_name,
-            inputs.base_sha,
-            inputs.contract.identity,
-            inputs.policy.identity,
-            snapshot.open_epoch,
-            strong.round_id,
-            snapshot.finding_set_revision,
-        ):
+        attempts = AdversarialValidationAttemptRepository(repo_name)
+        ordinary = retained.ordinary_correction if retained is not None and retained.head_sha == head_sha else None
+        if ordinary is None and inputs is None:
+            # No current typed or legacy closure evidence can own recovery.
+            # Leave publication observation to the ordinary admission path.
             return False
-        registered = evidence.attempts.get(record.attempt_id)
-        if registered is None or (registered.sequence, registered.pr_number, registered.head_sha) != (record.attempt_sequence, pr_number, inputs.head_sha):
+        status, error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, head_sha)
+        if error or status not in {None, "PASS", "BLOCKED", "NEEDS_FIX", "NEEDS_TESTS"}:
             return False
-        raw = restore_ordinary_result(record)
-        state = _get_claimed_review_thread_state(github_client, repo_name, pr_number, config=config)
-        if state.lookup_error:
-            raise RuntimeError(state.lookup_error)
-        threads = _authentic_root_threads(repo_name, state)
-        bridge, target = _accepted_state_inputs(repo_name, pr_data, inputs.head_sha)
-        projection = project_accepted_findings(bridge, target, threads)
-        raw.accepted_finding_projection = project_accepted_findings(bridge, target, threads, accepted_finding_dispositions(raw, threads, projection, inputs.head_sha))
-        application = derive_application(raw, raw.accepted_finding_projection)
-        if application.decision.next_action not in {EffectiveNextAction.IMPLEMENTATION_REPAIR, EffectiveNextAction.FOCUSED_TEST_REPAIR}:
+        legacy = None
+        if ordinary is None and status == "BLOCKED" and inputs is not None:
+            evidence = inputs.gate.closure_evidence()
+            published_sequence = attempts.latest_published_sequence(pr_number, head_sha)
+            legacy = next((item for item in evidence.evidence.for_pr(pr_number) if item.attempt_sequence == published_sequence and item.head_sha == head_sha and item.ordinary.result in {"NEEDS_FIX", "NEEDS_TESTS"}), None)
+            if legacy is not None:
+                ordinary = OrdinaryCorrectionEvidence(
+                    repository=legacy.repository,
+                    pr_number=legacy.pr_number,
+                    head_sha=legacy.head_sha,
+                    base_sha=legacy.base_sha,
+                    contract_identity=legacy.contract_identity,
+                    policy_identity=legacy.policy_identity,
+                    open_epoch=legacy.open_epoch,
+                    attempt_id=legacy.attempt_id,
+                    attempt_sequence=legacy.attempt_sequence,
+                    strong_round_id=legacy.round_id,
+                    audited_head_sha=legacy.audited_head_sha,
+                    finding_set_revision=legacy.finding_set_revision,
+                    requires_strong_policy=True,
+                    payload=legacy.ordinary.payload,
+                )
+        if ordinary is None:
             return False
-        completion = _corrective_completion_marker(repo_name, pr_data, inputs.head_sha, github_client)
-        if completion and _closure_review_due(repo_name, pr_number, inputs.head_sha, raw.accepted_finding_projection, completion):
+        raw = ordinary.restore()
+        if raw.result not in {"PASS", "NEEDS_FIX", "NEEDS_TESTS"}:
             return False
-        if github_client.get_pull_request_head_sha_strict(repo_name, pr_number) != inputs.head_sha:
-            raise RuntimeError("the PR head changed before saved correction recovery")
-        _retain_effective_decision(repo_name, pr_data, inputs.head_sha, application)
-        EffectiveDecisionStore(repo_name).update(pr_number, publication=PUBLICATION_CONFIRMED)
-    except Exception as exc:
-        _record_review_wait(repo_name, pr_number, inputs.head_sha, actions, processing_status, f"saved ordinary correction could not be recovered: {exc}")
+        bridge, target = _accepted_state_inputs(repo_name, pr_data, head_sha)
+        contract_identity = inputs.contract.identity if inputs is not None else ordinary.contract_identity
+        policy_identity = inputs.policy.identity if inputs is not None else ordinary.policy_identity
+        target = replace(target, contract_identity=contract_identity, policy_identity=policy_identity)
+        # Serialize both admission authorities through publication and dispatch.
+        # A newer ordinary attempt or accepted lifecycle transition must precede
+        # this check or follow the dependent effect, never slip between them.
+        with attempts.serialized_transition(), bridge.cycle.serialized_transition():
+            snapshot = bridge.cycle.snapshot(pr_number)
+            strong = snapshot.accepted_strong_round
+            stale = snapshot.closed or snapshot.active_claim is not None or snapshot.requires_new_strong_round
+            stale = stale or (ordinary.repository, ordinary.pr_number, ordinary.head_sha, ordinary.base_sha, ordinary.contract_identity, ordinary.policy_identity, ordinary.open_epoch, ordinary.strong_round_id, ordinary.audited_head_sha, ordinary.finding_set_revision) != (
+                repo_name,
+                pr_number,
+                head_sha,
+                base_sha,
+                contract_identity,
+                policy_identity,
+                snapshot.open_epoch,
+                strong.round_id if strong is not None else "",
+                strong.head_sha if strong is not None else "",
+                snapshot.finding_set_revision,
+            )
+            if attempts.latest_sequence(pr_number, head_sha) > ordinary.attempt_sequence:
+                if force:
+                    return False
+                raise RuntimeError("a newer ordinary attempt supersedes the retained correction")
+            if stale:
+                # The saved-review gate may admit one bounded fresh review of
+                # changed readable authority. It cannot replay this old payload.
+                return False
+            registered = attempts.get(ordinary.attempt_id)
+            if registered is None or (registered.sequence, registered.pr_number, registered.head_sha) != (ordinary.attempt_sequence, pr_number, head_sha):
+                raise RuntimeError("the producing ordinary attempt is not registered for this target")
+            if _ordinary_target_binding(github_client, repo_name, pr_number, ordinary, config) != (head_sha, base_sha, contract_identity, policy_identity):
+                raise RuntimeError("the PR target or contract changed before saved correction recovery")
+            state = _get_claimed_review_thread_state(github_client, repo_name, pr_number, config=config)
+            if state.lookup_error:
+                raise RuntimeError(state.lookup_error)
+            threads = _authentic_root_threads(repo_name, state)
+            projection = project_accepted_findings(bridge, target, threads)
+            sources = tuple(sorted(item.source_identity for item in projection.records))
+            if legacy is not None:
+                ordinary = replace(ordinary, accepted_sources=sources)
+            elif ordinary.accepted_sources != sources:
+                return False
+            # Completion must use freshly observed lifecycle state. Reapplying
+            # an old STILL_VALID observation first would hide completed work.
+            completion = _corrective_completion_marker(repo_name, pr_data, head_sha, github_client)
+            if completion and _closure_review_due(repo_name, pr_number, head_sha, projection, completion):
+                return False
+            raw.accepted_finding_projection = project_accepted_findings(bridge, target, threads, accepted_finding_dispositions(raw, threads, projection, head_sha))
+            application = _derive_effective_application(repo_name, pr_data, head_sha, raw, threads, github_client)
+            if application is None or application.decision.next_action not in {EffectiveNextAction.IMPLEMENTATION_REPAIR, EffectiveNextAction.FOCUSED_TEST_REPAIR}:
+                return False
+            if retained is not None and not retained.requires_handoff and not (application.decision.ordinary_findings or application.decision.ordinary_gaps):
+                # Repaired association evidence may justify one fresh accepted-
+                # finding assessment, but does not turn an old reconciliation
+                # into independently established ordinary corrective evidence.
+                return False
+            _retain_effective_decision(repo_name, pr_data, head_sha, application, ordinary_evidence=ordinary)
+            published = attempts.latest_published_sequence(pr_number, head_sha) == ordinary.attempt_sequence
+            if not published:
+                recovery = recover_pending_adversarial_publications(repo_name, pr_number)
+                if not recovery.success:
+                    raise RuntimeError(f"retained review publication is pending: {recovery.reason}")
+                published, publication_error = _reconcile_failed_adversarial_publication(github_client, repo_name, pr_number, head_sha, application.result)
+                if not published:
+                    if publication_error:
+                        raise RuntimeError(publication_error)
+                    publication = _publish_effective_review(repo_name, pr_number, head_sha, application.result, None)
+                    if not publication.success:
+                        published, publication_error = _reconcile_failed_adversarial_publication(github_client, repo_name, pr_number, head_sha, application.result)
+                        if not published:
+                            raise RuntimeError(f"retained review publication is unconfirmed: {publication_error or publication.reason}")
+                    recovery = recover_pending_adversarial_publications(repo_name, pr_number)
+                    if not recovery.success:
+                        raise RuntimeError(f"retained review roots are pending: {recovery.reason}")
+                attempts.mark_published(ordinary.attempt_id)
+            store.update(pr_number, publication=PUBLICATION_CONFIRMED)
+            if _ordinary_target_binding(github_client, repo_name, pr_number, ordinary, config) != (head_sha, base_sha, contract_identity, policy_identity):
+                raise RuntimeError("the PR target or contract changed before saved correction handoff")
+            actions.append(f"Resuming {application.decision.status} correction for PR #{pr_number} from retained ordinary attempt {ordinary.attempt_sequence}; no new adversarial validation was started")
+            record_reused(
+                PrAdversarialReviewTarget(repository=repo_name, pr_number=pr_number, head_sha=head_sha),
+                policy_identity=_pr_adversarial_policy_identity(config, True),
+                source_review_id=None,
+                native_verdict=raw.result,
+                attempt_id=ordinary.attempt_id,
+                attempt_sequence=ordinary.attempt_sequence,
+            )
+            result = application.result
+            feedback, facts = _dispatch_effective_correction(
+                github_client,
+                repo_name,
+                pr_data,
+                head_sha,
+                format_adversarial_review_summary(result, head_sha, attached_finding_count=0, attached_test_oracle_gap_count=0),
+                result,
+                application,
+                config,
+                [format_adversarial_finding_comment(finding) for finding in result.findings] + [format_test_oracle_gap_comment(gap) for gap in result.open_test_oracle_gaps],
+                authority_fenced=True,
+            )
+            actions.extend(feedback)
+            if isinstance(actions, PRReviewCoordinationResult):
+                actions.record_disposition(facts["review_disposition"])
+            _record_pr_stage(
+                pr_number,
+                "pr.repair-delegation",
+                f"pr#{pr_number} repair delegation",
+                _adversarial_repair_outcome(feedback, processing_status),
+                {"effect": "adversarial-feedback-replay", "examined_head": head_sha, "source_attempt_sequence": ordinary.attempt_sequence, "additional_model_execution": False, **facts},
+            )
+            return True
+    except _OrdinaryCorrectionInputsChanged:
+        return False
+    except DecisionRetentionError as exc:
+        actions.append(f"Saved ordinary correction for PR #{pr_number} could not be retained or read: {exc}; no dependent effect was emitted")
+        if isinstance(actions, PRReviewCoordinationResult):
+            actions.record_disposition(ReviewDisposition.OPERATIONAL_FAILURE)
+        _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.FAILED, {"examined_head": head_sha, "reason": str(exc), "review_disposition": ReviewDisposition.OPERATIONAL_FAILURE.value})
+        if processing_status is not None:
+            processing_status.outcome = PRProcessingOutcome.FAILED
+            processing_status.error = str(exc)
         return True
-    actions.append(f"Resuming {application.decision.status} correction for PR #{pr_number} from published ordinary attempt {record.attempt_sequence}; no new adversarial validation was started")
-    record_reused(
-        PrAdversarialReviewTarget(repository=repo_name, pr_number=pr_number, head_sha=inputs.head_sha),
-        policy_identity=_pr_adversarial_policy_identity(config, True),
-        source_review_id=None,
-        native_verdict=record.ordinary.result,
-        attempt_id=record.attempt_id,
-        attempt_sequence=record.attempt_sequence,
-    )
-    result = application.result
-    feedback, facts = _dispatch_effective_correction(
-        github_client,
-        repo_name,
-        pr_data,
-        inputs.head_sha,
-        format_adversarial_review_summary(result, inputs.head_sha, attached_finding_count=0, attached_test_oracle_gap_count=0),
-        result,
-        application,
-        config,
-        [format_adversarial_finding_comment(finding) for finding in result.findings] + [format_test_oracle_gap_comment(gap) for gap in result.open_test_oracle_gaps],
-    )
-    actions.extend(feedback)
-    _record_pr_stage(
-        pr_number,
-        "pr.repair-delegation",
-        f"pr#{pr_number} repair delegation",
-        _adversarial_repair_outcome(feedback, processing_status),
-        {"effect": "adversarial-feedback-replay", "examined_head": inputs.head_sha, "source_attempt_sequence": record.attempt_sequence, "additional_model_execution": False, **facts},
-    )
-    return True
+    except Exception as exc:
+        _record_review_wait(repo_name, pr_number, head_sha, actions, processing_status, f"saved ordinary correction could not be recovered: {exc}")
+        return True
 
 
 def _repair_strong_findings_before_validation(
@@ -895,7 +1061,7 @@ def _repair_strong_findings_before_validation(
         if not current_identities_readable or not records or any(not record.canonical_blocker_id or record.target_binding != BINDING_CURRENT or record.association == AMBIGUOUS for record in records):
             raise RuntimeError("accepted Strong finding identities are unavailable")
         retained = EffectiveDecisionStore(repo_name).load(pr_number)
-        if retained is not None and {record.source_identity for record in records} <= set(retained.source_identities) and _corrective_completion_marker(repo_name, pr_data, inputs.head_sha, github_client):
+        if retained is not None and current_sources <= set(retained.source_identities + retained.pending_closure_source_identities + retained.pending_reconciliation_source_identities) and _corrective_completion_marker(repo_name, pr_data, inputs.head_sha, github_client):
             return False
         current_findings = tuple(finding for finding in inputs.gate.state.snapshot(pr_number).open_findings if finding.finding_id in strong_round.finding_ids)
         implementation_repair = any(not finding.is_regression_gap for finding in current_findings)
@@ -1688,6 +1854,8 @@ def _adversarial_repair_outcome(actions: List[str], processing_status: Optional[
     """Distinguish local pending repair from confirmed cloud handoff."""
     if getattr(actions, "deferred", False) or getattr(actions, "quota_deferred", False):
         outcome = Outcome.DEFERRED
+    elif getattr(actions, "delivered", False):
+        outcome = Outcome.ACCEPTED_HANDOFF
     elif getattr(actions, "route_disposition", "CLOUD") != "CLOUD":
         outcome = Outcome.FAILED
     else:
@@ -4657,6 +4825,7 @@ class SavedReviewAssessment:
     action: str = SAVED_REVIEW_REUSE
     reason: str = ""
     projection: Optional[AcceptedFindingProjection] = None
+    recovery_key: str = ""
 
 
 def _accepted_state_inputs(repo_name: str, pr_data: Dict[str, Any], head_sha: str) -> Tuple[AcceptedFindingBridge, ProjectionTarget]:
@@ -4673,7 +4842,7 @@ def _saved_repair_has_current_evidence(retained: Optional[RetainedDecision], hea
     Addressed findings awaiting lifecycle closure are accounted for separately and are not repairs.
     """
     repair_actions = {EffectiveNextAction.IMPLEMENTATION_REPAIR.value, EffectiveNextAction.FOCUSED_TEST_REPAIR.value}
-    return retained is not None and retained.head_sha == head_sha and retained.next_action in repair_actions and {record.source_identity for record in outstanding} <= set(retained.source_identities + retained.pending_closure_source_identities)
+    return retained is not None and retained.head_sha == head_sha and retained.next_action in repair_actions and {record.source_identity for record in outstanding} <= set(retained.source_identities + retained.pending_closure_source_identities + retained.pending_reconciliation_source_identities)
 
 
 def _assess_saved_review_state(
@@ -4684,6 +4853,7 @@ def _assess_saved_review_state(
     claimed_review_threads: Sequence[Any],
     force: bool,
     github_client: Any = None,
+    config: Optional[AutomationConfig] = None,
 ) -> SavedReviewAssessment:
     """Re-acquire accepted-finding applicability before consuming a saved verdict.
 
@@ -4697,11 +4867,47 @@ def _assess_saved_review_state(
         return SavedReviewAssessment()
     try:
         bridge, target = _accepted_state_inputs(repo_name, pr_data, head_sha)
+        inputs = None
+        if github_client is not None:
+            inputs = _two_tier_gate_inputs(github_client, repo_name, pr_data)
+            if inputs is not None:
+                target = replace(target, contract_identity=inputs.contract.identity, policy_identity=inputs.policy.identity)
         projection = project_accepted_findings(bridge, target, claimed_review_threads)
         retained = EffectiveDecisionStore(repo_name).load(target.pr_number)
-    except DecisionRetentionError as exc:
+        changed_ordinary_inputs = ""
+        # A completed PASS follows saved-verdict clearance and explicit fresh
+        # admission. Replay-specific binding checks belong to unfinished
+        # ordinary evidence, not an already consumed clearance result.
+        if github_client is not None and inputs is None and retained is not None and retained.ordinary_correction is not None and not retained.ordinary_correction.requires_strong_policy and (retained.status != "PASS" or retained.next_action != EffectiveNextAction.NONE.value):
+            metadata = _strict_pull_request_target(github_client, repo_name, target.pr_number)
+            if (metadata["head"]["sha"], metadata["base"]["sha"]) != (target.head_sha, target.base_sha):
+                return SavedReviewAssessment(SAVED_REVIEW_WAIT, "the live PR target changed during saved-decision assessment", projection)
+            current = _current_ordinary_correction_inputs(github_client, repo_name, metadata, config or AutomationConfig())
+            supplied = retained.ordinary_correction.restore().correction_reference_context
+            if supplied is None or (supplied.validation_snapshot, supplied.requirement_manifest_identity) != (current.validation_snapshot, current.requirement_manifest_identity):
+                changed_ordinary_inputs = current.validation_snapshot
+    except (DecisionRetentionError, RuntimeError, ValueError, OSError) as exc:
         return SavedReviewAssessment(SAVED_REVIEW_WAIT, f"retained effective-decision state is unreadable: {exc}")
     revision = evidence_revision(projection)
+    if changed_ordinary_inputs:
+        if not closure_projection_readable(projection):
+            return SavedReviewAssessment(SAVED_REVIEW_WAIT, "changed ordinary inputs cannot be reassessed while accepted authority is unreadable or ambiguous", projection)
+        recovery_key = "ordinary-correction-v1:" + hashlib.sha256(f"{revision}:{changed_ordinary_inputs}".encode()).hexdigest()
+        if not force and retained is not None and recovery_key in retained.reconciliation_attempts:
+            return SavedReviewAssessment(SAVED_REVIEW_WAIT, "ordinary recovery was already admitted for these changed validation inputs", projection)
+        return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "changed ordinary Requirements or missing invocation binding require one fresh decision", projection, "" if force else recovery_key)
+    if saved_status == "BLOCKED" and retained is not None and retained.head_sha == head_sha and retained.ordinary_correction is not None and retained.next_action == EffectiveNextAction.OPERATIONAL_WAIT.value:
+        recovery_key = "ordinary-correction-v1:" + revision
+        if force or (closure_projection_readable(projection) and revision != retained.evidence_revision and recovery_key not in retained.reconciliation_attempts):
+            return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "new authority permits one reassessment of the unfinished ordinary result", projection, "" if force else recovery_key)
+        return SavedReviewAssessment(SAVED_REVIEW_WAIT, "the retained ordinary result is unfinished and authorizes no corrective thread replay", projection)
+    if saved_status == "BLOCKED" and (retained is None or (retained.head_sha == head_sha and retained.ordinary_correction is None)):
+        if not closure_projection_readable(projection):
+            return SavedReviewAssessment(SAVED_REVIEW_WAIT, "legacy ordinary evidence cannot be recovered while required authority is unreadable or ambiguous", projection)
+        recovery_key = "ordinary-correction-v1:" + revision
+        if not force and retained is not None and recovery_key in retained.reconciliation_attempts:
+            return SavedReviewAssessment(SAVED_REVIEW_WAIT, "the versioned legacy ordinary recovery was already admitted for this target and evidence", projection)
+        return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "legacy review has no reusable normalized ordinary evidence; one versioned recovery is required", projection, "" if force else recovery_key)
     resumable = retained is not None and retained.head_sha == head_sha and retained.next_action in {EffectiveNextAction.RECONCILIATION.value, EffectiveNextAction.CLOSURE_ACCEPTANCE.value}
     if retained is not None and resumable and revision in retained.reconciliation_attempts and not force:
         return SavedReviewAssessment(SAVED_REVIEW_WAIT, "waiting for new authority or association evidence; the focused reconciliation for this evidence revision was already attempted", projection)
@@ -4709,6 +4915,28 @@ def _assess_saved_review_state(
         return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "a saved PASS is not clearance while accepted findings are open or their state is unavailable", projection)
     if saved_status == "PASS" and claimed_review_threads:
         return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "a saved PASS still has unresolved review threads requiring independent closure", projection)
+    if saved_status in {"NEEDS_FIX", "NEEDS_TESTS"} and retained is not None and retained.ordinary_correction is not None:
+        # Typed evidence is replayed only by its target/attempt-fenced recovery
+        # path. A refused or completed replay must never fall through to the
+        # legacy headline/root path, which cannot validate its authority.
+        if not closure_projection_readable(projection):
+            return SavedReviewAssessment(SAVED_REVIEW_WAIT, "retained ordinary correction authority is unreadable or ambiguous", projection)
+        ordinary = retained.ordinary_correction
+        binding_changed = (ordinary.head_sha, ordinary.base_sha, ordinary.contract_identity, ordinary.policy_identity, ordinary.open_epoch, ordinary.finding_set_revision, ordinary.accepted_sources) != (
+            target.head_sha,
+            target.base_sha,
+            target.contract_identity,
+            target.policy_identity,
+            projection.open_epoch,
+            projection.finding_set_revision,
+            tuple(sorted(item.source_identity for item in projection.records)),
+        )
+        if binding_changed and not force:
+            recovery_key = "ordinary-correction-v1:" + revision
+            if recovery_key in retained.reconciliation_attempts:
+                return SavedReviewAssessment(SAVED_REVIEW_WAIT, "fresh ordinary recovery was already admitted for this changed target and evidence", projection)
+            return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "changed ordinary correction authority requires one fresh current-target decision", projection, recovery_key)
+        return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "retained ordinary correction requires a new current-target decision", projection)
     if saved_status == "BLOCKED" and resumable:
         return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "retained reconciliation work has new authority or association evidence", projection)
     if saved_status == "BLOCKED" and retained is not None and retained.head_sha == head_sha and retained.next_action == EffectiveNextAction.CLOSURE_ACCEPTANCE.value:
@@ -4737,6 +4965,8 @@ def _record_review_wait(
 ) -> None:
     """Report a reconciliation/evidence wait as pending work, never as completion."""
     actions.append(f"Review of PR #{pr_number} is waiting for reconciliation evidence: {reason}; no repair or approval was issued")
+    if isinstance(actions, PRReviewCoordinationResult):
+        actions.record_disposition(ReviewDisposition.RECONCILIATION_WAIT)
     _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.DEFERRED, {"examined_head": head_sha, "reason": reason, "review_disposition": ReviewDisposition.RECONCILIATION_WAIT.value})
     if processing_status is not None:
         processing_status.error = None
@@ -4750,6 +4980,7 @@ def _compose_actionable_feedback(
     records: Sequence[AcceptedFindingRecord],
     findings: Sequence[Any] = (),
     gaps: Sequence[Any] = (),
+    canonical_blocker_ids: Sequence[str] = (),
 ) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
     """Exact root bodies of the already-associated corrections plus any not yet rooted.
 
@@ -4761,10 +4992,11 @@ def _compose_actionable_feedback(
     bodies: List[str] = []
     covered: Set[str] = set()
     root_bodies: Dict[int, str] = {}
-    if records and github_client is not None:
+    if (records or canonical_blocker_ids) and github_client is not None:
         try:
+            reviewer_identity = resolve_reviewer_app_identity(repo_name)
             for thread in github_client.get_pr_review_threads_strict(repo_name, pr_number):
-                if not thread.is_resolved and thread.comments and thread.comments[0].database_id is not None:
+                if not thread.is_resolved and thread.comments and thread.comments[0].database_id is not None and reviewer_identity.matches_login(thread.comments[0].author_login):
                     root_bodies[int(thread.comments[0].database_id)] = thread.comments[0].body
         except Exception as exc:
             logger.warning(f"Associated review roots for PR #{pr_number} could not be read: {exc}")
@@ -4773,9 +5005,19 @@ def _compose_actionable_feedback(
         if rooted:
             bodies.extend(rooted)
             covered.update({record.source_identity, record.known_gap_id})
+    if canonical_blocker_ids:
+        snapshot = CanonicalPRBlockerLedger().get_snapshot("https://api.github.com", repo_name, pr_number, require_retained_state=True)
+        for blocker_id in canonical_blocker_ids:
+            blocker = snapshot.get_blocker(blocker_id)
+            if blocker is None or blocker not in snapshot.get_open_blockers():
+                raise RuntimeError("selected ordinary correction owner is unavailable or closed")
+            rooted = [root_bodies[root] for root in blocker.get_root_comment_ids() if root in root_bodies]
+            if not rooted:
+                raise RuntimeError("selected ordinary correction has no observable authenticated unresolved root")
+            bodies.extend(rooted)
     bodies.extend(format_adversarial_finding_comment(finding) for finding in findings if finding.finding_identity not in covered)
     bodies.extend(format_test_oracle_gap_comment(gap) for gap in gaps if gap.gap_id not in covered)
-    return tuple(dict.fromkeys(bodies)), tuple(dict.fromkeys(record.canonical_blocker_id for record in records if record.canonical_blocker_id))
+    return tuple(dict.fromkeys(bodies)), tuple(dict.fromkeys([record.canonical_blocker_id for record in records if record.canonical_blocker_id] + list(canonical_blocker_ids)))
 
 
 def _provider_activity_digest(repo_name: str, pr_data: Dict[str, Any], github_client: Any) -> Optional[str]:
@@ -4855,6 +5097,7 @@ def _derive_effective_application(
     claimed_review_threads: Sequence[Any],
     github_client: Any,
     closure: Optional[OrdinaryClosureOutcome] = None,
+    ordinary_authority: Optional[OrdinaryCorrectionEvidence] = None,
 ) -> Optional[DecisionApplication]:
     """Derive the effective decision from this attempt's parsed result and the accepted state.
 
@@ -4867,18 +5110,78 @@ def _derive_effective_application(
     projection = raw_result.accepted_finding_projection
     if projection is None or raw_result.result.strip().upper() in {"ERROR", "EXHAUSTED"}:
         return None
+    if ordinary_authority is not None:
+        projection = replace(projection, target=replace(projection.target, contract_identity=ordinary_authority.contract_identity, policy_identity=ordinary_authority.policy_identity))
     application = derive_application(raw_result, projection)
-    if closure is None or not (closure.accepted or closure.upheld):
+    if closure is None and raw_result.closure_assessment is None:
         return application
-    bridge, target = _accepted_state_inputs(repo_name, pr_data, head_sha)
+    bridge, _ = _accepted_state_inputs(repo_name, pr_data, head_sha)
+    target = projection.target
     dispositions = accepted_finding_dispositions(raw_result, claimed_review_threads, projection, head_sha)
-    if closure.upheld:
+    proposals = _ordinary_proposal_dispositions(raw_result, projection, bridge)
+    if proposals:
+        proposed_sources = {item.source_identity for item in proposals}
+        proposed_roots = {root for record in projection.records if record.source_identity in proposed_sources for root in record.root_comment_ids}
+        dispositions = [item for item in dispositions if item.source_identity not in proposed_sources and item.root_comment_id not in proposed_roots]
+        dispositions.extend(proposals)
+    elif closure is not None and closure.upheld:
         # The independent review supersedes the session's closure proposal for these findings.
         upheld_roots = {root for record in outstanding_records(projection) for root in record.root_comment_ids}
         dispositions = [item for item in dispositions if item.root_comment_id not in upheld_roots]
         dispositions.extend(OrdinaryDisposition(status="STILL_VALID", rationale="An independent ordinary closure review retained this finding.", evidence=closure.reason, head_sha=head_sha, source_identity=record.source_identity) for record in outstanding_records(projection))
     refreshed = project_accepted_findings(bridge, target, claimed_review_threads, dispositions)
     return derive_application(raw_result, refreshed)
+
+
+def _ordinary_proposal_dispositions(result: AdversarialValidationResult, projection: AcceptedFindingProjection, bridge: AcceptedFindingBridge) -> List[OrdinaryDisposition]:
+    """Keep exact per-finding proposals without converting them into accepted closure.
+
+    A complete closure assessment can describe fixed historical findings while
+    an independent ordinary violation prevents whole-cycle acceptance. Native
+    thread resolution and summary prose are never inputs to this projection.
+    """
+    assessment = result.closure_assessment
+    if assessment is None or not assessment.is_complete or assessment.mode is not ReviewMode.ORDINARY_CLOSURE or assessment.verdict not in {"PASS", "FINDINGS", "INCONCLUSIVE"}:
+        return []
+    target = projection.target
+    attempts = AdversarialValidationAttemptRepository(target.repository)
+    registered = attempts.get(result.attempt_id)
+    if registered is None or (registered.sequence, registered.pr_number, registered.head_sha) != (result.attempt_sequence, target.pr_number, target.head_sha) or attempts.latest_sequence(target.pr_number, target.head_sha) > result.attempt_sequence:
+        return []
+    snapshot = bridge.cycle.snapshot(target.pr_number)
+    strong = snapshot.accepted_strong_round
+    if strong is None or snapshot.closed or snapshot.active_claim is not None:
+        return []
+    if (assessment.repository, assessment.pr_number, assessment.head_sha, assessment.base_sha, assessment.attempt_id, assessment.attempt_sequence, assessment.open_epoch, assessment.round_id, assessment.audited_head_sha, assessment.finding_set_revision) != (
+        target.repository,
+        target.pr_number,
+        target.head_sha,
+        target.base_sha,
+        result.attempt_id,
+        result.attempt_sequence,
+        snapshot.open_epoch,
+        strong.round_id,
+        strong.head_sha,
+        snapshot.finding_set_revision,
+    ):
+        return []
+    if (assessment.contract_identity, assessment.policy_identity) != (strong.contract_identity, strong.policy_identity):
+        return []
+    if target.contract_identity and target.contract_identity != assessment.contract_identity or target.policy_identity and target.policy_identity != assessment.policy_identity:
+        return []
+    expected = {finding.finding_id for finding in snapshot.open_findings}
+    if len(assessment.dispositions) != len(expected) or {item.finding_id for item in assessment.dispositions} != expected:
+        return []
+    if any(item.status not in {"FIXED", "INVALID", "OPEN", "INCONCLUSIVE"} or not item.evidence.strip() for item in assessment.dispositions):
+        return []
+    by_finding = {record.finding_id: record for record in projection.records if record.accepted_state == "OPEN"}
+    return [
+        OrdinaryDisposition(
+            status="ADDRESSED" if item.status in {"FIXED", "INVALID"} else "STILL_VALID", rationale="The current ordinary closure assessment independently evaluated this accepted finding.", evidence=item.evidence, head_sha=target.head_sha, source_identity=by_finding[item.finding_id].source_identity
+        )
+        for item in assessment.dispositions
+        if item.finding_id in by_finding and item.status != "INCONCLUSIVE"
+    ]
 
 
 def _rederive_after_refusal(
@@ -4941,7 +5244,7 @@ def _replay_saved_nonpass_review(
         if marker and _closure_review_due(repo_name, pr_number, head_sha, projection, marker):
             return [f"The corrective request for PR #{pr_number} completed ({marker.split(':')[0]}); independently reassessing the accepted finding"], True
     retained = EffectiveDecisionStore(repo_name).load(pr_number)
-    pending_sources = set(retained.pending_closure_source_identities) if retained is not None and retained.head_sha == head_sha else set()
+    pending_sources = set(retained.pending_closure_source_identities + retained.pending_reconciliation_source_identities) if retained is not None and retained.head_sha == head_sha else set()
     pending_roots = {root for record in records if record.source_identity in pending_sources for root in record.root_comment_ids}
     records = tuple(record for record in records if record.source_identity not in pending_sources)
     bodies, blocker_ids = _compose_actionable_feedback(github_client, repo_name, pr_number, records)
@@ -4976,10 +5279,13 @@ def _replay_saved_nonpass_review(
     return result, False
 
 
-def _retain_effective_decision(repo_name: str, pr_data: Dict[str, Any], head_sha: str, application: DecisionApplication) -> None:
+def _retain_effective_decision(
+    repo_name: str, pr_data: Dict[str, Any], head_sha: str, application: DecisionApplication, closure_input: Optional[ReviewExecutionInput] = None, ordinary_evidence: Optional[OrdinaryCorrectionEvidence] = None, ordinary_authority: Optional[OrdinaryCorrectionEvidence] = None
+) -> None:
     """Durably retain the accepted decision and its outstanding work before any dependent effect."""
     base_sha = str((pr_data.get("base") or {}).get("sha") or "")
-    EffectiveDecisionStore(repo_name).retain(build_retained_record(application.decision, application.projection, head_sha, base_sha))
+    ordinary = ordinary_evidence or retain_ordinary_correction(application.ordinary_result or application.result, application.projection, closure_input, ordinary_authority)
+    EffectiveDecisionStore(repo_name).retain(build_retained_record(application.decision, application.projection, head_sha, base_sha, ordinary))
 
 
 def _approval_authority_for(
@@ -5018,6 +5324,118 @@ def _dispatch_effective_correction(
     application: Optional[DecisionApplication],
     config: AutomationConfig,
     default_feedback: Sequence[str],
+    *,
+    authority_fenced: bool = False,
+) -> Tuple[List[str], Dict[str, str]]:
+    """Reacquire producing authority and hold its fences through corrective dispatch."""
+    if application is None or authority_fenced:
+        return _dispatch_confirmed_effective_correction(github_client, repo_name, pr_data, head_sha, report, val_result, application, config, default_feedback)
+    pr_number = int(pr_data["number"])
+    try:
+        bridge, target = _accepted_state_inputs(repo_name, pr_data, head_sha)
+        attempts = AdversarialValidationAttemptRepository(repo_name)
+        with attempts.serialized_transition(), bridge.cycle.serialized_transition():
+            retained = EffectiveDecisionStore(repo_name).load(pr_number)
+            if retained is None or retained.ordinary_correction is None:
+                raise DecisionRetentionError("the effective correction has no retained producing evidence")
+            ordinary = retained.ordinary_correction
+            if (ordinary.attempt_id, ordinary.attempt_sequence) != (val_result.attempt_id, val_result.attempt_sequence) or retained.publication != PUBLICATION_CONFIRMED or attempts.latest_published_sequence(pr_number, head_sha) != ordinary.attempt_sequence:
+                raise RuntimeError("the caller's ordinary correction is superseded or its publication is unconfirmed")
+            registered = attempts.get(ordinary.attempt_id)
+            if registered is None or (registered.sequence, registered.pr_number, registered.head_sha) != (ordinary.attempt_sequence, pr_number, head_sha) or attempts.latest_sequence(pr_number, head_sha) != ordinary.attempt_sequence:
+                raise RuntimeError("the producing ordinary attempt no longer has current handoff authority")
+            current_head, current_base, current_contract, current_policy = _ordinary_target_binding(github_client, repo_name, pr_number, ordinary, config)
+            snapshot = bridge.cycle.snapshot(pr_number)
+            strong = snapshot.accepted_strong_round
+            if (
+                snapshot.closed
+                or snapshot.active_claim is not None
+                or snapshot.requires_new_strong_round
+                or (
+                    ordinary.repository,
+                    ordinary.pr_number,
+                    ordinary.head_sha,
+                    ordinary.base_sha,
+                    ordinary.contract_identity,
+                    ordinary.policy_identity,
+                    ordinary.open_epoch,
+                    ordinary.strong_round_id,
+                    ordinary.audited_head_sha,
+                    ordinary.finding_set_revision,
+                )
+                != (
+                    repo_name,
+                    pr_number,
+                    current_head,
+                    current_base,
+                    current_contract,
+                    current_policy,
+                    snapshot.open_epoch,
+                    strong.round_id if strong is not None else "",
+                    strong.head_sha if strong is not None else "",
+                    snapshot.finding_set_revision,
+                )
+            ):
+                raise RuntimeError("the target, contract or accepted finding set changed before corrective handoff")
+            target = replace(target, contract_identity=ordinary.contract_identity, policy_identity=ordinary.policy_identity)
+            state = _get_claimed_review_thread_state(github_client, repo_name, pr_number, config=config)
+            if state.lookup_error:
+                raise RuntimeError(state.lookup_error)
+            threads = _authentic_root_threads(repo_name, state)
+            projection = project_accepted_findings(bridge, target, threads)
+            if ordinary.accepted_sources != tuple(sorted(item.source_identity for item in projection.records)):
+                raise RuntimeError("the accepted-source set changed before corrective handoff")
+            raw = ordinary.restore()
+            raw.accepted_finding_projection = project_accepted_findings(bridge, target, threads, accepted_finding_dispositions(raw, threads, projection, head_sha))
+            current = _derive_effective_application(repo_name, pr_data, head_sha, raw, threads, github_client, ordinary_authority=ordinary)
+            if current is None or current.decision.next_action not in {EffectiveNextAction.IMPLEMENTATION_REPAIR, EffectiveNextAction.FOCUSED_TEST_REPAIR}:
+                raise RuntimeError("the current accepted evidence no longer authorizes this corrective handoff")
+            return _dispatch_confirmed_effective_correction(github_client, repo_name, pr_data, head_sha, report, current.result, current, config, default_feedback)
+    except Exception as exc:
+        return _correction_dispatch_wait(pr_number, exc)
+
+
+def _correction_dispatch_wait(pr_number: int, error: Exception) -> Tuple[List[str], Dict[str, str]]:
+    """Retain the distinction between unavailable authority and a failed durable write."""
+    waiting = CloudReviewRepairResult([f"Corrective handoff for PR #{pr_number} is waiting for current retained authority: {error}"], deferred=True, wait_reason=WAIT_ASSOCIATION_EVIDENCE)
+    return waiting, {
+        "review_disposition": (ReviewDisposition.OPERATIONAL_FAILURE if isinstance(error, DecisionRetentionError) else ReviewDisposition.RECONCILIATION_WAIT).value,
+        "handoff": HANDOFF_WAITING,
+        "wait_reason": WAIT_ASSOCIATION_EVIDENCE,
+        "blocker_ids": "",
+    }
+
+
+def _legacy_ordinary_observation_owners(github_client: Any, repo_name: str, pr_number: int, snapshot: BlockerLedgerSnapshot, result: AdversarialValidationResult, records: Sequence[AcceptedFindingRecord]) -> Tuple[str, ...]:
+    """Recover pre-alias publication only through exact authenticated roots or source identities."""
+    observations = [(format_adversarial_finding_comment(finding), {finding.finding_identity, finding.correction_identity}) for finding in result.findings]
+    observations.extend((format_test_oracle_gap_comment(gap), {gap.gap_id, gap.correction_identity}) for gap in result.open_test_oracle_gaps)
+    if any(identity.startswith("canonical:") for _body, identities in observations for identity in identities):
+        raise RuntimeError("canonical references require their accepted causal observation mapping")
+    identity = resolve_reviewer_app_identity(repo_name)
+    roots = tuple(thread.comments[0] for thread in github_client.get_pr_review_threads_strict(repo_name, pr_number) if not thread.is_resolved and thread.comments and identity.matches_login(thread.comments[0].author_login))
+    owners: Set[str] = set()
+    for body, identities in observations:
+        known = {record.canonical_blocker_id for record in records if (identities - {""}).intersection((record.source_identity, record.known_gap_id))}
+        if not known:
+            exact_roots = {root.database_id for root in roots if _adversarial_feedback_matches_request(root.body, {body})}
+            known = {blocker.blocker_id for blocker in snapshot.get_open_blockers() if exact_roots.intersection(blocker.get_root_comment_ids())}
+        if len(known) != 1:
+            raise RuntimeError("legacy ordinary observation has no unique authenticated canonical root")
+        owners.update(known)
+    return tuple(sorted(owners))
+
+
+def _dispatch_confirmed_effective_correction(
+    github_client: Any,
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    head_sha: str,
+    report: str,
+    val_result: AdversarialValidationResult,
+    application: Optional[DecisionApplication],
+    config: AutomationConfig,
+    default_feedback: Sequence[str],
 ) -> Tuple[List[str], Dict[str, str]]:
     """Advance a published nonapproving decision to the originating route's corrective handoff.
 
@@ -5028,10 +5446,33 @@ def _dispatch_effective_correction(
     pr_number = int(pr_data["number"])
     blocker_ids: Tuple[str, ...] = ()
     feedback: Sequence[str] = default_feedback
-    if application is not None and application.decision.corrections:
-        by_source = {record.source_identity: record for record in application.projection.records}
-        records = tuple(by_source[item.source_identity] for item in application.decision.corrections if item.source_identity in by_source)
-        feedback, blocker_ids = _compose_actionable_feedback(github_client, repo_name, pr_number, records, val_result.findings, val_result.open_test_oracle_gaps)
+    if application is not None:
+        from .pr_finding_reconciliation import UnrecordedOrdinaryObservationError, ordinary_observation_owners
+
+        try:
+            by_source = {record.source_identity: record for record in application.projection.records}
+            records = tuple(by_source[item.source_identity] for item in application.decision.corrections if item.source_identity in by_source)
+            snapshot = CanonicalPRBlockerLedger().get_snapshot("https://api.github.com", repo_name, pr_number, require_retained_state=True)
+            context = val_result.correction_reference_context
+            try:
+                ordinary_ids = ordinary_observation_owners(snapshot, repo_name, pr_number, head_sha, context.base_sha if context is not None else "", val_result)
+            except UnrecordedOrdinaryObservationError:
+                ordinary_ids = _legacy_ordinary_observation_owners(github_client, repo_name, pr_number, snapshot, val_result, records)
+            feedback, blocker_ids = _compose_actionable_feedback(github_client, repo_name, pr_number, records, val_result.findings, val_result.open_test_oracle_gaps, ordinary_ids)
+            store = EffectiveDecisionStore(repo_name)
+            retained = store.load(pr_number)
+            if retained is None:
+                raise DecisionRetentionError("the effective correction has no retained producing decision")
+            if retained.handoff == HANDOFF_DISPATCHED and set(retained.blocker_ids) == set(blocker_ids):
+                return CloudReviewRepairResult([f"The current corrective generation for PR #{pr_number} was already delivered; no duplicate request was sent"], delivered=True), {
+                    "review_disposition": ReviewDisposition.CORRECTIVE_HANDOFF.value,
+                    "handoff": HANDOFF_DISPATCHED,
+                    "wait_reason": "",
+                    "blocker_ids": ",".join(blocker_ids),
+                }
+            store.update(pr_number, blocker_ids=sorted(blocker_ids), handoff=retained.handoff if set(retained.blocker_ids) == set(blocker_ids) else HANDOFF_PENDING)
+        except Exception as exc:
+            return _correction_dispatch_wait(pr_number, exc)
     result = _send_adversarial_validation_feedback_to_cloud_task(repo_name, pr_data, head_sha, report, github_client, feedback, config=config, canonical_blocker_ids=blocker_ids)
     handoff, wait_reason = _record_handoff_state(repo_name, pr_data, github_client, result)
     facts = {
@@ -5227,7 +5668,7 @@ def _coordinate_pr_review(
                         # outstanding publication/thread effects below; its accepted finding is
                         # closed, so no repair is replayed or requested for it.
                         gate_retained_resume = _gate_resumption is not None and _gate_resumption.ordinary_pass_retained and current_status != "PASS"
-                        gate_assessment = _assess_saved_review_state(repo_name, pr_data, head_sha_for_gate, current_status, _authentic_root_threads(repo_name, claimed_thread_state), force_adversarial_validation, github_client)
+                        gate_assessment = _assess_saved_review_state(repo_name, pr_data, head_sha_for_gate, current_status, _authentic_root_threads(repo_name, claimed_thread_state), force_adversarial_validation, github_client, config)
                         if gate_assessment.action == SAVED_REVIEW_WAIT:
                             _record_review_wait(repo_name, pr_number, head_sha_for_gate, actions, processing_status, gate_assessment.reason)
                             return actions
@@ -5529,10 +5970,18 @@ def _coordinate_pr_review(
             if not publication_recovery.success:
                 reason = publication_recovery.reason or "review-root association remains incomplete"
                 actions.append(f"Adversarial review publication incomplete for PR #{pr_number}: {reason}")
-                _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.FAILED, {"examined_head": head_sha, "reason": reason, "phase": "publication-recovery"})
+                pending_receipt = publication_recovery.pending_receipt
+                actions.record_disposition(ReviewDisposition.CORRECTION_WAITING if pending_receipt else ReviewDisposition.OPERATIONAL_FAILURE)
+                _record_pr_stage(
+                    pr_number,
+                    "pr.adversarial-validation",
+                    f"pr#{pr_number} adversarial validation",
+                    Outcome.DEFERRED if pending_receipt else Outcome.FAILED,
+                    {"examined_head": head_sha, "reason": reason, "phase": "publication-recovery", "review_disposition": actions.disposition.value, "wait_reason": WAIT_INDETERMINATE if pending_receipt else ""},
+                )
                 if processing_status is not None:
-                    processing_status.error = reason
-                    processing_status.outcome = PRProcessingOutcome.FAILED
+                    processing_status.error = None if pending_receipt else reason
+                    processing_status.outcome = PRProcessingOutcome.DEFERRED if pending_receipt else PRProcessingOutcome.FAILED
                 return actions
 
             published_status, lookup_error = _get_published_adversarial_validation_status(
@@ -5601,7 +6050,7 @@ def _coordinate_pr_review(
             # state is re-acquired: a saved PASS is not clearance while an
             # accepted correction is open, retained reconciliation resumes on
             # new evidence, and unchanged evidence waits without repeating work.
-            reuse_assessment = _assess_saved_review_state(repo_name, pr_data, head_sha, published_status, claimed_review_threads, force_adversarial_validation, github_client)
+            reuse_assessment = _assess_saved_review_state(repo_name, pr_data, head_sha, published_status, claimed_review_threads, force_adversarial_validation, github_client, config)
             if reuse_assessment.action == SAVED_REVIEW_WAIT:
                 _record_review_wait(repo_name, pr_number, head_sha, actions, processing_status, reuse_assessment.reason)
                 return actions
@@ -5707,6 +6156,20 @@ def _coordinate_pr_review(
                 if retained_reuse is not None and attempt_repository.latest_sequence(pr_number, head_sha) != retained_reuse.attempt_sequence:
                     retained_reuse = None  # a newer attempt exists: its own verdict governs, never the older retained result
                 # Reusing the retained result consumes its existing attempt; no new attempt is registered.
+                if retained_reuse is None and reuse_assessment.recovery_key:
+                    try:
+                        recovery_admitted = EffectiveDecisionStore(repo_name).spend_reconciliation(pr_number, reuse_assessment.recovery_key, head_sha, str((pr_data.get("base") or {}).get("sha") or ""))
+                    except DecisionRetentionError as exc:
+                        actions.record_disposition(ReviewDisposition.OPERATIONAL_FAILURE)
+                        actions.append(f"Legacy ordinary recovery for PR #{pr_number} could not be retained: {exc}; no reviewer was invoked")
+                        _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.FAILED, {"examined_head": head_sha, "reason": str(exc), "review_disposition": ReviewDisposition.OPERATIONAL_FAILURE.value})
+                        if processing_status is not None:
+                            processing_status.error = str(exc)
+                            processing_status.outcome = PRProcessingOutcome.FAILED
+                        return actions
+                    if not recovery_admitted:
+                        _record_review_wait(repo_name, pr_number, head_sha, actions, processing_status, "the versioned legacy recovery has already been admitted")
+                        return actions
                 attempt = AdversarialValidationAttempt(retained_reuse.attempt_id, retained_reuse.attempt_sequence) if retained_reuse is not None else attempt_repository.start(pr_number, head_sha)
                 runtime.active_attempt_id = attempt.attempt_id
                 runtime.decision_attempt_repository = attempt_repository
@@ -5722,6 +6185,7 @@ def _coordinate_pr_review(
                 closure_input: Optional[ReviewExecutionInput] = None
                 closure_inputs: Optional[TwoTierGateInputs] = None
                 closure_gate: Optional[TwoTierPrGate] = None
+                ordinary_authority: Optional[OrdinaryCorrectionEvidence] = None
                 try:
                     if retained_reuse is not None:
                         # The accepted closure's own ordinary result is consumed without a reviewer.
@@ -5755,6 +6219,7 @@ def _coordinate_pr_review(
                                     closure_inputs = _two_tier_gate_inputs(github_client, repo_name, pr_data)
                                     if closure_inputs is not None:
                                         closure_gate = closure_inputs.gate
+                                        ordinary_authority = _capture_ordinary_correction_authority(repo_name, pr_number, closure_inputs, attempt)
                                         closure_capture = _capture_ordinary_closure_input(repo_name, pr_number, closure_inputs, attempt, validation_worktree)
                                         closure_input = closure_capture.review_input
                                         if closure_input is not None:
@@ -5835,6 +6300,7 @@ def _coordinate_pr_review(
                         claimed_review_threads,
                         github_client,
                         closure_outcome,
+                        ordinary_authority,
                     )
                 except Exception as e:
                     logger.error(f"Effective review decision for PR #{pr_number} could not be derived: {e}")
@@ -5917,7 +6383,7 @@ def _coordinate_pr_review(
                             effective_application = None  # an unconfirmed checkpoint write must not be overwritten by the precomputed decision
                     if effective_application is not None:
                         try:
-                            _retain_effective_decision(repo_name, pr_data, head_sha, effective_application)
+                            _retain_effective_decision(repo_name, pr_data, head_sha, effective_application, closure_input=closure_input, ordinary_authority=ordinary_authority)
                         except DecisionRetentionError as exc:
                             actions.record_disposition(ReviewDisposition.OPERATIONAL_FAILURE)
                             actions.append(f"Effective review decision for PR #{pr_number} could not be retained: {exc}; no dependent review effect was emitted")
@@ -6044,7 +6510,7 @@ def _coordinate_pr_review(
                             return actions
                         replacement, claimed_review_threads = rederived
                         try:
-                            _retain_effective_decision(repo_name, pr_data, head_sha, replacement)
+                            _retain_effective_decision(repo_name, pr_data, head_sha, replacement, closure_input=closure_input, ordinary_authority=ordinary_authority)
                         except DecisionRetentionError as exc:
                             actions.append(f"Replacement review decision for PR #{pr_number} could not be retained: {exc}; no dependent review effect was emitted")
                             record_effect(review_target, active_review_id, "failed", {"phase": "decision-retention", "reason": str(exc)})
@@ -9107,7 +9573,7 @@ def _delegate_cloud_review_thread_repair(
                     if not thread.is_resolved and thread.comments:
                         root_body = thread.comments[0].body
                         gap_id = extract_test_oracle_gap_id(root_body)
-                        current_feedback = next((body for body in validated_feedback if body == root_body or (gap_id and extract_test_oracle_gap_id(body) == gap_id)), None)
+                        current_feedback = next((body for body in validated_feedback if _adversarial_feedback_matches_request(root_body, {body}) or (gap_id and extract_test_oracle_gap_id(body) == gap_id)), None)
                         if current_feedback is None:
                             continue
                         # Independent validation overrides an implementer's addressed
@@ -9140,7 +9606,7 @@ def _delegate_cloud_review_thread_repair(
                 for thread in unresolved_threads:
                     for index, comment in enumerate(thread.comments):
                         identity = _review_feedback_identity(f"{repo_name}#{pr_number}:local:", thread, index)
-                        if identity in selected_identities:
+                        if not canonical_blocker_ids and identity in selected_identities:
                             external_ids.update(retain_external_review_feedback(ledger, repo_name, pr_number, thread, comment, target.head_sha))
             except Exception as exc:
                 return CloudReviewRepairResult([f"Local review repair was not admitted for PR #{pr_number}: external feedback identity is unavailable: {exc}"], route_disposition="LOCAL_REQUIRED")
@@ -10089,6 +10555,20 @@ def _send_adversarial_validation_feedback_to_cloud_task(
 
     if not new_work_allowed():
         return [f"Deferred adversarial correction feedback for PR #{pr_number}: graceful shutdown is draining"]
+    canonical_roots: Optional[Set[int]] = None
+    canonical_owner_roots: Dict[str, Set[int]] = {}
+    if canonical_blocker_ids:
+        try:
+            selected_snapshot = CanonicalPRBlockerLedger().get_snapshot("https://api.github.com", repo_name, pr_number, require_retained_state=True)
+            selected_blockers = [selected_snapshot.get_blocker(blocker_id) for blocker_id in canonical_blocker_ids]
+            if any(blocker is None or blocker not in selected_snapshot.get_open_blockers() for blocker in selected_blockers):
+                raise RuntimeError("a selected canonical correction is unavailable or closed")
+            canonical_owner_roots = {blocker.blocker_id: set(blocker.get_root_comment_ids()) for blocker in selected_blockers if blocker is not None}
+            canonical_roots = {root for roots in canonical_owner_roots.values() for root in roots}
+            if any(not roots for roots in canonical_owner_roots.values()):
+                raise RuntimeError("selected canonical corrections have no authenticated roots")
+        except Exception as exc:
+            return CloudReviewRepairResult([f"Corrective feedback for PR #{pr_number} is waiting for canonical root authority: {exc}"], deferred=True, wait_reason=WAIT_ASSOCIATION_EVIDENCE)
     route = _select_review_repair_route(repo_name, pr_data, github_client)
     if route.disposition is not ReviewRepairRouteDisposition.CLOUD:
         if route.disposition is not ReviewRepairRouteDisposition.LOCAL_REQUIRED:
@@ -10097,15 +10577,24 @@ def _send_adversarial_validation_feedback_to_cloud_task(
             return CloudReviewRepairResult([f"Cannot identify actionable adversarial feedback for PR #{pr_number}; GitHub client is unavailable"], route_disposition="UNAVAILABLE")
         try:
             review_threads = github_client.get_pr_review_threads_strict(repo_name, pr_number)
+            if canonical_roots is not None:
+                review_threads = [thread for thread in review_threads if not thread.is_resolved and thread.comments and thread.comments[0].database_id in canonical_roots and _adversarial_feedback_matches_request(thread.comments[0].body, set(actionable_feedback))]
+                observed_roots = {thread.comments[0].database_id for thread in review_threads}
+                if any(not observed_roots.intersection(roots) for roots in canonical_owner_roots.values()):
+                    return CloudReviewRepairResult([f"Corrective feedback for PR #{pr_number} is waiting for all selected canonical roots to be observable and actionable"], deferred=True, route_disposition="LOCAL_REQUIRED", wait_reason=WAIT_ASSOCIATION_EVIDENCE)
         except Exception as exc:
             return CloudReviewRepairResult([f"Cannot identify actionable adversarial feedback for PR #{pr_number}: {exc}"], route_disposition="UNAVAILABLE")
         # Freshly rendered findings can differ from their retained native roots.
         # Exact report dispositions still authorize those original identities.
-        requested_feedback = tuple(
-            dict.fromkeys(
-                (
-                    *actionable_feedback,
-                    *(thread.comments[0].body for thread in review_threads if not thread.is_resolved and thread.comments and thread.comments[0].body.startswith(_ADVERSARIAL_THREAD_HEADINGS) and _adversarial_feedback_belongs_to_report(thread.comments[0].body, validation_report, thread.id)),
+        requested_feedback = (
+            tuple(actionable_feedback)
+            if canonical_blocker_ids
+            else tuple(
+                dict.fromkeys(
+                    (
+                        *actionable_feedback,
+                        *(thread.comments[0].body for thread in review_threads if not thread.is_resolved and thread.comments and thread.comments[0].body.startswith(_ADVERSARIAL_THREAD_HEADINGS) and _adversarial_feedback_belongs_to_report(thread.comments[0].body, validation_report, thread.id)),
+                    )
                 )
             )
         )
@@ -10150,13 +10639,18 @@ def _send_adversarial_validation_feedback_to_cloud_task(
         for thread in review_threads
         if not thread.is_resolved
         and thread.comments
+        and (canonical_roots is None or thread.comments[0].database_id in canonical_roots)
         and thread.comments[0].body.startswith(_ADVERSARIAL_THREAD_HEADINGS)
         and (
-            _adversarial_feedback_matches_request(thread.comments[0].body, requested_bodies) or (f"#### `{thread.id}`:" in source_validation_report and _adversarial_feedback_belongs_to_report(thread.comments[0].body, source_validation_report, thread.id))
+            _adversarial_feedback_matches_request(thread.comments[0].body, requested_bodies) or (not canonical_blocker_ids and f"#### `{thread.id}`:" in source_validation_report and _adversarial_feedback_belongs_to_report(thread.comments[0].body, source_validation_report, thread.id))
             if requested_bodies
             else _adversarial_feedback_belongs_to_report(thread.comments[0].body, source_validation_report, thread.id)
         )
     ]
+    if canonical_roots is not None:
+        observed_roots = {thread.comments[0].database_id for thread in matching_threads}
+        if any(not observed_roots.intersection(roots) for roots in canonical_owner_roots.values()):
+            return CloudReviewRepairResult([f"Corrective feedback for PR #{pr_number} is waiting for all selected canonical roots to be observable and actionable"], deferred=True, wait_reason=WAIT_ASSOCIATION_EVIDENCE)
     feedback_bodies = [(thread.comments[0].body, _review_feedback_identity(prefix, thread, 0)) for thread in matching_threads]
     if not feedback_bodies:
         return [f"Cannot identify actionable adversarial feedback for PR #{pr_number}; delivery was not attempted"]
@@ -10267,8 +10761,15 @@ def _send_adversarial_validation_feedback_to_cloud_task(
             pass
 
         matched_bids: Set[str] = set()
-        if snapshot is not None:
-            matched_bids.update(str(bid) for bid in canonical_blocker_ids if snapshot.get_blocker(str(bid)))
+        if canonical_blocker_ids:
+            if snapshot is None or any(snapshot.get_blocker(str(bid)) not in snapshot.get_open_blockers() for bid in canonical_blocker_ids):
+                return [f"Deferred adversarial correction feedback for PR #{pr_number}: selected canonical correction authority is unavailable"]
+            pending_identities = {finding_identity for _body, finding_identity, _generation_identity in pending_feedback}
+            pending_roots = {thread.comments[0].database_id for thread in matching_threads if _review_feedback_identity(prefix, thread, 0) in pending_identities}
+            matched_bids.update(str(bid) for bid in canonical_blocker_ids if (blocker := snapshot.get_blocker(str(bid))) is not None and pending_roots.intersection(blocker.get_root_comment_ids()))
+            if not matched_bids:
+                return [f"Deferred adversarial correction feedback for PR #{pr_number}: selected canonical corrections have no matching authenticated roots"]
+        elif snapshot is not None:
             for body, _fid, _gid in pending_feedback:
                 m = _BLOCKER_ID_RE.search(body)
                 if m and snapshot.get_blocker(m.group(1) or m.group(2)):

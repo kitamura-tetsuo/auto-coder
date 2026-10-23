@@ -17,12 +17,33 @@ to actionable feedback; pending closure remains unverified and cannot appear as
 approval or merge completion. Unchanged closure evidence waits without adding
 another ordinary reviewer invocation to history.
 
+This also applies when an older native thread is resolved while its Strong
+lifecycle obligation remains OPEN and has no current adjudication. Pending
+historical reconciliation is retained separately from actionable correction
+identities. A complete closure proposal can remain pending alongside the repair;
+a missing or malformed closure assessment does not erase the independently
+retained ordinary correction. None of these states implies accepted closure.
+Repeated unchanged processing and reconstructed processing reuse that evidence
+without adding reviewer or provider effects. Publication receipts and identical
+observation bookkeeping do not create new review eligibility; genuine applicable
+authority or target changes retain their normal next action.
+
 Recovery of a previously published BLOCKED decision records reuse of its
 producing ordinary attempt. The repair-delegation event carries
 `effect=adversarial-feedback-replay`, `source_attempt_sequence` and
 `additional_model_execution=false`; confirmed delivery shows corrective
 handoff, while unsuccessful delivery remains a correction wait. Recovery does
 not create a new ordinary review or mark the pending closures complete.
+
+A legacy record with no authoritative ordinary payload gets at most one
+versioned recovery admission for the same semantic authority binding. That new
+review appears as an executed ordinary attempt, while subsequent recovery uses
+retained evidence. Unavailable-route, quota, allowance and indeterminate-delivery
+outcomes remain correction waits; durable-write failure remains operational
+failure. The existing review-disposition fields and generic history renderer
+continue to distinguish each from verified review and merge completion. Runnable
+coordinator, interruption and receipt tests are listed in
+`docs/dashboard-observability.md`.
 
 A canonical correction verified before its Strong lifecycle closes remains a
 reconciliation wait. Its recovery uses the existing ordinary-review and

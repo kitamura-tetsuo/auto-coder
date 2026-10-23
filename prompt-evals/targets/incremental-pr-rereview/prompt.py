@@ -58,6 +58,7 @@ def render(context):
         "claimed_review_threads": variables["review_demand"],
         "prior_test_oracle_gaps": json.dumps([gap], indent=2, sort_keys=True),
         "accepted_strong_findings": "(No accepted Strong audit findings are recorded for this PR.)",
+        "correction_references": "null",
         "ordinary_requirement_ids": '["REQ-001"]',
         "ci_execution_evidence": "Current-head focused tests passed; semantic judgment remains independent.",
         "adjacent_exploration_budget": "0",

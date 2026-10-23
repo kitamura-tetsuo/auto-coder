@@ -53,6 +53,19 @@ Review observations are reconciled against existing blockers via an explicit rec
 - Unresolved association ambiguities are exposed as explicit errors rather than arbitrarily picking a match or discarding an obligation.
 - Authenticated GitHub root/thread IDs, model identities, and test-oracle gap IDs are retained as provenance-bearing aliases rather than semantic authorities. A single historical root comment containing multiple distinct defects may own multiple blocker references, and resolving one blocker does not imply resolution of the others or the thread.
 
+Ordinary review reconciliation also retains `ordinary_observation` aliases for
+exact causal replay and `ordinary_observation_label` aliases for labels that the
+controller has already associated with an owner. The labels are displayed in later
+review contexts; they do not themselves authorize a new association. A
+controller-supplied `canonical:blk_...` reference, with invocation context and
+immutable scope fingerprints, preserves identity across wording changes without
+depending on advisory lexical matching. Association appends observation
+evidence while preserving the accepted scope and original corrective outcome.
+An implementation correction represented as a missing regression test keeps the
+same implementation owner, so presentation cannot create another repair allowance.
+Existing duplicate owners are never deleted, merged, closed or budget-reset by
+this mapping.
+
 ## Concurrency, Idempotency, and Durability Guarantees
 
 State transitions are durable and use optimistic locking:

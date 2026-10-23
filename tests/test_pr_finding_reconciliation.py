@@ -49,9 +49,11 @@ from auto_coder.pr_finding_reconciliation import (
     HistoricalCorrection,
     HistoricalRootParseResult,
     ObservationCandidate,
+    UnrecordedOrdinaryObservationError,
     advisory_semantic_match,
     extract_observation_candidate_from_finding,
     extract_observation_candidate_from_gap,
+    ordinary_observation_owners,
     parse_historical_pr_review_roots,
     reconcile_pr_findings_before_publication,
     scopes_describe_same_blocker,
@@ -1047,6 +1049,39 @@ def test_ambiguous_match_splits_without_discarding_existing_owners(ledger: Canon
     assert repeated.snapshot is not None
     assert len(repeated.snapshot.blockers) == 3
 
+    from auto_coder.ordinary_correction_references import build_correction_reference_context
+
+    reference_context = build_correction_reference_context(repeated.snapshot, "head-4", "base-0")
+    reference = next(item for item in reference_context.references if item.blocker_id == split_id)
+    restatement = AdversarialValidationFinding(
+        requirement_ids=list(reference.requirement_ids),
+        anchor_path=reference.authoritative_boundary,
+        actual_behavior="Configuration absence reaches an unchecked dereference.",
+        required_behavior="Safely handle the absent object before it is read.",
+        finding_identity="restated-split",
+        correction_identity=reference.correction_identity,
+        correction_scope_fingerprint=reference.scope_fingerprint,
+        correction_context_fingerprint=reference_context.fingerprint,
+    )
+    restored = reconcile_pr_findings_before_publication(
+        CanonicalPRBlockerLedger(db_path=db_path),
+        API_ORIGIN,
+        REPO,
+        PR_NUMBER,
+        2137,
+        "head-4",
+        "base-0",
+        AdversarialValidationResult(result="NEEDS_FIX", findings=[restatement], correction_reference_context=reference_context),
+        HistoricalRootParseResult(),
+        attempt_id="att-4",
+    )
+    assert not restored.is_ambiguous
+    assert restored.blocker_for_finding == ((0, split_id),)
+    assert len(restored.snapshot.blockers) == 3
+    for retained_id in (b1_id, b2_id, split_id):
+        assert restored.snapshot.get_blocker(retained_id).accepted_scope == repeated.snapshot.get_blocker(retained_id).accepted_scope
+        assert restored.snapshot.get_blocker(retained_id).disposition == BlockerDisposition.OPEN
+
 
 @pytest.mark.parametrize("matches_existing", [False, True])
 def test_historical_multi_owner_root_splits_and_replays(db_path: Path, matches_existing: bool) -> None:
@@ -1748,3 +1783,459 @@ def test_strong_regression_root_category_uses_declared_oracle_fields(gap_fields:
     assert len(parsed.corrections) == 1
     assert parsed.corrections[0].category == ("TEST_ORACLE" if gap_fields else "IMPLEMENTATION")
     assert parsed.corrections[0].authoritative_boundary == "replacement clone"
+
+
+def _incident_observations() -> dict[str, object]:
+    return json.loads((Path(__file__).parent / "fixtures/review_reconciliation/outliner_5746_join_on.json").read_text())
+
+
+def _incident_finding(observation: dict[str, object]) -> AdversarialValidationFinding:
+    return AdversarialValidationFinding(
+        requirement_id="#5729/REQ-004",
+        finding_identity="join-on-child-binding",
+        correction_identity="rewrite-child-before-join-alias",
+        anchor_path="client/src/services/yjstable/tableSqlRewrite.ts",
+        anchor_line=1,
+        actual_behavior=str(observation["actual_behavior"]),
+        required_behavior=str(observation["required_behavior"]),
+        evidence=str(observation["evidence"]),
+        counterexample="The renamed JOIN child cannot bind ON tasks.id.",
+        reachability="Object Manager duplicateSelectedObjects -> rewriteTableQuerySql",
+        violated_requirement="Preserve bindings to mapped physical relations.",
+    )
+
+
+def _reference_result(ledger: CanonicalPRBlockerLedger, finding: AdversarialValidationFinding, blocker_id: str, *, head: str = "head", base: str = "base") -> AdversarialValidationResult:
+    from auto_coder.ordinary_correction_references import build_correction_reference_context
+
+    snapshot = ledger.get_snapshot(API_ORIGIN, REPO, PR_NUMBER)
+    context = build_correction_reference_context(snapshot, head, base)
+    reference = next(item for item in context.references if item.blocker_id == blocker_id)
+    finding.correction_identity = reference.correction_identity
+    finding.correction_scope_fingerprint = reference.scope_fingerprint
+    finding.correction_context_fingerprint = context.fingerprint
+    return AdversarialValidationResult(result="NEEDS_FIX", findings=[finding], correction_reference_context=context)
+
+
+def _admit_incident(ledger: CanonicalPRBlockerLedger) -> tuple[str, AdversarialValidationFinding]:
+    first = _incident_finding(_incident_observations()["observations"][0])
+    result = reconcile_pr_findings_before_publication(ledger, API_ORIGIN, REPO, PR_NUMBER, 5729, "head", "base", AdversarialValidationResult(result="NEEDS_FIX", findings=[first]), HistoricalRootParseResult(), attempt_id="first")
+    assert not result.is_ambiguous
+    return result.blocker_for_finding[0][1], first
+
+
+def test_incident_nine_canonical_restatements_keep_one_published_root_after_reload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
+    """The actual nine descriptions route to one supplied immutable correction."""
+    from auto_coder.ordinary_closure_evidence import deserialize_ordinary_result, serialize_ordinary_result
+
+    class IncidentClient(RecordingClient):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.reviews: dict[int, dict[str, object]] = {}
+            self.roots: list[dict[str, object]] = []
+
+        def request(self, method: str, url: str, **kwargs: object) -> httpx.Response:
+            self.requests.append(httpx.Request(method, url, **kwargs))
+            if url.endswith("/installation"):
+                return resp(200, {"id": 1})
+            if url.endswith("/access_tokens"):
+                return resp(201, {"token": "fake-token", "expires_at": "2099-01-01T00:00:00Z"})
+            if url.endswith(f"/pulls/{PR_NUMBER}"):
+                return resp(200, {"head": {"sha": "head"}})
+            if f"/pulls/{PR_NUMBER}/comments?" in url:
+                return resp(200, self.roots)
+            if "/files?" in url:
+                return resp(200, [{"filename": "client/src/services/yjstable/tableSqlRewrite.ts", "patch": "@@ -1 +1 @@\n-old\n+new"}])
+            if method == "POST" and url.endswith("/reviews"):
+                payload = kwargs["json"]
+                assert isinstance(payload, dict)
+                review_id = len(self.reviews) + 1
+                self.reviews[review_id] = dict(payload, id=review_id, state="CHANGES_REQUESTED", user={"login": "auto-coder-reviewer[bot]"})
+                self.roots.extend(dict(comment, id=700 + len(self.roots), pull_request_review_id=review_id, user={"login": "auto-coder-reviewer[bot]"}) for comment in payload.get("comments", []))
+                return resp(200, {"id": review_id})
+            if "/reviews/" in url:
+                suffix = url.split("/reviews/", 1)[1]
+                review_id = int(suffix.split("/", 1)[0])
+                if "/comments?" in suffix:
+                    return resp(200, [root for root in self.roots if root["pull_request_review_id"] == review_id])
+                return resp(200, self.reviews[review_id])
+            raise AssertionError(f"Unexpected request {method} {url}")
+
+    fixture = _incident_observations()
+    observations = fixture["observations"]
+    assert len(observations) == 9
+    assert len({item["actual_behavior"] for item in observations}) == 9
+    client = IncidentClient()
+    owner = ""
+    original_scope = None
+    original_outcome = ""
+    for index, observation in enumerate(observations):
+        ledger = CanonicalPRBlockerLedger(db_path=db_path)
+        finding = _incident_finding(observation)
+        result = _reference_result(ledger, finding, owner) if owner else AdversarialValidationResult(result="NEEDS_FIX", findings=[finding])
+        result.attempt_id = f"incident-{index}"
+        result = deserialize_ordinary_result(serialize_ordinary_result(result))
+        reviewer = make_reviewer(tmp_path, client, monkeypatch, ledger)
+        publication = reviewer.publish(REPO, PR_NUMBER, "head", result, operation_id=f"incident-publication-{index}")
+        assert publication.success, publication.reason
+        snapshot = ledger.get_snapshot(API_ORIGIN, REPO, PR_NUMBER)
+        assert len(snapshot.blockers) == 1
+        blocker = snapshot.blockers[0]
+        if index == 0:
+            owner, original_scope, original_outcome = blocker.blocker_id, blocker.accepted_scope, blocker.required_correction_outcome
+        assert blocker.blocker_id == owner
+        assert blocker.accepted_scope == original_scope
+        assert blocker.required_correction_outcome == original_outcome
+        assert blocker.disposition == BlockerDisposition.OPEN
+        assert blocker.get_root_comment_ids() == (700,)
+        assert ordinary_observation_owners(snapshot, REPO, PR_NUMBER, "head", "base" if result.correction_reference_context else "", result) == (owner,)
+        assert len(client.roots) == 1
+    assert len(client.reviews) == 9
+    assert len(snapshot.blockers[0].reconciliations) == 8
+    assert str(observations[-1]["evidence"]) in snapshot.blockers[0].transitions[-1].evidence
+
+
+@pytest.mark.parametrize("mismatch", ["unknown", "scope", "context", "requirements", "boundary", "pr", "head", "base"])
+def test_explicit_correction_reference_mismatch_never_creates_owner(ledger: CanonicalPRBlockerLedger, mismatch: str) -> None:
+    from dataclasses import replace
+
+    owner, finding = _admit_incident(ledger)
+    result = _reference_result(ledger, finding, owner)
+    if mismatch == "unknown":
+        finding.correction_identity = "canonical:blk_unknown"
+    elif mismatch == "scope":
+        finding.correction_scope_fingerprint = "changed-scope"
+    elif mismatch == "context":
+        finding.correction_context_fingerprint = "another-invocation"
+    elif mismatch == "requirements":
+        finding.requirement_id = "#9999/REQ-004"
+    elif mismatch == "boundary":
+        finding.anchor_path = "client/src/another-owner.ts"
+    else:
+        change = {"pr": {"pr_number": PR_NUMBER + 1}, "head": {"head_sha": "other-head"}, "base": {"base_sha": "other-base"}}[mismatch]
+        result.correction_reference_context = replace(result.correction_reference_context, **change)
+        finding.correction_context_fingerprint = result.correction_reference_context.fingerprint
+    before = ledger.get_snapshot(API_ORIGIN, REPO, PR_NUMBER)
+    with pytest.raises(AssociationAmbiguityError) as exc:
+        ordinary_observation_owners(before, REPO, PR_NUMBER, "head", "base", result)
+    assert not isinstance(exc.value, UnrecordedOrdinaryObservationError)
+    reconciled = reconcile_pr_findings_before_publication(ledger, API_ORIGIN, REPO, PR_NUMBER, 5729, "head", "base", result, HistoricalRootParseResult(), attempt_id="mismatch")
+    assert reconciled.is_ambiguous
+    assert reconciled.ambiguity_reason
+    assert ledger.get_snapshot(API_ORIGIN, REPO, PR_NUMBER) == before
+
+
+def test_referenced_test_gap_preserves_implementation_owner_and_independent_gap(ledger: CanonicalPRBlockerLedger) -> None:
+    from auto_coder.bounded_repair_bundle import build_repair_handoff_bundle
+
+    owner, finding = _admit_incident(ledger)
+    reference_result = _reference_result(ledger, finding, owner)
+    gap = TestOracleGap(
+        gap_id="TOG-JOIN-BINDING",
+        correction_identity=finding.correction_identity,
+        correction_scope_fingerprint=finding.correction_scope_fingerprint,
+        correction_context_fingerprint=finding.correction_context_fingerprint,
+        requirement_id=finding.requirement_id,
+        authoritative_boundary=finding.anchor_path,
+        invariant="Regression omits a child qualifier in the ON expression.",
+        focused_regression_scenario="Execute the joined-alias counterexample.",
+    )
+    independent = TestOracleGap(gap_id="TOG-INDEPENDENT-DELETE", requirement_id=finding.requirement_id, authoritative_boundary=finding.anchor_path, invariant="Delete throws away unrelated relation data", focused_regression_scenario="Preserve unrelated rows after rollback")
+    reference_result.findings = []
+    reference_result.test_oracle_gaps = [gap, independent]
+    result = reconcile_pr_findings_before_publication(ledger, API_ORIGIN, REPO, PR_NUMBER, 5729, "head", "base", reference_result, HistoricalRootParseResult(), attempt_id="gap-reference")
+    assert not result.is_ambiguous
+    assert dict(result.blocker_for_gap)[gap.gap_id] == owner
+    assert dict(result.blocker_for_gap)[independent.gap_id] != owner
+    assert len(result.snapshot.blockers) == 2
+    assert result.snapshot.get_blocker(owner).category == "IMPLEMENTATION"
+    assert result.snapshot.get_blocker(owner).required_correction_outcome == finding.required_behavior
+    bundle = build_repair_handoff_bundle(result.snapshot, REPO, PR_NUMBER, "feature", "main", "head", "contract", api_origin=API_ORIGIN, target_blocker_ids=[dict(result.blocker_for_gap)[gap.gap_id]])
+    assert len(bundle.blockers) == 1
+    assert bundle.blockers[0].blocker_id == owner
+    assert bundle.blockers[0].category == "IMPLEMENTATION"
+    assert bundle.blockers[0].required_corrective_outcome == finding.required_behavior
+
+
+def test_exact_observation_replay_keeps_revision_across_unrelated_mutation_and_reload(ledger: CanonicalPRBlockerLedger, db_path: Path) -> None:
+    owner, finding = _admit_incident(ledger)
+    result = AdversarialValidationResult(result="NEEDS_FIX", findings=[finding])
+    before = ledger.get_snapshot(API_ORIGIN, REPO, PR_NUMBER)
+    _, unrelated = ledger.admit_blocker(
+        API_ORIGIN, REPO, PR_NUMBER, operation_id="unrelated", expected_ledger_revision=before.ledger_revision, payload=BlockerAdmissionPayload(category="IMPLEMENTATION", authoritative_boundary="different.py", accepted_scope=CorrectionScope(description="Unrelated correction"))
+    )
+    replay = reconcile_pr_findings_before_publication(CanonicalPRBlockerLedger(db_path=db_path), API_ORIGIN, REPO, PR_NUMBER, 5729, "head", "base", result, HistoricalRootParseResult(), attempt_id="first")
+    assert not replay.is_ambiguous
+    assert replay.blocker_for_finding == ((0, owner),)
+    assert replay.snapshot.ledger_revision == unrelated.ledger_revision
+    assert replay.snapshot.get_blocker(owner) == before.get_blocker(owner)
+
+
+def test_ordinary_owner_lookup_restores_finding_and_gap_without_roots_or_mutation(ledger: CanonicalPRBlockerLedger, db_path: Path) -> None:
+    from auto_coder.ordinary_closure_evidence import deserialize_ordinary_result, serialize_ordinary_result
+
+    result = AdversarialValidationResult(
+        result="NEEDS_FIX",
+        attempt_id="ordinary-owner-read",
+        findings=[_incident_finding(_incident_observations()["observations"][0])],
+        test_oracle_gaps=[TestOracleGap(gap_id="TOG-INDEPENDENT", requirement_id="#5729/REQ-004", authoritative_boundary="deletion.py", invariant="Failed delete must retain rows", focused_regression_scenario="Rollback leaves relation data intact")],
+    )
+    reconciled = reconcile_pr_findings_before_publication(ledger, API_ORIGIN, REPO, PR_NUMBER, 5729, "head", "base", result, HistoricalRootParseResult(), attempt_id=result.attempt_id)
+    assert not reconciled.is_ambiguous
+    expected = (reconciled.blocker_for_finding[0][1], reconciled.blocker_for_gap[0][1])
+    assert expected[0] != expected[1]
+    restored = deserialize_ordinary_result(serialize_ordinary_result(result))
+    reloaded = CanonicalPRBlockerLedger(db_path=db_path)
+    snapshot = reloaded.get_snapshot(API_ORIGIN, REPO, PR_NUMBER)
+    assert all(not blocker.get_root_comment_ids() for blocker in snapshot.blockers)
+    assert ordinary_observation_owners(snapshot, REPO, PR_NUMBER, "head", "base", restored) == expected
+    restored.findings.append(restored.findings[0])
+    assert ordinary_observation_owners(snapshot, REPO, PR_NUMBER, "head", "base", restored) == expected
+    assert reloaded.get_snapshot(API_ORIGIN, REPO, PR_NUMBER) == snapshot
+
+
+@pytest.mark.parametrize("mismatch", ["repository", "pr", "head", "base", "attempt", "evidence", "closed", "ambiguous"])
+def test_ordinary_owner_lookup_rejects_unbound_or_ambiguous_scope(ledger: CanonicalPRBlockerLedger, mismatch: str) -> None:
+    from dataclasses import replace
+
+    owner, finding = _admit_incident(ledger)
+    result = AdversarialValidationResult(result="NEEDS_FIX", attempt_id="first", findings=[finding])
+    snapshot = ledger.get_snapshot(API_ORIGIN, REPO, PR_NUMBER)
+    blocker = snapshot.get_blocker(owner)
+    assert blocker is not None
+    repo, pr, head, base = REPO, PR_NUMBER, "head", "base"
+    if mismatch == "repository":
+        repo = "someone/another"
+    elif mismatch == "pr":
+        pr += 1
+    elif mismatch == "head":
+        head = "another-head"
+    elif mismatch == "base":
+        base = "another-base"
+    elif mismatch == "attempt":
+        result.attempt_id = "another-attempt"
+    elif mismatch == "evidence":
+        finding.evidence += " A changed counterexample."
+    elif mismatch == "closed":
+        snapshot = replace(snapshot, blockers=(replace(blocker, disposition=BlockerDisposition.VERIFIED_CORRECTION),))
+    else:
+        duplicate = replace(blocker, blocker_id="blk_conflicting")
+        snapshot = replace(snapshot, blockers=(blocker, duplicate), aliases=snapshot.aliases + tuple(replace(alias, blocker_id=duplicate.blocker_id) for alias in snapshot.aliases))
+    with pytest.raises(AssociationAmbiguityError) as exc:
+        ordinary_observation_owners(snapshot, repo, pr, head, base, result)
+    assert isinstance(exc.value, UnrecordedOrdinaryObservationError) == (mismatch in {"head", "base", "attempt", "evidence"})
+
+
+def test_missing_ordinary_alias_does_not_mask_later_invalid_reference(ledger: CanonicalPRBlockerLedger) -> None:
+    owner, finding = _admit_incident(ledger)
+    result = _reference_result(ledger, finding, owner)
+    result.findings.insert(0, AdversarialValidationFinding(finding_identity="not-yet-admitted", anchor_path="new.py", actual_behavior="Another violation", required_behavior="A different correction"))
+    finding.correction_identity = "canonical:blk_unknown"
+    snapshot = ledger.get_snapshot(API_ORIGIN, REPO, PR_NUMBER)
+    with pytest.raises(AssociationAmbiguityError) as exc:
+        ordinary_observation_owners(snapshot, REPO, PR_NUMBER, "head", "base", result)
+    assert not isinstance(exc.value, UnrecordedOrdinaryObservationError)
+    assert ledger.get_snapshot(API_ORIGIN, REPO, PR_NUMBER) == snapshot
+
+
+@pytest.mark.parametrize("binding_field", ["correction_identity", "correction_scope_fingerprint", "correction_context_fingerprint"])
+@pytest.mark.parametrize("reverse_order", [False, True])
+def test_recorded_gap_compaction_rejects_every_conflicting_canonical_binding(binding_field: str, reverse_order: bool) -> None:
+    from auto_coder.adversarial_validator import parse_adversarial_validation_response
+
+    recorded = TestOracleGap(gap_id="TOG-retained", requirement_id="#5729/REQ-004", authoritative_boundary="rewrite.py", invariant="The ON child must remain bound")
+    valid = {
+        "gap_id": recorded.gap_id,
+        "status": "OPEN",
+        "correction_identity": "canonical:blk_retained",
+        "correction_scope_fingerprint": "supplied-scope",
+        "correction_context_fingerprint": "supplied-context",
+    }
+    same = parse_adversarial_validation_response(json.dumps({"result": "NEEDS_TESTS", "test_oracle_gaps": [valid, valid]}), recorded_test_oracle_gaps=[recorded])
+    assert same.result == "NEEDS_TESTS"
+    assert len(same.test_oracle_gaps) == 1
+    conflicting = dict(valid, **{binding_field: "canonical:blk_unknown" if binding_field == "correction_identity" else "contradictory-binding"})
+    entries = [conflicting, valid] if reverse_order else [valid, conflicting]
+    parsed = parse_adversarial_validation_response(json.dumps({"result": "NEEDS_TESTS", "test_oracle_gaps": entries}), recorded_test_oracle_gaps=[recorded])
+    assert parsed.result == "ERROR"
+    assert parsed.diagnostic_category == "correction_reference_invalid"
+    assert not parsed.test_oracle_gaps
+
+
+@pytest.mark.parametrize("invalid_reference", [False, True])
+def test_production_ordinary_prompt_supplies_references_and_validates_response(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid_reference: bool) -> None:
+    from dataclasses import asdict
+
+    from auto_coder.accepted_finding_bridge import AcceptedFindingBridge
+    from auto_coder.adversarial_validator import AdversarialValidationContext, IssueRequirement, run_adversarial_validation
+    from auto_coder.automation_config import AutomationConfig
+    from auto_coder.pr_review_cycle import PrReviewCycleRepository
+    from auto_coder.reviewer_session_registry import ReviewerSessionRegistry
+
+    # The real validator uses GitHub's default API origin for its bridge.
+    origin = "https://api.github.com"
+    ledger = CanonicalPRBlockerLedger(db_path=tmp_path / "prompt-ledger.db")
+    finding = _incident_finding(_incident_observations()["observations"][0])
+    admitted = reconcile_pr_findings_before_publication(ledger, origin, REPO, PR_NUMBER, 5729, "head", "base", AdversarialValidationResult(result="NEEDS_FIX", findings=[finding]), HistoricalRootParseResult(), attempt_id="first")
+    owner = admitted.blocker_for_finding[0][1]
+    context = AdversarialValidationContext(
+        repo_name=REPO,
+        pr_number=PR_NUMBER,
+        pr_diff="diff --git a/client/src/services/yjstable/tableSqlRewrite.ts b/client/src/services/yjstable/tableSqlRewrite.ts\n+binding = child",
+        all_changed_files=[finding.anchor_path],
+        issue_context="Issue #5729 requires preserving relation bindings.",
+        issue_requirements=[IssueRequirement("#5729/REQ-004", "Preserve bindings to mapped physical relations.")],
+    )
+    monkeypatch.setattr("auto_coder.adversarial_validator.build_adversarial_validation_context", lambda *args, **kwargs: context)
+    prompts: list[str] = []
+
+    def model_response(prompt: str, **kwargs: object) -> str:
+        prompts.append(prompt)
+        encoded = prompt.split("CONTROLLER CORRECTION REFERENCES:\n", 1)[1].split("\nThese references", 1)[0]
+        supplied = json.loads(encoded)
+        assert supplied["repository"] == REPO
+        assert supplied["pr_number"] == PR_NUMBER
+        assert supplied["head_sha"] == "head"
+        reference = supplied["references"][0]
+        assert reference["correction_identity"] == f"canonical:{owner}"
+        assert reference["required_outcome"] == finding.required_behavior
+        restatement = asdict(finding)
+        restatement.update(
+            correction_identity=reference["correction_identity"],
+            correction_scope_fingerprint="contradictory-scope" if invalid_reference else reference["scope_fingerprint"],
+            correction_context_fingerprint=supplied["context_fingerprint"],
+            actual_behavior="The JOIN child binding disappears before its ON qualifier is visited.",
+        )
+        independent = asdict(finding)
+        independent.update(finding_identity="independent-delete", correction_identity="retain-delete-rows", actual_behavior="Delete loses independent destination rows", required_behavior="Retain unrelated destination rows during rollback")
+        return json.dumps({"result": "NEEDS_FIX", "summary": "Two independent current corrections.", "findings": [restatement, independent], "requirement_coverage": [{"requirement_id": finding.requirement_id, "status": "VIOLATED", "evidence": "Current code exhibits both counterexamples."}]})
+
+    monkeypatch.setattr("auto_coder.adversarial_validator.run_llm_prompt", model_response)
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("ordinary", "codex", "model")
+    result = run_adversarial_validation(
+        REPO,
+        {"number": PR_NUMBER, "head": {"sha": "head"}, "base": {"sha": "base"}},
+        AutomationConfig(),
+        backend_manager=manager,
+        session_registry=ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json"),
+        accepted_finding_bridge=AcceptedFindingBridge(PrReviewCycleRepository(REPO, tmp_path / "cycle.json"), ledger),
+    )
+    assert len(prompts) == 1
+    assert result.correction_reference_context == context.correction_reference_context
+    assert len(result.findings) == 2
+    if invalid_reference:
+        assert result.result == "BLOCKED"
+        assert result.diagnostic_category == "correction_reference_invalid"
+        assert len(ledger.get_snapshot(origin, REPO, PR_NUMBER).blockers) == 1
+    else:
+        assert result.result == "NEEDS_FIX"
+        reconciled = reconcile_pr_findings_before_publication(ledger, origin, REPO, PR_NUMBER, 5729, "head", "base", result, HistoricalRootParseResult(), attempt_id="ordinary")
+        assert not reconciled.is_ambiguous
+        assert reconciled.blocker_for_finding[0] == (0, owner)
+        assert reconciled.blocker_for_finding[1][1] != owner
+        assert len(reconciled.snapshot.blockers) == 2
+
+
+@pytest.mark.parametrize("asserts_reference", [False, True])
+def test_first_ordinary_review_retains_input_binding_without_supplying_canonical_owners(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, asserts_reference: bool) -> None:
+    from dataclasses import asdict
+
+    from auto_coder.accepted_finding_bridge import AcceptedFindingBridge
+    from auto_coder.adversarial_validator import run_adversarial_validation
+    from auto_coder.automation_config import AutomationConfig
+    from auto_coder.canonical_pr_blocker_ledger import BlockerLedgerUnavailableError
+    from auto_coder.ordinary_closure_evidence import deserialize_ordinary_result, serialize_ordinary_result
+    from auto_coder.pr_review_cycle import PrReviewCycleRepository
+    from auto_coder.reviewer_session_registry import ReviewerSessionRegistry
+
+    finding = _incident_finding(_incident_observations()["observations"][0])
+
+    class InputClient:
+        def get_pr_diff(self, repo_name: str, pr_number: int) -> str:
+            path = finding.anchor_path
+            return f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+binding = child\n"
+
+        def get_pr_changed_file_count(self, repo_name: str, pr_number: int) -> int:
+            return 1
+
+        def get_pr_changed_files(self, repo_name: str, pr_number: int) -> list[dict[str, object]]:
+            raise AssertionError("The complete diff already supplies the changed file")
+
+        def get_issue_strict(self, repo_name: str, issue_number: int) -> dict[str, object]:
+            assert issue_number == 5729
+            return {"title": "Preserve relation bindings", "body": "## Requirements\n- REQ-004: Preserve bindings to mapped physical relations.\n"}
+
+        def get_parent_issue_details(self, repo_name: str, issue_number: int) -> None:
+            return None
+
+    supplied_contexts: list[dict[str, object]] = []
+
+    def model_response(prompt: str, **kwargs: object) -> str:
+        encoded = prompt.split("CONTROLLER CORRECTION REFERENCES:\n", 1)[1].split("\nThese references", 1)[0]
+        supplied = json.loads(encoded)
+        supplied_contexts.append(supplied)
+        assert supplied["references"] == []
+        assert supplied["validation_snapshot"] and supplied["requirement_manifest_identity"]
+        observed = asdict(finding)
+        if asserts_reference:
+            observed.update(correction_identity="canonical:blk_not_supplied", correction_scope_fingerprint="invented-scope", correction_context_fingerprint=supplied["context_fingerprint"])
+        return json.dumps({"result": "NEEDS_FIX", "summary": "The child binding is lost.", "findings": [observed], "requirement_coverage": [{"requirement_id": finding.requirement_id, "status": "VIOLATED", "evidence": finding.evidence}]})
+
+    ledger = CanonicalPRBlockerLedger(db_path=tmp_path / "empty-ledger.db")
+    monkeypatch.setattr("auto_coder.adversarial_validator.run_llm_prompt", model_response)
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("ordinary", "codex", "model")
+    result = run_adversarial_validation(
+        REPO,
+        {"number": PR_NUMBER, "body": "Fixes #5729", "head": {"sha": "head"}, "base": {"sha": "base"}},
+        AutomationConfig(),
+        github_client=InputClient(),
+        backend_manager=manager,
+        session_registry=ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json"),
+        accepted_finding_bridge=AcceptedFindingBridge(PrReviewCycleRepository(REPO, tmp_path / "cycle.json"), ledger),
+    )
+    assert len(supplied_contexts) == 1
+    retained = result.correction_reference_context
+    assert retained is not None and retained.references == ()
+    assert (retained.api_origin, retained.repository, retained.pr_number, retained.head_sha, retained.base_sha) == ("https://api.github.com", REPO, PR_NUMBER, "head", "base")
+    assert retained.validation_snapshot == supplied_contexts[0]["validation_snapshot"]
+    assert retained.requirement_manifest_identity == supplied_contexts[0]["requirement_manifest_identity"]
+    assert deserialize_ordinary_result(serialize_ordinary_result(result)).correction_reference_context == retained
+    assert result.result == ("BLOCKED" if asserts_reference else "NEEDS_FIX")
+    if asserts_reference:
+        assert result.diagnostic_category == "correction_reference_invalid"
+    else:
+        assert [(entry.requirement_id, entry.status) for entry in result.requirement_coverage] == [(finding.requirement_id, "VIOLATED")]
+        assert [item.finding_identity for item in result.findings] == [finding.finding_identity]
+    with pytest.raises(BlockerLedgerUnavailableError):
+        ledger.get_snapshot("https://api.github.com", REPO, PR_NUMBER)
+
+
+def test_normalized_test_restatement_preserves_reference_beside_independent_same_requirement_gap(ledger: CanonicalPRBlockerLedger) -> None:
+    from auto_coder.adversarial_validator import AdversarialValidationContext, IssueRequirement, RequirementCoverageEntry, _apply_coverage_and_verdict_precedence
+
+    owner, finding = _admit_incident(ledger)
+    result = _reference_result(ledger, finding, owner)
+    finding.actual_behavior = "No test resolves the child qualifier inside JOIN ON."
+    finding.required_behavior = "Add regression test executing original and rewritten JOIN queries."
+    finding.test_gap = "No test asserts the renamed child binding."
+    finding.suggested_regression_scenario = "Execute the joined-alias SQL and compare rows."
+    independent = TestOracleGap(
+        gap_id="TOG-INDEPENDENT-DELETE", requirement_id=finding.requirement_id, authoritative_boundary=finding.anchor_path, anchor_path=finding.anchor_path, invariant="Delete loses unrelated rows during rollback", focused_regression_scenario="Verify unrelated rows remain after a failed transaction"
+    )
+    result.test_oracle_gaps = [independent]
+    result.requirement_coverage = [RequirementCoverageEntry(finding.requirement_id, "VIOLATED", "Missing regression protection.")]
+    context = AdversarialValidationContext(all_changed_files=[finding.anchor_path], issue_requirements=[IssueRequirement(finding.requirement_id, "Preserve bindings to mapped physical relations.")], correction_reference_context=result.correction_reference_context)
+    normalized = _apply_coverage_and_verdict_precedence(result, context)
+    assert normalized.result == "NEEDS_TESTS"
+    assert not normalized.findings
+    assert len(normalized.open_test_oracle_gaps) == 2
+    referenced_gap = next(gap for gap in normalized.open_test_oracle_gaps if gap.correction_identity)
+    assert referenced_gap.correction_identity == f"canonical:{owner}"
+    assert referenced_gap.authoritative_boundary == finding.anchor_path
+    reconciled = reconcile_pr_findings_before_publication(ledger, API_ORIGIN, REPO, PR_NUMBER, 5729, "head", "base", normalized, HistoricalRootParseResult(), attempt_id="normalized-gap")
+    assert not reconciled.is_ambiguous
+    assert dict(reconciled.blocker_for_gap)[referenced_gap.gap_id] == owner
+    assert dict(reconciled.blocker_for_gap)[independent.gap_id] != owner
+    assert reconciled.snapshot.get_blocker(owner).category == "IMPLEMENTATION"

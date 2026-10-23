@@ -10,7 +10,7 @@ import ast
 import hashlib
 import json
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Sequence
@@ -33,6 +33,7 @@ from .ci_observation import CIConclusion, ObservationAvailability, WorkflowObser
 from .cli_event_stream import extract_claude_jsonl_result, extract_codex_jsonl_message, extract_muse_jsonl_result
 from .issue_context import IssueOracleResolution, VerifiedIssueOracle, get_linked_issues_context, resolve_issue_oracles
 from .logger_config import get_logger
+from .ordinary_correction_references import CANONICAL_CORRECTION_PREFIX, CanonicalCorrectionContext, build_correction_reference_context, validate_correction_reference
 from .pr_review_execution import ReviewExecutionInput, ReviewExecutionResult, build_review_prompt, parse_review_result
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
@@ -123,6 +124,8 @@ class AdversarialValidationFinding:
     requirement_ids: List[str] = field(default_factory=list)
     finding_identity: str = ""
     correction_identity: str = ""
+    correction_scope_fingerprint: str = ""
+    correction_context_fingerprint: str = ""
     violated_requirement: str = ""
     requirement_text: str = ""
     reachability: str = ""
@@ -522,6 +525,7 @@ class AdversarialValidationResult:
     reviewer_session_checkpoint: Optional[ReviewerSession] = field(default=None, repr=False)
     reviewer_session_registry: Optional[ReviewerSessionRegistry] = field(default=None, repr=False)
     accepted_finding_projection: Optional[AcceptedFindingProjection] = field(default=None, repr=False)
+    correction_reference_context: Optional[CanonicalCorrectionContext] = field(default=None, repr=False)
     # The unmodified model verdict once an effective decision replaced it. It is
     # historical diagnostic evidence and never publication or merge authority.
     raw_model_result: str = ""
@@ -609,6 +613,7 @@ class AdversarialValidationContext:
     # as a currently demonstrated violation; a retained OPEN lifecycle state alone
     # is a closure wait, not current evidence.
     accepted_upheld_gap_ids: frozenset[str] = frozenset()
+    correction_reference_context: Optional[CanonicalCorrectionContext] = None
 
     @property
     def has_complete_file_coverage(self) -> bool:
@@ -1710,9 +1715,20 @@ def _extract_test_oracle_gaps(
             explicit_requirement = item.get("requirement_id")
             if explicit_requirement is not None and (not isinstance(explicit_requirement, str) or explicit_requirement.strip() != recorded.requirement_id):
                 return [], _parse_error(raw_response, "schema_error", "Conflicting recorded test-oracle gap requirement", f"gap_id {supplied_id} belongs to {recorded.requirement_id}")
-            update = replace(recorded, status=status, resolution_evidence=resolution_evidence)
+            if str(item.get("correction_identity", "")).startswith(CANONICAL_CORRECTION_PREFIX) and item.get("authoritative_boundary", recorded.authoritative_boundary) != recorded.authoritative_boundary:
+                return [], _parse_error(raw_response, "correction_reference_invalid", "Conflicting recorded correction boundary", f"gap_id {supplied_id} contradicts its recorded authoritative boundary")
+            update = replace(
+                recorded,
+                status=status,
+                resolution_evidence=resolution_evidence,
+                correction_identity=str(item.get("correction_identity", "")).strip(),
+                correction_scope_fingerprint=str(item.get("correction_scope_fingerprint", "")).strip(),
+                correction_context_fingerprint=str(item.get("correction_context_fingerprint", "")).strip(),
+            )
             previous = updates_by_id.get(supplied_id)
             if previous is not None:
+                if (previous.correction_identity, previous.correction_scope_fingerprint, previous.correction_context_fingerprint) != (update.correction_identity, update.correction_scope_fingerprint, update.correction_context_fingerprint):
+                    return [], _parse_error(raw_response, "correction_reference_invalid", "Conflicting recorded correction bindings", f"gap_id {supplied_id} has contradictory canonical references")
                 if (previous.status, previous.resolution_evidence, previous.requirement_id) != (update.status, update.resolution_evidence, update.requirement_id):
                     return [], _parse_error(raw_response, "schema_error", "Conflicting recorded test-oracle gap updates", f"gap_id {supplied_id} has conflicting lifecycle updates")
                 continue
@@ -1742,6 +1758,9 @@ def _extract_test_oracle_gaps(
             return [], _parse_error(raw_response, "schema_error", "Unstable test-oracle gap identity", f"gap_id must be {derived_id} for the supplied scope")
         new_gap = TestOracleGap(
             gap_id=derived_id,
+            correction_identity=str(item.get("correction_identity", "")).strip(),
+            correction_scope_fingerprint=str(item.get("correction_scope_fingerprint", "")).strip(),
+            correction_context_fingerprint=str(item.get("correction_context_fingerprint", "")).strip(),
             **values,
             anchor_line=_optional_positive_int(item.get("anchor_line")),
             anchor_side=str(item.get("anchor_side", "RIGHT")).strip().upper(),
@@ -2063,6 +2082,8 @@ def parse_adversarial_validation_response(
                                 requirement_ids=finding_requirement_ids,
                                 finding_identity=required_fields["finding_identity"],
                                 correction_identity=required_fields["correction_identity"],
+                                correction_scope_fingerprint=str(item.get("correction_scope_fingerprint", "")).strip(),
+                                correction_context_fingerprint=str(item.get("correction_context_fingerprint", "")).strip(),
                                 violated_requirement=req,
                                 reachability=required_fields["reachability"],
                                 required_behavior=required_fields["required_behavior"],
@@ -2094,6 +2115,10 @@ def parse_adversarial_validation_response(
                         findings_by_counterexample[identity] = finding
                         compacted_findings.append(finding)
                         continue
+                    if (existing.correction_scope_fingerprint, existing.correction_context_fingerprint) != (finding.correction_scope_fingerprint, finding.correction_context_fingerprint):
+                        return _parse_error(raw_response, "correction_reference_invalid", "Conflicting canonical correction bindings", "Repeated correction identity has contradictory scope or context bindings")
+                    if finding.correction_identity.startswith(CANONICAL_CORRECTION_PREFIX) and (existing.anchor_path != finding.anchor_path or set(existing.all_requirement_ids) != set(finding.all_requirement_ids)):
+                        return _parse_error(raw_response, "correction_reference_invalid", "Conflicting canonical correction scope", "Repeated canonical correction has contradictory boundary or qualified requirements")
                     existing.requirement_ids = list(dict.fromkeys([*existing.all_requirement_ids, *finding.all_requirement_ids]))
                     for field_name in (
                         "violated_requirement",
@@ -3163,7 +3188,9 @@ def _deliverable_finding_from_gap(gap: TestOracleGap, requirement_text: str) -> 
     return AdversarialValidationFinding(
         requirement_id=gap.requirement_id,
         finding_identity=gap.gap_id,
-        correction_identity=gap.gap_id,
+        correction_identity=gap.correction_identity or gap.gap_id,
+        correction_scope_fingerprint=gap.correction_scope_fingerprint,
+        correction_context_fingerprint=gap.correction_context_fingerprint,
         violated_requirement=requirement_text,
         requirement_text=requirement_text,
         reachability=gap.authoritative_boundary,
@@ -3173,7 +3200,7 @@ def _deliverable_finding_from_gap(gap: TestOracleGap, requirement_text: str) -> 
         counterexample=(f"At {gap.authoritative_boundary}, the requirement mandates a committed regression deliverable, " f"but current tests omit it: {gap.invariant}. {gap.why_tests_still_pass}"),
         test_gap=gap.why_tests_still_pass,
         suggested_regression_scenario=gap.focused_regression_scenario,
-        anchor_path=gap.anchor_path,
+        anchor_path=gap.authoritative_boundary if gap.correction_identity.startswith(CANONICAL_CORRECTION_PREFIX) else gap.anchor_path,
         anchor_line=gap.anchor_line,
         anchor_side=gap.anchor_side,
         anchor_start_line=gap.anchor_start_line,
@@ -3185,6 +3212,8 @@ def _same_test_correction(finding: AdversarialValidationFinding, gap: TestOracle
     if gap.requirement_id not in finding.all_requirement_ids:
         return False
     if gap.gap_id in {finding.finding_identity, finding.correction_identity}:
+        return True
+    if gap.correction_identity.startswith(CANONICAL_CORRECTION_PREFIX) and gap.correction_identity == finding.correction_identity:
         return True
     finding_scope = " ".join((finding.reachability, finding.required_behavior, finding.actual_behavior, finding.suggested_regression_scenario)).casefold()
     gap_scope = " ".join((gap.authoritative_boundary, gap.invariant, gap.focused_regression_scenario)).casefold()
@@ -3296,13 +3325,16 @@ def _normalize_findings_and_gaps(
             retained_gaps = [gap for gap in retained_gaps if not _same_test_correction(finding, gap) or (gap.gap_id in context.accepted_known_gap_ids and gap.gap_id not in {finding.finding_identity, finding.correction_identity})]
         else:
             if _is_missing_test_finding(finding):
-                has_matching_gap = any(gap.requirement_id in finding.all_requirement_ids for gap in retained_gaps)
+                has_matching_gap = any(_same_test_correction(finding, gap) for gap in retained_gaps)
                 if not has_matching_gap:
                     primary_req = finding.requirement_id if finding.requirement_id in expected_requirement_ids else (finding.requirement_ids[0] if finding.requirement_ids else "")
-                    boundary = finding.reachability or finding.anchor_path or "runtime_boundary"
+                    boundary = finding.anchor_path if finding.correction_identity.startswith(CANONICAL_CORRECTION_PREFIX) else finding.reachability or finding.anchor_path or "runtime_boundary"
                     invariant = finding.required_behavior or req_text_by_id.get(primary_req, "Runtime invariant")
                     new_gap = TestOracleGap(
                         gap_id=_stable_test_oracle_gap_id(primary_req, boundary, invariant),
+                        correction_identity=finding.correction_identity if finding.correction_identity.startswith(CANONICAL_CORRECTION_PREFIX) else "",
+                        correction_scope_fingerprint=finding.correction_scope_fingerprint,
+                        correction_context_fingerprint=finding.correction_context_fingerprint,
                         requirement_id=primary_req,
                         requirement_text=req_text_by_id.get(primary_req, ""),
                         authoritative_boundary=boundary,
@@ -3493,6 +3525,25 @@ def _enforce_coverage_and_verdict_precedence(
 ) -> AdversarialValidationResult:
     if result.result == "ERROR" and result.diagnostic_category:
         return result
+
+    result.correction_reference_context = context.correction_reference_context
+    observations: list[AdversarialValidationFinding | TestOracleGap] = [*result.findings, *result.open_test_oracle_gaps]
+    for observation in observations:
+        is_finding = isinstance(observation, AdversarialValidationFinding)
+        _, reference_error = validate_correction_reference(
+            context.correction_reference_context,
+            observation.correction_identity,
+            observation.correction_scope_fingerprint,
+            observation.correction_context_fingerprint,
+            observation.all_requirement_ids if isinstance(observation, AdversarialValidationFinding) else [observation.requirement_id],
+            observation.anchor_path if isinstance(observation, AdversarialValidationFinding) else observation.authoritative_boundary,
+            "IMPLEMENTATION" if is_finding else "TEST_ORACLE",
+        )
+        if reference_error:
+            result.result = "BLOCKED"
+            result.diagnostic_category = "correction_reference_invalid"
+            result.diagnostic_reason = reference_error
+            return result
 
     _normalize_findings_and_gaps(result, context)
 
@@ -3942,10 +3993,37 @@ def run_adversarial_validation(
     bridge = accepted_finding_bridge or default_accepted_finding_bridge(repo_name)
     projection_target = ProjectionTarget(repository=repo_name, pr_number=pr_number, head_sha=head_sha, base_sha=str((pr_data.get("base") or {}).get("sha") or ""))
     accepted_projection = project_accepted_findings(bridge, projection_target, claimed_review_threads)
+    try:
+        reference_snapshot = bridge.ledger.get_snapshot(projection_target.api_origin, repo_name, pr_number, require_retained_state=True)
+        context.correction_reference_context = build_correction_reference_context(
+            reference_snapshot,
+            head_sha,
+            projection_target.base_sha,
+            context.validation_snapshot,
+            context.requirement_manifest_identity,
+        )
+    except Exception as exc:
+        # An unavailable source supplies no references; an asserted reference
+        # will fail closed instead of becoming a new observation label. Retain
+        # the invocation binding even before the first ordinary owner exists.
+        logger.warning(f"Canonical correction context unavailable for PR #{pr_number}: {exc}")
+        context.correction_reference_context = CanonicalCorrectionContext(
+            api_origin=projection_target.api_origin,
+            repository=repo_name,
+            pr_number=pr_number,
+            head_sha=head_sha,
+            base_sha=projection_target.base_sha,
+            validation_snapshot=context.validation_snapshot,
+            requirement_manifest_identity=context.requirement_manifest_identity,
+        )
     accepted_known_gaps = [known_gap_from_record(record) for record in accepted_projection.known_gap_records]
     accepted_gap_ids = frozenset(gap.gap_id for gap in accepted_known_gaps)
     context.accepted_known_gap_ids = accepted_gap_ids
     lifecycle_session = _lifecycle_session_with_accepted_gaps(lifecycle_session, stored_session, accepted_known_gaps, repo_name, pr_number, accepted_projection.records[0].originating_head_sha if accepted_projection.records else "")
+    if lifecycle_session is not None:
+        # A previous invocation's reference proves retained identity, not a new
+        # current observation. The ledger supplies fresh references separately.
+        lifecycle_session = replace(lifecycle_session, test_oracle_gaps=[replace(gap, correction_identity="", correction_scope_fingerprint="", correction_context_fingerprint="") for gap in lifecycle_session.test_oracle_gaps])
     # The accepted review lifecycle selects review policy. Provider-session
     # resumability only selects the transport used below; a fresh invocation
     # must still adjudicate the same recorded obligations incrementally.
@@ -3984,6 +4062,7 @@ def run_adversarial_validation(
         ordinary_requirement_ids=json.dumps([requirement.requirement_id for requirement in context.issue_requirements]),
         prior_test_oracle_gaps=prior_test_oracle_gaps,
         accepted_strong_findings=render_accepted_findings(accepted_projection),
+        correction_references=json.dumps({"context_fingerprint": context.correction_reference_context.fingerprint, **asdict(context.correction_reference_context)}, indent=2) if context.correction_reference_context is not None else "null",
         ci_execution_evidence=format_ci_execution_evidence(ci_status),
         adjacent_exploration_budget=ADVERSARIAL_ADJACENT_EXPLORATION_BUDGET,
         evidence_recovery_budget=ADVERSARIAL_EVIDENCE_RECOVERY_BUDGET,

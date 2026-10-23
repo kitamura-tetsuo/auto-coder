@@ -80,6 +80,9 @@ class ReviewPublicationResult:
     # transmitted. It is a policy/applicability refusal, never a transport
     # failure and never an ambiguously sent request.
     policy_refusal: bool = False
+    # A retained transmission may have been accepted, but its exact receipt
+    # cannot yet be confirmed. Consumers wait without resubmitting the review.
+    pending_receipt: bool = False
 
 
 @dataclass(frozen=True)
@@ -612,7 +615,7 @@ class GitHubAppReviewer:
                     pr_number,
                     issue_number=0,
                     head_sha=validated_head_sha,
-                    base_sha="",
+                    base_sha=result.correction_reference_context.base_sha if result.correction_reference_context is not None else "",
                     val_result=result,
                     historical_parse=hist_parse,
                     attempt_id=result.attempt_id,
@@ -836,7 +839,7 @@ class GitHubAppReviewer:
                     page += 1
                 unique_matches = {item[0]: item[1] for item in matches}
                 if len(unique_matches) != 1:
-                    return ReviewPublicationResult(False, event, "Publication accepted state is unresolved; exact native review is unavailable or ambiguous")
+                    return ReviewPublicationResult(False, event, "Publication accepted state is unresolved; exact native review is unavailable or ambiguous", pending_receipt=True)
                 review_id, discovered_roots = next(iter(unique_matches.items()))
                 ledger.record_publication_acceptance(self._api_url, repo_name, pr_number, intent_id, review_id)
 
@@ -863,7 +866,7 @@ class GitHubAppReviewer:
             ledger.confirm_publication_intent(self._api_url, repo_name, pr_number, intent_id, tuple(sorted(associations.items())), evidence=f"review:{review_id}")
             return ReviewPublicationResult(True, event, "")
         except Exception:
-            return ReviewPublicationResult(False, event, f"Publication root reconciliation is pending for operation {intent_id}")
+            return ReviewPublicationResult(False, event, f"Publication root reconciliation is pending for operation {intent_id}", pending_receipt=True)
 
     def _review_root_comments(self, repo_name: str, pr_number: int, review_id: int, token: str) -> list[dict[str, object]]:
         roots: list[dict[str, object]] = []

@@ -3,12 +3,14 @@ from dataclasses import replace
 import pytest
 
 from auto_coder.accepted_finding_bridge import (
+    AMBIGUOUS,
     ASSOCIATED,
     BINDING_CURRENT,
     CATEGORY_IMPLEMENTATION,
     CATEGORY_REGRESSION_GAP,
     CURRENCY_CURRENT_HEAD,
     OUTCOME_CLOSURE_PROPOSAL_NOT_ACCEPTED,
+    OUTCOME_UNAVAILABLE,
     AcceptedFindingProjection,
     AcceptedFindingRecord,
     DispositionOutcome,
@@ -17,6 +19,7 @@ from auto_coder.accepted_finding_bridge import (
 from auto_coder.adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult, RequirementCoverageEntry, SpecificationGap
 from auto_coder.canonical_pr_blocker_ledger import QualifiedRequirement
 from auto_coder.effective_review_decision import EffectiveNextAction, derive_effective_review_decision
+from auto_coder.reviewer_session_registry import TestOracleGap
 
 TARGET = ProjectionTarget(repository="owner/repo", pr_number=42, head_sha="head", base_sha="base", contract_identity="contract", policy_identity="policy")
 
@@ -29,6 +32,34 @@ def result(status: str = "PASS") -> AdversarialValidationResult:
         attempt_sequence=7,
         requirement_coverage=[RequirementCoverageEntry("REQ-001", "VERIFIED", "src/state.py:20")],
     )
+
+
+def ordinary_correction(status: str = "NEEDS_FIX") -> AdversarialValidationResult:
+    raw = result(status)
+    if status == "NEEDS_FIX":
+        raw.requirement_coverage[0].status = "VIOLATED"
+        raw.findings = [
+            AdversarialValidationFinding(
+                requirement_id="REQ-001",
+                finding_identity="ordinary-join-binding",
+                correction_identity="join-on-binding",
+                counterexample="Rewritten JOIN ON retains tasks.id after tasks becomes tasks_2",
+            )
+        ]
+    else:
+        raw.test_oracle_gaps = [
+            TestOracleGap(
+                gap_id="TOG-join-on-binding",
+                requirement_id="REQ-001",
+                authoritative_boundary="SQL rewrite before destination persistence",
+                invariant="JOIN ON preserves inner table binding",
+                plausible_incorrect_implementation="Install the joined-result alias in the child scope",
+                why_tests_still_pass="Existing JOIN fixture uses ON true",
+                material_consequence="Destination SQL raises a missing FROM-clause error",
+                focused_regression_scenario="Execute both original and rewritten bound JOIN ON expressions",
+            )
+        ]
+    return raw
 
 
 def finding(identity: str, blocker: str, category: str) -> AcceptedFindingRecord:
@@ -98,7 +129,7 @@ def test_ordinary_repair_result_remains_nonapproving_without_accepted_findings(
     ordinary_status: str,
     expected_action: EffectiveNextAction,
 ) -> None:
-    raw = result(ordinary_status)
+    raw = ordinary_correction(ordinary_status)
 
     decision = derive_effective_review_decision(raw, projection())
 
@@ -106,6 +137,8 @@ def test_ordinary_repair_result_remains_nonapproving_without_accepted_findings(
     assert decision.next_action is expected_action
     assert decision.approval_eligible is False
     assert decision.corrections == ()
+    assert decision.ordinary_findings == tuple(raw.findings)
+    assert decision.ordinary_gaps == tuple(raw.test_oracle_gaps)
     assert decision.raw_result == ordinary_status
     assert decision.requirement_coverage == tuple(raw.requirement_coverage)
 
@@ -211,7 +244,8 @@ def test_stale_accepted_closure_requires_reconciliation() -> None:
     decision = derive_effective_review_decision(result(), projection(closed))
 
     assert (decision.status, decision.next_action) == ("BLOCKED", EffectiveNextAction.RECONCILIATION)
-    assert decision.corrections[0].accepted_state == "FIXED"
+    assert decision.corrections == ()
+    assert decision.pending_reconciliation[0].accepted_state == "FIXED"
 
 
 def test_same_head_decision_is_revision_bound_and_specification_gap_blocks() -> None:
@@ -227,3 +261,174 @@ def test_same_head_decision_is_revision_bound_and_specification_gap_blocks() -> 
     assert first.binding.association_revision != second.binding.association_revision
     assert first.binding.reopen_epoch == 0
     assert (specification.status, specification.next_action) == ("BLOCKED", EffectiveNextAction.RECONCILIATION)
+
+
+@pytest.mark.parametrize(
+    ("status", "action"),
+    [("NEEDS_FIX", EffectiveNextAction.IMPLEMENTATION_REPAIR), ("NEEDS_TESTS", EffectiveNextAction.FOCUSED_TEST_REPAIR)],
+)
+def test_current_ordinary_correction_dispatches_while_historical_open_source_awaits_adjudication(status: str, action: EffectiveNextAction) -> None:
+    historical = replace(finding("round:historical", "blocker-historical", CATEGORY_IMPLEMENTATION), evidence_currency="HISTORICAL")
+    raw = ordinary_correction(status)
+
+    decision = derive_effective_review_decision(raw, projection(historical))
+
+    assert (decision.status, decision.next_action, decision.approval_eligible) == (status, action, False)
+    assert decision.corrections == ()
+    assert decision.blocker_ids == ()
+    assert decision.pending_closures == ()
+    assert tuple(item.source_identity for item in decision.pending_reconciliation) == (historical.source_identity,)
+    assert decision.pending_reconciliation[0].accepted_state == "OPEN"
+    assert decision.ordinary_findings == tuple(raw.findings)
+    assert decision.ordinary_gaps == tuple(raw.test_oracle_gaps)
+
+
+@pytest.mark.parametrize("category", [CATEGORY_IMPLEMENTATION, CATEGORY_REGRESSION_GAP])
+def test_current_accepted_correction_is_independent_of_historical_adjudication(category: str) -> None:
+    historical = replace(finding("round:historical", "blocker-historical", CATEGORY_IMPLEMENTATION), evidence_currency="HISTORICAL")
+    current = finding("round:current", "blocker-current", category)
+    raw = result()
+    raw.requirement_coverage[0].status = "UNVERIFIED"
+
+    decision = derive_effective_review_decision(raw, projection(historical, current))
+
+    assert decision.status == ("NEEDS_FIX" if category == CATEGORY_IMPLEMENTATION else "NEEDS_TESTS")
+    assert decision.blocker_ids == ("blocker-current",)
+    assert tuple(item.source_identity for item in decision.pending_reconciliation) == (historical.source_identity,)
+    assert not decision.approval_eligible
+
+
+def test_complete_closure_proposal_and_historical_adjudication_do_not_enter_new_repair() -> None:
+    closure = replace(
+        finding("round:fixed", "blocker-fixed", CATEGORY_IMPLEMENTATION),
+        evidence_currency="HISTORICAL",
+        current_observations=(DispositionOutcome(OUTCOME_CLOSURE_PROPOSAL_NOT_ACCEPTED, "round:fixed", "ADDRESSED", "exact current-head FIXED proposal"),),
+    )
+    historical = replace(finding("round:historical", "blocker-historical", CATEGORY_IMPLEMENTATION), evidence_currency="HISTORICAL")
+    raw = ordinary_correction()
+
+    decision = derive_effective_review_decision(raw, projection(closure, historical))
+
+    assert (decision.status, decision.next_action, decision.approval_eligible) == ("NEEDS_FIX", EffectiveNextAction.IMPLEMENTATION_REPAIR, False)
+    assert decision.corrections == ()
+    assert decision.ordinary_findings == tuple(raw.findings)
+    assert tuple(item.source_identity for item in decision.pending_closures) == (closure.source_identity,)
+    assert tuple(item.source_identity for item in decision.pending_reconciliation) == (historical.source_identity,)
+
+
+@pytest.mark.parametrize("problem", ["incomplete", "stale", "ambiguous", "unavailable", "missing_owner", "unknown_state", "unknown_category"])
+def test_independent_ordinary_correction_does_not_bypass_invalid_accepted_authority(problem: str) -> None:
+    historical = replace(finding("round:historical", "blocker-historical", CATEGORY_IMPLEMENTATION), evidence_currency="HISTORICAL")
+    if problem == "stale":
+        historical = replace(historical, target_binding="RECONCILIATION_REQUIRED")
+    elif problem == "ambiguous":
+        historical = replace(historical, association=AMBIGUOUS)
+    elif problem == "unavailable":
+        historical = replace(historical, current_observations=(DispositionOutcome(OUTCOME_UNAVAILABLE, historical.source_identity),))
+    elif problem == "missing_owner":
+        historical = replace(historical, canonical_blocker_id="")
+    elif problem == "unknown_state":
+        historical = replace(historical, accepted_state="UNRECOGNIZED")
+    elif problem == "unknown_category":
+        historical = replace(historical, category="UNSUPPORTED")
+
+    decision = derive_effective_review_decision(ordinary_correction(), projection(historical, complete=problem != "incomplete"))
+
+    assert (decision.status, decision.next_action, decision.approval_eligible) == ("BLOCKED", EffectiveNextAction.RECONCILIATION, False)
+    assert decision.ordinary_findings == ()
+    assert decision.ordinary_gaps == ()
+
+
+@pytest.mark.parametrize("status", ["NEEDS_FIX", "NEEDS_TESTS", "UNSUPPORTED"])
+def test_status_string_without_current_corrective_evidence_does_not_authorize_repair(status: str) -> None:
+    decision = derive_effective_review_decision(result(status), projection())
+
+    assert (decision.status, decision.next_action, decision.approval_eligible) == ("BLOCKED", EffectiveNextAction.RECONCILIATION, False)
+    assert decision.ordinary_findings == ()
+    assert decision.ordinary_gaps == ()
+
+
+def test_unsupported_verdict_cannot_borrow_current_accepted_repair_authority() -> None:
+    current = finding("round:current", "blocker-current", CATEGORY_IMPLEMENTATION)
+
+    decision = derive_effective_review_decision(result("UNSUPPORTED"), projection(current))
+
+    assert (decision.status, decision.next_action, decision.approval_eligible) == ("BLOCKED", EffectiveNextAction.RECONCILIATION, False)
+    assert decision.ordinary_findings == ()
+
+
+def test_invalid_canonical_reference_stays_nonactionable_with_current_accepted_findings() -> None:
+    current = finding("round:current", "blocker-current", CATEGORY_IMPLEMENTATION)
+    raw = ordinary_correction()
+    raw.result = "BLOCKED"
+    raw.diagnostic_category = "correction_reference_invalid"
+
+    decision = derive_effective_review_decision(raw, projection(current))
+
+    assert (decision.status, decision.next_action, decision.approval_eligible) == ("BLOCKED", EffectiveNextAction.OPERATIONAL_WAIT, False)
+    assert decision.ordinary_findings == ()
+    assert decision.ordinary_gaps == ()
+
+
+@pytest.mark.parametrize("problem", ["missing_counterexample", "unverified_finding", "verified_coverage", "unmatched_coverage", "specification_gap", "missing_gap_scope"])
+def test_historical_pending_work_does_not_relax_ordinary_evidence_requirements(problem: str) -> None:
+    historical = replace(finding("round:historical", "blocker-historical", CATEGORY_IMPLEMENTATION), evidence_currency="HISTORICAL")
+    raw = ordinary_correction("NEEDS_TESTS" if problem == "missing_gap_scope" else "NEEDS_FIX")
+    if problem == "missing_counterexample":
+        raw.findings[0].counterexample = ""
+    elif problem == "unverified_finding":
+        raw.findings[0].evidence_classification = "UNVERIFIED"
+    elif problem == "verified_coverage":
+        raw.requirement_coverage[0].status = "VERIFIED"
+    elif problem == "unmatched_coverage":
+        raw.findings[0].requirement_id = "REQ-999"
+    elif problem == "specification_gap":
+        raw.specification_gaps = [SpecificationGap(question="Which behavior is required?")]
+    else:
+        raw.test_oracle_gaps[0].authoritative_boundary = ""
+
+    decision = derive_effective_review_decision(raw, projection(historical))
+
+    assert (decision.status, decision.next_action, decision.approval_eligible) == ("BLOCKED", EffectiveNextAction.RECONCILIATION, False)
+    assert decision.ordinary_findings == ()
+    assert decision.ordinary_gaps == ()
+    assert tuple(item.source_identity for item in decision.pending_reconciliation) == (historical.source_identity,)
+
+
+@pytest.mark.parametrize(("identity_field", "prefix"), [("finding_identity", ""), ("correction_identity", ""), ("correction_identity", "canonical:")])
+def test_historical_accepted_identity_cannot_become_new_repair_through_raw_restatement(identity_field: str, prefix: str) -> None:
+    historical = replace(finding("round:historical", "blocker-historical", CATEGORY_IMPLEMENTATION), evidence_currency="HISTORICAL")
+    raw = ordinary_correction()
+    setattr(raw.findings[0], identity_field, historical.source_identity if identity_field == "finding_identity" else f"{prefix}{historical.canonical_blocker_id}")
+
+    decision = derive_effective_review_decision(raw, projection(historical))
+
+    assert (decision.status, decision.next_action) == ("BLOCKED", EffectiveNextAction.RECONCILIATION)
+    assert decision.corrections == ()
+    assert decision.ordinary_findings == ()
+    assert tuple(item.source_identity for item in decision.pending_reconciliation) == (historical.source_identity,)
+
+
+def test_gap_restatement_cannot_convert_historical_implementation_to_test_repair() -> None:
+    historical = replace(finding("round:historical", "blocker-historical", CATEGORY_IMPLEMENTATION), evidence_currency="HISTORICAL")
+    raw = ordinary_correction("NEEDS_TESTS")
+    raw.test_oracle_gaps[0].correction_identity = f"canonical:{historical.canonical_blocker_id}"
+
+    decision = derive_effective_review_decision(raw, projection(historical))
+
+    assert (decision.status, decision.next_action) == ("BLOCKED", EffectiveNextAction.RECONCILIATION)
+    assert decision.corrections == ()
+    assert decision.ordinary_gaps == ()
+    assert decision.pending_reconciliation[0].category == CATEGORY_IMPLEMENTATION
+
+
+def test_independent_implementation_violation_takes_priority_over_accepted_test_correction() -> None:
+    accepted_gap = finding("round:gap", "blocker-gap", CATEGORY_REGRESSION_GAP)
+    raw = ordinary_correction()
+
+    decision = derive_effective_review_decision(raw, projection(accepted_gap))
+
+    assert (decision.status, decision.next_action) == ("NEEDS_FIX", EffectiveNextAction.IMPLEMENTATION_REPAIR)
+    assert decision.blocker_ids == ("blocker-gap",)
+    assert decision.ordinary_findings == tuple(raw.findings)
+    assert not decision.approval_eligible
