@@ -51,10 +51,10 @@ def _production_scope(engine: AutomationEngine):
     return stack
 
 
-def _install_real_offer(engine: AutomationEngine, github: MagicMock):
+def _install_real_offer(engine: AutomationEngine, github: MagicMock, kind: RepairKind = RepairKind.MERGE_CONFLICT, ci_authority=None):
     def process(_github, _config, repository, data, **_kwargs):
         with local_pr_repair_context(_kwargs["local_repair_context"]):
-            repair = _offer_selected_local_pr_repair(repository, data, RepairKind.MERGE_CONFLICT, github, conflict_eligible=True)
+            repair = _offer_selected_local_pr_repair(repository, data, kind, github, conflict_eligible=True, ci_authority=ci_authority)
         assert repair is not None
         return ProcessedPRResult(data, [repair.reason], outcome=PRProcessingOutcome.DEFERRED, repair_result=repair)
 

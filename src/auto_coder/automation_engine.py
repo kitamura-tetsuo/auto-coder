@@ -7553,18 +7553,35 @@ class AutomationEngine:
                 result.target_outcome = ExplicitTargetOutcome.DEFERRED
                 result.actions = ["Deferred - graceful shutdown began before implementation ownership admission"]
                 return result
-            if explicit_only and candidate.type == "pr" and not force:
+            if explicit_only and candidate.type == "pr":
                 retained = self._get_local_job_store().unsettled_pr_repair(repo_name, item_number)
                 if retained is not None:
-                    retained_execution = retained.implementation_execution_id
-                    if retained_execution and retained_execution in slots.active_execution_ids(owner):
-                        from .pr_repair_dispatch import LocalPRRepairHandoff, PRRepairResult, RepairDisposition, RepairKind
+                    from .pr_repair_dispatch import LocalPRRepairHandoff, PRRepairResult, RepairDisposition, RepairKind
 
-                        claim = self._get_local_job_store().get_pr_repair_claim(retained.job_id)
-                        if claim is None:
-                            result.target_outcome = ExplicitTargetOutcome.DEFERRED
-                            result.error = "Cannot attach explicit processing to retained PR repair authority"
-                            return result
+                    retained_execution = retained.implementation_execution_id
+                    claim = self._get_local_job_store().get_pr_repair_claim(retained.job_id)
+                    execution_restored = False
+                    if claim is not None and retained_execution and retained_execution not in slots.active_execution_ids(owner):
+                        execution_restored = slots.restore_local_pr_repair_execution(retained, owner)
+                    attached = claim is not None and bool(retained_execution) and retained_execution in slots.active_execution_ids(owner)
+                    reason = f"Attached explicit processing to retained local PR repair job {retained.job_id}" if attached else "Cannot attach explicit processing to retained PR repair authority or execution"
+                    _record_pr_stage_result(
+                        item_number,
+                        "pr.repair-delegation",
+                        f"pr#{item_number} local repair admission",
+                        Outcome.DEFERRED,
+                        {
+                            "effect": "local-pr-repair-admission",
+                            "repair_kind": claim.repair_kind if claim is not None else "",
+                            "backend": retained.backend_name,
+                            "admission_status": "retained" if attached else "deferred",
+                            "job_id": retained.job_id if attached else "",
+                            "reason": reason,
+                            "execution_restored": execution_restored,
+                        },
+                    )
+                    if attached:
+                        assert claim is not None
                         kind = RepairKind.CI_FAILURE if retained.kind is LocalJobKind.PR_CI_FAILURE else RepairKind.MERGE_CONFLICT
                         attached_handoff = LocalPRRepairHandoff(
                             retained.job_id,
@@ -7575,7 +7592,6 @@ class AutomationEngine:
                             claim.base_identity,
                             retained_execution,
                         )
-                        reason = f"Attached explicit processing to retained local PR repair job {retained.job_id}"
                         result.repair_result = PRRepairResult(
                             RepairDisposition.DEFERRED,
                             (reason,),
@@ -7586,10 +7602,10 @@ class AutomationEngine:
                             base_ref=claim.base_ref,
                             local_handoff=attached_handoff,
                         )
-                        result.actions = [reason]
-                        result.target_outcome = ExplicitTargetOutcome.DEFERRED
-                        result.target_reason = reason
-                        return result
+                    result.actions = [reason]
+                    result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                    result.target_reason = reason
+                    return result
             execution_id = slots.current_execution_id(owner) if continue_execution else None
             inherited_execution = execution_id is not None
             owner_existed_before_admission = owner in slots.active_owners()

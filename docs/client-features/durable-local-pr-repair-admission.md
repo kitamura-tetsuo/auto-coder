@@ -72,5 +72,11 @@ are `DEFERRED`; only the admitted case carries a job ID. Rejections retain a
 specific operational reason in the log, action result, and dashboard facts,
 including the exception type for unavailable metadata/owner evidence. These
 diagnostics never imply provider entry, publication, CI success, or merge.
+Explicit reattachment to an existing job emits the same stage with
+`admission_status=retained` and `execution_restored` indicating whether its
+never-started execution record had to be restored under the existing owner.
+It retains the original backend and job ID even when the current selection
+policy or the caller's `--force` flag differs. A refused attachment returns its
+specific reason without attempting another admission.
 The real-store/configuration and mounted-detail regressions run with
 `bash scripts/test.sh tests/test_local_pr_repair_admission_regression.py`.

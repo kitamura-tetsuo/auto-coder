@@ -4,7 +4,24 @@ Eligible locally owned CI-failure and merge-conflict repairs are admitted as dur
 
 The ordinary PR worker releases its transient processing and checkout scopes after admission while the durable job retains the resolved logical owner's implementation execution. The repository-scoped local runner later performs model work in its private workspace, and the repair finalizer publishes exact-head artifacts, retires that execution while preserving lifetime ownership, and wakes a fresh PR evaluation. Cloud-owned work, dependency bots, unsupported Jules routes, and green-CI review/merge deferrals retain their existing routing. The supported explicit checked-out-local Jules exception is retained in the immutable job input and revalidated by the runner instead of being flattened into ordinary local ownership.
 
-A missing or contradictory durable ownership read is fail-closed: the execution is retained rather than being retired while a committed handoff may exist. Repeated explicit observations attach to the retained job and execution identity instead of attempting another admission, while ordinary observations use the stable current-head operation identity and cannot infer success from an offer.
+A missing or contradictory durable ownership read is fail-closed: the execution is retained rather than being retired while a committed handoff may exist. Repeated explicit observations, including `--force`, attach to the retained job and execution identity instead of attempting another admission, while ordinary observations use the stable current-head operation identity and cannot infer success from an offer.
+
+Stale-process cleanup preserves execution IDs owned by any unsettled local job,
+even after the accepting controller exits. If an older controller already removed
+a pending PR repair's execution record, explicit processing can restore that same
+ID under the existing idle lifecycle owner. Restoration requires a retained exact
+PR claim, no provider entry or execution incarnation, no competing execution or
+provider session, and matching standalone-PR identity or retained PR membership.
+It cannot recreate a missing lifecycle owner or overwrite another owner. Unknown
+entered work remains deferred for reconciliation. The runner still revalidates
+the original head/base and current routing before editing; attachment is not new
+repair authority or permission to publish a stale candidate.
+
+Retained attachment emits `pr.repair-delegation` with
+`effect=local-pr-repair-admission`, `admission_status=retained`, the original
+backend and job ID, and `execution_restored`. Refused attachment emits `deferred`
+with its operational reason and cannot fall through to a fresh editor. Coverage
+and the mounted dashboard regression are in `tests/test_local_pr_repair_recovery.py`.
 
 The production runner reconstructs CI repairs from the complete immutable offer, including the nested failed-check snapshot captured at admission. Terminal `CANNOT_FIX` and stale-target outcomes settle that exact edit claim and retire only its execution; lifetime ownership and normal retry authorization remain intact for a later independent PR evaluation.
 

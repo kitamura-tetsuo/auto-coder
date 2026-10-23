@@ -2790,6 +2790,31 @@ covers corruption of either ledger and an explicitly disabled repair pool, with 
 job/receipt and the original refusal reason in the collected stage. Strict guard
 regressions additionally preserve exhaustion and required-state errors.
 
+Explicit restart attachment, including `--force`, also emits this stage with
+`admission_status=retained`, the original backend/job ID, and
+`execution_restored`. The latter is true only when a never-started pending
+job's missing execution record was restored under its existing idle lifecycle
+owner. A competing execution, missing claim/owner, or unknown provider entry
+remains `DEFERRED` with the refusal reason and no new admission. Attachment
+does not report editing, publication, or merge completion. The generic detail
+renderer displays the existing facts table without a schema change.
+
+```bash
+bash scripts/test.sh tests/test_local_pr_repair_recovery.py tests/test_local_pr_repair_engine_entry.py tests/test_local_issue_owner_recovery.py
+```
+
+`test_explicit_restart_runs_only_original_pr_job_and_reaches_mounted_detail`
+drives the production explicit entry, real stores, local runner, finalizer and
+mounted detail view for standalone and Issue-owned PRs, with and without a
+missing execution and `--force`. It asserts the original execution/job identity,
+one invocation, deferred outcome, and unchanged lifetime owner. The controlled
+adapter returns `CANNOT_FIX`; settlement is not evidence of a published repair.
+`test_missing_execution_refuses_uncertain_or_competing_authority` verifies that
+refused recovery never reaches a fresh offer or changes slot state.
+`test_dead_pr_controller_retains_every_unsettled_job_execution` checks all three
+PR job kinds and every job state, foreign-repository isolation, and reclamation
+only after settlement or absence of retained responsibility.
+
 ## Local PR repair startup recovery
 
 The existing pending-work snapshot reports retained local PR repair

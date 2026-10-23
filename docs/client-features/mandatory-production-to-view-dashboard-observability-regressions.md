@@ -11,6 +11,14 @@ real configuration and SQLite stores, and mounted detail projection for CI,
 conflict, corrupt-storage, and disabled-backend cases. Run
 `bash scripts/test.sh tests/test_local_pr_repair_admission_regression.py`.
 
+Explicit PR restart attachment uses that stage with `admission_status=retained`
+and `execution_restored`, retaining the original job/backend identity and a
+deferred outcome. `tests/test_local_pr_repair_recovery.py` drives the production
+explicit entry through the real runner/finalizer and mounted detail view, covering
+Issue and standalone owners, missing execution recovery, and `--force` without a
+second offer. Refused or indeterminate recovery cannot imply publication or
+merge completion. Run `bash scripts/test.sh tests/test_local_pr_repair_recovery.py`.
+
 `tests/test_muse_retained_result.py` recovers a retained candidate through the
 production Issue resume route without another editing-model call and verifies
 that `llm.muse-retained-task-reconciliation` reaches the mounted Issue detail

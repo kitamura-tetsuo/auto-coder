@@ -911,7 +911,7 @@ class ImplementationSlotRepository:
         default_root = Path(configured_root) / "state" if configured_root else Path.home() / ".auto-coder"
         default_store = default_root / self.repo_name / "implementation_slots.json"
         try:
-            retained = LocalJobStore().retained_issue_execution_ids(self.repo_name) if self.storage_path.resolve() == default_store.resolve() and any(record.get("executions") for record in owners.values()) and default_local_job_db_path().is_file() else frozenset()
+            retained = LocalJobStore().retained_execution_ids(self.repo_name) if self.storage_path.resolve() == default_store.resolve() and any(record.get("executions") for record in owners.values()) and default_local_job_db_path().is_file() else frozenset()
         except Exception as exc:
             raise ImplementationSlotUnavailable(f"Cannot verify durable local execution responsibility: {exc}") from exc
         removed = []
@@ -930,6 +930,29 @@ class ImplementationSlotRepository:
                 record["executions"] = remaining
                 self._increment_activity_revision(record)
         return tuple(removed)
+
+    def restore_local_pr_repair_execution(self, job: "LocalJobRecord", owner: ImplementationOwner) -> bool:
+        """Reattach a never-started PR job to its existing idle lifecycle owner."""
+        from .local_job_handoff import LocalJobKind, LocalJobState
+
+        if job.repository != self.repo_name or job.kind not in {LocalJobKind.PR_CI_FAILURE, LocalJobKind.PR_MERGE_CONFLICT} or job.state is not LocalJobState.PENDING or job.provider_entered or job.execution_incarnation or not job.implementation_execution_id:
+            return False
+        with self._state_lock():
+            owners = self._read()
+            record = owners.get(owner.key)
+            if record is None or self._execution_snapshots(record, owner.key) or self._string_list(record, "provider_sessions", owner.key):
+                return False
+            if owner.kind == "pr":
+                if owner.number != job.target_number:
+                    return False
+            elif job.target_number not in self._positive_integer_list(record, "implementation_prs", owner.key):
+                return False
+            if any(execution.execution_id == job.implementation_execution_id for key, value in owners.items() for execution in self._execution_snapshots(value, key)):
+                return False
+            record["executions"] = [{"id": job.implementation_execution_id, "local_job_id": job.job_id}]
+            self._increment_activity_revision(record)
+            self._write(owners)
+        return True
 
     def restore_local_issue_execution(self, job: "LocalJobRecord", current_generation: str) -> bool:
         """Restore an exact unretired publication owner, without model admission."""

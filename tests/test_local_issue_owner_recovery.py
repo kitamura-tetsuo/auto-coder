@@ -108,6 +108,6 @@ def test_unreadable_job_authority_does_not_reclaim_execution(retained_result, mo
     def unavailable(_store, _repository):
         raise OSError("durable authority unreadable")
 
-    monkeypatch.setattr(LocalJobStore, "retained_issue_execution_ids", unavailable)
+    monkeypatch.setattr(LocalJobStore, "retained_execution_ids", unavailable)
     with pytest.raises(ImplementationSlotUnavailable, match="Cannot verify durable local execution responsibility"):
         slots.reclaim_stale_executions()
