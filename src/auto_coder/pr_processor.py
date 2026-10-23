@@ -793,19 +793,6 @@ class _SavedReviewPorts:
         return _resume_retained_closure(repository, pr_number, head_sha, inputs, github_client)
 
     @staticmethod
-    def resume_ordinary_correction(request: SavedReviewRequest, inputs: object | None) -> bool:
-        return _resume_saved_ordinary_correction(
-            request.github_client,
-            request.repository,
-            ProcessedPRResult(pr_data=cast(Dict[str, Any], request.pr_data)),
-            cast(Optional[TwoTierGateInputs], inputs),
-            request.actions,
-            request.processing_status,
-            request.config,
-            force=request.force,
-        )
-
-    @staticmethod
     def repair_strong_findings(request: SavedReviewRequest, inputs: object) -> bool:
         return _repair_strong_findings_before_validation(
             request.github_client,
@@ -825,31 +812,229 @@ class _SavedReviewPorts:
     def record_closure_deferral(pr_number: int, head_sha: str, reason: str) -> None:
         _record_pr_stage(pr_number, "pr.ordinary-closure", f"pr#{pr_number} ordinary closure", Outcome.DEFERRED, {"head": head_sha, "reason": reason, "evidence_status": "UNAVAILABLE", "additional_model_execution": False})
 
-    @staticmethod
-    def assess_saved(request: SavedReviewRequest, saved_status: Optional[str], claimed_review_threads: Sequence[object]) -> SavedReviewAssessment:
-        return _assess_saved_review_state_impl(
-            request.repository,
-            cast(Dict[str, Any], request.pr_data),
-            request.head_sha,
-            saved_status,
-            claimed_review_threads,
-            request.force,
-            request.github_client,
-            request.config,
-        )
+    @property
+    def AdversarialValidationAttemptRepository(self) -> Any:
+        return AdversarialValidationAttemptRepository
 
-    @staticmethod
-    def replay_saved(request: SavedReviewRequest, report: str, projection: Optional[AcceptedFindingProjection]) -> SavedReviewReplayResult:
-        feedback, reassess = _replay_saved_nonpass_review_impl(
-            request.github_client,
-            request.repository,
-            cast(Dict[str, Any], request.pr_data),
-            request.head_sha,
-            report,
-            projection,
-            request.config,
-        )
-        return SavedReviewReplayResult(feedback, reassess)
+    @property
+    def DecisionRetentionError(self) -> Any:
+        return DecisionRetentionError
+
+    @property
+    def EffectiveDecisionStore(self) -> Any:
+        return EffectiveDecisionStore
+
+    @property
+    def EffectiveNextAction(self) -> Any:
+        return EffectiveNextAction
+
+    @property
+    def OrdinaryCorrectionEvidence(self) -> Any:
+        return OrdinaryCorrectionEvidence
+
+    @property
+    def Outcome(self) -> Any:
+        return Outcome
+
+    @property
+    def PRProcessingOutcome(self) -> Any:
+        return PRProcessingOutcome
+
+    @property
+    def PRReviewCoordinationResult(self) -> Any:
+        return PRReviewCoordinationResult
+
+    @property
+    def PUBLICATION_CONFIRMED(self) -> Any:
+        return PUBLICATION_CONFIRMED
+
+    @property
+    def PrAdversarialReviewTarget(self) -> Any:
+        return PrAdversarialReviewTarget
+
+    @property
+    def ReviewDisposition(self) -> Any:
+        return ReviewDisposition
+
+    @property
+    def _OrdinaryCorrectionInputsChanged(self) -> Any:
+        return _OrdinaryCorrectionInputsChanged
+
+    @property
+    def _accepted_state_inputs(self) -> Any:
+        return _accepted_state_inputs
+
+    @property
+    def _adversarial_repair_outcome(self) -> Any:
+        return _adversarial_repair_outcome
+
+    @property
+    def _authentic_root_threads(self) -> Any:
+        return _authentic_root_threads
+
+    @property
+    def _closure_review_due(self) -> Any:
+        return _closure_review_due
+
+    @property
+    def _corrective_completion_marker(self) -> Any:
+        return _corrective_completion_marker
+
+    @property
+    def _derive_effective_application(self) -> Any:
+        return _derive_effective_application
+
+    @property
+    def _dispatch_effective_correction(self) -> Any:
+        return _dispatch_effective_correction
+
+    @property
+    def _get_claimed_review_thread_state(self) -> Any:
+        return _get_claimed_review_thread_state
+
+    @property
+    def _get_published_adversarial_validation_status(self) -> Any:
+        return _get_published_adversarial_validation_status
+
+    @property
+    def _ordinary_target_binding(self) -> Any:
+        return _ordinary_target_binding
+
+    @property
+    def _pr_adversarial_policy_identity(self) -> Any:
+        return _pr_adversarial_policy_identity
+
+    @property
+    def _publish_effective_review(self) -> Any:
+        return _publish_effective_review
+
+    @property
+    def _reconcile_failed_adversarial_publication(self) -> Any:
+        return _reconcile_failed_adversarial_publication
+
+    @property
+    def _record_pr_stage(self) -> Any:
+        return _record_pr_stage
+
+    @property
+    def _record_review_wait(self) -> Any:
+        return _record_review_wait
+
+    @property
+    def _retain_effective_decision(self) -> Any:
+        return _retain_effective_decision
+
+    @property
+    def accepted_finding_dispositions(self) -> Any:
+        return accepted_finding_dispositions
+
+    @property
+    def format_adversarial_finding_comment(self) -> Any:
+        return format_adversarial_finding_comment
+
+    @property
+    def format_adversarial_review_summary(self) -> Any:
+        return format_adversarial_review_summary
+
+    @property
+    def format_test_oracle_gap_comment(self) -> Any:
+        return format_test_oracle_gap_comment
+
+    @property
+    def project_accepted_findings(self) -> Any:
+        return project_accepted_findings
+
+    @property
+    def record_reused(self) -> Any:
+        return record_reused
+
+    @property
+    def recover_pending_adversarial_publications(self) -> Any:
+        return recover_pending_adversarial_publications
+
+    @property
+    def replace(self) -> Any:
+        return replace
+
+    @property
+    def SAVED_REVIEW_REUSE(self) -> Any:
+        return SAVED_REVIEW_REUSE
+
+    @property
+    def SAVED_REVIEW_REVALIDATE(self) -> Any:
+        return SAVED_REVIEW_REVALIDATE
+
+    @property
+    def SAVED_REVIEW_WAIT(self) -> Any:
+        return SAVED_REVIEW_WAIT
+
+    @property
+    def _current_ordinary_correction_inputs(self) -> Any:
+        return _current_ordinary_correction_inputs
+
+    @property
+    def _strict_pull_request_target(self) -> Any:
+        return _strict_pull_request_target
+
+    @property
+    def _two_tier_gate_inputs(self) -> Any:
+        return _two_tier_gate_inputs
+
+    @property
+    def closure_attempt_key(self) -> Any:
+        return closure_attempt_key
+
+    @property
+    def closure_projection_readable(self) -> Any:
+        return closure_projection_readable
+
+    @property
+    def closure_ready(self) -> Any:
+        return closure_ready
+
+    @property
+    def evidence_revision(self) -> Any:
+        return evidence_revision
+
+    @property
+    def hashlib(self) -> Any:
+        return hashlib
+
+    @property
+    def outstanding_records(self) -> Any:
+        return outstanding_records
+
+    @property
+    def saved_pass_is_clearance(self) -> Any:
+        return saved_pass_is_clearance
+
+    @property
+    def _ADVERSARIAL_THREAD_HEADINGS(self) -> Any:
+        return _ADVERSARIAL_THREAD_HEADINGS
+
+    @property
+    def _adversarial_feedback_belongs_to_report(self) -> Any:
+        return _adversarial_feedback_belongs_to_report
+
+    @property
+    def _compose_actionable_feedback(self) -> Any:
+        return _compose_actionable_feedback
+
+    @property
+    def _record_handoff_state(self) -> Any:
+        return _record_handoff_state
+
+    @property
+    def _send_adversarial_validation_feedback_to_cloud_task(self) -> Any:
+        return _send_adversarial_validation_feedback_to_cloud_task
+
+    @property
+    def logger(self) -> Any:
+        return logger
+
+    @property
+    def resolve_reviewer_app_identity(self) -> Any:
+        return resolve_reviewer_app_identity
 
 
 def _saved_review_service() -> SavedReviewResumptionService:
@@ -882,201 +1067,6 @@ def _resume_closure_before_admission(
 ) -> Tuple[Optional[RetainedClosureResumption], bool]:
     result = _saved_review_service().resume_before_admission(_saved_review_request(github_client, repo_name, pr_data, head_sha, force, actions, processing_status, config))
     return result.retained_closure, result.stop_processing
-
-
-def _resume_saved_ordinary_correction(
-    github_client: Any,
-    repo_name: str,
-    pr: ProcessedPRResult,
-    inputs: Optional[TwoTierGateInputs],
-    actions: List[str],
-    processing_status: Optional[ProcessedPRResult],
-    config: AutomationConfig,
-    force: bool = False,
-) -> bool:
-    """Resume retained ordinary correction before reviewer admission, including force.
-
-    The normalized producing result survives missing closure data and interrupted
-    publication. Reacquired target, attempt and accepted-source authority govern
-    every replay; neither a GitHub headline nor an audit capture supplies evidence.
-    """
-    pr_data = pr.pr_data
-    pr_number = int(pr_data["number"])
-    head_sha = str((pr_data.get("head") or {}).get("sha") or "")
-    base_sha = str((pr_data.get("base") or {}).get("sha") or "")
-    try:
-        store = EffectiveDecisionStore(repo_name)
-        retained = store.load(pr_number)
-        if retained is not None and retained.head_sha == head_sha and retained.status == "PASS" and retained.next_action == EffectiveNextAction.NONE.value:
-            # The lifecycle already consumed this result as clearance. Its
-            # optional accepted-gap representation is not a saved correction;
-            # pending closure publication keeps its own attempt authority.
-            return False
-        attempts = AdversarialValidationAttemptRepository(repo_name)
-        ordinary = retained.ordinary_correction if retained is not None and retained.head_sha == head_sha else None
-        if ordinary is None and inputs is None:
-            # No current typed or legacy closure evidence can own recovery.
-            # Leave publication observation to the ordinary admission path.
-            return False
-        status, error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, head_sha)
-        if error or status not in {None, "PASS", "BLOCKED", "NEEDS_FIX", "NEEDS_TESTS"}:
-            return False
-        legacy = None
-        if ordinary is None and status == "BLOCKED" and inputs is not None:
-            evidence = inputs.gate.closure_evidence()
-            published_sequence = attempts.latest_published_sequence(pr_number, head_sha)
-            legacy = next((item for item in evidence.evidence.for_pr(pr_number) if item.attempt_sequence == published_sequence and item.head_sha == head_sha and item.ordinary.result in {"NEEDS_FIX", "NEEDS_TESTS"}), None)
-            if legacy is not None:
-                ordinary = OrdinaryCorrectionEvidence(
-                    repository=legacy.repository,
-                    pr_number=legacy.pr_number,
-                    head_sha=legacy.head_sha,
-                    base_sha=legacy.base_sha,
-                    contract_identity=legacy.contract_identity,
-                    policy_identity=legacy.policy_identity,
-                    open_epoch=legacy.open_epoch,
-                    attempt_id=legacy.attempt_id,
-                    attempt_sequence=legacy.attempt_sequence,
-                    strong_round_id=legacy.round_id,
-                    audited_head_sha=legacy.audited_head_sha,
-                    finding_set_revision=legacy.finding_set_revision,
-                    requires_strong_policy=True,
-                    payload=legacy.ordinary.payload,
-                )
-        if ordinary is None:
-            return False
-        raw = ordinary.restore()
-        if raw.result not in {"PASS", "NEEDS_FIX", "NEEDS_TESTS"}:
-            return False
-        bridge, target = _accepted_state_inputs(repo_name, pr_data, head_sha)
-        contract_identity = inputs.contract.identity if inputs is not None else ordinary.contract_identity
-        policy_identity = inputs.policy.identity if inputs is not None else ordinary.policy_identity
-        target = replace(target, contract_identity=contract_identity, policy_identity=policy_identity)
-        # Serialize both admission authorities through publication and dispatch.
-        # A newer ordinary attempt or accepted lifecycle transition must precede
-        # this check or follow the dependent effect, never slip between them.
-        with attempts.serialized_transition(), bridge.cycle.serialized_transition():
-            snapshot = bridge.cycle.snapshot(pr_number)
-            strong = snapshot.accepted_strong_round
-            stale = snapshot.closed or snapshot.active_claim is not None or snapshot.requires_new_strong_round
-            stale = stale or (ordinary.repository, ordinary.pr_number, ordinary.head_sha, ordinary.base_sha, ordinary.contract_identity, ordinary.policy_identity, ordinary.open_epoch, ordinary.strong_round_id, ordinary.audited_head_sha, ordinary.finding_set_revision) != (
-                repo_name,
-                pr_number,
-                head_sha,
-                base_sha,
-                contract_identity,
-                policy_identity,
-                snapshot.open_epoch,
-                strong.round_id if strong is not None else "",
-                strong.head_sha if strong is not None else "",
-                snapshot.finding_set_revision,
-            )
-            if attempts.latest_sequence(pr_number, head_sha) > ordinary.attempt_sequence:
-                if force:
-                    return False
-                raise RuntimeError("a newer ordinary attempt supersedes the retained correction")
-            if stale:
-                # The saved-review gate may admit one bounded fresh review of
-                # changed readable authority. It cannot replay this old payload.
-                return False
-            registered = attempts.get(ordinary.attempt_id)
-            if registered is None or (registered.sequence, registered.pr_number, registered.head_sha) != (ordinary.attempt_sequence, pr_number, head_sha):
-                raise RuntimeError("the producing ordinary attempt is not registered for this target")
-            if _ordinary_target_binding(github_client, repo_name, pr_number, ordinary, config) != (head_sha, base_sha, contract_identity, policy_identity):
-                raise RuntimeError("the PR target or contract changed before saved correction recovery")
-            state = _get_claimed_review_thread_state(github_client, repo_name, pr_number, config=config)
-            if state.lookup_error:
-                raise RuntimeError(state.lookup_error)
-            threads = _authentic_root_threads(repo_name, state)
-            projection = project_accepted_findings(bridge, target, threads)
-            sources = tuple(sorted(item.source_identity for item in projection.records))
-            if legacy is not None:
-                ordinary = replace(ordinary, accepted_sources=sources)
-            elif ordinary.accepted_sources != sources:
-                return False
-            # Completion must use freshly observed lifecycle state. Reapplying
-            # an old STILL_VALID observation first would hide completed work.
-            completion = _corrective_completion_marker(repo_name, pr_data, head_sha, github_client)
-            if completion and _closure_review_due(repo_name, pr_number, head_sha, projection, completion):
-                return False
-            raw.accepted_finding_projection = project_accepted_findings(bridge, target, threads, accepted_finding_dispositions(raw, threads, projection, head_sha))
-            application = _derive_effective_application(repo_name, pr_data, head_sha, raw, threads, github_client)
-            if application is None or application.decision.next_action not in {EffectiveNextAction.IMPLEMENTATION_REPAIR, EffectiveNextAction.FOCUSED_TEST_REPAIR}:
-                return False
-            if retained is not None and not retained.requires_handoff and not (application.decision.ordinary_findings or application.decision.ordinary_gaps):
-                # Repaired association evidence may justify one fresh accepted-
-                # finding assessment, but does not turn an old reconciliation
-                # into independently established ordinary corrective evidence.
-                return False
-            _retain_effective_decision(repo_name, pr_data, head_sha, application, ordinary_evidence=ordinary)
-            published = attempts.latest_published_sequence(pr_number, head_sha) == ordinary.attempt_sequence
-            if not published:
-                recovery = recover_pending_adversarial_publications(repo_name, pr_number)
-                if not recovery.success:
-                    raise RuntimeError(f"retained review publication is pending: {recovery.reason}")
-                published, publication_error = _reconcile_failed_adversarial_publication(github_client, repo_name, pr_number, head_sha, application.result)
-                if not published:
-                    if publication_error:
-                        raise RuntimeError(publication_error)
-                    publication = _publish_effective_review(repo_name, pr_number, head_sha, application.result, None)
-                    if not publication.success:
-                        published, publication_error = _reconcile_failed_adversarial_publication(github_client, repo_name, pr_number, head_sha, application.result)
-                        if not published:
-                            raise RuntimeError(f"retained review publication is unconfirmed: {publication_error or publication.reason}")
-                    recovery = recover_pending_adversarial_publications(repo_name, pr_number)
-                    if not recovery.success:
-                        raise RuntimeError(f"retained review roots are pending: {recovery.reason}")
-                attempts.mark_published(ordinary.attempt_id)
-            store.update(pr_number, publication=PUBLICATION_CONFIRMED)
-            if _ordinary_target_binding(github_client, repo_name, pr_number, ordinary, config) != (head_sha, base_sha, contract_identity, policy_identity):
-                raise RuntimeError("the PR target or contract changed before saved correction handoff")
-            actions.append(f"Resuming {application.decision.status} correction for PR #{pr_number} from retained ordinary attempt {ordinary.attempt_sequence}; no new adversarial validation was started")
-            record_reused(
-                PrAdversarialReviewTarget(repository=repo_name, pr_number=pr_number, head_sha=head_sha),
-                policy_identity=_pr_adversarial_policy_identity(config, True),
-                source_review_id=None,
-                native_verdict=raw.result,
-                attempt_id=ordinary.attempt_id,
-                attempt_sequence=ordinary.attempt_sequence,
-            )
-            result = application.result
-            feedback, facts = _dispatch_effective_correction(
-                github_client,
-                repo_name,
-                pr_data,
-                head_sha,
-                format_adversarial_review_summary(result, head_sha, attached_finding_count=0, attached_test_oracle_gap_count=0),
-                result,
-                application,
-                config,
-                [format_adversarial_finding_comment(finding) for finding in result.findings] + [format_test_oracle_gap_comment(gap) for gap in result.open_test_oracle_gaps],
-                authority_fenced=True,
-            )
-            actions.extend(feedback)
-            if isinstance(actions, PRReviewCoordinationResult):
-                actions.record_disposition(facts["review_disposition"])
-            _record_pr_stage(
-                pr_number,
-                "pr.repair-delegation",
-                f"pr#{pr_number} repair delegation",
-                _adversarial_repair_outcome(feedback, processing_status),
-                {"effect": "adversarial-feedback-replay", "examined_head": head_sha, "source_attempt_sequence": ordinary.attempt_sequence, "additional_model_execution": False, **facts},
-            )
-            return True
-    except _OrdinaryCorrectionInputsChanged:
-        return False
-    except DecisionRetentionError as exc:
-        actions.append(f"Saved ordinary correction for PR #{pr_number} could not be retained or read: {exc}; no dependent effect was emitted")
-        if isinstance(actions, PRReviewCoordinationResult):
-            actions.record_disposition(ReviewDisposition.OPERATIONAL_FAILURE)
-        _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.FAILED, {"examined_head": head_sha, "reason": str(exc), "review_disposition": ReviewDisposition.OPERATIONAL_FAILURE.value})
-        if processing_status is not None:
-            processing_status.outcome = PRProcessingOutcome.FAILED
-            processing_status.error = str(exc)
-        return True
-    except Exception as exc:
-        _record_review_wait(repo_name, pr_number, head_sha, actions, processing_status, f"saved ordinary correction could not be recovered: {exc}")
-        return True
 
 
 def _repair_strong_findings_before_validation(
@@ -4882,17 +4872,6 @@ def _accepted_state_inputs(repo_name: str, pr_data: Dict[str, Any], head_sha: st
     return default_accepted_finding_bridge(repo_name), target
 
 
-def _saved_repair_has_current_evidence(retained: Optional[RetainedDecision], head_sha: str, outstanding: Sequence[AcceptedFindingRecord]) -> bool:
-    """Whether a retained decision accounts for every outstanding accepted finding at this head.
-
-    The effective decision derives a repair for an open accepted finding only from current-target
-    evidence, so its retained record is the durable proof that a saved violation is current.
-    Addressed findings awaiting lifecycle closure are accounted for separately and are not repairs.
-    """
-    repair_actions = {EffectiveNextAction.IMPLEMENTATION_REPAIR.value, EffectiveNextAction.FOCUSED_TEST_REPAIR.value}
-    return retained is not None and retained.head_sha == head_sha and retained.next_action in repair_actions and {record.source_identity for record in outstanding} <= set(retained.source_identities + retained.pending_closure_source_identities + retained.pending_reconciliation_source_identities)
-
-
 def _assess_saved_review_state(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -4914,116 +4893,6 @@ def _assess_saved_review_state(
         config or AutomationConfig(),
     )
     return _saved_review_service().assess(request, saved_status=saved_status, claimed_review_threads=claimed_review_threads)
-
-
-def _assess_saved_review_state_impl(
-    repo_name: str,
-    pr_data: Dict[str, Any],
-    head_sha: str,
-    saved_status: Optional[str],
-    claimed_review_threads: Sequence[Any],
-    force: bool,
-    github_client: Any = None,
-    config: Optional[AutomationConfig] = None,
-) -> SavedReviewAssessment:
-    """Re-acquire accepted-finding applicability before consuming a saved verdict.
-
-    A saved ordinary PASS (including a legacy contradictory one at this SHA) is
-    clearance only while the accepted state is readable and closed for this
-    target. Retained reconciliation work is resumed when its authority or
-    association evidence has changed, and otherwise waits without repeating
-    identical model or repair work.
-    """
-    if saved_status not in {"PASS", "BLOCKED", "NEEDS_FIX", "NEEDS_TESTS"}:
-        return SavedReviewAssessment()
-    try:
-        bridge, target = _accepted_state_inputs(repo_name, pr_data, head_sha)
-        inputs = None
-        if github_client is not None:
-            inputs = _two_tier_gate_inputs(github_client, repo_name, pr_data)
-            if inputs is not None:
-                target = replace(target, contract_identity=inputs.contract.identity, policy_identity=inputs.policy.identity)
-        projection = project_accepted_findings(bridge, target, claimed_review_threads)
-        retained = EffectiveDecisionStore(repo_name).load(target.pr_number)
-        changed_ordinary_inputs = ""
-        # A completed PASS follows saved-verdict clearance and explicit fresh
-        # admission. Replay-specific binding checks belong to unfinished
-        # ordinary evidence, not an already consumed clearance result.
-        if github_client is not None and inputs is None and retained is not None and retained.ordinary_correction is not None and not retained.ordinary_correction.requires_strong_policy and (retained.status != "PASS" or retained.next_action != EffectiveNextAction.NONE.value):
-            metadata = _strict_pull_request_target(github_client, repo_name, target.pr_number)
-            if (metadata["head"]["sha"], metadata["base"]["sha"]) != (target.head_sha, target.base_sha):
-                return SavedReviewAssessment(SAVED_REVIEW_WAIT, "the live PR target changed during saved-decision assessment", projection)
-            current = _current_ordinary_correction_inputs(github_client, repo_name, metadata, config or AutomationConfig())
-            supplied = retained.ordinary_correction.restore().correction_reference_context
-            if supplied is None or (supplied.validation_snapshot, supplied.requirement_manifest_identity) != (current.validation_snapshot, current.requirement_manifest_identity):
-                changed_ordinary_inputs = current.validation_snapshot
-    except (DecisionRetentionError, RuntimeError, ValueError, OSError) as exc:
-        return SavedReviewAssessment(SAVED_REVIEW_WAIT, f"retained effective-decision state is unreadable: {exc}")
-    revision = evidence_revision(projection)
-    if changed_ordinary_inputs:
-        if not closure_projection_readable(projection):
-            return SavedReviewAssessment(SAVED_REVIEW_WAIT, "changed ordinary inputs cannot be reassessed while accepted authority is unreadable or ambiguous", projection)
-        recovery_key = "ordinary-correction-v1:" + hashlib.sha256(f"{revision}:{changed_ordinary_inputs}".encode()).hexdigest()
-        if not force and retained is not None and recovery_key in retained.reconciliation_attempts:
-            return SavedReviewAssessment(SAVED_REVIEW_WAIT, "ordinary recovery was already admitted for these changed validation inputs", projection)
-        return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "changed ordinary Requirements or missing invocation binding require one fresh decision", projection, "" if force else recovery_key)
-    if saved_status == "BLOCKED" and retained is not None and retained.head_sha == head_sha and retained.ordinary_correction is not None and retained.next_action == EffectiveNextAction.OPERATIONAL_WAIT.value:
-        recovery_key = "ordinary-correction-v1:" + revision
-        if force or (closure_projection_readable(projection) and revision != retained.evidence_revision and recovery_key not in retained.reconciliation_attempts):
-            return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "new authority permits one reassessment of the unfinished ordinary result", projection, "" if force else recovery_key)
-        return SavedReviewAssessment(SAVED_REVIEW_WAIT, "the retained ordinary result is unfinished and authorizes no corrective thread replay", projection)
-    if saved_status == "BLOCKED" and (retained is None or (retained.head_sha == head_sha and retained.ordinary_correction is None)):
-        if not closure_projection_readable(projection):
-            return SavedReviewAssessment(SAVED_REVIEW_WAIT, "legacy ordinary evidence cannot be recovered while required authority is unreadable or ambiguous", projection)
-        recovery_key = "ordinary-correction-v1:" + revision
-        if not force and retained is not None and recovery_key in retained.reconciliation_attempts:
-            return SavedReviewAssessment(SAVED_REVIEW_WAIT, "the versioned legacy ordinary recovery was already admitted for this target and evidence", projection)
-        return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "legacy review has no reusable normalized ordinary evidence; one versioned recovery is required", projection, "" if force else recovery_key)
-    resumable = retained is not None and retained.head_sha == head_sha and retained.next_action in {EffectiveNextAction.RECONCILIATION.value, EffectiveNextAction.CLOSURE_ACCEPTANCE.value}
-    if retained is not None and resumable and revision in retained.reconciliation_attempts and not force:
-        return SavedReviewAssessment(SAVED_REVIEW_WAIT, "waiting for new authority or association evidence; the focused reconciliation for this evidence revision was already attempted", projection)
-    if saved_status == "PASS" and not saved_pass_is_clearance(projection):
-        return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "a saved PASS is not clearance while accepted findings are open or their state is unavailable", projection)
-    if saved_status == "PASS" and claimed_review_threads:
-        return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "a saved PASS still has unresolved review threads requiring independent closure", projection)
-    if saved_status in {"NEEDS_FIX", "NEEDS_TESTS"} and retained is not None and retained.ordinary_correction is not None:
-        # Typed evidence is replayed only by its target/attempt-fenced recovery
-        # path. A refused or completed replay must never fall through to the
-        # legacy headline/root path, which cannot validate its authority.
-        if not closure_projection_readable(projection):
-            return SavedReviewAssessment(SAVED_REVIEW_WAIT, "retained ordinary correction authority is unreadable or ambiguous", projection)
-        ordinary = retained.ordinary_correction
-        binding_changed = (ordinary.head_sha, ordinary.base_sha, ordinary.contract_identity, ordinary.policy_identity, ordinary.open_epoch, ordinary.finding_set_revision, ordinary.accepted_sources) != (
-            target.head_sha,
-            target.base_sha,
-            target.contract_identity,
-            target.policy_identity,
-            projection.open_epoch,
-            projection.finding_set_revision,
-            tuple(sorted(item.source_identity for item in projection.records)),
-        )
-        if binding_changed and not force:
-            recovery_key = "ordinary-correction-v1:" + revision
-            if recovery_key in retained.reconciliation_attempts:
-                return SavedReviewAssessment(SAVED_REVIEW_WAIT, "fresh ordinary recovery was already admitted for this changed target and evidence", projection)
-            return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "changed ordinary correction authority requires one fresh current-target decision", projection, recovery_key)
-        return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "retained ordinary correction requires a new current-target decision", projection)
-    if saved_status == "BLOCKED" and resumable:
-        return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "retained reconciliation work has new authority or association evidence", projection)
-    if saved_status == "BLOCKED" and retained is not None and retained.head_sha == head_sha and retained.next_action == EffectiveNextAction.CLOSURE_ACCEPTANCE.value:
-        key = closure_attempt_key(head_sha, projection.finding_set_revision, retained.handoff_generation)
-        marker = _corrective_completion_marker(repo_name, pr_data, head_sha, github_client)
-        if key not in retained.closure_attempts and closure_ready(projection, head_sha, marker):
-            return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "a pending closure acceptance has not completed and may now be attempted", projection)
-    outstanding = outstanding_records(projection)
-    if saved_status in {"NEEDS_FIX", "NEEDS_TESTS"} and projection.complete and outstanding and not _saved_repair_has_current_evidence(retained, head_sha, outstanding):
-        # Open accepted obligations plus a saved violation are not themselves current evidence: the
-        # headline may be a legacy synthesis of the historical finding. Only a retained decision that
-        # derived the repair from this head's evidence authorizes replaying it.
-        return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "the saved nonpassing review is not backed by a retained current-evidence decision for the open accepted findings", projection)
-    if saved_status in {"NEEDS_FIX", "NEEDS_TESTS"} and projection.complete and not outstanding and retained is not None and retained.head_sha == head_sha and retained.source_identities:
-        return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "every accepted correction behind the saved verdict is now closed by its lifecycle owner", projection)
-    return SavedReviewAssessment(SAVED_REVIEW_REUSE, "", projection)
 
 
 def _record_review_wait(
@@ -5302,66 +5171,6 @@ def _replay_saved_nonpass_review(
     request = _saved_review_request(github_client, repo_name, pr_data, head_sha, False, PRActionList(), None, config)
     result = _saved_review_service().replay_nonpass(request, report=report, projection=projection)
     return result.feedback, result.requires_reassessment
-
-
-def _replay_saved_nonpass_review_impl(
-    github_client: Any,
-    repo_name: str,
-    pr_data: Dict[str, Any],
-    head_sha: str,
-    report: str,
-    projection: Optional[AcceptedFindingProjection],
-    config: AutomationConfig,
-) -> Tuple[List[str], bool]:
-    """Resume the outstanding work of a saved NEEDS_FIX/NEEDS_TESTS review.
-
-    Once a delivered correction has completed (a new head, a supported local
-    no-change completion, or changed provider activity) the finding is
-    independently reassessed rather than replayed: the bool asks the caller to
-    re-derive the decision, which reaches bounded closure on the ordinary
-    session's own coverage. Otherwise the correction is routed through the
-    originating route using the already-associated roots and canonical identities.
-    """
-    pr_number = int(pr_data["number"])
-    records = outstanding_records(projection) if projection is not None else ()
-    if projection is not None and records:
-        marker = _corrective_completion_marker(repo_name, pr_data, head_sha, github_client)
-        if marker and _closure_review_due(repo_name, pr_number, head_sha, projection, marker):
-            return [f"The corrective request for PR #{pr_number} completed ({marker.split(':')[0]}); independently reassessing the accepted finding"], True
-    retained = EffectiveDecisionStore(repo_name).load(pr_number)
-    pending_sources = set(retained.pending_closure_source_identities + retained.pending_reconciliation_source_identities) if retained is not None and retained.head_sha == head_sha else set()
-    pending_roots = {root for record in records if record.source_identity in pending_sources for root in record.root_comment_ids}
-    records = tuple(record for record in records if record.source_identity not in pending_sources)
-    bodies, blocker_ids = _compose_actionable_feedback(github_client, repo_name, pr_number, records)
-    if not bodies and github_client is not None:
-        try:
-            replay_threads = github_client.get_pr_review_threads_strict(repo_name, pr_number)
-            reviewer_identity = resolve_reviewer_app_identity(repo_name)
-        except Exception as exc:
-            logger.warning(f"Could not read review threads to check replayability for PR #{pr_number}: {exc}")
-        else:
-            # A published review summarizes its findings and attaches them as threads, so
-            # report-text matching can miss them; reviewer-authored unresolved finding
-            # roots (not marked resolved/invalid by the report) are the feedback to deliver.
-            attached = tuple(
-                thread.comments[0].body
-                for thread in replay_threads
-                if not thread.is_resolved
-                and thread.comments
-                and thread.comments[0].database_id not in pending_roots
-                and thread.comments[0].body.startswith(_ADVERSARIAL_THREAD_HEADINGS)
-                and reviewer_identity.matches_login(thread.comments[0].author_login)
-                and (_adversarial_feedback_belongs_to_report(thread.comments[0].body, report, thread.id) or f"#### `{thread.id}`:" not in report)
-            )
-            if attached:
-                bodies = attached
-            else:
-                return [f"Saved non-passing review for PR #{pr_number} has no actionable unresolved feedback to deliver; revalidating the current head"], True
-    result = _send_adversarial_validation_feedback_to_cloud_task(repo_name, pr_data, head_sha, report, github_client, bodies, config=config, canonical_blocker_ids=blocker_ids)
-    _record_handoff_state(repo_name, pr_data, github_client, result)
-    if projection is not None and records and getattr(result, "local_phase", "") == "completed_no_change" and _closure_review_due(repo_name, pr_number, head_sha, projection, "local:completed_no_change"):
-        return [*result, f"A supported no-change completion was reported for PR #{pr_number}; independently reassessing the accepted finding"], True
-    return result, False
 
 
 def _retain_effective_decision(
