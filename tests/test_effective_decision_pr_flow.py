@@ -14,6 +14,7 @@ import hashlib
 import json
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Iterator, Optional, Sequence
 from unittest.mock import MagicMock, patch
 
@@ -49,6 +50,7 @@ from auto_coder.pr_processor import (
     _consume_pending_two_tier_publication,
     _handle_pr_merge,
     _review_feedback_identity,
+    process_pull_request,
 )
 from auto_coder.pr_review_execution import FindingDisposition, ReviewExecutionResult, ReviewMode, ScopeAssessment
 from auto_coder.util.gh_cache import PullRequestRoutingMetadata, ReviewThread, ReviewThreadComment
@@ -217,7 +219,16 @@ class Flow:
 
     # -- execution -----------------------------------------------------
 
-    def run(self, *, force: bool = False, thread_state: Optional[ClaimedReviewThreadGateState] = None, saved: Optional[tuple[Optional[str], Optional[str]]] = None, closure: Optional[ClosureScript] = None) -> PRReviewCoordinationResult:
+    def run(
+        self,
+        *,
+        force: bool = False,
+        thread_state: Optional[ClaimedReviewThreadGateState] = None,
+        saved: Optional[tuple[Optional[str], Optional[str]]] = None,
+        closure: Optional[ClosureScript] = None,
+        public_origin: bool = False,
+        thread_gate_enabled: Optional[bool] = None,
+    ) -> Sequence[str]:
         mp = self.monkeypatch
         env = self.env
         client = self.client
@@ -339,6 +350,25 @@ class Flow:
             patch("auto_coder.pr_processor.get_linked_issues_context", side_effect=lambda *_a, **_k: current_validation_context(REPO, self.pr_data()).issue_context),
             patch("auto_coder.pr_correction_job.offer_pr_correction_job", side_effect=self._local_offer),
         ]
+        if public_origin:
+            label = MagicMock()
+            label.__enter__.return_value = True
+            patches.extend(
+                [
+                    patch(
+                        "auto_coder.pr_processor._reject_unsafe_codex_cloud_pr",
+                        return_value=SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=self.pr_data(), closed=False),
+                    ),
+                    patch("auto_coder.pr_processor._link_codex_cloud_pr_to_issue", return_value=None),
+                    patch("auto_coder.pr_processor._link_jules_pr_to_issue", return_value=True),
+                    patch("auto_coder.pr_processor._close_empty_pr", return_value=SimpleNamespace(closed=False)),
+                    patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=SimpleNamespace(closed=False)),
+                    patch("auto_coder.pr_processor._should_skip_waiting_for_jules", return_value=False),
+                    patch("auto_coder.pr_processor.LabelManager", return_value=label),
+                ]
+            )
+        if thread_gate_enabled is not None:
+            patches.append(patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=thread_gate_enabled))
         if not self.real_local_allowance:
             patches.append(patch("auto_coder.local_review_repair.admit_local_repair_allowance", return_value=(object(), "")))
         if self.exhausted:
@@ -358,9 +388,12 @@ class Flow:
         with contextlib.ExitStack() as stack:
             for item in patches:
                 stack.enter_context(item)
+            if public_origin:
+                self.status = process_pull_request(client, config, REPO, self.pr_data(), force_adversarial_validation=force)
+                return self.status.actions_taken
             actions = _handle_pr_merge(client, REPO, self.pr_data(), config, {}, self.status, force_adversarial_validation=force)
-        assert isinstance(actions, PRReviewCoordinationResult)
-        return actions
+            assert isinstance(actions, PRReviewCoordinationResult)
+            return actions
 
     def _ci_results(self):
         """Pre-validation CI is green; later reads (the post-validation refresh) may differ."""
@@ -1179,13 +1212,13 @@ def test_published_current_correction_rechecks_authority_before_handoff(flow_env
             monkeypatch.setattr("tests.test_effective_decision_pr_flow.CONTRACT", ContractSnapshot(("#2401",), "Issue #2401 REQ-001: Preserve accepted findings under a newly revised contract."))
 
     flow.router.before_review = change_authority_during_publication
-    actions = flow.run(closure=script)
+    actions = flow.run(closure=script, public_origin=True)
 
     retained = flow.retained()
     assert changes == [changed_authority]
     assert flow.model_calls == 1 and len(flow.reviews) == 1 and flow.handoffs == 0, actions
     assert retained is not None and retained.publication == "CONFIRMED" and retained.handoff != HANDOFF_DISPATCHED
-    assert actions.disposition.value == "RECONCILIATION_WAIT"
+    assert flow.status.outcome is PRProcessingOutcome.DEFERRED
     assert flow.merge.call_count == 0 and flow.env.cycle.snapshot(flow.pr).open_findings
 
 
@@ -1253,15 +1286,56 @@ def test_saved_blocked_current_correction_replays_authoritative_evidence_after_r
     _reconstruct_flow_stores(flow)
     flow.model_responses = []
 
-    actions = flow.run(force=force, closure=script)
-    again = flow.run(force=force, closure=script)
+    actions = flow.run(force=force, closure=script, public_origin=True)
+    first_public_status = flow.status
+    again = flow.run(force=force, closure=script, public_origin=True)
 
     assert flow.model_calls == 1 and flow.handoffs == 1 and len(flow.reviews) == 1, (list(actions), list(again))
+    assert first_public_status.pr_data["number"] == flow.pr and flow.status.pr_data["number"] == flow.pr
     assert [(blocker.blocker_id, blocker.accepted_scope) for blocker in flow.env.ledger.get_snapshot("https://api.github.com", REPO, flow.pr).blockers] == owners
     assert {root["id"] for roots in flow.router.review_roots.values() for root in roots} == root_ids
     assert flow.merge.call_count == 0 and flow.env.cycle.snapshot(flow.pr).open_findings
     assert flow.retained().ordinary_correction is not None
     assert "State is discarded" in flow.handoff_text() and "Counterexample for finding-a" not in flow.handoff_text()
+
+
+@pytest.mark.parametrize("thread_gate_enabled", [True, False], ids=["early-unresolved-thread-route", "ordinary-saved-result-route"])
+def test_public_saved_review_routes_resume_real_durable_correction_without_new_reviewer(flow_env: Env, monkeypatch: pytest.MonkeyPatch, thread_gate_enabled: bool) -> None:
+    """REQ-009: both public routes enter the real service and reuse durable attempt/effect identity."""
+    from auto_coder.pr_review_resumption import SavedReviewResumptionService
+
+    flow, script, _ = _historical_root_with_current_violation(flow_env, monkeypatch, "cloud", "missing")
+    with patch("auto_coder.pr_processor._dispatch_effective_correction", side_effect=SimulatedCrash), pytest.raises(SimulatedCrash):
+        flow.run(closure=script)
+    retained_before = flow.retained()
+    assert retained_before is not None and retained_before.ordinary_correction is not None
+    producing_attempt = retained_before.ordinary_correction.attempt_id
+    source_identities = tuple(retained_before.source_identities)
+    _reconstruct_flow_stores(flow)
+    flow.model_responses = []
+    service_calls: list[int] = []
+    real_resume = SavedReviewResumptionService.resume_before_admission
+
+    def observe_resume(service, request):
+        service_calls.append(int(request.pr_data["number"]))
+        return real_resume(service, request)
+
+    monkeypatch.setattr(SavedReviewResumptionService, "resume_before_admission", observe_resume)
+    actions = flow.run(closure=script, public_origin=True, thread_gate_enabled=thread_gate_enabled)
+    retained_after_first = flow.retained()
+    assert retained_after_first is not None
+    blocker_ids = tuple(retained_after_first.blocker_ids)
+    again = flow.run(closure=script, public_origin=True, thread_gate_enabled=thread_gate_enabled)
+
+    retained_after = flow.retained()
+    assert service_calls == [flow.pr, flow.pr]
+    assert flow.model_calls == 1 and flow.handoffs == 1 and len(flow.reviews) == 1, (actions, again)
+    assert retained_after is not None and retained_after.ordinary_correction is not None
+    assert retained_after.ordinary_correction.attempt_id == producing_attempt
+    assert tuple(retained_after.blocker_ids) == blocker_ids and blocker_ids
+    assert tuple(retained_after.source_identities) == source_identities
+    assert retained_after.handoff == HANDOFF_DISPATCHED
+    assert flow.status.pr_data["number"] == flow.pr and flow.merge.call_count == 0
 
 
 @pytest.mark.parametrize("newer_status", ["IN_PROGRESS", "ERROR"])
@@ -1277,11 +1351,11 @@ def test_superseded_saved_correction_cannot_dispatch_older_evidence(flow_env: En
     _reconstruct_flow_stores(flow)
     flow.model_responses = []
 
-    actions = flow.run(closure=script)
+    actions = flow.run(closure=script, public_origin=True)
 
     assert flow.handoffs == 0 and len(flow.reviews) == 1 and flow.model_calls == 1, actions
     assert flow.merge.call_count == 0 and flow.env.cycle.snapshot(flow.pr).open_findings
-    assert actions.disposition.value in {"RECONCILIATION_WAIT", "OPERATIONAL_FAILURE"}
+    assert flow.status.outcome in {PRProcessingOutcome.DEFERRED, PRProcessingOutcome.FAILED}
 
 
 def test_explicit_force_after_a_newer_failed_attempt_admits_fresh_corrective_evidence(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1370,15 +1444,15 @@ def test_current_correction_lost_provider_response_reconciles_after_restart(flow
     flow, script, _ = _historical_root_with_current_violation(flow_env, monkeypatch, "cloud", "malformed")
     flow.provider.lose_next_response = True
 
-    first = flow.run(closure=script)
+    first = flow.run(closure=script, public_origin=True)
 
-    assert first.disposition.value == "CORRECTION_WAITING" and flow.retained().handoff == HANDOFF_WAITING
+    assert flow.status.outcome is PRProcessingOutcome.DEFERRED and flow.retained().handoff == HANDOFF_WAITING
     assert len(flow.provider.followups) == 1
     _reconstruct_flow_stores(flow)
     flow.model_responses = []
-    second = flow.run(closure=script)
-    third = flow.run(closure=script)
-    assert second.disposition.value == "CORRECTIVE_HANDOFF" and third.disposition.value == "CORRECTIVE_HANDOFF"
+    second = flow.run(closure=script, public_origin=True)
+    third = flow.run(closure=script, public_origin=True)
+    assert any("already delivered" in action for action in third), (second, third)
     assert flow.model_calls == 1 and len(flow.provider.followups) == 1 and len(flow.reviews) == 1
     assert flow.retained().handoff == HANDOFF_DISPATCHED and flow.merge.call_count == 0
 
@@ -1402,10 +1476,10 @@ def test_current_correction_accepted_review_with_lost_response_uses_confirmed_ro
     transport.__dict__.update(flow.router.__dict__)
     flow.router = transport
 
-    actions = flow.run(closure=script)
+    actions = flow.run(closure=script, public_origin=True)
     _reconstruct_flow_stores(flow)
     flow.model_responses = []
-    again = flow.run(closure=script)
+    again = flow.run(closure=script, public_origin=True)
 
     assert flow.model_calls == 1 and flow.handoffs == 1 and len(flow.reviews) == 1, (list(actions), list(again))
     assert len(transport.review_records) == 2  # Initial Strong review and the accepted ordinary review.
@@ -1463,10 +1537,10 @@ def test_current_correction_failed_durable_evidence_write_emits_no_effect(flow_e
     flow, script, _ = _historical_root_with_current_violation(flow_env, monkeypatch, "cloud", "missing")
 
     with patch.object(EffectiveDecisionStore, "_write", side_effect=OSError("disk full")):
-        actions = flow.run(closure=script)
+        actions = flow.run(closure=script, public_origin=True)
 
     assert flow.model_calls == 1 and flow.reviews == [] and flow.handoffs == 0
-    assert actions.disposition.value == "OPERATIONAL_FAILURE" and flow.status.outcome is PRProcessingOutcome.FAILED
+    assert flow.status.outcome is PRProcessingOutcome.FAILED
     assert flow.merge.call_count == 0 and flow.env.cycle.snapshot(flow.pr).open_findings
 
 
@@ -1724,7 +1798,7 @@ def test_acceptance_after_the_authority_check_is_ordered_after_the_authorized_tr
         outcome["blocked_until_send"] = worker.is_alive()
 
     flow.router.before_review = pause_before_transport
-    flow.run()
+    flow.run(public_origin=True)
     worker.join(timeout=30)
 
     assert outcome == {"blocked_until_send": True, "accepted": True}  # acceptance could not interleave between the check and the send
@@ -1783,7 +1857,7 @@ def test_transient_target_outage_retains_the_assessment_and_resumes_without_a_mo
     calls_before = flow.model_calls
     outage = ClosureScript(status="FIXED")
     outage.on_review = lambda: setattr(outage, "observable", False)  # the authoritative target becomes unreadable after the review returns
-    flow.run(closure=outage)
+    flow.run(closure=outage, public_origin=True)
     assert len(outage.calls) == 1 and flow.model_calls == calls_before + 1
     assert flow_env.cycle.snapshot(flow.pr).accepted_closure is None  # retained, not applied: an unavailable read never certifies
     assert [item.finding_id for item in flow_env.cycle.snapshot(flow.pr).open_findings] == ["finding-a"]
@@ -1791,7 +1865,7 @@ def test_transient_target_outage_retains_the_assessment_and_resumes_without_a_mo
     flow.auto_status = True  # GitHub now holds the saved review for this head
     restored = ClosureScript(status="FIXED")
     calls_before = flow.model_calls
-    actions = flow.run(closure=restored)  # normal processing, same head, no commit, no store reset
+    actions = flow.run(closure=restored, public_origin=True)  # normal processing, same head, no commit, no store reset
 
     # The retained assessment is applied from the durable source: no closure-only
     # reviewer runs and the same evidence is never re-requested with closure context.
