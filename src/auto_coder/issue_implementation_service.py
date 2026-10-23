@@ -25,6 +25,7 @@ from .implementation_slots import ImplementationOwner, ImplementationSlotReposit
 from .issue_dispatch import DispatchOutcome
 from .issue_retry_admission import IssueRetryAdmissionService, IssueRetryDisposition, IssueRetryOrigin
 from .issue_stage_routing import ImplementationRetryRequest, IssueStageRoutingStore
+from .local_job_handoff import LocalJobStore
 from .logger_config import get_logger
 from .stale_jules_recovery import find_pending_stale_jules_recovery
 
@@ -68,9 +69,10 @@ class IssueImplementationPorts:
 class IssueImplementationService:
     """Own the Issue execution lifetime from ownership through settlement."""
 
-    def __init__(self, routing: IssueStageRoutingStore, slots: ImplementationSlotRepository) -> None:
+    def __init__(self, routing: IssueStageRoutingStore, slots: ImplementationSlotRepository, local_jobs: Optional[LocalJobStore] = None) -> None:
         self._routing = routing
         self._slots = slots
+        self._local_jobs = local_jobs
 
     def execute(self, request: IssueImplementationRequest, ports: IssueImplementationPorts) -> CandidateProcessingResult:
         owner = ImplementationOwner("issue", request.target_number)
@@ -104,7 +106,7 @@ class IssueImplementationService:
                 if request.manual_retry:
                     if request.retry_request_id is None:
                         raise ValueError("manual retry requires a durable request id")
-                    admission = IssueRetryAdmissionService(self._routing, self._slots).admit(
+                    admission = IssueRetryAdmissionService(self._routing, self._slots, self._local_jobs).admit(
                         request.repository,
                         request.target_number,
                         generation,

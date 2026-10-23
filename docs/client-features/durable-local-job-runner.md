@@ -85,3 +85,11 @@ This recovery never admits another model invocation. Coverage is in
 `tests/test_local_issue_owner_recovery.py`.
 PR controller-death and settled-job reclamation coverage is in
 `tests/test_local_pr_repair_recovery.py`.
+
+An operator's explicit `--only --force --retry` can supersede an unfinished
+Issue job after both its runner and writer group are positively stopped.
+This separate admission path atomically fences the retained continuation and
+records abandonment without manufacturing a result. Files and session history
+remain available, while automatic polling cannot claim the settled job again.
+See `explicit-implementation-retry-production-activation.md` and
+`tests/test_stopped_issue_retry.py` for the exact protected boundaries.

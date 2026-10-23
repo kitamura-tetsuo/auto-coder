@@ -6789,7 +6789,7 @@ class AutomationEngine:
                 owner = ImplementationOwner("issue", item_number)
                 slots = self._get_implementation_slots(repo_name)
                 retained_async_owner = slots.has_provider_sessions(owner)
-                if (slots.active_execution_ids(owner) or (retained_async_owner and not manual_retry)) and not continue_execution:
+                if (slots.active_execution_ids(owner) or retained_async_owner) and not manual_retry and not continue_execution:
                     try:
                         owned_snapshot = self._reconcile_validation_snapshot(
                             repo_name,
@@ -7478,7 +7478,7 @@ class AutomationEngine:
                     },
                 )
 
-            service = IssueImplementationService(self.issue_stage_routing, slots)
+            service = IssueImplementationService(self.issue_stage_routing, slots, self._get_local_job_store() if manual_retry else None)
             request = IssueImplementationRequest(
                 repository=repo_name,
                 target_number=item_number,

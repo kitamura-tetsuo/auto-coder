@@ -1480,6 +1480,62 @@ class LocalJobStore:
             connection.commit()
         return True
 
+    def supersede_stopped_issue_for_retry(self, job: LocalJobRecord, continuation: LocalJobContinuation, request_id: str) -> bool:
+        """Fence an operator-abandoned invocation after its writers are proven dead.
+
+        The caller verifies liveness. This transaction compares the exact observed
+        runner and continuation so a concurrent resume or result wins safely.
+        Settlement records abandonment, without inventing a provider result.
+        """
+        if not request_id or job.kind is not LocalJobKind.ISSUE_IMPLEMENTATION or job.state not in {LocalJobState.RUNNING, LocalJobState.PAUSED} or continuation.job_id != job.job_id or continuation.execution_incarnation != job.execution_incarnation:
+            return False
+        reason = f"Superseded by explicit implementation retry request {request_id}; previous runner and writers stopped"
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "UPDATE local_jobs SET state=?, diagnostic=?, updated_at=? "
+                "WHERE job_id=? AND kind=? AND repository=? AND target_number=? AND execution_incarnation=? "
+                "AND implementation_execution_id=? AND owner_incarnation=? AND owner_generation IS ? AND runner_owner=? AND state=? AND provider_entered=1 AND result_reference='' AND invocation_outcome IS NULL "
+                "AND EXISTS (SELECT 1 FROM local_job_continuations c WHERE c.job_id=local_jobs.job_id "
+                "AND c.execution_incarnation=local_jobs.execution_incarnation AND c.executor_token=? AND c.writer_owner=? "
+                "AND c.state=? AND c.frontier=? AND c.state<>?) "
+                "AND NOT EXISTS (SELECT 1 FROM local_job_results r WHERE r.job_id=local_jobs.job_id AND r.execution_incarnation=local_jobs.execution_incarnation) "
+                "AND NOT EXISTS (SELECT 1 FROM local_job_effects e WHERE e.job_id=local_jobs.job_id AND e.execution_incarnation=local_jobs.execution_incarnation)",
+                (
+                    LocalJobState.SETTLED.value,
+                    reason,
+                    time.time(),
+                    job.job_id,
+                    job.kind.value,
+                    job.repository,
+                    job.target_number,
+                    job.execution_incarnation,
+                    job.implementation_execution_id,
+                    job.owner_incarnation,
+                    job.owner_generation,
+                    job.runner_owner,
+                    job.state.value,
+                    continuation.executor_token,
+                    continuation.writer_owner,
+                    continuation.state.value,
+                    continuation.frontier,
+                    ContinuationState.FINAL_CONFIRMED.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                connection.rollback()
+                return False
+            connection.execute(
+                "UPDATE local_job_continuations SET executor_token=?, state=?, reconciliation_reason=?, updated_at=? WHERE job_id=?",
+                (f"retry:{request_id}:{uuid.uuid4().hex}", ContinuationState.INTERRUPTED.value, reason, time.time(), job.job_id),
+            )
+            connection.execute(
+                "INSERT INTO local_job_effects (job_id, execution_incarnation, name, state, evidence, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (job.job_id, job.execution_incarnation, "explicit-retry-supersession", "completed", request_id, time.time()),
+            )
+            connection.commit()
+        return True
+
     def pause_continuation(self, job: LocalJobRecord, executor_token: str, reason: str) -> bool:
         """Retain an unfinished invocation for an explicit same-session turn."""
         with self._connect() as connection:

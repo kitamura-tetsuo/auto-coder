@@ -18,3 +18,12 @@ the same request may acquire ownership under ordinary capacity rules. The
 typed result distinguishes owned, deferred, stale, and failed admission and
 always carries the durable authority when one could be established. Provider
 acceptance and later publication remain separate downstream transitions.
+
+Manual admission inspects local jobs bound to retained executions before
+accepting a new request. A live or unconfirmed runner/writer defers without
+creating a pending request that could strand the next operator command.
+With positive runner and writer-group settlement, an unfinished local Issue
+job may be superseded under the accepted request. The store atomically fences
+concurrent resumes/results, preserves retained files and invocation uncertainty,
+and records a receipt for crash-safe release of only the predecessor execution.
+Automatic stale-Jules admission does not retire local jobs.

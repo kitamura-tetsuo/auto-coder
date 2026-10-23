@@ -876,11 +876,22 @@ The CLI action carries the same request and attempt identities. A historical
 same-generation tombstone remains visible in durable ownership history but no
 longer turns an otherwise authorized new explicit request into a duplicate
 skip; ordinary wakes and invocations without all three flags remain unchanged.
+When a stopped local predecessor is explicitly superseded, production first
+emits `issue.retry-predecessor-retirement` with outcome `superseded`, the retry
+request, predecessor job, and predecessor execution identities. This records
+operator abandonment only; it is separate from authorization of the new attempt
+and from provider completion/publication. Existing trace projection handles this
+stage without a schema change. The parameterized
+`tests/test_stopped_issue_retry.py::test_stopped_predecessor_retry_reaches_new_attempt_and_mounted_detail`
+drives both running and paused predecessors through production admission and the
+mounted detail view; the same file checks protected live/unknown writers,
+readiness, result checkpoints, concurrent resume, and crash-interrupted receipt
+projection. Run `bash scripts/test.sh tests/test_stopped_issue_retry.py`.
 `tests/test_specification_validation_lifecycle.py::test_manual_retry_retained_provider_admission_and_trace`
 checks the real admission path and emitted authorization for every flag boundary;
 `tests/test_dashboard_observability.py::test_manual_retry_authorization_reaches_mounted_detail`
 checks its mounted detail projection. Run
-`bash scripts/test.sh tests/test_manual_cloud_retry.py tests/test_specification_validation_lifecycle.py tests/test_dashboard_observability.py tests/test_process_issues_cloud_only.py`.
+`bash scripts/test.sh tests/test_stopped_issue_retry.py tests/test_specification_validation_lifecycle.py::test_manual_retry_retained_provider_admission_and_trace tests/test_dashboard_observability.py::test_manual_retry_authorization_reaches_mounted_detail tests/test_process_issues_cloud_only.py`.
 
 Family reconciliation emits `issue.family-discovery` after confirming related
 declarations against validated, cache-aware GitHub reads. Its facts identify

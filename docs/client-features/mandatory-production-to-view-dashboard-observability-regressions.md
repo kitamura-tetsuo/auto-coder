@@ -19,6 +19,15 @@ Issue and standalone owners, missing execution recovery, and `--force` without a
 second offer. Refused or indeterminate recovery cannot imply publication or
 merge completion. Run `bash scripts/test.sh tests/test_local_pr_repair_recovery.py`.
 
+An explicit Issue retry can retire an unfinished local predecessor only with
+positive runner and writer-group settlement. Production emits
+`issue.retry-predecessor-retirement` as `superseded`, retaining request, job,
+and execution identities separately from `issue.manual-retry` authorization.
+`tests/test_stopped_issue_retry.py` crosses the production admission path and
+mounted detail view for both running and paused predecessors, and verifies that
+live/unknown writers, concurrent resume/results, and unreadable evidence cannot
+authorize replacement. Run `bash scripts/test.sh tests/test_stopped_issue_retry.py`.
+
 `tests/test_muse_retained_result.py` recovers a retained candidate through the
 production Issue resume route without another editing-model call and verifies
 that `llm.muse-retained-task-reconciliation` reaches the mounted Issue detail
