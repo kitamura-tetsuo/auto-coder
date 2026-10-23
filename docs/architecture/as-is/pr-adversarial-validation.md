@@ -91,3 +91,7 @@ contexts across the coordinator's final remote-head, CI, thread, current-attempt
 and two-tier checks and through the merge effect. Existing durable review-cycle,
 effective-decision, correction-routing, publication, and merge helpers remain
 the authoritative producers and consumers.
+
+## Saved-review resumption boundary
+
+`pr_review_resumption.py` owns the synchronous pre-admission phase ordering and the typed assessment/replay boundary used by both saved-review routes. It reconciles retained closure before ordinary correction and Strong repair, and its replay result names independent reassessment explicitly. `pr_processor.py` supplies late-bound ports to the existing attempt, accepted-finding, publication, routing, and correction owners; it continues to own reviewer admission, `PRReviewRuntime`, final checks, and merge effects.

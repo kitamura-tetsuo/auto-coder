@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from string import Template
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple, cast
 
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
 from auto_coder.cli_helpers import create_high_score_backend_manager
@@ -145,6 +145,13 @@ from .pr_review_cycle import FindingDisposition as DurableFindingDisposition
 from .pr_review_cycle import NotApplicableError, RoundProvenance, StrongAuditRound, StrongPolicyIdentity
 from .pr_review_effects import CONFIRMED, REJECTED, UNCERTAIN, AcceptedReviewPayload, EffectAttempt, EffectOperation, ReviewEffectExecutor, ReviewEffectRepository
 from .pr_review_execution import ReviewExecutionInput, ReviewMode, execute_review
+from .pr_review_resumption import (
+    RetainedClosureResumption,
+    SavedReviewAssessment,
+    SavedReviewReplayResult,
+    SavedReviewRequest,
+    SavedReviewResumptionService,
+)
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import get_prompt_template, render_prompt
@@ -443,17 +450,6 @@ class ClosureContextCapture:
     """The controller-captured closure context for one ordinary invocation, or why none applies."""
 
     review_input: Optional[ReviewExecutionInput] = None
-    reason: str = ""
-
-
-@dataclass(frozen=True)
-class RetainedClosureResumption:
-    """Outcome of resuming retained closure evidence without any model call."""
-
-    ordinary_pass_retained: bool = False  # a retained, accepted semantic ordinary PASS covers this head
-    retained_record: Optional[ClosureEvidenceRecord] = None  # the accepted source that carries that PASS
-    revalidate: bool = False  # closure is outstanding with no retained evidence: one combined ordinary review is due
-    unavailable: bool = False  # an authoritative read or store failed; pending work is retained
     reason: str = ""
 
 
@@ -785,6 +781,95 @@ def _resume_retained_closure(repo_name: str, pr_number: int, head_sha: str, inpu
     return RetainedClosureResumption(revalidate=True, reason="closure is outstanding and no retained ordinary assessment exists")
 
 
+class _SavedReviewPorts:
+    """Late-bound adapter preserving processor monkeypatch/test boundaries."""
+
+    @staticmethod
+    def resolve_two_tier(github_client: object, repository: str, pr_data: Mapping[str, object]) -> Optional[TwoTierGateInputs]:
+        return _two_tier_gate_inputs(github_client, repository, cast(Dict[str, Any], pr_data))
+
+    @staticmethod
+    def resume_retained_closure(repository: str, pr_number: int, head_sha: str, inputs: TwoTierGateInputs, github_client: object) -> RetainedClosureResumption:
+        return _resume_retained_closure(repository, pr_number, head_sha, inputs, github_client)
+
+    @staticmethod
+    def resume_ordinary_correction(request: SavedReviewRequest, inputs: object | None) -> bool:
+        return _resume_saved_ordinary_correction(
+            request.github_client,
+            request.repository,
+            ProcessedPRResult(pr_data=cast(Dict[str, Any], request.pr_data)),
+            cast(Optional[TwoTierGateInputs], inputs),
+            request.actions,
+            request.processing_status,
+            request.config,
+            force=request.force,
+        )
+
+    @staticmethod
+    def repair_strong_findings(request: SavedReviewRequest, inputs: object) -> bool:
+        return _repair_strong_findings_before_validation(
+            request.github_client,
+            request.repository,
+            cast(Dict[str, Any], request.pr_data),
+            cast(TwoTierGateInputs, inputs),
+            request.actions,
+            request.processing_status,
+            request.config,
+        )
+
+    @staticmethod
+    def record_identity_deferral(pr_number: int, head_sha: str, reason: str) -> None:
+        _record_pr_stage(pr_number, "pr.strong-audit-gate", f"pr#{pr_number} strong-audit gate", Outcome.DEFERRED, {"reason": reason, "phase": "identity-resolution"})
+
+    @staticmethod
+    def record_closure_deferral(pr_number: int, head_sha: str, reason: str) -> None:
+        _record_pr_stage(pr_number, "pr.ordinary-closure", f"pr#{pr_number} ordinary closure", Outcome.DEFERRED, {"head": head_sha, "reason": reason, "evidence_status": "UNAVAILABLE", "additional_model_execution": False})
+
+    @staticmethod
+    def assess_saved(request: SavedReviewRequest, saved_status: Optional[str], claimed_review_threads: Sequence[object]) -> SavedReviewAssessment:
+        return _assess_saved_review_state_impl(
+            request.repository,
+            cast(Dict[str, Any], request.pr_data),
+            request.head_sha,
+            saved_status,
+            claimed_review_threads,
+            request.force,
+            request.github_client,
+            request.config,
+        )
+
+    @staticmethod
+    def replay_saved(request: SavedReviewRequest, report: str, projection: Optional[AcceptedFindingProjection]) -> SavedReviewReplayResult:
+        feedback, reassess = _replay_saved_nonpass_review_impl(
+            request.github_client,
+            request.repository,
+            cast(Dict[str, Any], request.pr_data),
+            request.head_sha,
+            report,
+            projection,
+            request.config,
+        )
+        return SavedReviewReplayResult(feedback, reassess)
+
+
+def _saved_review_service() -> SavedReviewResumptionService:
+    """Construct late so patched production boundaries remain observable in tests."""
+    return SavedReviewResumptionService(_SavedReviewPorts())
+
+
+def _saved_review_request(
+    github_client: Any,
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    head_sha: str,
+    force: bool,
+    actions: List[str],
+    processing_status: Optional[ProcessedPRResult],
+    config: AutomationConfig,
+) -> SavedReviewRequest:
+    return SavedReviewRequest(github_client, repo_name, pr_data, head_sha, force, config, actions, processing_status)
+
+
 def _resume_closure_before_admission(
     github_client: Any,
     repo_name: str,
@@ -795,46 +880,8 @@ def _resume_closure_before_admission(
     processing_status: Optional[ProcessedPRResult],
     config: AutomationConfig,
 ) -> Tuple[Optional[RetainedClosureResumption], bool]:
-    """Resume retained closure evidence before any same-head shortcut or reviewer admission.
-
-    Returns the resumption (None when the strong tier does not apply) and
-    whether processing must stop here because retained evidence is pending on an
-    unavailable observation: that work is retained as a deferral and resumes from
-    the same evidence, never by admitting a reviewer that would supersede it.
-    """
-    pr_number = int(pr_data["number"])
-    try:
-        inputs = _two_tier_gate_inputs(github_client, repo_name, pr_data)
-    except Exception as exc:
-        actions.append(f"Skipping merge for PR #{pr_number}: strong-audit identity could not be resolved: {exc}")
-        _record_pr_stage(pr_number, "pr.strong-audit-gate", f"pr#{pr_number} strong-audit gate", Outcome.DEFERRED, {"reason": str(exc), "phase": "identity-resolution"})
-        return None, True
-    resumption = None
-    if inputs is not None:
-        try:
-            # A retained closure assessment owns completed corrective work.
-            # Reconcile it before an older ordinary/Strong correction can
-            # overwrite that work or redispatch the completed generation.
-            resumption = _resume_retained_closure(repo_name, pr_number, head_sha, inputs, github_client)
-        except Exception as exc:  # an unreadable owning store retains the pending work; it never authorizes or erases it
-            resumption = RetainedClosureResumption(unavailable=True, reason=f"the owning review state could not be read: {exc}")
-    if resumption is not None and resumption.unavailable and not force:
-        actions.append(f"Retained closure evidence for PR #{pr_number} is pending: {resumption.reason}; no reviewer was admitted and the same evidence will be resumed when it is observable again")
-        _record_pr_stage(pr_number, "pr.ordinary-closure", f"pr#{pr_number} ordinary closure", Outcome.DEFERRED, {"head": head_sha, "reason": resumption.reason, "evidence_status": "UNAVAILABLE", "additional_model_execution": False})
-        actions.quota_deferred = True  # type: ignore[attr-defined]
-        actions.retry_not_before = time.time() + 60.0  # type: ignore[attr-defined]
-        if processing_status is not None:
-            processing_status.error = None
-            processing_status.outcome = PRProcessingOutcome.DEFERRED
-            processing_status.retry_not_before = actions.retry_not_before  # type: ignore[attr-defined]
-        return resumption, True
-    if resumption is not None and resumption.ordinary_pass_retained:
-        return resumption, False
-    if _resume_saved_ordinary_correction(github_client, repo_name, ProcessedPRResult(pr_data=pr_data), inputs, actions, processing_status, config, force=force):
-        return None, True
-    if inputs is not None and _repair_strong_findings_before_validation(github_client, repo_name, pr_data, inputs, actions, processing_status, config):
-        return None, True
-    return resumption, False
+    result = _saved_review_service().resume_before_admission(_saved_review_request(github_client, repo_name, pr_data, head_sha, force, actions, processing_status, config))
+    return result.retained_closure, result.stop_processing
 
 
 def _resume_saved_ordinary_correction(
@@ -4829,16 +4876,6 @@ SAVED_REVIEW_REVALIDATE = "REVALIDATE"
 SAVED_REVIEW_WAIT = "WAIT"
 
 
-@dataclass(frozen=True)
-class SavedReviewAssessment:
-    """Whether a saved same-head review headline may be consumed as it stands."""
-
-    action: str = SAVED_REVIEW_REUSE
-    reason: str = ""
-    projection: Optional[AcceptedFindingProjection] = None
-    recovery_key: str = ""
-
-
 def _accepted_state_inputs(repo_name: str, pr_data: Dict[str, Any], head_sha: str) -> Tuple[AcceptedFindingBridge, ProjectionTarget]:
     """The authoritative accepted-finding reader and the current target it is read against."""
     target = ProjectionTarget(repository=repo_name, pr_number=int(pr_data["number"]), head_sha=head_sha, base_sha=str((pr_data.get("base") or {}).get("sha") or ""))
@@ -4857,6 +4894,29 @@ def _saved_repair_has_current_evidence(retained: Optional[RetainedDecision], hea
 
 
 def _assess_saved_review_state(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    head_sha: str,
+    saved_status: Optional[str],
+    claimed_review_threads: Sequence[Any],
+    force: bool,
+    github_client: Any = None,
+    config: Optional[AutomationConfig] = None,
+) -> SavedReviewAssessment:
+    request = _saved_review_request(
+        github_client,
+        repo_name,
+        pr_data,
+        head_sha,
+        force,
+        PRActionList(),
+        None,
+        config or AutomationConfig(),
+    )
+    return _saved_review_service().assess(request, saved_status=saved_status, claimed_review_threads=claimed_review_threads)
+
+
+def _assess_saved_review_state_impl(
     repo_name: str,
     pr_data: Dict[str, Any],
     head_sha: str,
@@ -5231,6 +5291,20 @@ def _rederive_after_refusal(
 
 
 def _replay_saved_nonpass_review(
+    github_client: Any,
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    head_sha: str,
+    report: str,
+    projection: Optional[AcceptedFindingProjection],
+    config: AutomationConfig,
+) -> Tuple[Any, bool]:
+    request = _saved_review_request(github_client, repo_name, pr_data, head_sha, False, PRActionList(), None, config)
+    result = _saved_review_service().replay_nonpass(request, report=report, projection=projection)
+    return result.feedback, result.requires_reassessment
+
+
+def _replay_saved_nonpass_review_impl(
     github_client: Any,
     repo_name: str,
     pr_data: Dict[str, Any],
