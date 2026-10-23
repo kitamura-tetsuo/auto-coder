@@ -49,7 +49,9 @@ from .effective_review_decision import (
     derive_effective_review_decision,
 )
 from .logger_config import get_logger
+from .ordinary_closure_evidence import deserialize_ordinary_result, serialize_ordinary_result
 from .pr_review_cycle import OPEN
+from .pr_review_execution import ReviewExecutionInput
 from .runtime_locks import ensure_lock_directory, lock_path
 
 logger = get_logger(__name__)
@@ -93,6 +95,93 @@ class DecisionRetentionError(RuntimeError):
     """The decision could not be durably retained; dependent effects must not run."""
 
 
+@dataclass(frozen=True)
+class OrdinaryCorrectionEvidence:
+    """Normalized ordinary evidence and the controller authority evaluated by its attempt.
+
+    This is part of the effective-decision record, independent of the optional
+    closure extension. It confers neither closure nor approval and is usable
+    only after its binding has been checked against the current owning stores.
+    """
+
+    version: int = 1
+    repository: str = ""
+    pr_number: int = 0
+    head_sha: str = ""
+    base_sha: str = ""
+    contract_identity: str = ""
+    policy_identity: str = ""
+    open_epoch: int = 0
+    attempt_id: str = ""
+    attempt_sequence: int = 0
+    strong_round_id: str = ""
+    audited_head_sha: str = ""
+    finding_set_revision: int = 0
+    requires_strong_policy: bool = False
+    accepted_sources: tuple[str, ...] = ()
+    payload: str = ""
+
+    def restore(self) -> AdversarialValidationResult:
+        if self.version != 1 or not self.payload:
+            raise DecisionRetentionError("Ordinary correction evidence has an unsupported or missing payload")
+        try:
+            result = deserialize_ordinary_result(self.payload)
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise DecisionRetentionError(f"Ordinary correction evidence is unreadable: {exc}") from exc
+        if (result.attempt_id, result.attempt_sequence) != (self.attempt_id, self.attempt_sequence):
+            raise DecisionRetentionError("Ordinary correction evidence does not match its producing attempt")
+        return result
+
+
+def retain_ordinary_correction(result: AdversarialValidationResult, projection: AcceptedFindingProjection, closure_input: Optional[ReviewExecutionInput] = None, authority: Optional[OrdinaryCorrectionEvidence] = None) -> OrdinaryCorrectionEvidence:
+    """Capture the evaluated binding without relying on a returned closure assessment."""
+    target = projection.target
+    records = projection.records
+    rounds = {record.round_id for record in records}
+    contracts = {record.contract_identity for record in records}
+    policies = {record.policy_identity for record in records}
+    audited_heads = {record.originating_head_sha for record in records}
+    if authority is not None:
+        if (authority.repository, authority.pr_number, authority.head_sha, authority.base_sha, authority.attempt_id, authority.attempt_sequence, authority.open_epoch, authority.finding_set_revision) != (
+            target.repository,
+            target.pr_number,
+            target.head_sha,
+            target.base_sha,
+            result.attempt_id,
+            result.attempt_sequence,
+            projection.open_epoch,
+            projection.finding_set_revision,
+        ):
+            raise DecisionRetentionError("Captured ordinary authority differs from the evaluated context")
+        return replace(authority, accepted_sources=tuple(sorted(record.source_identity for record in records)), payload=serialize_ordinary_result(result, include_closure=True))
+    if closure_input is not None and (closure_input.repository, closure_input.pr_number, closure_input.head_sha, closure_input.base_sha, closure_input.attempt_id, closure_input.attempt_sequence) != (
+        target.repository,
+        target.pr_number,
+        target.head_sha,
+        target.base_sha,
+        result.attempt_id,
+        result.attempt_sequence,
+    ):
+        raise DecisionRetentionError("Captured ordinary context does not match the evaluated target and attempt")
+    return OrdinaryCorrectionEvidence(
+        repository=target.repository,
+        pr_number=target.pr_number,
+        head_sha=target.head_sha,
+        base_sha=target.base_sha,
+        contract_identity=closure_input.contract.identity if closure_input else target.contract_identity or (next(iter(contracts)) if len(contracts) == 1 else ""),
+        policy_identity=closure_input.policy.identity if closure_input else target.policy_identity or (next(iter(policies)) if len(policies) == 1 else ""),
+        open_epoch=closure_input.open_epoch if closure_input else projection.open_epoch,
+        attempt_id=result.attempt_id,
+        attempt_sequence=result.attempt_sequence,
+        strong_round_id=closure_input.round_id if closure_input else (next(iter(rounds)) if len(rounds) == 1 else ""),
+        audited_head_sha=closure_input.audited_head_sha if closure_input else (next(iter(audited_heads)) if len(audited_heads) == 1 else ""),
+        finding_set_revision=closure_input.finding_set_revision if closure_input else projection.finding_set_revision,
+        requires_strong_policy=closure_input is not None,
+        accepted_sources=tuple(sorted(record.source_identity for record in records)),
+        payload=serialize_ordinary_result(result, include_closure=True),
+    )
+
+
 @dataclass
 class RetainedDecision:
     """The durable record of one accepted effective decision and its open work."""
@@ -106,6 +195,8 @@ class RetainedDecision:
     blocker_ids: list[str] = field(default_factory=list)
     source_identities: list[str] = field(default_factory=list)
     pending_closure_source_identities: list[str] = field(default_factory=list)
+    pending_reconciliation_source_identities: list[str] = field(default_factory=list)
+    ordinary_correction: Optional[OrdinaryCorrectionEvidence] = None
     attempt_id: str = ""
     attempt_sequence: int = 0
     source_revision: int = -1
@@ -175,7 +266,18 @@ class EffectiveDecisionStore:
     @staticmethod
     def _decode(raw: dict[str, object]) -> RetainedDecision:
         known = {name for name in RetainedDecision.__dataclass_fields__}
-        return RetainedDecision(**{key: value for key, value in raw.items() if key in known})  # type: ignore[arg-type]
+        values = {key: value for key, value in raw.items() if key in known}
+        ordinary = values.get("ordinary_correction")
+        if ordinary is not None:
+            if not isinstance(ordinary, dict):
+                raise DecisionRetentionError("Retained ordinary correction is not an evidence object")
+            try:
+                evidence = dict(ordinary)
+                evidence["accepted_sources"] = tuple(evidence.get("accepted_sources", ()))
+                values["ordinary_correction"] = OrdinaryCorrectionEvidence(**evidence)
+            except (TypeError, ValueError) as exc:
+                raise DecisionRetentionError(f"Retained ordinary correction is invalid: {exc}") from exc
+        return RetainedDecision(**values)  # type: ignore[arg-type]
 
     def load(self, pr_number: int) -> Optional[RetainedDecision]:
         """Return the retained decision; an unreadable store raises instead of reading as empty."""
@@ -203,29 +305,39 @@ class EffectiveDecisionStore:
         return stamped
 
     def retain(self, record: RetainedDecision) -> RetainedDecision:
-        """Retain a newly accepted decision, carrying forward spent attempts for the same target.
+        """Retain a newly accepted decision without erasing spent target-bound attempts.
 
-        Spent reconciliation/closure attempts and an already confirmed corrective
-        handoff are bound to their evidence revision and head; they are kept only
-        while that identity is unchanged.
+        Reconciliation keys already include their target, so historical keys
+        survive target changes without spending the new target's allowance.
+        Typed ordinary delivery receipts and resolved blocker identities survive
+        re-derivation only for the same producing evidence and correction set.
         """
         previous = self.load(record.pr_number)
-        carried = record
         waiting_actions = {EffectiveNextAction.RECONCILIATION.value, EffectiveNextAction.CLOSURE_ACCEPTANCE.value}
-        if previous is not None and previous.head_sha == record.head_sha:
-            attempts = list(previous.reconciliation_attempts)
-            if record.next_action in waiting_actions and record.evidence_revision not in attempts:
-                attempts.append(record.evidence_revision)
+        attempts = list(previous.reconciliation_attempts) if previous is not None else []
+        for key in record.reconciliation_attempts:
+            if key not in attempts:
+                attempts.append(key)
+        if record.next_action in waiting_actions and record.evidence_revision not in attempts:
+            attempts.append(record.evidence_revision)
+        carried = replace(record, reconciliation_attempts=attempts)
+        if previous is not None and (previous.head_sha, previous.base_sha) == (record.head_sha, record.base_sha):
+            same_producer = previous.ordinary_correction == record.ordinary_correction and (previous.attempt_id, previous.attempt_sequence) == (record.attempt_id, record.attempt_sequence)
+            same_ordinary = record.ordinary_correction is not None and same_producer and previous.next_action == record.next_action and previous.status == record.status and previous.source_identities == record.source_identities and set(record.blocker_ids).issubset(previous.blocker_ids)
+            legacy_continuity = previous.ordinary_correction is None and record.ordinary_correction is None
+            same_delivery = same_ordinary or (legacy_continuity and previous.blocker_ids == record.blocker_ids)
             carried = replace(
-                record,
-                reconciliation_attempts=attempts,
+                carried,
+                blocker_ids=list(previous.blocker_ids) if same_ordinary else list(record.blocker_ids),
                 closure_attempts=list(previous.closure_attempts),
+                # Generations are historical delivery accounting, not a receipt
+                # for the newly derived payload. Resetting them would reuse a
+                # spent closure key after a later confirmed corrective request.
                 handoff_generation=previous.handoff_generation,
-                handoff_observation=previous.handoff_observation,
-                handoff=previous.handoff if previous.blocker_ids == record.blocker_ids and previous.handoff == HANDOFF_DISPATCHED and record.requires_handoff else record.handoff,
+                handoff_observation=previous.handoff_observation if same_ordinary or legacy_continuity else record.handoff_observation,
+                handoff=previous.handoff if same_delivery and previous.handoff == HANDOFF_DISPATCHED and record.requires_handoff else record.handoff,
+                publication=previous.publication if same_producer else record.publication,
             )
-        elif record.next_action in waiting_actions:
-            carried = replace(record, reconciliation_attempts=[record.evidence_revision])
         return self.save(carried)
 
     def update(self, pr_number: int, **changes: object) -> RetainedDecision:
@@ -247,22 +359,51 @@ class EffectiveDecisionStore:
         self.save(replace(previous, closure_attempts=[*previous.closure_attempts, key]))
         return True
 
+    def spend_reconciliation(self, pr_number: int, key: str, head_sha: str, base_sha: str) -> bool:
+        """Atomically admit one legacy recovery before its reviewer can be invoked.
+
+        The key binds the evaluated target and evidence. An older envelope must
+        neither suppress a new target's admission nor have its old binding
+        rewritten to imply that its saved evidence applies to that new target.
+        """
+        try:
+            with self._locked():
+                state = self._read()
+                raw = state.get(str(pr_number))
+                record = self._decode(raw) if raw is not None else RetainedDecision(pr_number=pr_number, head_sha=head_sha, base_sha=base_sha)
+                if key in record.reconciliation_attempts:
+                    return False
+                state[str(pr_number)] = asdict(replace(record, reconciliation_attempts=[*record.reconciliation_attempts, key], updated_at=time.time()))
+                self._write(state)
+                return True
+        except DecisionRetentionError:
+            raise
+        except (OSError, ValueError, TypeError) as exc:
+            raise DecisionRetentionError(f"Legacy ordinary recovery admission could not be retained: {exc}") from exc
+
 
 def evidence_revision(projection: AcceptedFindingProjection) -> str:
     """Identity of the authority/association evidence a reconciliation depends on.
 
-    Head-dependent adjudication (observations, currency) is deliberately absent:
-    an unchanged revision means no new exact evidence exists, so repeating the
-    same reconciliation could not produce a different answer.
+    Storage/CAS counters, publication receipts and repeated observations are
+    deliberately absent. Only relevant accepted-source, availability and exact
+    association facts can renew a spent attempt. Target changes remain visible.
     """
     payload = {
         "complete": projection.complete,
-        "source_revision": projection.source_revision,
+        "target": {
+            **asdict(projection.target),
+            "contract_identity": [projection.target.contract_identity] if projection.target.contract_identity else sorted({record.contract_identity for record in projection.records}),
+            "policy_identity": [projection.target.policy_identity] if projection.target.policy_identity else sorted({record.policy_identity for record in projection.records}),
+        },
         "finding_set_revision": projection.finding_set_revision,
-        "ledger_revision": projection.ledger_revision,
         "open_epoch": projection.open_epoch,
-        "diagnostics": sorted(diagnostic.code for diagnostic in projection.diagnostics),
-        "records": sorted((record.source_identity, record.accepted_state, record.association, record.canonical_blocker_id, record.target_binding, tuple(record.root_comment_ids)) for record in projection.records),
+        "source_available": projection.source_revision >= 0,
+        "diagnostics": sorted((diagnostic.code, diagnostic.source_identity) for diagnostic in projection.diagnostics),
+        "records": sorted(
+            (record.source_identity, record.accepted_state, record.association, record.canonical_blocker_id, record.target_binding, tuple(sorted(record.root_comment_ids)), record.contract_identity, record.policy_identity, record.category, record.ledger_disposition, record.closure_head_sha)
+            for record in projection.records
+        ),
     }
     if not projection.complete and closure_projection_readable(projection):
         # Older consumers spent reconciliation without a reachable independent
@@ -317,10 +458,18 @@ def apply_effective_decision(
     """
     raw = result.raw_model_result or result.result
     status = decision.status
-    findings = list(result.findings)
-    gaps = [replace(gap) for gap in result.test_oracle_gaps]
-    if decision.pending_closures:
-        pending_sources = {item.source_identity for item in decision.pending_closures}
+    corrective = decision.next_action in {EffectiveNextAction.IMPLEMENTATION_REPAIR, EffectiveNextAction.FOCUSED_TEST_REPAIR}
+    findings = list(decision.ordinary_findings) if corrective else list(result.findings)
+    gaps = [replace(gap) for gap in (decision.ordinary_gaps if corrective else result.test_oracle_gaps)]
+    if corrective:
+        actionable_sources = {correction.source_identity for correction in decision.corrections}
+        promoted_gap_ids = {record.known_gap_id for record in projection.records if record.source_identity in actionable_sources and record.category == CATEGORY_REGRESSION_GAP and record.known_gap_id}
+        # Independent normalization may establish an accepted test deliverable
+        # as an implementation violation. Preserve that current representation
+        # under its original gap identity instead of synthesizing another gap.
+        findings.extend(finding for finding in result.findings if promoted_gap_ids.intersection((finding.finding_identity, finding.correction_identity)) and finding not in findings)
+    if decision.pending_closures or decision.pending_reconciliation:
+        pending_sources = {item.source_identity for item in (*decision.pending_closures, *decision.pending_reconciliation)}
         pending_ids = {identity for record in projection.records if record.source_identity in pending_sources for identity in (record.source_identity, record.known_gap_id) if identity}
         findings = [finding for finding in findings if finding.finding_identity not in pending_ids]
         gaps = [gap for gap in gaps if gap.gap_id not in pending_ids]
@@ -355,9 +504,10 @@ class DecisionApplication:
     result: AdversarialValidationResult
     decision: EffectiveReviewDecision
     projection: AcceptedFindingProjection
+    ordinary_result: Optional[AdversarialValidationResult] = None
 
 
-def build_retained_record(decision: EffectiveReviewDecision, projection: AcceptedFindingProjection, head_sha: str, base_sha: str) -> RetainedDecision:
+def build_retained_record(decision: EffectiveReviewDecision, projection: AcceptedFindingProjection, head_sha: str, base_sha: str, ordinary_correction: Optional[OrdinaryCorrectionEvidence] = None) -> RetainedDecision:
     binding = decision.binding
     return RetainedDecision(
         repository=binding.target.repository,
@@ -369,6 +519,8 @@ def build_retained_record(decision: EffectiveReviewDecision, projection: Accepte
         blocker_ids=sorted(decision.blocker_ids),
         source_identities=sorted(correction.source_identity for correction in decision.corrections),
         pending_closure_source_identities=sorted(correction.source_identity for correction in decision.pending_closures),
+        pending_reconciliation_source_identities=sorted(correction.source_identity for correction in decision.pending_reconciliation),
+        ordinary_correction=ordinary_correction,
         attempt_id=binding.validation_attempt_id,
         attempt_sequence=binding.validation_attempt_sequence,
         source_revision=binding.source_revision,
@@ -405,7 +557,7 @@ def derive_application(result: AdversarialValidationResult, projection: Accepted
     """Derive the effective decision and the result that carries it (no side effects)."""
     settled = settle_accepted_gaps(result, projection)
     decision = derive_effective_review_decision(settled, projection)
-    return DecisionApplication(apply_effective_decision(settled, decision, projection), decision, projection)
+    return DecisionApplication(apply_effective_decision(settled, decision, projection), decision, projection, result)
 
 
 @dataclass(frozen=True)

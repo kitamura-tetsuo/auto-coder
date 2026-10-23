@@ -393,14 +393,14 @@ def test_saved_pass_is_clearance_only_for_readable_closed_state(env: Env) -> Non
     assert saved_pass_is_clearance(env.bridge().project(env.target(pr, h2)))
 
 
-def test_evidence_revision_ignores_head_adjudication_but_tracks_authority_and_association(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_evidence_revision_tracks_target_authority_and_association_without_storage_bookkeeping(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
     pr = 4202
     save_empty_session(env, pr)
     inputs = accept_strong(env, pr, [finding_json("finding-a")])
     bridge = env.bridge()
     first = evidence_revision(bridge.project(env.target(pr)))
     assert evidence_revision(bridge.project(env.target(pr))) == first  # idempotent reads share a revision
-    assert evidence_revision(bridge.project(env.target(pr, _commit(env.worktree, "other-head")))) == first
+    assert evidence_revision(bridge.project(env.target(pr, _commit(env.worktree, "other-head")))) != first
 
     strong = env.cycle.snapshot(pr).accepted_strong_round
     assert strong is not None

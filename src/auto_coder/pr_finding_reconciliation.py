@@ -36,6 +36,15 @@ from .canonical_pr_blocker_ledger import (
 )
 from .execution_trace import EventKind, Outcome, get_trace_collector
 from .logger_config import get_logger
+from .ordinary_correction_references import (
+    ORDINARY_LABEL_ALIAS,
+    ORDINARY_OBSERVATION_ALIAS,
+    correction_scope_fingerprint,
+    qualified_requirements,
+    reference_target_error,
+    requirement_identities,
+    validate_correction_reference,
+)
 
 logger = get_logger(__name__)
 
@@ -331,7 +340,7 @@ def extract_observation_candidate_from_finding(
     boundary = finding.anchor_path or finding.reachability or "repository"
     incorrect_behavior = finding.actual_behavior or finding.counterexample or finding.evidence or "Demonstrated specification violation"
     required_outcome = finding.required_behavior or finding.suggested_regression_scenario or "Corrective behavior according to specification"
-    obs_id = finding.finding_identity or finding.correction_identity or f"obs_{uuid.uuid4().hex[:8]}"
+    obs_id = finding.finding_identity or finding.correction_identity or "obs_" + hashlib.sha256(json.dumps([req_ids, boundary, incorrect_behavior, required_outcome]).encode()).hexdigest()[:16]
 
     return ObservationCandidate(
         source_type="FINDING",
@@ -355,7 +364,7 @@ def extract_observation_candidate_from_gap(
     boundary = gap.authoritative_boundary or gap.anchor_path or "repository"
     incorrect_behavior = gap.invariant or gap.plausible_incorrect_implementation or "Missing regression test protection"
     required_outcome = gap.focused_regression_scenario or gap.material_consequence or "Add focused regression test"
-    obs_id = gap.gap_id or f"gap_{uuid.uuid4().hex[:8]}"
+    obs_id = gap.gap_id or "gap_" + hashlib.sha256(json.dumps([req_ids, boundary, incorrect_behavior, required_outcome]).encode()).hexdigest()[:16]
 
     return ObservationCandidate(
         source_type="TEST_ORACLE_GAP",
@@ -510,7 +519,7 @@ def scopes_describe_same_blocker(
         return False
 
     cand_reqs = set(cand.requirement_ids)
-    blk_reqs = {r.requirement_id for r in blocker.qualified_requirements}
+    blk_reqs = {r.requirement_id for r in blocker.qualified_requirements} | set(requirement_identities(blocker.qualified_requirements))
     if cand_reqs and blk_reqs:
         if not cand_reqs.intersection(blk_reqs):
             return False
@@ -581,6 +590,111 @@ def _record_split(pr_number: int, reason: str) -> None:
         logger.debug(f"Diagnostic trace recording failed for pr#{pr_number} finding split")
 
 
+def _observation_alias(cand: ObservationCandidate, api_origin: str, repo_name: str, pr_number: int, head_sha: str, base_sha: str, attempt_id: str) -> BlockerAlias:
+    """Bind an accepted observation to its causal input, independent of CAS counters."""
+    identity = [api_origin, repo_name, pr_number, head_sha, base_sha, attempt_id, asdict(cand)]
+    return BlockerAlias(alias_type=ORDINARY_OBSERVATION_ALIAS, alias_value=hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest())
+
+
+def _label_alias(cand: ObservationCandidate) -> BlockerAlias:
+    observation = cand.finding_ref or cand.gap_ref
+    label = json.dumps([cand.source_type, cand.observation_identity, observation.correction_identity if observation else ""], separators=(",", ":"))
+    return BlockerAlias(alias_type=ORDINARY_LABEL_ALIAS, alias_value=label)
+
+
+def _canonical_reference_error(
+    cand: ObservationCandidate,
+    result: AdversarialValidationResult,
+    snapshot: BlockerLedgerSnapshot,
+    head_sha: str,
+    base_sha: str,
+) -> tuple[Optional[str], str]:
+    observation = cand.finding_ref or cand.gap_ref
+    if observation is None:
+        return None, ""
+    reference, error = validate_correction_reference(
+        result.correction_reference_context,
+        observation.correction_identity,
+        observation.correction_scope_fingerprint,
+        observation.correction_context_fingerprint,
+        cand.requirement_ids,
+        cand.authoritative_boundary,
+        cand.category,
+    )
+    if error or reference is None:
+        return None, error
+    context = result.correction_reference_context
+    assert context is not None
+    error = reference_target_error(context, snapshot.api_origin, snapshot.repository, snapshot.pr_number, head_sha, base_sha)
+    if error:
+        return None, error
+    blocker = snapshot.get_blocker(reference.blocker_id)
+    if blocker is None or blocker not in snapshot.get_open_blockers() or correction_scope_fingerprint(blocker) != reference.scope_fingerprint:
+        return None, "Canonical correction reference no longer identifies the supplied open accepted scope"
+    if blocker.category != reference.category and {blocker.category, reference.category} != {"IMPLEMENTATION", "TEST_ORACLE"}:
+        return None, "Canonical correction reference category no longer matches the supplied scope"
+    if cand.gap_ref and cand.gap_ref.gap_id:
+        owners = snapshot.get_blockers_for_alias("test_oracle_gap", cand.gap_ref.gap_id)
+        if any(owner.blocker_id != blocker.blocker_id for owner in owners):
+            return None, "Canonical correction reference contradicts retained test-gap ownership"
+    if cand.finding_ref and cand.finding_ref.finding_identity:
+        for alias_type in (SOURCE_ALIAS_TYPE, "test_oracle_gap"):
+            owners = snapshot.get_blockers_for_alias(alias_type, cand.finding_ref.finding_identity)
+            if any(owner.blocker_id != blocker.blocker_id for owner in owners):
+                return None, "Canonical correction reference contradicts retained source ownership"
+    return blocker.blocker_id, ""
+
+
+def _ordinary_observation_candidates(result: AdversarialValidationResult, issue_number: int = 0) -> tuple[ObservationCandidate, ...]:
+    return tuple(extract_observation_candidate_from_finding(finding, issue_number) for finding in result.findings) + tuple(extract_observation_candidate_from_gap(gap, issue_number) for gap in result.open_test_oracle_gaps)
+
+
+class UnrecordedOrdinaryObservationError(AssociationAmbiguityError):
+    """An ordinary observation has no accepted causal alias in this namespace."""
+
+
+def ordinary_observation_owners(
+    snapshot: BlockerLedgerSnapshot,
+    repo_name: str,
+    pr_number: int,
+    head_sha: str,
+    base_sha: str,
+    result: AdversarialValidationResult,
+) -> tuple[str, ...]:
+    """Read accepted ordinary ownership without reconciliation or ledger writes.
+
+    The head, base and result attempt must be those used by the publisher. Missing
+    causal aliases have a distinct error so an authenticated legacy root can be
+    resolved separately; ambiguous, closed or contradictory owners never acquire
+    authority from a fallback. Root availability is checked by the handoff caller.
+    """
+    if snapshot.repository != repo_name or snapshot.pr_number != pr_number:
+        raise AssociationAmbiguityError("Ordinary observation ownership belongs to another PR namespace")
+    owners: list[str] = []
+    missing = False
+    open_ids = {blocker.blocker_id for blocker in snapshot.get_open_blockers()}
+    for candidate in _ordinary_observation_candidates(result):
+        canonical_owner, error = _canonical_reference_error(candidate, result, snapshot, head_sha, base_sha)
+        if error:
+            raise AssociationAmbiguityError(error)
+        alias = _observation_alias(candidate, snapshot.api_origin, repo_name, pr_number, head_sha, base_sha, result.attempt_id)
+        matches = snapshot.get_blockers_for_alias(alias.alias_type, alias.alias_value)
+        if not matches:
+            missing = True
+            continue
+        if len(matches) != 1:
+            raise AssociationAmbiguityError("Ordinary observation has ambiguous retained ownership")
+        owner = matches[0].blocker_id
+        if owner not in open_ids:
+            raise AssociationAmbiguityError("Ordinary observation owner is no longer open")
+        if canonical_owner is not None and canonical_owner != owner:
+            raise AssociationAmbiguityError("Ordinary observation contradicts its retained canonical owner")
+        owners.append(owner)
+    if missing:
+        raise UnrecordedOrdinaryObservationError("Ordinary observation has no accepted causal ownership mapping")
+    return tuple(dict.fromkeys(owners))
+
+
 # ---------------------------------------------------------------------------
 # High-Level Reconciliation Coordinator (REQ-001, REQ-004, REQ-005, REQ-010)
 # ---------------------------------------------------------------------------
@@ -636,11 +750,17 @@ def reconcile_pr_findings_before_publication(
         )
     snapshot = ledger.get_snapshot(api_origin, repo_name, pr_number, require_retained_state=True)
 
-    candidates: list[ObservationCandidate] = []
-    for finding in val_result.findings:
-        candidates.append(extract_observation_candidate_from_finding(finding, issue_number))
-    for gap in val_result.open_test_oracle_gaps:
-        candidates.append(extract_observation_candidate_from_gap(gap, issue_number))
+    candidates = _ordinary_observation_candidates(val_result, issue_number)
+
+    # Validate every explicit reference before admitting any new observation.
+    # A contradictory reference must not quietly become another correction.
+    canonical_owners: dict[int, str] = {}
+    for index, cand in enumerate(candidates):
+        owner, reference_error = _canonical_reference_error(cand, val_result, snapshot, head_sha, base_sha)
+        if reference_error:
+            return FindingReconciliationResult(snapshot=snapshot, is_ambiguous=True, ambiguity_reason=reference_error)
+        if owner:
+            canonical_owners[index] = owner
 
     already_rooted: list[str] = []
     unrooted: list[str] = []
@@ -651,15 +771,22 @@ def reconcile_pr_findings_before_publication(
     unrooted_gaps: list[TestOracleGap] = []
 
     finding_idx = 0
-    for cand in candidates:
+    for candidate_index, cand in enumerate(candidates):
         open_blockers = snapshot.get_open_blockers()
         all_blockers = snapshot.blockers
 
-        matched_blocker_id: Optional[str] = None
+        matched_blocker_id: Optional[str] = canonical_owners.get(candidate_index)
+        canonical_reference = matched_blocker_id is not None
+        observation_alias = _observation_alias(cand, snapshot.api_origin, repo_name, pr_number, head_sha, base_sha, attempt_id)
+        replay_owners = snapshot.get_blockers_for_alias(observation_alias.alias_type, observation_alias.alias_value)
+        if len(replay_owners) > 1 or replay_owners and matched_blocker_id and replay_owners[0].blocker_id != matched_blocker_id:
+            return FindingReconciliationResult(snapshot=snapshot, is_ambiguous=True, ambiguity_reason="Ordinary observation has contradictory retained ownership")
+        if replay_owners:
+            matched_blocker_id = replay_owners[0].blocker_id
         retained_split = _retained_split(cand, open_blockers)
-        if retained_split is not None:
+        if not matched_blocker_id and retained_split is not None:
             matched_blocker_id = retained_split.blocker_id
-        if cand.gap_ref and cand.gap_ref.gap_id:
+        if not matched_blocker_id and cand.gap_ref and cand.gap_ref.gap_id:
             for b in all_blockers:
                 for alias in b.aliases:
                     if alias.alias_type == "test_oracle_gap" and alias.alias_value == cand.gap_ref.gap_id:
@@ -693,37 +820,53 @@ def reconcile_pr_findings_before_publication(
             split_aliases.append(_split_scope_alias(cand))
             decision = ReconciliationDecision.DISTINCT_DEFECT
 
-        if decision == ReconciliationDecision.ASSOCIATE and associated_id:
+        if replay_owners:
+            # The exact causal observation has already been committed, including
+            # its aliases. Publication receipts or unrelated writes cannot renew it.
+            effective_id = replay_owners[0].blocker_id
+        elif decision == ReconciliationDecision.ASSOCIATE and associated_id:
             effective_id = associated_id
             justified_transition = False
             transition_reason = ""
             target_blocker = snapshot.get_blocker(effective_id)
-            if target_blocker and target_blocker.category != cand.category:
+            effective_category = target_blocker.category if canonical_reference and target_blocker is not None and target_blocker.category == "IMPLEMENTATION" else cand.category
+            if target_blocker and target_blocker.category != effective_category:
                 justified_transition = True
-                transition_reason = f"Justified category transition from {target_blocker.category} to {cand.category}"
+                transition_reason = f"Justified category transition from {target_blocker.category} to {effective_category}"
 
             # An exact identity match preserves the blocker's original authoritative boundary; the
             # observation may name it differently (a finding anchors to a file, a gap to a boundary).
             boundary = target_blocker.authoritative_boundary if matched_blocker_id and target_blocker is not None and target_blocker.authoritative_boundary else cand.authoritative_boundary
+            aliases = [observation_alias, _label_alias(cand)]
+            if cand.gap_ref and cand.gap_ref.gap_id:
+                aliases.append(BlockerAlias(alias_type="test_oracle_gap", alias_value=cand.gap_ref.gap_id))
+            if target_blocker is not None:
+                aliases = [alias for alias in aliases if not any(existing.alias_type == alias.alias_type and existing.alias_value == alias.alias_value for existing in target_blocker.aliases)]
+            observation_evidence = json.dumps({"actual_behavior": cand.incorrect_behavior_or_invariant, "required_outcome": cand.required_outcome, "evidence": cand.evidence}, sort_keys=True) if canonical_reference else cand.evidence
             payload = BlockerAdmissionPayload(
-                category=cand.category,
-                qualified_requirements=tuple(QualifiedRequirement(issue_number=issue_number, requirement_id=r) for r in cand.requirement_ids),
+                category=effective_category,
+                qualified_requirements=qualified_requirements(cand.requirement_ids, issue_number),
                 authoritative_boundary=boundary,
                 incorrect_behavior_or_missing_invariant=cand.incorrect_behavior_or_invariant,
                 required_correction_outcome=cand.required_outcome,
                 evidence_needed=cand.required_outcome,
                 original_objective_anchor=cand.original_objective_anchor,
-                accepted_scope=CorrectionScope(
-                    description=cand.incorrect_behavior_or_invariant,
-                    concern_ids=(cand.observation_identity,),
+                accepted_scope=(
+                    target_blocker.accepted_scope
+                    if canonical_reference and target_blocker is not None
+                    else CorrectionScope(
+                        description=cand.incorrect_behavior_or_invariant,
+                        concern_ids=(cand.observation_identity,),
+                    )
                 ),
-                evidence=cand.evidence,
+                aliases=tuple(aliases),
+                evidence=observation_evidence,
                 reviewed_head_sha=head_sha,
                 reviewed_base_sha=base_sha,
                 review_attempt_id=attempt_id,
                 observation_identity=cand.observation_identity,
             )
-            op_id = f"reconcile_{uuid.uuid4().hex[:10]}"
+            op_id = f"ordinary_reconcile_{observation_alias.alias_value}"
             try:
                 effective_id, snapshot = ledger.reconcile_observation(
                     api_origin,
@@ -732,10 +875,10 @@ def reconcile_pr_findings_before_publication(
                     operation_id=op_id,
                     expected_ledger_revision=snapshot.ledger_revision,
                     candidate_payload=payload,
-                    blocker_ids_considered=tuple(b.blocker_id for b in open_blockers),
+                    blocker_ids_considered=(effective_id,),
                     decision=ReconciliationDecision.ASSOCIATE,
                     associated_blocker_id=effective_id,
-                    evidence=cand.evidence,
+                    evidence=observation_evidence,
                     review_observation_identity=cand.observation_identity,
                     justified_category_transition=justified_transition,
                     category_transition_reason=transition_reason,
@@ -747,13 +890,13 @@ def reconcile_pr_findings_before_publication(
                     ambiguity_reason=str(exc),
                 )
         else:
-            aliases_to_add: list[BlockerAlias] = list(split_aliases)
+            aliases_to_add: list[BlockerAlias] = [*split_aliases, observation_alias, _label_alias(cand)]
             if cand.gap_ref and cand.gap_ref.gap_id:
                 aliases_to_add.append(BlockerAlias(alias_type="test_oracle_gap", alias_value=cand.gap_ref.gap_id))
 
             payload = BlockerAdmissionPayload(
                 category=cand.category,
-                qualified_requirements=tuple(QualifiedRequirement(issue_number=issue_number, requirement_id=r) for r in cand.requirement_ids),
+                qualified_requirements=qualified_requirements(cand.requirement_ids, issue_number),
                 authoritative_boundary=cand.authoritative_boundary,
                 incorrect_behavior_or_missing_invariant=cand.incorrect_behavior_or_invariant,
                 required_correction_outcome=cand.required_outcome,
@@ -770,7 +913,7 @@ def reconcile_pr_findings_before_publication(
                 review_attempt_id=attempt_id,
                 observation_identity=cand.observation_identity,
             )
-            op_id = f"admit_{uuid.uuid4().hex[:10]}"
+            op_id = f"ordinary_admit_{observation_alias.alias_value}"
             effective_id, snapshot = ledger.admit_blocker(
                 api_origin,
                 repo_name,

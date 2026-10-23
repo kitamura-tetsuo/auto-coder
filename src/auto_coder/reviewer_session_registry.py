@@ -17,6 +17,9 @@ class TestOracleGap:
     __test__: ClassVar[bool] = False
 
     gap_id: str = ""
+    correction_identity: str = ""
+    correction_scope_fingerprint: str = ""
+    correction_context_fingerprint: str = ""
     requirement_id: str = ""
     requirement_text: str = ""
     authoritative_boundary: str = ""

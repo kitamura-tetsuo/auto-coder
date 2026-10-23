@@ -36,9 +36,45 @@ same-head replay without another reviewer or delivery. Its companion
 `test_missing_closure_assessment_waits_at_the_same_head_without_repeating_validation`
 checks deferred closure recovery and explicit-force eligibility.
 
+The same repair disposition applies when a historical native thread has already
+been resolved but its accepted Strong obligation still lacks current adjudication.
+`test_resolved_historical_root_does_not_suppress_current_correction_or_repeat_reviews`
+drives that transition with complete, missing and malformed closure assessments,
+for Codex Cloud and local routes, while reconstructing durable stores between
+polls. It checks the emitted repair-delegation facts and one reviewer, one native
+review, one new root and one corrective request; local allowance state remains
+identical after the first admission. Historical closure and reconciliation source
+lists remain separate from the dispatched correction identities.
+`test_same_boundary_historical_owner_never_enters_current_canonical_repair_bundle`
+checks that the actual persisted repair bundle selects only the current owner
+even when the historical owner shares the exact file boundary. No APPROVE or
+merge-completion event is permitted by this handoff.
+
+Normalized corrective evidence now survives independently of the optional
+closure extension in the existing effective-decision record. The interruption,
+legacy-envelope recovery and receipt-loss regressions in
+`tests/test_effective_decision_pr_flow.py` exercise the actual shared coordinator,
+authenticated publisher and original provider boundary. Saved evidence emits the
+existing `adversarial-feedback-replay` effect with
+`additional_model_execution=false`; a legacy record without reusable evidence
+may admit one bounded recovery review and then uses the normal retained path.
+Route, quota, allowance and uncertain-delivery cases remain `CORRECTION_WAITING`,
+unavailable decision persistence remains `OPERATIONAL_FAILURE`, and retained
+historical adjudication without actionable evidence remains `RECONCILIATION_WAIT`.
+Semantic retry novelty excludes identical observation and publication bookkeeping;
+the ledger revision still fences concurrent writes and approval. These changes
+reuse the same trace schema and dashboard renderer. The bounded command above
+includes the new recovery and effect-count regressions.
+`test_genuinely_ambiguous_association_spends_one_focused_attempt_per_evidence_revision`
+keeps fresh admission observable after a relevant association is repaired, while
+`test_transient_target_outage_retains_the_assessment_and_resumes_without_a_model_call`
+resumes the owning lifecycle's retained closure without another reviewer.
+
 `test_saved_blocked_violation_recovers_to_repair_before_force_can_start_validation`
 exercises historical BLOCKED recovery with local/cloud origins and automatic/
-forced admission, including newer unpublished failed attempts. It uses the
+forced admission while the producing attempt remains applicable. The separate
+`test_superseded_saved_correction_cannot_dispatch_older_evidence` refuses replay
+after a newer registered attempt, including a failed unpublished attempt. It uses the
 existing repair-delegation stage with `effect=adversarial-feedback-replay`,
 `source_attempt_sequence` and `additional_model_execution=false`. No new event
 schema or renderer is required: delivery uses the existing handoff/wait facts;

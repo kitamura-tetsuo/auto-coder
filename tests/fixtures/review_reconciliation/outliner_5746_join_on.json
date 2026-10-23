@@ -1,0 +1,71 @@
+{
+  "source_pull_request": "https://github.com/kitamura-tetsuo/outliner/pull/5746",
+  "reviewed_head": "59d1c5afbbbb3c342fc348a11b1fa247189b183f",
+  "requirement_id": "#5729/REQ-004",
+  "authoritative_boundary": "client/src/services/yjstable/tableSqlRewrite.ts",
+  "observations": [
+    {
+      "source_comment_id": 4353095697,
+      "source_url": "https://github.com/kitamura-tetsuo/outliner/pull/5746#discussion_r4353095697",
+      "actual_behavior": "Current walkFrom installs JoinExpr.alias into the same bindings map before walking JoinExpr.quals, overwriting the child tasks->{destination:tasks_2} binding with {}. ON tasks.id then finds no destination and is left as tasks.id, producing SELECT tasks.id AS id FROM (tasks_2 JOIN notes_2 ON tasks.id = notes_2.task_id) AS tasks, which reparses but PGlite rejects with missing FROM-clause entry for table tasks.",
+      "required_behavior": "ON must resolve against the join children (physical tasks_2), while the outer SELECT qualifier must resolve against the joined-result alias tasks; exact rewrite must be SELECT tasks.id AS id FROM (tasks_2 JOIN notes_2 ON tasks_2.id = notes_2.task_id) AS tasks, preserving rows.",
+      "evidence": "tableSqlRewrite.ts:258-264 walks larg/rarg then sets JoinExpr.alias in the same scope before walkExpression(quals); rewriteRangeVar binds unaliased tasks to {destination:tasks_2} at :193-196, then alias set at :262 overwrites key tasks with {}. Supplied test at tableSqlRewrite.test.ts:375-383 uses ON true so no child-name qualifier is ever resolved in the join condition and stays green."
+    },
+    {
+      "source_comment_id": 4353177224,
+      "source_url": "https://github.com/kitamura-tetsuo/outliner/pull/5746#discussion_r4353177224",
+      "actual_behavior": "ON tasks.id is left as tasks.id while the relations become tasks_2/notes_2, producing SELECT tasks.id AS id FROM (tasks_2 JOIN notes_2 ON tasks.id = notes_2.task_id) AS tasks: the join condition no longer binds to the renamed child and reparsed SQL points at a missing entry.",
+      "required_behavior": "ON must resolve against the join children (physical tasks_2), while the outer SELECT qualifier resolves against the joined-result alias tasks: SELECT tasks.id AS id FROM (tasks_2 JOIN notes_2 ON tasks_2.id = notes_2.task_id) AS tasks.",
+      "evidence": "tableSqlRewrite.ts walkFrom lines 258-264 walks larg/rarg (binding unaliased tasks to {destination:tasks_2} at lines 193-196) then overwrites key tasks with {} via JoinExpr.alias before walkExpression(quals); ColumnRef at lines 214-224 then finds {} and emits no replacement. Supplied joined-alias test at tableSqlRewrite.test.ts:375-383 uses ON true so no child-name qualifier inside ON is ever resolved."
+    },
+    {
+      "source_comment_id": 4353215817,
+      "source_url": "https://github.com/kitamura-tetsuo/outliner/pull/5746#discussion_r4353215817",
+      "actual_behavior": "ON tasks.id is left as tasks.id while the relations become tasks_2/notes_2, producing SELECT tasks.id AS id FROM (tasks_2 JOIN notes_2 ON tasks.id = notes_2.task_id) AS tasks, whose join condition no longer binds to the renamed child and which PGlite rejects with a missing FROM-clause entry for table tasks.",
+      "required_behavior": "ON must resolve against the join children (physical tasks_2), while the outer SELECT qualifier resolves against the joined-result alias tasks: SELECT tasks.id AS id FROM (tasks_2 JOIN notes_2 ON tasks_2.id = notes_2.task_id) AS tasks.",
+      "evidence": "tableSqlRewrite.ts walkFrom lines 258-264 walks larg/rarg (binding unaliased tasks to {destination:tasks_2} at lines 193-196) then overwrites key tasks with {} via JoinExpr.alias before walkExpression(quals); ColumnRef at lines 219-224 then finds {} and emits no replacement. The only joined-alias regression (tableSqlRewrite.test.ts:375-383) uses ON true so no child-name qualifier inside ON is ever resolved."
+    },
+    {
+      "source_comment_id": 4353285868,
+      "source_url": "https://github.com/kitamura-tetsuo/outliner/pull/5746#discussion_r4353285868",
+      "actual_behavior": "ON tasks.id is left as tasks.id while relations become tasks_2/notes_2, producing SELECT tasks.id AS id FROM (tasks_2 JOIN notes_2 ON tasks.id = notes_2.task_id) AS tasks, whose join condition no longer binds to the renamed child and which PGlite rejects with missing FROM-clause entry for table tasks.",
+      "required_behavior": "ON must resolve against the join children (physical tasks_2), while the outer SELECT qualifier resolves against the joined-result alias tasks: SELECT tasks.id AS id FROM (tasks_2 JOIN notes_2 ON tasks_2.id = notes_2.task_id) AS tasks.",
+      "evidence": "tableSqlRewrite.ts:258-264 walks larg/rarg (binding unaliased tasks to {destination:tasks_2} at 193-196) then overwrites key tasks with {} via JoinExpr.alias before walkExpression(quals) at line 263; ColumnRef at 219-224 then finds {} and emits no replacement. Only joined-alias test at tableSqlRewrite.test.ts:375-383 uses ON true so no child-name qualifier inside ON is resolved."
+    },
+    {
+      "source_comment_id": 4353305559,
+      "source_url": "https://github.com/kitamura-tetsuo/outliner/pull/5746#discussion_r4353305559",
+      "actual_behavior": "ON tasks.id is left as tasks.id while relations become tasks_2/notes_2, producing SELECT tasks.id AS id FROM (tasks_2 JOIN notes_2 ON tasks.id = notes_2.task_id) AS tasks, which reparses but no longer binds to the renamed child.",
+      "required_behavior": "ON must resolve against the join children (tasks_2) while the outer SELECT keeps the joined-result alias tasks: SELECT tasks.id AS id FROM (tasks_2 JOIN notes_2 ON tasks_2.id = notes_2.task_id) AS tasks.",
+      "evidence": "tableSqlRewrite.ts walkFrom lines 258-264 walks larg/rarg (binding unaliased tasks to {destination:tasks_2}) then overwrites key tasks with {} via JoinExpr.alias before walkExpression(quals); ColumnRef lookup then finds {} and emits no replacement. Only joined-alias test at tableSqlRewrite.test.ts:375-383 uses ON true, so no child-name qualifier inside ON is exercised."
+    },
+    {
+      "source_comment_id": 4353327527,
+      "source_url": "https://github.com/kitamura-tetsuo/outliner/pull/5746#discussion_r4353327527",
+      "actual_behavior": "ON tasks.id is left as tasks.id while relations become tasks_2/notes_2, producing SELECT tasks.id AS id FROM (tasks_2 JOIN notes_2 ON tasks.id = notes_2.task_id) AS tasks, which reparses but no longer binds to the renamed child and fails at execution.",
+      "required_behavior": "ON must resolve against the join children (physical tasks_2), while the outer SELECT qualifier resolves against the joined-result alias tasks: SELECT tasks.id AS id FROM (tasks_2 JOIN notes_2 ON tasks_2.id = notes_2.task_id) AS tasks.",
+      "evidence": "tableSqlRewrite.ts:193-196 binds unaliased tasks to {destination:tasks_2}; :258-264 walks larg/rarg then overwrites key tasks with {} via JoinExpr.alias before walkExpression(quals) at :263; ColumnRef lookup at :219-224 then finds {} and emits no replacement. Only joined-alias test at tableSqlRewrite.test.ts:375-383 uses ON true so no child-name qualifier inside ON is exercised."
+    },
+    {
+      "source_comment_id": 4353346228,
+      "source_url": "https://github.com/kitamura-tetsuo/outliner/pull/5746#discussion_r4353346228",
+      "actual_behavior": "Relations become tasks_2/notes_2 but ON tasks.id is left as tasks.id, producing SELECT tasks.id AS id FROM (tasks_2 JOIN notes_2 ON tasks.id = notes_2.task_id) AS tasks, which no longer binds to the renamed child.",
+      "required_behavior": "ON must resolve against the join children (physical tasks_2), while the outer SELECT keeps the joined-result alias: SELECT tasks.id AS id FROM (tasks_2 JOIN notes_2 ON tasks_2.id = notes_2.task_id) AS tasks.",
+      "evidence": "tableSqlRewrite.ts:258-264 walks larg/rarg (binding unaliased tasks to {destination:tasks_2} at 193-196) then overwrites key tasks with {} via JoinExpr.alias before walkExpression(quals); ColumnRef lookup at 219-224 then finds {} and emits no replacement. Only joined-alias test at 375-383 uses ON true so this path stays green."
+    },
+    {
+      "source_comment_id": 4353368783,
+      "source_url": "https://github.com/kitamura-tetsuo/outliner/pull/5746#discussion_r4353368783",
+      "actual_behavior": "Relations become tasks_2/notes_2 but ON tasks.id is left as tasks.id, producing SELECT tasks.id AS id FROM (tasks_2 JOIN notes_2 ON tasks.id = notes_2.task_id) AS tasks, which no longer binds to the renamed child and fails at execution.",
+      "required_behavior": "ON must resolve against the join children (tasks_2) while the outer SELECT keeps the joined-result alias tasks: SELECT tasks.id AS id FROM (tasks_2 JOIN notes_2 ON tasks_2.id = notes_2.task_id) AS tasks.",
+      "evidence": "tableSqlRewrite.ts:193-196 binds unaliased tasks to {destination:tasks_2}; walkFrom at 258-264 walks larg/rarg then overwrites key tasks with {} via JoinExpr.alias before walkExpression(quals); ColumnRef lookup at 219-224 then finds {} and emits no replacement. Only joined-alias test at tableSqlRewrite.test.ts:375-383 uses ON true so this path stays green."
+    },
+    {
+      "source_comment_id": 4353450447,
+      "source_url": "https://github.com/kitamura-tetsuo/outliner/pull/5746#discussion_r4353450447",
+      "actual_behavior": "Relations become tasks_2/notes_2 but ON tasks.id is left as tasks.id, producing SELECT tasks.id AS id FROM (tasks_2 JOIN notes_2 ON tasks.id = notes_2.task_id) AS tasks, which reparses but no longer binds to the renamed child and fails at execution.",
+      "required_behavior": "ON must resolve against the join children (tasks_2) while the outer SELECT keeps the joined-result alias tasks: SELECT tasks.id AS id FROM (tasks_2 JOIN notes_2 ON tasks_2.id = notes_2.task_id) AS tasks.",
+      "evidence": "tableSqlRewrite.ts:258-264 walks larg/rarg (binding unaliased tasks to {destination:tasks_2} at 193-196) then overwrites key tasks with {} via JoinExpr.alias before walkExpression(quals) at :263; ColumnRef lookup at :219-224 then finds {} and emits no replacement. Only joined-alias test at tableSqlRewrite.test.ts:375-383 uses ON true so no child-name qualifier inside ON is exercised."
+    }
+  ]
+}

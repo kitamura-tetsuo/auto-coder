@@ -22,6 +22,17 @@ attempt as the ordinary result. A result with no assessment is `MISSING`
 is `UNAVAILABLE`; neither authorizes anything. A retained source is never
 overwritten.
 
+Ordinary corrective evidence has a separate purpose within the existing
+`EffectiveDecisionStore`: its typed normalized payload is retained before
+publication or repair even when this closure-specific journal returns `MISSING`.
+The two paths share typed serialization, including controller-issued canonical
+reference context, but no additional store is introduced. Missing, malformed or
+non-authorizing closure data cannot erase an independently substantiated current
+ordinary correction. Complete exact-current FIXED/INVALID proposals can appear
+as pending closure in an effective decision while another ordinary violation
+prevents whole-cycle acceptance. `_authority_gap` and lifecycle certification
+still require the full ordinary clearance described below.
+
 ## Application
 
 `apply()` holds the attempt transition fence and rejects (`REJECTED`, journaled)
@@ -88,3 +99,12 @@ resolved rather than removing them. This lets the single-review and restart
 scenarios verify closure acknowledgement against actual publication receipts
 and observed thread state, while still checking that independent merge gates
 remain blocking.
+
+The same production fixture also retains a resolved historical native root
+while its accepted Strong source remains OPEN, then supplies an independent
+current ordinary violation with complete, absent or malformed closure data.
+Local and cloud routes must publish once and hand off only the current canonical
+correction once across repeated polling and reconstructed stores. The historical
+source stays open; no APPROVE or merge is authorized. Saved-payload recovery,
+legacy one-time admission, lost review/provider responses, supersession and
+authority changes are tested at their real controller boundaries.

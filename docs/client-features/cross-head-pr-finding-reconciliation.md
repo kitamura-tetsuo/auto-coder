@@ -79,6 +79,54 @@ presented test evidence demonstrates the contract itself was incomplete):
 - Thread continuity is preserved by retaining the existing blocker ID and canonical
   root comment reference.
 
+## Ordinary correction references
+
+Before ordinary prompt assembly, the controller reads the canonical ledger and
+supplies its open corrections under the reserved `canonical:blk_...` namespace.
+Each entry includes immutable accepted scope, qualified Requirements, authoritative
+boundary, previously admitted observation labels, and a scope fingerprint. The
+context itself binds API origin, repository, PR, head/base, validation snapshot
+and Requirement manifest. Ordinary results retain this typed context separately
+from the optional Strong closure assessment, including across restart.
+Before the first ordinary owner exists, or when the ledger cannot supply any
+references, the context still retains that invocation binding with an empty
+reference list. It grants no canonical identity authority and leaves source
+availability checks to the existing accepted-state and publication gates.
+
+A reviewer restating a supplied correction copies its identity,
+`correction_scope_fingerprint` and `correction_context_fingerprint`. The ordinary
+validation boundary checks supplied-ID membership, exact binding, Requirements,
+boundary and supported category presentation before deriving a repair. Publication
+rechecks the reference against the current PR namespace and immutable ledger scope.
+Unknown, cross-target or contradictory references explicitly require reconciliation;
+they never fall through to a new blocker. Free-form rationale and evidence are
+retained as observations and cannot replace the accepted correction scope.
+
+Validated references take precedence over advisory lexical matching. A test-gap
+restatement of an upheld implementation correction keeps that implementation
+owner, root and allowance. A genuinely independent test obligation or implementation
+defect uses a new ordinary label and goes through the existing conservative
+discovery path. A shared file or Requirement is insufficient for identity. Existing
+duplicate owners and accepted conservative splits remain intact; a supplied
+reference can select one exact owner without merging or closing any other owner.
+These checks establish routing and binding, not arbitrary natural-language
+equivalence or the model's ability to select the right reference.
+
+Accepted observation-to-owner mappings use ledger aliases. An exact causal replay
+(same PR, target, attempt, observation and evidence) reuses its recorded mapping
+without another ledger mutation. New observations use deterministic operation
+identities and retain normal compare-and-set fencing. Publication receipts,
+identical observations and unrelated mutations therefore cannot create apparent
+new correction evidence by incrementing a storage counter.
+
+Repair handoff reads those exact causal aliases without repeating reconciliation
+or changing the ledger. Every selected observation must resolve to one open owner
+in the same PR namespace; a closed owner, conflicting mapping or invalid supplied
+reference blocks handoff. The caller then selects the owner's authenticated,
+unresolved native root. A missing causal alias is reported separately so legacy
+retained observations can recover ownership from an exact authenticated root;
+this does not relax scope or ambiguity checks.
+
 ## Durable Publication Intent and Concurrency Fencing
 
 To ensure safe, idempotent publication across network disruptions and racing processes:

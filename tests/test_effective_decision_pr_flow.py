@@ -10,6 +10,7 @@ recorded), and the corrective handoff is observed at the provider boundary.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -85,6 +86,7 @@ class ClosureScript:
     scope: str = "BOUNDED"  # BOUNDED | EXPANDED | UNKNOWN
     verdict: str = ""  # optional independent closure verdict
     omit_assessment: bool = False  # the reviewer returns no closure assessment at all
+    malformed_assessment: bool = False  # invalid extension must not erase ordinary evidence
     calls: list[Any] = field(default_factory=list)
     closure_only_calls: list[Any] = field(default_factory=list)
     on_review: Any = None
@@ -140,6 +142,7 @@ class Flow:
     pr: int
     origin: str = "cloud"
     provider_name: str = "jules"
+    requirement_text: Optional[str] = None
     auto_status: bool = False
     saved_status: Optional[str] = "PASS"
     head: str = ""
@@ -159,6 +162,7 @@ class Flow:
     origin_available: bool = True
     exhausted: bool = False
     quota_hold: bool = False
+    real_local_allowance: bool = False
     post_ci: Optional[GitHubActionsStatusResult] = None
     extra_threads: tuple[ReviewThread, ...] = ()
     resolve_on_approve: bool = False  # The GitHub boundary confirms resolution by the controller or after approval.
@@ -173,9 +177,9 @@ class Flow:
 
     # -- arrangement ---------------------------------------------------
 
-    def accept_finding(self, *, gap: bool = True, finding_id: str = "finding-a") -> None:
+    def accept_finding(self, *, gap: bool = True, finding_id: str = "finding-a", boundary: str = "src/state.py:delete_two") -> None:
         save_empty_session(self.env, self.pr, self.head)
-        inputs = accept_strong(self.env, self.pr, [finding_json(finding_id, gap=gap)])
+        inputs = accept_strong(self.env, self.pr, [finding_json(finding_id, gap=gap, boundary=boundary)])
         strong = self.env.cycle.snapshot(self.pr).accepted_strong_round
         assert strong is not None
         assert self.router is not None
@@ -240,10 +244,10 @@ class Flow:
         def next_response(*_args: object, **_kwargs: object) -> str:
             self.model_calls += 1
             raw = responses.pop(0) if len(responses) > 1 else responses[0]
+            if closure is not None and closure.on_review is not None:
+                closure.on_review()
             if closure is None or not supplied:
                 return raw
-            if closure.on_review is not None:
-                closure.on_review()
             payload = json.loads(raw)
             payload["closure_assessment"] = {
                 "result": closure.verdict or ("FINDINGS" if closure.status == "STILL_VALID" else "PASS"),
@@ -254,17 +258,30 @@ class Flow:
             }
             if closure.omit_assessment:
                 del payload["closure_assessment"]
+            elif closure.malformed_assessment:
+                payload["closure_assessment"] = {"result": "PASS", "dispositions": "invalid"}
             return json.dumps(payload)
 
         manager.continue_session.side_effect = next_response
 
-        def real_validation(*args: Any, **kwargs: Any):
+        def current_validation_context(repo_name: str, pr_data: dict[str, Any], *_args: object, **_kwargs: object):
+            from auto_coder.adversarial_validator import IssueRequirement, _requirement_manifest_identity, _snapshot_digest
             from tests.test_accepted_finding_bridge import _context
 
-            with (
-                patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=_context()),
-                patch("auto_coder.adversarial_validator.run_llm_prompt", side_effect=next_response),
-            ):
+            context = _context()
+            context.repo_name = repo_name
+            context.pr_number = int(pr_data["number"])
+            context.pr_body = str(pr_data.get("body") or "")
+            if self.requirement_text is not None:
+                context.issue_context = f"Issue #2401 REQ-001: {self.requirement_text}"
+                context.issue_requirements = [IssueRequirement("#2401/REQ-001", self.requirement_text)]
+            files = [{"filename": path, "raw_diff_sha256": hashlib.sha256(context.pr_diff.encode()).hexdigest()} for path in context.all_changed_files]
+            context.validation_snapshot = _snapshot_digest(repo_name, pr_data, files, context.issue_requirements, context.pr_diff)
+            context.requirement_manifest_identity = _requirement_manifest_identity(context.issue_requirements)
+            return context
+
+        def real_validation(*args: Any, **kwargs: Any):
+            with patch("auto_coder.adversarial_validator.run_llm_prompt", side_effect=next_response):
                 section = kwargs.pop("claimed_review_threads_section", "")
                 self.validation_sections.append(section)
                 kwargs.pop("execution_cwd", None)  # the controlled worktree is not a git checkout
@@ -301,6 +318,8 @@ class Flow:
             patch("auto_coder.pr_processor._get_published_adversarial_validation_comment", return_value=("<!-- report -->", None)),
             patch("auto_coder.pr_processor.isolated_pr_head_worktree", worktree),
             patch("auto_coder.pr_processor.run_adversarial_validation", real_validation),
+            patch("auto_coder.pr_processor.build_adversarial_validation_context", side_effect=current_validation_context),
+            patch("auto_coder.adversarial_validator.build_adversarial_validation_context", side_effect=current_validation_context),
             patch("auto_coder.pr_processor.default_accepted_finding_bridge", lambda repo: env.bridge()),
             patch("auto_coder.adversarial_validator.default_accepted_finding_bridge", lambda repo: env.bridge()),
             patch("auto_coder.github_app_reviewer.load_reviewer_app_config", return_value=ReviewerAppConfig("4765828", "client", key)),
@@ -311,10 +330,11 @@ class Flow:
             patch("auto_coder.pr_processor._resolve_cloud_task_origin", return_value=CloudTaskOriginResolution(origin=CloudTaskOrigin(self.provider_name, "task-1", self.provider)) if self.origin_available else CloudTaskOriginResolution(reason="the configured origin has no route")),
             patch("auto_coder.pr_processor._revalidate_cloud_origin", return_value=None),
             patch("auto_coder.pr_processor._merge_pr", self.merge),
-            patch("auto_coder.pr_processor.get_linked_issues_context", return_value="REQ-001: Preserve accepted findings."),
-            patch("auto_coder.local_review_repair.admit_local_repair_allowance", return_value=(object(), "")),
+            patch("auto_coder.pr_processor.get_linked_issues_context", side_effect=lambda *_a, **_k: current_validation_context(REPO, self.pr_data()).issue_context),
             patch("auto_coder.pr_correction_job.offer_pr_correction_job", side_effect=self._local_offer),
         ]
+        if not self.real_local_allowance:
+            patches.append(patch("auto_coder.local_review_repair.admit_local_repair_allowance", return_value=(object(), "")))
         if self.exhausted:
             exhaustion = MagicMock(is_exhausted=True, exhausted_blocker_ids=("blk-exhausted",))
             patches.append(patch("auto_coder.pr_processor.check_pr_repair_exhaustion", return_value=exhaustion))
@@ -463,7 +483,7 @@ def test_contradictory_raw_pass_becomes_actionable_repair_and_never_approves(flo
     assert all(post["event"] != "APPROVE" for post in flow.reviews)
 
     retained = flow.retained()
-    assert retained is not None and retained.status == expected and retained.publication == "CONFIRMED" and retained.handoff == HANDOFF_DISPATCHED
+    assert retained is not None and retained.status == expected and retained.publication == "CONFIRMED" and retained.handoff == HANDOFF_DISPATCHED, "\n".join(actions)
     snapshot = flow_env.ledger.get_snapshot("https://api.github.com", REPO, pr)
     assert len(snapshot.blockers) == 1 and retained.blocker_ids == [snapshot.blockers[0].blocker_id]
 
@@ -656,6 +676,104 @@ def _repair_to(flow: Flow, label: str) -> str:
     return flow.head
 
 
+def _historical_root_with_current_violation(flow_env: Env, monkeypatch: pytest.MonkeyPatch, origin: str, extension: str, *, historical_boundary: str = "src/state.py:delete_two") -> tuple[Flow, ClosureScript, dict[str, Any]]:
+    """The incident's natural state: native resolution is not accepted Strong closure."""
+    from tests.test_adversarial_validator import _demonstrated_finding_with_anchor
+
+    flow = make_flow(flow_env, monkeypatch, 5746, origin, saved_status=None, auto_status=True, provider_name="codex-cloud")
+    flow.accept_finding(gap=False, boundary=historical_boundary)
+    _repair_to(flow, "historical-fix-with-independent-join-binding-defect")
+    flow.thread_resolved = True
+    raw = json.loads(ordinary_response(flow.thread_id, result="NEEDS_FIX"))
+    raw["summary"] = "The historical counterexample is fixed, but a distinct current state-loss violation remains."
+    raw["requirement_coverage"][0]["status"] = "VIOLATED"
+    current_finding = _demonstrated_finding_with_anchor(40)
+    current_finding["requirement_id"] = "#2401/REQ-001"
+    raw["findings"] = [current_finding]
+    raw["thread_dispositions"] = []  # The resolved historical root is not in the claimed native thread set.
+    flow.model_responses = [json.dumps(raw)]
+    script = ClosureScript(omit_assessment=extension == "missing", malformed_assessment=extension == "malformed")
+    return flow, script, raw
+
+
+def _reconstruct_flow_stores(flow: Flow) -> None:
+    """Drop every process-local store/gate object while keeping durable transport history."""
+    from auto_coder.two_tier_pr_gate import TwoTierPrGate
+
+    flow.env = flow.env.reconstructed()
+    flow.gate_inputs = replace(flow.gate_inputs, gate=TwoTierPrGate(REPO, flow.env.cycle))
+
+
+@pytest.mark.parametrize("origin", ["cloud", "local"])
+@pytest.mark.parametrize("extension", ["complete", "missing", "malformed"])
+def test_resolved_historical_root_does_not_suppress_current_correction_or_repeat_reviews(flow_env: Env, monkeypatch: pytest.MonkeyPatch, origin: str, extension: str) -> None:
+    from auto_coder import pr_processor
+    from auto_coder.durable_repair_allowance import RepairAllowanceLedger
+
+    flow, script, raw = _historical_root_with_current_violation(flow_env, monkeypatch, origin, extension)
+    flow.real_local_allowance = origin == "local"
+    observations: list[tuple[int, int, int]] = []
+    local_allowance_snapshots = []
+
+    with patch("auto_coder.pr_processor._record_pr_stage", wraps=pr_processor._record_pr_stage) as stages:
+        for _ in range(3):
+            actions = flow.run(closure=script)
+            observations.append((flow.model_calls, len(flow.reviews), flow.handoffs))
+            if origin == "local":
+                local_allowance_snapshots.append(RepairAllowanceLedger().get_snapshot("https://api.github.com", REPO, flow.pr))
+            raw["thread_dispositions"] = [{"thread_id": thread.id, "status": "STILL_VALID", "rationale": "The current correction is still required.", "evidence": "src/state.py:40 still drops state."} for thread in flow.threads() if not thread.is_resolved]
+            flow.model_responses = [json.dumps(raw)]
+            _reconstruct_flow_stores(flow)
+
+    assert flow.handoffs == 1, (observations, list(actions))
+    assert observations == [(1, 1, 1)] * 3
+    assert len(flow.local_executions if origin == "local" else flow.provider.followups) == 1
+    assert [review["event"] for review in flow.reviews] == ["REQUEST_CHANGES"]
+    assert flow.router is not None and sum(len(roots) for roots in flow.router.review_roots.values()) == 2
+    if origin == "local":
+        assert len(local_allowance_snapshots[0].generations) == 1
+        assert local_allowance_snapshots == [local_allowance_snapshots[0]] * 3
+    assert flow.merge.call_count == 0 and flow.thread_resolved
+    assert [finding.finding_id for finding in flow.env.cycle.snapshot(flow.pr).open_findings] == ["finding-a"]
+    assert "State is discarded" in flow.handoff_text()
+    assert "Counterexample for finding-a" not in flow.handoff_text()
+    retained = flow.retained()
+    assert retained is not None and retained.status == "NEEDS_FIX" and retained.handoff == HANDOFF_DISPATCHED
+    assert retained.source_identities == []
+    assert retained.ordinary_correction is not None
+    restored = retained.ordinary_correction.restore()
+    assert restored.result == "NEEDS_FIX" and len(restored.findings) == 1
+    assert len(retained.pending_closure_source_identities if extension == "complete" else retained.pending_reconciliation_source_identities) == 1
+    snapshot = flow.env.ledger.get_snapshot("https://api.github.com", REPO, flow.pr)
+    assert len(snapshot.blockers) == 2
+    assert any(blocker.blocker_id in flow.handoff_text() for blocker in snapshot.blockers if blocker.blocker_id in retained.blocker_ids)
+    assert actions.disposition.value == "CORRECTIVE_HANDOFF"
+    repair_events = [call.args for call in stages.call_args_list if call.args[1] == "pr.repair-delegation"]
+    assert repair_events and all(event[4]["review_disposition"] == "CORRECTIVE_HANDOFF" for event in repair_events)
+
+
+@pytest.mark.parametrize("extension", ["complete", "missing"])
+def test_same_boundary_historical_owner_never_enters_current_canonical_repair_bundle(flow_env: Env, monkeypatch: pytest.MonkeyPatch, extension: str) -> None:
+    flow, script, _ = _historical_root_with_current_violation(flow_env, monkeypatch, "cloud", extension, historical_boundary="src/state.py")
+    historical = flow.env.bridge().project(flow.env.target(flow.pr, flow.head)).records[0]
+
+    actions = flow.run(closure=script)
+
+    assert flow.handoffs == 1, actions
+    snapshot = flow.env.ledger.get_snapshot("https://api.github.com", REPO, flow.pr)
+    assert len(snapshot.blockers) == 2
+    assert {blocker.authoritative_boundary for blocker in snapshot.blockers} == {"src/state.py"}
+    current = next(blocker for blocker in snapshot.blockers if blocker.blocker_id != historical.canonical_blocker_id)
+    bundles = flow.env.ledger.get_repair_bundles_for_pr("https://api.github.com", REPO, flow.pr)
+    assert len(bundles) == 1 and [blocker.blocker_id for blocker in bundles[0].blockers] == [current.blocker_id]
+    retained = flow.retained()
+    assert retained is not None and retained.blocker_ids == [current.blocker_id]
+    assert historical.canonical_blocker_id not in flow.handoff_text()
+    assert "Counterexample for finding-a" not in flow.handoff_text()
+    assert flow.env.cycle.snapshot(flow.pr).open_findings[0].finding_id == "finding-a"
+    assert flow.merge.call_count == 0
+
+
 @pytest.mark.parametrize("origin", ["cloud", "local"])
 @pytest.mark.parametrize("gap", [False, True])
 def test_new_violation_is_handed_off_once_while_accepted_correction_awaits_closure(flow_env: Env, monkeypatch: pytest.MonkeyPatch, origin: str, gap: bool) -> None:
@@ -721,6 +839,62 @@ def test_missing_closure_assessment_waits_at_the_same_head_without_repeating_val
     assert flow.model_calls == 2 and flow.handoffs == 0
 
 
+@pytest.mark.parametrize("mutation", ["same-source-observation", "unrelated-owner"])
+def test_historical_reconciliation_wait_ignores_nonsemantic_ledger_writes(flow_env: Env, monkeypatch: pytest.MonkeyPatch, mutation: str) -> None:
+    from auto_coder.canonical_pr_blocker_ledger import BlockerAdmissionPayload, CorrectionScope, EvidenceAvailability, QualifiedRequirement
+
+    flow, script, raw = _historical_root_with_current_violation(flow_env, monkeypatch, "cloud", "missing")
+    raw["result"] = "PASS"
+    raw["summary"] = "The current requirement coverage is verified; accepted historical closure is still pending."
+    raw["requirement_coverage"][0]["status"] = "VERIFIED"
+    raw["findings"] = []
+    flow.model_responses = [json.dumps(raw)]
+    first = flow.run(closure=script)
+    retained = flow.retained()
+    assert retained is not None and retained.next_action == "RECONCILIATION", first
+    snapshot = flow.env.ledger.get_snapshot("https://api.github.com", REPO, flow.pr)
+    original_revision = snapshot.ledger_revision
+    if mutation == "same-source-observation":
+        snapshot = flow.env.ledger.record_evidence(
+            "https://api.github.com",
+            REPO,
+            flow.pr,
+            "repeat-observation-with-no-new-adjudication",
+            snapshot.ledger_revision,
+            snapshot.blockers[0].blocker_id,
+            EvidenceAvailability.KNOWN,
+            "The same original accepted source was observed again.",
+            reviewed_head_sha=flow.head,
+            reviewed_base_sha=flow.env.base,
+        )
+    else:
+        _, snapshot = flow.env.ledger.admit_blocker(
+            "https://api.github.com",
+            REPO,
+            flow.pr,
+            "unrelated-reconciliation-source",
+            snapshot.ledger_revision,
+            BlockerAdmissionPayload(
+                category="implementation",
+                qualified_requirements=(QualifiedRequirement(9999, "REQ-099"),),
+                authoritative_boundary="src/another_feature.py:unrelated",
+                incorrect_behavior_or_missing_invariant="An independent state machine needs its own correction.",
+                required_correction_outcome="Correct that independent state machine.",
+                accepted_scope=CorrectionScope("Preserve an unrelated obligation."),
+            ),
+        )
+    assert snapshot.ledger_revision > original_revision
+    _reconstruct_flow_stores(flow)
+    flow.model_responses = []
+
+    waiting = flow.run(closure=script)
+
+    assert flow.model_calls == 1 and flow.handoffs == 0 and len(flow.reviews) == 1, waiting
+    assert waiting.disposition.value == "RECONCILIATION_WAIT"
+    assert flow.retained().evidence_revision == retained.evidence_revision
+    assert flow.env.cycle.snapshot(flow.pr).open_findings and flow.merge.call_count == 0
+
+
 @pytest.mark.parametrize("force", [False, True])
 @pytest.mark.parametrize("origin", ["cloud", "local"])
 def test_saved_blocked_violation_recovers_to_repair_before_force_can_start_validation(flow_env: Env, monkeypatch: pytest.MonkeyPatch, force: bool, origin: str) -> None:
@@ -747,7 +921,7 @@ def test_saved_blocked_violation_recovers_to_repair_before_force_can_start_valid
     def historical_closure_priority(*args: Any, **kwargs: Any) -> DecisionApplication:
         application = derive(*args, **kwargs)
         assert application is not None
-        return DecisionApplication(replace(application.result, result="BLOCKED"), replace(application.decision, status="BLOCKED", next_action=EffectiveNextAction.CLOSURE_ACCEPTANCE), application.projection)
+        return DecisionApplication(replace(application.result, result="BLOCKED"), replace(application.decision, status="BLOCKED", next_action=EffectiveNextAction.CLOSURE_ACCEPTANCE), application.projection, application.ordinary_result)
 
     with patch("auto_coder.pr_processor._derive_effective_application", side_effect=historical_closure_priority):
         first = flow.run(closure=script)
@@ -756,8 +930,6 @@ def test_saved_blocked_violation_recovers_to_repair_before_force_can_start_valid
     original = flow.retained()
     assert original is not None and original.status == "BLOCKED"
     attempts = AdversarialValidationAttemptRepository(REPO)
-    failed = attempts.start(flow.pr, flow.head)
-    attempts.finish(failed.attempt_id, "ERROR")  # a forced retry failed without publishing or superseding the corrective evidence
     sequence = attempts.latest_sequence(flow.pr, flow.head)
     flow.model_responses = []  # no reviewer response exists: any invocation is a regression
 
@@ -769,7 +941,7 @@ def test_saved_blocked_violation_recovers_to_repair_before_force_can_start_valid
     replay_stages = [call for call in stages.call_args_list if call.args[1] == "pr.repair-delegation" and call.args[4].get("effect") == "adversarial-feedback-replay"]
     assert len(replay_stages) == 1
     assert replay_stages[0].args[4]["additional_model_execution"] is False
-    assert replay_stages[0].args[4]["source_attempt_sequence"] == sequence - 1
+    assert replay_stages[0].args[4]["source_attempt_sequence"] == sequence
 
     assert flow.model_calls == 1 and flow.handoffs == 1, "\n".join(recovered)
     assert any("no new adversarial validation was started" in action for action in recovered)
@@ -940,6 +1112,345 @@ def test_completed_no_change_at_the_same_head_converges_or_retains_the_same_bloc
 
 class SimulatedCrash(BaseException):
     """A process interruption: nothing after this point in the invocation runs."""
+
+
+@pytest.mark.parametrize("extension", ["missing", "malformed"])
+@pytest.mark.parametrize("boundary", ["before-publication", "before-handoff"])
+def test_current_correction_evidence_survives_interruption_without_closure_extension(flow_env: Env, monkeypatch: pytest.MonkeyPatch, extension: str, boundary: str) -> None:
+    flow, script, _ = _historical_root_with_current_violation(flow_env, monkeypatch, "cloud", extension)
+    assert flow.router is not None
+
+    def crash(*_args: object, **_kwargs: object) -> None:
+        raise SimulatedCrash
+
+    if boundary == "before-publication":
+        with patch("auto_coder.pr_processor._publish_effective_review", side_effect=crash), pytest.raises(SimulatedCrash):
+            flow.run(closure=script)
+        assert flow.reviews == []
+    else:
+        with patch("auto_coder.pr_processor._dispatch_effective_correction", side_effect=crash), pytest.raises(SimulatedCrash):
+            flow.run(closure=script)
+        assert len(flow.reviews) == 1
+    retained = flow.retained()
+    assert retained is not None and retained.ordinary_correction is not None
+    assert retained.ordinary_correction.restore().findings[0].actual_behavior == "State is discarded"
+    assert flow.handoffs == 0
+    _reconstruct_flow_stores(flow)
+    flow.model_responses = []  # The retained producer result is the only available corrective evidence.
+
+    actions = flow.run(closure=script)
+    again = flow.run(closure=script)
+
+    assert flow.model_calls == 1 and flow.handoffs == 1 and len(flow.reviews) == 1, (list(actions), list(again))
+    assert flow.merge.call_count == 0 and flow.env.cycle.snapshot(flow.pr).open_findings
+    assert "Counterexample for finding-a" not in flow.handoff_text()
+
+
+@pytest.mark.parametrize("changed_authority", ["base", "contract"])
+def test_published_current_correction_rechecks_authority_before_handoff(flow_env: Env, monkeypatch: pytest.MonkeyPatch, changed_authority: str) -> None:
+    from auto_coder.pr_review_cycle import ContractSnapshot
+
+    flow, script, _ = _historical_root_with_current_violation(flow_env, monkeypatch, "cloud", "missing")
+    assert flow.router is not None
+    changes: list[str] = []
+
+    def change_authority_during_publication() -> None:
+        changes.append(changed_authority)
+        if changed_authority == "base":
+            flow.current_base = "base-advanced-during-publication"
+        else:
+            monkeypatch.setattr("tests.test_effective_decision_pr_flow.CONTRACT", ContractSnapshot(("#2401",), "Issue #2401 REQ-001: Preserve accepted findings under a newly revised contract."))
+
+    flow.router.before_review = change_authority_during_publication
+    actions = flow.run(closure=script)
+
+    retained = flow.retained()
+    assert changes == [changed_authority]
+    assert flow.model_calls == 1 and len(flow.reviews) == 1 and flow.handoffs == 0, actions
+    assert retained is not None and retained.publication == "CONFIRMED" and retained.handoff != HANDOFF_DISPATCHED
+    assert actions.disposition.value == "RECONCILIATION_WAIT"
+    assert flow.merge.call_count == 0 and flow.env.cycle.snapshot(flow.pr).open_findings
+
+
+def _seed_legacy_blocked_envelope(flow: Flow, *, retain_corrective_payload: bool) -> None:
+    """Restore the persisted pre-upgrade envelope; keep authoritative producer evidence intact.
+
+    The incident regression above exercises the original failure naturally. This
+    fixture isolates upgrade recovery without monkeypatching decision derivation.
+    """
+    from auto_coder.effective_decision_application import HANDOFF_NOT_REQUIRED
+
+    store = EffectiveDecisionStore(REPO)
+    retained = store.load(flow.pr)
+    assert retained is not None
+    snapshot = flow.env.cycle.snapshot(flow.pr)
+    strong = snapshot.accepted_strong_round
+    assert strong is not None
+    source = f"{strong.round_id}:finding-a"
+    projection = flow.env.bridge().project(flow.env.target(flow.pr, flow.head))
+    historical = next(record for record in projection.records if record.source_identity == source)
+    store.save(
+        replace(
+            retained,
+            status="BLOCKED",
+            next_action="RECONCILIATION",
+            blocker_ids=[historical.canonical_blocker_id],
+            source_identities=[source],
+            pending_closure_source_identities=[],
+            pending_reconciliation_source_identities=[],
+            ordinary_correction=retained.ordinary_correction if retain_corrective_payload else None,
+            handoff=HANDOFF_NOT_REQUIRED,
+            reconciliation_attempts=[retained.evidence_revision],
+            wait_reason="RECONCILIATION_PENDING",
+        )
+    )
+    assert flow.router is not None
+    for review in [*flow.reviews, *flow.router.review_records]:
+        if f"adversarial-validation:v11:{flow.head}" in review["body"]:
+            review["body"] = review["body"].replace("adversarial validation: NEEDS_FIX", "adversarial validation: BLOCKED")
+            review["event"] = "COMMENT"
+            if "state" in review:
+                review["state"] = "COMMENTED"
+    assert flow._published_status() == "BLOCKED"
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("evidence_source", ["ordinary-payload", "legacy-closure-record", "legacy-closure-without-causal-alias"])
+def test_saved_blocked_current_correction_replays_authoritative_evidence_after_restart(flow_env: Env, monkeypatch: pytest.MonkeyPatch, force: bool, evidence_source: str) -> None:
+    flow, script, _ = _historical_root_with_current_violation(flow_env, monkeypatch, "cloud", "missing" if evidence_source == "ordinary-payload" else "complete")
+    with patch("auto_coder.pr_processor._dispatch_effective_correction", side_effect=SimulatedCrash), pytest.raises(SimulatedCrash):
+        flow.run(closure=script)
+    assert flow.model_calls == 1 and flow.handoffs == 0 and len(flow.reviews) == 1
+    _seed_legacy_blocked_envelope(flow, retain_corrective_payload=evidence_source == "ordinary-payload")
+    if evidence_source == "legacy-closure-without-causal-alias":
+        from auto_coder.ordinary_correction_references import ORDINARY_OBSERVATION_ALIAS
+
+        # Model a pre-upgrade ledger without the newly introduced causal alias;
+        # retain its accepted owners, native roots, scope and delivery history.
+        with flow.env.ledger._connect() as connection:
+            removed = connection.execute("DELETE FROM blocker_aliases WHERE alias_type = ?", (ORDINARY_OBSERVATION_ALIAS,)).rowcount
+        assert removed == 1
+    owners = [(blocker.blocker_id, blocker.accepted_scope) for blocker in flow.env.ledger.get_snapshot("https://api.github.com", REPO, flow.pr).blockers]
+    assert flow.router is not None
+    root_ids = {root["id"] for roots in flow.router.review_roots.values() for root in roots}
+    _reconstruct_flow_stores(flow)
+    flow.model_responses = []
+
+    actions = flow.run(force=force, closure=script)
+    again = flow.run(force=force, closure=script)
+
+    assert flow.model_calls == 1 and flow.handoffs == 1 and len(flow.reviews) == 1, (list(actions), list(again))
+    assert [(blocker.blocker_id, blocker.accepted_scope) for blocker in flow.env.ledger.get_snapshot("https://api.github.com", REPO, flow.pr).blockers] == owners
+    assert {root["id"] for roots in flow.router.review_roots.values() for root in roots} == root_ids
+    assert flow.merge.call_count == 0 and flow.env.cycle.snapshot(flow.pr).open_findings
+    assert flow.retained().ordinary_correction is not None
+    assert "State is discarded" in flow.handoff_text() and "Counterexample for finding-a" not in flow.handoff_text()
+
+
+@pytest.mark.parametrize("newer_status", ["IN_PROGRESS", "ERROR"])
+def test_superseded_saved_correction_cannot_dispatch_older_evidence(flow_env: Env, monkeypatch: pytest.MonkeyPatch, newer_status: str) -> None:
+    flow, script, _ = _historical_root_with_current_violation(flow_env, monkeypatch, "cloud", "missing")
+    with patch("auto_coder.pr_processor._dispatch_effective_correction", side_effect=SimulatedCrash), pytest.raises(SimulatedCrash):
+        flow.run(closure=script)
+    _seed_legacy_blocked_envelope(flow, retain_corrective_payload=True)
+    attempts = AdversarialValidationAttemptRepository(REPO)
+    newer = attempts.start(flow.pr, flow.head)
+    if newer_status == "ERROR":
+        attempts.finish(newer.attempt_id, newer_status)
+    _reconstruct_flow_stores(flow)
+    flow.model_responses = []
+
+    actions = flow.run(closure=script)
+
+    assert flow.handoffs == 0 and len(flow.reviews) == 1 and flow.model_calls == 1, actions
+    assert flow.merge.call_count == 0 and flow.env.cycle.snapshot(flow.pr).open_findings
+    assert actions.disposition.value in {"RECONCILIATION_WAIT", "OPERATIONAL_FAILURE"}
+
+
+def test_explicit_force_after_a_newer_failed_attempt_admits_fresh_corrective_evidence(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    flow, script, raw = _historical_root_with_current_violation(flow_env, monkeypatch, "cloud", "missing")
+    with patch("auto_coder.pr_processor._dispatch_effective_correction", side_effect=SimulatedCrash), pytest.raises(SimulatedCrash):
+        flow.run(closure=script)
+    _seed_legacy_blocked_envelope(flow, retain_corrective_payload=True)
+    attempts = AdversarialValidationAttemptRepository(REPO)
+    newer = attempts.start(flow.pr, flow.head)
+    attempts.finish(newer.attempt_id, "ERROR")
+    raw["thread_dispositions"] = [{"thread_id": thread.id, "status": "STILL_VALID", "rationale": "The distinct correction remains required.", "evidence": "src/state.py:40 still drops state."} for thread in flow.threads() if not thread.is_resolved]
+    flow.model_responses = [json.dumps(raw)]
+    _reconstruct_flow_stores(flow)
+
+    actions = flow.run(force=True, closure=script)
+    _reconstruct_flow_stores(flow)
+    flow.model_responses = []
+    again = flow.run(closure=script)
+
+    retained = flow.retained()
+    assert flow.model_calls == 2 and flow.handoffs == 1 and len(flow.reviews) == 2, (list(actions), list(again))
+    assert retained is not None and retained.ordinary_correction is not None
+    assert retained.ordinary_correction.attempt_sequence > newer.sequence
+    assert retained.handoff == HANDOFF_DISPATCHED
+    assert flow.merge.call_count == 0 and flow.env.cycle.snapshot(flow.pr).open_findings
+
+
+def test_legacy_blocked_without_any_ordinary_payload_admits_one_recovery_then_retains_it(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    flow, script, raw = _historical_root_with_current_violation(flow_env, monkeypatch, "cloud", "missing")
+    with patch("auto_coder.pr_processor._dispatch_effective_correction", side_effect=SimulatedCrash), pytest.raises(SimulatedCrash):
+        flow.run(closure=script)
+    _seed_legacy_blocked_envelope(flow, retain_corrective_payload=False)
+    raw["thread_dispositions"] = [{"thread_id": thread.id, "status": "STILL_VALID", "rationale": "The distinct current correction remains required.", "evidence": "src/state.py:40 still drops state."} for thread in flow.threads() if not thread.is_resolved]
+    flow.model_responses = [json.dumps(raw)]
+    _reconstruct_flow_stores(flow)
+    admissions: list[str] = []
+
+    def assert_recovery_was_spent_before_review() -> None:
+        record = flow.retained()
+        assert record is not None
+        keys = [key for key in record.reconciliation_attempts if key.startswith("ordinary-correction-v1:")]
+        assert len(keys) == 1
+        admissions.extend(keys)
+
+    script.on_review = assert_recovery_was_spent_before_review
+
+    actions = flow.run(closure=script)
+    _reconstruct_flow_stores(flow)
+    flow.model_responses = []
+    again = flow.run(closure=script)
+
+    assert flow.model_calls == 2 and flow.handoffs == 1, (list(actions), list(again))
+    assert len(admissions) == 1
+    assert len(flow.reviews) == 2
+    retained = flow.retained()
+    assert retained is not None and retained.ordinary_correction is not None and retained.handoff == HANDOFF_DISPATCHED
+    assert flow.env.cycle.snapshot(flow.pr).open_findings and flow.merge.call_count == 0
+
+
+def test_interrupted_legacy_recovery_cannot_obtain_another_unchanged_admission(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    flow, script, _ = _historical_root_with_current_violation(flow_env, monkeypatch, "cloud", "missing")
+    with patch("auto_coder.pr_processor._dispatch_effective_correction", side_effect=SimulatedCrash), pytest.raises(SimulatedCrash):
+        flow.run(closure=script)
+    _seed_legacy_blocked_envelope(flow, retain_corrective_payload=False)
+
+    def interrupted_reviewer() -> None:
+        retained = flow.retained()
+        assert retained is not None and any(key.startswith("ordinary-correction-v1:") for key in retained.reconciliation_attempts)
+        raise SimulatedCrash
+
+    script.on_review = interrupted_reviewer
+    with pytest.raises(SimulatedCrash):
+        flow.run(closure=script)
+    _reconstruct_flow_stores(flow)
+    flow.model_responses = []
+
+    first = flow.run(closure=script)
+    second = flow.run(closure=script)
+
+    assert flow.model_calls == 2 and flow.handoffs == 0 and len(flow.reviews) == 1, (list(first), list(second))
+    assert first.disposition.value == "RECONCILIATION_WAIT" and second.disposition.value == "RECONCILIATION_WAIT"
+    assert flow.merge.call_count == 0 and flow.env.cycle.snapshot(flow.pr).open_findings
+
+
+def test_current_correction_lost_provider_response_reconciles_after_restart(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    flow, script, _ = _historical_root_with_current_violation(flow_env, monkeypatch, "cloud", "malformed")
+    flow.provider.lose_next_response = True
+
+    first = flow.run(closure=script)
+
+    assert first.disposition.value == "CORRECTION_WAITING" and flow.retained().handoff == HANDOFF_WAITING
+    assert len(flow.provider.followups) == 1
+    _reconstruct_flow_stores(flow)
+    flow.model_responses = []
+    second = flow.run(closure=script)
+    third = flow.run(closure=script)
+    assert second.disposition.value == "CORRECTIVE_HANDOFF" and third.disposition.value == "CORRECTIVE_HANDOFF"
+    assert flow.model_calls == 1 and len(flow.provider.followups) == 1 and len(flow.reviews) == 1
+    assert flow.retained().handoff == HANDOFF_DISPATCHED and flow.merge.call_count == 0
+
+
+def test_current_correction_accepted_review_with_lost_response_uses_confirmed_roots(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    class AcceptedResponseLostClient(RouterClient):
+        lose_next_response = True
+
+        def request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+            response = super().request(method, url, **kwargs)
+            if method == "POST" and url.endswith("/reviews") and self.lose_next_response:
+                self.lose_next_response = False
+                raise httpx.ConnectError("accepted response lost", request=response.request)
+            return response
+
+    flow, script, _ = _historical_root_with_current_violation(flow_env, monkeypatch, "cloud", "missing")
+    assert flow.router is not None
+    transport = AcceptedResponseLostClient(flow.head)
+    transport.__dict__.update(flow.router.__dict__)
+    flow.router = transport
+
+    actions = flow.run(closure=script)
+    _reconstruct_flow_stores(flow)
+    flow.model_responses = []
+    again = flow.run(closure=script)
+
+    assert flow.model_calls == 1 and flow.handoffs == 1 and len(flow.reviews) == 1, (list(actions), list(again))
+    assert len(transport.review_records) == 2  # Initial Strong review and the accepted ordinary review.
+    assert len(transport.review_roots[max(transport.review_roots)]) == 1
+    assert flow.retained().publication == "CONFIRMED"
+    assert flow.merge.call_count == 0 and flow.env.cycle.snapshot(flow.pr).open_findings
+
+
+def test_current_correction_uncertain_publication_waits_for_receipt_without_resubmission(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    flow, script, _ = _historical_root_with_current_violation(flow_env, monkeypatch, "cloud", "missing")
+    assert flow.router is not None
+
+    def lose_process_after_transmission_is_journaled() -> None:
+        raise SimulatedCrash
+
+    flow.router.before_review = lose_process_after_transmission_is_journaled
+    with pytest.raises(SimulatedCrash):
+        flow.run(closure=script)
+    # The durable intent cannot know whether a terminated transport sent its request.
+    flow.router.before_review = lambda: None
+    _reconstruct_flow_stores(flow)
+    flow.model_responses = []
+
+    first = flow.run(closure=script)
+    second = flow.run(closure=script)
+
+    assert flow.model_calls == 1 and flow.reviews == [] and flow.handoffs == 0
+    assert any("publication" in action.lower() and "unresolved" in action.lower() for action in first), first
+    assert any("publication" in action.lower() and "unresolved" in action.lower() for action in second), second
+    assert first.disposition.value == second.disposition.value == "CORRECTION_WAITING"
+    retained = flow.retained()
+    assert retained is not None and retained.publication == "PENDING" and retained.ordinary_correction is not None
+    assert flow.status.outcome is PRProcessingOutcome.DEFERRED and flow.merge.call_count == 0
+
+
+@pytest.mark.parametrize(("gate", "wait_reason"), [("origin_available", "ROUTE_UNAVAILABLE"), ("quota_hold", "QUOTA_DEFERRED"), ("exhausted", "ALLOWANCE_EXHAUSTED")])
+def test_current_correction_wait_keeps_ordinary_evidence_and_historical_obligation(flow_env: Env, monkeypatch: pytest.MonkeyPatch, gate: str, wait_reason: str) -> None:
+    flow, script, _ = _historical_root_with_current_violation(flow_env, monkeypatch, "cloud", "missing")
+    setattr(flow, gate, gate != "origin_available")
+
+    actions = flow.run(closure=script)
+
+    retained = flow.retained()
+    assert retained is not None and retained.ordinary_correction is not None
+    assert retained.handoff == HANDOFF_WAITING and retained.wait_reason == wait_reason, actions
+    assert actions.disposition.value == "CORRECTION_WAITING"
+    assert flow.handoffs == 0 and flow.merge.call_count == 0 and flow.env.cycle.snapshot(flow.pr).open_findings
+    _reconstruct_flow_stores(flow)
+    flow.model_responses = []
+    again = flow.run(closure=script)
+    assert flow.model_calls == 1 and len(flow.reviews) == 1 and flow.handoffs == 0, again
+
+
+def test_current_correction_failed_durable_evidence_write_emits_no_effect(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    flow, script, _ = _historical_root_with_current_violation(flow_env, monkeypatch, "cloud", "missing")
+
+    with patch.object(EffectiveDecisionStore, "_write", side_effect=OSError("disk full")):
+        actions = flow.run(closure=script)
+
+    assert flow.model_calls == 1 and flow.reviews == [] and flow.handoffs == 0
+    assert actions.disposition.value == "OPERATIONAL_FAILURE" and flow.status.outcome is PRProcessingOutcome.FAILED
+    assert flow.merge.call_count == 0 and flow.env.cycle.snapshot(flow.pr).open_findings
 
 
 def _unfinished_flow(flow_env: Env, monkeypatch: pytest.MonkeyPatch, pr: int, **kwargs: Any) -> Flow:
@@ -1165,8 +1676,8 @@ def test_genuinely_ambiguous_association_spends_one_focused_attempt_per_evidence
     flow_env.bridge().project(flow_env.target(pr), RootObservation(roots=(observation.roots[0],), complete=True))  # new exact association evidence for finding-a
     flow.root_body, flow.root_id, flow.thread_id = observation.roots[0].body, 5001, "PRRT_a"
     flow.model_responses = [ordinary_response("PRRT_a")]
-    flow.run()
-    assert flow.model_calls == 2  # eligible again on relevant new evidence
+    actions = flow.run()
+    assert flow.model_calls == 2, "\n".join(actions)  # eligible again on relevant new evidence
     resumed = flow.retained()
     assert resumed is not None and resumed.next_action != "RECONCILIATION" and resumed.status in {"NEEDS_TESTS", "NEEDS_FIX"}
 
@@ -1268,8 +1779,10 @@ def test_transient_target_outage_retains_the_assessment_and_resumes_without_a_mo
     # The retained assessment is applied from the durable source: no closure-only
     # reviewer runs and the same evidence is never re-requested with closure context.
     assert restored.calls == [] and restored.closure_only_calls == [], actions
+    assert flow.model_calls == calls_before, "\n".join(actions)
+    assert flow.handoffs == 1, "\n".join(actions)
     snapshot = flow_env.cycle.snapshot(flow.pr)
-    assert snapshot.accepted_closure is not None and snapshot.open_findings == ()
+    assert snapshot.accepted_closure is not None and snapshot.open_findings == (), "\n".join(actions)
     assert snapshot.accepted_closure.head_sha == flow.head
 
 

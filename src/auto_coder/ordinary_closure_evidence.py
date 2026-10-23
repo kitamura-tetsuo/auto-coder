@@ -17,6 +17,7 @@ import json
 import os
 import re
 import time
+import types
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
@@ -374,7 +375,7 @@ def _decode(annotation: object, value: object) -> object:
         return None
     origin = get_origin(annotation)
     arguments = get_args(annotation)
-    if origin is Union:
+    if origin in (Union, types.UnionType):
         candidates = [item for item in arguments if item is not type(None)]
         return _decode(candidates[0], value) if len(candidates) == 1 else value
     if origin in (list, set, frozenset) and isinstance(value, list):
@@ -393,18 +394,31 @@ def _decode(annotation: object, value: object) -> object:
     return value
 
 
-def restore_ordinary_result(record: "ClosureEvidenceRecord") -> "AdversarialValidationResult":
-    """The complete ordinary semantic result retained with the evidence, rebuilt without a model call.
+def serialize_ordinary_result(result: "AdversarialValidationResult", *, include_closure: bool = False) -> str:
+    """Serialize normalized ordinary evidence without process-local authority objects."""
+    return json.dumps(_plain({item.name: getattr(result, item.name) for item in fields(result) if (item.repr or item.name == "correction_reference_context") and (include_closure or item.name != "closure_assessment")}), sort_keys=True)
+
+
+def deserialize_ordinary_result(payload: str) -> "AdversarialValidationResult":
+    """Restore normalized evidence, leaving owning stores to supply current authority.
 
     Fields that are never retained (session checkpoint/registry and the accepted-finding
     projection) are left unset; the caller re-derives them from their owning stores.
     """
     from .adversarial_validator import AdversarialValidationResult
 
-    raw = json.loads(record.ordinary.payload)
+    raw = json.loads(payload)
+    if not isinstance(raw, dict) or not isinstance(raw.get("result"), str):
+        raise ValueError("Retained ordinary result is not a normalized result object")
     restored = _decode(AdversarialValidationResult, raw)
-    assert isinstance(restored, AdversarialValidationResult)
+    if not isinstance(restored, AdversarialValidationResult):
+        raise ValueError("Retained ordinary result could not be restored")
     return restored
+
+
+def restore_ordinary_result(record: "ClosureEvidenceRecord") -> "AdversarialValidationResult":
+    """Restore the complete ordinary result retained by the closure evidence journal."""
+    return deserialize_ordinary_result(record.ordinary.payload)
 
 
 def _coverage_gap(coverage: Tuple[Tuple[str, str], ...], contract: ContractSnapshot) -> str:
@@ -461,7 +475,7 @@ def _ordinary_outcome(result: "AdversarialValidationResult") -> OrdinaryOutcome:
         open_test_oracle_gap_count=len(result.open_test_oracle_gaps),
         specification_gap_count=len(result.specification_gaps),
         blockers=tuple(blockers),
-        payload=json.dumps(_plain({item.name: getattr(result, item.name) for item in fields(result) if item.repr and item.name != "closure_assessment"}), sort_keys=True),
+        payload=serialize_ordinary_result(result),
     )
 
 
