@@ -87,6 +87,8 @@ class ReviewThreadTransport:
     lose_patches: int = 0
     lose_resolves: int = 0
     reject_patches: bool = False
+    reject_unresolves: bool = False
+    unresolve_attempts: int = 0
     fail_thread_reads: bool = False
     missing_thread: bool = False
     duplicate_thread: bool = False
@@ -95,6 +97,7 @@ class ReviewThreadTransport:
     move_head_after_resolve: bool = False
     before_create: Callable[[], None] | None = None
     before_resolve: Callable[[], None] | None = None
+    before_unresolve: Callable[[], None] | None = None
 
     @property
     def users(self):
@@ -164,6 +167,11 @@ class ReviewThreadTransport:
         variables = payload.get("variables", {})
         if "unresolveReviewThread" in query:
             assert variables["threadId"] == THREAD_ID
+            self.unresolve_attempts += 1
+            if self.before_unresolve is not None:
+                self.before_unresolve()
+            if self.reject_unresolves:
+                raise RuntimeError("Unresolve refused before send")
             self.effects.append("unresolve")
             self.resolved = False
             data = {"unresolveReviewThread": {"thread": {"id": THREAD_ID, "isResolved": False}}}
@@ -380,6 +388,130 @@ def test_same_head_close_waits_for_durable_rollback_cleanup(receipt_scenario):
     assert scenario.transport.resolved is True
     assert scenario.transport.effects.count("resolve") == 2
     assert scenario.transport.effects.count("unresolve") == 1
+    assert len(scenario.transport.posts) == 1
+
+
+@pytest.mark.parametrize("recovery_state", ["same_head", "changed_head", "already_unresolved"])
+def test_failed_publication_rollback_survives_local_storage_loss(receipt_scenario, monkeypatch, recovery_state):
+    scenario = receipt_scenario
+    claimed = scenario.claimed()
+    first = scenario.close(claimed=claimed)
+    assert first.resolved_thread_ids == (THREAD_ID,)
+    registry = scenario.registry()
+
+    def reject_local_write(*_args, **_kwargs):
+        raise OSError("Rollback registry storage unavailable")
+
+    monkeypatch.setattr(registry, "record_rollback_transition", reject_local_write)
+    monkeypatch.setattr(registry, "record", reject_local_write)
+    scenario.transport.reject_unresolves = True
+
+    reopened = reopen_review_threads_after_publication_failure(scenario.client(), REPOSITORY, PR_NUMBER, claimed, first.resolved_thread_ids, registry=registry)
+
+    assert reopened == []
+    assert scenario.transport.resolved is True
+    assert scenario.transport.unresolve_attempts > 0
+    assert scenario.registry().pending_for_pr(REPOSITORY, PR_NUMBER) == []
+    assert scenario.registry().rollback_transitions_for_pr(REPOSITORY, PR_NUMBER) == {}
+    obligation = observe_closure_receipt(scenario.client(), REPOSITORY, PR_NUMBER, THREAD_ID, ROOT_ID).receipt
+    assert obligation is not None
+    assert obligation.phase == "ROLLBACK_REQUIRED"
+    effects_before_replay = list(scenario.transport.effects)
+
+    replay = scenario.close(claimed=claimed)
+
+    assert replay.resolved_thread_ids == ()
+    assert replay.unfinished_outcomes
+    assert scenario.transport.effects == effects_before_replay
+    assert observe_closure_receipt(scenario.client(), REPOSITORY, PR_NUMBER, THREAD_ID, ROOT_ID).receipt == obligation
+    if recovery_state == "changed_head":
+        scenario.transport.head = NEXT_HEAD
+    fresh_registry = StaleReviewThreadRegistry(path=scenario.path / "restart-without-local-rollback.json")
+
+    pending = retry_pending_stale_review_thread_rollbacks(scenario.client(), REPOSITORY, PR_NUMBER, registry=fresh_registry)
+
+    assert pending == [THREAD_ID]
+    assert scenario.transport.resolved is True
+    assert len(scenario.transport.posts) == 1
+    assert observe_closure_receipt(scenario.client(), REPOSITORY, PR_NUMBER, THREAD_ID, ROOT_ID).receipt == obligation
+    scenario.transport.reject_unresolves = False
+    if recovery_state == "already_unresolved":
+        scenario.client().unresolve_review_thread(THREAD_ID)
+    attempts_before_recovery = scenario.transport.unresolve_attempts
+    assert retry_pending_stale_review_thread_rollbacks(scenario.client(), REPOSITORY, PR_NUMBER, registry=fresh_registry) == []
+    assert scenario.transport.resolved is False
+    assert scenario.transport.unresolve_attempts == attempts_before_recovery + (0 if recovery_state == "already_unresolved" else 1)
+    assert scenario.transport.effects.count("unresolve") == 1
+    assert len(scenario.transport.posts) == 1
+    assert "ROLLED_BACK" in next(comment.body for comment in scenario.transport.comments if comment.login == CONTROLLER_LOGIN)
+
+
+def test_rejected_rollback_receipt_write_preserves_local_recovery(receipt_scenario):
+    scenario = receipt_scenario
+    claimed = scenario.claimed()
+    first = scenario.close(claimed=claimed)
+    assert first.resolved_thread_ids == (THREAD_ID,)
+    scenario.transport.reject_patches = True
+    scenario.transport.reject_unresolves = True
+
+    reopened = reopen_review_threads_after_publication_failure(scenario.client(), REPOSITORY, PR_NUMBER, claimed, first.resolved_thread_ids, registry=scenario.registry())
+
+    assert reopened == []
+    assert scenario.transport.resolved is True
+    assert scenario.registry().pending_for_pr(REPOSITORY, PR_NUMBER) == [THREAD_ID]
+    assert any("ROLLBACK_REQUIRED" in body for _comment_id, body in scenario.transport.patches)
+    receipt = observe_closure_receipt(scenario.client(), REPOSITORY, PR_NUMBER, THREAD_ID, ROOT_ID).receipt
+    assert receipt is not None and receipt.phase == "RESOLVED"
+    assert retry_pending_stale_review_thread_rollbacks(scenario.client(), REPOSITORY, PR_NUMBER, registry=scenario.registry()) == [THREAD_ID]
+    assert scenario.transport.resolved is True
+    scenario.transport.reject_patches = False
+    scenario.transport.reject_unresolves = False
+
+    assert retry_pending_stale_review_thread_rollbacks(scenario.client(), REPOSITORY, PR_NUMBER, registry=scenario.registry()) == []
+    assert scenario.transport.resolved is False
+    assert scenario.transport.effects.count("unresolve") == 1
+    assert len(scenario.transport.posts) == 1
+    assert scenario.registry().pending_for_pr(REPOSITORY, PR_NUMBER) == []
+
+
+def test_old_cleanup_reports_newer_required_receipt_unfinished_when_unresolved(receipt_scenario):
+    scenario = receipt_scenario
+    claimed = scenario.claimed()
+    first = scenario.close(claimed=claimed)
+    old_registry = scenario.registry()
+    scenario.transport.reject_patches = True
+    assert reopen_review_threads_after_publication_failure(scenario.client(), REPOSITORY, PR_NUMBER, claimed, first.resolved_thread_ids, registry=old_registry) == [THREAD_ID]
+    assert old_registry.marker_cleanup_pending_for_pr(REPOSITORY, PR_NUMBER) == {THREAD_ID: ROOT_ID}
+    old_operation = old_registry.receipt_operation_keys_for_pr(REPOSITORY, PR_NUMBER)[THREAD_ID]
+    scenario.transport.reject_patches = False
+    scenario.transport.head = NEXT_HEAD
+    other_registry = StaleReviewThreadRegistry(path=scenario.path / "other-process-rollback.json")
+    second = scenario.close(claimed=claimed, registry=other_registry)
+    assert second.resolved_thread_ids == (THREAD_ID,)
+
+    def reject_cleanup_after_actual_unresolve():
+        scenario.transport.reject_patches = True
+
+    scenario.transport.before_unresolve = reject_cleanup_after_actual_unresolve
+    assert reopen_review_threads_after_publication_failure(scenario.client(), REPOSITORY, PR_NUMBER, claimed, second.resolved_thread_ids, registry=other_registry) == [THREAD_ID]
+    scenario.transport.before_unresolve = None
+    scenario.transport.reject_patches = False
+    newer_receipt = observe_closure_receipt(scenario.client(), REPOSITORY, PR_NUMBER, THREAD_ID, ROOT_ID).receipt
+    assert newer_receipt is not None
+    assert newer_receipt.phase == "ROLLBACK_REQUIRED"
+    assert newer_receipt.operation_key != old_operation
+    assert scenario.transport.resolved is False
+    effects_before = list(scenario.transport.effects)
+
+    pending = retry_pending_stale_review_thread_rollbacks(scenario.client(), REPOSITORY, PR_NUMBER, registry=old_registry)
+
+    assert pending == [THREAD_ID]
+    assert scenario.transport.effects == effects_before
+    assert observe_closure_receipt(scenario.client(), REPOSITORY, PR_NUMBER, THREAD_ID, ROOT_ID).receipt == newer_receipt
+    assert old_registry.marker_cleanup_pending_for_pr(REPOSITORY, PR_NUMBER) == {}
+    assert retry_pending_stale_review_thread_rollbacks(scenario.client(), REPOSITORY, PR_NUMBER, registry=old_registry) == []
+    assert scenario.transport.effects == effects_before + ["patch"]
+    assert scenario.transport.effects.count("unresolve") == 2
     assert len(scenario.transport.posts) == 1
 
 
@@ -689,6 +821,70 @@ def test_receipt_evidence_round_trips_markup_and_trailing_whitespace(receipt_sce
     assert confirmed.receipt == desired
     assert observe_closure_receipt(scenario.client(), REPOSITORY, PR_NUMBER, THREAD_ID, ROOT_ID).receipt == desired
     assert scenario.transport.effects == effects_before + ["patch"]
+    assert len(scenario.transport.posts) == 1
+
+
+@pytest.mark.parametrize("is_resolved", [True, False])
+def test_required_rollback_cannot_be_promoted_or_rebound(receipt_scenario, is_resolved):
+    scenario = receipt_scenario
+    assert scenario.close().resolved_thread_ids == (THREAD_ID,)
+    client = scenario.client()
+    observation = observe_closure_receipt(client, REPOSITORY, PR_NUMBER, THREAD_ID, ROOT_ID)
+    assert observation.receipt is not None
+    with closure_receipt_lock(REPOSITORY, PR_NUMBER):
+        observation = put_receipt(client, observation, replace(observation.receipt, phase="ROLLBACK_REQUIRED"))
+    if not is_resolved:
+        client.unresolve_review_thread(THREAD_ID)
+        observation = observe_closure_receipt(client, REPOSITORY, PR_NUMBER, THREAD_ID, ROOT_ID)
+    obligation = observation.receipt
+    assert obligation is not None
+    effects_before = list(scenario.transport.effects)
+    forbidden = (
+        replace(obligation, phase="PENDING"),
+        replace(obligation, phase="RESOLVED"),
+        replace(obligation, validated_head_sha=NEXT_HEAD),
+        replace(obligation, operation_key="another-closure-operation"),
+        replace(obligation, rationale="A different rationale cannot replace the rollback obligation."),
+        replace(obligation, phase="ROLLED_BACK", evidence="Changed evidence cannot inherit old rollback proof."),
+    )
+
+    with closure_receipt_lock(REPOSITORY, PR_NUMBER):
+        for desired in forbidden:
+            with pytest.raises(ClosureReceiptError):
+                put_receipt(client, observation, desired, confirmed_rollback_operation_key=obligation.operation_key)
+        assert put_receipt(client, observation, obligation).receipt == obligation
+
+    assert scenario.transport.effects == effects_before
+    assert scenario.transport.resolved is is_resolved
+    assert len(scenario.transport.posts) == 1
+
+
+@pytest.mark.parametrize("prior_state", ["missing", "rolled_back"])
+def test_rollback_intent_cannot_manufacture_or_resurrect_an_operation(receipt_scenario, prior_state):
+    scenario = receipt_scenario
+    claimed = scenario.claimed()
+    first = scenario.close(claimed=claimed)
+    assert first.resolved_thread_ids == (THREAD_ID,)
+    client = scenario.client()
+    prior = observe_closure_receipt(client, REPOSITORY, PR_NUMBER, THREAD_ID, ROOT_ID).receipt
+    assert prior is not None
+    if prior_state == "missing":
+        scenario.transport.comments = _initial_comments()
+        desired = replace(prior, phase="ROLLBACK_REQUIRED", comment_id=None)
+    else:
+        assert reopen_review_threads_after_publication_failure(client, REPOSITORY, PR_NUMBER, claimed, first.resolved_thread_ids, registry=scenario.registry()) == [THREAD_ID]
+        client.resolve_review_thread(THREAD_ID)
+        prior = observe_closure_receipt(client, REPOSITORY, PR_NUMBER, THREAD_ID, ROOT_ID).receipt
+        assert prior is not None and prior.phase == "ROLLED_BACK"
+        desired = replace(prior, phase="ROLLBACK_REQUIRED")
+    observation = observe_closure_receipt(client, REPOSITORY, PR_NUMBER, THREAD_ID, ROOT_ID)
+    effects_before = list(scenario.transport.effects)
+
+    with closure_receipt_lock(REPOSITORY, PR_NUMBER), pytest.raises(ClosureReceiptError):
+        put_receipt(client, observation, desired)
+
+    assert scenario.transport.effects == effects_before
+    assert scenario.transport.resolved is True
     assert len(scenario.transport.posts) == 1
 
 

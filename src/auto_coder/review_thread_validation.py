@@ -335,22 +335,30 @@ def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: i
         return trusted_marker_author
 
     for thread in threads:
-        if not thread.is_resolved:
+        comments = thread.comments or []
+        has_receipt = any((comment.body or "").lstrip().startswith(CLOSURE_RECEIPT_PREFIX) for comment in comments)
+        if not thread.is_resolved and not has_receipt:
             continue
         if thread.comments_truncated:
             incomplete_thread_ids.append(thread.id)
             continue
-        comments = thread.comments or []
         root_comment_database_id = comments[0].database_id if comments else None
         # Mutable receipts are independent risk records, not chronological
         # BLOCKER/CLEARED events: editing a comment does not change its position.
-        if any((comment.body or "").lstrip().startswith(CLOSURE_RECEIPT_PREFIX) for comment in comments):
+        if has_receipt:
             receipt = parse_owned_receipt(thread, _trusted_marker_author())
             if receipt is not None:
                 if receipt.api_origin != "https://api.github.com" or receipt.repository.casefold() != repo_name.casefold() or receipt.pr_number != pr_number:
                     raise RuntimeError(f"Closure receipt namespace does not match {repo_name}#{pr_number}")
-                if receipt.phase == "PENDING" and receipt.validated_head_sha != _current_head():
+                if receipt.phase == "ROLLBACK_REQUIRED":
+                    # Publication failure requires reopening even at the same
+                    # head. This is not an unresolved completion PATCH, and an
+                    # already-unresolved effect still needs receipt cleanup.
                     pending[thread.id] = root_comment_database_id
+                elif thread.is_resolved and receipt.phase == "PENDING" and receipt.validated_head_sha != _current_head():
+                    pending[thread.id] = root_comment_database_id
+        if not thread.is_resolved:
+            continue
         # None = no active blocker marker seen yet; "" = a legacy/headless
         # blocker marker (always pending); otherwise the head it was posted
         # against.
@@ -414,7 +422,7 @@ def _finish_rollback_markers(
         pass
     elif receipt is not None and not observation.thread.is_resolved and receipt.phase != "ROLLED_BACK":
         observation = put_receipt(github_client, observation, replace(receipt, phase="ROLLED_BACK"))
-    elif receipt is not None and observation.thread.is_resolved and receipt.phase == "PENDING":
+    elif receipt is not None and observation.thread.is_resolved and receipt.phase in ("PENDING", "ROLLBACK_REQUIRED"):
         # A durable confirmed rollback may finish its own old receipt after
         # another actor legitimately resolves the thread. It cannot authorize
         # another unresolve or retire a different pending operation.
@@ -443,7 +451,7 @@ def _finish_rollback_markers(
         # Mixed histories retain a separate legacy obligation. A completed
         # mutable receipt cannot silently cancel that event.
         github_client.reply_to_review_thread(repo_name, pr_number, root_comment_database_id, STALE_BLOCKER_CLEARED_MARKER)
-    return newer_operation and receipt is not None and receipt.phase == "PENDING" and observation.thread.is_resolved
+    return newer_operation and receipt is not None and (receipt.phase == "ROLLBACK_REQUIRED" or (receipt.phase == "PENDING" and observation.thread.is_resolved))
 
 
 def _retry_pending_stale_review_thread_rollbacks(
@@ -579,7 +587,8 @@ def _retry_pending_stale_review_thread_rollbacks(
             raise StaleReviewThreadRegistryError(f"Could not durably prepare stale rollback of thread {thread_id} on PR #{pr_number}: {exc}") from exc
 
         try:
-            github_client.unresolve_review_thread(thread_id)
+            if observation.thread.is_resolved:
+                github_client.unresolve_review_thread(thread_id)
         except Exception as exc:
             logger.error(f"Retry to revert stale resolution of thread {thread_id} on PR #{pr_number} failed: {exc}")
             try:
@@ -1019,13 +1028,22 @@ def _reopen_review_threads_after_publication_failure(
         claimed_thread = _find_claimed_thread(claimed, thread_id)
         root_comment_database_id = claimed_thread.root_comment_database_id if claimed_thread is not None else None
         operation_key = ""
+        already_unresolved = False
         if root_comment_database_id is not None:
             try:
                 observation = observe_closure_receipt(github_client, repo_name, pr_number, thread_id, root_comment_database_id)
+                already_unresolved = not observation.thread.is_resolved
                 if observation.receipt is not None:
                     operation_key = observation.receipt.operation_key
+                    if observation.receipt.phase == "ROLLED_BACK" and not already_unresolved:
+                        # This operation's rollback is already settled. An old
+                        # callback cannot undo a later independent resolution.
+                        logger.info(f"Publication rollback for thread {thread_id} on PR #{pr_number} was already completed")
+                        continue
+                    if not already_unresolved:
+                        put_receipt(github_client, observation, replace(observation.receipt, phase="ROLLBACK_REQUIRED"))
             except Exception as exc:
-                logger.error(f"Could not observe receipt before publication-failure rollback of thread {thread_id} on PR #{pr_number}: {exc}")
+                logger.error(f"Could not retain publication-failure rollback in the receipt for thread {thread_id} on PR #{pr_number}: {exc}")
         try:
             rollback_registry.record_rollback_transition(
                 repo_name,
@@ -1038,15 +1056,18 @@ def _reopen_review_threads_after_publication_failure(
             logger.error(f"Could not durably prepare publication-failure rollback for thread {thread_id} on PR #{pr_number}: {exc}")
 
         last_exc: Optional[Exception] = None
-        for attempt in range(1, UNRESOLVE_ROLLBACK_MAX_ATTEMPTS + 1):
-            try:
-                github_client.unresolve_review_thread(thread_id)
-                last_exc = None
-                reopened.append(thread_id)
-                break
-            except Exception as exc:
-                last_exc = exc
-                logger.error(f"Attempt {attempt}/{UNRESOLVE_ROLLBACK_MAX_ATTEMPTS} to reopen thread {thread_id} after review publication failure on PR #{pr_number} failed: {exc}")
+        if already_unresolved:
+            reopened.append(thread_id)
+        else:
+            for attempt in range(1, UNRESOLVE_ROLLBACK_MAX_ATTEMPTS + 1):
+                try:
+                    github_client.unresolve_review_thread(thread_id)
+                    last_exc = None
+                    reopened.append(thread_id)
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    logger.error(f"Attempt {attempt}/{UNRESOLVE_ROLLBACK_MAX_ATTEMPTS} to reopen thread {thread_id} after review publication failure on PR #{pr_number} failed: {exc}")
 
         if last_exc is not None:
             try:

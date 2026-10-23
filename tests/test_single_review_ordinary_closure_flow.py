@@ -406,12 +406,26 @@ def test_nonpassing_independent_gate_blocks_merge_after_valid_bounded_closure(fl
 def test_unresolved_thread_blocks_merge_after_valid_bounded_closure(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
     flow = _repaired_flow(flow_env, monkeypatch, 7310, resolve_on_approve=False)  # the accepted thread is never confirmed resolved
 
-    actions = flow.run(closure=ClosureScript(status="FIXED"))
+    with patch("auto_coder.pr_processor._record_pr_stage", wraps=_record_pr_stage) as stages:
+        actions = flow.run(closure=ClosureScript(status="FIXED"))
 
     snapshot = flow_env.cycle.snapshot(7310)
     assert snapshot.accepted_closure is not None and snapshot.accepted_closure.publication_status == "PENDING"
     assert snapshot.completion is None
-    assert flow.merge.call_count == 0 and any("accepted finding thread resolution remains unfinished" in action for action in actions)
+    assert flow.merge.call_count == 0
+    assert any(f"Review-thread closure remains unfinished for 1 thread(s): {flow.thread_id}" in action for action in actions), actions
+    assert flow.status.outcome is PRProcessingOutcome.FAILED
+    closure_events = [event for event in stages.call_args_list if event.args[1] == "pr.review-thread-closure"]
+    assert len(closure_events) == 2
+    assert all(event.args[3].value == "blocked" for event in closure_events)
+    ordinary_facts, receipt_facts = [event.args[4] for event in closure_events]
+    assert ordinary_facts["effect"] == "accepted-ordinary-closure"
+    assert ordinary_facts["unfinished"] == [{"thread_id": flow.thread_id, "phase": "effect-confirmation", "reason": "Exact finding thread remains unresolved"}]
+    unfinished = receipt_facts["unfinished"]
+    assert len(unfinished) == 1
+    assert unfinished[0]["thread_id"] == flow.thread_id
+    assert unfinished[0]["phase"] == "marker-cleanup"
+    assert unfinished[0]["reason"] == "GitHub has not confirmed the receipt's resolved outcome"
     assert flow.threads()[0].is_resolved is False
 
 

@@ -33,6 +33,7 @@ from auto_coder.review_thread_validation import (
 )
 from auto_coder.reviewer_session_registry import ReviewerSession, ReviewerSessionRegistry, TestOracleGap
 from auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
+from tests.test_review_thread_validation import _closure_client
 
 
 class FallbackReviewerClient:
@@ -865,9 +866,9 @@ def test_same_head_addressed_gap_thread_persists_before_unrelated_inconclusive_r
     assert saved.test_oracle_gaps[0].status == "RESOLVED"
     assert "tests/test_grid.py" in saved.test_oracle_gaps[0].resolution_evidence
 
-    client = MagicMock()
+    client = _closure_client([claimed])
     client.get_pull_request_head_sha_strict.return_value = "sha-a"
-    client.resolve_review_thread.return_value = True
+    client.remote_threads[0].comments[0].body = claimed.original_finding
     resolved = resolve_addressed_review_threads(
         client,
         "owner/repo",
@@ -1456,9 +1457,9 @@ def test_gap_persistence_failure_prevents_thread_projection_and_same_head_retry_
             ],
         }
     )
-    client = MagicMock()
+    client = _closure_client([claimed])
     client.get_pull_request_head_sha_strict.return_value = "sha-a"
-    client.resolve_review_thread.return_value = True
+    client.remote_threads[0].comments[0].body = claimed.original_finding
 
     with (
         patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context),

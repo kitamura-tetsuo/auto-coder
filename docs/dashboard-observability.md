@@ -442,8 +442,14 @@ these fields and blocked outcomes, so no event schema or renderer change is
 needed. The production-emission oracle is
 `tests/test_adversarial_validation_pr_flow.py::test_real_thread_closure_reuses_reply_after_pr_publication_failure[receipt-cleanup-observability]`;
 its `publication-retry` companion verifies real closure, review-publication
-failure, reopening and retry through the same single comment identity. Run the
-pair with `bash scripts/test.sh
+failure, reopening and retry through the same single comment identity. The
+`publication-rollback-storage-loss` case combines failed publication, failed
+local rollback writes and failed native reopening, then reconstructs the client
+and empty registry. The retained `ROLLBACK_REQUIRED` receipt keeps processing
+at the existing stale-rollback gate without further validation, publication or
+merge until reopening succeeds. This recovery uses the same blocked outcome
+and dashboard projection; it adds no event field or renderer state. Run these
+cases with `bash scripts/test.sh
 tests/test_adversarial_validation_pr_flow.py::test_real_thread_closure_reuses_reply_after_pr_publication_failure`.
 Browser spec citations (`.spec.ts` and JavaScript/module variants) now satisfy the
 test-evidence recognition step without requiring the words `test` or `oracle`.

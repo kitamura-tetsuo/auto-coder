@@ -20,7 +20,7 @@ CLOSURE_RECEIPT_MARKER = "<!-- auto-coder-review-thread-closure:v1 -->"
 CLOSURE_RECEIPT_PREFIX = "<!-- auto-coder-review-thread-closure:"
 _RECEIPT_DATA_PREFIX = "<!-- auto-coder-review-thread-closure-data: "
 _RECEIPT_DATA_SUFFIX = " -->"
-_RECEIPT_PHASES = frozenset({"PENDING", "RESOLVED", "ROLLED_BACK"})
+_RECEIPT_PHASES = frozenset({"PENDING", "RESOLVED", "ROLLBACK_REQUIRED", "ROLLED_BACK"})
 
 
 class ClosureReceiptError(RuntimeError):
@@ -199,9 +199,10 @@ def put_receipt(github_client: GitHubClient, observation: ReceiptObservation, de
     A fresh read here prevents using an absent-receipt observation captured
     before a contender completed. Response loss is resolved by read-back.
 
-    A durable cleanup record may prove that this exact pending operation was
-    already rolled back before a subsequent independent resolution. Its key
-    permits retiring that old receipt without undoing the later resolution.
+    A durable cleanup record may prove that this exact pending or
+    rollback-required operation was already rolled back before a subsequent
+    independent resolution. Its key permits retiring that old receipt without
+    undoing the later resolution.
     It cannot rebind or otherwise rewrite the old operation's evidence.
     """
     _validate_receipt(desired)
@@ -217,13 +218,18 @@ def put_receipt(github_client: GitHubClient, observation: ReceiptObservation, de
         raise ClosureReceiptError("An observed closure receipt cannot be replaced by a new reply")
     if prior is not None and desired.comment_id is not None and desired.comment_id != prior.comment_id:
         raise ClosureReceiptError("Closure receipt write would replace a different owned reply")
+    if desired.phase == "ROLLBACK_REQUIRED" and (prior is None or prior.phase == "ROLLED_BACK" or not _same_receipt(replace(prior, phase="ROLLBACK_REQUIRED"), desired)):
+        raise ClosureReceiptError("Rollback intent must preserve the exact observed closure operation")
+    if prior is not None and prior.phase == "ROLLBACK_REQUIRED":
+        if desired.phase not in ("ROLLBACK_REQUIRED", "ROLLED_BACK") or not _same_receipt(replace(prior, phase=desired.phase), desired):
+            raise ClosureReceiptError("A required rollback must be confirmed before its receipt can be reused")
     if prior is not None and prior.phase == "PENDING" and (prior.operation_key != desired.operation_key or prior.validated_head_sha != desired.validated_head_sha) and current.thread.is_resolved:
         raise ClosureReceiptError("A prior pending closure must be reconciled before rebinding its receipt")
     confirmed_historical_rollback = (
         isinstance(confirmed_rollback_operation_key, str)
         and bool(confirmed_rollback_operation_key)
         and prior is not None
-        and prior.phase == "PENDING"
+        and prior.phase in ("PENDING", "ROLLBACK_REQUIRED")
         and prior.operation_key == desired.operation_key == confirmed_rollback_operation_key
         and desired.phase == "ROLLED_BACK"
         and _same_receipt(replace(prior, phase="ROLLED_BACK"), desired)

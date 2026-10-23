@@ -773,6 +773,9 @@ def _execute_durable_thread_closures(
             continue
 
         receipt = observation.receipt
+        if receipt is not None and receipt.phase == "ROLLBACK_REQUIRED":
+            errors.append(f"{thread_id}|receipt-reconciliation|Publication-failure rollback must complete before another closure")
+            continue
         same_operation = receipt is not None and receipt.operation_key == pending_receipt.operation_key and receipt.validated_head_sha == validated_head_sha
         if receipt is not None and receipt.phase == "PENDING" and not same_operation:
             if observation.thread.is_resolved:

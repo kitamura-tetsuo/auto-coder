@@ -45,6 +45,7 @@ validation before any new closure effect.
 | --- | --- |
 | `PENDING` | GitHub durably exposes intent for this operation before resolution. The resulting thread state or cleanup may still need reconciliation. |
 | `RESOLVED` | Resolution was confirmed for the validated head and the same reply was updated to record completion. |
+| `ROLLBACK_REQUIRED` | Review publication failed after closure. Reopening remains required for this exact operation, including at the same head and after local registry loss. |
 | `ROLLED_BACK` | Rollback of the bound operation was confirmed; this does not authorize a later resolution. |
 
 Every actual resolve, including a second resolve after review-publication
@@ -83,6 +84,17 @@ confirmed rollback records the exact receipt operation key, so a later retry
 can finish that historical operation without reopening a newer legitimate
 resolution or overwriting a different operation's receipt. Missing provenance
 does not authorize clearing an unrelated pending operation.
+
+After review-publication failure, the controller first updates the existing
+authenticated reply to `ROLLBACK_REQUIRED`, preserving its exact operation and
+head, before recording the local transition and attempting to reopen the
+thread. This state survives simultaneous local-registry write failure and
+failed unresolve attempts. Reconstructed processing discovers it even at the
+same head and blocks further closure or merge until rollback is confirmed. It
+cannot be promoted back to `RESOLVED` or rebound to a new closure. An already
+unresolved thread needs receipt cleanup only; recovery does not send another
+unresolve. If the receipt update fails, a successfully stored local transition
+still protects rollback. Both recovery paths use the same bounded PR lock.
 
 Mutable receipts are interpreted independently of chronological legacy
 `BLOCKER`/`CLEARED` events: editing a comment does not move it to the end of the
