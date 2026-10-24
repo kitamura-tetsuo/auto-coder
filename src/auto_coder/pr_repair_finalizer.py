@@ -129,6 +129,14 @@ class PRRepairJobFinalizer:
                 # A settled replay is deliberately receipt-only: cleanup may
                 # already have removed every Git object in the workspace.
                 if record.state is LocalJobState.SETTLED:
+                    if record.invocation_outcome is InvocationOutcome.CANNOT_FIX:
+                        return self._finish_terminal(record, PRRepairPublicationDisposition.CANNOT_FIX, "local PR repair cannot fix the selected failure")
+                    if record.invocation_outcome in {InvocationOutcome.FAILED, InvocationOutcome.INTERRUPTED}:
+                        return self._finish_terminal(
+                            record,
+                            PRRepairPublicationDisposition.REFUSED,
+                            f"local PR repair ended with retained {record.invocation_outcome.value} evidence",
+                        )
                     evidence = authenticated_successful_disposition(self._store, record)
                     if evidence is None or not evidence[1].startswith("published:"):
                         return self._result(job_id, PRRepairPublicationDisposition.REFUSED, diagnostic="settled job lacks complete publication receipts")
