@@ -37,7 +37,10 @@ class LLMOutputLogger:
 
     @staticmethod
     def _diagnostic(message: str) -> None:
-        print(f"Warning: LLM output log: {message[:500]}", file=sys.stderr)
+        try:
+            print(f"Warning: LLM output log: {message[:500]}", file=sys.stderr)
+        except (OSError, ValueError):
+            pass
 
     @classmethod
     def _setting(cls, name: str, default: int, minimum: int) -> int:
@@ -86,9 +89,35 @@ class LLMOutputLogger:
                     found.append((generation, candidate))
         return sorted(found)
 
+    @staticmethod
+    def _unlimited_decimal(value: int) -> str:
+        """Render an integer without Python's process-wide digit limit."""
+        negative = value < 0
+        remaining = -value if negative else value
+        chunks = []
+        while remaining:
+            remaining, chunk = divmod(remaining, 1_000_000_000)
+            chunks.append(chunk)
+        decimal = "0" if not chunks else str(chunks.pop()) + "".join(f"{chunk:09d}" for chunk in reversed(chunks))
+        return "-" + decimal if negative else decimal
+
+    def _encoded_record(self, data: Dict[str, Any], supplied_lengths: Optional[Dict[str, Any]]) -> bytes:
+        transformed = dict(data)
+        replacements: list[tuple[bytes, bytes]] = []
+        for index, name in enumerate(("prompt_length", "response_length")):
+            value = transformed.get(name)
+            if supplied_lengths is not None and name in supplied_lengths and isinstance(value, int) and not isinstance(value, bool) and (value < -MAX_COUNTER or value > MAX_COUNTER):
+                token = f"__auto_coder_large_integer_{index}__"
+                transformed[name] = token
+                replacements.append((json.dumps(token).encode(), self._unlimited_decimal(value).encode()))
+        encoded = (json.dumps(transformed, ensure_ascii=False) + "\n").encode()
+        for encoded_token, decimal in replacements:
+            encoded = encoded.replace(encoded_token, decimal, 1)
+        return encoded
+
     def _serialize(self, data: Dict[str, Any], supplied_lengths: Optional[Dict[str, Any]] = None) -> bytes:
         try:
-            ordinary = (json.dumps(data, ensure_ascii=False) + "\n").encode()
+            ordinary = self._encoded_record(data, supplied_lengths)
         except Exception as exc:
             raise ValueError(f"record serialization failed ({type(exc).__name__})") from exc
         if len(ordinary) <= self.max_bytes:
@@ -140,7 +169,7 @@ class LLMOutputLogger:
                     pending.clear()
                     try:
                         valid = isinstance(json.loads(line.decode("utf-8")), dict)
-                    except (UnicodeDecodeError, json.JSONDecodeError):
+                    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
                         valid = False
                     if valid:
                         retained.append(line)
@@ -208,6 +237,15 @@ class LLMOutputLogger:
         except Exception as exc:
             self._diagnostic(f"write skipped ({type(exc).__name__}): {str(exc)[:250]}")
 
+    def _redacted_metadata(self, metadata: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not metadata:
+            return None
+        try:
+            return redact_data(metadata)
+        except Exception as exc:
+            self._diagnostic(f"record skipped during redaction ({type(exc).__name__})")
+            return None
+
     def log_request(self, backend: str, model: Optional[str] = None, prompt: Optional[str] = None, prompt_length: Optional[int] = None, metadata: Optional[Dict[str, Any]] = None) -> None:
         data: Dict[str, Any] = {"event_type": "llm_request", "backend": backend}
         if model is not None:
@@ -218,7 +256,10 @@ class LLMOutputLogger:
             data["prompt_length"] = prompt_length
         supplied = {"prompt_length": data["prompt_length"]} if "prompt_length" in data else {}
         if metadata:
-            data.update(redact_data(metadata))
+            redacted = self._redacted_metadata(metadata)
+            if redacted is None:
+                return
+            data.update(redacted)
         self._write_json_line(data, supplied)
 
     def log_response(self, backend: str, model: Optional[str] = None, response: Optional[str] = None, response_length: Optional[int] = None, duration_ms: Optional[float] = None, status: str = "success", error: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -235,7 +276,10 @@ class LLMOutputLogger:
             data["error"] = redact_string(error)
         supplied = {"response_length": data["response_length"]} if "response_length" in data else {}
         if metadata:
-            data.update(redact_data(metadata))
+            redacted = self._redacted_metadata(metadata)
+            if redacted is None:
+                return
+            data.update(redacted)
         self._write_json_line(data, supplied)
 
     def log_interaction(self, backend: str, model: Optional[str] = None, prompt: Optional[str] = None, response: Optional[str] = None, duration_ms: Optional[float] = None, status: str = "success", error: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -252,7 +296,10 @@ class LLMOutputLogger:
             data["error"] = redact_string(error)
         supplied: Dict[str, Any] = {name: data[name] for name in ("prompt_length", "response_length") if name in data}
         if metadata:
-            data.update(redact_data(metadata))
+            redacted = self._redacted_metadata(metadata)
+            if redacted is None:
+                return
+            data.update(redacted)
         self._write_json_line(data, supplied)
 
     def flush(self) -> None:

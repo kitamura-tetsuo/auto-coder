@@ -3,6 +3,7 @@
 import json
 import multiprocessing
 import os
+import sys
 import tempfile
 import threading
 from contextlib import contextmanager
@@ -583,6 +584,48 @@ class TestBoundedLLMOutputLogger:
             logger.log_response("codex", response_length=-1, metadata={"huge": "x" * 10000})
         assert json.loads(path.read_bytes())["omitted_length_fields"] == ["response_length"]
 
+    @pytest.mark.parametrize(
+        ("method", "counter_name"),
+        [("log_request", "prompt_length"), ("log_response", "response_length")],
+    )
+    def test_huge_public_counter_writes_exact_bounded_summary(self, tmp_path, method, counter_name):
+        path = tmp_path / f"{method}.jsonl"
+        huge_counter = 10**5000
+        with self._settings():
+            logger = LLMOutputLogger(path, enabled=True)
+            getattr(logger, method)("codex", **{counter_name: huge_counter})
+        raw = path.read_bytes()
+        summary = json.loads(raw)
+        ordinary_with_zero = (
+            json.dumps(
+                {
+                    "event_type": "llm_request" if method == "log_request" else "llm_response",
+                    "backend": "codex",
+                    **({"status": "success"} if method == "log_response" else {}),
+                    counter_name: 0,
+                    "timestamp": summary["timestamp"],
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        ).encode()
+        assert len(raw) <= 4096
+        assert summary["original_record_bytes"] == len(ordinary_with_zero) + 5000
+        assert summary["omitted_length_fields"] == [counter_name]
+
+    def test_deeply_malformed_line_does_not_poison_recovery(self, tmp_path):
+        path = tmp_path / "out.jsonl"
+        path.write_bytes(b'{"x":' + b"[" * 1500 + b'\n{"marker": true}\n')
+        with self._settings():
+            logger = LLMOutputLogger(path, enabled=True)
+            logger.log_request("first", prompt_length=1)
+            logger.log_request("second", prompt_length=2)
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        assert len(records) == 3
+        assert records[0] == {"marker": True}
+        assert [record.get("backend") for record in records] == [None, "first", "second"]
+        assert path.stat().st_size <= 4096
+
     def test_normalizes_partial_and_oversized_legacy_segments(self, tmp_path):
         path = tmp_path / "out.jsonl"
         archive = tmp_path / "out.jsonl.auto-coder-archive.00000000000000000003.jsonl"
@@ -690,3 +733,35 @@ class TestBoundedLLMOutputLogger:
         logger.log_request("codex", prompt_length=2)
         assert json.loads(path.read_bytes())["prompt_length"] == 2
         assert path.stat().st_mode & 0o777 == 0o600
+
+    def test_unavailable_stderr_cannot_make_config_or_storage_failure_fatal(self, tmp_path, monkeypatch):
+        class BrokenStderr:
+            def write(self, value):
+                raise BrokenPipeError("closed")
+
+            def flush(self):
+                raise BrokenPipeError("closed")
+
+        path = tmp_path / "parent" / "out.jsonl"
+        path.parent.write_text("not a directory")
+        original_stderr = sys.stderr
+        monkeypatch.setattr("sys.stderr", BrokenStderr())
+        with self._settings(max_bytes="invalid"):
+            logger = LLMOutputLogger(path, enabled=True)
+        logger.log_request("failed", prompt_length=1)
+        monkeypatch.setattr("sys.stderr", original_stderr)
+        path.parent.unlink()
+        logger.log_request("recovered", prompt_length=2)
+        assert json.loads(path.read_bytes())["backend"] == "recovered"
+
+    @pytest.mark.parametrize("method", ["log_request", "log_response", "log_interaction"])
+    def test_circular_metadata_is_nonfatal_and_same_instance_retries(self, tmp_path, method):
+        path = tmp_path / f"{method}.jsonl"
+        circular = {}
+        circular["self"] = circular
+        logger = LLMOutputLogger(path, enabled=True)
+        getattr(logger, method)("invalid", metadata=circular)
+        logger.log_request("recovered", prompt_length=1)
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        assert len(records) == 1
+        assert records[0]["backend"] == "recovered"
