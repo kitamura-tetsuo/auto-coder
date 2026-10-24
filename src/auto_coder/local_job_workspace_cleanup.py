@@ -172,7 +172,12 @@ def _writers_released(store: LocalJobStore, record: LocalJobRecord, target: Path
         return False
     try:
         provider = Path(continuation.provider_workspace).resolve()
-        provider.relative_to(target.resolve())
+        relative_provider = provider.relative_to(target.resolve())
+        if not relative_provider.parts:
+            return False
+        attributed_roots = {"repository", relative_provider.parts[0]}
+        if {path.name for path in target.iterdir()} != attributed_roots:
+            return False
     except (OSError, ValueError):
         return False
     return bool(continuation.writer_owner) and writer_group_settled(continuation.writer_owner)
