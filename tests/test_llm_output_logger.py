@@ -490,6 +490,75 @@ class TestBoundedLLMOutputLogger:
         assert unrelated.read_text() == "untouched"
         assert all(json.loads(line) for item in managed for line in item.read_text().splitlines())
 
+    @pytest.mark.parametrize("backup_count", ["0", "4"])
+    def test_noncanonical_archive_aliases_are_never_owned(self, tmp_path, backup_count):
+        path = tmp_path / "out.jsonl"
+        prefix = path.name + ".auto-coder-archive."
+        aliases = [
+            tmp_path / f"{prefix}000000000000000000001.jsonl",
+            tmp_path / f"{prefix}０００００００００００００００００００１.jsonl",
+        ]
+        alias_state = {}
+        for index, alias in enumerate(aliases):
+            content = f"unrelated-{index}\n".encode()
+            alias.write_bytes(content)
+            os.chmod(alias, 0o640)
+            alias_state[alias] = (content, alias.stat().st_mode & 0o777)
+
+        canonical_generations = (0, 1, 10**20)
+        canonical = []
+        for generation in canonical_generations:
+            archive = tmp_path / f"{prefix}{generation:020d}.jsonl"
+            archive.write_text(json.dumps({"generation": generation}) + "\n")
+            canonical.append(archive)
+
+        with self._settings(backups=backup_count):
+            LLMOutputLogger(path, enabled=True).log_request("codex", prompt_length=1)
+
+        for alias, (content, mode) in alias_state.items():
+            assert alias.read_bytes() == content
+            assert alias.stat().st_mode & 0o777 == mode
+        if backup_count == "0":
+            assert not any(archive.exists() for archive in canonical)
+        else:
+            assert all(archive.exists() for archive in canonical)
+
+    def test_reconstructed_logger_enforces_smaller_size_and_retention(self, tmp_path):
+        path = tmp_path / "out.jsonl"
+        unrelated = tmp_path / "out.jsonl.1"
+        unrelated.write_bytes(b"unrelated")
+        os.chmod(unrelated, 0o640)
+        unrelated_state = (unrelated.read_bytes(), unrelated.stat().st_mode & 0o777)
+
+        with self._settings(max_bytes="8192", backups="3"):
+            older_logger = LLMOutputLogger(path, enabled=True)
+            for generation in range(4):
+                older_logger.log_response("codex", response="x" * 6000)
+                older_logger.log_request(f"marker-{generation}", prompt_length=1)
+
+        with self._settings(max_bytes="4096", backups="1"):
+            smaller_logger = LLMOutputLogger(path, enabled=True)
+            smaller_logger.log_request("downsized", prompt_length=1)
+
+        archives = sorted(tmp_path.glob("out.jsonl.auto-coder-archive.*.jsonl"))
+        managed = [path, *archives]
+        assert older_logger.max_bytes == 8192
+        assert smaller_logger.max_bytes == 4096
+        assert len(archives) == 1
+        assert all(segment.stat().st_size <= 4096 for segment in managed)
+        assert sum(segment.stat().st_size for segment in managed) <= 8192
+        assert [json.loads(line)["backend"] for line in archives[0].read_text().splitlines()] == ["marker-2"]
+        assert [json.loads(line)["backend"] for line in path.read_text().splitlines()] == ["marker-3", "downsized"]
+        assert (unrelated.read_bytes(), unrelated.stat().st_mode & 0o777) == unrelated_state
+
+        with self._settings(max_bytes="4096", backups="0"):
+            restarted_logger = LLMOutputLogger(path, enabled=True)
+            restarted_logger.log_request("no-archives", prompt_length=1)
+        assert restarted_logger.backup_count == 0
+        assert not list(tmp_path.glob("out.jsonl.auto-coder-archive.*.jsonl"))
+        assert path.stat().st_size <= 4096
+        assert (unrelated.read_bytes(), unrelated.stat().st_mode & 0o777) == unrelated_state
+
     def test_oversized_utf8_record_is_a_bounded_summary(self, tmp_path):
         path = tmp_path / "out.jsonl"
         with self._settings():

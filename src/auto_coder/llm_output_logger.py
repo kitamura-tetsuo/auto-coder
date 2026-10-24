@@ -75,12 +75,15 @@ class LLMOutputLogger:
         return fd
 
     def _archives(self, active: Path) -> list[tuple[int, Path]]:
-        pattern = re.compile(rf"^{re.escape(active.name)}\.auto-coder-archive\.(\d{{20,}})\.jsonl$")
+        pattern = re.compile(rf"^{re.escape(active.name)}\.auto-coder-archive\.([0-9]{{20,}})\.jsonl$")
         found = []
         for candidate in active.parent.iterdir():
             match = pattern.fullmatch(candidate.name)
             if match and candidate.is_file():
-                found.append((int(match.group(1)), candidate))
+                generation_text = match.group(1)
+                generation = int(generation_text)
+                if generation_text == f"{generation:020d}":
+                    found.append((generation, candidate))
         return sorted(found)
 
     def _serialize(self, data: Dict[str, Any], supplied_lengths: Optional[Dict[str, Any]] = None) -> bytes:
