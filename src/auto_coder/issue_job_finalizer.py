@@ -200,8 +200,10 @@ class IssueJobFinalizer:
             if status.returncode:
                 return self._pending(claim, "commit", status.stderr or "git status failed")
             if not status.stdout.strip() and head.stdout.strip() == record.source_commit:
-                self._store.record_effect(claim, "commit", "skipped", "authenticated no-change result")
-                self._store.record_effect(claim, "publication", "skipped", "no changes")
+                if not self._store.record_effect(claim, "commit", "skipped", "authenticated no-change result"):
+                    return IssuePublicationResult(job_id, "pending", diagnostic="no-change commit checkpoint failed")
+                if not self._store.record_effect(claim, "publication", "skipped", "no changes"):
+                    return IssuePublicationResult(job_id, "pending", diagnostic="no-change publication checkpoint failed")
                 if not self._store.settle(claim, "no_change"):
                     return IssuePublicationResult(job_id, "pending", diagnostic="could not settle no-change result")
                 self._finish_execution(record)

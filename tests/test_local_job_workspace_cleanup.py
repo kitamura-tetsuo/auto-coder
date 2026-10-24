@@ -358,6 +358,23 @@ def test_restart_resumes_deleting_after_partial_git_removal(tmp_path: Path, _use
     assert not checkpoint.workspace.parent.exists()
 
 
+def test_restart_checkpoints_deleted_after_target_is_already_absent(tmp_path: Path, _use_real_commands) -> None:
+    store, checkpoint, _finalizer = _published(tmp_path)
+    root = tmp_path / "workspaces"
+    assert reclaim_finalized_workspaces(store, now=1, retention_seconds=10, issue_root=root)[0].decision == "retained"
+    release = store.get_workspace_reclamation(checkpoint.job_id, checkpoint.execution_incarnation)
+    assert release is not None
+    assert store.transition_workspace_reclamation(release, WorkspaceReclamationPhase.RELEASED, WorkspaceReclamationPhase.DELETING)
+    shutil.rmtree(checkpoint.workspace.parent)
+
+    reopened = LocalJobStore(store.path)
+    resumed = reclaim_finalized_workspaces(reopened, now=20, retention_seconds=10, issue_root=root)
+
+    assert resumed[0].decision == "reclaimed"
+    deleted = reopened.get_workspace_reclamation(checkpoint.job_id, checkpoint.execution_incarnation)
+    assert deleted is not None and deleted.phase is WorkspaceReclamationPhase.DELETED
+
+
 def test_every_cleanup_decision_is_logged_once_with_exact_context(tmp_path: Path, monkeypatch, _use_real_commands) -> None:
     logs: list[str] = []
     sink = logger.add(lambda message: logs.append(str(message)), format="{message}")
