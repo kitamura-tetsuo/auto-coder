@@ -1216,6 +1216,32 @@ export AUTO_CODER_LLM_OUTPUT_LOG_ENABLED=0
 # or: false, no, off
 ```
 
+### Rotation and retention
+
+The active log is limited to 10 MiB and keeps five 10 MiB archives by
+default, for a combined maximum of 60 MiB. Set
+`AUTO_CODER_LLM_OUTPUT_LOG_MAX_BYTES` (an integer of at least 4096) and
+`AUTO_CODER_LLM_OUTPUT_LOG_BACKUP_COUNT` (a nonnegative integer) before
+constructing a logger to change those independent limits. Invalid values fall
+back to their respective defaults. Unlike these construction-time settings,
+the enable variable is reevaluated for every call. Different logger instances
+can therefore have different effective limits; the defaults are not a global
+disk quota.
+
+Archives are siblings named
+`llm_output.jsonl.auto-coder-archive.<20-or-more-digit-generation>.jsonl` and
+are ordered by their numeric generation. The logger also owns sibling
+`.auto-coder.lock` and `.auto-coder-stage.jsonl` files. Oversized interactions
+become bounded JSON summaries with `log_record_truncated` and
+`original_record_bytes`. On first use, malformed, incomplete, or oversized
+legacy lines can be discarded independently from each segment; records are
+not repacked between segments. History readers should read archives in numeric
+generation order and the active path last.
+
+The same naming and retention rules apply to custom paths. Rotation applies
+only to this structured interaction log and does not include the separate
+review-audit store.
+
 ### Example Log Entry
 
 Each log entry contains structured data about an LLM interaction:

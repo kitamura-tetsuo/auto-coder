@@ -69,12 +69,13 @@ class TestLLMOutputLogger:
                 else:
                     assert logger.enabled is False, f"Failed for value: {value}"
 
-    def test_init_creates_log_directory(self):
-        """Test that logger creates log directory if it doesn't exist."""
+    def test_first_write_creates_log_directory(self):
+        """Construction is side-effect free and the first write creates the directory."""
         with tempfile.TemporaryDirectory() as temp_dir:
             log_file = Path(temp_dir) / "logs" / "test.jsonl"
             logger = LLMOutputLogger(log_path=log_file)
-            # Directory should be created during init
+            assert not log_file.parent.exists()
+            logger.log_request("codex")
             assert log_file.parent.exists()
 
     def test_log_request_creates_jsonl_entry(self):
@@ -430,3 +431,110 @@ class TestLLMOutputLogger:
             # On Windows, permissions might behave differently, but for this environment it should be 0o600
             if os.name != "nt":
                 assert mode == 0o600, f"File permissions are {oct(mode)}, expected 0o600"
+
+
+class TestBoundedLLMOutputLogger:
+    """Real-filesystem regression coverage for the managed log family."""
+
+    @staticmethod
+    def _settings(max_bytes="4096", backups="2"):
+        return patch.dict(
+            os.environ,
+            {
+                "AUTO_CODER_LLM_OUTPUT_LOG_MAX_BYTES": max_bytes,
+                "AUTO_CODER_LLM_OUTPUT_LOG_BACKUP_COUNT": backups,
+            },
+            clear=False,
+        )
+
+    def test_disabled_constructor_has_no_filesystem_effect(self, tmp_path):
+        path = tmp_path / "missing" / "out.jsonl"
+        with patch.dict(os.environ, {"AUTO_CODER_LLM_OUTPUT_LOG_ENABLED": "0"}):
+            logger = LLMOutputLogger(path)
+            logger.log_request("codex", prompt="ignored")
+        assert not path.parent.exists()
+
+    def test_rotation_retention_and_unrelated_files(self, tmp_path):
+        path = tmp_path / "out.jsonl"
+        unrelated = tmp_path / "out.jsonl.1"
+        unrelated.write_text("untouched")
+        with self._settings(backups="1"):
+            logger = LLMOutputLogger(path)
+            for number in range(12):
+                logger.log_response("codex", response=f"{number}:" + "x" * 700)
+        managed = [path, *tmp_path.glob("out.jsonl.auto-coder-archive.*.jsonl")]
+        assert len(managed) == 2
+        assert all(item.stat().st_size <= 4096 for item in managed)
+        assert sum(item.stat().st_size for item in managed) <= 8192
+        assert unrelated.read_text() == "untouched"
+        assert all(json.loads(line) for item in managed for line in item.read_text().splitlines())
+
+    def test_oversized_utf8_record_is_a_bounded_summary(self, tmp_path):
+        path = tmp_path / "out.jsonl"
+        with self._settings():
+            logger = LLMOutputLogger(path)
+            logger.log_response(
+                "codex",
+                response="界" * 5000,
+                metadata={"response_length": 2**80, "huge": "z" * 20000},
+            )
+        raw = path.read_bytes()
+        record = json.loads(raw)
+        assert len(raw) <= 4096
+        assert record["log_record_truncated"] is True
+        assert record["original_record_bytes"] > 4096
+        assert record["response_length"] == 5000
+        assert record["omitted_length_fields"] == []
+
+    def test_invalid_public_counter_is_named_in_summary(self, tmp_path):
+        path = tmp_path / "out.jsonl"
+        with self._settings():
+            logger = LLMOutputLogger(path)
+            logger.log_response("codex", response_length=-1, metadata={"huge": "x" * 10000})
+        assert json.loads(path.read_bytes())["omitted_length_fields"] == ["response_length"]
+
+    def test_normalizes_partial_and_oversized_legacy_segments(self, tmp_path):
+        path = tmp_path / "out.jsonl"
+        archive = tmp_path / "out.jsonl.auto-coder-archive.00000000000000000003.jsonl"
+        path.write_bytes(b'{"old": 1}\n' + b"x" * 9000 + b'\n{"new": 2}\n{"partial"')
+        archive.write_bytes(b"bad\n" + b'{"archive": true}\n')
+        stage = tmp_path / "out.jsonl.auto-coder-stage.jsonl"
+        stage.write_bytes(b"abandoned")
+        with self._settings():
+            LLMOutputLogger(path).log_request("codex", prompt_length=4)
+        assert not stage.exists()
+        active_lines = [json.loads(line) for line in path.read_text().splitlines()]
+        assert {"new": 2} in active_lines
+        assert active_lines[-1]["event_type"] == "llm_request"
+        assert archive.read_text() == '{"archive": true}\n'
+        assert path.stat().st_size <= 4096
+
+    def test_old_instance_appends_to_current_inode_after_rotation(self, tmp_path):
+        path = tmp_path / "out.jsonl"
+        with self._settings(backups="1"):
+            old = LLMOutputLogger(path)
+            old.log_response("codex", response="a" * 3000)
+            newer = LLMOutputLogger(path)
+            newer.log_response("codex", response="b" * 3000)
+            old.log_request("old-instance", prompt_length=1)
+        active = [json.loads(line) for line in path.read_text().splitlines()]
+        assert active[-1]["backend"] == "old-instance"
+
+    def test_invalid_settings_fall_back_independently(self, capsys):
+        with self._settings(max_bytes="3", backups="nope"):
+            logger = LLMOutputLogger(enabled=False)
+        assert logger.max_bytes == 10485760
+        assert logger.backup_count == 5
+        diagnostic = capsys.readouterr().err
+        assert len(diagnostic) < 1200
+        assert "MAX_BYTES" in diagnostic and "BACKUP_COUNT" in diagnostic
+
+    def test_nonfatal_failure_allows_same_instance_retry(self, tmp_path):
+        path = tmp_path / "parent" / "out.jsonl"
+        path.parent.write_text("not a directory")
+        logger = LLMOutputLogger(path)
+        logger.log_request("codex", prompt_length=1)
+        path.parent.unlink()
+        logger.log_request("codex", prompt_length=2)
+        assert json.loads(path.read_bytes())["prompt_length"] == 2
+        assert path.stat().st_mode & 0o777 == 0o600

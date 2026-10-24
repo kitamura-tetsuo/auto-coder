@@ -1,374 +1,271 @@
-"""LLM Output Logger - JSON Lines format logging for LLM interactions.
+"""Bounded JSON Lines logging for LLM interactions."""
 
-This module provides a specialized logger for recording LLM interactions in
-JSON Lines format (one JSON object per line). This format is ideal for:
-- Easy parsing and analysis
-- Streaming and tailing log files
-- Integration with data processing tools
-
-The logger is designed to be compatible with loguru's multi-sink setup and
-can be enabled/disabled via environment variables.
-"""
+from __future__ import annotations
 
 import json
 import os
+import re
 import sys
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 from .review_capture.context import get_active_interaction_id, get_active_review_context
+from .runtime_locks import file_lock
 from .security_utils import redact_data, redact_string
+
+DEFAULT_MAX_BYTES = 10 * 1024 * 1024
+DEFAULT_BACKUP_COUNT = 5
+MIN_MAX_BYTES = 4096
+MAX_COUNTER = 2**63 - 1
+LOCK_TIMEOUT_SECONDS = 5.0
 
 
 class LLMOutputLogger:
-    """Logger for LLM outputs in JSON Lines format.
+    """Write redacted LLM interactions to a bounded rotating JSONL family."""
 
-    This class provides structured logging for LLM interactions, writing
-    one JSON object per line to a log file. It's designed to work alongside
-    loguru's multi-sink setup for comprehensive logging coverage.
-
-    Example JSON log entry:
-    {
-        "timestamp": "2025-11-24T10:30:45.123Z",
-        "level": "INFO",
-        "event_type": "llm_request",
-        "backend": "codex",
-        "model": "codex",
-        "prompt_length": 1500,
-        "response_length": 850,
-        "duration_ms": 1234,
-        "status": "success"
-    }
-
-    Attributes:
-        log_path: Path to the JSON log file
-        enabled: Whether logging is enabled (can be overridden by env var)
-        env_var: Environment variable name for enabling/disabling
-    """
-
-    def __init__(
-        self,
-        log_path: Optional[Union[str, Path]] = None,
-        enabled: Optional[bool] = None,
-        environment_variable: str = "AUTO_CODER_LLM_OUTPUT_LOG_ENABLED",
-    ):
-        """Initialize LLMOutputLogger.
-
-        Args:
-            log_path: Path for JSON log file. If None, uses default path in
-                     ~/.auto-coder/logs/llm_output.jsonl
-            enabled: Whether logging is enabled. If None, checks environment
-                    variable first, then uses True as default
-            environment_variable: Environment variable to check for enabling/disabling
-        """
+    def __init__(self, log_path: Optional[Union[str, Path]] = None, enabled: Optional[bool] = None, environment_variable: str = "AUTO_CODER_LLM_OUTPUT_LOG_ENABLED"):
         self.env_var = environment_variable
-
-        # Determine if logging is enabled
-        # Priority: explicit enabled parameter > environment variable > default (True)
-        if enabled is not None:
-            # If explicitly set, use it unless env var is also set
-            env_enabled = os.environ.get(self.env_var, "").strip().lower()
-            if env_enabled:
-                self.enabled = env_enabled in {"1", "true", "yes", "on"}
-            else:
-                self.enabled = enabled
-        else:
-            # No explicit setting, check environment variable
-            env_enabled = os.environ.get(self.env_var, "").strip().lower()
-            if env_enabled:
-                self.enabled = env_enabled in {"1", "true", "yes", "on"}
-            else:
-                # Default to enabled if no environment variable is set
-                self.enabled = True
-
-        # Set up log path
-        if log_path is not None:
-            self.log_path = Path(log_path)
-        else:
-            # Compute default path at runtime
-            self.log_path = Path.home() / ".auto-coder" / "logs" / "llm_output.jsonl"
-
-        # Ensure log directory exists
-        if self.enabled and self.log_path:
-            self.log_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Track if file is open
+        value = os.environ.get(self.env_var, "").strip().lower()
+        self.enabled = value in {"1", "true", "yes", "on"} if value else (enabled if enabled is not None else True)
+        self.log_path = Path(log_path) if log_path is not None else Path.home() / ".auto-coder/logs/llm_output.jsonl"
+        self.max_bytes = self._setting("AUTO_CODER_LLM_OUTPUT_LOG_MAX_BYTES", DEFAULT_MAX_BYTES, MIN_MAX_BYTES)
+        self.backup_count = self._setting("AUTO_CODER_LLM_OUTPUT_LOG_BACKUP_COUNT", DEFAULT_BACKUP_COUNT, 0)
+        # Compatibility only: append descriptors are intentionally never cached.
         self._file_handle: Optional[Any] = None
 
+    @staticmethod
+    def _diagnostic(message: str) -> None:
+        print(f"Warning: LLM output log: {message[:500]}", file=sys.stderr)
+
+    @classmethod
+    def _setting(cls, name: str, default: int, minimum: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        try:
+            result = int(raw)
+            if result < minimum:
+                raise ValueError
+            return result
+        except (TypeError, ValueError):
+            cls._diagnostic(f"invalid {name}; using default {default}")
+            return default
+
     def _is_enabled(self) -> bool:
-        """Check if logging is currently enabled.
+        value = os.environ.get(self.env_var, "").strip().lower()
+        return value in {"1", "true", "yes", "on"} if value else self.enabled
 
-        Returns:
-            True if logging is enabled, False otherwise
-        """
-        # Re-check environment variable on each call to allow runtime changes
-        env_enabled = os.environ.get(self.env_var, "").strip().lower()
-        if env_enabled:
-            return env_enabled in {"1", "true", "yes", "on"}
-
-        return self.enabled
-
-    def _get_timestamp(self) -> str:
-        """Get current timestamp in ISO format with timezone.
-
-        Returns:
-            ISO format timestamp with timezone info
-        """
+    @staticmethod
+    def _get_timestamp() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    def _open_file(self) -> None:
-        """Open the log file for writing."""
-        if self._file_handle is None:
-            try:
-                # Open with secure permissions (0o600)
-                # We use os.open to ensure permissions are set on creation
-                fd = os.open(
-                    self.log_path,
-                    os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-                    0o600,
-                )
+    def _paths(self) -> tuple[Path, Path, Path]:
+        active = self.log_path.expanduser().resolve()
+        return active, active.with_name(active.name + ".auto-coder.lock"), active.with_name(active.name + ".auto-coder-stage.jsonl")
 
-                # Ensure permissions are correct even if file already existed
-                try:
-                    os.chmod(self.log_path, 0o600)
-                except Exception:
-                    # Ignore chmod errors (e.g. on Windows or if not owner)
-                    pass
+    @staticmethod
+    def _secure_open(path: Path, flags: int) -> int:
+        fd = os.open(path, flags | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError:
+            pass
+        return fd
 
-                self._file_handle = open(
-                    fd,
-                    "a",
-                    encoding="utf-8",
-                )
-            except Exception as e:
-                # Fallback to stderr if file can't be opened
-                print(f"Warning: Could not open LLM output log file {self.log_path}: {e}", file=sys.stderr)
-                self._file_handle = None
+    def _archives(self, active: Path) -> list[tuple[int, Path]]:
+        pattern = re.compile(rf"^{re.escape(active.name)}\.auto-coder-archive\.(\d{{20,}})\.jsonl$")
+        found = []
+        for candidate in active.parent.iterdir():
+            match = pattern.fullmatch(candidate.name)
+            if match and candidate.is_file():
+                found.append((int(match.group(1)), candidate))
+        return sorted(found)
 
-    def _close_file(self) -> None:
-        """Close the log file if it's open."""
-        if self._file_handle is not None:
-            try:
-                self._file_handle.close()
-            except Exception:
-                pass
-            self._file_handle = None
+    def _serialize(self, data: Dict[str, Any], supplied_lengths: Optional[Dict[str, Any]] = None) -> bytes:
+        try:
+            ordinary = (json.dumps(data, ensure_ascii=False) + "\n").encode()
+        except Exception as exc:
+            raise ValueError(f"record serialization failed ({type(exc).__name__})") from exc
+        if len(ordinary) <= self.max_bytes:
+            return ordinary
+        summary: Dict[str, Any] = {"log_record_truncated": True, "original_record_bytes": len(ordinary), "omitted_length_fields": []}
+        lengths = supplied_lengths if supplied_lengths is not None else data
+        for name in ("prompt_length", "response_length"):
+            value = lengths.get(name)
+            if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= MAX_COUNTER:
+                summary[name] = value
+            elif name in lengths:
+                summary["omitted_length_fields"].append(name)
+        for name in ("timestamp", "event_type", "backend", "model", "status"):
+            value = data.get(name)
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                candidate = dict(summary)
+                candidate[name] = value[:512] if isinstance(value, str) else value
+                encoded = (json.dumps(candidate, ensure_ascii=False) + "\n").encode()
+                if len(encoded) <= self.max_bytes:
+                    summary = candidate
+        result = (json.dumps(summary, ensure_ascii=False) + "\n").encode()
+        if len(result) > self.max_bytes:
+            raise ValueError("truncated summary exceeds configured bound")
+        return result
 
-    def _write_json_line(self, data: Dict[str, Any]) -> None:
-        """Write a JSON line to the log.
+    def _normalize(self, path: Path, stage: Path) -> None:
+        """Keep the newest complete JSON object lines using bounded memory."""
+        if not path.exists():
+            return
+        retained: deque[bytes] = deque()
+        size = 0
+        pending = bytearray()
+        discarding = False
+        with path.open("rb", buffering=64 * 1024) as source:
+            while chunk := source.read(64 * 1024):
+                for part in chunk.splitlines(keepends=True):
+                    if discarding:
+                        if part.endswith(b"\n"):
+                            discarding = False
+                        continue
+                    pending.extend(part)
+                    if len(pending) > self.max_bytes:
+                        pending.clear()
+                        discarding = not part.endswith(b"\n")
+                        continue
+                    if not pending.endswith(b"\n"):
+                        continue
+                    line = bytes(pending)
+                    pending.clear()
+                    try:
+                        valid = isinstance(json.loads(line.decode("utf-8")), dict)
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        valid = False
+                    if valid:
+                        retained.append(line)
+                        size += len(line)
+                        while size > self.max_bytes:
+                            size -= len(retained.popleft())
+        fd = self._secure_open(stage, os.O_WRONLY | os.O_TRUNC)
+        with os.fdopen(fd, "wb") as output:
+            output.writelines(retained)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(stage, path)
+        os.chmod(path, 0o600)
 
-        Args:
-            data: Dictionary to write as JSON
-        """
+    def _maintain_and_append(self, line: bytes) -> None:
+        active, lock_path, stage = self._paths()
+        active.parent.mkdir(parents=True, exist_ok=True)
+
+        def open_lock() -> int:
+            return self._secure_open(lock_path, os.O_RDWR)
+
+        with file_lock(lock_path, opener=open_lock, timeout=LOCK_TIMEOUT_SECONDS):
+            stage.unlink(missing_ok=True)
+            for _, path in self._archives(active):
+                self._normalize(path, stage)
+            self._normalize(active, stage)
+            archives = self._archives(active)
+            while len(archives) > self.backup_count:
+                archives.pop(0)[1].unlink()
+            if (active.stat().st_size if active.exists() else 0) + len(line) > self.max_bytes:
+                if self.backup_count:
+                    generation = archives[-1][0] + 1 if archives else 0
+                    archive = active.with_name(f"{active.name}.auto-coder-archive.{generation:020d}.jsonl")
+                    if active.exists():
+                        os.replace(active, archive)
+                        os.chmod(archive, 0o600)
+                    archives = self._archives(active)
+                    while len(archives) > self.backup_count:
+                        archives.pop(0)[1].unlink()
+                else:
+                    active.unlink(missing_ok=True)
+            fd = self._secure_open(active, os.O_WRONLY | os.O_APPEND)
+            with os.fdopen(fd, "ab") as output:
+                output.write(line)
+                output.flush()
+                os.fsync(output.fileno())
+            stage.unlink(missing_ok=True)
+
+    def _write_json_line(self, data: Dict[str, Any], supplied_lengths: Optional[Dict[str, Any]] = None) -> None:
         if not self._is_enabled():
             return
-
-        # Check active review context
         ctx = get_active_review_context()
-        if ctx is not None:
-            data["review_id"] = ctx.review_id
-            data["repository"] = ctx.repository
-            data["target_type"] = ctx.target_type
-            data["target_number"] = ctx.target_number
-            data["review_kind"] = ctx.review_kind
-            data["generation"] = ctx.generation_identity
-
+        correlation = ("review_id", "interaction_id", "repository", "target_type", "target_number", "review_kind", "generation")
+        if ctx is None:
+            for name in correlation:
+                data.pop(name, None)
+        else:
+            data.update(review_id=ctx.review_id, repository=ctx.repository, target_type=ctx.target_type, target_number=ctx.target_number, review_kind=ctx.review_kind, generation=ctx.generation_identity)
             interaction_id = get_active_interaction_id()
             if interaction_id:
                 data["interaction_id"] = interaction_id
-        else:
-            # If no context is active, do not allow arbitrary metadata to invent these correlation fields
-            data.pop("review_id", None)
-            data.pop("interaction_id", None)
-            data.pop("repository", None)
-            data.pop("target_type", None)
-            data.pop("target_number", None)
-            data.pop("review_kind", None)
-            data.pop("generation", None)
-
-        # Add timestamp if not present
-        if "timestamp" not in data:
-            data["timestamp"] = self._get_timestamp()
-
-        # Write to file or stderr as fallback
+        data.setdefault("timestamp", self._get_timestamp())
         try:
-            if self._file_handle is None:
-                # Try to open file for append
-                self._open_file()
+            self._maintain_and_append(self._serialize(data, supplied_lengths))
+        except Exception as exc:
+            self._diagnostic(f"write skipped ({type(exc).__name__}): {str(exc)[:250]}")
 
-            if self._file_handle is not None:
-                json_line = json.dumps(data, ensure_ascii=False)
-                self._file_handle.write(json_line + "\n")
-                self._file_handle.flush()
-            else:
-                # Fallback to stderr
-                json_line = json.dumps(data, ensure_ascii=False)
-                print(json_line, file=sys.stderr)
-        except Exception as e:
-            # Don't let logging errors break the application
-            print(f"Warning: Failed to write LLM output log: {e}", file=sys.stderr)
-
-    def log_request(
-        self,
-        backend: str,
-        model: Optional[str] = None,
-        prompt: Optional[str] = None,
-        prompt_length: Optional[int] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """Log an LLM request.
-
-        Args:
-            backend: Name of the backend (e.g., 'codex', 'antigravity', 'qwen')
-            model: Model name (optional)
-            prompt: The prompt sent to LLM (optional)
-            prompt_length: Length of prompt in characters (optional, can be auto-calculated)
-            metadata: Additional metadata (optional)
-        """
-        data: Dict[str, Any] = {
-            "event_type": "llm_request",
-            "backend": backend,
-        }
-
+    def log_request(self, backend: str, model: Optional[str] = None, prompt: Optional[str] = None, prompt_length: Optional[int] = None, metadata: Optional[Dict[str, Any]] = None) -> None:
+        data: Dict[str, Any] = {"event_type": "llm_request", "backend": backend}
         if model is not None:
             data["model"] = model
-
         if prompt is not None:
             data["prompt_length"] = len(prompt)
         elif prompt_length is not None:
             data["prompt_length"] = prompt_length
-
+        supplied = {"prompt_length": data["prompt_length"]} if "prompt_length" in data else {}
         if metadata:
-            # Recursively redact metadata
             data.update(redact_data(metadata))
+        self._write_json_line(data, supplied)
 
-        self._write_json_line(data)
-
-    def log_response(
-        self,
-        backend: str,
-        model: Optional[str] = None,
-        response: Optional[str] = None,
-        response_length: Optional[int] = None,
-        duration_ms: Optional[float] = None,
-        status: str = "success",
-        error: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """Log an LLM response.
-
-        Args:
-            backend: Name of the backend (e.g., 'codex', 'antigravity', 'qwen')
-            model: Model name (optional)
-            response: The response from LLM (optional)
-            response_length: Length of response in characters (optional, can be auto-calculated)
-            duration_ms: Duration of request in milliseconds (optional)
-            status: Status of the request ('success', 'error', etc.)
-            error: Error message if request failed (optional)
-            metadata: Additional metadata (optional)
-        """
-        data: Dict[str, Any] = {
-            "event_type": "llm_response",
-            "backend": backend,
-            "status": status,
-        }
-
+    def log_response(self, backend: str, model: Optional[str] = None, response: Optional[str] = None, response_length: Optional[int] = None, duration_ms: Optional[float] = None, status: str = "success", error: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> None:
+        data: Dict[str, Any] = {"event_type": "llm_response", "backend": backend, "status": status}
         if model is not None:
             data["model"] = model
-
         if response is not None:
-            data["response_length"] = len(response)
-            data["response"] = redact_string(response)
+            data.update(response_length=len(response), response=redact_string(response))
         elif response_length is not None:
             data["response_length"] = response_length
-
         if duration_ms is not None:
             data["duration_ms"] = duration_ms
-
         if error is not None:
             data["error"] = redact_string(error)
-
+        supplied = {"response_length": data["response_length"]} if "response_length" in data else {}
         if metadata:
-            # Recursively redact metadata
             data.update(redact_data(metadata))
+        self._write_json_line(data, supplied)
 
-        self._write_json_line(data)
-
-    def log_interaction(
-        self,
-        backend: str,
-        model: Optional[str] = None,
-        prompt: Optional[str] = None,
-        response: Optional[str] = None,
-        duration_ms: Optional[float] = None,
-        status: str = "success",
-        error: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """Log a complete LLM interaction (request + response).
-
-        This is a convenience method that combines log_request and log_response
-        into a single entry.
-
-        Args:
-            backend: Name of the backend (e.g., 'codex', 'antigravity', 'qwen')
-            model: Model name (optional)
-            prompt: The prompt sent to LLM (optional)
-            response: The response from LLM (optional)
-            duration_ms: Duration of request in milliseconds (optional)
-            status: Status of the request ('success', 'error', etc.)
-            error: Error message if request failed (optional)
-            metadata: Additional metadata (optional)
-        """
-        data: Dict[str, Any] = {
-            "event_type": "llm_interaction",
-            "backend": backend,
-            "status": status,
-        }
-
+    def log_interaction(self, backend: str, model: Optional[str] = None, prompt: Optional[str] = None, response: Optional[str] = None, duration_ms: Optional[float] = None, status: str = "success", error: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> None:
+        data: Dict[str, Any] = {"event_type": "llm_interaction", "backend": backend, "status": status}
         if model is not None:
             data["model"] = model
-
         if prompt is not None:
             data["prompt_length"] = len(prompt)
-
         if response is not None:
-            data["response_length"] = len(response)
-            data["response"] = redact_string(response)
-
+            data.update(response_length=len(response), response=redact_string(response))
         if duration_ms is not None:
             data["duration_ms"] = duration_ms
-
         if error is not None:
             data["error"] = redact_string(error)
-
+        supplied: Dict[str, Any] = {name: data[name] for name in ("prompt_length", "response_length") if name in data}
         if metadata:
-            # Recursively redact metadata
             data.update(redact_data(metadata))
-
-        self._write_json_line(data)
+        self._write_json_line(data, supplied)
 
     def flush(self) -> None:
-        """Flush the log file to ensure all writes are committed."""
-        if self._file_handle is not None:
-            try:
-                self._file_handle.flush()
-            except Exception:
-                pass
+        """Writes are already flushed synchronously."""
 
     def close(self) -> None:
-        """Close the log file and release resources."""
-        self._close_file()
+        """No descriptor is retained."""
+
+    def _close_file(self) -> None:
+        self.close()
 
     def __enter__(self):
-        """Context manager entry."""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit."""
         self.close()
 
     def __repr__(self) -> str:
-        """String representation of the logger."""
-        return f"LLMOutputLogger(" f"enabled={self.enabled}, " f"path={self.log_path}, " f"env_var={self.env_var})"
+        return f"LLMOutputLogger(enabled={self.enabled}, path={self.log_path}, env_var={self.env_var})"
