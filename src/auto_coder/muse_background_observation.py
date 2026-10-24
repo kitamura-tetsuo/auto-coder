@@ -167,11 +167,13 @@ class MuseObservationFold:
     foreground_turn: str
     support: MuseRuntimeSupport
     _tasks: dict[str, MuseTaskObservation] = field(default_factory=dict)
+    _inventory_tracked_tasks: set[str] = field(default_factory=set)
     _seen: set[tuple[str, int, str]] = field(default_factory=set)
     _positions: list[str] = field(default_factory=list)
     _queued: set[str] = field(default_factory=set)
     _active: set[str] = field(default_factory=set)
     _terminal_turns: set[str] = field(default_factory=set)
+    _completed_turns: set[str] = field(default_factory=set)
     _known_turns: set[str] = field(default_factory=set)
     _incorporated: set[str] = field(default_factory=set)
     _turn_incorporated: dict[str, set[str]] = field(default_factory=dict)
@@ -254,8 +256,9 @@ class MuseObservationFold:
                 self._gap = "task/list contained an unrecognized workload"
                 continue
             seen.add(task_id)
+            self._inventory_tracked_tasks.add(task_id)
             self._observe_task("task/updated", row, provenance)
-        missing = [task_id for task_id, task in self._tasks.items() if task.state == "running" and task_id not in seen]
+        missing = [task_id for task_id, task in self._tasks.items() if task.state == "running" and task_id in self._inventory_tracked_tasks and task_id not in seen]
         if missing:
             self._gap = "live task disappeared without attributable terminal evidence: " + ", ".join(sorted(missing))
 
@@ -318,7 +321,7 @@ class MuseObservationFold:
         final_turn = self._candidate_order[-1] if self._candidate_order else ""
         required_results = {task.result_reference for task in tasks if task.result_reference}
         candidate_frontier = self._turn_incorporated.get(final_turn, set())
-        if not outstanding and not self._gap and final_turn in self._known_turns and required_results <= candidate_frontier:
+        if not outstanding and not self._gap and not self._active and not self._queued and final_turn in self._completed_turns and final_turn in self._known_turns and required_results <= candidate_frontier:
             final = self._assistant_candidates.get(final_turn, "")
         return MuseBackgroundObservation(
             self.binding,
@@ -358,6 +361,26 @@ class MuseObservationFold:
         self._queued.discard(turn_id)
         self._known_turns.add(turn_id)
         self._terminal_turns.add(turn_id)
+        if method == "turn/completed" and params.get("terminal") in {None, "completed"}:
+            self._completed_turns.add(turn_id)
+            candidate = self._assistant_candidates.get(turn_id)
+            if candidate is not None and any(line.strip().startswith("ACTION_SUMMARY:") or line.strip() == "CANNOT_FIX" for line in candidate.splitlines()):
+                for task_id, task in tuple(self._tasks.items()):
+                    if task.turn_id == turn_id and task.state == "running" and task_id not in self._inventory_tracked_tasks:
+                        reference = task.result_reference or f"{task_id}@{task.revision}"
+                        self._incorporated.add(reference)
+                        self._turn_incorporated.setdefault(turn_id, set()).add(reference)
+                        self._tasks[task_id] = MuseTaskObservation(
+                            task.task_id,
+                            task.turn_id,
+                            "terminal",
+                            MuseTaskOutcome.CANCELLED,
+                            reference,
+                            True,
+                            task.revision,
+                            task.provenance,
+                            task.contradictory,
+                        )
         if turn_id == self.foreground_turn:
             self._foreground_state = str(params.get("terminal") or ("unqueued" if method == "turn/unqueued" else "unknown"))
 
@@ -411,7 +434,11 @@ class MuseObservationFold:
         result_reference = result if isinstance(result, str) else ""
         if terminal and not result_reference:
             result_reference = f"{task_id}@{revision}"
-        delivered = bool(task.get("resultDelivered", False))
+        in_turn_unified_delivery = terminal and task_id not in self._inventory_tracked_tasks and turn_id in self._active
+        if in_turn_unified_delivery and result_reference:
+            self._incorporated.add(result_reference)
+            self._turn_incorporated.setdefault(turn_id, set()).add(result_reference)
+        delivered = bool(task.get("resultDelivered", False)) or in_turn_unified_delivery or (old is not None and old.result_delivered and old.result_reference == result_reference) or (bool(result_reference) and result_reference in self._incorporated)
         key = (task_id, revision, provenance)
         if key in self._seen:
             return
@@ -425,20 +452,46 @@ class MuseObservationFold:
             return
         self._tasks[task_id] = MuseTaskObservation(task_id, turn_id, "terminal" if terminal else "running", outcome, result_reference, delivered, revision, provenance, contradictory)
 
+    def _is_background_tool_item(self, item: Mapping[str, object]) -> bool:
+        task_id = item.get("taskId", item.get("itemId", item.get("id")))
+        if item.get("background") is True:
+            if isinstance(task_id, str) and task_id:
+                self._inventory_tracked_tasks.add(task_id)
+            return True
+        if isinstance(task_id, str) and task_id in self._tasks:
+            return True
+        if item.get("status") not in {"inProgress", "running"}:
+            return False
+        bg_status = item.get("backgroundStatus")
+        if isinstance(bg_status, Mapping) and bg_status.get("state") in {"backgrounded", "running", "inProgress"}:
+            return True
+        visible_output = item.get("visibleOutput")
+        if isinstance(visible_output, str) and "background_running" in visible_output:
+            try:
+                payload = json.loads(visible_output)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, Mapping) and payload.get("execution_state") == "background_running":
+                return True
+        return False
+
     def _observe_item(self, params: Mapping[str, object], provenance: str) -> None:
         item = params.get("item")
         if not isinstance(item, Mapping):
             return
         kind = item.get("kind")
         turn_id = item.get("turnId")
-        if kind in {"tool", "toolCall"} and item.get("background") is True:
+        if kind in {"tool", "toolCall"} and self._is_background_tool_item(item):
             self._observe_task("item/completed" if params.get("item") is item and item.get("status") != "inProgress" else "item/updated", item, provenance)
         elif kind in {"message", "agentMessage"} and isinstance(turn_id, str) and isinstance(item.get("text"), str):
+            if item.get("status") in {"inProgress", "running"}:
+                return
             self._known_turns.add(turn_id)
-            self._assistant_candidates[turn_id] = str(item["text"])
-            if turn_id in self._candidate_order:
-                self._candidate_order.remove(turn_id)
-            self._candidate_order.append(turn_id)
+            if str(item["text"]).strip():
+                self._assistant_candidates[turn_id] = str(item["text"])
+                if turn_id in self._candidate_order:
+                    self._candidate_order.remove(turn_id)
+                self._candidate_order.append(turn_id)
 
 
 def persist_muse_observation(

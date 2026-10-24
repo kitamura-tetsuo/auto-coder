@@ -51,21 +51,25 @@ def confirm_muse_retained_result(store: LocalJobStore, job: LocalJobRecord) -> b
         continuation = store.get_continuation(job.job_id)
         observation = recover_muse_observation(store, job.job_id)
         pending = store.unresolved_continuation_tasks(job.job_id)
-        if continuation is None or observation is None or not pending or not continuation.candidate_output or continuation.candidate_frontier != continuation.frontier:
+        if continuation is None or observation is None or not pending:
             return False
+        steered_candidate = not continuation.candidate_output and continuation.candidate_frontier is None and bool(observation.foreground_turn) and bool(observation.final_assistant_turn) and observation.foreground_turn != observation.final_assistant_turn
+        if not steered_candidate and (not continuation.candidate_output or continuation.candidate_frontier != continuation.frontier):
+            return False
+        pending_ids = {task.task_id for task in pending}
         if (
             observation.binding.provider_session != continuation.provider_session
             or observation.binding.execution_incarnation != job.execution_incarnation
             or observation.binding.backend_name != job.backend_name
             or observation.binding.upstream_attempt != job.upstream_attempt
             or observation.binding.workspace.resolve() != Path(job.workspace_path).resolve()
-            or observation.foreground_state != "completed"
+            or (observation.foreground_state != "completed" and not steered_candidate)
             or observation.queued_turns
             or observation.active_turns
-            or observation.final_assistant_turn != observation.foreground_turn
-            or observation.final_assistant != continuation.candidate_output
-            or any(task.state != "terminal" or not task.result_delivered or task.contradictory for task in observation.tasks)
-            or any(task.result_reference or not task.provider_position.startswith("task/list:") for task in pending)
+            or not observation.final_assistant_turn
+            or (not steered_candidate and observation.final_assistant != continuation.candidate_output)
+            or any(task.contradictory or ((task.state != "terminal" or not task.result_delivered) and not (steered_candidate and task.task_id in pending_ids and task.turn_id == observation.final_assistant_turn and not task.result_reference)) for task in observation.tasks)
+            or any(task.result_reference or not (task.provider_position.startswith("task/list:") or task.provider_position.startswith(f"v4:{continuation.provider_session}:")) for task in pending)
         ):
             return False
         root = (Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))) / "muse").resolve()
@@ -78,6 +82,7 @@ def confirm_muse_retained_result(store: LocalJobStore, job: LocalJobRecord) -> b
             return False
         starts: dict[str, int] = {}
         last_start = ""
+        steered_into: dict[str, str] = {}
         task_events: dict[str, tuple[str, int, str]] = {}
         messages: dict[str, tuple[str, int]] = {}
         completed: dict[str, int] = {}
@@ -113,6 +118,8 @@ def confirm_muse_retained_result(store: LocalJobStore, job: LocalJobRecord) -> b
                 if event.get("kind") == "started":
                     starts[turn] = timestamp
                     last_start = turn
+                elif event.get("kind") == "inbox_item_queued" and isinstance(record.get("causation_id"), str) and isinstance(event.get("source"), dict) and event["source"].get("source") == "user_steer":
+                    steered_into[str(record["causation_id"])] = turn
                 elif event.get("kind") == "assistant_message_committed" and isinstance(event.get("text"), str):
                     messages[turn] = (event["text"], timestamp)
                 elif event.get("kind") == "terminal" and event.get("terminal") == "completed":
@@ -126,21 +133,33 @@ def confirm_muse_retained_result(store: LocalJobStore, job: LocalJobRecord) -> b
                 if native.get("session_id") != continuation.provider_session:
                     return False
                 clean_end = timestamp if native.get("exit_reason") == "clean" else 0
-        turn = observation.foreground_turn
+        turn = observation.final_assistant_turn
+        if steered_candidate and steered_into.get(observation.foreground_turn) != turn:
+            return False
+        foreground_start = starts.get(turn if steered_candidate else observation.foreground_turn, 0)
         start = starts.get(turn, 0)
         message = messages.get(turn)
         terminal = completed.get(turn, 0)
-        if not metadata_matches or not start or last_start != turn or message is None or message[0] != continuation.candidate_output or not (start < message[1] <= terminal <= clean_end) or clean_end != last_timestamp:
+        candidate_output = message[0] if steered_candidate and message is not None else continuation.candidate_output
+        if not metadata_matches or not foreground_start or not start or foreground_start > start or last_start != turn or message is None or not candidate_output or message[0] != candidate_output or not (start < message[1] <= terminal <= clean_end) or clean_end != last_timestamp:
             return False
+        in_turn_task_ids = {task.task_id for task in observation.tasks if task.turn_id == turn}
         terminals = []
         for task in pending:
             evidence = task_events.get(task.task_id)
-            if evidence is None or evidence[0] != "completed" or not evidence[2] or evidence[1] >= start:
+            if evidence is None or evidence[0] not in {"completed", "cancelled"} or not evidence[2]:
+                return False
+            if task.task_id in in_turn_task_ids and evidence[0] == "cancelled":
+                if not (start < evidence[1] <= clean_end):
+                    return False
+            elif evidence[1] >= foreground_start:
                 return False
             # Native transport completion proves termination, not successful
             # tool execution. Keep the domain outcome explicitly unknown.
             terminals.append(replace(task, lifecycle="terminal", terminal_outcome="unknown", provider_position=f"retained-task:{evidence[2]}"))
-        confirmed = store.confirm_retained_task_result(job.job_id, continuation.executor_token, continuation.frontier, continuation.candidate_output, tuple(terminals))
+        if steered_candidate and not store.record_candidate_output(job.job_id, continuation.executor_token, continuation.frontier, candidate_output):
+            return False
+        confirmed = store.confirm_retained_task_result(job.job_id, continuation.executor_token, continuation.frontier, candidate_output, tuple(terminals))
         if confirmed:
             get_trace_collector().record_event(
                 EventKind.STAGE_RESULT, stage_id="llm.muse-retained-task-reconciliation", origin="local-backend", label="Retained Muse predecessor reconciliation", outcome=Outcome.COMPLETED, facts={"task_count": len(terminals), "job_id": job.job_id, "source": "settled retained session journal"}

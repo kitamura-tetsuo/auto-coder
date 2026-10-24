@@ -12,9 +12,18 @@ The fold consumes frames after the production MSP JSON decoder.  It tolerates
 duplicate and out-of-order delivery by task revision and receive order; MSP
 cursor strings are retained as opaque provenance and are never sorted.  A
 foreign session is ignored.  An older revision cannot roll back a task, while
-conflicting terminal outcomes require reconciliation.  `task/list` is only a
-live nonterminal inventory: an empty inventory or a missing prior row leaves
-the task unresolved until attributable terminal evidence arrives.  Unavailable
+conflicting terminal outcomes require reconciliation.  Background tool items are
+recognized both from explicit `background: true` / `backgroundStatus` evidence
+and from managed `unified_exec` sessions whose `inProgress` tool update reports
+`execution_state: "background_running"` (such as when `yield_time_ms` expires),
+and subsequent updates/completions for a tracked background `itemId` remain
+correlated even when later frames omit `background: true`.  `task/list` is a
+live nonterminal inventory for user-backgrounded tasks: an empty inventory or a
+missing prior `task/list`-tracked row leaves that task unresolved and flags a
+gap until attributable terminal evidence arrives, while managed `unified_exec`
+background sessions not listed in `task/list` remain tracked through their item
+lifecycle (and are finalized as cancelled if their turn completes with a
+terminal contract output while the managed session remains open).  Unavailable
 views, malformed workload rows, and identity contradictions likewise remain
 non-authorizing.
 

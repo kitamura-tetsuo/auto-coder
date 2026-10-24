@@ -124,7 +124,7 @@ from .jules_client import invalidate_jules_sessions_cache
 from .jules_engine import check_and_resume_or_archive_sessions, check_and_start_recurrent_jules_tasks
 from .label_manager import LabelManager
 from .llm_backend_config import active_repo_context, get_pr_review_allowlist_from_config, get_review_adjudicator_allowlist_from_config
-from .local_job_handoff import LocalJobClaim, LocalJobKind, LocalJobStore, LocalJobStoreUnavailable
+from .local_job_handoff import LocalJobClaim, LocalJobKind, LocalJobRecord, LocalJobStore, LocalJobStoreUnavailable
 from .local_job_runner import LocalJobRunner
 from .logger_config import get_logger
 from .merge_operation_scheduler import get_merge_operation_scheduler
@@ -3307,6 +3307,38 @@ class AutomationEngine:
         result.actions.append(result.target_reason)
         result.error = None if result.success else result.target_reason
 
+    def _retire_superseded_pending_pr_repair(self, repo_name: str, job: LocalJobRecord, slots: ImplementationSlotRepository) -> bool:
+        """Release only an unentered stale claim before normal PR re-evaluation."""
+        from .local_job_handoff import LocalJobState
+
+        if job.repository != repo_name or job.state is not LocalJobState.PENDING or job.provider_entered or job.execution_incarnation:
+            return False
+        store = self._get_local_job_store()
+        claim = store.get_pr_repair_claim(job.job_id)
+        if claim is None:
+            return False
+        try:
+            metadata = self.github.get_pull_request_metadata_strict(repo_name, job.target_number)
+            head, base = metadata.get("head") or {}, metadata.get("base") or {}
+            current = ((head.get("repo") or {}).get("full_name"), head.get("ref"), head.get("sha"), (base.get("repo") or {}).get("full_name"), base.get("ref"), base.get("sha") or base.get("identity"))
+            retained = (claim.head_repository, claim.head_ref, claim.head_sha, claim.base_repository, claim.base_ref, claim.base_identity)
+            if not all(current) or not all(retained) or current == retained:
+                return False
+        except Exception:
+            return False
+        reason = "Retired unentered local PR repair because authoritative PR head/base changed"
+        if not store.settle_unentered_pr_repair(job, reason):
+            return False
+        slots.finish_execution_by_id(job.implementation_execution_id)
+        _record_pr_stage_result(
+            job.target_number,
+            "pr.repair-delegation",
+            f"pr#{job.target_number} local repair admission",
+            Outcome.DEFERRED,
+            {"effect": "local-pr-repair-admission", "admission_status": "superseded", "job_id": job.job_id, "backend": job.backend_name, "repair_kind": claim.repair_kind, "reason": reason, "provider_started": False},
+        )
+        return True
+
     def _complete_explicit_local_pr_repair(self, repo_name: str, result: CandidateProcessingResult) -> None:
         """Wake and observe only the durable PR job accepted by ``--only``."""
         from .pr_local_job_runtime import build_pr_local_job_adapters, build_pr_repair_finalizer
@@ -3390,6 +3422,8 @@ class AutomationEngine:
         result.target_outcome = ExplicitTargetOutcome.DEFERRED
         result.success = False
         result.target_reason = f"Local PR repair job {job.job_id} is {current.state.value}; fresh PR validation remains required"
+        if current.diagnostic and publication_disposition != "published":
+            result.target_reason += f": {current.diagnostic}"
         result.actions.append(result.target_reason)
         result.error = None
 
@@ -7555,6 +7589,8 @@ class AutomationEngine:
                 return result
             if explicit_only and candidate.type == "pr":
                 retained = self._get_local_job_store().unsettled_pr_repair(repo_name, item_number)
+                if retained is not None and self._retire_superseded_pending_pr_repair(repo_name, retained, slots):
+                    retained = None
                 if retained is not None:
                     from .pr_repair_dispatch import LocalPRRepairHandoff, PRRepairResult, RepairDisposition, RepairKind
 
@@ -8098,6 +8134,7 @@ class AutomationEngine:
                         local_repair_context=LocalPRRepairContext(
                             self._get_local_job_store(),
                             implementation_slots.current_execution_id(implementation_slots.resolve_owner("pr", candidate.data, self.github)) or "",
+                            forced_retry=force_adversarial_validation,
                         ),
                     )
                     result.actions = pr_result.actions_taken

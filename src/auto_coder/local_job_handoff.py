@@ -853,6 +853,36 @@ class LocalJobStore:
         except (OSError, sqlite3.Error, ValueError) as exc:
             raise RuntimeError("local PR repair target lookup failed") from exc
 
+    def pr_repair_for_attempt(self, repository: str, pr_number: int, kind: LocalJobKind, upstream_attempt: str) -> Optional[LocalJobRecord]:
+        """Strictly find the PR repair envelope retained for one operation identity."""
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT * FROM local_jobs WHERE kind=? AND repository=? AND target_number=? AND upstream_attempt=?",
+                    (kind.value, repository, pr_number, upstream_attempt),
+                ).fetchone()
+            return self._record(row) if row is not None else None
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            raise RuntimeError("local PR repair attempt lookup failed") from exc
+
+    def settle_unentered_pr_repair(self, record: LocalJobRecord, diagnostic: str) -> bool:
+        """Retire a superseded pending repair without claiming provider completion."""
+        if record.kind not in {LocalJobKind.PR_CI_FAILURE, LocalJobKind.PR_MERGE_CONFLICT}:
+            return False
+        with self._connect() as connection:
+            changed = connection.execute(
+                "UPDATE local_jobs SET state=?, diagnostic=?, updated_at=? "
+                "WHERE job_id=? AND repository=? AND implementation_execution_id=? "
+                "AND state=? AND provider_entered=0 AND execution_incarnation='' "
+                "AND runner_owner='' AND result_reference='' AND invocation_outcome IS NULL "
+                "AND NOT EXISTS (SELECT 1 FROM local_job_continuations WHERE job_id=local_jobs.job_id) "
+                "AND NOT EXISTS (SELECT 1 FROM local_job_results WHERE job_id=local_jobs.job_id) "
+                "AND NOT EXISTS (SELECT 1 FROM local_job_effects WHERE job_id=local_jobs.job_id)",
+                (LocalJobState.SETTLED.value, diagnostic, time.time(), record.job_id, record.repository, record.implementation_execution_id, LocalJobState.PENDING.value),
+            ).rowcount
+            connection.commit()
+        return changed == 1
+
     def issue_job_evidence(self, repository: str, issue_number: int) -> tuple[LocalIssueJobEvidence, ...]:
         """Read all retained jobs and effects for one exact repository/Issue.
 

@@ -179,3 +179,94 @@ def test_restore_rejects_foreign_job_and_wrong_issue_membership(pending_repair) 
     assert slots.restore_local_pr_repair_execution(job, unrelated) is False
     assert slots.active_execution_ids(owner) == ()
     assert slots.active_execution_ids(unrelated) == ()
+
+
+@patch("auto_coder.dashboard.ui")
+def test_changed_base_retires_unentered_job_and_executes_fresh_repair(mock_ui, pending_repair) -> None:
+    engine, slots, owner, original = pending_repair
+    store = engine.local_job_store
+    incarnation = slots.owner_incarnation(owner)
+    changed = _pr(17)
+    changed["base"]["sha"] = "B2"
+    engine.github.get_pull_request_metadata_strict.side_effect = lambda *_: changed
+    engine._create_candidate_from_single.side_effect = lambda *_args, **_kwargs: Candidate("pr", changed, 0)
+    observed = snapshot()
+    authority = CIRepairAuthority(True, "current head failure", "H17", replace(observed, subject=replace(observed.subject, head_sha="H17")))
+    invoked = []
+
+    class Adapter:
+        def authorize_provider_entry(self, job):
+            return True
+
+        def invoke(self, job):
+            invoked.append(job.job_id)
+            return LocalJobExecutionResult(InvocationOutcome.CANNOT_FIX, "CANNOT_FIX")
+
+    kind = RepairKind.CI_FAILURE if original.kind is LocalJobKind.PR_CI_FAILURE else RepairKind.MERGE_CONFLICT
+    traces = get_trace_collector()
+    traces.clear()
+    with (
+        _production_scope(engine),
+        _install_real_offer(engine, engine.github, kind, authority),
+        patch("auto_coder.pr_local_job_runtime.build_pr_local_job_adapters", return_value={original.kind: Adapter()}),
+    ):
+        result = engine.process_single("owner/repo", "pr", 17, explicit_only=True, force=True)
+
+    assert result["errors"] == []
+    assert result["target_outcome"] == ExplicitTargetOutcome.DEFERRED.value
+    assert len(invoked) == 1 and invoked[0] != original.job_id
+    old = store.get(original.job_id)
+    assert old.state is LocalJobState.SETTLED
+    assert not old.provider_entered and old.invocation_outcome is None
+    assert store.get_pr_repair_claim(invoked[0]).base_identity == "B2"
+    assert store.get(invoked[0]).state is LocalJobState.SETTLED
+    assert slots.active_execution_ids(owner) == ()
+    assert slots.owner_incarnation(owner) == incarnation
+    events = [event for event in traces.get_snapshot(repository="owner/repo", item_type="pr", item_number=17).events if event.stage_id == "pr.repair-delegation"]
+    superseded = [event for event in events if event.facts.get("admission_status") == "superseded"]
+    assert len(superseded) == 1
+    assert superseded[0].facts["job_id"] == original.job_id
+    assert superseded[0].facts["provider_started"] is False
+    diagram = _mounted_detail(mock_ui, "pr", 17)
+    _assert_required_stage_visible(diagram, "local repair admission")
+    rows = [row for call in mock_ui.table.call_args_list for row in call.kwargs.get("rows", [])]
+    assert any("admission_status: superseded" in row.get("facts", "") and original.job_id in row["facts"] for row in rows)
+
+
+@pytest.mark.parametrize("condition", ["unchanged", "incomplete", "unavailable", "running", "entered", "claim_race"])
+def test_stale_retirement_preserves_uncertain_or_claimed_jobs(pending_repair, condition) -> None:
+    engine, slots, owner, original = pending_repair
+    store = engine.local_job_store
+    changed = _pr(17)
+    changed["base"]["sha"] = "B2"
+    engine.github.get_pull_request_metadata_strict.side_effect = lambda *_: changed
+    if condition == "unchanged":
+        changed["base"]["sha"] = "B1"
+    elif condition == "incomplete":
+        changed["head"]["sha"] = ""
+    elif condition == "unavailable":
+        engine.github.get_pull_request_metadata_strict.side_effect = RuntimeError("offline")
+    elif condition == "running":
+        assert store.claim(original.job_id) is not None
+        original = store.get(original.job_id)
+    elif condition == "entered":
+        original = replace(original, provider_entered=True)
+    elif condition == "claim_race":
+        assert store.claim(original.job_id) is not None
+    assert engine._retire_superseded_pending_pr_repair("owner/repo", original, slots) is False
+    assert store.get(original.job_id).state is not LocalJobState.SETTLED
+    assert slots.active_execution_ids(owner) == (original.implementation_execution_id,)
+
+
+def test_explicit_pending_reason_includes_preparation_failure(pending_repair) -> None:
+    engine, _slots, _owner, original = pending_repair
+
+    class Adapter:
+        def authorize_provider_entry(self, job):
+            raise RuntimeError("source unavailable")
+
+    with _production_scope(engine), patch("auto_coder.pr_local_job_runtime.build_pr_local_job_adapters", return_value={original.kind: Adapter()}):
+        result = engine.process_single("owner/repo", "pr", 17, explicit_only=True, force=True)
+    assert result["errors"] == []
+    assert "authorization unavailable: source unavailable" in result["target_reason"]
+    assert engine.local_job_store.get(original.job_id).state is LocalJobState.PENDING

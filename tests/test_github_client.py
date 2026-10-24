@@ -358,6 +358,7 @@ class TestGitHubClient:
         assert found is not None
         assert found["number"] == 321
         assert found["state"] == "closed"
+        mock_get_client.assert_called_once_with(mock_github_token, extra_headers={"Cache-Control": "no-cache"})
         mock_get_client.return_value.pulls.list.assert_called_once_with("test", "repo", state="all", head="test:issue-47", per_page=100, page=1)
 
         mock_get_client.return_value.pulls.list.side_effect = RuntimeError("GitHub unavailable")

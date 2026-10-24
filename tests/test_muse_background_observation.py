@@ -288,3 +288,111 @@ def test_persistence_requires_exact_fenced_job_binding(tmp_path: Path) -> None:
 
     foreign = MuseBackgroundObservation(MuseObservationBinding("codex", "foreign", claim.record.execution_incarnation, "attempt-1", tmp_path.resolve()), "turn-1")
     assert not persist_muse_observation(store, offer.job_id, "executor", foreign)
+
+
+def test_unified_exec_auto_background_and_replay_preserve_delivery() -> None:
+    fold = MuseObservationFold(_binding(), "turn-f", _support(native=True))
+    fold.consume(
+        _event(
+            "item/updated",
+            item={
+                "itemId": "task-unified",
+                "kind": "toolCall",
+                "turnId": "turn-f",
+                "revision": 3,
+                "status": "inProgress",
+                "statusLine": "terminal process running",
+                "tool": "bash",
+                "visibleOutput": json.dumps({"execution_state": "background_running", "session_id": 1}),
+            },
+            viewCursor="cursor-bg",
+        )
+    )
+    fold.consume(_event("item/completed", item={"itemId": "msg-f", "kind": "agentMessage", "turnId": "turn-f", "status": "completed", "text": "waiting on background"}))
+    fold.consume(_event("turn/completed", turnId="turn-f", terminal="completed", viewCursor="cursor-fg-done"))
+    fold.consume_task_inventory([], "task/list:5")
+
+    waiting = fold.observation()
+    assert len(waiting.tasks) == 1
+    assert waiting.tasks[0].task_id == "task-unified"
+    assert waiting.tasks[0].state == "running"
+    assert waiting.final_assistant == ""
+    assert waiting.reconciliation_reason == ""
+
+    fold.consume(
+        _event(
+            "item/completed",
+            item={
+                "itemId": "task-unified",
+                "kind": "toolCall",
+                "turnId": "turn-f",
+                "revision": 5,
+                "status": "completed",
+                "tool": "bash",
+                "visibleOutput": "MUSE_BACKGROUND_RESULT\n",
+            },
+            viewCursor="cursor-task-done",
+        )
+    )
+    fold.consume(_event("turn/started", turnId="turn-n", viewCursor="cursor-native-start"))
+    fold.consume_result_delivery("turn-n", ["task-unified@5"], "cursor-native-start")
+    fold.consume(
+        _event(
+            "item/completed",
+            item={
+                "itemId": "msg-n",
+                "kind": "agentMessage",
+                "turnId": "turn-n",
+                "revision": 2,
+                "status": "completed",
+                "text": "ACTION_SUMMARY: completed after unified_exec wake",
+            },
+            viewCursor="cursor-native-msg",
+        )
+    )
+    # Before turn/completed for turn-n, final_assistant is still withheld.
+    assert fold.observation().final_assistant == ""
+
+    fold.consume(_event("turn/completed", turnId="turn-n", terminal="completed", viewCursor="cursor-native-done"))
+    assert fold.observation().final_assistant == "ACTION_SUMMARY: completed after unified_exec wake"
+
+    replay = {
+        "session": {"sessionId": "session-1"},
+        "viewCursor": "cursor-replay",
+        "history": {
+            "mode": "inline",
+            "items": [
+                {
+                    "itemId": "task-unified",
+                    "kind": "toolCall",
+                    "turnId": "turn-f",
+                    "revision": 5,
+                    "status": "completed",
+                    "tool": "bash",
+                    "visibleOutput": "MUSE_BACKGROUND_RESULT\n",
+                },
+                {
+                    "itemId": "msg-f",
+                    "kind": "agentMessage",
+                    "turnId": "turn-f",
+                    "revision": 2,
+                    "status": "completed",
+                    "text": "waiting on background",
+                },
+                {
+                    "itemId": "msg-n",
+                    "kind": "agentMessage",
+                    "turnId": "turn-n",
+                    "revision": 2,
+                    "status": "completed",
+                    "text": "ACTION_SUMMARY: completed after unified_exec wake",
+                },
+            ],
+        },
+        "lastTurn": {"turnId": "turn-n", "terminal": "completed"},
+    }
+    fold.consume_session_snapshot(replay, "cursor-replay")
+    final_obs = fold.observation()
+    assert final_obs.tasks[0].result_delivered
+    assert final_obs.final_assistant == "ACTION_SUMMARY: completed after unified_exec wake"
+    assert final_obs.final_assistant_turn == "turn-n"

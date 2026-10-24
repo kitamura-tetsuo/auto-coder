@@ -2,9 +2,15 @@
 
 An admitted local PR CI or merge-conflict job is prepared in a private,
 execution-specific Git repository. Preparation reads only the controller
-checkout's authorized `origin` URL, fetches the retained head and base refs
-into private refs, and requires those refs still to resolve to the admitted H
-and B commits. It never copies the controller checkout's HEAD, index, working
+checkout's authorized `origin` URL, fetches the retained head branch and the
+exact admitted base commit into private refs, and verifies the admitted H and B
+commit identities. The head branch must still resolve to H. The base is fetched
+by its recorded SHA: GitHub PR metadata can retain B after the base branch tip
+has advanced. Preparation must neither replace B with that tip nor require the
+tip to equal B. An unavailable B still fails before provider entry. The adapters
+and finalizer retain their strict PR metadata checks, including B and the base
+branch identity, before execution and publication.
+It never copies the controller checkout's HEAD, index, working
 files, or stale remote-tracking refs. Foreign-head inputs and incomplete legacy
 admission records fail closed. The workspace binding is persisted before an
 adapter may enter a provider.
@@ -29,3 +35,11 @@ legacy source claim, changed file, changed lineage, unreadable artifact, or
 mismatched incarnation remains unverifiable and grants no publication
 authority. Temporary protected invocation worktrees remain a separate
 isolation boundary inside this job-owned workspace.
+
+`tests/test_pr_repair_workspace.py` covers moving base branches for both CI and
+conflict workspaces, unavailable B, and rejected head movement using real Git
+repositories. The moving-base case of
+`tests/test_z_local_ci_repair_job.py::test_production_runner_composition_discovers_admitted_ci_job`
+also drives production admission, adapter preparation, runner provider entry,
+and verified result capture for the same retained job when PR metadata still
+advertises B.

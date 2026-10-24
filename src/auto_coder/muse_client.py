@@ -1315,6 +1315,14 @@ class MuseClient(LLMClientBase):
             turn_id = turn_ack.get("turnId")
             if not isinstance(turn_id, str) or not turn_id or type(turn_ack.get("startedNewTurn")) is not bool or not isinstance(turn_ack.get("disposition"), str) or not turn_ack.get("disposition"):
                 raise RuntimeError("Muse MSP did not acknowledge the submitted turn")
+            if turn_ack.get("startedNewTurn") is False and turn_ack.get("disposition") in {"steered", "queued"}:
+                for event in reversed(notifications):
+                    params_obj = event.get("params")
+                    if event.get("method") in {"turn/started", "turn/queued"} and isinstance(params_obj, dict) and params_obj.get("sessionId") == canonical_id:
+                        steered_turn = _nonempty_str(params_obj.get("turnId"))
+                        if steered_turn is not None and steered_turn != predecessor_turn:
+                            turn_id = steered_turn
+                            break
             self._bind_admitted_turn(turn_id)
             observation_fold: Optional[MuseObservationFold] = None
             conformance_evidence = MuseRuntimeConformanceEvidence()
@@ -1376,8 +1384,13 @@ class MuseClient(LLMClientBase):
                 inventory = self._msp_wait(process, 5, deadline, notifications)
                 rows = inventory.get("tasks")
                 observation_fold.consume_task_inventory(rows if isinstance(rows, list) else None, "task/list:5")
-                conformance_evidence = MuseRuntimeConformanceEvidence(task_list_observed=isinstance(rows, list))
                 current_observation = observation_fold.observation()
+                in_turn_delivered = bool(current_observation.tasks) and all(task.state == "terminal" and task.result_delivered for task in current_observation.tasks)
+                conformance_evidence = MuseRuntimeConformanceEvidence(
+                    task_list_observed=isinstance(rows, list),
+                    task_result_delivery_observed=in_turn_delivered,
+                    continuation_ownership="native" if in_turn_delivered else "",
+                )
                 self._last_background_observation = current_observation
                 persist_muse_observation(job_observer.store, job_observer.job.job_id, job_observer.executor_token, current_observation)
                 while current_observation.tasks and not current_observation.final_assistant:
@@ -1391,11 +1404,14 @@ class MuseClient(LLMClientBase):
                             continuation_turn = params_obj.get("turnId")
                             if isinstance(continuation_turn, str) and continuation_turn != turn_id:
                                 raw_references = params_obj.get("resultReferences")
-                                references = [reference for reference in raw_references if isinstance(reference, str) and reference] if isinstance(raw_references, list) else []
+                                if isinstance(raw_references, list):
+                                    references = [reference for reference in raw_references if isinstance(reference, str) and reference]
+                                else:
+                                    references = [task.result_reference for task in observation_fold.observation().tasks if task.state == "terminal" and task.result_reference]
                                 observation_fold.consume_result_delivery(continuation_turn, references, str(params_obj.get("viewCursor", "")))
                                 conformance_evidence = MuseRuntimeConformanceEvidence(
                                     task_list_observed=conformance_evidence.task_list_observed,
-                                    task_result_delivery_observed=bool(references),
+                                    task_result_delivery_observed=conformance_evidence.task_result_delivery_observed or bool(references),
                                     continuation_ownership="native",
                                 )
                         current_observation = observation_fold.observation()
@@ -1481,6 +1497,9 @@ class MuseClient(LLMClientBase):
                 if params_obj.get("terminal") != terminal.get("terminal"):
                     raise RuntimeError("Muse MSP host reported conflicting terminal outcomes for the turn")
             self._assert_approvals_settled()
+            valid_answer_turns = {turn_id}
+            if self._last_background_observation is not None and self._last_background_observation.final_assistant_turn:
+                valid_answer_turns.add(self._last_background_observation.final_assistant_turn)
             answers: list[str] = []
             for event in notifications:
                 params_obj = event.get("params")
@@ -1489,7 +1508,7 @@ class MuseClient(LLMClientBase):
                 if params_obj.get("sessionId") != canonical_id:
                     raise RuntimeError("Muse MSP assistant item belongs to an incompatible session")
                 item = params_obj.get("item")
-                if isinstance(item, dict) and item.get("turnId") == turn_id and item.get("kind") in {"message", "agentMessage"} and item.get("status") == "completed" and (item.get("kind") == "agentMessage" or item.get("role") == "assistant") and isinstance(item.get("text"), str):
+                if isinstance(item, dict) and item.get("turnId") in valid_answer_turns and item.get("kind") in {"message", "agentMessage"} and item.get("status") == "completed" and (item.get("kind") == "agentMessage" or item.get("role") == "assistant") and isinstance(item.get("text"), str):
                     answers.append(str(item["text"]))
             if not answers:
                 raise RuntimeError("Muse MSP turn completed without final assistant text")

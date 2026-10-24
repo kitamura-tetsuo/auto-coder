@@ -232,18 +232,51 @@ def test_revalidation_recomputes_changed_identities_from_retained_h(tmp_path: Pa
         producer.revalidate_result(store.get(claim.record.job_id), artifact)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("advanced_ref", ["feature", "main"])
-def test_ref_advancement_refuses_preparation_before_provider_entry(tmp_path: Path, _use_real_commands, advanced_ref: str) -> None:
+def test_head_ref_advancement_refuses_preparation_before_provider_entry(tmp_path: Path, _use_real_commands) -> None:
     repo, head, base = repository(tmp_path)
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
     claim = admitted(store, tmp_path, head, base)
-    git(repo, "switch", advanced_ref)
-    (repo / "advance.txt").write_text(advanced_ref)
+    git(repo, "switch", "feature")
+    (repo / "advance.txt").write_text("feature")
     git(repo, "add", ".")
-    git(repo, "commit", "-m", f"advance {advanced_ref}")
-    git(repo, "push", "origin", advanced_ref)
+    git(repo, "commit", "-m", "advance feature")
+    git(repo, "push", "origin", "feature")
 
     with pytest.raises(PRRepairWorkspaceError, match="no longer resolves"):
+        PRRepairWorkspaceProducer(store, tmp_path / "workspaces").prepare(claim, PRRepairSource(repo))
+    retained = store.get(claim.record.job_id)
+    assert retained is not None and not retained.provider_entered and not retained.workspace_path
+
+
+@pytest.mark.parametrize("admit", [admitted, admitted_conflict])
+def test_moving_base_branch_prepares_exact_retained_commit(tmp_path: Path, _use_real_commands, admit) -> None:
+    repo, head, base = repository(tmp_path)
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    claim = admit(store, tmp_path, head, base)
+    git(repo, "switch", "main")
+    (repo / "base.txt").write_text("advanced base\n")
+    git(repo, "commit", "-am", "advance main")
+    advanced = git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "origin", "main")
+
+    prepared = PRRepairWorkspaceProducer(store, tmp_path / "workspaces").prepare(claim, PRRepairSource(repo))
+
+    assert advanced != base
+    assert git(prepared.workspace, "rev-parse", "refs/remotes/authorized/pr-base") == base
+    assert git(prepared.workspace, "rev-parse", "HEAD") == head
+    assert (prepared.workspace / "base.txt").read_text() == "base\n"
+    assert prepared.authority.base_identity == base
+    retained = store.get(claim.record.job_id)
+    assert retained is not None and retained.workspace_path == str(prepared.workspace)
+    assert not retained.provider_entered
+    assert git(repo, "rev-parse", "HEAD") == advanced
+
+
+def test_unavailable_retained_base_refuses_preparation(tmp_path: Path, _use_real_commands) -> None:
+    repo, head, _base = repository(tmp_path)
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    claim = admitted(store, tmp_path, head, "f" * 40)
+    with pytest.raises(PRRepairWorkspaceError):
         PRRepairWorkspaceProducer(store, tmp_path / "workspaces").prepare(claim, PRRepairSource(repo))
     retained = store.get(claim.record.job_id)
     assert retained is not None and not retained.provider_entered and not retained.workspace_path

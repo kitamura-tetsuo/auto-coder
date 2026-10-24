@@ -17,7 +17,7 @@ from auto_coder.ci_observation import (
 )
 from auto_coder.ci_repair_authority import CIRepairAuthority
 from auto_coder.durable_repair_allowance import RepairAllowanceLedger
-from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobStore
+from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore
 from auto_coder.local_pr_repair_job import LocalPRRepairOffer, offer_local_pr_repair_job
 from auto_coder.local_review_repair import LocalReviewRepairRequest, LocalReviewRepairStore, admit_local_repair_allowance
 from auto_coder.pr_correction_job import offer_pr_correction_job
@@ -415,3 +415,59 @@ def test_ci_first_blocks_review_transfer_until_ci_settles(tmp_path: Path) -> Non
     )
     assert accepted is not None and accepted.kind is LocalJobKind.PR_REVIEW_CORRECTION
     assert len(LocalJobStore(jobs.path).discover_unsettled()) == 1
+
+
+def _settle_cannot_fix(jobs: LocalJobStore, job_id: str) -> None:
+    claim = jobs.claim(job_id, "controller")
+    assert claim is not None and claim.acquired
+    artifact = jobs.persist_result_artifact(claim, InvocationOutcome.CANNOT_FIX, "cannot fix selected failure")
+    assert artifact is not None
+    assert jobs.record_result(claim, InvocationOutcome.CANNOT_FIX, artifact.artifact_id)
+    assert jobs.mark_downstream_pending(claim)
+    assert jobs.settle(claim, "local PR repair cannot fix the selected failure")
+
+
+def test_settled_same_evidence_is_refused_unless_forced_and_force_admits_successor(tmp_path: Path) -> None:
+    from auto_coder import pr_processor
+
+    path = tmp_path / "jobs.sqlite3"
+    repair_store = LocalReviewRepairStore(tmp_path / "repairs.sqlite3")
+    authority = CIRepairAuthority(True, "current exact-head CI failure", "H1", snapshot())
+    pr_data = client().get_pull_request_metadata_strict.return_value | {"number": 17}
+
+    def selected(execution_id: str, forced: bool):
+        store = LocalJobStore(path)
+        with pr_processor.local_pr_repair_context(pr_processor.LocalPRRepairContext(store, execution_id, forced_retry=forced)):
+            return pr_processor._offer_selected_local_pr_repair("owner/repo", pr_data, RepairKind.CI_FAILURE, client(), ci_authority=authority, store=store, repair_store=repair_store)
+
+    with (
+        patch.object(pr_processor, "_selected_local_backend_name", return_value="codex"),
+        patch.object(pr_processor, "check_pr_repair_exhaustion", return_value=None),
+    ):
+        first = selected("execution-1", False)
+        assert first.receipt
+        _settle_cannot_fix(LocalJobStore(path), first.receipt)
+
+        # A later run with a different execution must not hit a contradictory
+        # replay; it reports the settled prior and the retry guidance instead.
+        refused = selected("execution-2", False)
+        assert refused.disposition is RepairDisposition.DEFERRED
+        assert refused.receipt == ""
+        assert f"repair job {first.receipt} already settled (cannot_fix: local PR repair cannot fix the selected failure)" in refused.reason
+        assert "--force" in refused.reason
+        assert LocalJobStore(path).discover_unsettled() == ()
+
+        forced = selected("execution-3", True)
+        assert forced.disposition is RepairDisposition.DEFERRED
+        assert forced.receipt and forced.receipt != first.receipt
+        assert forced.reason == f"Durably admitted local ci_failure repair job {forced.receipt}"
+        successor = LocalJobStore(path).get(forced.receipt)
+        assert successor is not None and successor.state is not LocalJobState.SETTLED
+        assert successor.implementation_execution_id == "execution-3"
+        assert successor.upstream_attempt != LocalJobStore(path).get(first.receipt).upstream_attempt
+        assert successor.upstream_incarnation == LocalJobStore(path).get(first.receipt).upstream_incarnation
+
+        _settle_cannot_fix(LocalJobStore(path), forced.receipt)
+        again = selected("execution-4", True)
+        assert again.receipt and again.receipt not in {first.receipt, forced.receipt}
+        assert [job.job_id for job in LocalJobStore(path).discover_unsettled()] == [again.receipt]

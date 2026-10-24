@@ -17,6 +17,22 @@ entered work remains deferred for reconciliation. The runner still revalidates
 the original head/base and current routing before editing; attachment is not new
 repair authority or permission to publish a stale candidate.
 
+Before explicit reattachment, a complete strict PR metadata read compares the
+retained head/base repository, branch, and commit identities with the current
+target. A changed identity retires only a pending, positively unentered job with
+no execution incarnation or continuation. An atomic state check refuses retirement
+if a runner claimed it concurrently. The controller retires that job's execution,
+preserves lifetime ownership, and continues ordinary current-target admission in
+the same command. Current routing, CI, and allowance gates still apply. Unavailable
+or incomplete metadata and entered or uncertain work never authorize replacement.
+This handles changed authoritative PR metadata. A base branch tip advancing
+while PR metadata still advertises the admitted B preserves the existing job;
+its workspace fetches B by SHA, as described in
+[retained workspaces](pr-repair-job-workspaces.md). Pending results
+include the retained preparation/authorization diagnostic in the displayed reason.
+Supersession emits the existing admission stage with `admission_status=superseded`,
+the retired job ID, and `provider_started=false`; it does not claim repair success.
+
 Retained attachment emits `pr.repair-delegation` with
 `effect=local-pr-repair-admission`, `admission_status=retained`, the original
 backend and job ID, and `execution_restored`. Refused attachment emits `deferred`
@@ -24,5 +40,7 @@ with its operational reason and cannot fall through to a fresh editor. Coverage
 and the mounted dashboard regression are in `tests/test_local_pr_repair_recovery.py`.
 
 The production runner reconstructs CI repairs from the complete immutable offer, including the nested failed-check snapshot captured at admission. Terminal `CANNOT_FIX` and stale-target outcomes settle that exact edit claim and retire only its execution; lifetime ownership and normal retry authorization remain intact for a later independent PR evaluation.
+
+A settled envelope for the same head/base/failure evidence is never replayed as a contradictory offer. An ordinary evaluation reports a `deferred` admission naming the settled job, its outcome and diagnostic, and that a new head or `--only <PR> --force` is needed to retry. An explicit `--only <PR> --force` run admits a successor envelope with a deterministic, distinct operation identity (the evidence incarnation is unchanged), and repeated forced runs after further settled attempts receive further distinct identities. Current routing, CI, allowance, and competing-owner gates still apply to the successor. Coverage is in `tests/test_local_pr_repair_job.py`.
 
 Standalone explicit PR processing immediately drives only its accepted job through the production local runner composition. It may wait for that exact job, but it never drains unrelated retained work. Successful H2 publication durably records a repository-scoped PR invalidation before acknowledging the wake, and the handoff remains deferred until fresh PR validation establishes the post-publication outcome.

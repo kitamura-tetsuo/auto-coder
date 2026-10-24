@@ -119,7 +119,7 @@ from .issue_stage_routing import IMPLEMENTATION_STAGE, ImplementationRetryReques
 from .label_manager import LabelManager, LabelOperationError, filter_legacy_auto_coder_label
 from .llm_backend_config import get_pr_review_allowlist_from_config, get_review_adjudicator_allowlist_from_config
 from .local_ci_repair_execution import CorrectionPorts, LocalCIRepairPorts, LocalCIRepairRequest, LocalCIRepairResult, execute_correction, execute_local_ci_repair
-from .local_job_handoff import LocalJobStore
+from .local_job_handoff import LocalJobKind, LocalJobRecord, LocalJobState, LocalJobStore
 from .logger_config import get_gh_logger, get_logger
 from .ordinary_closure_evidence import ApplicationStatus, ClosureEvidenceRecord, EvidenceState, ObservedTarget, restore_ordinary_result
 from .pr_blocker_closure import _BLOCKER_ID_RE, _GAP_ID_RE
@@ -211,6 +211,9 @@ cmd = CommandExecutor()
 class LocalPRRepairContext:
     store: LocalJobStore
     implementation_execution_id: str
+    # Explicit ``--only --force`` PR processing: a repair whose exact evidence
+    # already settled (e.g. CANNOT_FIX) may be admitted as a new attempt.
+    forced_retry: bool = False
 
 
 _local_pr_repair_context: ContextVar[Optional[LocalPRRepairContext]] = ContextVar("local_pr_repair_context", default=None)
@@ -1687,6 +1690,38 @@ def _selected_local_backend_name(repo_name: Optional[str] = None) -> str:
     return candidates[0] if candidates else ""
 
 
+def _local_pr_repair_operation_identity(
+    store: LocalJobStore,
+    repo_name: str,
+    pr_number: int,
+    job_kind: LocalJobKind,
+    evidence_identity: str,
+    *,
+    forced_retry: bool,
+) -> tuple[str, Optional[LocalJobRecord]]:
+    """Select the durable operation identity for one exact evidence observation.
+
+    Ordinary observations replay the stable evidence identity. When that
+    envelope already settled (for example after ``CANNOT_FIX``), only an
+    explicit forced retry may admit a successor attempt; otherwise the settled
+    prior is returned so the caller can report why admission is refused.
+    Successor identities are derived deterministically so a later forced run
+    after another settled attempt receives a further distinct identity.
+    """
+    prior = store.pr_repair_for_attempt(repo_name, pr_number, job_kind, evidence_identity)
+    if prior is None or prior.state is not LocalJobState.SETTLED:
+        return evidence_identity, None
+    if not forced_retry:
+        return evidence_identity, prior
+    retry = 1
+    while True:
+        candidate = hashlib.sha256(json.dumps([evidence_identity, "forced-retry", retry], separators=(",", ":")).encode("utf-8")).hexdigest()
+        existing = store.pr_repair_for_attempt(repo_name, pr_number, job_kind, candidate)
+        if existing is None or existing.state is not LocalJobState.SETTLED:
+            return candidate, None
+        retry += 1
+
+
 def _offer_selected_local_pr_repair(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -1727,8 +1762,40 @@ def _offer_selected_local_pr_repair(
     # workflow execution identities make independently repeated current-head
     # reads replay the same durable envelope across controller restarts.
     evidence_identity = local_pr_repair_evidence_identity("", head_sha, base_identity, kind, failed)
-    operation_identity = evidence_identity
     backend_name = _selected_local_backend_name(repo_name)
+    try:
+        operation_identity, settled_prior = _local_pr_repair_operation_identity(
+            store,
+            repo_name,
+            int(pr_data["number"]),
+            LocalJobKind.PR_CI_FAILURE if kind is RepairKind.CI_FAILURE else LocalJobKind.PR_MERGE_CONFLICT,
+            evidence_identity,
+            forced_retry=context.forced_retry,
+        )
+        history_reason = ""
+    except RuntimeError as exc:
+        operation_identity, settled_prior = evidence_identity, None
+        history_reason = f"Local PR repair admission deferred: local repair attempt history is unavailable ({exc})"
+    if settled_prior is not None:
+        outcome = settled_prior.invocation_outcome.value if settled_prior.invocation_outcome is not None else "settled"
+        detail = f": {settled_prior.diagnostic}" if settled_prior.diagnostic else ""
+        history_reason = f"Local PR repair admission deferred: local {kind.value} repair job {settled_prior.job_id} already settled " f"({outcome}{detail}) for the current head/base and failure evidence; " "push a new head or rerun with --only <PR> --force to retry"
+    if history_reason:
+        _record_pr_stage(
+            int(pr_data["number"]),
+            "pr.repair-delegation",
+            f"pr#{pr_data['number']} local repair admission",
+            Outcome.DEFERRED,
+            {
+                "effect": "local-pr-repair-admission",
+                "repair_kind": kind.value,
+                "backend": backend_name,
+                "admission_status": "deferred",
+                "job_id": settled_prior.job_id if settled_prior is not None else "",
+                "reason": history_reason,
+            },
+        )
+        return PRRepairResult(RepairDisposition.DEFERRED, reason=history_reason)
     request = LocalPRRepairOffer(
         repository=repo_name,
         pr_number=int(pr_data["number"]),

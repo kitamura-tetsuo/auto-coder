@@ -158,9 +158,12 @@ class PRRepairWorkspaceProducer:
         self._git(workspace, "fetch", "--no-tags", "origin", f"+refs/heads/{authority.head_ref}:{head_private_ref}")
         if self._git(workspace, "rev-parse", f"{head_private_ref}^{{commit}}") != authority.head_sha:
             raise PRRepairWorkspaceError("authorized PR head ref no longer resolves to retained H")
-        self._git(workspace, "fetch", "--no-tags", "origin", f"+refs/heads/{authority.base_ref}:{base_private_ref}")
+        # PR metadata can retain B after its base branch advances. Fetch the
+        # admitted commit itself; substituting today's branch tip changes the
+        # job's source contract, while requiring B to remain the tip stalls it.
+        self._git(workspace, "fetch", "--no-tags", "origin", f"+{authority.base_identity}:{base_private_ref}")
         if self._git(workspace, "rev-parse", f"{base_private_ref}^{{commit}}") != authority.base_identity:
-            raise PRRepairWorkspaceError("authorized base ref no longer resolves to retained B")
+            raise PRRepairWorkspaceError("fetched base commit does not match retained B")
         branch = f"repair-{record.target_number}-{record.execution_incarnation[:12]}"
         self._git(workspace, "switch", "--no-track", "-c", branch, authority.head_sha)
         if self._git(workspace, "rev-parse", "HEAD") != authority.head_sha or self._git(workspace, "status", "--porcelain"):

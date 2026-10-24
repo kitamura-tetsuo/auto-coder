@@ -289,10 +289,19 @@ def test_production_selection_runs_focused_nonpublishing_job(mode: str, tmp_path
     runner.close()
 
 
-def test_production_runner_composition_discovers_admitted_ci_job(tmp_path: Path, _use_real_commands) -> None:
+@pytest.mark.parametrize("moving_base", [False, True])
+def test_production_runner_composition_discovers_admitted_ci_job(tmp_path: Path, _use_real_commands, moving_base: bool) -> None:
     """REQ-001: daemon composition registers and executes the captured CI adapter."""
     harness = Harness.create(tmp_path)
     job_id = harness.offer_from_pr_handler()
+    if moving_base:
+        # PR metadata still advertises the admitted B while main moves ahead.
+        git(harness.controller, "switch", "main")
+        (harness.controller / "base.txt").write_text("advanced main\n")
+        git(harness.controller, "commit", "-am", "advance main")
+        git(harness.controller, "push", "origin", "main")
+        assert git(harness.remote, "rev-parse", "refs/heads/main") != harness.base
+        assert harness.github.get_pull_request_metadata_strict("owner/repo", 17)["base"]["sha"] == harness.base
     with (
         patch("auto_coder.ci_repair_authority.current_ci_failure_authority", harness.authority),
         patch("auto_coder.pr_processor.build_durable_ci_correction", side_effect=lambda job, prepared, *_args: harness.correction(job, prepared)),
@@ -304,7 +313,12 @@ def test_production_runner_composition_discovers_admitted_ci_job(tmp_path: Path,
     completed = harness.store.get(job_id)
     assert completed is not None and completed.invocation_outcome is InvocationOutcome.COMPLETED
     assert harness.editor_calls == 1
-    assert harness.store.get_result_artifact(completed.result_reference) is not None
+    artifact = harness.store.get_result_artifact(completed.result_reference)
+    assert artifact is not None
+    verified = PRRepairWorkspaceProducer(harness.store).revalidate_result(completed, artifact)
+    assert verified.manifest.base_sha == harness.base
+    assert verified.manifest.head_sha == harness.head
+    assert completed.job_id == job_id and completed.provider_entered
     runner.close()
 
 

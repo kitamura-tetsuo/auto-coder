@@ -60,24 +60,30 @@ the retained publication workspace and enter the ordinary result/finalizer path.
 Failure preserves the retained workspace and a reconciliation reason.
 
 After process loss, Muse may report its orphaned predecessor's cancellation while
-the new turn is being admitted. The transport correlates that historical terminal
-only to the exact predecessor recorded for the same job/backend/attempt/session
-and workspace. It cannot complete the new turn or authorize its result. Unknown
-turns and foreign sessions still fail; the new turn must produce its own confirmed
-terminal and assistant output.
+the new turn is being admitted, or steer the resumed `turn/start` command into
+a native background-terminal delivery run that started on `session/resume`. The
+transport correlates an orphaned terminal only to the exact predecessor recorded
+for the same job/backend/attempt/session and workspace, and binds a steered
+`turn/start` acknowledgement (`startedNewTurn: false`) to the active session run
+already opened on resume. Unknown turns and foreign sessions still fail; the
+admitted turn must produce its own confirmed terminal and assistant output.
 
-Historical live-inventory rows can outlive their earlier Muse turn. They are
-never removed or marked successful merely because the resumed host reports an
-empty inventory. After writer settlement, the adapter can reconcile a retained
-candidate against the native session journal selected by Muse's session index.
-The exact session and provider root must match, every unresolved inventory-only
-predecessor must have a positive terminal record before the candidate's turn
-began, and the exact later assistant message, completed turn, and clean final
-shutdown must agree with the captured current replay. Work with missing result
-delivery, an explicit undelivered result reference, a later turn, contradictory
-or incomplete evidence, or a changed executor/frontier remains unresolved.
-Transport completion retains an unknown domain outcome rather than fabricating
-tool success. Task reconciliation and candidate confirmation commit atomically.
+Historical live-inventory or session-cursor auto-backgrounded rows can outlive
+their earlier Muse turn. They are never removed or marked successful merely
+because the resumed host reports an empty inventory. After writer settlement,
+the adapter can reconcile a retained candidate (including a steered resume run
+correlated via `user_steer` causation in the session journal) against the native
+session journal selected by Muse's session index. The exact session and provider
+root must match, every unresolved predecessor must have a positive terminal
+record (`completed` or `cancelled`) before the resumed invocation's foreground
+turn began (and any in-turn managed session cancelled at host shutdown must be
+recorded before clean `session_end`), and the exact later assistant message,
+completed turn, and clean final shutdown must agree with the captured current
+replay. Work with missing result delivery, an explicit undelivered result
+reference, a later turn, contradictory or incomplete evidence, or a changed
+executor/frontier remains unresolved. Transport completion retains an unknown
+domain outcome rather than fabricating tool success. Task reconciliation and
+candidate confirmation commit atomically.
 
 Native `omitted_live_only` markers for schema-v1 ephemeral
 `task_tool_delta_v1` output deltas are accepted after validating their session,

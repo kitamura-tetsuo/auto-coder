@@ -1874,7 +1874,7 @@ class GitHubClient:
     def find_pr_by_head_branch_strict(self, repo_name: str, branch_name: str) -> Optional[Dict[str, Any]]:
         """Find an open or closed head-branch PR, propagating lookup failures."""
         owner, repo = repo_name.split("/")
-        api = get_ghapi_client(self.token)
+        api = get_ghapi_client(self.token, extra_headers={"Cache-Control": "no-cache"})
         page = 1
         while True:
             prs = api.pulls.list(owner, repo, state="all", head=f"{owner}:{branch_name}", per_page=100, page=page)

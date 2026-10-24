@@ -2810,6 +2810,27 @@ remains `DEFERRED` with the refusal reason and no new admission. Attachment
 does not report editing, publication, or merge completion. The generic detail
 renderer displays the existing facts table without a schema change.
 
+`test_changed_base_retires_unentered_job_and_executes_fresh_repair` drives
+explicit processing through strict changed-base observation, atomic retirement of
+the unentered job, fresh admission, and runner execution. Production emits the
+same stage with `admission_status=superseded`, the retired job ID and backend,
+the retirement reason, and `provider_started=false`. The test checks these facts
+and the mounted detail rendering before verifying the replacement job's retained
+base identity. `test_stale_retirement_preserves_uncertain_or_claimed_jobs` covers
+unavailable/incomplete reads and concurrent runner ownership; neither admits a
+replacement. `test_explicit_pending_reason_includes_preparation_failure` verifies
+that the explicit result preserves the runner's operational diagnostic.
+
+Workspace preparation fetches the admitted base SHA even if the remote base
+branch tip has advanced while strict PR metadata still advertises that SHA.
+This is observability-neutral: the retained job, execution, provider routing,
+admission event, result manifest, and publication gates keep the same identities
+and meanings. No replacement-admission event is appropriate for branch-tip
+movement alone. Run `bash scripts/test.sh tests/test_pr_repair_workspace.py
+tests/test_z_local_ci_repair_job.py` for real-Git workspace regressions and the
+moving-base production runner case, which verifies one editor entry and a result
+manifest retaining the admitted B for the original job.
+
 ```bash
 bash scripts/test.sh tests/test_local_pr_repair_recovery.py tests/test_local_pr_repair_engine_entry.py tests/test_local_issue_owner_recovery.py
 ```

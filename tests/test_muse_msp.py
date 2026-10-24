@@ -151,19 +151,31 @@ for line in sys.stdin:
         emit({"jsonrpc":"2.0","id":frame["id"],"result":ack})
         effective_mode = ack.get("effectiveMode", {}).get("mode")
     elif method == "task/list":
-        tasks = [] if os.environ.get("MSP_EMPTY_INVENTORY") else [{"taskId":"background-task","kind":"tool","status":"inProgress","tool":"bash"}]
+        tasks = [] if (os.environ.get("MSP_EMPTY_INVENTORY") or os.environ.get("MSP_AUTO_BACKGROUND_ITEM")) else [{"taskId":"background-task","kind":"tool","status":"inProgress","tool":"bash"}]
         emit({"jsonrpc":"2.0","id":frame["id"],"result":{"tasks":tasks}})
-        if os.environ.get("MSP_BACKGROUND_ITEM"):
+        if os.environ.get("MSP_BACKGROUND_ITEM") or os.environ.get("MSP_AUTO_BACKGROUND_ITEM"):
             gate = os.environ.get("MSP_BACKGROUND_GATE")
             while gate and not Path(gate).exists():
                 time.sleep(0.01)
-            emit({"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":last_session,"item":{"itemId":"background-task","kind":"toolCall","background":True,"revision":2,"status":"failed","turnId":last_turn,"tool":"bash"}}})
+            bg_item = {"itemId":"background-task","kind":"toolCall","revision":2,"status":"completed" if os.environ.get("MSP_AUTO_BACKGROUND_ITEM") else "failed","turnId":last_turn,"tool":"bash","visibleOutput":"MUSE_BACKGROUND_RESULT\n"}
+            if not os.environ.get("MSP_AUTO_BACKGROUND_ITEM"):
+                bg_item["background"] = True
+            emit({"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":last_session,"item":bg_item}})
             native = "native-continuation"
-            emit({"jsonrpc":"2.0","method":"turn/started","params":{"sessionId":last_session,"turnId":native,"viewCursor":"native-1","resultReferences":["background-task@2"]}})
+            started_params = {"sessionId":last_session,"turnId":native,"viewCursor":"native-1"}
+            if not os.environ.get("MSP_AUTO_BACKGROUND_ITEM"):
+                started_params["resultReferences"] = ["background-task@2"]
+            emit({"jsonrpc":"2.0","method":"turn/started","params":started_params})
             emit({"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":last_session,"item":{"itemId":"native-answer","kind":"agentMessage","revision":1,"status":"completed","turnId":native,"text":os.environ.get("MSP_NATIVE_ANSWER", "answer:native")}}})
             emit({"jsonrpc":"2.0","method":"turn/completed","params":{"sessionId":last_session,"turnId":native,"terminal":"completed"}})
     elif method == "session/read":
-        emit({"jsonrpc":"2.0","id":frame["id"],"result":{"session":{"sessionId":last_session},"viewCursor":"replay-1","history":{"mode":"inline","items":[]},"lastTurn":{"turnId":"native-continuation","terminal":"completed"}}})
+        replay_items = []
+        if os.environ.get("MSP_AUTO_BACKGROUND_ITEM"):
+            replay_items = [
+                {"itemId":"background-task","kind":"toolCall","revision":2,"status":"completed","turnId":last_turn,"tool":"bash","visibleOutput":"MUSE_BACKGROUND_RESULT\n"},
+                {"itemId":"native-answer","kind":"agentMessage","revision":1,"status":"completed","turnId":"native-continuation","text":os.environ.get("MSP_NATIVE_ANSWER", "answer:native")},
+            ]
+        emit({"jsonrpc":"2.0","id":frame["id"],"result":{"session":{"sessionId":last_session},"viewCursor":"replay-1","history":{"mode":"inline","items":replay_items},"lastTurn":{"turnId":"native-continuation","terminal":"completed"}}})
         if os.environ.get("MSP_LATE_BACKGROUND_ACTIVITY"):
             emit({"jsonrpc":"2.0","method":"turn/started","params":{"sessionId":last_session,"turnId":"late-turn","viewCursor":"late-1"}})
             emit({"jsonrpc":"2.0","method":"item/updated","params":{"sessionId":last_session,"viewCursor":"late-2","item":{"itemId":"late-background-task","kind":"toolCall","background":True,"revision":1,"status":"inProgress","turnId":"late-turn","tool":"bash"}}})
@@ -213,11 +225,16 @@ for line in sys.stdin:
         item_kind = os.environ.get("MSP_ITEM_KIND", "message")
         if os.environ.get("MSP_BACKGROUND_ITEM"):
             emit({"jsonrpc":"2.0","method":"item/updated","params":{"sessionId":event_session,"item":{"itemId":"background-task","kind":"toolCall","background":True,"revision":1,"status":"inProgress","turnId":turn,"tool":"bash"}}})
-        item = {"itemId":"answer","kind":item_kind,"revision":1,"status":item_status,"turnId":turn,"text":os.environ.get("MSP_ANSWER", "answer:" + ("second" if "second" in frame["params"]["input"][0]["text"] else "first"))}
-        retain({"kind":"run","run_id":turn,"event":{"kind":"assistant_message_committed","text":item["text"]}})
-        if item_kind == "message":
-            item["role"] = "assistant"
-        emit({"jsonrpc":"2.0","method":item_method,"params":{"sessionId":event_session,"item":item}})
+        if os.environ.get("MSP_AUTO_BACKGROUND_ITEM"):
+            bg_out = json.dumps({"execution_state": "background_running", "session_id": 1})
+            bg_upd = {"itemId": "background-task", "kind": "toolCall", "revision": 1, "status": "inProgress", "statusLine": "terminal process running", "turnId": turn, "tool": "bash", "visibleOutput": bg_out}
+            emit({"jsonrpc": "2.0", "method": "item/updated", "params": {"sessionId": event_session, "item": bg_upd}})
+        if not os.environ.get("MSP_OMIT_FOREGROUND_ANSWER"):
+            item = {"itemId":"answer","kind":item_kind,"revision":1,"status":item_status,"turnId":turn,"text":os.environ.get("MSP_ANSWER", "answer:" + ("second" if "second" in frame["params"]["input"][0]["text"] else "first"))}
+            retain({"kind":"run","run_id":turn,"event":{"kind":"assistant_message_committed","text":item["text"]}})
+            if item_kind == "message":
+                item["role"] = "assistant"
+            emit({"jsonrpc":"2.0","method":item_method,"params":{"sessionId":event_session,"item":item}})
         terminal = "failed" if os.environ.get("MSP_QUOTA_TERMINAL") else "completed"
         terminal_params = {"sessionId":event_session,"turnId":turn,"terminal":terminal}
         if terminal == "failed":
@@ -480,7 +497,8 @@ def test_muse_msp_fresh_then_exact_resume(tmp_path, monkeypatch, _use_real_comma
     assert (repo / "tracked.txt").read_text() == "unchanged\n"
 
 
-def test_accepted_job_production_transport_persists_background_frontier(tmp_path, monkeypatch, _use_real_commands):
+@pytest.mark.parametrize("background_env", ["MSP_BACKGROUND_ITEM", "MSP_AUTO_BACKGROUND_ITEM"])
+def test_accepted_job_production_transport_persists_background_frontier(tmp_path, monkeypatch, _use_real_commands, background_env):
     repo = _repository(tmp_path)
     host = _host(tmp_path)
     log = tmp_path / "msp.jsonl"
@@ -488,7 +506,9 @@ def test_accepted_job_production_transport_persists_background_frontier(tmp_path
     monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
     monkeypatch.setenv("MSP_LOG", str(log))
     monkeypatch.setenv("MSP_SERVER_VERSION", "1.4.6")
-    monkeypatch.setenv("MSP_BACKGROUND_ITEM", "1")
+    monkeypatch.setenv(background_env, "1")
+    if background_env == "MSP_AUTO_BACKGROUND_ITEM":
+        monkeypatch.setenv("MSP_OMIT_FOREGROUND_ANSWER", "1")
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
     guard = IssueDispatchGuard(tmp_path / "dispatch.sqlite3")
     identity = IssueAttemptIdentity("owner", "repo", 42, "attempt-1")

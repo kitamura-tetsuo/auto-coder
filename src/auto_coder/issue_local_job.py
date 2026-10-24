@@ -156,7 +156,7 @@ class IssueLocalJobAdapter:
         from .muse_retained_result import confirm_muse_retained_result
 
         continuation = self._store.get_continuation(job.job_id)
-        if continuation is None or not continuation.candidate_output:
+        if continuation is None or (not continuation.candidate_output and not self._store.get_continuation_observation(job.job_id)):
             return None
         self.validate_resume(job, continuation)
         if not confirm_muse_retained_result(self._store, job):

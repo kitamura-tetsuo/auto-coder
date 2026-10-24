@@ -96,6 +96,97 @@ def test_retained_terminal_evidence_confirms_later_output_atomically(tmp_path, m
     assert store.get_continuation(job.job_id) == after
 
 
+def test_retained_cancelled_cursor_predecessor_confirms_later_output(tmp_path, monkeypatch, _use_real_commands):
+    _, store, _, job, _, journal, records, _ = retained_candidate(tmp_path, monkeypatch, 1)
+    assert store.observe_continuation_task(
+        job.job_id,
+        job.runner_owner,
+        "old-auto-bg",
+        "running",
+        provider_position="v4:retained-session:1332",
+    )
+    continuation = store.get_continuation(job.job_id)
+    assert store.record_candidate_output(job.job_id, job.runner_owner, continuation.frontier, continuation.candidate_output)
+    records.insert(
+        2,
+        {
+            "recorded_at": 150,
+            "id": "terminal-cancelled",
+            "payload": {"kind": "task", "event": {"kind": "cancelled", "task_id": "old-auto-bg"}},
+        },
+    )
+    journal.write_text("".join(json.dumps(record) + "\n" for record in records))
+    assert confirm_muse_retained_result(store, job)
+    assert store.unresolved_continuation_tasks(job.job_id) == ()
+    assert store.get_continuation(job.job_id).state is ContinuationState.FINAL_CONFIRMED
+
+
+def test_steered_resume_turn_reconciles_journal_candidate_and_managed_session(tmp_path, monkeypatch, _use_real_commands):
+    _, store, _, job, _, journal, records, _ = retained_candidate(tmp_path, monkeypatch, 1)
+    assert store.observe_continuation_task(
+        job.job_id,
+        job.runner_owner,
+        "in-turn-managed",
+        "running",
+        provider_position="v4:retained-session:1574",
+    )
+    output = "ACTION_SUMMARY: retained edits and verified tests"
+    from auto_coder.muse_background_observation import MuseTaskObservation, MuseTaskOutcome
+
+    observation = MuseBackgroundObservation(
+        MuseObservationBinding(job.backend_name, "retained-session", job.execution_incarnation, job.upstream_attempt, Path(job.workspace_path)),
+        "steered-command-id",
+        foreground_state="running",
+        tasks=(
+            MuseTaskObservation(
+                "in-turn-managed",
+                "resumed-turn",
+                "running",
+                MuseTaskOutcome.UNKNOWN,
+                "",
+                False,
+                3,
+                "v4:retained-session:1574",
+            ),
+        ),
+        final_assistant="",
+        final_assistant_turn="resumed-turn",
+    )
+    assert persist_muse_observation(store, job.job_id, job.runner_owner, observation)
+    with store._connect() as connection:
+        connection.execute(
+            "UPDATE local_job_continuations SET candidate_frontier=NULL, candidate_output='' WHERE job_id=?",
+            (job.job_id,),
+        )
+    records.insert(
+        -3,
+        {
+            "recorded_at": 1020,
+            "id": "steer-event",
+            "causation_id": "steered-command-id",
+            "payload": {
+                "kind": "run",
+                "run_id": "resumed-turn",
+                "event": {"kind": "inbox_item_queued", "source": {"source": "user_steer"}},
+            },
+        },
+    )
+    records.insert(
+        -1,
+        {
+            "recorded_at": 1250,
+            "id": "managed-cancelled",
+            "payload": {"kind": "task", "run_id": "resumed-turn", "event": {"kind": "cancelled", "task_id": "in-turn-managed"}},
+        },
+    )
+    journal.write_text("".join(json.dumps(record) + "\n" for record in records))
+    assert confirm_muse_retained_result(store, job)
+    assert store.unresolved_continuation_tasks(job.job_id) == ()
+    after = store.get_continuation(job.job_id)
+    assert after.state is ContinuationState.FINAL_CONFIRMED
+    assert after.final_output == output
+
+
 @pytest.mark.parametrize("problem", ["unknown_marker", "durable_omission", "terminal_omission", "foreign_session", "missing_position", "boolean_sequence", "missing_terminal"])
 def test_omission_markers_never_replace_required_terminal_evidence(tmp_path, monkeypatch, _use_real_commands, problem):
     _, store, _, job, _, journal, records, _ = retained_candidate(tmp_path, monkeypatch)
