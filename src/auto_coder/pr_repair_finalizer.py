@@ -119,10 +119,36 @@ class PRRepairJobFinalizer:
         if record.kind not in {LocalJobKind.PR_CI_FAILURE, LocalJobKind.PR_MERGE_CONFLICT}:
             return self._result(job_id, PRRepairPublicationDisposition.REFUSED, diagnostic="job is not a PR repair")
         lock = lock_path(record.repository, self._store.path, "pr-repair-publication", str(record.target_number))
+        from .local_job_workspace_cleanup import authenticated_successful_disposition, workspace_reclamation_lock
+
+        release_lock = workspace_reclamation_lock(self._store, record)
         ensure_lock_directory(lock)
+        ensure_lock_directory(release_lock)
         try:
-            with file_lock(lock), checkout_lock(record.workspace_path):
-                return self._finalize_locked(job_id)
+            with file_lock(release_lock), file_lock(lock):
+                current = self._store.get(job_id)
+                if current is None or current.kind not in {LocalJobKind.PR_CI_FAILURE, LocalJobKind.PR_MERGE_CONFLICT} or current.execution_incarnation != record.execution_incarnation:
+                    return self._result(job_id, PRRepairPublicationDisposition.REFUSED, diagnostic="job authority changed before finalization")
+                record = current
+                # A settled replay is deliberately receipt-only: cleanup may
+                # already have removed every Git object in the workspace.
+                if record.state is LocalJobState.SETTLED:
+                    if record.invocation_outcome is InvocationOutcome.CANNOT_FIX:
+                        return self._finish_terminal(record, PRRepairPublicationDisposition.CANNOT_FIX, "local PR repair cannot fix the selected failure")
+                    if record.invocation_outcome in {InvocationOutcome.FAILED, InvocationOutcome.INTERRUPTED}:
+                        return self._finish_terminal(
+                            record,
+                            PRRepairPublicationDisposition.REFUSED,
+                            f"local PR repair ended with retained {record.invocation_outcome.value} evidence",
+                        )
+                    evidence = authenticated_successful_disposition(self._store, record)
+                    if evidence is None or not evidence[1].startswith("published:"):
+                        return self._result(job_id, PRRepairPublicationDisposition.REFUSED, diagnostic="settled job lacks complete publication receipts")
+                    candidate = evidence[1].split(":", 1)[1]
+                    self._retire_execution(record)
+                    return self._result(job_id, PRRepairPublicationDisposition.PUBLISHED, candidate)
+                with checkout_lock(record.workspace_path):
+                    return self._finalize_locked(job_id)
         except Exception as exc:
             return self._result(job_id, PRRepairPublicationDisposition.PENDING, diagnostic=str(exc), error=exc)
 

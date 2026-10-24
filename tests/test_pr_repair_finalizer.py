@@ -248,6 +248,99 @@ def test_definite_terminal_failure_settles_claim_and_retires_execution(tmp_path:
     assert slots.start_execution(owner) is not None
 
 
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [
+        (InvocationOutcome.CANNOT_FIX, PRRepairPublicationDisposition.CANNOT_FIX),
+        (InvocationOutcome.FAILED, PRRepairPublicationDisposition.REFUSED),
+        (InvocationOutcome.INTERRUPTED, PRRepairPublicationDisposition.REFUSED),
+    ],
+)
+def test_settled_terminal_replay_retries_exact_execution_retirement(
+    tmp_path: Path,
+    outcome: InvocationOutcome,
+    expected: PRRepairPublicationDisposition,
+) -> None:
+    slots_path = tmp_path / "slots.json"
+    retired_path = tmp_path / "retired.json"
+    slots = ImplementationSlotRepository("owner/repo", 3, slots_path, retired_path)
+    owner = ImplementationOwner("pr", 7)
+    unrelated_owner = ImplementationOwner("pr", 8)
+    execution_id = slots.start_execution(owner)
+    unrelated_execution = slots.start_execution(unrelated_owner)
+    assert execution_id is not None and unrelated_execution is not None
+    store = LocalJobStore(tmp_path / "terminal-replay.sqlite3")
+    offer = LocalJobOffer(LocalJobKind.PR_MERGE_CONFLICT, "owner/repo", 7, "attempt-7", "codex", "repair", execution_id)
+    admission = PRRepairAdmission(
+        "owner/repo",
+        "feature",
+        "H1",
+        "owner/repo",
+        "main",
+        "B1",
+        "merge_conflict",
+        "evidence-7",
+        "upstream-7",
+        conflict_eligible=True,
+        pr_open=True,
+        pr_unmerged=True,
+        local_route=True,
+        owner_allowed=True,
+    )
+    assert store.offer_pr_repair(offer, admission) is not None
+    claim = store.claim(offer.job_id, "runner")
+    assert claim is not None and claim.acquired
+    artifact = store.persist_result_artifact(claim, outcome, outcome.value, executor_token="runner")
+    assert artifact is not None
+    assert store.record_result(claim, outcome, artifact.artifact_id, executor_token="runner")
+    pending = PendingWorkStore(tmp_path / "pending.sqlite3")
+    identity = rediscover_pr_repair_finalizations("owner/repo", store, pending)[0]
+    obligation = pending.get(identity)
+    assert obligation is not None
+    retirement_attempts = 0
+
+    def fail_first_retirement(_record) -> None:  # type: ignore[no-untyped-def]
+        nonlocal retirement_attempts
+        retirement_attempts += 1
+        raise RuntimeError("process stopped after settlement")
+
+    first_observer = MagicMock(side_effect=AssertionError("terminal replay must not observe GitHub"))
+    first_wake = MagicMock(side_effect=AssertionError("terminal replay must not wake CI"))
+    first = PRRepairJobFinalizer(store, first_observer, first_wake, finish_execution=fail_first_retirement)
+    first_outcome = LocalPRRepairFinalizationHandler("owner/repo", store, first).dispatch(obligation)
+
+    assert first_outcome.completed_effects == ()
+    settled = store.get(offer.job_id)
+    assert settled is not None and settled.state is LocalJobState.SETTLED
+    assert slots.active_execution_ids(owner) == (execution_id,)
+
+    reopened_store = LocalJobStore(store.path)
+    reopened_slots = ImplementationSlotRepository("owner/repo", 3, slots_path, retired_path)
+    observer_call = MagicMock(side_effect=AssertionError("terminal replay must not observe GitHub"))
+    wake_call = MagicMock(side_effect=AssertionError("terminal replay must not wake CI"))
+    recovered = PRRepairJobFinalizer(
+        reopened_store,
+        observer_call,
+        wake_call,
+        finish_execution=lambda record: reopened_slots.finish_execution_by_id(record.implementation_execution_id),
+    )
+    with patch.object(recovered, "_git", side_effect=AssertionError("terminal replay must not access Git")):
+        recovered_outcome = LocalPRRepairFinalizationHandler("owner/repo", reopened_store, recovered).recover(obligation)
+        replay = recovered.finalize(offer.job_id)
+
+    assert recovered_outcome.completed_effects == (LOCAL_PR_REPAIR_FINALIZATION_EFFECT,)
+    assert replay.disposition is expected
+    assert retirement_attempts == 1
+    assert reopened_slots.active_execution_ids(owner) == ()
+    assert owner in reopened_slots.active_owners()
+    assert reopened_slots.active_execution_ids(unrelated_owner) == (unrelated_execution,)
+    assert reopened_store.get_result_artifact(artifact.artifact_id) == artifact
+    first_observer.assert_not_called()
+    first_wake.assert_not_called()
+    observer_call.assert_not_called()
+    wake_call.assert_not_called()
+
+
 def test_stale_artifact_settles_edit_claim_and_retires_only_execution(tmp_path: Path, _use_real_commands) -> None:
     source, remote, head, base = repository(tmp_path)
     slots = ImplementationSlotRepository("owner/repo", 2, tmp_path / "slots.json")

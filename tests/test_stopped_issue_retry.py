@@ -14,6 +14,7 @@ from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, Is
 from auto_coder.issue_retry_admission import IssueRetryAdmissionService, IssueRetryDisposition, IssueRetryOrigin
 from auto_coder.local_job_handoff import ContinuationState, InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore
 from auto_coder.local_job_runner import current_runner_owner, process_owner, runner_owner_alive, writer_group_settled
+from auto_coder.local_job_workspace_cleanup import reclaim_finalized_workspaces
 
 from .test_dashboard_observability import _assert_required_stage_visible, _mounted_detail
 from .test_implementation_slots import execution_process
@@ -91,6 +92,9 @@ def test_stopped_predecessor_retry_reaches_new_attempt_and_mounted_detail(mock_u
     assert retained.result_reference == ""
     assert store.claim(old.job_id).acquired is False
     assert retained.workspace_path == old.workspace_path
+    assert (workspace / "partial.txt").read_text() == "retained edits\n"
+    cleanup = reclaim_finalized_workspaces(store, retention_seconds=0, issue_root=workspace.parent)
+    assert cleanup[0].decision == "retained"
     assert (workspace / "partial.txt").read_text() == "retained edits\n"
     after = store.get_continuation(old.job_id)
     assert after.provider_session == continuation.provider_session

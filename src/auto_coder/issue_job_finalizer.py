@@ -76,8 +76,19 @@ class IssueJobFinalizer:
 
     def finalize(self, job_id: str) -> IssuePublicationResult:
         record = self._store.get(job_id)
-        if record is not None and record.workspace_path and record.state is not LocalJobState.SETTLED:
-            with checkout_lock(record.workspace_path):
+        if record is not None and record.workspace_path:
+            from .local_job_workspace_cleanup import workspace_reclamation_lock
+            from .runtime_locks import ensure_lock_directory, file_lock
+
+            release_lock = workspace_reclamation_lock(self._store, record)
+            ensure_lock_directory(release_lock)
+            with file_lock(release_lock):
+                current = self._store.get(job_id)
+                if current is None or current.kind is not LocalJobKind.ISSUE_IMPLEMENTATION or current.execution_incarnation != record.execution_incarnation:
+                    return IssuePublicationResult(job_id, "rejected", diagnostic="job authority changed before finalization")
+                if current.state is not LocalJobState.SETTLED:
+                    with checkout_lock(current.workspace_path):
+                        return self._finalize_locked(job_id)
                 return self._finalize_locked(job_id)
         return self._finalize_locked(job_id)
 
@@ -97,7 +108,8 @@ class IssueJobFinalizer:
             if record.invocation_outcome is not InvocationOutcome.COMPLETED:
                 return IssuePublicationResult(job_id, record.invocation_outcome.value)
             publication = self._store.get_effect(job_id, record.execution_incarnation, "publication")
-            if record.diagnostic == "no_change" and publication is not None and publication.state == "skipped":
+            commit_receipt = self._store.get_effect(job_id, record.execution_incarnation, "commit")
+            if record.diagnostic == "no_change" and publication is not None and publication.state == "skipped" and commit_receipt is not None and commit_receipt.state == "skipped":
                 return IssuePublicationResult(job_id, "no_change")
             pr_reference = self._completed_evidence(record, "pr")
             commit = self._completed_evidence(record, "commit")
@@ -188,8 +200,10 @@ class IssueJobFinalizer:
             if status.returncode:
                 return self._pending(claim, "commit", status.stderr or "git status failed")
             if not status.stdout.strip() and head.stdout.strip() == record.source_commit:
-                self._store.record_effect(claim, "commit", "skipped", "authenticated no-change result")
-                self._store.record_effect(claim, "publication", "skipped", "no changes")
+                if not self._store.record_effect(claim, "commit", "skipped", "authenticated no-change result"):
+                    return IssuePublicationResult(job_id, "pending", diagnostic="no-change commit checkpoint failed")
+                if not self._store.record_effect(claim, "publication", "skipped", "no changes"):
+                    return IssuePublicationResult(job_id, "pending", diagnostic="no-change publication checkpoint failed")
                 if not self._store.settle(claim, "no_change"):
                     return IssuePublicationResult(job_id, "pending", diagnostic="could not settle no-change result")
                 self._finish_execution(record)

@@ -172,6 +172,41 @@ def test_settled_no_change_replays_after_workspace_disposal(tmp_path: Path, _use
     assert store.get_effect(checkpoint.job_id, checkpoint.execution_incarnation, "push") is None
 
 
+def test_no_change_receipt_write_failure_does_not_settle_success(tmp_path: Path, monkeypatch, _use_real_commands) -> None:
+    _source, remote, store, slots, checkpoint = _completed_job(tmp_path, 49, change=False)
+    original_record_effect = store.record_effect
+    failed = False
+
+    def fail_first_commit_receipt(claim, name: str, state: str, evidence: str) -> bool:
+        nonlocal failed
+        if name == "commit" and not failed:
+            failed = True
+            return False
+        return original_record_effect(claim, name, state, evidence)
+
+    monkeypatch.setattr(store, "record_effect", fail_first_commit_receipt)
+
+    def unexpected_publication(*_args):
+        raise AssertionError("No-change jobs must not publish")
+
+    first = IssueJobFinalizer(store, slots, unexpected_publication, unexpected_publication).finalize(checkpoint.job_id)
+
+    assert first.disposition == "pending"
+    assert first.diagnostic == "no-change commit checkpoint failed"
+    assert store.get(checkpoint.job_id).state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING  # type: ignore[union-attr]
+    assert store.get_effect(checkpoint.job_id, checkpoint.execution_incarnation, "commit") is None
+    assert store.get_effect(checkpoint.job_id, checkpoint.execution_incarnation, "publication") is None
+
+    reopened = LocalJobStore(store.path)
+    replay = IssueJobFinalizer(reopened, slots, unexpected_publication, unexpected_publication).finalize(checkpoint.job_id)
+
+    assert replay.disposition == "no_change"
+    assert reopened.get(checkpoint.job_id).state is LocalJobState.SETTLED  # type: ignore[union-attr]
+    assert reopened.get_effect(checkpoint.job_id, checkpoint.execution_incarnation, "commit").state == "skipped"  # type: ignore[union-attr]
+    assert reopened.get_effect(checkpoint.job_id, checkpoint.execution_incarnation, "publication").state == "skipped"  # type: ignore[union-attr]
+    assert git(remote, "branch", "--list", "issue-49") == ""
+
+
 def test_settled_completed_job_without_publication_receipts_is_not_success(tmp_path: Path) -> None:
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
     acquired = claim(store, 48)
