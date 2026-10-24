@@ -237,6 +237,28 @@ class LocalJobEffect:
     evidence: str = ""
 
 
+class WorkspaceReclamationPhase(str, Enum):
+    RELEASED = "released"
+    DELETING = "deleting"
+    DELETED = "deleted"
+
+
+@dataclass(frozen=True)
+class WorkspaceReclamationRecord:
+    job_id: str
+    execution_incarnation: str
+    kind: LocalJobKind
+    repository: str
+    workspace_root: str
+    artifact_id: str
+    disposition: str
+    first_release_at: float
+    phase: WorkspaceReclamationPhase
+    device: int
+    inode: int
+    diagnostic: str = ""
+
+
 @dataclass(frozen=True)
 class EffectIntentClaim:
     """Result of an atomic first-effect-intent claim."""
@@ -331,6 +353,16 @@ class LocalJobStore:
                 name TEXT NOT NULL, state TEXT NOT NULL, evidence TEXT NOT NULL DEFAULT '',
                 updated_at REAL NOT NULL,
                 PRIMARY KEY(job_id, execution_incarnation, name))"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS local_job_workspace_reclamations (
+                job_id TEXT NOT NULL, execution_incarnation TEXT NOT NULL,
+                kind TEXT NOT NULL, repository TEXT NOT NULL,
+                workspace_root TEXT NOT NULL, artifact_id TEXT NOT NULL,
+                disposition TEXT NOT NULL, first_release_at REAL NOT NULL,
+                phase TEXT NOT NULL, device INTEGER NOT NULL, inode INTEGER NOT NULL,
+                diagnostic TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL,
+                PRIMARY KEY(job_id, execution_incarnation))"""
             )
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS local_start_notifications (
@@ -1397,6 +1429,71 @@ class LocalJobStore:
             "diagnostic=?",
             (diagnostic,),
         )
+
+    @staticmethod
+    def _reclamation(row: sqlite3.Row) -> WorkspaceReclamationRecord:
+        return WorkspaceReclamationRecord(
+            str(row["job_id"]),
+            str(row["execution_incarnation"]),
+            LocalJobKind(str(row["kind"])),
+            str(row["repository"]),
+            str(row["workspace_root"]),
+            str(row["artifact_id"]),
+            str(row["disposition"]),
+            float(row["first_release_at"]),
+            WorkspaceReclamationPhase(str(row["phase"])),
+            int(row["device"]),
+            int(row["inode"]),
+            str(row["diagnostic"]),
+        )
+
+    def discover_settled_with_workspaces(self) -> tuple[LocalJobRecord, ...]:
+        """Enumerate settled jobs which still have a durable workspace binding."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM local_jobs WHERE state=? AND workspace_path<>'' ORDER BY created_at",
+                (LocalJobState.SETTLED.value,),
+            ).fetchall()
+        return tuple(self._record(row) for row in rows)
+
+    def get_workspace_reclamation(self, job_id: str, execution_incarnation: str) -> Optional[WorkspaceReclamationRecord]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM local_job_workspace_reclamations WHERE job_id=? AND execution_incarnation=?",
+                (job_id, execution_incarnation),
+            ).fetchone()
+        return self._reclamation(row) if row is not None else None
+
+    def release_workspace(self, record: WorkspaceReclamationRecord) -> WorkspaceReclamationRecord:
+        """Persist the first positive release without resetting its retention clock."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "INSERT OR IGNORE INTO local_job_workspace_reclamations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (record.job_id, record.execution_incarnation, record.kind.value, record.repository, record.workspace_root, record.artifact_id, record.disposition, record.first_release_at, record.phase.value, record.device, record.inode, record.diagnostic, time.time()),
+            )
+            row = connection.execute(
+                "SELECT * FROM local_job_workspace_reclamations WHERE job_id=? AND execution_incarnation=?",
+                (record.job_id, record.execution_incarnation),
+            ).fetchone()
+            connection.commit()
+        if row is None:
+            raise RuntimeError("workspace release was not retained")
+        return self._reclamation(row)
+
+    def transition_workspace_reclamation(
+        self,
+        record: WorkspaceReclamationRecord,
+        expected: WorkspaceReclamationPhase,
+        target: WorkspaceReclamationPhase,
+        diagnostic: str = "",
+    ) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE local_job_workspace_reclamations SET phase=?, diagnostic=?, updated_at=? " "WHERE job_id=? AND execution_incarnation=? AND phase=? AND workspace_root=? AND device=? AND inode=?",
+                (target.value, diagnostic[:1000], time.time(), record.job_id, record.execution_incarnation, expected.value, record.workspace_root, record.device, record.inode),
+            )
+        return cursor.rowcount == 1
 
     @staticmethod
     def _continuation(row: sqlite3.Row) -> LocalJobContinuation:

@@ -76,8 +76,16 @@ class IssueJobFinalizer:
 
     def finalize(self, job_id: str) -> IssuePublicationResult:
         record = self._store.get(job_id)
-        if record is not None and record.workspace_path and record.state is not LocalJobState.SETTLED:
-            with checkout_lock(record.workspace_path):
+        if record is not None and record.workspace_path:
+            from .local_job_workspace_cleanup import workspace_reclamation_lock
+            from .runtime_locks import ensure_lock_directory, file_lock
+
+            release_lock = workspace_reclamation_lock(self._store, record)
+            ensure_lock_directory(release_lock)
+            with file_lock(release_lock):
+                if record.state is not LocalJobState.SETTLED:
+                    with checkout_lock(record.workspace_path):
+                        return self._finalize_locked(job_id)
                 return self._finalize_locked(job_id)
         return self._finalize_locked(job_id)
 
