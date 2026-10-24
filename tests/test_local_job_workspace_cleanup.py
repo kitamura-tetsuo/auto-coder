@@ -5,6 +5,7 @@ import subprocess
 import time
 from multiprocessing import Event, Process
 from pathlib import Path
+from threading import Event as ThreadEvent
 from threading import Thread
 from unittest.mock import patch
 
@@ -347,3 +348,116 @@ def test_every_cleanup_decision_is_logged_once_with_exact_context(tmp_path: Path
     for result in (retained, unproven, changed, reclaimed, failed):
         expected = f"Workspace cleanup decision={result.decision} job={result.job_id} path={result.path} reason={result.reason}"
         assert sum(expected in entry for entry in logs) == 1
+
+
+def test_issue_replay_refreshes_settlement_before_checkout_after_cleanup(tmp_path: Path, _use_real_commands) -> None:
+    _source, _remote, store, slots, checkpoint = _completed_job(tmp_path, 2701)
+    existing = {"number": 101, "head": {"ref": checkpoint.work_branch}, "body": "Closes #2701"}
+    stale_store = LocalJobStore(store.path)
+    initial_read = ThreadEvent()
+    resume = ThreadEvent()
+    original_get = stale_store.get
+    reads = 0
+
+    def delayed_first_get(job_id: str):
+        nonlocal reads
+        record = original_get(job_id)
+        reads += 1
+        if reads == 1:
+            initial_read.set()
+            assert resume.wait(10)
+        return record
+
+    stale_store.get = delayed_first_get  # type: ignore[method-assign]
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("settled replay must not repeat publication")
+
+    replay_finalizer = IssueJobFinalizer(stale_store, slots, forbidden, forbidden)
+    replay_results = []
+    replay = Thread(target=lambda: replay_results.append(replay_finalizer.finalize(checkpoint.job_id)))
+    replay.start()
+    assert initial_read.wait(5)
+
+    published = IssueJobFinalizer(store, slots, lambda *_: existing, lambda *_: None).finalize(checkpoint.job_id)
+    assert published.disposition == "published"
+    assert reclaim_finalized_workspaces(store, retention_seconds=0, issue_root=tmp_path / "workspaces")[0].decision == "reclaimed"
+    with patch("auto_coder.issue_job_finalizer.checkout_lock", side_effect=AssertionError("deleted checkout accessed")):
+        resume.set()
+        replay.join(5)
+
+    assert not replay.is_alive()
+    assert replay_results[0].disposition == "published"
+    assert replay_results[0].pr_number == published.pr_number
+
+
+def test_pr_replay_refreshes_settlement_before_checkout_after_cleanup(tmp_path: Path, _use_real_commands) -> None:
+    source, remote, head, base = pr_repository(tmp_path)
+    slots = ImplementationSlotRepository("owner/repo", 3, tmp_path / "slots.json", tmp_path / "retired.json")
+    owner = ImplementationOwner("pr", 7)
+    unrelated_owner = ImplementationOwner("pr", 8)
+    execution = slots.start_execution(owner)
+    unrelated = slots.start_execution(unrelated_owner)
+    assert execution is not None and unrelated is not None
+    store, claim_record, prepared, _artifact = completed_pr_job(tmp_path, source, head, base, execution_id=execution)
+    stale_store = LocalJobStore(store.path)
+    initial_read = ThreadEvent()
+    resume = ThreadEvent()
+    original_get = stale_store.get
+    reads = 0
+
+    def delayed_first_get(job_id: str):
+        nonlocal reads
+        record = original_get(job_id)
+        reads += 1
+        if reads == 1:
+            initial_read.set()
+            assert resume.wait(10)
+        return record
+
+    stale_store.get = delayed_first_get  # type: ignore[method-assign]
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("settled replay must not perform external work")
+
+    replay_finalizer = PRRepairJobFinalizer(
+        stale_store,
+        forbidden,
+        forbidden,
+        finish_execution=lambda record: slots.finish_execution_by_id(record.implementation_execution_id),
+    )
+    replay_results = []
+    replay = Thread(target=lambda: replay_results.append(replay_finalizer.finalize(claim_record.record.job_id)))
+    replay.start()
+    assert initial_read.wait(5)
+
+    wakes = 0
+
+    def wake(*_args) -> bool:
+        nonlocal wakes
+        wakes += 1
+        return True
+
+    published = PRRepairJobFinalizer(
+        store,
+        observer(remote, base),
+        wake,
+        finish_execution=lambda record: slots.finish_execution_by_id(record.implementation_execution_id),
+    ).finalize(claim_record.record.job_id)
+    assert published.disposition is PRRepairPublicationDisposition.PUBLISHED
+    assert reclaim_finalized_workspaces(store, retention_seconds=0, pr_root=tmp_path / "workspaces-7")[0].decision == "reclaimed"
+    with (
+        patch("auto_coder.pr_repair_finalizer.checkout_lock", side_effect=AssertionError("deleted checkout accessed")),
+        patch.object(replay_finalizer, "_git", side_effect=AssertionError("deleted Git state accessed")),
+    ):
+        resume.set()
+        replay.join(5)
+
+    assert not replay.is_alive()
+    assert replay_results[0].disposition is PRRepairPublicationDisposition.PUBLISHED
+    assert replay_results[0].candidate_sha == published.candidate_sha
+    assert wakes == 1
+    assert slots.active_execution_ids(owner) == ()
+    assert owner in slots.active_owners()
+    assert slots.active_execution_ids(unrelated_owner) == (unrelated,)
+    assert not prepared.workspace.parent.exists()

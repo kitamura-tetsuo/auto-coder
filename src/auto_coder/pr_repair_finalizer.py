@@ -126,6 +126,10 @@ class PRRepairJobFinalizer:
         ensure_lock_directory(release_lock)
         try:
             with file_lock(release_lock), file_lock(lock):
+                current = self._store.get(job_id)
+                if current is None or current.kind not in {LocalJobKind.PR_CI_FAILURE, LocalJobKind.PR_MERGE_CONFLICT} or current.execution_incarnation != record.execution_incarnation:
+                    return self._result(job_id, PRRepairPublicationDisposition.REFUSED, diagnostic="job authority changed before finalization")
+                record = current
                 # A settled replay is deliberately receipt-only: cleanup may
                 # already have removed every Git object in the workspace.
                 if record.state is LocalJobState.SETTLED:

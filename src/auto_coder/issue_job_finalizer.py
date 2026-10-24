@@ -83,8 +83,11 @@ class IssueJobFinalizer:
             release_lock = workspace_reclamation_lock(self._store, record)
             ensure_lock_directory(release_lock)
             with file_lock(release_lock):
-                if record.state is not LocalJobState.SETTLED:
-                    with checkout_lock(record.workspace_path):
+                current = self._store.get(job_id)
+                if current is None or current.kind is not LocalJobKind.ISSUE_IMPLEMENTATION or current.execution_incarnation != record.execution_incarnation:
+                    return IssuePublicationResult(job_id, "rejected", diagnostic="job authority changed before finalization")
+                if current.state is not LocalJobState.SETTLED:
+                    with checkout_lock(current.workspace_path):
                         return self._finalize_locked(job_id)
                 return self._finalize_locked(job_id)
         return self._finalize_locked(job_id)
