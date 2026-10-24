@@ -1,14 +1,35 @@
 """Tests for LLMOutputLogger functionality."""
 
 import json
+import multiprocessing
 import os
 import tempfile
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from src.auto_coder.llm_output_logger import LLMOutputLogger
+from src.auto_coder.runtime_locks import file_lock
+
+
+def _write_after_process_barrier(log_path, barrier, connection):
+    """Contend on the production logger path from a distinct OS process."""
+    import src.auto_coder.llm_output_logger as logger_module
+
+    @contextmanager
+    def observed_file_lock(*args, **kwargs):
+        barrier.wait(timeout=5)
+        connection.send("attempting")
+        with file_lock(*args, **kwargs):
+            yield
+
+    logger_module.file_lock = observed_file_lock
+    LLMOutputLogger(log_path=log_path, enabled=True).log_request("process-contender", prompt_length=2)
+    connection.send("complete")
+    connection.close()
 
 
 class TestLLMOutputLogger:
@@ -519,6 +540,68 @@ class TestBoundedLLMOutputLogger:
             old.log_request("old-instance", prompt_length=1)
         active = [json.loads(line) for line in path.read_text().splitlines()]
         assert active[-1]["backend"] == "old-instance"
+
+    def test_thread_writer_waits_for_contested_shared_lock(self, tmp_path, monkeypatch):
+        path = tmp_path / "out.jsonl"
+        logger = LLMOutputLogger(path, enabled=True)
+        logger.log_request("before-thread", prompt_length=1)
+        lock_path = path.with_name(path.name + ".auto-coder.lock").resolve()
+        attempted = threading.Barrier(2)
+        completed = threading.Event()
+
+        @contextmanager
+        def observed_file_lock(*args, **kwargs):
+            attempted.wait(timeout=5)
+            with file_lock(*args, **kwargs):
+                yield
+
+        monkeypatch.setattr("src.auto_coder.llm_output_logger.file_lock", observed_file_lock)
+
+        def write_contender():
+            LLMOutputLogger(path, enabled=True).log_request("thread-contender", prompt_length=2)
+            completed.set()
+
+        with file_lock(lock_path, timeout=5):
+            contender = threading.Thread(target=write_contender)
+            contender.start()
+            attempted.wait(timeout=5)
+            assert not completed.wait(timeout=0.25)
+        contender.join(timeout=5)
+        assert completed.is_set()
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        assert [record["backend"] for record in records] == [
+            "before-thread",
+            "thread-contender",
+        ]
+
+    def test_process_writer_waits_for_contested_shared_lock(self, tmp_path):
+        path = tmp_path / "out.jsonl"
+        LLMOutputLogger(path, enabled=True).log_request("before-process", prompt_length=1)
+        lock_path = path.with_name(path.name + ".auto-coder.lock").resolve()
+        context = multiprocessing.get_context("spawn")
+        barrier = context.Barrier(2)
+        parent_connection, child_connection = context.Pipe(duplex=False)
+        contender = context.Process(
+            target=_write_after_process_barrier,
+            args=(path, barrier, child_connection),
+        )
+
+        with file_lock(lock_path, timeout=5):
+            contender.start()
+            child_connection.close()
+            barrier.wait(timeout=5)
+            assert parent_connection.poll(5)
+            assert parent_connection.recv() == "attempting"
+            assert not parent_connection.poll(0.25)
+        assert parent_connection.poll(5)
+        assert parent_connection.recv() == "complete"
+        contender.join(timeout=5)
+        assert contender.exitcode == 0
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        assert [record["backend"] for record in records] == [
+            "before-process",
+            "process-contender",
+        ]
 
     def test_invalid_settings_fall_back_independently(self, capsys):
         with self._settings(max_bytes="3", backups="nope"):
