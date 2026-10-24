@@ -157,6 +157,27 @@ def test_unproven_or_external_workspace_is_retained(tmp_path: Path, _use_real_co
     assert external.exists()
 
 
+def test_released_workspace_rejects_symlinked_job_ancestor(tmp_path: Path, _use_real_commands) -> None:
+    store, checkpoint, _finalizer = _published(tmp_path)
+    root = tmp_path / "workspaces"
+    assert reclaim_finalized_workspaces(store, now=1, retention_seconds=10, issue_root=root)[0].decision == "retained"
+    job_directory = checkpoint.workspace.parent.parent
+    external_parent = tmp_path / "external"
+    external_parent.mkdir()
+    moved_job = external_parent / "moved-job"
+    shutil.move(str(job_directory), moved_job)
+    job_directory.symlink_to(moved_job, target_is_directory=True)
+    marker = moved_job / checkpoint.execution_incarnation / "repository" / "important.txt"
+    marker.write_text("preserve external target", encoding="utf-8")
+
+    result = reclaim_finalized_workspaces(LocalJobStore(store.path), now=20, retention_seconds=10, issue_root=root)
+
+    assert result[0].decision == "retained"
+    assert marker.read_text(encoding="utf-8") == "preserve external target"
+    release = store.get_workspace_reclamation(checkpoint.job_id, checkpoint.execution_incarnation)
+    assert release is not None and release.phase is WorkspaceReclamationPhase.RELEASED
+
+
 def test_retention_configuration(monkeypatch) -> None:
     monkeypatch.setenv("AUTO_CODER_JOB_WORKSPACE_RETENTION_SECONDS", "0")
     assert workspace_retention_seconds() == 0
@@ -270,6 +291,34 @@ def test_final_confirmed_muse_with_unknown_writer_is_retained(tmp_path: Path, _u
 
     assert retained[0].decision == "retained"
     assert checkpoint.workspace.exists()
+
+
+def test_released_muse_workspace_rechecks_new_unattributed_sibling(tmp_path: Path, _use_real_commands) -> None:
+    store, checkpoint, _process = _published_muse_job(tmp_path, 2588)
+    assert reclaim_finalized_workspaces(store, now=1, retention_seconds=10, issue_root=tmp_path / "workspaces")[0].decision == "retained"
+    sibling = checkpoint.workspace.parent / "muse-B"
+    sibling.mkdir()
+    marker = sibling / "partial.txt"
+    marker.write_text("new unattributed work", encoding="utf-8")
+
+    result = reclaim_finalized_workspaces(LocalJobStore(store.path), now=20, retention_seconds=10, issue_root=tmp_path / "workspaces")
+
+    assert result[0].decision == "retained"
+    assert marker.read_text(encoding="utf-8") == "new unattributed work"
+
+
+def test_released_muse_workspace_rechecks_live_writer(tmp_path: Path, _use_real_commands) -> None:
+    store, checkpoint, _process = _published_muse_job(tmp_path, 2589)
+    assert reclaim_finalized_workspaces(store, now=1, retention_seconds=10, issue_root=tmp_path / "workspaces")[0].decision == "retained"
+    process = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    try:
+        assert store.bind_continuation_writer(checkpoint.job_id, "executor", checkpoint.workspace.parent / "muse-A", process_owner(process.pid))
+        result = reclaim_finalized_workspaces(LocalJobStore(store.path), now=20, retention_seconds=10, issue_root=tmp_path / "workspaces")
+        assert result[0].decision == "retained"
+        assert checkpoint.workspace.exists()
+    finally:
+        process.kill()
+        process.wait(timeout=5)
 
 
 def test_two_process_finalizer_authority_window_excludes_cleanup(tmp_path: Path, _use_real_commands) -> None:
@@ -389,6 +438,37 @@ def test_issue_replay_refreshes_settlement_before_checkout_after_cleanup(tmp_pat
     assert not replay.is_alive()
     assert replay_results[0].disposition == "published"
     assert replay_results[0].pr_number == published.pr_number
+
+
+def test_issue_no_change_replay_rejects_missing_or_contradictory_commit_receipt(tmp_path: Path, _use_real_commands) -> None:
+    for index, commit_state in enumerate((None, "completed"), start=1):
+        case_root = tmp_path / f"case-{index}"
+        case_root.mkdir()
+        _source, _remote, store, slots, checkpoint = _completed_job(case_root, 2750 + index, change=False)
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("invalid receipt replay must not perform publication work")
+
+        finalizer = IssueJobFinalizer(store, slots, forbidden, forbidden)
+        assert finalizer.finalize(checkpoint.job_id).disposition == "no_change"
+        assert reclaim_finalized_workspaces(store, retention_seconds=0, issue_root=case_root / "workspaces")[0].decision == "reclaimed"
+        with store._connect() as connection:
+            if commit_state is None:
+                connection.execute(
+                    "DELETE FROM local_job_effects WHERE job_id=? AND execution_incarnation=? AND name='commit'",
+                    (checkpoint.job_id, checkpoint.execution_incarnation),
+                )
+            else:
+                connection.execute(
+                    "UPDATE local_job_effects SET state=? WHERE job_id=? AND execution_incarnation=? AND name='commit'",
+                    (commit_state, checkpoint.job_id, checkpoint.execution_incarnation),
+                )
+
+        with patch("auto_coder.issue_job_finalizer.checkout_lock", side_effect=AssertionError("deleted checkout accessed")):
+            replay = IssueJobFinalizer(LocalJobStore(store.path), slots, forbidden, forbidden).finalize(checkpoint.job_id)
+
+        assert replay.disposition == "pending"
+        assert "confirmed publication receipt" in replay.diagnostic
 
 
 def test_pr_replay_refreshes_settlement_before_checkout_after_cleanup(tmp_path: Path, _use_real_commands) -> None:

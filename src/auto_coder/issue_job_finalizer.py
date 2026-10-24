@@ -108,7 +108,8 @@ class IssueJobFinalizer:
             if record.invocation_outcome is not InvocationOutcome.COMPLETED:
                 return IssuePublicationResult(job_id, record.invocation_outcome.value)
             publication = self._store.get_effect(job_id, record.execution_incarnation, "publication")
-            if record.diagnostic == "no_change" and publication is not None and publication.state == "skipped":
+            commit_receipt = self._store.get_effect(job_id, record.execution_incarnation, "commit")
+            if record.diagnostic == "no_change" and publication is not None and publication.state == "skipped" and commit_receipt is not None and commit_receipt.state == "skipped":
                 return IssuePublicationResult(job_id, "no_change")
             pr_reference = self._completed_evidence(record, "pr")
             commit = self._completed_evidence(record, "commit")

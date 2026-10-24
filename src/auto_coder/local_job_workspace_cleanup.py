@@ -238,7 +238,17 @@ def reclaim_finalized_workspaces(
                     _record_decision(results, WorkspaceCleanupResult(current.job_id, release.workspace_root, "retained", "retention period has not elapsed"))
                     continue
                 target = Path(release.workspace_root)
-                if evidence is None or evidence != (release.artifact_id, release.disposition) or not _same_identity(target, release):
+                if evidence is None or evidence != (release.artifact_id, release.disposition):
+                    _record_decision(results, WorkspaceCleanupResult(current.job_id, release.workspace_root, "retained", "release authority or physical identity changed"))
+                    continue
+                if target.exists():
+                    if target_info is None or str(target_info[0]) != release.workspace_root or not _same_identity(target, release):
+                        _record_decision(results, WorkspaceCleanupResult(current.job_id, release.workspace_root, "retained", "release authority or physical identity changed"))
+                        continue
+                    if not _writers_released(store, current, target):
+                        _record_decision(results, WorkspaceCleanupResult(current.job_id, release.workspace_root, "retained", "workspace writer or provider-root ownership is unresolved"))
+                        continue
+                elif release.phase is not WorkspaceReclamationPhase.DELETING:
                     _record_decision(results, WorkspaceCleanupResult(current.job_id, release.workspace_root, "retained", "release authority or physical identity changed"))
                     continue
                 if release.phase is WorkspaceReclamationPhase.RELEASED:
