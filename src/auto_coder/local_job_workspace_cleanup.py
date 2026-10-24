@@ -191,6 +191,11 @@ def _same_identity(path: Path, record: WorkspaceReclamationRecord) -> bool:
     return not path.is_symlink() and stat.S_ISDIR(observed.st_mode) and observed.st_dev == record.device and observed.st_ino == record.inode
 
 
+def _record_decision(results: list[WorkspaceCleanupResult], result: WorkspaceCleanupResult) -> None:
+    results.append(result)
+    logger.info("Workspace cleanup decision={} job={} path={} reason={}", result.decision, result.job_id, result.path, result.reason)
+
+
 def reclaim_finalized_workspaces(
     store: LocalJobStore,
     *,
@@ -219,19 +224,22 @@ def reclaim_finalized_workspaces(
                 release = store.get_workspace_reclamation(current.job_id, current.execution_incarnation)
                 if release is None:
                     if evidence is None or target_info is None or not _writers_released(store, current, target_info[0]):
-                        results.append(WorkspaceCleanupResult(current.job_id, path, "retained", "positive release evidence is incomplete"))
+                        _record_decision(results, WorkspaceCleanupResult(current.job_id, path, "retained", "positive release evidence is incomplete"))
                         continue
                     target, identity = target_info
+                    if current.workspace_device <= 0 or current.workspace_inode <= 0 or (identity.st_dev, identity.st_ino) != (current.workspace_device, current.workspace_inode):
+                        _record_decision(results, WorkspaceCleanupResult(current.job_id, path, "retained", "producer-bound physical identity is unavailable or changed"))
+                        continue
                     release = store.release_workspace(WorkspaceReclamationRecord(current.job_id, current.execution_incarnation, current.kind, current.repository, str(target), evidence[0], evidence[1], timestamp, WorkspaceReclamationPhase.RELEASED, identity.st_dev, identity.st_ino))
                 if release.phase is WorkspaceReclamationPhase.DELETED:
-                    results.append(WorkspaceCleanupResult(current.job_id, release.workspace_root, "retained", "already deleted"))
+                    _record_decision(results, WorkspaceCleanupResult(current.job_id, release.workspace_root, "retained", "already deleted"))
                     continue
                 if timestamp < release.first_release_at + retention:
-                    results.append(WorkspaceCleanupResult(current.job_id, release.workspace_root, "retained", "retention period has not elapsed"))
+                    _record_decision(results, WorkspaceCleanupResult(current.job_id, release.workspace_root, "retained", "retention period has not elapsed"))
                     continue
                 target = Path(release.workspace_root)
                 if evidence is None or evidence != (release.artifact_id, release.disposition) or not _same_identity(target, release):
-                    results.append(WorkspaceCleanupResult(current.job_id, release.workspace_root, "retained", "release authority or physical identity changed"))
+                    _record_decision(results, WorkspaceCleanupResult(current.job_id, release.workspace_root, "retained", "release authority or physical identity changed"))
                     continue
                 if release.phase is WorkspaceReclamationPhase.RELEASED:
                     if not store.transition_workspace_reclamation(release, WorkspaceReclamationPhase.RELEASED, WorkspaceReclamationPhase.DELETING):
@@ -243,11 +251,9 @@ def reclaim_finalized_workspaces(
                     raise RuntimeError("target remains after recursive deletion")
                 if not store.transition_workspace_reclamation(release, WorkspaceReclamationPhase.DELETING, WorkspaceReclamationPhase.DELETED):
                     raise RuntimeError("could not checkpoint deleted phase")
-                results.append(WorkspaceCleanupResult(current.job_id, release.workspace_root, "reclaimed", "positive release expired"))
+                _record_decision(results, WorkspaceCleanupResult(current.job_id, release.workspace_root, "reclaimed", "positive release expired"))
         except Exception as exc:
-            logger.opt(exception=True).error("Workspace cleanup failed job={} path={} reason={}", job.job_id, path, exc)
+            logger.opt(exception=True).error("Workspace cleanup decision=failed job={} path={} reason={}", job.job_id, path, exc)
             results.append(WorkspaceCleanupResult(job.job_id, path, "failed", str(exc)))
             continue
-        result = results[-1]
-        logger.info("Workspace cleanup decision={} job={} path={} reason={}", result.decision, result.job_id, result.path, result.reason)
     return tuple(results)

@@ -8,6 +8,8 @@ from pathlib import Path
 from threading import Thread
 from unittest.mock import patch
 
+from loguru import logger
+
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.issue_job_finalizer import IssueJobFinalizer
 from auto_coder.issue_job_workspace import IssueJobSource, IssueJobWorkspaceProducer
@@ -120,6 +122,24 @@ def test_replaced_incarnation_is_never_deleted(tmp_path: Path, _use_real_command
 
     assert result[0].decision == "retained"
     assert marker.read_text(encoding="utf-8") == "keep"
+
+
+def test_replacement_before_first_release_scan_is_never_adopted(tmp_path: Path, _use_real_commands) -> None:
+    store, checkpoint, _finalizer = _published(tmp_path)
+    bound = store.get(checkpoint.job_id)
+    assert bound is not None and bound.workspace_device > 0 and bound.workspace_inode > 0
+    shutil.rmtree(checkpoint.workspace.parent)
+    checkpoint.workspace.mkdir(parents=True)
+    marker = checkpoint.workspace / "important.txt"
+    marker.write_text("unrelated replacement", encoding="utf-8")
+
+    immediate = reclaim_finalized_workspaces(LocalJobStore(store.path), now=1, retention_seconds=0, issue_root=tmp_path / "workspaces")
+    later = reclaim_finalized_workspaces(LocalJobStore(store.path), now=100000, retention_seconds=86400, issue_root=tmp_path / "workspaces")
+
+    assert immediate[0].decision == later[0].decision == "retained"
+    assert "physical identity" in immediate[0].reason
+    assert store.get_workspace_reclamation(checkpoint.job_id, checkpoint.execution_incarnation) is None
+    assert marker.read_text(encoding="utf-8") == "unrelated replacement"
 
 
 def test_unproven_or_external_workspace_is_retained(tmp_path: Path, _use_real_commands) -> None:
@@ -286,3 +306,44 @@ def test_restart_resumes_deleting_after_partial_git_removal(tmp_path: Path, _use
 
     assert resumed[0].decision == "reclaimed"
     assert not checkpoint.workspace.parent.exists()
+
+
+def test_every_cleanup_decision_is_logged_once_with_exact_context(tmp_path: Path, monkeypatch, _use_real_commands) -> None:
+    logs: list[str] = []
+    sink = logger.add(lambda message: logs.append(str(message)), format="{message}")
+    try:
+        retained_root = tmp_path / "retained"
+        retained_root.mkdir()
+        retained_store, retained_checkpoint, _ = _published(retained_root, 2601)
+        retained = reclaim_finalized_workspaces(retained_store, now=1, retention_seconds=10, issue_root=retained_root / "workspaces")[0]
+
+        unproven_root = tmp_path / "unproven"
+        unproven_root.mkdir()
+        unproven_store, unproven_checkpoint, _ = _published(unproven_root, 2602)
+        with unproven_store._connect() as connection:
+            connection.execute(
+                "DELETE FROM local_job_effects WHERE job_id=? AND execution_incarnation=? AND name='association'",
+                (unproven_checkpoint.job_id, unproven_checkpoint.execution_incarnation),
+            )
+        unproven = reclaim_finalized_workspaces(unproven_store, retention_seconds=0, issue_root=unproven_root / "workspaces")[0]
+
+        shutil.rmtree(retained_checkpoint.workspace.parent)
+        retained_checkpoint.workspace.mkdir(parents=True)
+        changed = reclaim_finalized_workspaces(retained_store, now=20, retention_seconds=10, issue_root=retained_root / "workspaces")[0]
+
+        reclaimed_root = tmp_path / "reclaimed"
+        reclaimed_root.mkdir()
+        reclaimed_store, _reclaimed_checkpoint, _ = _published(reclaimed_root, 2603)
+        reclaimed = reclaim_finalized_workspaces(reclaimed_store, retention_seconds=0, issue_root=reclaimed_root / "workspaces")[0]
+
+        failed_root = tmp_path / "failed"
+        failed_root.mkdir()
+        failed_store, _failed_checkpoint, _ = _published(failed_root, 2604)
+        monkeypatch.setattr("auto_coder.local_job_workspace_cleanup.shutil.rmtree", lambda _path: (_ for _ in ()).throw(OSError("forced removal failure")))
+        failed = reclaim_finalized_workspaces(failed_store, retention_seconds=0, issue_root=failed_root / "workspaces")[0]
+    finally:
+        logger.remove(sink)
+
+    for result in (retained, unproven, changed, reclaimed, failed):
+        expected = f"Workspace cleanup decision={result.decision} job={result.job_id} path={result.path} reason={result.reason}"
+        assert sum(expected in entry for entry in logs) == 1

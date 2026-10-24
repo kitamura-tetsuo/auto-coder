@@ -209,6 +209,8 @@ class LocalJobRecord:
     owner_incarnation: str = ""
     owner_generation: Optional[str] = None
     implementation_execution_id: str = ""
+    workspace_device: int = 0
+    workspace_inode: int = 0
 
 
 @dataclass(frozen=True)
@@ -312,6 +314,8 @@ class LocalJobStore:
                 work_branch TEXT NOT NULL DEFAULT '', publication_remote TEXT NOT NULL DEFAULT '',
                 owner_incarnation TEXT NOT NULL DEFAULT '', owner_generation TEXT,
                 implementation_execution_id TEXT NOT NULL DEFAULT '',
+                workspace_device INTEGER NOT NULL DEFAULT 0,
+                workspace_inode INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(kind, repository, target_number, upstream_attempt))"""
             )
             columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(local_jobs)")}
@@ -326,6 +330,10 @@ class LocalJobStore:
                 connection.execute("ALTER TABLE local_jobs ADD COLUMN owner_generation TEXT")
             if "implementation_execution_id" not in columns:
                 connection.execute("ALTER TABLE local_jobs ADD COLUMN implementation_execution_id TEXT NOT NULL DEFAULT ''")
+            if "workspace_device" not in columns:
+                connection.execute("ALTER TABLE local_jobs ADD COLUMN workspace_device INTEGER NOT NULL DEFAULT 0")
+            if "workspace_inode" not in columns:
+                connection.execute("ALTER TABLE local_jobs ADD COLUMN workspace_inode INTEGER NOT NULL DEFAULT 0")
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS local_job_results (
                 artifact_id TEXT PRIMARY KEY, job_id TEXT NOT NULL,
@@ -521,6 +529,8 @@ class LocalJobStore:
             owner_incarnation=str(row["owner_incarnation"]),
             owner_generation=str(row["owner_generation"]) if row["owner_generation"] is not None else None,
             implementation_execution_id=str(row["implementation_execution_id"]),
+            workspace_device=int(row["workspace_device"]),
+            workspace_inode=int(row["workspace_inode"]),
         )
 
     @staticmethod
@@ -1142,9 +1152,14 @@ class LocalJobStore:
         if not claim.acquired or not workspace_path.is_absolute() or not source_commit or not source_ref or not work_branch or not publication_remote:
             return False
         try:
+            incarnation_identity = workspace_path.parent.stat(follow_symlinks=False)
+            if workspace_path.is_symlink() or workspace_path.parent.is_symlink() or not workspace_path.is_dir():
+                return False
             with self._connect() as connection:
                 cursor = connection.execute(
-                    "UPDATE local_jobs SET workspace_path=?, source_commit=?, source_ref=?, work_branch=?, " "publication_remote=?, owner_incarnation=?, owner_generation=?, updated_at=? " "WHERE job_id=? AND state=? AND execution_incarnation=? AND workspace_path=''",
+                    "UPDATE local_jobs SET workspace_path=?, source_commit=?, source_ref=?, work_branch=?, "
+                    "publication_remote=?, owner_incarnation=?, owner_generation=?, workspace_device=?, workspace_inode=?, updated_at=? "
+                    "WHERE job_id=? AND state=? AND execution_incarnation=? AND workspace_path=''",
                     (
                         str(workspace_path),
                         source_commit,
@@ -1153,6 +1168,8 @@ class LocalJobStore:
                         publication_remote,
                         owner_incarnation,
                         owner_generation,
+                        incarnation_identity.st_dev,
+                        incarnation_identity.st_ino,
                         time.time(),
                         claim.record.job_id,
                         LocalJobState.RUNNING.value,
