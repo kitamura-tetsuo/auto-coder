@@ -45,6 +45,27 @@ def assert_required_workflow_profile(workflow: object) -> None:
     assert complete["env"]["AUTO_CODER_REQUIRE_BROWSER"] == "1"
 
 
+def publish_workflow_result(
+    workflow: object,
+    remote: "FakeGitData",
+    source_record: SourceRecord,
+    gate_outcomes: dict[str, tuple[str, object]],
+    *,
+    unrelated_oci_conclusion: str = "failure",
+):
+    """Model the Actions boundary: workflow gates produce the observed run/jobs."""
+
+    assert_required_workflow_profile(workflow)
+    assert set(gate_outcomes) == REQUIRED_JOBS
+    remote.job_outcomes = gate_outcomes
+    unfinished = any(status != "completed" for status, _conclusion in gate_outcomes.values())
+    failed = any(conclusion != "success" for _status, conclusion in gate_outcomes.values())
+    remote.run_status = "in_progress" if unfinished else "completed"
+    remote.run_conclusion = None if unfinished else ("failure" if failed else "success")
+    assert unrelated_oci_conclusion in {"failure", "success"}
+    return publisher(remote).publish(source_record, "2026-01-02T03:04:05Z")
+
+
 def record(**changes: object) -> SourceRecord:
     value = SourceRecord(
         schema_version=SCHEMA_VERSION,
@@ -75,6 +96,7 @@ class FakeGitData:
         self.source_sha = SHA
         self.unavailable_attempts: set[int] = set()
         self.missing_job: str | None = None
+        self.job_outcomes: dict[str, tuple[str, object]] = {name: ("completed", "success") for name in REQUIRED_JOBS}
         self.tag_status = 201
         self.ref_exception_after_create = False
         self.ref_read_exception = False
@@ -114,7 +136,7 @@ class FakeGitData:
             )
         if method == "GET" and "/attempts/" in path and path.endswith("/jobs?per_page=100"):
             attempt = int(path.split("/attempts/", 1)[1].split("/", 1)[0])
-            jobs = [{"name": name, "status": "completed", "conclusion": "success", "run_attempt": attempt} for name in REQUIRED_JOBS if name != self.missing_job]
+            jobs = [{"name": name, "status": self.job_outcomes[name][0], "conclusion": self.job_outcomes[name][1], "run_attempt": attempt} for name in REQUIRED_JOBS if name != self.missing_job]
             return GitDataResponse(200, {"total_count": len(jobs), "jobs": jobs})
         if method == "GET" and path.startswith("git/ref/tags/"):
             if self.ref_read_exception and self.ref is not None:
@@ -292,17 +314,22 @@ def test_workflows_keep_source_authority_independent_from_legacy_image_publish()
 
     narrowed = deepcopy(workflow)
     narrowed["jobs"]["complete-source-tests"]["steps"][-1]["run"] += " tests/test_tested_source_refs.py"
+    narrowed_remote = FakeGitData()
     with pytest.raises(AssertionError):
-        assert_required_workflow_profile(narrowed)
+        publish_workflow_result(narrowed, narrowed_remote, record(), {name: ("completed", "success") for name in REQUIRED_JOBS})
+    assert narrowed_remote.creates == 0
 
     skipped = deepcopy(workflow)
     skipped["jobs"]["complete-source-tests"]["steps"][-1]["if"] = "false"
+    skipped_remote = FakeGitData()
     with pytest.raises(AssertionError):
-        assert_required_workflow_profile(skipped)
+        publish_workflow_result(skipped, skipped_remote, record(), {name: ("completed", "success") for name in REQUIRED_JOBS})
+    assert skipped_remote.creates == 0
 
 
 def test_checkout_record_uses_real_clean_git_identity_and_locked_input(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
-    assert_required_workflow_profile(yaml.safe_load(Path(".github/workflows/test-source-for-runtime.yml").read_text(encoding="utf-8")))
+    workflow = yaml.safe_load(Path(".github/workflows/test-source-for-runtime.yml").read_text(encoding="utf-8"))
+    assert_required_workflow_profile(workflow)
     subprocess.run(["git", "init", "-q", tmp_path], check=True)
     subprocess.run(["git", "-C", tmp_path, "config", "user.name", "Test"], check=True)
     subprocess.run(["git", "-C", tmp_path, "config", "user.email", "test@example.invalid"], check=True)
@@ -355,9 +382,20 @@ def test_checkout_record_uses_real_clean_git_identity_and_locked_input(tmp_path:
 
     publication_remote = FakeGitData()
     publication_remote.source_sha = sha
-    published = publisher(publication_remote).publish(observed, "2026-01-02T03:04:05Z")
+    successful_gates = {name: ("completed", "success") for name in REQUIRED_JOBS}
+    published = publish_workflow_result(workflow, publication_remote, observed, successful_gates, unrelated_oci_conclusion="failure")
     assert published.direct_commit_sha == sha
     assert publication_remote.creates == 1
+
+    for failing_gates in (
+        {**successful_gates, "Source identity and quality": ("completed", "failure")},
+        {**successful_gates, "Complete source tests with Chromium": ("in_progress", None)},
+    ):
+        failed_remote = FakeGitData()
+        failed_remote.source_sha = sha
+        with pytest.raises(SourceEvidenceError, match="completed successful"):
+            publish_workflow_result(workflow, failed_remote, observed, failing_gates)
+        assert failed_remote.creates == 0
 
     def remote_with_existing(existing_record: SourceRecord) -> FakeGitData:
         remote = FakeGitData()
