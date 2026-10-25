@@ -7785,6 +7785,7 @@ class AutomationEngine:
         if execution_id is None:
             reason = "active execution already exists" if slots.active_execution_ids(owner) else "logical implementation limit is occupied"
             if candidate.type == "pr":
+                result.outcome = PRProcessingOutcome.DEFERRED
                 _record_pr_stage_result(item_number, "pr.implementation-admission", f"pr#{item_number} implementation admission", Outcome.DEFERRED, {"owner": owner.key, "reason": reason})
             result.target_outcome = ExplicitTargetOutcome.DEFERRED
             if not result.actions:

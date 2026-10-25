@@ -2531,6 +2531,18 @@ for real handlers, durable stores, repeated due selection, and production trace
 evidence reaching the mounted detail view. No schema or renderer changes.
 # Explicit-local PR correction handoff
 
+PR admission blocked by a retained execution or occupied capacity returns
+`PRProcessingOutcome.DEFERRED`, matching the existing deferred
+`pr.implementation-admission` trace and worker outcome. The mounted detail
+regression covers both waits and successful admission:
+`bash scripts/test.sh tests/test_dashboard_observability.py::test_claude_pr_slot_admission_reaches_detail_view`.
+Fair local-job scheduling and fresh workspace binding on positively unentered
+PR retries reuse existing runner/provider-entry and downstream traces; neither
+preparation nor a rejected entry emits completion. Run
+`bash scripts/test.sh tests/test_local_job_runner.py tests/test_pr_repair_workspace.py`
+for later-job progress, exact-incarnation rebinding, retained old directories,
+and entered-work fencing. No event schema or renderer change is required.
+
 The `pr.repair-delegation` stage reports an accepted/deferred local handoff with
 its local phase while the durable local-job runner owns execution independently
 of the PR worker. Runner completion schedules a durable PR invalidation, so the

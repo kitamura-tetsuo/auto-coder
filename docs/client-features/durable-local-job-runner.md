@@ -4,6 +4,11 @@
 workers. Calling `poll()` only claims and schedules accepted `LocalJobStore`
 envelopes; it never waits for inference. When capacity is full, further jobs
 remain durably pending. `capacity` is mandatory and must be at least one.
+Pending jobs are scheduled by least recent claim within the runner, preserving
+creation order for jobs not yet attempted. A pre-entry refusal returns its job
+to pending without monopolizing the lane: later accepted jobs receive a turn
+before that job is retried. This ordering never bypasses entry authorization,
+repository scope, or capacity limits.
 
 Each job kind has a registered domain adapter. The adapter rechecks current
 authoritative provider-entry permission for the exact claimed incarnation.

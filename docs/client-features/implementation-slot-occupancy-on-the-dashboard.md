@@ -36,3 +36,10 @@ standalone PR reservations leave the active occupancy snapshot and are not
 recreated by a retained merge retry. A live execution still retains its slot.
 The detail view marks the obsolete resumption's refresh as superseded; this is
 lifecycle evidence, not a claim that this resumption performed a merge.
+
+A PR observation blocked by an existing execution or occupied capacity returns
+a deferred PR outcome and emits `pr.implementation-admission` as deferred. The
+worker reports the wait rather than successful processing; the mounted detail
+view preserves the admission reason and the occupied slot remains visible.
+Pending local repairs receive fair runner turns even if an older job repeatedly
+fails pre-entry authorization or preparation.

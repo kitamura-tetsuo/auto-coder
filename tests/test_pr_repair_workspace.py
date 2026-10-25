@@ -96,6 +96,39 @@ def admitted_conflict(store: LocalJobStore, tmp_path: Path, head: str, base: str
     return claim
 
 
+@pytest.mark.parametrize("kind", ["ci", "conflict"])
+@pytest.mark.parametrize("dead_owner", [False, True])
+def test_unentered_retry_prepares_new_workspace(tmp_path: Path, _use_real_commands, kind: str, dead_owner: bool) -> None:
+    repo, head, base = repository(tmp_path)
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    claim = (admitted if kind == "ci" else admitted_conflict)(store, tmp_path, head, base)
+    producer = PRRepairWorkspaceProducer(store, tmp_path / "workspaces")
+    original = producer.prepare(claim, PRRepairSource(repo))
+    if dead_owner:
+        assert store.release_dead_owner_claim(store.get(claim.record.job_id), "dead unentered owner")
+    else:
+        assert store.release_unentered_claim(claim, "fresh authority unavailable")
+    retry = store.claim(claim.record.job_id, "new-runner")
+    assert retry is not None and retry.acquired
+    assert retry.record.execution_incarnation != claim.record.execution_incarnation
+    assert retry.record.workspace_path == ""
+    assert not store.release_unentered_claim(claim, "stale release")
+    prepared = producer.prepare(retry, PRRepairSource(repo))
+    assert prepared.workspace != original.workspace
+    assert original.workspace.is_dir()
+    assert git(prepared.workspace, "rev-parse", "HEAD") == head
+    bound = store.get(claim.record.job_id)
+    assert bound is not None and bound.workspace_path == str(prepared.workspace)
+    assert bound.source_commit == head
+    assert bound.provider_entered is False
+    losing_claim = store.claim(claim.record.job_id, "other-runner")
+    assert losing_claim is not None and not losing_claim.acquired
+    assert losing_claim.record == bound
+    assert store.mark_provider_entered(retry)
+    assert not store.release_unentered_claim(retry, "entered work must stay retained")
+    assert store.get(claim.record.job_id).workspace_path == str(prepared.workspace)
+
+
 def test_exact_remote_workspace_ignores_dirty_checkout_and_records_modes(tmp_path: Path, _use_real_commands) -> None:
     repo, head, base = repository(tmp_path)
     (repo / "dirty.txt").write_text("not authorized\n")

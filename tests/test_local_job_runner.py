@@ -83,6 +83,36 @@ def test_runner_releases_submitter_and_checkpoints_real_output(tmp_path: Path) -
     runner.close()
 
 
+def test_unentered_retry_does_not_starve_later_job(tmp_path: Path) -> None:
+    store, first_id = _accepted(tmp_path, "first")
+    _, second_id = _accepted(tmp_path, "second")
+    adapter = BarrierAdapter(authorized=False)
+    runner = LocalJobRunner(store, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter})
+    try:
+        assert runner.poll() == 1
+        _wait(lambda: runner.active_count() == 0)
+        first = store.get(first_id)
+        assert first is not None and first.state is LocalJobState.PENDING
+        assert first.diagnostic == "authoritative provider-entry permission denied"
+        adapter.authorized = True
+        assert runner.poll() == 1
+        assert adapter.entered.wait(5)
+        second = store.get(second_id)
+        assert second is not None and second.state is LocalJobState.RUNNING
+        assert second.provider_entered is True
+        assert store.get(first_id) == first
+        adapter.release.set()
+        _wait(lambda: runner.active_count() == 0)
+        assert runner.poll() == 1
+        _wait(lambda: runner.active_count() == 0)
+        assert store.get(first_id).state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+        assert store.get(second_id).state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+        assert adapter.calls == 2
+    finally:
+        adapter.release.set()
+        runner.close(wait=True)
+
+
 def test_runner_promotes_transformed_domain_result_under_muse_continuation_fence(tmp_path: Path) -> None:
     """A confirmed provider summary may be wrapped by the domain handoff."""
     store, job_id = _accepted(tmp_path, "muse-domain-result")

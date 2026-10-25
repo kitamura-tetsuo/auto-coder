@@ -15,6 +15,15 @@ files, or stale remote-tracking refs. Foreign-head inputs and incomplete legacy
 admission records fail closed. The workspace binding is persisted before an
 adapter may enter a provider.
 
+When a positively unentered PR job returns to pending, its next successful
+claim clears the previous workspace binding atomically with the new execution
+incarnation. Preparation then creates a fresh private workspace for that
+incarnation and revalidates the retained H/B authority. Earlier directories stay
+on disk; an unsuccessful competing claim cannot clear the current binding.
+Entered jobs cannot be returned to pending or acquire a replacement workspace.
+`tests/test_pr_repair_workspace.py::test_unentered_retry_prepares_new_workspace`
+covers both repair kinds and ordinary/dead-owner pre-entry release.
+
 The shared producer prepares both repair kinds but does not invoke a model,
 form a conflict merge, commit, push, or authorize publication. Conflict
 adapters own the real H+B merge snapshot. CI edit results must remain at H;

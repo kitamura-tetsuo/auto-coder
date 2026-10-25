@@ -966,9 +966,17 @@ class LocalJobStore:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 cursor = connection.execute(
-                    "UPDATE local_jobs SET state=?, execution_incarnation=?, runner_owner=?, updated_at=? WHERE job_id=? AND state=? AND execution_incarnation=''",
+                    "UPDATE local_jobs SET state=?, execution_incarnation=?, runner_owner=?, updated_at=? WHERE job_id=? AND state=? AND execution_incarnation='' AND provider_entered=0",
                     (LocalJobState.RUNNING.value, incarnation, runner_owner, time.time(), job_id, LocalJobState.PENDING.value),
                 )
+                if cursor.rowcount == 1:
+                    # A fresh, unentered PR incarnation prepares its own workspace.
+                    # Keep the previous directory on disk, but do not let its binding
+                    # prevent preparation after an earlier pre-entry refusal.
+                    connection.execute(
+                        "UPDATE local_jobs SET workspace_path='', source_commit='', source_ref='', work_branch='', publication_remote='' " "WHERE job_id=? AND execution_incarnation=? AND kind IN (?, ?)",
+                        (job_id, incarnation, LocalJobKind.PR_CI_FAILURE.value, LocalJobKind.PR_MERGE_CONFLICT.value),
+                    )
                 row = connection.execute("SELECT * FROM local_jobs WHERE job_id=?", (job_id,)).fetchone()
                 connection.commit()
             return LocalJobClaim(self._record(row), cursor.rowcount == 1) if row is not None else None

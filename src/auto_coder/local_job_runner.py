@@ -148,6 +148,8 @@ class LocalJobRunner:
         self._notification_executor = ThreadPoolExecutor(max_workers=capacity, thread_name_prefix="local-job-notification")
         self._lock = threading.Lock()
         self._active: dict[str, Future[None]] = {}
+        self._last_scheduled: dict[str, int] = {}
+        self._schedule_sequence = 0
         self._checkpoint_handles: dict[str, InvocationHandle] = {}
         self._notifying: set[str] = set()
         self._recovering_start_notifications: set[int] = set()
@@ -267,7 +269,13 @@ class LocalJobRunner:
             free = self.capacity - len(self._active)
             if free <= 0:
                 return 0
-            pending = [job for job in self._discover_unsettled() if job.state is LocalJobState.PENDING and job.job_id not in self._active]
+            unsettled = self._discover_unsettled()
+            unsettled_ids = {job.job_id for job in unsettled}
+            self._last_scheduled = {job_id: sequence for job_id, sequence in self._last_scheduled.items() if job_id in unsettled_ids}
+            pending = [job for job in unsettled if job.state is LocalJobState.PENDING and job.job_id not in self._active]
+            # A refused entry returns to pending. Give other jobs a turn before
+            # retrying it, even when it is the oldest durable envelope.
+            pending.sort(key=lambda job: self._last_scheduled.get(job.job_id, 0))
             scheduled = 0
             for job in pending[:free]:
                 # Admission happens before claiming. A draining daemon leaves the
@@ -285,6 +293,8 @@ class LocalJobRunner:
                     handle.confirm_settled(f"claim-lost:{job.job_id}")
                     continue
                 self._checkpoint_handles[claim.record.execution_incarnation] = handle
+                self._schedule_sequence += 1
+                self._last_scheduled[job.job_id] = self._schedule_sequence
                 future = self._executor.submit(run_with_scope, current_scope(), self._execute, claim, handle)
                 self._active[job.job_id] = future
                 scheduled += 1
