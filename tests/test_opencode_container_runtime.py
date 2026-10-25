@@ -200,9 +200,9 @@ def test_compose_channels_runtime_mounts_and_isolation() -> None:
     dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text()
     assert compose_text.count('AUTO_CODER_LOCAL_WORKER_UID: "65532"') == 2
     assert compose_text.count('AUTO_CODER_LOCAL_WORKER_GID: "65532"') == 2
-    assert compose_text.count("- /sys/fs/cgroup:/sys/fs/cgroup:rw") == 2
-    assert compose_text.count("privileged: true") == 2
-    assert compose_text.count("cgroup: host") == 2
+    assert "/sys/fs/cgroup" not in compose_text
+    assert "privileged:" not in compose_text
+    assert "cgroup:" not in compose_text
     assert "useradd --uid 65532 --gid 65532" in dockerfile
 
     release = services["release"]
@@ -213,7 +213,7 @@ def test_compose_channels_runtime_mounts_and_isolation() -> None:
     assert beta["environment"]["HOME"] == "/runtime/home"
 
     # REQ-004: Persistent runtime mounts are separated between channels
-    shared_infrastructure = {"/routing", "/sys/fs/cgroup"}
+    shared_infrastructure = {"/routing"}
     release_vols = {v.split(":")[0] for v in release["volumes"] if not any(f":{target}" in v for target in shared_infrastructure)}
     beta_vols = {v.split(":")[0] for v in beta["volumes"] if not any(f":{target}" in v for target in shared_infrastructure)}
 

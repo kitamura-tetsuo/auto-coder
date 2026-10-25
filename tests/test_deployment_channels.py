@@ -413,10 +413,13 @@ def test_compose_channels_use_disjoint_private_storage_and_artifacts():
     assert beta["image"] == "${AUTO_CODER_IMAGE}@${BETA_DIGEST}"
     assert release["environment"]["HOME"] == beta["environment"]["HOME"] == "/runtime/home"
     assert release["environment"]["AUTO_CODER_RUNTIME_ROOT"] == beta["environment"]["AUTO_CODER_RUNTIME_ROOT"] == "/runtime"
-    assert release["command"][-1] == beta["command"][-1] == "/runtime/logs/auto-coder.log"
+    assert release["environment"]["AUTO_CODER_SUPERVISOR_INSTANCE_ID"] == "release-worker"
+    assert beta["environment"]["AUTO_CODER_SUPERVISOR_INSTANCE_ID"] == "beta-worker"
+    assert release["environment"]["AUTO_CODER_REPOSITORY"] == "${RELEASE_REPOSITORY}"
+    assert beta["environment"]["AUTO_CODER_REPOSITORY"] == "${BETA_REPOSITORY}"
 
-    release_private = {mount.split(":", 1)[0] for mount in release["volumes"] if not mount.endswith(":/routing") and not mount.startswith("/sys/fs/cgroup:")}
-    beta_private = {mount.split(":", 1)[0] for mount in beta["volumes"] if not mount.endswith(":/routing") and not mount.startswith("/sys/fs/cgroup:")}
+    release_private = {mount.split(":", 1)[0] for mount in release["volumes"] if not mount.endswith(":/routing")}
+    beta_private = {mount.split(":", 1)[0] for mount in beta["volumes"] if not mount.endswith(":/routing")}
     assert release_private == {"./runtime/release", "./runtime/workspaces/release"}
     assert beta_private == {"./runtime/beta", "./runtime/workspaces/beta"}
     assert release_private.isdisjoint(beta_private)
