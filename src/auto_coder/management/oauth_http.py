@@ -33,7 +33,7 @@ from .oauth_grants import (
     OAuthGrantService,
     Unavailable,
 )
-from .oauth_provider import CodeExchangeContext, ExchangeContext, ManagementOAuthProvider, RefreshExchangeContext, browser_authorization, exchange_context
+from .oauth_provider import CodeExchangeContext, ExchangeContext, ManagementOAuthProvider, RawAuthorizationContext, RefreshExchangeContext, authorization_unavailable, browser_authorization, exchange_context, raw_authorization
 
 _SECURITY_QUERY_FIELDS = {
     "client_id",
@@ -174,33 +174,39 @@ def create_management_auth_app(
             _scope(query_value("scope"))
         except OAuthError as exc:
             return _oauth_error(exc.code)
-        context_token = browser_authorization.set(None)
+        browser_token = browser_authorization.set(None)
+        raw_token = raw_authorization.set(RawAuthorizationContext(client_id, redirect_uri))
+        unavailable_token = authorization_unavailable.set(False)
         try:
             response = await authorization_handler.handle(request)
+            if authorization_unavailable.get():
+                return _oauth_error("temporarily_unavailable", 503)
             pending = browser_authorization.get()
             if pending is not None:
                 response.set_cookie(_cookie_name(settings, pending.request_id), f"{pending.browser_secret}.{pending.csrf_secret}", secure=settings.canonical_issuer.startswith("https://"), httponly=True, samesite="lax", max_age=600, path="/")
             return response
         finally:
-            browser_authorization.reset(context_token)
+            authorization_unavailable.reset(unavailable_token)
+            raw_authorization.reset(raw_token)
+            browser_authorization.reset(browser_token)
 
     @app.get("/consent/{request_id}")
     async def consent(request_id: str, request: Request) -> Response:
-        client_id = request.query_params.get("client_id", "")
-        client = settings.client(client_id)
         cookie = request.cookies.get(_cookie_name(settings, request_id), "")
         try:
-            _, csrf = cookie.split(".", 1)
+            browser, csrf = cookie.split(".", 1)
         except ValueError:
             return _oauth_error("invalid_request")
-        if client is None:
-            return _oauth_error("invalid_client")
+        try:
+            pending = await run_in_threadpool(grants.inspect_pending, request_id, browser, csrf)
+        except OAuthError as exc:
+            return _oauth_error(exc.code, 503 if isinstance(exc, Unavailable) else 400)
         template = files("auto_coder.management.static").joinpath("authorize.html").read_text()
         data = json.dumps(
             {
                 "requestId": request_id,
                 "csrf": csrf,
-                "clientId": client_id,
+                "clientId": pending.client_id,
                 "resource": settings.resource,
                 "scope": SUPPORTED_SCOPE,
                 "firebase": settings.firebase_web_config,

@@ -44,6 +44,16 @@ class BrowserAuthorization:
 browser_authorization: ContextVar[BrowserAuthorization | None] = ContextVar("management_oauth_browser", default=None)
 
 
+@dataclass(frozen=True)
+class RawAuthorizationContext:
+    client_id: str
+    redirect_uri: str
+
+
+raw_authorization: ContextVar[RawAuthorizationContext | None] = ContextVar("management_oauth_raw_authorization", default=None)
+authorization_unavailable: ContextVar[bool] = ContextVar("management_oauth_authorization_unavailable", default=False)
+
+
 class ManagementOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, RefreshToken, AccessToken]):
     def __init__(self, settings: OAuthSettings, grants: OAuthGrantService) -> None:
         self.settings, self.grants = settings, grants
@@ -58,17 +68,22 @@ class ManagementOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode
         raise NotImplementedError
 
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
+        raw = raw_authorization.get()
+        if raw is None or raw.client_id != client.client_id or str(params.redirect_uri) != str(AnyUrl(raw.redirect_uri)):
+            raise AuthorizeError("invalid_request", "authorization binding changed during SDK validation")
         browser, csrf = __import__("secrets").token_urlsafe(32), __import__("secrets").token_urlsafe(32)
         try:
-            pending = await run_in_threadpool(self.grants.begin_authorization, AuthorizationRequest(client.client_id or "", str(params.redirect_uri), params.resource or "", params.code_challenge, tuple(params.scopes) if params.scopes is not None else None, params.state), browser, csrf)
+            pending = await run_in_threadpool(self.grants.begin_authorization, AuthorizationRequest(client.client_id or "", raw.redirect_uri, params.resource or "", params.code_challenge, tuple(params.scopes) if params.scopes is not None else None, params.state), browser, csrf)
         except OAuthError as exc:
+            if isinstance(exc, Unavailable):
+                authorization_unavailable.set(True)
             code = cast(
                 Literal["invalid_request", "access_denied", "invalid_scope", "temporarily_unavailable"],
                 exc.code if exc.code in {"invalid_request", "access_denied", "invalid_scope", "temporarily_unavailable"} else "invalid_request",
             )
             raise AuthorizeError(code, code) from exc
         browser_authorization.set(BrowserAuthorization(pending.request_id, browser, csrf))
-        return f"{self.settings.canonical_issuer}/consent/{pending.request_id}?client_id={client.client_id}"
+        return f"{self.settings.canonical_issuer}/consent/{pending.request_id}"
 
     async def load_authorization_code(self, client: OAuthClientInformationFull, authorization_code: str) -> AuthorizationCode | None:
         item = await run_in_threadpool(self.grants.inspect_code, client.client_id or "", authorization_code)

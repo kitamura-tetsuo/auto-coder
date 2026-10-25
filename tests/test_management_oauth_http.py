@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from auto_coder.management.identity import AdmissionResult, AdmissionStatus, VerifiedPrincipal
 from auto_coder.management.oauth_config import OAuthClient, OAuthSettings
-from auto_coder.management.oauth_grants import OAuthGrantService
+from auto_coder.management.oauth_grants import OAuthGrantService, Unavailable
 from auto_coder.management.oauth_http import create_management_auth_app
 from auto_coder.management.oauth_provider import exchange_context
 from tests.test_management_identity_sdk import sdk_boundary  # noqa: F401
@@ -210,3 +210,68 @@ def test_overlapping_sdk_exchanges_keep_request_local_values(tmp_path):
     assert [response.status_code for response in responses] == [200, 200]
     assert set(observed) == {(first_code, first_verifier, settings.resource), (second_code, second_verifier, settings.resource)}
     assert exchange_context.get() is None
+
+
+def test_exact_https_redirect_survives_sdk_url_normalization(tmp_path):
+    for redirect_uri in ("https://client.example", "https://client.example/%7Ecallback"):
+        settings = OAuthSettings(
+            tmp_path / ("oauth-" + hashlib.sha256(redirect_uri.encode()).hexdigest() + ".db"),
+            "https://management.example",
+            "project",
+            (OAuthClient("client", (redirect_uri,)),),
+        )
+        client = TestClient(create_management_auth_app(settings, OAuthGrantService(settings, Identity())), base_url=settings.canonical_issuer)
+        response = client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "client",
+                "redirect_uri": redirect_uri,
+                "resource": settings.resource,
+                "code_challenge": challenge("v" * 43),
+                "code_challenge_method": "S256",
+            },
+        )
+        assert response.status_code == 200
+        assert redirect_uri in settings.clients[0].redirect_uris
+        alternate = redirect_uri + ("/" if redirect_uri == "https://client.example" else "")
+        if alternate != redirect_uri:
+            refused = client.get("/authorize", params={"response_type": "code", "client_id": "client", "redirect_uri": alternate, "resource": settings.resource, "code_challenge": challenge("v" * 43), "code_challenge_method": "S256"})
+            assert refused.status_code == 400
+
+
+def test_authorization_store_unavailable_returns_direct_503(tmp_path):
+    settings, grants, client = setup(tmp_path)
+
+    def unavailable(*_args, **_kwargs):
+        raise Unavailable()
+
+    grants.begin_authorization = unavailable
+    response = begin(client, settings)
+    assert response.status_code == 503
+    assert response.headers["cache-control"] == "no-store"
+    assert "location" not in response.headers
+    assert response.json() == {"error": "temporarily_unavailable"}
+
+
+def test_consent_uses_durable_pending_client_not_query_discriminator(tmp_path):
+    settings = OAuthSettings(
+        tmp_path / "two-clients.db",
+        "http://localhost",
+        "project",
+        (
+            OAuthClient("client-a", ("http://127.0.0.1:9876/cb",)),
+            OAuthClient("client-b", ("http://127.0.0.1:9877/cb",)),
+        ),
+    )
+    client = TestClient(create_management_auth_app(settings, OAuthGrantService(settings, Identity())), base_url="http://localhost")
+    authorization = client.get(
+        "/authorize",
+        params={"response_type": "code", "client_id": "client-a", "redirect_uri": "http://127.0.0.1:9876/cb", "resource": settings.resource, "code_challenge": challenge("a" * 43), "code_challenge_method": "S256"},
+        follow_redirects=False,
+    )
+    assert authorization.status_code == 302
+    consent = client.get(authorization.headers["location"] + "?client_id=client-b")
+    assert consent.status_code == 200
+    assert '"clientId": "client-a"' in consent.text
+    assert '"clientId": "client-b"' not in consent.text

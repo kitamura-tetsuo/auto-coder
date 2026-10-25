@@ -199,6 +199,19 @@ class OAuthGrantService:
             raise Unavailable() from exc
         return PendingAuthorization(request_id, request.client_id, request.resource, scopes, expires)
 
+    def inspect_pending(self, request_id: str, browser_binding_secret: str, csrf_secret: str) -> PendingAuthorization:
+        """Return a bound, live pending request without changing durable state."""
+        try:
+            with self.store.connect() as db:
+                row = db.execute("SELECT * FROM pending WHERE id=?", (request_id,)).fetchone()
+        except sqlite3.Error as exc:
+            raise Unavailable() from exc
+        if row is None or row["status"] != "pending" or row["expires"] <= self.clock():
+            raise InvalidGrant()
+        if not secrets.compare_digest(row["browser_hash"], _hash(browser_binding_secret)) or not secrets.compare_digest(row["csrf_hash"], _hash(csrf_secret)):
+            raise InvalidRequest()
+        return PendingAuthorization(row["id"], row["client_id"], row["resource"], tuple(row["scope"].split()), row["expires"])
+
     def deny_authorization(self, request_id: str, browser_binding_secret: str, csrf_secret: str) -> AuthorizationRedirect:
         try:
             with self.store.connect() as db:
