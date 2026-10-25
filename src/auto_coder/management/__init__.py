@@ -1,6 +1,18 @@
-"""Durable management-operation journal."""
+"""Remote-management building blocks.
 
+Importing this package intentionally does not initialize Firebase or open the
+management-operation journal.
+"""
+
+from .identity import AdmissionResult, AdmissionStatus, FirebaseOperatorIdentity, IdentityConfig, ReasonCode, VerifiedPrincipal
 from .operation_store import ManagementOperationStore
-from .operations import *  # noqa: F401,F403
 
-__all__ = ["ManagementOperationStore"]
+__all__ = [
+    "AdmissionResult",
+    "AdmissionStatus",
+    "FirebaseOperatorIdentity",
+    "IdentityConfig",
+    "ManagementOperationStore",
+    "ReasonCode",
+    "VerifiedPrincipal",
+]
