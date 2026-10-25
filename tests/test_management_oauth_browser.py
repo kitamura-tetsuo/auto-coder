@@ -47,6 +47,14 @@ def test_shipped_page_hands_signed_identity_to_real_verifier_and_requires_consen
     )
     grants = OAuthGrantService(settings, identity)
     app = create_management_auth_app(settings, grants)
+    csp_mutation = {"enabled": False}
+
+    @app.middleware("http")
+    async def mutate_consent_csp(request, call_next):
+        response = await call_next(request)
+        if csp_mutation["enabled"] and request.url.path.startswith("/consent/"):
+            response.headers["content-security-policy"] = response.headers["content-security-policy"].replace(" https://*.firebaseapp.com", "")
+        return response
 
     @app.get("/callback")
     async def callback_page():
@@ -80,6 +88,7 @@ def test_shipped_page_hands_signed_identity_to_real_verifier_and_requires_consen
     try:
         with headless_page(viewport={"width": 1024, "height": 768}) as page:
             loaded_firebase_modules = []
+            loaded_auth_iframes = []
             requested_urls = []
             browser_errors = []
             page.on("request", lambda request: requested_urls.append(request.url))
@@ -112,7 +121,9 @@ window.gapi.iframes = {
     const element = document.createElement('iframe');
     element.dataset.controlledProvider = 'true';
     element.src = options.url;
-    element.onload = () => {
+    const providerReady = event => {
+      if (event.source !== element.contentWindow || !event.data?.controlledProviderReady) return;
+      window.removeEventListener('message', providerReady);
       const iframe = {
         restyle: async () => {}, ping: done => { done(); return Promise.resolve(); },
         register: (name, handler) => window.addEventListener('message', event => {
@@ -122,6 +133,7 @@ window.gapi.iframes = {
       };
       ready(iframe).then(resolve, reject);
     };
+    window.addEventListener('message', providerReady);
     document.body.appendChild(element);
   })})
 };
@@ -145,7 +157,18 @@ window.gapi.iframes = {
                     )
 
             page.context.route("https://identitytoolkit.googleapis.com/**", firebase_api)
-            page.context.route("https://test-project.firebaseapp.com/__/auth/**", lambda route: route.fulfill(content_type="text/html", body="controlled provider popup"))
+
+            def firebase_auth_domain(route):
+                if "/iframe" in route.request.url:
+                    loaded_auth_iframes.append(route.request.url)
+                    route.fulfill(
+                        content_type="text/html",
+                        body="<script>parent.postMessage({controlledProviderReady:true}, '*')</script>",
+                    )
+                else:
+                    route.fulfill(content_type="text/html", body="controlled provider popup")
+
+            page.context.route("https://test-project.firebaseapp.com/__/auth/**", firebase_auth_domain)
             page.goto(f"{origin}/authorize?{params}")
             page.wait_for_function("document.getElementById('signin').onclick !== null")
             page.add_script_tag(url="https://apis.google.com/js/api.js")
@@ -170,6 +193,7 @@ window.gapi.iframes = {
             event_id = parse_qs(urlsplit(popup.url).query)["eventId"][0]
             assert page.locator("iframe[data-controlled-provider='true']").count() == 1
             assert any("test-project.firebaseapp.com/__/auth/iframe" in url for url in requested_urls)
+            assert len(loaded_auth_iframes) == 1
             popup.evaluate(
                 """eventId => window.opener.postMessage({event: 'authEvent', payload: {authEvent: {
                     type: 'signInViaPopup', eventId,
@@ -198,6 +222,27 @@ window.gapi.iframes = {
             page.wait_for_url(f"{callback}*")
             denied = parse_qs(urlsplit(page.url).query)
             assert denied == {"iss": [origin], "state": ["deny-state"], "error": ["access_denied"]}
+
+            # A CSP regression must stop the real browser handoff before Firebase
+            # can open the provider popup or submit identity evidence.  The
+            # controlled auth-domain document acknowledges readiness through the
+            # iframe's actual WindowProxy, so a blocked frame cannot be mistaken
+            # for a successful SDK initialization.
+            csp_mutation["enabled"] = True
+            requests_before_blocked_flow = len(requested_urls)
+            blocked_page = page.goto(f"{origin}/authorize?{params.replace('browser-state', 'blocked-frame-state')}")
+            assert blocked_page is not None
+            assert "firebaseapp.com" not in blocked_page.headers["content-security-policy"]
+            page.wait_for_function("document.getElementById('signin').onclick !== null")
+            page.add_script_tag(url="https://apis.google.com/js/api.js")
+            page.evaluate(controlled_provider_transport)
+            page.locator("#signin").click()
+            page.wait_for_timeout(500)
+            blocked_requests = requested_urls[requests_before_blocked_flow:]
+            assert page.locator("#allow").is_disabled()
+            assert not any("test-project.firebaseapp.com/__/auth/iframe" in url for url in blocked_requests)
+            with grants.store.connect() as db:
+                assert db.execute("SELECT COUNT(*) FROM codes").fetchone()[0] == 1
     finally:
         server.should_exit = True
         thread.join(timeout=10)
