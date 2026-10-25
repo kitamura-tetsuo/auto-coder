@@ -30,6 +30,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 FROM python:3.12-slim
 ARG AUTO_CODER_SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.revision=$AUTO_CODER_SOURCE_REVISION
+# Runtime revision staging uses this immutable bootstrap tool; it never updates
+# uv or the system Python environment from inside the running worker.
+COPY --from=ghcr.io/astral-sh/uv:0.7.22 /uv /usr/local/bin/uv
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl && \
     MUSE_INSTALL_DIR=/usr/local/bin curl -fsSL https://dev.meta.ai/install.sh | bash && \
     apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
