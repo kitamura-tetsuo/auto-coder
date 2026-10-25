@@ -63,7 +63,14 @@ async def _run_process_issues_daemon(
     """Run the production signal, webhook, and engine orchestration."""
     import asyncio
 
+    from .worker_management_bridge import WorkerManagementBridge, configured_identity
+
     loop = asyncio.get_running_loop()
+    bridge_identity = configured_identity(repo_name)
+    bridge = WorkerManagementBridge(bridge_identity, automation_engine) if bridge_identity is not None else None
+    if bridge is not None:
+        await bridge.start()
+        automation_engine.graceful_terminal_observer = bridge.persist_graceful_terminal
     signal_counts = {signal.SIGINT: 0, signal.SIGTERM: 0}
 
     def handle_shutdown_signal(received: signal.Signals) -> None:
@@ -104,6 +111,9 @@ async def _run_process_issues_daemon(
         else:
             await automation_engine.start_automation(repo_name)
     finally:
+        if bridge is not None:
+            automation_engine.graceful_terminal_observer = None
+            await bridge.close()
         for shutdown_signal in installed_signals:
             loop.remove_signal_handler(shutdown_signal)
 
