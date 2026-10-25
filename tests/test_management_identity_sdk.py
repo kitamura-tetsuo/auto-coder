@@ -123,6 +123,8 @@ def test_real_sdk_login_uses_original_auth_time_for_revocation(sdk_boundary):
     state["valid_since"] = str(now - 15)
     revoked = adapter.verify_login(token())
     assert (revoked.status, revoked.reason, revoked.principal) == (AdmissionStatus.DENIED, ReasonCode.SESSION_REVOKED, None)
+    rechecked = adapter.recheck_identity(equality.principal)
+    assert (rechecked.status, rechecked.reason, rechecked.principal) == (AdmissionStatus.DENIED, ReasonCode.SESSION_REVOKED, None)
 
 
 @pytest.mark.parametrize(
@@ -195,6 +197,10 @@ def test_unusable_real_account_record_is_typed_unavailable(sdk_boundary):
 
     for result in (login, recheck):
         assert (result.status, result.reason, result.principal) == (AdmissionStatus.UNAVAILABLE, ReasonCode.IDENTITY_SERVICE_UNAVAILABLE, None)
+
+    state["valid_since"] = "0"
+    assert adapter.verify_login(token()).status is AdmissionStatus.PERMITTED
+    assert adapter.recheck_identity(admitted.principal).status is AdmissionStatus.PERMITTED
 
 
 def test_emulator_added_before_lazy_initialization_is_rejected(tmp_path, monkeypatch):
