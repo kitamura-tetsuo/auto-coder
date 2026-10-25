@@ -1,7 +1,8 @@
 import json
+import os
 import socket
+import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -17,13 +18,18 @@ def config(tmp_path: Path, command: tuple[str, ...] | None = None) -> Supervisor
 
 
 def request(endpoint: Path, payload: dict[str, object]) -> dict[str, object]:
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    for _ in range(100):
+    client: socket.socket | None = None
+    for _ in range(500):
+        candidate = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            client.connect(str(endpoint))
+            candidate.connect(str(endpoint))
+            client = candidate
             break
         except (FileNotFoundError, ConnectionRefusedError):
+            candidate.close()
             time.sleep(0.01)
+    if client is None:
+        raise AssertionError("supervisor control socket did not become reachable")
     client.sendall(json.dumps(payload).encode() + b"\n")
     response = json.loads(client.makefile("rb").readline())
     client.close()
@@ -41,16 +47,27 @@ def test_store_rejects_corrupt_schema(tmp_path: Path) -> None:
         raise AssertionError("corrupt state was accepted")
 
 
-def test_control_socket_survives_client_disconnect_and_remains_queryable(tmp_path: Path) -> None:
-    supervisor = WorkerSupervisor(config(tmp_path))
-    thread = threading.Thread(target=supervisor.run, daemon=True)
-    thread.start()
-    first = request(supervisor.control_socket, {"operation_id": "inspect-1", "operation": "INSPECT"})
-    assert first["status"] == "UNKNOWN"
-    assert thread.is_alive()
-    second = request(supervisor.control_socket, {"operation_id": "inspect-2", "operation": "INSPECT"})
-    assert second["supervisor_incarnation"] == first["supervisor_incarnation"]
-    assert thread.is_alive()
+def test_control_socket_survives_client_disconnect_and_remains_queryable(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None) -> None:
+    environment = os.environ.copy()
+    environment.update(
+        AUTO_CODER_SUPERVISOR_INSTANCE_ID="beta-worker",
+        AUTO_CODER_CHANNEL="beta",
+        AUTO_CODER_REPOSITORY="owner/repo",
+        AUTO_CODER_RUNTIME_ROOT=str(tmp_path),
+        AUTO_CODER_WORKSPACE_ROOT=str(tmp_path),
+    )
+    endpoint = tmp_path / "supervisor" / "control.sock"
+    process = subprocess.Popen([sys.executable, "-m", "auto_coder.worker_supervisor"], env=environment)
+    try:
+        first = request(endpoint, {"operation_id": "inspect-1", "operation": "INSPECT"})
+        assert first["status"] == "UNKNOWN"
+        assert process.poll() is None
+        second = request(endpoint, {"operation_id": "inspect-2", "operation": "INSPECT"})
+        assert second["supervisor_incarnation"] == first["supervisor_incarnation"]
+        assert process.poll() is None
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
 
 
 def test_same_id_changed_operation_preserves_original_acceptance(tmp_path: Path) -> None:
