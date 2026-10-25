@@ -111,6 +111,20 @@ def test_real_sdk_positive_revoked_and_cryptographic_outcomes(sdk_boundary):
     assert adapter.verify_login(token(aud="another-project")).status is AdmissionStatus.INVALID
 
 
+def test_real_sdk_login_uses_original_auth_time_for_revocation(sdk_boundary):
+    adapter, token, state, _policy, now = sdk_boundary
+
+    state["valid_since"] = str(now - 20)
+    equality = adapter.verify_login(token())
+    assert equality.status is AdmissionStatus.PERMITTED
+
+    # The refreshed token's iat is T-10, so the SDK's iat comparison permits it.
+    # The adapter must still deny because the original auth_time T-20 predates T-15.
+    state["valid_since"] = str(now - 15)
+    revoked = adapter.verify_login(token())
+    assert (revoked.status, revoked.reason, revoked.principal) == (AdmissionStatus.DENIED, ReasonCode.SESSION_REVOKED, None)
+
+
 @pytest.mark.parametrize(
     "claim,value,drop",
     [
@@ -168,3 +182,29 @@ def test_transport_failure_diagnostics_are_bounded_and_secret_free(sdk_boundary,
     assert sentinel not in console_value
     assert sentinel not in file_value
     assert sentinel not in repr(result)
+
+
+def test_unusable_real_account_record_is_typed_unavailable(sdk_boundary):
+    adapter, token, state, _policy, _now = sdk_boundary
+    admitted = adapter.verify_login(token())
+    assert admitted.principal is not None
+
+    state["valid_since"] = "unusable"
+    login = adapter.verify_login(token())
+    recheck = adapter.recheck_identity(admitted.principal)
+
+    for result in (login, recheck):
+        assert (result.status, result.reason, result.principal) == (AdmissionStatus.UNAVAILABLE, ReasonCode.IDENTITY_SERVICE_UNAVAILABLE, None)
+
+
+def test_emulator_added_before_lazy_initialization_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.delenv("FIREBASE_AUTH_EMULATOR_HOST", raising=False)
+    policy = tmp_path / "operators.json"
+    policy.write_text(json.dumps({"project_id": "test-project", "allowed_uids": ["operator"]}), encoding="utf-8")
+    adapter = FirebaseOperatorIdentity(IdentityConfig("test-project", policy))
+    monkeypatch.setenv("FIREBASE_AUTH_EMULATOR_HOST", "127.0.0.1:9099")
+    monkeypatch.setattr(requests.sessions.Session, "request", lambda *_args, **_kwargs: pytest.fail("emulator/network request attempted"))
+
+    result = adapter.verify_login("unsigned-emulator-token")
+
+    assert (result.status, result.reason, result.principal) == (AdmissionStatus.UNAVAILABLE, ReasonCode.INVALID_CONFIGURATION, None)

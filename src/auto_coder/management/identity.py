@@ -74,10 +74,9 @@ class FirebaseOperatorIdentity:
         self._config = config
         self._clock = clock
         self._app: Optional[App] = None
-        self._configuration_error = bool(os.environ.get("FIREBASE_AUTH_EMULATOR_HOST"))
 
     def verify_login(self, id_token: str) -> AdmissionResult:
-        if self._configuration_error:
+        if self._emulator_configured():
             return self._failure(AdmissionStatus.UNAVAILABLE, ReasonCode.INVALID_CONFIGURATION)
         if not isinstance(id_token, str) or not id_token:
             return self._failure(AdmissionStatus.INVALID, ReasonCode.INVALID_TOKEN)
@@ -89,8 +88,10 @@ class FirebaseOperatorIdentity:
             return self._failure(AdmissionStatus.DENIED, ReasonCode.ACCOUNT_DISABLED)
         except auth.UserNotFoundError:
             return self._failure(AdmissionStatus.DENIED, ReasonCode.ACCOUNT_DELETED)
-        except (auth.InvalidIdTokenError, auth.ExpiredIdTokenError, ValueError):
+        except (auth.InvalidIdTokenError, auth.ExpiredIdTokenError):
             return self._failure(AdmissionStatus.INVALID, ReasonCode.INVALID_TOKEN)
+        except ValueError:
+            return self._failure(AdmissionStatus.UNAVAILABLE, ReasonCode.IDENTITY_SERVICE_UNAVAILABLE)
         except Exception:
             return self._failure(AdmissionStatus.UNAVAILABLE, ReasonCode.IDENTITY_SERVICE_UNAVAILABLE)
 
@@ -112,7 +113,7 @@ class FirebaseOperatorIdentity:
     def recheck_identity(self, principal: VerifiedPrincipal) -> AdmissionResult:
         if not self._valid_principal(principal):
             return self._failure(AdmissionStatus.INVALID, ReasonCode.WRONG_PROJECT)
-        if self._configuration_error:
+        if self._emulator_configured():
             return self._failure(AdmissionStatus.UNAVAILABLE, ReasonCode.INVALID_CONFIGURATION)
         return self._check_account_and_policy(principal)
 
@@ -122,6 +123,8 @@ class FirebaseOperatorIdentity:
         return self._check_policy(principal)
 
     def _firebase_app(self) -> App:
+        if self._emulator_configured():
+            raise RuntimeError("Firebase Auth emulator configuration is forbidden")
         if self._app is None:
             credential = credentials.ApplicationDefault()
             self._app = initialize_app(credential, {"projectId": self._config.project_id}, name=f"auto-coder-management-{uuid.uuid4()}")
@@ -134,9 +137,13 @@ class FirebaseOperatorIdentity:
             return self._failure(AdmissionStatus.DENIED, ReasonCode.ACCOUNT_DELETED)
         except Exception:
             return self._failure(AdmissionStatus.UNAVAILABLE, ReasonCode.IDENTITY_SERVICE_UNAVAILABLE)
-        if user.disabled:
+        try:
+            disabled = user.disabled
+            valid_after = user.tokens_valid_after_timestamp
+        except (AttributeError, TypeError, ValueError):
+            return self._failure(AdmissionStatus.UNAVAILABLE, ReasonCode.IDENTITY_SERVICE_UNAVAILABLE)
+        if disabled:
             return self._failure(AdmissionStatus.DENIED, ReasonCode.ACCOUNT_DISABLED)
-        valid_after = user.tokens_valid_after_timestamp
         if not self._finite_number(valid_after):
             return self._failure(AdmissionStatus.UNAVAILABLE, ReasonCode.IDENTITY_SERVICE_UNAVAILABLE)
         if principal.auth_time * 1000 < valid_after:
@@ -162,3 +169,7 @@ class FirebaseOperatorIdentity:
     @staticmethod
     def _finite_number(value: object) -> bool:
         return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+    @staticmethod
+    def _emulator_configured() -> bool:
+        return bool(os.environ.get("FIREBASE_AUTH_EMULATOR_HOST"))
