@@ -234,6 +234,17 @@ def test_exact_https_redirect_survives_sdk_url_normalization(tmp_path):
         )
         assert response.status_code == 200
         assert redirect_uri in settings.clients[0].redirect_uris
+        import json
+
+        data = json.loads(response.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0])
+        approved = client.post(
+            f"/authorize/{data['requestId']}/allow",
+            headers={"Origin": settings.canonical_issuer},
+            data={"csrf": data["csrf"], "firebase_id_token": "signed"},
+            follow_redirects=False,
+        )
+        assert approved.status_code == 303
+        assert approved.headers["location"].startswith(redirect_uri + "?")
         alternate = redirect_uri + ("/" if redirect_uri == "https://client.example" else "")
         if alternate != redirect_uri:
             refused = client.get("/authorize", params={"response_type": "code", "client_id": "client", "redirect_uri": alternate, "resource": settings.resource, "code_challenge": challenge("v" * 43), "code_challenge_method": "S256"})
