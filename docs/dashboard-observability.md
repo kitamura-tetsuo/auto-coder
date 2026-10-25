@@ -1,5 +1,14 @@
 # Dashboard observability verification
 
+Private target reevaluation adds a trusted-socket command-intake origin without
+adding a dashboard-owned outcome or processing lifecycle. Bounded Loguru
+diagnostics correlate the operation ID, exact target, accepting process run,
+and durable disposition; the durable receipt says only
+`accepted_for_reevaluation`, while the existing controller traces continue to
+own all later blocked, deferred, execution, publication, and merge outcomes.
+The real socket and persistence projection are exercised by `bash
+scripts/test.sh tests/test_worker_management_bridge.py -k reevaluation`.
+
 Management journal operation IDs, phases, targets, and safe categories use the existing Loguru sinks without changing worker command/trace lifecycle events. Its separate contract is documented in [`client-features/management-operation-journal.md`](client-features/management-operation-journal.md).
 
 Local CI base-update diagnostics retain the durable `Update Base` stage and its

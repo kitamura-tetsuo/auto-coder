@@ -19,7 +19,61 @@ from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.decomposition_analyzer import DecompositionAnalysisResult
 from src.auto_coder.decomposition_validation_lifecycle import DecompositionValidationLifecycle
 from src.auto_coder.dispatch_claim_store import DispatchClaimStore, DispatchOutcome
-from src.auto_coder.entity_invalidation import CIWebhookDelivery, ClaimedInvalidation, CompletionOutcome, DurableInvalidationQueue, EntityIdentity, GitHubDeliveryMetadata, InvalidationDisposition
+from src.auto_coder.entity_invalidation import CIWebhookDelivery, ClaimedInvalidation, CompletionOutcome, DurableInvalidationQueue, EntityIdentity, GitHubDeliveryMetadata, InvalidationDisposition, ReevaluationOperationConflict
+
+
+def test_management_reevaluation_atomically_binds_receipt_and_coalescing(tmp_path: Path) -> None:
+    queue = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
+    arguments = dict(
+        operation_id="operator-1",
+        repository="owner/repo",
+        channel="release",
+        target=EntityIdentity("owner/repo", "issue", 2602),
+        requested_process_run_id="run-1",
+        requested_deployment_generation="deploy-1",
+        accepting_process_run_id="run-1",
+        accepting_deployment_generation="deploy-1",
+        associated_prs=(40, 41),
+    )
+
+    receipt, replay = queue.accept_management_reevaluation(**arguments)
+    repeated, repeated_is_replay = queue.accept_management_reevaluation(**arguments)
+
+    assert replay is False
+    assert repeated_is_replay is True
+    assert repeated == receipt
+    assert receipt.disposition is InvalidationDisposition.NEW_PENDING
+    assert receipt.generation == 1
+    assert queue.pending_count("owner/repo") == 3
+    with pytest.raises(ReevaluationOperationConflict):
+        queue.accept_management_reevaluation(**{**arguments, "target": EntityIdentity("owner/repo", "pr", 2602)})
+    assert queue.pending_count("owner/repo") == 3
+
+
+def test_management_reevaluation_processing_target_has_one_followup(tmp_path: Path) -> None:
+    queue = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
+    identity = EntityIdentity("owner/repo", "pr", 7)
+    queue.invalidate(identity)
+    claim = queue.claim("owner/repo")
+    assert claim is not None and queue.begin_processing(claim)
+
+    receipt, _ = queue.accept_management_reevaluation(
+        operation_id="operator-2",
+        repository="owner/repo",
+        channel="release",
+        target=identity,
+        requested_process_run_id="run",
+        requested_deployment_generation="deploy",
+        accepting_process_run_id="run",
+        accepting_deployment_generation="deploy",
+    )
+
+    assert receipt.disposition is InvalidationDisposition.FOLLOWUP_REQUIRED
+    assert queue.complete(claim) is True
+    followup = queue.claim("owner/repo")
+    assert followup is not None and followup.generation == 2
+
+
 from src.auto_coder.github_pending_work import PendingWorkScheduler, PendingWorkStore
 from src.auto_coder.github_request_governor import GitHubRequestDeferred, GitHubRequestGovernor
 from src.auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository

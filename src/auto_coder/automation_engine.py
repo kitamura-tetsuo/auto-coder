@@ -43,6 +43,8 @@ from .entity_invalidation import (
     EntityIdentity,
     InvalidationDisposition,
     InvalidationTransition,
+    ReevaluationOperationConflict,
+    ReevaluationReceipt,
     issue_stabilization_deadline,
 )
 from .exceptions import AutoCoderRetryableBackendError, CloudSubmissionNotStartedError
@@ -5319,6 +5321,112 @@ class AutomationEngine:
             if self._invalidation_wake_event is not None:
                 self._invalidation_wake_event.set()
         return accepted
+
+    async def accept_private_reevaluation(
+        self,
+        *,
+        operation_id: str,
+        repository: str,
+        channel: str,
+        target_type: str,
+        target_number: int,
+        expected_process_run_id: str,
+        expected_deployment_generation: str,
+        current_process_run_id: str,
+        current_deployment_generation: str,
+    ) -> tuple[ReevaluationReceipt, bool]:
+        """Admit one incarnation-bound command through the ordinary durable queue."""
+        target = EntityIdentity(repository, target_type, target_number)
+        # Historical receipts are immutable observations. They deliberately do
+        # not depend on the accepting worker still being alive.
+        existing = await asyncio.to_thread(self.invalidations.get_reevaluation_receipt, operation_id)
+        if existing is not None:
+            matches = (
+                existing.repository == repository
+                and existing.channel == channel
+                and existing.target_type == target_type
+                and existing.target_number == target_number
+                and existing.requested_process_run_id == expected_process_run_id
+                and existing.requested_deployment_generation == expected_deployment_generation
+            )
+            if not matches:
+                raise ReevaluationOperationConflict(operation_id)
+            logger.info("Private reevaluation replay operation_id={} target={}#{} accepting_process_run_id={}", operation_id, target_type, target_number, existing.accepting_process_run_id)
+            return existing, True
+
+        receipt, replay = await asyncio.to_thread(
+            self._commit_private_reevaluation,
+            operation_id,
+            repository,
+            channel,
+            target,
+            expected_process_run_id,
+            expected_deployment_generation,
+            current_process_run_id,
+            current_deployment_generation,
+        )
+
+        if not replay:
+            self.github_request_governor.wake_admission_waiters()
+            await self._enqueue_pending_invalidations(repository)
+            if self._invalidation_wake_event is not None:
+                self._invalidation_wake_event.set()
+        logger.info("Private reevaluation {} operation_id={} target={}#{} process_run_id={} disposition={}", "replayed" if replay else "accepted", operation_id, target_type, target_number, current_process_run_id, receipt.disposition.value)
+        return receipt, replay
+
+    def _commit_private_reevaluation(
+        self,
+        operation_id: str,
+        repository: str,
+        channel: str,
+        target: EntityIdentity,
+        expected_process_run_id: str,
+        expected_deployment_generation: str,
+        current_process_run_id: str,
+        current_deployment_generation: str,
+    ) -> tuple[ReevaluationReceipt, bool]:
+        """Own lifecycle ordering and the blocking durable acceptance boundary."""
+        # This is the same lock used to close daemon admission. Running the
+        # entire boundary in a worker thread keeps competing socket requests
+        # reachable while preserving one order with synchronous shutdown.
+        with self._lifecycle_lock:
+            raced = self.invalidations.get_reevaluation_receipt(operation_id)
+            if raced is not None:
+                matches = (
+                    raced.repository == repository
+                    and raced.channel == channel
+                    and raced.target_type == target.entity_type
+                    and raced.target_number == target.number
+                    and raced.requested_process_run_id == expected_process_run_id
+                    and raced.requested_deployment_generation == expected_deployment_generation
+                )
+                if not matches:
+                    raise ReevaluationOperationConflict(operation_id)
+                return raced, True
+            if self._lifecycle is not EngineLifecycle.RUNNING or not self.startup_reconciled or not self.daemon_serving:
+                raise RuntimeError("worker_not_ready")
+            if expected_process_run_id != current_process_run_id or expected_deployment_generation != current_deployment_generation:
+                raise RuntimeError("wrong_incarnation")
+            self.issue_admission_cache.invalidate(repository)
+            associated: tuple[int, ...] = ()
+            if target.entity_type == "issue":
+                self.dependency_observations.invalidate(repository, target.number)
+                associated = tuple(self.review_adjudications.store.affected_prs(repository, target.number))
+                for pr_number in associated:
+                    self.review_adjudications.mark_unavailable(repository, pr_number, "contributing Issue invalidated")
+            else:
+                self.review_adjudications.mark_unavailable(repository, target.number, "PR evidence invalidated")
+            return self.invalidations.accept_management_reevaluation(
+                operation_id=operation_id,
+                repository=repository,
+                channel=channel,
+                target=target,
+                requested_process_run_id=expected_process_run_id,
+                requested_deployment_generation=expected_deployment_generation,
+                accepting_process_run_id=current_process_run_id,
+                accepting_deployment_generation=current_deployment_generation,
+                associated_prs=associated,
+            )
 
     @staticmethod
     def _dependency_trigger_facts(
