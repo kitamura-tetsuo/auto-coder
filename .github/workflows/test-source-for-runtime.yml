@@ -1,0 +1,53 @@
+name: Test Source for Runtime
+
+'on':
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  source-quality:
+    name: Source identity and quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen --dev --extra test
+      - name: Establish exact clean source identity
+        run: |
+          uv run python -c 'from auto_coder.build_identity import resolve_build_identity; r=resolve_build_identity("."); assert r.state == "clean" and r.source_revision == "${{ github.sha }}"'
+      - name: Check source quality
+        run: |
+          uv run black --check src/ tests/
+          uv run isort --check-only src/ tests/
+          uv run flake8 src/ tests/
+          uv run mypy --config-file pyproject.toml -p auto_coder
+
+  complete-source-tests:
+    name: Complete source tests with Chromium
+    runs-on: ubuntu-latest
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+      AUTO_CODER_REQUIRE_BROWSER: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen --dev --extra test
+      - name: Install Chromium
+        run: uv run playwright install --with-deps chromium
+      - name: Verify real headless Chromium
+        run: uv run python scripts/browser_preflight.py
+      - name: Run complete required source selection
+        run: uv run pytest -m 'not opencode_live' -vv
