@@ -8,6 +8,8 @@ from auto_coder.management.identity import AdmissionResult, AdmissionStatus, Ver
 from auto_coder.management.oauth_config import OAuthClient, OAuthSettings
 from auto_coder.management.oauth_grants import OAuthGrantService
 from auto_coder.management.oauth_http import create_management_auth_app
+from auto_coder.management.oauth_provider import exchange_context
+from tests.test_management_identity_sdk import sdk_boundary  # noqa: F401
 
 
 class Identity:
@@ -44,6 +46,7 @@ def test_discovery_consent_exchange_refresh_and_revoke(tmp_path):
     assert metadata["authorization_response_iss_parameter_supported"] is True
     page = begin(client, settings)
     assert page.status_code == 200 and "Allow" in page.text
+    assert "script-src 'self' https://www.gstatic.com https://apis.google.com" in page.headers["content-security-policy"]
     data_text = page.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0]
     import json
 
@@ -99,3 +102,55 @@ def test_browser_decision_requires_unique_form_fields(tmp_path):
     assert script.status_code == 200
     assert "form.submit()" in script.text
     assert "fetch(" not in script.text
+
+
+def test_real_firebase_verifier_is_reached_from_http_allow(tmp_path, sdk_boundary):
+    identity, signed_token, _state, _policy, _now = sdk_boundary
+    settings = OAuthSettings(
+        tmp_path / "real-verifier.db",
+        "http://localhost",
+        "test-project",
+        (OAuthClient("client", ("http://127.0.0.1:9876/cb",)),),
+    )
+    client = TestClient(create_management_auth_app(settings, OAuthGrantService(settings, identity)), base_url="http://localhost")
+    page = begin(client, settings)
+    import json
+
+    data = json.loads(page.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0])
+    result = client.post(
+        f"/authorize/{data['requestId']}/allow",
+        headers={"Origin": settings.canonical_issuer},
+        data={"csrf": data["csrf"], "firebase_id_token": signed_token()},
+        follow_redirects=False,
+    )
+    assert result.status_code == 303
+    assert "code=" in result.headers["location"]
+
+
+def test_denial_survives_app_reconstruction_with_original_binding(tmp_path):
+    settings, grants, client = setup(tmp_path)
+    page = begin(client, settings)
+    import json
+
+    data = json.loads(page.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0])
+    cookie_name = f"ac_oauth_{data['requestId']}"
+    binding = client.cookies.get(cookie_name)
+    denied = client.post(
+        f"/authorize/{data['requestId']}/deny",
+        headers={"Origin": settings.canonical_issuer},
+        data={"csrf": data["csrf"]},
+        follow_redirects=False,
+    )
+    assert denied.status_code == 303
+
+    reconstructed = TestClient(create_management_auth_app(settings, OAuthGrantService(settings, Identity())), base_url="http://localhost")
+    reconstructed.cookies.set(cookie_name, binding)
+    replay = reconstructed.post(
+        f"/authorize/{data['requestId']}/allow",
+        headers={"Origin": settings.canonical_issuer},
+        data={"csrf": data["csrf"], "firebase_id_token": "signed"},
+        follow_redirects=False,
+    )
+    assert replay.status_code == 400
+    assert replay.json() == {"error": "invalid_grant"}
+    assert exchange_context.get() is None

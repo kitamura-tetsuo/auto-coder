@@ -119,6 +119,10 @@ class CredentialInspection:
     resource: Optional[str]
     active: bool
     spent: bool = False
+    scopes: tuple[str, ...] = ()
+    expires_at: Optional[float] = None
+    redirect_uri: Optional[str] = None
+    code_challenge: Optional[str] = None
 
 
 def _hash(value: str) -> str:
@@ -384,7 +388,17 @@ class OAuthGrantService:
             raise Unavailable() from exc
         if row is None or row["client_id"] != client_id:
             return CredentialInspection(None, None, None, False)
-        return CredentialInspection(None, client_id, row["resource"], row["consumed"] is None and row["expires"] > self.clock(), row["consumed"] is not None)
+        return CredentialInspection(
+            None,
+            client_id,
+            row["resource"],
+            row["consumed"] is None and row["expires"] > self.clock(),
+            row["consumed"] is not None,
+            tuple(row["scope"].split()),
+            row["expires"],
+            row["redirect_uri"],
+            row["challenge"],
+        )
 
     def inspect_refresh(self, client_id: str, token: str) -> CredentialInspection:
         return self._inspect_token("refresh_tokens", client_id, token)
@@ -396,10 +410,21 @@ class OAuthGrantService:
         self._client(client_id)
         try:
             with self.store.connect() as db:
-                row = db.execute(f"SELECT t.*,g.client_id,g.resource,g.revoked FROM {table} t JOIN grants g ON g.id=t.grant_id WHERE t.hash=?", (_hash(token),)).fetchone()
+                row = db.execute(
+                    f"SELECT t.*,g.client_id,g.resource,g.scope,g.expires AS grant_expires,g.revoked FROM {table} t JOIN grants g ON g.id=t.grant_id WHERE t.hash=?",
+                    (_hash(token),),
+                ).fetchone()
         except sqlite3.Error as exc:
             raise Unavailable() from exc
         if row is None or row["client_id"] != client_id:
             return CredentialInspection(None, None, None, False)
         spent = bool(row["spent"] is not None) if table == "refresh_tokens" else False
-        return CredentialInspection(row["grant_id"], client_id, row["resource"], row["revoked"] is None and row["expires"] > self.clock() and not spent, spent)
+        return CredentialInspection(
+            row["grant_id"],
+            client_id,
+            row["resource"],
+            row["revoked"] is None and row["expires"] > self.clock() and not spent,
+            spent,
+            tuple(row["scope"].split()),
+            row["grant_expires"],
+        )

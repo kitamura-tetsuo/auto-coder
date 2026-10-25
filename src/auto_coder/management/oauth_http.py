@@ -14,7 +14,11 @@ from urllib.parse import urlencode, urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from mcp.server.auth.handlers.authorize import AuthorizationHandler
+from mcp.server.auth.handlers.token import TokenHandler
+from mcp.server.auth.middleware.client_auth import ClientAuthenticator
 from mcp.server.auth.routes import create_auth_routes  # official SDK route primitive
+from pydantic import AnyHttpUrl, TypeAdapter
 from starlette.concurrency import run_in_threadpool
 
 from .oauth_config import SUPPORTED_SCOPE, OAuthSettings
@@ -29,6 +33,7 @@ from .oauth_grants import (
     OAuthGrantService,
     Unavailable,
 )
+from .oauth_provider import CodeExchangeContext, ExchangeContext, ManagementOAuthProvider, RefreshExchangeContext, browser_authorization, exchange_context
 
 _SECURITY_QUERY_FIELDS = {
     "client_id",
@@ -116,7 +121,14 @@ def create_management_auth_app(
     else:
         selected_lifespan = lifespan
     app = FastAPI(lifespan=selected_lifespan)
-    app.state.oauth_sdk_route_factory = create_auth_routes
+    provider = ManagementOAuthProvider(settings, grants)
+    # Construct the official route set as an assertion that this adapter remains
+    # compatible with the locked SDK surface. Binding-sensitive wrappers below use
+    # the same official handlers while retaining raw request fields the SDK drops.
+    issuer_url = TypeAdapter(AnyHttpUrl).validate_python(settings.canonical_issuer)
+    app.state.oauth_sdk_routes = create_auth_routes(provider, issuer_url)
+    token_handler = TokenHandler(provider, ClientAuthenticator(provider))
+    authorization_handler = AuthorizationHandler(provider)
 
     @app.get("/.well-known/oauth-authorization-server")
     async def metadata() -> JSONResponse:
@@ -154,32 +166,39 @@ def create_management_auth_app(
         if client is None or redirect_uri not in client.redirect_uris:
             return _oauth_error("invalid_client" if client is None else "invalid_request")
         assert client_id is not None and redirect_uri is not None
+        if query_value("response_type") != "code" or query_value("resource") != settings.resource:
+            return _oauth_error("invalid_request")
+        if query_value("code_challenge_method") != "S256" or not query_value("code_challenge"):
+            return _oauth_error("invalid_request")
         try:
-            if query_value("response_type") != "code" or query_value("resource") != settings.resource:
-                raise InvalidRequest()
-            if query_value("code_challenge_method") != "S256" or not query_value("code_challenge"):
-                raise InvalidRequest()
-            scopes = _scope(query_value("scope"))
-            browser, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-            pending = await run_in_threadpool(
-                grants.begin_authorization,
-                AuthorizationRequest(
-                    client_id,
-                    redirect_uri,
-                    settings.resource,
-                    query_value("code_challenge") or "",
-                    scopes,
-                    query_value("state"),
-                ),
-                browser,
-                csrf,
-            )
+            _scope(query_value("scope"))
         except OAuthError as exc:
-            return _oauth_error(exc.code, 503 if isinstance(exc, Unavailable) else 400)
+            return _oauth_error(exc.code)
+        context_token = browser_authorization.set(None)
+        try:
+            response = await authorization_handler.handle(request)
+            pending = browser_authorization.get()
+            if pending is not None:
+                response.set_cookie(_cookie_name(settings, pending.request_id), f"{pending.browser_secret}.{pending.csrf_secret}", secure=settings.canonical_issuer.startswith("https://"), httponly=True, samesite="lax", max_age=600, path="/")
+            return response
+        finally:
+            browser_authorization.reset(context_token)
+
+    @app.get("/consent/{request_id}")
+    async def consent(request_id: str, request: Request) -> Response:
+        client_id = request.query_params.get("client_id", "")
+        client = settings.client(client_id)
+        cookie = request.cookies.get(_cookie_name(settings, request_id), "")
+        try:
+            _, csrf = cookie.split(".", 1)
+        except ValueError:
+            return _oauth_error("invalid_request")
+        if client is None:
+            return _oauth_error("invalid_client")
         template = files("auto_coder.management.static").joinpath("authorize.html").read_text()
         data = json.dumps(
             {
-                "requestId": pending.request_id,
+                "requestId": request_id,
                 "csrf": csrf,
                 "clientId": client_id,
                 "resource": settings.resource,
@@ -192,11 +211,10 @@ def create_management_auth_app(
             body,
             headers={
                 "Cache-Control": "no-store",
-                "Content-Security-Policy": "default-src 'self'; script-src 'self' https://www.gstatic.com; connect-src 'self' https://*.googleapis.com; frame-src https://*.firebaseapp.com https://accounts.google.com; style-src 'self'; object-src 'none'; base-uri 'none'",
+                "Content-Security-Policy": "default-src 'self'; script-src 'self' https://www.gstatic.com https://apis.google.com; connect-src 'self' https://*.googleapis.com; frame-src https://*.firebaseapp.com https://accounts.google.com; style-src 'self'; object-src 'none'; base-uri 'none'",
                 "Cross-Origin-Opener-Policy": "same-origin-allow-popups",
             },
         )
-        response.set_cookie(_cookie_name(settings, pending.request_id), f"{browser}.{csrf}", secure=settings.canonical_issuer.startswith("https://"), httponly=True, samesite="lax", max_age=600, path="/")
         return response
 
     @app.get("/assets/authorize.js")
@@ -257,18 +275,22 @@ def create_management_auth_app(
         if not client_id or resource != settings.resource:
             return _oauth_error("invalid_target" if resource != settings.resource else "invalid_client")
         try:
+            context: ExchangeContext
             if grant_type == "authorization_code":
                 if get("scope") is not None:
                     _scope(get("scope"))
-                bundle = await run_in_threadpool(grants.exchange_code, client_id, get("code") or "", get("redirect_uri") or "", resource, get("code_verifier") or "")
+                context = CodeExchangeContext(client_id, get("code") or "", get("redirect_uri") or "", resource, get("code_verifier") or "")
             elif grant_type == "refresh_token":
-                scopes = _scope(get("scope"))
-                bundle = await run_in_threadpool(grants.refresh, client_id, get("refresh_token") or "", resource, scopes)
+                context = RefreshExchangeContext(client_id, get("refresh_token") or "", resource, _scope(get("scope")))
             else:
                 return _oauth_error("unsupported_grant_type")
+            context_token = exchange_context.set(context)
+            try:
+                return await token_handler.handle(request)
+            finally:
+                exchange_context.reset(context_token)
         except OAuthError as exc:
             return _oauth_error(exc.code, 503 if isinstance(exc, Unavailable) else 400)
-        return JSONResponse({"access_token": bundle.access_token, "refresh_token": bundle.refresh_token, "token_type": bundle.token_type, "expires_in": bundle.expires_in, "scope": bundle.scope}, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 
     @app.post("/revoke")
     async def revoke(request: Request) -> Response:
