@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -53,6 +54,13 @@ def test_ready_publication_is_atomic_and_schema_is_bounded(tmp_path: Path) -> No
 )
 def test_process_failures_have_safe_typed_classifications(command: list[str], diagnostic: str, expected: PreparationFailure) -> None:
     assert WorkerVersionPreparer._classify_process_failure(command, diagnostic) is expected
+
+
+def test_filesystem_space_failures_have_a_safe_typed_classification() -> None:
+    failure = WorkerVersionPreparer._filesystem_error(OSError(errno.ENOSPC, "sensitive path omitted"))
+
+    assert failure.failure is PreparationFailure.INSUFFICIENT_SPACE
+    assert "sensitive path omitted" not in str(failure)
 
 
 def test_checkout_uses_argument_vectors_and_rejects_non_exact_resolution(tmp_path: Path) -> None:

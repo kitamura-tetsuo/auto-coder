@@ -7,6 +7,7 @@ full object id and an operation id that a caller is allowed to select.
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import hashlib
 import json
@@ -108,11 +109,16 @@ class WorkerVersionPreparer:
     def prepare(self, intent: PrepareIntent) -> PreparedEnvironment:
         self._validate_intent(intent)
         self._validate_configuration()
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        lock_path = self.root / ".prepare.lock"
-        with lock_path.open("a+b") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            return self._prepare_locked(intent)
+        try:
+            self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            lock_path = self.root / ".prepare.lock"
+            with lock_path.open("a+b") as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                return self._prepare_locked(intent)
+        except WorkerVersionError:
+            raise
+        except OSError as exc:
+            raise self._filesystem_error(exc) from exc
 
     def read_ready(self, receipt_path: Path) -> ReadyReceipt:
         """Read a READY receipt and independently verify all immutable bindings."""
@@ -225,7 +231,9 @@ class WorkerVersionPreparer:
             return PreparedEnvironment(self.read_ready(attempt / "READY.json"))
         except WorkerVersionError:
             raise
-        except (OSError, subprocess.SubprocessError) as exc:
+        except OSError as exc:
+            raise self._filesystem_error(exc) from exc
+        except subprocess.SubprocessError as exc:
             raise WorkerVersionError(PreparationFailure.UNAVAILABLE, "worker revision preparation was unavailable") from exc
 
     def _checkout(self, destination: Path, source_sha: str) -> None:
@@ -369,6 +377,14 @@ class WorkerVersionPreparer:
         if executable == "uv" or "uv" in executable:
             return PreparationFailure.INCOMPATIBLE_DEPENDENCIES
         return PreparationFailure.UNAVAILABLE
+
+    @staticmethod
+    def _filesystem_error(exc: OSError) -> WorkerVersionError:
+        """Normalize preparation filesystem failures without exposing paths."""
+
+        if exc.errno in {errno.ENOSPC, errno.EDQUOT}:
+            return WorkerVersionError(PreparationFailure.INSUFFICIENT_SPACE, "worker revision storage has insufficient space")
+        return WorkerVersionError(PreparationFailure.UNAVAILABLE, "worker revision storage is unavailable")
 
     @staticmethod
     def _publish(path: Path, receipt: ReadyReceipt) -> None:

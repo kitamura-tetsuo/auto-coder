@@ -139,6 +139,27 @@ def test_independent_concurrent_preparers_reuse_one_real_install(tmp_path: Path,
     assert len(list(root.glob("revisions/*/*/READY.json"))) == 1
 
 
+def test_preinstall_lock_filesystem_failure_is_typed_and_preserves_prior_environment(tmp_path: Path, _use_real_commands: None) -> None:
+    repo, sha, uv, uv_version = _create_production_fixture(tmp_path)
+    root = tmp_path / "unavailable-versions"
+    root.mkdir()
+    (root / ".prepare.lock").mkdir()
+    previous = tmp_path / "previous-environment"
+    previous.mkdir()
+    marker = previous / "running-worker-marker"
+    marker.write_text("unchanged")
+    config = WorkerVersionConfig(repo, root, Path(sys.executable), uv, uv_version)
+
+    with pytest.raises(WorkerVersionError) as caught:
+        WorkerVersionPreparer(config).prepare(PrepareIntent(sha, "must-not-start"))
+
+    assert caught.value.failure is PreparationFailure.UNAVAILABLE
+    assert str(root) not in str(caught.value)
+    assert marker.read_text() == "unchanged"
+    assert (root / ".prepare.lock").is_dir()
+    assert not list(root.glob("revisions/*/*/READY.json"))
+
+
 def test_partial_attempt_frozen_lock_failure_and_cross_runtime_receipt_are_rejected(tmp_path: Path, _use_real_commands: None) -> None:
     repo, sha, uv, uv_version = _create_production_fixture(tmp_path)
     config = WorkerVersionConfig(repo, tmp_path / "versions-a", Path(sys.executable), uv, uv_version)
