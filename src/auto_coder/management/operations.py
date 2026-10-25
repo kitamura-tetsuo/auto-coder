@@ -106,15 +106,8 @@ class OperationIntent:
         result = []
         for parameter in self.parameters:
             _bounded(parameter.name, "parameter name")
-            if parameter.name.lower() in {
-                "authorization_code",
-                "bearer_token",
-                "command",
-                "credential",
-                "path",
-                "refresh_token",
-                "token",
-            }:
+            unsafe_name_parts = ("authorization", "credential", "command", "directory", "path", "secret", "token")
+            if any(part in parameter.name.lower() for part in unsafe_name_parts):
                 raise ValueError("credential, command, and path parameters are not journal-safe")
             if parameter.name in names:
                 raise ValueError("duplicate action parameter")

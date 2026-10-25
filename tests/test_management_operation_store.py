@@ -201,3 +201,101 @@ def test_schema_and_credentials_fail_closed(tmp_path: Path) -> None:
     connection.commit()
     connection.close()
     assert ManagementOperationStore(tmp_path).admit(intent("new"), authority()).status is AdmissionStatus.UNAVAILABLE
+
+
+def test_needs_attention_cannot_be_bypassed_by_generic_entry_points(tmp_path: Path) -> None:
+    store = ManagementOperationStore(tmp_path)
+    record = store.admit(intent(), authority()).record
+    assert record
+    attention = store.transition(record.operation_id, 0, OperationPhase.NEEDS_ATTENTION)
+    assert attention.record
+    history_before = store.history(record.operation_id)
+    assert store.transition(record.operation_id, 1, OperationPhase.RUNNING).status is MutationStatus.INVALID
+    assert (
+        store.begin_effect(
+            record.operation_id,
+            1,
+            owner_attempt_id="owner",
+            attempt_id="attempt",
+            correlation_identity="effect/1",
+        ).status
+        is MutationStatus.INVALID
+    )
+    assert store.get(record.operation_id).record == attention.record
+    assert store.history(record.operation_id) == history_before
+    assert store.admit(intent("competitor"), authority()).status is AdmissionStatus.BUSY
+    evidence = EffectReceipt("resolution/1", "consumer", 2, "resume")
+    assert store.resolve_needs_attention(record.operation_id, 1, OperationPhase.RUNNING, evidence=evidence).status is MutationStatus.UPDATED
+
+
+def test_corrupt_record_shapes_fail_closed_for_reads_and_admission(tmp_path: Path) -> None:
+    for column, value in (("phase", "unknown-phase"), ("intent_json", "{}"), ("effect_json", "{}")):
+        root = tmp_path / column
+        store = ManagementOperationStore(root)
+        record = store.admit(intent(), authority()).record
+        assert record
+        connection = sqlite3.connect(root / "management-operations.sqlite3")
+        connection.execute(f"UPDATE operations SET {column}=? WHERE operation_id=?", (value, record.operation_id))
+        connection.commit()
+        connection.close()
+        reopened = ManagementOperationStore(root)
+        assert reopened.get(record.operation_id).status is ReadStatus.UNAVAILABLE
+        assert reopened.admit(intent("competitor"), authority()).status is AdmissionStatus.UNAVAILABLE
+        connection = sqlite3.connect(root / "management-operations.sqlite3")
+        assert connection.execute("SELECT COUNT(*) FROM operations").fetchone() == (1,)
+        connection.close()
+
+
+def test_sensitive_parameter_name_variants_never_reach_storage(tmp_path: Path) -> None:
+    store = ManagementOperationStore(tmp_path)
+    unsafe = (
+        ActionParameter("access_token", "Bearer canary-token"),
+        ActionParameter("shell_command", "echo canary-command"),
+        ActionParameter("working_directory", "/canary/path"),
+    )
+    for index, parameter in enumerate(unsafe):
+        candidate = replace(intent(f"unsafe-{index}"), parameters=(parameter,))
+        assert store.admit(candidate, authority()).status is AdmissionStatus.UNAVAILABLE
+    database_parts = tuple(tmp_path.glob("management-operations.sqlite3*"))
+    assert not database_parts or all(marker not in part.read_bytes() for part in database_parts for marker in (b"canary-token", b"canary-command", b"/canary/path"))
+    assert store.list_operations().records == ()
+
+
+def test_stale_generation_cannot_mutate_history_or_lane(tmp_path: Path) -> None:
+    old_store, current_store = ManagementOperationStore(tmp_path), ManagementOperationStore(tmp_path)
+    old = old_store.admit(intent(), authority()).record
+    assert old
+    running = current_store.transition(old.operation_id, 0, OperationPhase.RUNNING)
+    assert running.record
+    history_before = current_store.history(old.operation_id)
+    evidence = EffectReceipt("operation/1", "consumer", 3, "failed")
+    stale = old_store.transition(old.operation_id, old.revision, OperationPhase.FAILED, evidence=evidence)
+    assert stale.status is MutationStatus.STALE
+    assert current_store.get(old.operation_id).record == running.record
+    assert current_store.history(old.operation_id) == history_before
+    assert current_store.admit(intent("competitor"), authority()).status is AdmissionStatus.BUSY
+    terminal = current_store.transition(old.operation_id, running.record.revision, OperationPhase.FAILED, evidence=evidence)
+    assert terminal.record
+    terminal_history = current_store.history(old.operation_id)
+    assert old_store.transition(old.operation_id, 0, OperationPhase.RUNNING).status is MutationStatus.STALE
+    assert current_store.get(old.operation_id).record == terminal.record
+    assert current_store.history(old.operation_id) == terminal_history
+
+
+def test_terminal_failure_preserves_correlated_rejected_effect(tmp_path: Path) -> None:
+    store = ManagementOperationStore(tmp_path)
+    record = store.admit(intent(), authority()).record
+    assert record
+    sent = store.begin_effect(record.operation_id, 0, owner_attempt_id="owner", attempt_id="attempt", correlation_identity="effect/1")
+    assert sent.record
+    rejection = EffectReceipt("effect/1", "provider", 4, "rejected")
+    rejected = store.record_effect(record.operation_id, 1, attempt_id="attempt", state=EffectState.REJECTED, receipt=rejection)
+    assert rejected.record and rejected.record.effect.state is EffectState.REJECTED
+    failed = store.transition(record.operation_id, 2, OperationPhase.FAILED, evidence=rejection)
+    assert failed.record and failed.record.effect.state is EffectState.REJECTED
+    reopened = ManagementOperationStore(tmp_path)
+    retained = reopened.get(record.operation_id).record
+    assert retained and retained.effect == rejected.record.effect
+    terminal_history = reopened.history(record.operation_id).entries[-1]
+    assert terminal_history.effect_state is EffectState.REJECTED
+    assert terminal_history.effect_attempt_id == "attempt"

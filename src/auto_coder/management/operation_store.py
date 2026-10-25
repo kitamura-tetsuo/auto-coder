@@ -108,13 +108,15 @@ class ManagementOperationStore:
                     record = self._record(old)
                     status = AdmissionStatus.REPLAY if old["fingerprint"] == fingerprint else AdmissionStatus.CONFLICT
                     return AdmissionResult(status, record)
-                busy = connection.execute(
-                    "SELECT * FROM operations WHERE target_key=? AND phase IN ('accepted','running','reconciling','needs_attention')",
+                target_rows = connection.execute(
+                    "SELECT * FROM operations WHERE target_key=?",
                     (intent.target.key(),),
-                ).fetchone()
+                ).fetchall()
+                target_records = tuple(self._record(row) for row in target_rows)
+                busy = next((record for record in target_records if record.phase in ACTIVE_PHASES), None)
                 if busy is not None:
                     connection.rollback()
-                    return AdmissionResult(AdmissionStatus.BUSY, self._record(busy))
+                    return AdmissionResult(AdmissionStatus.BUSY, busy)
                 operation_id = str(uuid.uuid4())
                 normalized = OperationIntent(intent.target, intent.action, parameters, intent.idempotency_key, intent.expected_incarnation, intent.expected_artifact)
                 now = time.time()
@@ -139,7 +141,7 @@ class ManagementOperationStore:
                 return self._confirm_ambiguous(namespace, fingerprint)
             finally:
                 connection.close()
-        except (ValueError, sqlite3.Error, OSError) as exc:
+        except (ValueError, KeyError, TypeError, IndexError, sqlite3.Error, OSError) as exc:
             return AdmissionResult(AdmissionStatus.UNAVAILABLE, detail=self._safe_error(exc))
 
     def get(self, operation_id: str) -> OperationLookup:
@@ -152,7 +154,7 @@ class ManagementOperationStore:
                 return OperationLookup(ReadStatus.FOUND, self._record(row))
             finally:
                 connection.close()
-        except (ValueError, sqlite3.Error, OSError) as exc:
+        except (ValueError, KeyError, TypeError, IndexError, sqlite3.Error, OSError) as exc:
             return OperationLookup(ReadStatus.UNAVAILABLE, detail=self._safe_error(exc))
 
     def find_by_key(self, intent: OperationIntent, authority: AcceptedAuthority) -> OperationLookup:
@@ -165,7 +167,7 @@ class ManagementOperationStore:
                 return OperationLookup(ReadStatus.FOUND, self._record(row))
             finally:
                 connection.close()
-        except (ValueError, sqlite3.Error, OSError) as exc:
+        except (ValueError, KeyError, TypeError, IndexError, sqlite3.Error, OSError) as exc:
             return OperationLookup(ReadStatus.UNAVAILABLE, detail=self._safe_error(exc))
 
     def transition(self, operation_id: str, expected_revision: int, phase: OperationPhase, *, owner_attempt_id: str = "", safe_error_category: str = "", evidence: EffectReceipt | None = None) -> MutationResult:
@@ -209,7 +211,16 @@ class ManagementOperationStore:
         if current is None or current.phase is not OperationPhase.NEEDS_ATTENTION:
             return MutationResult(MutationStatus.INVALID, current, "operation is not awaiting attention")
         if phase in TERMINAL_PHASES:
-            return self.transition(operation_id, expected_revision, phase, owner_attempt_id=current.owner_attempt_id, evidence=evidence)
+            return self._mutate(
+                operation_id,
+                expected_revision,
+                phase,
+                current.owner_attempt_id,
+                current.safe_error_category,
+                None,
+                evidence,
+                allow_attention_resolution=True,
+            )
         if current.effect.state is not EffectState.NOT_SENT and current.effect.correlation_identity != evidence.correlation_identity:
             return MutationResult(MutationStatus.INVALID, current, "resolution evidence correlation mismatch")
         effect = EffectAttempt(
@@ -227,6 +238,7 @@ class ManagementOperationStore:
             current.safe_error_category,
             effect,
             evidence,
+            allow_attention_resolution=True,
         )
 
     def list_operations(self, *, cursor: int = 0, limit: int = 50, outstanding_only: bool = False, target: ManagedTarget | None = None) -> OperationPage:
@@ -247,7 +259,7 @@ class ManagementOperationStore:
                 return OperationPage(tuple(self._record(row) for row in rows), int(rows[-1]["sequence"]) if more and rows else None)
             finally:
                 connection.close()
-        except (ValueError, sqlite3.Error, OSError) as exc:
+        except (ValueError, KeyError, TypeError, IndexError, sqlite3.Error, OSError) as exc:
             return OperationPage((), None, QueryStatus.UNAVAILABLE, self._safe_error(exc))
 
     def history(self, operation_id: str, *, cursor: int = 0, limit: int = 50) -> HistoryPage:
@@ -262,10 +274,21 @@ class ManagementOperationStore:
                 return HistoryPage(entries, int(rows[-1]["sequence"]) if more and rows else None)
             finally:
                 connection.close()
-        except (ValueError, sqlite3.Error, OSError) as exc:
+        except (ValueError, KeyError, TypeError, IndexError, sqlite3.Error, OSError) as exc:
             return HistoryPage((), None, QueryStatus.UNAVAILABLE, self._safe_error(exc))
 
-    def _mutate(self, operation_id: str, expected_revision: int, phase: OperationPhase, owner: str, category: str, effect: EffectAttempt | None, evidence: EffectReceipt | None) -> MutationResult:
+    def _mutate(
+        self,
+        operation_id: str,
+        expected_revision: int,
+        phase: OperationPhase,
+        owner: str,
+        category: str,
+        effect: EffectAttempt | None,
+        evidence: EffectReceipt | None,
+        *,
+        allow_attention_resolution: bool = False,
+    ) -> MutationResult:
         try:
             self._bounded_evidence(owner, category)
             connection = self._connect()
@@ -279,6 +302,9 @@ class ManagementOperationStore:
                 if current.revision != expected_revision or current.phase in TERMINAL_PHASES:
                     connection.rollback()
                     return MutationResult(MutationStatus.STALE, current)
+                if current.phase is OperationPhase.NEEDS_ATTENTION and phase is not OperationPhase.NEEDS_ATTENTION and not allow_attention_resolution:
+                    connection.rollback()
+                    return MutationResult(MutationStatus.INVALID, current, "NEEDS_ATTENTION requires explicit evidence-bearing resolution")
                 if effect is not None and effect.state is EffectState.SENT_UNKNOWN and current.effect.state is EffectState.SENT_UNKNOWN:
                     connection.rollback()
                     return MutationResult(MutationStatus.INVALID, current, "unresolved effect cannot be replaced")
@@ -292,13 +318,14 @@ class ManagementOperationStore:
                     if next_effect.state is not EffectState.NOT_SENT and next_effect.correlation_identity != evidence.correlation_identity:
                         connection.rollback()
                         return MutationResult(MutationStatus.INVALID, current, "terminal evidence correlation mismatch")
-                    next_effect = EffectAttempt(
-                        EffectState.CONFIRMED,
-                        next_effect.owner_generation or expected_revision + 1,
-                        next_effect.attempt_id,
-                        evidence.correlation_identity,
-                        evidence,
-                    )
+                    if next_effect.state is not EffectState.REJECTED or next_effect.receipt != evidence:
+                        next_effect = EffectAttempt(
+                            EffectState.CONFIRMED,
+                            next_effect.owner_generation or expected_revision + 1,
+                            next_effect.attempt_id,
+                            evidence.correlation_identity,
+                            evidence,
+                        )
                 revision = expected_revision + 1
                 connection.execute(
                     "UPDATE operations SET phase=?,revision=?,owner_attempt_id=?,safe_error_category=?,effect_json=?,updated_at=? WHERE operation_id=? AND revision=?", (phase.value, revision, owner, category, self._effect_json(next_effect), time.time(), operation_id, expected_revision)
@@ -309,7 +336,7 @@ class ManagementOperationStore:
                 return MutationResult(MutationStatus.UPDATED, self._record(updated))
             finally:
                 connection.close()
-        except (ValueError, sqlite3.Error, OSError) as exc:
+        except (ValueError, KeyError, TypeError, IndexError, sqlite3.Error, OSError) as exc:
             return MutationResult(MutationStatus.UNAVAILABLE, detail=self._safe_error(exc))
 
     def _confirm_ambiguous(self, namespace: str, fingerprint: str) -> AdmissionResult:
