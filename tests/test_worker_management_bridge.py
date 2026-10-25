@@ -58,8 +58,6 @@ def test_real_unix_socket_observes_same_engine_and_read_does_not_heartbeat(monke
     engine = ObservedEngine()
     HealthMonitor.reset_instance()
     monitor = get_health_monitor()
-    monitor.heartbeat("producer:real")
-    before = monitor.heartbeat_observation()
 
     async def scenario() -> None:
         identity = configured_identity("owner/repo")
@@ -69,8 +67,12 @@ def test_real_unix_socket_observes_same_engine_and_read_does_not_heartbeat(monke
         try:
             transport = httpx.AsyncHTTPTransport(uds=str(endpoint))
             async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+                unavailable = await client.get("/v1/observation", params={"nonce": "initial"})
+                monitor.heartbeat("producer:first")
                 first = await client.get("/v1/observation", params={"nonce": "first"})
                 second = await client.get("/v1/observation", params={"nonce": "second"})
+                monitor.heartbeat("producer:second")
+                advanced = await client.get("/v1/observation", params={"nonce": "advanced"})
                 spaced = await client.get("/v1/observation", params={"nonce": "a b"})
                 longest = await client.get("/v1/observation", params={"nonce": "x" * 128})
                 invalid = await client.get("/v1/observation?nonce=a&nonce=b")
@@ -79,14 +81,19 @@ def test_real_unix_socket_observes_same_engine_and_read_does_not_heartbeat(monke
             assert second.status_code == 200
             assert invalid.status_code == 422
             assert non_ascii.status_code == 422
+            assert unavailable.json()["heartbeat"] == {"available": False, "sequence": None, "stage": None, "age_seconds": None}
             payload = first.json()
             assert payload["nonce"] == "first"
             assert payload["repository"] == "owner/repo"
             assert payload["deployment_generation"] == "generation-7"
             assert payload["lifecycle"]["daemon_serving"] is False
-            assert payload["heartbeat"]["sequence"] == before["sequence"]
+            assert payload["heartbeat"]["available"] is True
+            assert payload["heartbeat"]["sequence"] == 1
+            assert payload["heartbeat"]["stage"] == "producer:first"
             assert first.headers["auto-coder-deployment-generation"] == "generation-7"
-            assert second.json()["heartbeat"]["sequence"] == before["sequence"]
+            assert second.json()["heartbeat"]["sequence"] == 1
+            assert advanced.json()["heartbeat"]["sequence"] == 2
+            assert advanced.json()["heartbeat"]["stage"] == "producer:second"
             assert spaced.json()["nonce"] == "a b"
             assert longest.json()["nonce"] == "x" * 128
         finally:
@@ -240,6 +247,8 @@ def test_actual_daemon_is_observable_during_startup_and_cancellation(monkeypatch
     reconciliation_release = asyncio.Event()
     setup_entered = threading.Event()
     setup_release = threading.Event()
+    producer_cleanup_entered = asyncio.Event()
+    producer_cleanup_release = asyncio.Event()
 
     async def reconcile(_repository: str) -> None:
         reconciliation_entered.set()
@@ -250,8 +259,17 @@ def test_actual_daemon_is_observable_during_startup_and_cancellation(monkeypatch
         setup_entered.set()
         assert setup_release.wait(5)
 
+    async def supervised_producer(_repository: str) -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            producer_cleanup_entered.set()
+            await producer_cleanup_release.wait()
+            raise
+
     monkeypatch.setattr(engine, "_perform_startup_reconciliation", reconcile)
     monkeypatch.setattr("auto_coder.codex_work_reconstruction.reconstruct_active_codex_work", hold_later_setup)
+    monkeypatch.setattr(engine, "_producer_loop", supervised_producer)
 
     async def scenario() -> None:
         daemon = asyncio.create_task(_run_process_issues_daemon(engine, "owner/repo", False, "127.0.0.1", 0, "critical", None, None))
@@ -270,8 +288,20 @@ def test_actual_daemon_is_observable_during_startup_and_cancellation(monkeypatch
             later_setup = await client.get("/v1/observation", params={"nonce": "later setup"})
             assert later_setup.json()["lifecycle"]["startup_reconciled"] is True
             assert later_setup.json()["lifecycle"]["daemon_serving"] is False
-            daemon.cancel()
             setup_release.set()
+            for sequence in range(100):
+                steady = await client.get("/v1/observation", params={"nonce": f"steady-{sequence}"})
+                if steady.json()["lifecycle"]["daemon_serving"] is True:
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                raise AssertionError("real daemon never entered supervised steady state")
+            daemon.cancel()
+            await asyncio.wait_for(producer_cleanup_entered.wait(), timeout=3)
+            cancelling = await client.get("/v1/observation", params={"nonce": "cancelling"})
+            assert cancelling.json()["lifecycle"]["daemon_serving"] is False
+            assert not daemon.done()
+            producer_cleanup_release.set()
         with pytest.raises(asyncio.CancelledError):
             await daemon
 
