@@ -1,5 +1,7 @@
 import base64
 import hashlib
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import parse_qs, urlsplit
 
 from fastapi.testclient import TestClient
@@ -37,6 +39,20 @@ def setup(tmp_path):
 
 def begin(client, settings, verifier="a" * 43, state="state"):
     return client.get("/authorize", params={"response_type": "code", "client_id": "client", "redirect_uri": "http://127.0.0.1:9876/cb", "resource": settings.resource, "scope": "auto-coder.read", "state": state, "code_challenge": challenge(verifier), "code_challenge_method": "S256"})
+
+
+def approve(client, settings, verifier):
+    import json
+
+    page = begin(client, settings, verifier=verifier)
+    data = json.loads(page.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0])
+    result = client.post(
+        f"/authorize/{data['requestId']}/allow",
+        headers={"Origin": settings.canonical_issuer},
+        data={"csrf": data["csrf"], "firebase_id_token": "signed"},
+        follow_redirects=False,
+    )
+    return parse_qs(urlsplit(result.headers["location"]).query)["code"][0]
 
 
 def test_discovery_consent_exchange_refresh_and_revoke(tmp_path):
@@ -153,4 +169,44 @@ def test_denial_survives_app_reconstruction_with_original_binding(tmp_path):
     )
     assert replay.status_code == 400
     assert replay.json() == {"error": "invalid_grant"}
+    assert exchange_context.get() is None
+
+
+def test_overlapping_sdk_exchanges_keep_request_local_values(tmp_path):
+    settings, grants, client = setup(tmp_path)
+    first_verifier, second_verifier = "a" * 43, "b" * 43
+    first_code = approve(client, settings, first_verifier)
+    second_code = approve(client, settings, second_verifier)
+    original = grants.exchange_code
+    barrier = threading.Barrier(2)
+    observed = []
+    observed_lock = threading.Lock()
+
+    def exchange(client_id, code, redirect_uri, resource, verifier):
+        barrier.wait(timeout=5)
+        with observed_lock:
+            observed.append((code, verifier, resource))
+        return original(client_id, code, redirect_uri, resource, verifier)
+
+    grants.exchange_code = exchange
+
+    def redeem(code, verifier):
+        with TestClient(create_management_auth_app(settings, grants), base_url="http://localhost") as concurrent_client:
+            return concurrent_client.post(
+                "/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "client_id": "client",
+                    "code": code,
+                    "redirect_uri": "http://127.0.0.1:9876/cb",
+                    "resource": settings.resource,
+                    "code_verifier": verifier,
+                },
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda item: redeem(*item), [(first_code, first_verifier), (second_code, second_verifier)]))
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert set(observed) == {(first_code, first_verifier, settings.resource), (second_code, second_verifier, settings.resource)}
     assert exchange_context.get() is None
