@@ -28,7 +28,7 @@ logger = get_logger(__name__)
 MAX_DOCUMENT_BYTES = 256 * 1024
 MAX_UNSETTLED = 500
 MAX_TEXT = 2000
-_NONCE = re.compile(r"^[\x21-\x7e]{1,128}$")
+_NONCE = re.compile(r"^[\x20-\x7e]{1,128}$")
 
 
 class ManagementBridgeConfigurationError(RuntimeError):

@@ -2996,9 +2996,15 @@ class AutomationEngine:
         try:
             # Serving starts only after every required steady-state task exists
             # and immediately before their supervising wait becomes active.
-            self.daemon_serving = all(not task.done() for task in all_loop_tasks)
-            done, _ = await asyncio.wait({*all_loop_tasks, shutdown_wait}, return_when=asyncio.FIRST_COMPLETED)
-            self.daemon_serving = False
+            self.daemon_serving = self.lifecycle is EngineLifecycle.RUNNING and self.startup_reconciled and all(not task.done() for task in all_loop_tasks)
+            try:
+                done, _ = await asyncio.wait({*all_loop_tasks, shutdown_wait}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                # Cancellation and exceptions skip the statement following an
+                # await.  Clear readiness before any cancellation joins so a
+                # still-responsive bridge cannot report a dead supervisor as
+                # serving while cleanup is blocked on owned work.
+                self.daemon_serving = False
             if shutdown_wait in done:
                 # Admission stopped synchronously when the lifecycle changed.
                 # Cancel loop waiters, but shielded synchronous operations retain
