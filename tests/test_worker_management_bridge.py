@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -96,13 +97,13 @@ def test_real_unix_socket_observes_same_engine_and_read_does_not_heartbeat(monke
 
 
 def test_conflicting_endpoint_is_never_replaced(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from auto_coder.cli_commands_main import _run_process_issues_daemon
+
     endpoint = configure(monkeypatch, tmp_path)
     endpoint.write_text("operator-owned")
-    identity = configured_identity("owner/repo")
-    assert identity is not None
-    bridge = WorkerManagementBridge(identity, ObservedEngine())
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
     with pytest.raises(ManagementBridgeConfigurationError, match="already exists"):
-        asyncio.run(bridge.start())
+        asyncio.run(_run_process_issues_daemon(engine, "owner/repo", False, "127.0.0.1", 0, "critical", None, None))
     assert endpoint.read_text() == "operator-owned"
 
 
@@ -176,9 +177,12 @@ def test_actual_daemon_uds_observes_admitted_drain_and_persists_receipt(monkeypa
             assert body["lifecycle"]["daemon_serving"] is False
             assert body["invocations"]["unsettled_count"] == 1
             assert body["invocations"]["unsettled"][0]["invocation_id"] == admitted.identity.invocation_id
+            assert engine.implementation_slots is not None
+            monkeypatch.setattr(engine.implementation_slots, "snapshot", MagicMock(side_effect=OSError("store unavailable")))
             status = await client.get("/api/status")
             assert status.status_code == 200
             assert status.headers["auto-coder-deployment-generation"] == "generation-7"
+            assert status.json()["implementation_slots"]["error_code"] == "slot_observation_unavailable"
 
         admitted.begin_checkpointing("result")
         assert admitted.confirm_settled("durable-checkpoint")
@@ -190,6 +194,22 @@ def test_actual_daemon_uds_observes_admitted_drain_and_persists_receipt(monkeypa
     assert receipt["unsettled_count"] == 0
     assert receipt["process_run_id"]
     assert not endpoint.exists()
+
+    # A later production daemon lifetime cannot relabel the immutable receipt.
+    monkeypatch.setenv("AUTO_CODER_DEPLOYMENT_GENERATION", "generation-8")
+    monkeypatch.setattr(
+        bridge_module,
+        "observe_controller_artifact",
+        lambda: ControllerArtifactObservation(
+            process_run_id="new-process-run",
+            process_run=ArtifactField(value="new-process-run", origin="controller_process", available=True),
+        ),
+    )
+    replacement = AutomationEngine(MagicMock(), AutomationConfig())
+    assert replacement.request_graceful_shutdown("first signal")
+    replacement.request_force_stop("second signal")
+    asyncio.run(_run_process_issues_daemon(replacement, "owner/repo", False, "127.0.0.1", 0, "critical", None, None))
+    assert json.loads(endpoint.with_name("last-terminal.json").read_text()) == receipt
 
 
 def test_actual_daemon_forced_stop_never_persists_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -205,4 +225,79 @@ def test_actual_daemon_forced_stop_never_persists_receipt(monkeypatch: pytest.Mo
     asyncio.run(_run_process_issues_daemon(engine, "owner/repo", False, "127.0.0.1", 0, "critical", None, None))
 
     assert engine.lifecycle is EngineLifecycle.FORCED
+    assert not endpoint.with_name("last-terminal.json").exists()
+
+
+def test_actual_daemon_is_observable_during_startup_and_cancellation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Exercise both startup barriers without replacing start_automation."""
+    from auto_coder.cli_commands_main import _run_process_issues_daemon
+
+    endpoint = configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    reconciliation_entered = asyncio.Event()
+    reconciliation_release = asyncio.Event()
+    setup_entered = threading.Event()
+    setup_release = threading.Event()
+
+    async def reconcile(_repository: str) -> None:
+        reconciliation_entered.set()
+        await reconciliation_release.wait()
+        engine.startup_reconciled = True
+
+    def hold_later_setup(*_args: object, **_kwargs: object) -> None:
+        setup_entered.set()
+        assert setup_release.wait(5)
+
+    monkeypatch.setattr(engine, "_perform_startup_reconciliation", reconcile)
+    monkeypatch.setattr("auto_coder.codex_work_reconstruction.reconstruct_active_codex_work", hold_later_setup)
+
+    async def scenario() -> None:
+        daemon = asyncio.create_task(_run_process_issues_daemon(engine, "owner/repo", False, "127.0.0.1", 0, "critical", None, None))
+        await asyncio.wait_for(reconciliation_entered.wait(), timeout=3)
+        transport = httpx.AsyncHTTPTransport(uds=str(endpoint))
+        async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+            startup = await client.get("/v1/observation", params={"nonce": "startup"})
+            assert startup.json()["lifecycle"] == {
+                "state": "running",
+                "startup_reconciled": False,
+                "startup_reconciliation_error": None,
+                "daemon_serving": False,
+            }
+            reconciliation_release.set()
+            assert await asyncio.to_thread(setup_entered.wait, 3)
+            later_setup = await client.get("/v1/observation", params={"nonce": "later setup"})
+            assert later_setup.json()["lifecycle"]["startup_reconciled"] is True
+            assert later_setup.json()["lifecycle"]["daemon_serving"] is False
+            daemon.cancel()
+            setup_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await daemon
+
+    asyncio.run(scenario())
+    assert not endpoint.with_name("last-terminal.json").exists()
+
+
+def test_actual_daemon_unexpected_loop_exit_never_persists_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from auto_coder.cli_commands_main import _run_process_issues_daemon
+
+    endpoint = configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+
+    async def reconcile(_repository: str) -> None:
+        engine.startup_reconciled = True
+
+    async def producer_exits(_repository: str) -> None:
+        return None
+
+    monkeypatch.setattr(engine, "_perform_startup_reconciliation", reconcile)
+    monkeypatch.setattr(engine, "_producer_loop", producer_exits)
+
+    asyncio.run(_run_process_issues_daemon(engine, "owner/repo", False, "127.0.0.1", 0, "critical", None, None))
+
+    assert engine.lifecycle is EngineLifecycle.DRAINING
+    assert engine.daemon_serving is False
     assert not endpoint.with_name("last-terminal.json").exists()
