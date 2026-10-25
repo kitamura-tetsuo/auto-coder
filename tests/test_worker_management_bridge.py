@@ -6,7 +6,7 @@ import sqlite3
 import threading
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -103,6 +103,71 @@ def test_real_unix_socket_observes_same_engine_and_read_does_not_heartbeat(monke
         finally:
             await bridge.close()
         assert not endpoint.exists()
+
+    asyncio.run(scenario())
+
+
+def test_real_socket_reevaluation_accepts_replays_conflicts_and_survives_replacement(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    endpoint = configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    engine.startup_reconciled = True
+    engine.daemon_serving = True
+    engine._enqueue_pending_invalidations = AsyncMock()
+    engine.review_adjudications.store.affected_prs = MagicMock(return_value=[])
+
+    async def scenario() -> None:
+        identity = configured_identity("owner/repo")
+        assert identity is not None
+        bridge = WorkerManagementBridge(identity, engine)
+        await bridge.start()
+        payload = {
+            "operation_id": "management:2602:1",
+            "repository": "owner/repo",
+            "channel": "release",
+            "expected_process_run_id": bridge.artifact.process_run_id,
+            "expected_deployment_generation": "generation-7",
+            "target": {"type": "issue", "number": 2602},
+        }
+        try:
+            transport = httpx.AsyncHTTPTransport(uds=str(endpoint))
+            async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+                accepted = await client.post("/v1/reevaluations", json=payload)
+                replay = await client.post("/v1/reevaluations", json=payload)
+                fetched = await client.get("/v1/reevaluations/management:2602:1")
+                conflict = await client.post("/v1/reevaluations", json={**payload, "target": {"type": "pr", "number": 2602}})
+                boolean = await client.post("/v1/reevaluations", json={**payload, "operation_id": "bad-number", "target": {"type": "issue", "number": True}})
+                forced = await client.post("/v1/reevaluations", json={**payload, "operation_id": "bad-field", "force": True})
+            assert accepted.status_code == 202
+            assert replay.status_code == fetched.status_code == 200
+            assert accepted.json() == replay.json() == fetched.json()
+            assert accepted.json()["outcome"] == "accepted_for_reevaluation"
+            assert accepted.json()["invalidation"] == {"disposition": "new_pending", "generation": 1}
+            assert conflict.status_code == 409 and conflict.json()["error"]["code"] == "operation_payload_conflict"
+            assert boolean.status_code == forced.status_code == 422
+            assert engine.invalidations.pending_count("owner/repo") == 1
+            engine._enqueue_pending_invalidations.assert_awaited_once_with("owner/repo")
+        finally:
+            await bridge.close()
+
+        # Historical lookup and identical replay do not require the old
+        # incarnation to remain RUNNING, while a new stale command is refused.
+        engine.request_graceful_shutdown("replacement")
+        replacement = WorkerManagementBridge(identity, engine)
+        replacement.artifact = replace(replacement.artifact, process_run_id="replacement-run")
+        await replacement.start()
+        try:
+            transport = httpx.AsyncHTTPTransport(uds=str(endpoint))
+            async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+                fetched_after = await client.get("/v1/reevaluations/management:2602:1")
+                replay_after = await client.post("/v1/reevaluations", json=payload)
+                stale_new = await client.post("/v1/reevaluations", json={**payload, "operation_id": "management:2602:2"})
+            assert fetched_after.status_code == replay_after.status_code == 200
+            assert fetched_after.json()["accepting_process_run_id"] == payload["expected_process_run_id"]
+            assert stale_new.status_code == 409
+            assert stale_new.json()["error"]["code"] == "not_ready_or_draining"
+        finally:
+            await replacement.close()
 
     asyncio.run(scenario())
 

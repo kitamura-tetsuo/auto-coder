@@ -1,5 +1,6 @@
 """Durable, coalescing invalidations for authoritative GitHub reevaluation."""
 
+import json
 import math
 import sqlite3
 import threading
@@ -8,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .logger_config import get_logger
 
@@ -77,6 +78,30 @@ class InvalidationTransition:
 
     accepted: bool
     disposition: Optional[InvalidationDisposition] = None
+
+
+@dataclass(frozen=True)
+class ReevaluationReceipt:
+    """Immutable evidence that one management command entered the durable queue."""
+
+    schema_version: int
+    operation_id: str
+    repository: str
+    channel: str
+    target_type: str
+    target_number: int
+    requested_process_run_id: str
+    requested_deployment_generation: str
+    accepting_process_run_id: str
+    accepting_deployment_generation: str
+    accepted_at: str
+    disposition: InvalidationDisposition
+    generation: int
+    outcome: str = "accepted_for_reevaluation"
+
+
+class ReevaluationOperationConflict(ValueError):
+    """An operation identifier is already bound to a different command."""
 
 
 class CompletionOutcome(str, Enum):
@@ -220,6 +245,21 @@ class DurableInvalidationQueue:
                 active INTEGER NOT NULL DEFAULT 1,
                 PRIMARY KEY(repository, pr_number, head_sha, workflow_id)
             );
+            CREATE TABLE IF NOT EXISTS management_reevaluations (
+                operation_id TEXT PRIMARY KEY,
+                canonical_payload TEXT NOT NULL,
+                repository TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                target_type TEXT NOT NULL CHECK(target_type IN ('issue', 'pr')),
+                target_number INTEGER NOT NULL,
+                requested_process_run_id TEXT NOT NULL,
+                requested_deployment_generation TEXT NOT NULL,
+                accepting_process_run_id TEXT NOT NULL,
+                accepting_deployment_generation TEXT NOT NULL,
+                accepted_at TEXT NOT NULL,
+                disposition TEXT NOT NULL,
+                generation INTEGER NOT NULL
+            );
             """
         )
         schema = self._connection.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'entity_invalidations'").fetchone()[0]
@@ -323,6 +363,126 @@ class DurableInvalidationQueue:
                 DROP TABLE github_deliveries_v2;
                 """
             )
+
+    @staticmethod
+    def _receipt(row: tuple[Any, ...]) -> ReevaluationReceipt:
+        return ReevaluationReceipt(
+            1,
+            str(row[0]),
+            str(row[2]),
+            str(row[3]),
+            str(row[4]),
+            int(row[5]),
+            str(row[6]),
+            str(row[7]),
+            str(row[8]),
+            str(row[9]),
+            str(row[10]),
+            InvalidationDisposition(str(row[11])),
+            int(row[12]),
+        )
+
+    def get_reevaluation_receipt(self, operation_id: str) -> Optional[ReevaluationReceipt]:
+        """Read authoritative admission evidence without consulting queue appearance."""
+        with self._lock:
+            row = self._connection.execute(
+                """SELECT operation_id, canonical_payload, repository, channel,
+                          target_type, target_number, requested_process_run_id,
+                          requested_deployment_generation, accepting_process_run_id,
+                          accepting_deployment_generation, accepted_at, disposition, generation
+                   FROM management_reevaluations WHERE operation_id = ?""",
+                (operation_id,),
+            ).fetchone()
+        return None if row is None else self._receipt(row)
+
+    def accept_management_reevaluation(
+        self,
+        *,
+        operation_id: str,
+        repository: str,
+        channel: str,
+        target: EntityIdentity,
+        requested_process_run_id: str,
+        requested_deployment_generation: str,
+        accepting_process_run_id: str,
+        accepting_deployment_generation: str,
+        associated_prs: tuple[int, ...] = (),
+    ) -> tuple[ReevaluationReceipt, bool]:
+        """Atomically bind a command receipt and all of its queue transitions."""
+        payload = json.dumps(
+            {
+                "channel": channel,
+                "expected_deployment_generation": requested_deployment_generation,
+                "expected_process_run_id": requested_process_run_id,
+                "repository": repository,
+                "target": {"number": target.number, "type": target.entity_type},
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        accepted_at = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._connection:
+            existing = self._connection.execute(
+                """SELECT operation_id, canonical_payload, repository, channel,
+                          target_type, target_number, requested_process_run_id,
+                          requested_deployment_generation, accepting_process_run_id,
+                          accepting_deployment_generation, accepted_at, disposition, generation
+                   FROM management_reevaluations WHERE operation_id = ?""",
+                (operation_id,),
+            ).fetchone()
+            if existing is not None:
+                if str(existing[1]) != payload:
+                    raise ReevaluationOperationConflict(operation_id)
+                return self._receipt(existing), True
+
+            disposition, generation = self._management_invalidate(target)
+            for number in sorted(set(associated_prs)):
+                self._management_invalidate(EntityIdentity(repository, "pr", number))
+            if target.entity_type == "issue":
+                self._connection.execute(
+                    """UPDATE entity_invalidations SET retry_not_before = NULL, deferral_reason = NULL
+                       WHERE repository = ? AND state = 'dirty'
+                         AND deferral_reason = 'cached_dependency_wait'""",
+                    (repository,),
+                )
+            self._connection.execute(
+                """INSERT INTO management_reevaluations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (operation_id, payload, repository, channel, target.entity_type, target.number, requested_process_run_id, requested_deployment_generation, accepting_process_run_id, accepting_deployment_generation, accepted_at, disposition.value, generation),
+            )
+            receipt = ReevaluationReceipt(
+                1,
+                operation_id,
+                repository,
+                channel,
+                target.entity_type,
+                target.number,
+                requested_process_run_id,
+                requested_deployment_generation,
+                accepting_process_run_id,
+                accepting_deployment_generation,
+                accepted_at,
+                disposition,
+                generation,
+            )
+            return receipt, False
+
+    def _management_invalidate(self, identity: EntityIdentity) -> tuple[InvalidationDisposition, int]:
+        row = self._connection.execute(
+            """SELECT state, generation FROM entity_invalidations
+               WHERE repository = ? AND entity_type = ? AND entity_number = ?""",
+            (identity.repository, identity.entity_type, identity.number),
+        ).fetchone()
+        self._connection.execute(
+            """INSERT INTO entity_invalidations(repository, entity_type, entity_number, generation, state)
+               VALUES (?, ?, ?, 1, 'dirty')
+               ON CONFLICT(repository, entity_type, entity_number) DO UPDATE SET
+                 generation = CASE WHEN state = 'processing' THEN generation + 1 ELSE generation END""",
+            (identity.repository, identity.entity_type, identity.number),
+        )
+        if row is None:
+            return InvalidationDisposition.NEW_PENDING, 1
+        disposition = InvalidationDisposition.FOLLOWUP_REQUIRED if row[0] == "processing" else InvalidationDisposition.COALESCED
+        return disposition, int(row[1]) + (1 if row[0] == "processing" else 0)
 
     def accept_ci_delivery(self, delivery: CIWebhookDelivery, now: Optional[float] = None) -> bool:
         """Atomically retain a CI delivery and advance its durable observation scopes."""
