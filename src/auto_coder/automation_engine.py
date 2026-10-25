@@ -5362,12 +5362,7 @@ class AutomationEngine:
             raced = self.invalidations.get_reevaluation_receipt(operation_id)
             if raced is not None:
                 matches = (
-                    raced.repository == repository
-                    and raced.channel == channel
-                    and raced.target_type == target_type
-                    and raced.target_number == target_number
-                    and raced.requested_process_run_id == expected_process_run_id
-                    and raced.requested_deployment_generation == expected_deployment_generation
+                    raced.repository == repository and raced.channel == channel and raced.target_type == target_type and raced.target_number == target_number and raced.requested_process_run_id == expected_process_run_id and raced.requested_deployment_generation == expected_deployment_generation
                 )
                 if not matches:
                     raise ReevaluationOperationConflict(operation_id)
