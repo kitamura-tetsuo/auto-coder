@@ -49,27 +49,54 @@ class FakeGitData:
         self.ref_status = 201
         self.run_status = "completed"
         self.run_conclusion: object = "success"
+        self.current_attempt = 2
+        self.source_sha = SHA
+        self.unavailable_attempts: set[int] = set()
         self.missing_job: str | None = None
         self.tag_status = 201
+        self.ref_exception_after_create = False
+        self.ref_read_exception = False
+        self.ref_oid_after_create: str | None = None
+        self.requests: list[tuple[str, str]] = []
 
     def request(self, method: str, path: str, payload: dict[str, object] | None = None) -> GitDataResponse:
+        self.requests.append((method, path))
         if method == "GET" and path == "actions/runs/17":
             return GitDataResponse(
                 200,
                 {
                     "id": 17,
-                    "run_attempt": 2,
+                    "run_attempt": self.current_attempt,
                     "workflow_id": 23,
-                    "head_sha": SHA,
+                    "head_sha": self.source_sha,
                     "path": WORKFLOW_PATH,
                     "status": self.run_status,
                     "conclusion": self.run_conclusion,
                 },
             )
-        if method == "GET" and path.endswith("/attempts/2/jobs?per_page=100"):
-            jobs = [{"name": name, "status": "completed", "conclusion": "success", "run_attempt": 2} for name in REQUIRED_JOBS if name != self.missing_job]
+        if method == "GET" and path.startswith("actions/runs/17/attempts/") and not path.endswith("/jobs?per_page=100"):
+            attempt = int(path.rsplit("/", 1)[1])
+            if attempt in self.unavailable_attempts:
+                return GitDataResponse(404)
+            return GitDataResponse(
+                200,
+                {
+                    "id": 17,
+                    "run_attempt": attempt,
+                    "workflow_id": 23,
+                    "head_sha": self.source_sha,
+                    "path": WORKFLOW_PATH,
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+            )
+        if method == "GET" and "/attempts/" in path and path.endswith("/jobs?per_page=100"):
+            attempt = int(path.split("/attempts/", 1)[1].split("/", 1)[0])
+            jobs = [{"name": name, "status": "completed", "conclusion": "success", "run_attempt": attempt} for name in REQUIRED_JOBS if name != self.missing_job]
             return GitDataResponse(200, {"total_count": len(jobs), "jobs": jobs})
         if method == "GET" and path.startswith("git/ref/tags/"):
+            if self.ref_read_exception and self.ref is not None:
+                raise RuntimeError("GitHub Git-data request unavailable")
             return GitDataResponse(200, self.ref) if self.ref is not None else GitDataResponse(404)
         if method == "GET" and path.startswith("git/tags/"):
             value = self.tags.get(path.removeprefix("git/tags/"))
@@ -82,7 +109,9 @@ class FakeGitData:
             return GitDataResponse(201, {"sha": TAG_OID})
         if method == "POST" and path == "git/refs" and payload is not None:
             # Model both a normal response and a response lost after GitHub committed it.
-            self.ref = {"ref": payload["ref"], "object": {"type": "tag", "sha": payload["sha"]}}
+            self.ref = {"ref": payload["ref"], "object": {"type": "tag", "sha": self.ref_oid_after_create or payload["sha"]}}
+            if self.ref_exception_after_create:
+                raise RuntimeError("GitHub Git-data request unavailable")
             return GitDataResponse(self.ref_status)
         raise AssertionError((method, path, payload))
 
@@ -108,11 +137,82 @@ def test_exact_tag_is_created_once_and_same_sha_rerun_reuses_it() -> None:
     assert remote.creates == 1
 
 
+def test_successful_later_attempt_reuses_original_attempt_tag_without_writes() -> None:
+    remote = FakeGitData()
+    original = publisher(remote).publish(record(), "2026-01-02T03:04:05Z")
+    remote.current_attempt = 3
+
+    reused = publisher(remote).publish(record(run_attempt=3), "2026-01-02T04:04:05Z")
+
+    assert reused == original
+    assert remote.creates == 1
+    assert ("GET", "actions/runs/17/attempts/2") in remote.requests
+
+
+def test_unavailable_original_attempt_refuses_same_sha_rerun_without_writes() -> None:
+    remote = FakeGitData()
+    publisher(remote).publish(record(), "2026-01-02T03:04:05Z")
+    remote.current_attempt = 3
+    remote.unavailable_attempts.add(2)
+
+    with pytest.raises(SourceEvidenceError, match="workflow run readback is unavailable"):
+        publisher(remote).publish(record(run_attempt=3), "2026-01-02T04:04:05Z")
+    assert remote.creates == 1
+
+
+def test_failed_current_rerun_is_refused_before_reusing_original_tag() -> None:
+    remote = FakeGitData()
+    publisher(remote).publish(record(), "2026-01-02T03:04:05Z")
+    remote.current_attempt = 3
+    remote.run_conclusion = "failure"
+
+    with pytest.raises(SourceEvidenceError, match="completed successful"):
+        publisher(remote).publish(record(run_attempt=3), "2026-01-02T04:04:05Z")
+    assert remote.creates == 1
+
+
 def test_lost_ref_create_response_is_recovered_only_by_exact_readback() -> None:
     remote = FakeGitData()
     remote.ref_status = 503
     assert publisher(remote).publish(record(), "2026-01-02T03:04:05Z").tag_object_oid == TAG_OID
     assert remote.creates == 1
+
+
+def test_transport_exception_after_ref_create_is_reconciled_without_retry() -> None:
+    remote = FakeGitData()
+    remote.ref_exception_after_create = True
+
+    assert publisher(remote).publish(record(), "2026-01-02T03:04:05Z").tag_object_oid == TAG_OID
+    assert remote.creates == 1
+    assert remote.requests.count(("POST", "git/refs")) == 1
+    assert remote.requests[-1] == ("GET", "actions/runs/17/attempts/2/jobs?per_page=100")
+
+
+def test_transport_exception_with_unavailable_readback_stays_uncertain() -> None:
+    remote = FakeGitData()
+    remote.ref_exception_after_create = True
+    remote.ref_read_exception = True
+
+    with pytest.raises(SourceEvidenceError, match="outcome is uncertain"):
+        publisher(remote).publish(record(), "2026-01-02T03:04:05Z")
+    assert remote.creates == 1
+    assert remote.requests.count(("POST", "git/refs")) == 1
+
+
+def test_transport_exception_readback_of_different_object_is_conflict() -> None:
+    remote = FakeGitData()
+    remote.ref_exception_after_create = True
+    remote.ref_oid_after_create = OTHER_SHA
+    remote.tags[OTHER_SHA] = {
+        "tag": f"auto-coder-tested-{SHA}",
+        "message": serialize_record(record(distribution_version="9.9.9")),
+        "object": {"type": "commit", "sha": SHA},
+    }
+
+    with pytest.raises(SourceEvidenceError, match="object just created"):
+        publisher(remote).publish(record(), "2026-01-02T03:04:05Z")
+    assert remote.creates == 1
+    assert remote.requests.count(("POST", "git/refs")) == 1
 
 
 def test_lost_tag_object_create_response_stays_uncertain_without_blind_retry() -> None:
@@ -179,6 +279,32 @@ def test_checkout_record_uses_real_clean_git_identity_and_locked_input(tmp_path:
     observed = record_from_checkout("owner/repo", sha, 17, 2, 23, tmp_path)
     assert observed.source_sha == sha
     assert len(observed.lock_sha256) == 64
+
+    def remote_with_existing(existing_record: SourceRecord) -> FakeGitData:
+        remote = FakeGitData()
+        remote.source_sha = sha
+        remote.ref = {"ref": f"refs/tags/auto-coder-tested-{sha}", "object": {"type": "tag", "sha": TAG_OID}}
+        remote.tags[TAG_OID] = {
+            "tag": f"auto-coder-tested-{sha}",
+            "message": serialize_record(existing_record),
+            "object": {"type": "commit", "sha": sha},
+        }
+        return remote
+
+    for conflicting in (
+        replace(observed, distribution_version="9.9.9"),
+        replace(observed, lock_sha256="e" * 64),
+    ):
+        remote = remote_with_existing(conflicting)
+        with pytest.raises(SourceEvidenceError, match="source/build identity"):
+            publisher(remote).publish(observed, "2026-01-02T03:04:05Z")
+        assert remote.creates == 0
+
+    rerun_remote = remote_with_existing(observed)
+    rerun_remote.current_attempt = 3
+    reused = publisher(rerun_remote).publish(replace(observed, run_attempt=3), "2026-01-02T04:04:05Z")
+    assert reused.record == observed
+    assert rerun_remote.creates == 0
 
     (tmp_path / "uv.lock").write_text("version = 2\n", encoding="utf-8")
     with pytest.raises(SourceEvidenceError, match="clean exact source"):

@@ -129,11 +129,12 @@ class TestedSourcePublisher:
         self.client = client
         self.repository = repository
 
-    def verify_run(self, record: TestedSourceRecord) -> None:
+    def verify_run(self, record: TestedSourceRecord, *, recorded_attempt: bool = False) -> None:
         validate_record(record)
         if record.repository != self.repository:
             raise TestedSourceError("run repository does not match publication repository")
-        run = _object(self.client.request("GET", f"actions/runs/{record.run_id}"), "workflow run readback")
+        run_path = f"actions/runs/{record.run_id}/attempts/{record.run_attempt}" if recorded_attempt else f"actions/runs/{record.run_id}"
+        run = _object(self.client.request("GET", run_path), "workflow run readback")
         expected = {
             "id": record.run_id,
             "run_attempt": record.run_attempt,
@@ -187,7 +188,21 @@ class TestedSourcePublisher:
         self.verify_run(record)
         existing = self.read(record.source_sha)
         if existing is not None:
-            self.verify_run(existing.record)
+            immutable_identity = (
+                "schema_version",
+                "repository",
+                "source_sha",
+                "distribution_version",
+                "lock_sha256",
+                "python_version",
+                "workflow_id",
+                "workflow_path",
+                "test_profile",
+                "test_result",
+            )
+            if any(getattr(existing.record, field) != getattr(record, field) for field in immutable_identity):
+                raise TestedSourceError("existing tested-source tag conflicts with the source/build identity")
+            self.verify_run(existing.record, recorded_attempt=True)
             return existing
         name = tag_name(record.source_sha)
         tag_response = self.client.request(
@@ -204,16 +219,23 @@ class TestedSourcePublisher:
         if tag_response.status != 201 or not isinstance(tag_response.data, dict):
             raise TestedSourceError("tag object creation is unavailable; publication outcome is uncertain")
         oid = _require_sha(tag_response.data.get("sha"), "created tag object oid")
-        ref_response = self.client.request("POST", "git/refs", {"ref": f"refs/tags/{name}", "sha": oid})
-        if ref_response.status not in (201, 422):
+        try:
+            ref_response = self.client.request("POST", "git/refs", {"ref": f"refs/tags/{name}", "sha": oid})
+        except RuntimeError:
+            ref_response = None
+            logger.warning("Tested-source ref create response was lost; performing exact readback")
+        if ref_response is not None and ref_response.status not in (201, 422):
             # A lost create response is resolved only by strict readback below.
             logger.warning("Tested-source ref create response was unavailable; performing exact readback")
-        observed = self.read(record.source_sha)
+        try:
+            observed = self.read(record.source_sha)
+        except RuntimeError as exc:
+            raise TestedSourceError("tested-source ref readback is unavailable; publication outcome is uncertain") from exc
         if observed is None:
             raise TestedSourceError("tested-source ref is not observable; publication outcome is uncertain")
         if observed.tag_object_oid != oid or observed.record != record:
             raise TestedSourceError("tested-source ref conflicts with the object just created")
-        self.verify_run(observed.record)
+        self.verify_run(observed.record, recorded_attempt=True)
         return observed
 
 
