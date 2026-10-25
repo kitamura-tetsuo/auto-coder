@@ -70,6 +70,45 @@ def test_control_socket_survives_client_disconnect_and_remains_queryable(tmp_pat
         process.wait(timeout=5)
 
 
+def test_control_socket_survives_child_exit_before_lifetime_capture(tmp_path: Path) -> None:
+    launches = tmp_path / "launches"
+    child_command = (
+        sys.executable,
+        "-c",
+        f"from pathlib import Path; Path({str(launches)!r}).open('a').write('x')",
+    )
+    supervisor = WorkerSupervisor(config(tmp_path, child_command))
+    original_start_token = supervisor._start_token
+    first_sample = True
+
+    def sample_after_child_exit(pid: int) -> str:
+        nonlocal first_sample
+        if first_sample:
+            first_sample = False
+            assert supervisor.child is not None
+            supervisor.child.wait(timeout=5)
+        return original_start_token(pid)
+
+    supervisor._start_token = sample_after_child_exit  # type: ignore[method-assign]
+    thread = threading.Thread(target=supervisor.run, daemon=True)
+    thread.start()
+
+    started = request(supervisor.control_socket, {"operation_id": "start", "operation": "START"})
+    assert started == {
+        "status": "UNKNOWN",
+        "reason": "child lifetime unavailable during startup",
+    }
+    inspected = request(supervisor.control_socket, {"operation_id": "inspect", "operation": "INSPECT"})
+    assert inspected["status"] == "UNKNOWN"
+    assert inspected["supervisor_incarnation"] == supervisor.incarnation
+    assert thread.is_alive()
+    assert request(
+        supervisor.control_socket,
+        {"operation_id": "retry", "operation": "START"},
+    ) == {"status": "NEEDS_ATTENTION"}
+    assert launches.read_text() == "x"
+
+
 def test_same_id_changed_operation_preserves_original_acceptance(tmp_path: Path) -> None:
     supervisor = WorkerSupervisor(config(tmp_path))
     original = {"operation_id": "K", "operation": "REQUEST_GRACEFUL_STOP"}

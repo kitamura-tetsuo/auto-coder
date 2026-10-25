@@ -243,7 +243,25 @@ class WorkerSupervisor:
         state.update(selected_runtime_id=runtime["runtime_id"], stop_verified=False, launch_intent={"generation": generation, "runtime": runtime, "at": time.time()})
         self.store.write(state)
         self.child = subprocess.Popen(command, cwd=self.config.workspace_root, env=environment, start_new_session=False)
-        worker = {"pid": self.child.pid, "start_token": self._start_token(self.child.pid), "process_run_id": None, "deployment_generation": generation, "runtime_id": runtime["runtime_id"], "ready": runtime["ready"], "started_at": time.time()}
+        state["launch_intent"]["pid"] = self.child.pid
+        self.store.write(state)
+        try:
+            start_token = self._start_token(self.child.pid)
+        except OSError as error:
+            # The child can exit between Popen and the reuse-safe /proc sample.  The
+            # process effect is then ambiguous: retain its durable launch intent so
+            # reconstruction cannot spawn a replacement, but keep PID 1 available.
+            state["launch_intent"].update(
+                lifetime_status="unavailable",
+                observed_at=time.time(),
+                error=type(error).__name__,
+            )
+            self.store.write(state)
+            return {
+                "status": "UNKNOWN",
+                "reason": "child lifetime unavailable during startup",
+            }
+        worker = {"pid": self.child.pid, "start_token": start_token, "process_run_id": None, "deployment_generation": generation, "runtime_id": runtime["runtime_id"], "ready": runtime["ready"], "started_at": time.time()}
         state.update(worker=worker, stopped=False, launch_intent=None)
         return {"status": "RUNNING", "worker": worker}
 
