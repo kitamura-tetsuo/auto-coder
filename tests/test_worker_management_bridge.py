@@ -6,7 +6,9 @@ from pathlib import Path
 import httpx
 import pytest
 
+import auto_coder.worker_management_bridge as bridge_module
 from auto_coder.automation_engine import EngineLifecycle
+from auto_coder.build_provenance import ArtifactField, ControllerArtifactObservation
 from auto_coder.health_monitor import HealthMonitor, get_health_monitor
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.worker_management_bridge import (
@@ -115,3 +117,22 @@ def test_graceful_receipt_requires_stopped_closed_and_settled(monkeypatch: pytes
     assert receipt["unsettled_count"] == 0
     assert receipt["deployment_generation"] == "generation-7"
     assert os.stat(bridge.receipt_path).st_mode & 0o777 == 0o600
+
+
+def test_missing_process_identity_cannot_create_graceful_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        bridge_module,
+        "observe_controller_artifact",
+        lambda: ControllerArtifactObservation(process_run_id=None, process_run=ArtifactField(reason="unavailable")),
+    )
+    identity = configured_identity("owner/repo")
+    assert identity is not None
+    engine = ObservedEngine()
+    engine.invocation_gate.close_admission("test")
+    engine.lifecycle = EngineLifecycle.STOPPED
+    bridge = WorkerManagementBridge(identity, engine)
+
+    bridge.persist_graceful_terminal("signal SIGTERM")
+
+    assert not bridge.receipt_path.exists()

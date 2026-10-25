@@ -6,10 +6,8 @@ import asyncio
 import json
 import os
 import re
-import socket
 import stat
 import tempfile
-import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,7 +17,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
 from .build_provenance import observe_controller_artifact
-from .deployment_channel import DeploymentIdentity, validate_repository_ownership
+from .deployment_channel import validate_repository_ownership
 from .health_monitor import get_health_monitor
 from .logger_config import get_logger
 from .public_api import init_public_api
@@ -80,6 +78,11 @@ class WorkerManagementBridge:
     def __init__(self, identity: BridgeIdentity, engine: Any) -> None:
         self.identity = identity
         self.engine = engine
+        # Installed-artifact and process-run identity are immutable facts of
+        # this bridge incarnation.  Capture them once before serving so every
+        # response/header is correlatable and middleware never performs
+        # metadata/filesystem I/O on the event loop.
+        self.artifact = observe_controller_artifact()
         self.app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
         self.server: Any = None
         self.task: Optional[asyncio.Task[Any]] = None
@@ -91,10 +94,9 @@ class WorkerManagementBridge:
         return self.identity.socket_path.with_name("last-terminal.json")
 
     def _headers(self) -> dict[str, str]:
-        artifact = observe_controller_artifact()
         return {
             "Cache-Control": "no-store",
-            "Auto-Coder-Process-Run-Id": artifact.process_run_id or "unavailable",
+            "Auto-Coder-Process-Run-Id": self.artifact.process_run_id or "unavailable",
             "Auto-Coder-Deployment-Generation": self.identity.deployment_generation,
         }
 
@@ -125,7 +127,6 @@ class WorkerManagementBridge:
         init_public_api(self.app, self.engine, self.identity.repository)
 
     def _observation(self, nonce: str) -> dict[str, object]:
-        artifact = observe_controller_artifact()
         gate = self.engine.invocation_admission_snapshot()
         unsettled = gate.unsettled
         identities = [
@@ -143,12 +144,12 @@ class WorkerManagementBridge:
             "repository": self.identity.repository,
             "channel": self.identity.channel,
             "deployment_generation": self.identity.deployment_generation,
-            "process_run_id": artifact.process_run_id,
+            "process_run_id": self.artifact.process_run_id,
             "observation_time": datetime.now(timezone.utc).isoformat(),
             "nonce": nonce,
             "artifact": {
-                "distribution_version": asdict(artifact.distribution_version),
-                "source_revision": asdict(artifact.source_revision),
+                "distribution_version": asdict(self.artifact.distribution_version),
+                "source_revision": asdict(self.artifact.source_revision),
                 "declared_artifact_digest": {"value": self.identity.declared_artifact_digest, "origin": "declared_configuration"},
             },
             "lifecycle": {
@@ -195,7 +196,9 @@ class WorkerManagementBridge:
         if self.server is not None:
             self.server.should_exit = True
         if self.task is not None:
-            await self.task
+            result = await asyncio.gather(self.task, return_exceptions=True)
+            if result and isinstance(result[0], BaseException):
+                logger.error(f"Private worker management bridge stopped with an error: {type(result[0]).__name__}")
         try:
             details = self.identity.socket_path.lstat()
             if self._owned_endpoint == (details.st_dev, details.st_ino) and stat.S_ISSOCK(details.st_mode):
@@ -209,13 +212,14 @@ class WorkerManagementBridge:
             gate = self.engine.invocation_admission_snapshot()
             if self.engine.lifecycle.value != "stopped" or gate.state.value == "forced" or not gate.is_graceful_ready or gate.unsettled:
                 raise ValueError("terminal state is not a successful graceful drain")
-            artifact = observe_controller_artifact()
+            if self.artifact.process_run_id is None:
+                raise ValueError("process-run identity is unavailable")
             payload = {
                 "schema_version": 1,
                 "repository": self.identity.repository,
                 "channel": self.identity.channel,
                 "deployment_generation": self.identity.deployment_generation,
-                "process_run_id": artifact.process_run_id,
+                "process_run_id": self.artifact.process_run_id,
                 "observed_at": datetime.now(timezone.utc).isoformat(),
                 "terminal_reason": _safe_text(reason),
                 "lifecycle_state": self.engine.lifecycle.value,
