@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import concurrent.futures
+import errno
 import hashlib
+import http.server
 import json
 import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
+import zipfile
 from dataclasses import replace
 from pathlib import Path
 
@@ -77,6 +82,21 @@ def _prepare_in_process(repo: str, root: str, uv: str, uv_version: str, sha: str
     config = WorkerVersionConfig(Path(repo), Path(root), Path(sys.executable), Path(uv), uv_version)
     prepared = WorkerVersionPreparer(config).prepare(PrepareIntent(sha, attempt))
     return prepared.receipt.installed_runtime_id, prepared.reused, prepared.receipt.interpreter_path
+
+
+def _write_dependency_wheel(directory: Path) -> Path:
+    wheel = directory / "fixture_dependency-1.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("fixture_dependency/__init__.py", "VERSION = '1.0'\n")
+        archive.writestr("fixture_dependency-1.0.dist-info/METADATA", "Metadata-Version: 2.1\nName: fixture-dependency\nVersion: 1.0\n")
+        archive.writestr("fixture_dependency-1.0.dist-info/WHEEL", "Wheel-Version: 1.0\nGenerator: worker-version-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
+        archive.writestr("fixture_dependency-1.0.dist-info/RECORD", "")
+    return wheel
+
+
+class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, _format: str, *_arguments: object) -> None:
+        pass
 
 
 def test_real_uv_install_provenance_reconstruction_wrong_source_and_running_sentinel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands: None) -> None:
@@ -160,6 +180,92 @@ def test_preinstall_lock_filesystem_failure_is_typed_and_preserves_prior_environ
     assert not list(root.glob("revisions/*/*/READY.json"))
 
 
+def test_public_prepare_classifies_real_os_space_failure_without_starting_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands: None) -> None:
+    repo, sha, uv, uv_version = _create_production_fixture(tmp_path)
+    root = tmp_path / "space-unavailable"
+    previous = tmp_path / "previous-space-sentinel"
+    previous.write_text("unchanged")
+    original_mkdir = Path.mkdir
+
+    def no_space(path: Path, *arguments: object, **keywords: object) -> None:
+        if path == root:
+            raise OSError(errno.ENOSPC, "forced OS boundary")
+        original_mkdir(path, *arguments, **keywords)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "mkdir", no_space)
+    config = WorkerVersionConfig(repo, root, Path(sys.executable), uv, uv_version)
+
+    with pytest.raises(WorkerVersionError) as caught:
+        WorkerVersionPreparer(config).prepare(PrepareIntent(sha, "no-space"))
+
+    assert caught.value.failure is PreparationFailure.INSUFFICIENT_SPACE
+    assert previous.read_text() == "unchanged"
+    assert not root.exists()
+
+
+def test_actual_uv_locked_download_network_failure_is_typed_and_never_ready(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands: None) -> None:
+    repo, _sha, uv, uv_version = _create_production_fixture(tmp_path)
+    monkeypatch.setenv("UV_INSECURE_HOST", "127.0.0.1")
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
+    served = tmp_path / "served"
+    served.mkdir()
+    wheel = _write_dependency_wheel(served)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), lambda *args, **kwargs: _QuietHandler(*args, directory=str(served), **kwargs))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        pyproject = repo / "pyproject.toml"
+        pyproject.write_text(pyproject.read_text().replace("dependencies = []", f'dependencies = ["fixture-dependency @ http://127.0.0.1:{port}/{wheel.name}"]'))
+        _command([str(uv), "lock", "--no-cache", "--python", sys.executable], repo)
+        sha = _commit(repo, "locked network dependency")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    monkeypatch.setenv("UV_NO_CACHE", "1")
+    config = WorkerVersionConfig(repo, tmp_path / "network-versions", Path(sys.executable), uv, uv_version)
+    with pytest.raises(WorkerVersionError) as caught:
+        WorkerVersionPreparer(config).prepare(PrepareIntent(sha, "network-down"))
+
+    assert caught.value.failure is PreparationFailure.NETWORK_UNAVAILABLE
+    assert not list(config.version_root.glob("revisions/*/*/READY.json"))
+
+
+def test_actual_preparer_crash_retains_partial_attempt_and_reconstruction_uses_disjoint_path(tmp_path: Path, _use_real_commands: None) -> None:
+    repo, sha, uv, uv_version = _create_production_fixture(tmp_path)
+    root = tmp_path / "crash-versions"
+    script = """
+import sys
+from pathlib import Path
+from auto_coder.worker_versions import PrepareIntent, WorkerVersionConfig, WorkerVersionPreparer
+config = WorkerVersionConfig(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.executable), Path(sys.argv[3]), sys.argv[4])
+WorkerVersionPreparer(config).prepare(PrepareIntent(sys.argv[5], "crashed-process"))
+"""
+    process = subprocess.Popen([sys.executable, "-c", script, str(repo), str(root), str(uv), uv_version, sha])
+    deadline = time.monotonic() + 30
+    partial_venv: Path | None = None
+    while time.monotonic() < deadline and process.poll() is None:
+        partial_venv = next(iter(root.glob("revisions/*/crashed-process/venv/pyvenv.cfg")), None)
+        if partial_venv is not None:
+            process.kill()
+            break
+        time.sleep(0.005)
+    process.wait(timeout=10)
+    assert partial_venv is not None
+    assert not list(root.glob("revisions/*/crashed-process/READY.json"))
+
+    config = WorkerVersionConfig(repo, root, Path(sys.executable), uv, uv_version)
+    prepared = WorkerVersionPreparer(config).prepare(PrepareIntent(sha, "reconstructed-process"))
+
+    assert prepared.receipt.attempt_id == "reconstructed-process"
+    assert Path(prepared.receipt.environment_path).parent.name == "reconstructed-process"
+    assert partial_venv.exists()
+    assert len(list(root.glob("revisions/*/*/READY.json"))) == 1
+
+
 def test_partial_attempt_frozen_lock_failure_and_cross_runtime_receipt_are_rejected(tmp_path: Path, _use_real_commands: None) -> None:
     repo, sha, uv, uv_version = _create_production_fixture(tmp_path)
     config = WorkerVersionConfig(repo, tmp_path / "versions-a", Path(sys.executable), uv, uv_version)
@@ -174,10 +280,17 @@ def test_partial_attempt_frozen_lock_failure_and_cross_runtime_receipt_are_rejec
     assert not (partial / "READY.json").exists()
     assert (partial / "partial-install").read_text() == "not ready"
 
-    other_config = replace(config, version_root=tmp_path / "versions-b")
+    other_config = replace(config, version_root=tmp_path / "versions-b", runtime_profile="python-3.12-other")
     other = WorkerVersionPreparer(other_config).prepare(PrepareIntent(sha, "other-runtime"))
     ready = next(config.version_root.glob("revisions/*/retry-attempt/READY.json"))
     target_payload = json.loads(ready.read_text())
+    other_ready = next(other_config.version_root.glob("revisions/*/other-runtime/READY.json"))
+    ready.write_bytes(other_ready.read_bytes())
+    with pytest.raises(WorkerVersionError) as cross_runtime:
+        WorkerVersionPreparer(config).read_ready(ready)
+    assert cross_runtime.value.failure is PreparationFailure.CONFLICT
+    ready.write_text(json.dumps(target_payload))
+
     # Model a receipt from a different real runtime while retaining paths that
     # pass structural confinement. Readback must still execute this runtime and
     # reject the substituted installed version rather than trusting JSON.
