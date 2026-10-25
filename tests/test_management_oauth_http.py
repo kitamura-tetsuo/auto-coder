@@ -405,6 +405,38 @@ def test_exact_https_redirect_survives_sdk_url_normalization(tmp_path):
             assert refused.status_code == 400
 
 
+def test_authorization_error_replaces_callback_query_issuer(tmp_path):
+    redirect_uri = "https://client.example/cb?tenant=&iss=https%3A%2F%2Fother.example"
+    settings = OAuthSettings(
+        tmp_path / "callback-query.db",
+        "https://management.example",
+        "project",
+        (OAuthClient("client", (redirect_uri,)),),
+    )
+    client = TestClient(create_management_auth_app(settings, OAuthGrantService(settings, Identity())), base_url=settings.canonical_issuer)
+    response = client.get(
+        "/authorize",
+        params={
+            "response_type": "code",
+            "client_id": "client",
+            "redirect_uri": redirect_uri,
+            "resource": settings.resource,
+            "state": "original-state",
+            "code_challenge": "x",
+            "code_challenge_method": "S256",
+        },
+        follow_redirects=False,
+    )
+    location = urlsplit(response.headers["location"])
+    query = parse_qs(location.query, keep_blank_values=True)
+    assert (location.scheme, location.netloc, location.path) == ("https", "client.example", "/cb")
+    assert query["tenant"] == [""]
+    assert query["iss"] == [settings.canonical_issuer]
+    assert query["state"] == ["original-state"]
+    assert "code" not in query
+    assert response.headers["cache-control"] == "no-store"
+
+
 def test_authorization_store_unavailable_returns_direct_503(tmp_path):
     settings, grants, client = setup(tmp_path)
     original_connect = grants.store.connect

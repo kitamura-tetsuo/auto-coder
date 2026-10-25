@@ -192,9 +192,10 @@ def create_management_auth_app(
                 location = response.headers["location"]
                 split = urlsplit(location)
                 callback = urlsplit(redirect_uri)
-                parameters = parse_qsl(split.query, keep_blank_values=True)
-                if not any(name == "iss" for name, _ in parameters):
-                    parameters.append(("iss", settings.canonical_issuer))
+                protocol_fields = {"code", "error", "error_description", "error_uri", "iss", "state"}
+                parameters = [(name, value) for name, value in parse_qsl(callback.query, keep_blank_values=True) if name not in protocol_fields]
+                parameters.extend((name, value) for name, value in parse_qsl(split.query, keep_blank_values=True) if name != "iss")
+                parameters.append(("iss", settings.canonical_issuer))
                 response.headers["location"] = urlunsplit((callback.scheme, callback.netloc, callback.path, urlencode(parameters), callback.fragment))
                 response.headers["Cache-Control"] = "no-store"
             return response
