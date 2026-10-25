@@ -29,4 +29,8 @@ Runtime source testing and immutable Git references are a separate publication
 channel documented in `tested-source-references.md`; their eligibility never
 depends on an OCI digest and does not alter these image channels.
 
+The independently operator-dispatched mutable Git source pointer is documented
+in `source-beta-selection.md`. It selects verified source for later in-container
+updates without moving an image tag or claiming that a worker installed it.
+
 This file documents the client-facing features and tools provided by auto-coder.
