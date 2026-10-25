@@ -170,6 +170,35 @@ def test_revision_is_canonical_for_equivalent_target_order(tmp_path):
     assert load_operating_policy(first).revision == load_operating_policy(second).revision
 
 
+def test_target_channel_change_updates_decision_and_revision(tmp_path):
+    path = tmp_path / "policy.yaml"
+    path.write_text("profile: beta\ntargets:\n  service: {channel: beta, repositories: [example/widgets]}\n", encoding="utf-8")
+    intent = _intent("service", ActionClass.DEPLOYMENT)
+
+    beta_target = evaluate_operating_policy(path, intent)
+    path.write_text("profile: beta\ntargets:\n  service: {channel: release, repositories: [example/widgets]}\n", encoding="utf-8")
+    release_target = evaluate_operating_policy(path, intent)
+
+    assert beta_target.outcome is DecisionOutcome.ALLOWED
+    assert release_target.outcome is DecisionOutcome.DENIED
+    assert release_target.policy_revision != beta_target.policy_revision
+
+
+def test_target_repository_change_updates_decision_and_revision(tmp_path):
+    path = tmp_path / "policy.yaml"
+    path.write_text("profile: beta\ntargets:\n  service: {channel: beta, repositories: [example/widgets]}\n", encoding="utf-8")
+    intent = _intent("service", ActionClass.DEPLOYMENT)
+
+    permitted = evaluate_operating_policy(path, intent)
+    path.write_text("profile: beta\ntargets:\n  service: {channel: beta, repositories: [other/widgets]}\n", encoding="utf-8")
+    rejected = evaluate_operating_policy(path, intent)
+
+    assert permitted.outcome is DecisionOutcome.ALLOWED
+    assert rejected.outcome is DecisionOutcome.DENIED
+    assert rejected.reason_code is ReasonCode.REPOSITORY_MISMATCH
+    assert rejected.policy_revision != permitted.policy_revision
+
+
 @pytest.mark.parametrize("profile", ("observe", "beta", "full"))
 def test_documented_examples_are_loaded_by_production_loader(profile):
     loaded = load_operating_policy(EXAMPLES / f"operating-policy-{profile}.yaml")
