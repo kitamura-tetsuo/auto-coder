@@ -118,6 +118,30 @@ def test_malformed_configuration_is_unavailable(tmp_path, contents):
     assert decision.policy_revision.startswith("invalid-sha256:")
 
 
+@pytest.mark.parametrize(
+    "conflicting_declarations",
+    [
+        "profile: observe\nprofile: full\ntargets: {service: {channel: release, repositories: [example/widgets]}}\n",
+        "profile: full\nprofile: observe\ntargets: {service: {channel: release, repositories: [example/widgets]}}\n",
+        "profile: full\ntargets:\n  service: {channel: beta, repositories: [example/widgets]}\n  service: {channel: release, repositories: [example/widgets]}\n",
+        "profile: full\ntargets:\n  service: {channel: release, repositories: [example/widgets]}\n  service: {channel: beta, repositories: [example/widgets]}\n",
+        "profile: full\ntargets:\n  service:\n    channel: beta\n    channel: release\n    repositories: [example/widgets]\n",
+        "profile: full\ntargets:\n  service:\n    channel: release\n    channel: beta\n    repositories: [example/widgets]\n",
+        "profile: full\ntargets:\n  service:\n    channel: release\n    repositories: [other/widgets]\n    repositories: [example/widgets]\n",
+        "profile: full\ntargets:\n  service:\n    channel: release\n    repositories: [example/widgets]\n    repositories: [other/widgets]\n",
+    ],
+)
+def test_conflicting_duplicate_authority_is_unavailable_in_either_order(tmp_path, conflicting_declarations):
+    path = tmp_path / "policy.yaml"
+    path.write_text(conflicting_declarations, encoding="utf-8")
+
+    decision = evaluate_operating_policy(path, _intent("service", ActionClass.DEPLOYMENT))
+
+    assert decision.outcome is DecisionOutcome.UNAVAILABLE
+    assert decision.reason_code is ReasonCode.POLICY_MALFORMED
+    assert decision.policy_revision.startswith("invalid-sha256:")
+
+
 def test_fresh_evaluation_observes_change_and_unreadable_file(tmp_path):
     path = tmp_path / "policy.yaml"
     path.write_text((EXAMPLES / "operating-policy-full.yaml").read_text(), encoding="utf-8")
