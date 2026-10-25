@@ -151,6 +151,45 @@ def test_corrupt_storage_is_typed_unavailable_and_does_not_release_lane(tmp_path
     assert good.admit(intent("competitor"), authority()).status is AdmissionStatus.BUSY
 
 
+def test_needs_attention_resolution_requires_and_retains_new_evidence(tmp_path: Path) -> None:
+    store = ManagementOperationStore(tmp_path)
+    admitted = store.admit(intent(), authority()).record
+    assert admitted
+    attention = store.transition(
+        admitted.operation_id,
+        admitted.revision,
+        OperationPhase.NEEDS_ATTENTION,
+        owner_attempt_id="reconciler-1",
+        safe_error_category="ambiguous_delivery",
+    )
+    assert attention.status is MutationStatus.UPDATED and attention.record
+
+    empty = EffectReceipt("", "", 0, "")
+    refused = store.resolve_needs_attention(
+        admitted.operation_id,
+        attention.record.revision,
+        OperationPhase.RUNNING,
+        evidence=empty,
+    )
+    assert refused.status is MutationStatus.INVALID
+    unchanged = ManagementOperationStore(tmp_path).get(admitted.operation_id)
+    assert unchanged.status is ReadStatus.FOUND and unchanged.record == attention.record
+
+    evidence = EffectReceipt("reconciliation/1", "consumer-observation", 5, "safe_to_resume")
+    resolved = store.resolve_needs_attention(
+        admitted.operation_id,
+        attention.record.revision,
+        OperationPhase.RUNNING,
+        evidence=evidence,
+    )
+    assert resolved.status is MutationStatus.UPDATED
+    reopened = ManagementOperationStore(tmp_path)
+    retained = reopened.get(admitted.operation_id)
+    assert retained.status is ReadStatus.FOUND
+    assert retained.record and retained.record.effect.receipt == evidence
+    assert reopened.history(admitted.operation_id).entries[-1].receipt == evidence
+
+
 def test_schema_and_credentials_fail_closed(tmp_path: Path) -> None:
     store = ManagementOperationStore(tmp_path)
     assert store.admit(intent(), authority()).status is AdmissionStatus.CREATED

@@ -199,13 +199,35 @@ class ManagementOperationStore:
         return self._mutate(operation_id, expected_revision, current.phase, current.owner_attempt_id, current.safe_error_category, effect, receipt)
 
     def resolve_needs_attention(self, operation_id: str, expected_revision: int, phase: OperationPhase, *, evidence: EffectReceipt) -> MutationResult:
+        error = self._receipt_error(evidence)
+        if error:
+            return MutationResult(MutationStatus.INVALID, detail=error)
         lookup = self.get(operation_id)
         if lookup.status is ReadStatus.UNAVAILABLE:
             return MutationResult(MutationStatus.UNAVAILABLE, detail=lookup.detail)
         current = lookup.record
         if current is None or current.phase is not OperationPhase.NEEDS_ATTENTION:
             return MutationResult(MutationStatus.INVALID, current, "operation is not awaiting attention")
-        return self.transition(operation_id, expected_revision, phase, owner_attempt_id=current.owner_attempt_id, evidence=evidence)
+        if phase in TERMINAL_PHASES:
+            return self.transition(operation_id, expected_revision, phase, owner_attempt_id=current.owner_attempt_id, evidence=evidence)
+        if current.effect.state is not EffectState.NOT_SENT and current.effect.correlation_identity != evidence.correlation_identity:
+            return MutationResult(MutationStatus.INVALID, current, "resolution evidence correlation mismatch")
+        effect = EffectAttempt(
+            EffectState.CONFIRMED,
+            current.effect.owner_generation or expected_revision + 1,
+            current.effect.attempt_id,
+            evidence.correlation_identity,
+            evidence,
+        )
+        return self._mutate(
+            operation_id,
+            expected_revision,
+            phase,
+            current.owner_attempt_id,
+            current.safe_error_category,
+            effect,
+            evidence,
+        )
 
     def list_operations(self, *, cursor: int = 0, limit: int = 50, outstanding_only: bool = False, target: ManagedTarget | None = None) -> OperationPage:
         limit = self._limit(limit)
