@@ -471,6 +471,101 @@ def test_socket_storage_failures_never_fabricate_acceptance_or_receipts(monkeypa
     asyncio.run(scenario())
 
 
+def test_socket_distinguishes_foreign_worker_from_malformed_request(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    endpoint = configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    engine.startup_reconciled = engine.daemon_serving = True
+    engine._enqueue_pending_invalidations = AsyncMock()
+
+    async def scenario() -> None:
+        identity = configured_identity("owner/repo")
+        assert identity is not None
+        bridge = WorkerManagementBridge(identity, engine)
+        await bridge.start()
+        payload = {
+            "operation_id": "wrong-worker",
+            "repository": "owner/repo",
+            "channel": "release",
+            "expected_process_run_id": bridge.artifact.process_run_id,
+            "expected_deployment_generation": "generation-7",
+            "target": {"type": "pr", "number": 97},
+        }
+        try:
+            transport = httpx.AsyncHTTPTransport(uds=str(endpoint))
+            async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+                malformed = await client.post("/v1/reevaluations", json={**payload, "force": True})
+                foreign_repository = await client.post("/v1/reevaluations", json={**payload, "repository": "owner/other"})
+                foreign_channel = await client.post("/v1/reevaluations", json={**payload, "channel": "beta"})
+            assert malformed.status_code == 422 and malformed.json()["error"]["code"] == "invalid_request"
+            for response in (foreign_repository, foreign_channel):
+                assert response.status_code == 409
+                assert response.json()["error"]["code"] == "wrong_target"
+            assert engine.invalidations.pending_count("owner/repo") == 0
+            assert engine.invalidations.get_reevaluation_receipt("wrong-worker") is None
+            engine._enqueue_pending_invalidations.assert_not_awaited()
+        finally:
+            await bridge.close()
+
+    asyncio.run(scenario())
+
+
+def test_socket_logs_correlated_stale_and_draining_refusals_without_caller_secrets(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    endpoint = configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    engine.startup_reconciled = engine.daemon_serving = True
+    captured = io.StringIO()
+    sink = logger.add(captured, format="{message}")
+
+    async def scenario() -> None:
+        identity = configured_identity("owner/repo")
+        assert identity is not None
+        bridge = WorkerManagementBridge(identity, engine)
+        await bridge.start()
+        actual_process = bridge.artifact.process_run_id
+        payload = {
+            "operation_id": "refusal-stale",
+            "repository": "owner/repo",
+            "channel": "release",
+            "expected_process_run_id": "credential-canary-/private/operator",
+            "expected_deployment_generation": "generation-7",
+            "target": {"type": "issue", "number": 98},
+        }
+        try:
+            transport = httpx.AsyncHTTPTransport(uds=str(endpoint))
+            async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+                stale = await client.post("/v1/reevaluations", json=payload)
+                assert engine.request_graceful_shutdown("test drain") is True
+                draining = await client.post(
+                    "/v1/reevaluations",
+                    json={**payload, "operation_id": "refusal-draining", "expected_process_run_id": actual_process, "target": {"type": "pr", "number": 99}},
+                )
+            assert stale.json()["error"]["code"] == "wrong_incarnation"
+            assert draining.json()["error"]["code"] == "not_ready_or_draining"
+            output = captured.getvalue()
+            assert f"code=wrong_incarnation operation_id=refusal-stale target=issue#98 process_run_id={actual_process}" in output
+            assert f"code=not_ready_or_draining operation_id=refusal-draining target=pr#99 process_run_id={actual_process}" in output
+            assert "credential-canary" not in output
+            assert "/private/operator" not in output
+            monkeypatch.setattr(bridge_module.logger, "warning", MagicMock(side_effect=OSError("diagnostic sink failed")))
+            async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=str(endpoint)), base_url="http://worker") as client:
+                sink_failure = await client.post(
+                    "/v1/reevaluations",
+                    json={**payload, "operation_id": "refusal-sink-failure", "expected_process_run_id": actual_process},
+                )
+            assert sink_failure.status_code == 409
+            assert sink_failure.json()["error"]["code"] == "not_ready_or_draining"
+            assert engine.invalidations.pending_count("owner/repo") == 0
+        finally:
+            await bridge.close()
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        logger.remove(sink)
+
+
 def test_conflicting_endpoint_is_never_replaced(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from auto_coder.cli_commands_main import _run_process_issues_daemon
 

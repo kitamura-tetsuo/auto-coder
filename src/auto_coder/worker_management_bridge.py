@@ -38,6 +38,10 @@ class ManagementBridgeConfigurationError(RuntimeError):
     """The opt-in bridge cannot safely establish its private endpoint."""
 
 
+class WrongWorkerTarget(ValueError):
+    """A valid command names a different configured worker identity."""
+
+
 @dataclass(frozen=True)
 class BridgeIdentity:
     repository: str
@@ -137,6 +141,8 @@ class WorkerManagementBridge:
                     return self._error("invalid_request", "Request is invalid.", 422)
                 body = json.loads(raw)
                 parsed = self._parse_reevaluation(body)
+            except WrongWorkerTarget:
+                return self._error("wrong_target", "Command targets a different worker.", 409)
             except (ValueError, TypeError, json.JSONDecodeError):
                 return self._error("invalid_request", "Request is invalid.", 422)
             try:
@@ -151,8 +157,10 @@ class WorkerManagementBridge:
             except RuntimeError as exc:
                 code = str(exc)
                 if code == "wrong_incarnation":
+                    self._record_reevaluation_refusal(parsed, code)
                     return self._error(code, "Worker identity does not match.", 409)
                 if code == "worker_not_ready":
+                    self._record_reevaluation_refusal(parsed, "not_ready_or_draining")
                     return self._error("not_ready_or_draining", "Worker is not accepting commands.", 409)
                 logger.error("Private reevaluation storage unavailable operation_id={}", parsed["operation_id"])
                 return self._error("storage_unavailable", "Authoritative storage is unavailable.", 503)
@@ -200,7 +208,7 @@ class WorkerManagementBridge:
         if target["type"] not in {"issue", "pr"} or isinstance(number, bool) or not isinstance(number, int) or number <= 0:
             raise ValueError("invalid target")
         if body["repository"] != self.identity.repository or body["channel"] != self.identity.channel:
-            raise ValueError("foreign worker")
+            raise WrongWorkerTarget("foreign worker")
         return {
             "operation_id": operation_id,
             "repository": body["repository"],
@@ -210,6 +218,23 @@ class WorkerManagementBridge:
             "expected_process_run_id": body["expected_process_run_id"],
             "expected_deployment_generation": body["expected_deployment_generation"],
         }
+
+    def _record_reevaluation_refusal(self, parsed: dict[str, object], code: str) -> None:
+        """Emit bounded command correlation without becoming refusal authority."""
+        try:
+            logger.warning(
+                "Private reevaluation refused code={} operation_id={} target={}#{} process_run_id={} deployment_generation={}",
+                code,
+                parsed["operation_id"],
+                parsed["target_type"],
+                parsed["target_number"],
+                self.artifact.process_run_id or "unavailable",
+                self.identity.deployment_generation,
+            )
+        except Exception:
+            # Diagnostic sinks are explicitly non-authoritative. A broken sink
+            # cannot turn a refusal into acceptance or change its typed result.
+            pass
 
     @staticmethod
     def _receipt_document(receipt: ReevaluationReceipt) -> dict[str, object]:
