@@ -9,6 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional
 
+import jwt
 from firebase_admin import App, auth, credentials, initialize_app
 
 from auto_coder.logger_config import get_logger
@@ -90,6 +91,13 @@ class FirebaseOperatorIdentity:
             return self._failure(AdmissionStatus.DENIED, ReasonCode.ACCOUNT_DELETED)
         except (auth.InvalidIdTokenError, auth.ExpiredIdTokenError):
             return self._failure(AdmissionStatus.INVALID, ReasonCode.INVALID_TOKEN)
+        except TypeError:
+            # google-auth performs arithmetic on iat/exp before Firebase can
+            # normalize their types. Inspecting the untrusted payload here is
+            # used only to classify a rejection; it never establishes identity.
+            if self._has_unusable_time_claims(id_token):
+                return self._failure(AdmissionStatus.INVALID, ReasonCode.INVALID_TOKEN)
+            return self._failure(AdmissionStatus.UNAVAILABLE, ReasonCode.IDENTITY_SERVICE_UNAVAILABLE)
         except ValueError:
             return self._failure(AdmissionStatus.UNAVAILABLE, ReasonCode.IDENTITY_SERVICE_UNAVAILABLE)
         except Exception:
@@ -173,3 +181,11 @@ class FirebaseOperatorIdentity:
     @staticmethod
     def _emulator_configured() -> bool:
         return bool(os.environ.get("FIREBASE_AUTH_EMULATOR_HOST"))
+
+    @classmethod
+    def _has_unusable_time_claims(cls, id_token: str) -> bool:
+        try:
+            untrusted_claims = jwt.decode(id_token, options={"verify_signature": False})
+        except (jwt.DecodeError, TypeError, ValueError):
+            return False
+        return not all(cls._finite_number(untrusted_claims.get(claim)) for claim in ("iat", "exp", "auth_time"))

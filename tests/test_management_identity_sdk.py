@@ -149,6 +149,15 @@ def test_real_sdk_and_adapter_enforce_zero_skew_boundaries(sdk_boundary, claim, 
     assert (result.status, result.principal) == (AdmissionStatus.INVALID, None)
 
 
+@pytest.mark.parametrize("claim,value", [("iat", "1000"), ("iat", None), ("exp", "2000"), ("exp", None)])
+def test_real_sdk_classifies_unusable_arithmetic_time_claims_as_invalid(sdk_boundary, claim, value):
+    adapter, token, _state, _policy, _now = sdk_boundary
+
+    result = adapter.verify_login(token(**{claim: value}))
+
+    assert (result.status, result.reason, result.principal) == (AdmissionStatus.INVALID, ReasonCode.INVALID_TOKEN, None)
+
+
 def test_verified_tenant_provider_operator_and_current_account_denials(sdk_boundary):
     adapter, token, state, policy, _now = sdk_boundary
     tenant = adapter.verify_login(token(firebase={"tenant": "tenant-1", "sign_in_provider": "google.com"}))
