@@ -102,12 +102,31 @@ def test_receipt_content_identity_binds_lock_runtime_and_paths(tmp_path: Path) -
     WorkerVersionPreparer._publish(ready, receipt)
     preparer = WorkerVersionPreparer(config)
     preparer._observe = lambda _environment: observed  # type: ignore[method-assign]
+    preparer._interpreter_prefix = lambda _interpreter: environment.resolve()  # type: ignore[method-assign]
 
     assert preparer.read_ready(ready) == receipt
     (source / "uv.lock").write_bytes(b"substituted")
     with pytest.raises(WorkerVersionError) as caught:
         preparer.read_ready(ready)
     assert caught.value.failure is PreparationFailure.VERIFICATION_MISMATCH
+
+
+@pytest.mark.parametrize("bad_value", [["a" * 40], {"sha": "a" * 40}, 7, None])
+def test_corrupt_ready_field_types_are_typed_and_never_reused(tmp_path: Path, bad_value: object) -> None:
+    config = _config(tmp_path)
+    ready = config.version_root / "revisions" / ("k" * 64) / "attempt" / "READY.json"
+    ready.parent.mkdir(parents=True)
+    provenance = InstalledProvenance("a" * 40, "1.0")
+    receipt = ReadyReceipt(1, "a" * 40, "a" * 40, "/v", "/v/bin/python", "1.0", "b" * 64, "attempt", "python-3.12", "opaque", "c" * 64, provenance, "2026-01-01T00:00:00+00:00")
+    payload = asdict(receipt)
+    payload["source_sha"] = bad_value
+    ready.write_text(json.dumps(payload))
+
+    with pytest.raises(WorkerVersionError) as caught:
+        WorkerVersionPreparer(config).read_ready(ready)
+
+    assert caught.value.failure is PreparationFailure.CORRUPT_READY
+    assert json.loads(ready.read_text())["source_sha"] == bad_value
 
 
 def test_configured_repository_supplies_exact_revision_lock_identity(tmp_path: Path, _use_real_commands: None) -> None:

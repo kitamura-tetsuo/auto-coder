@@ -24,6 +24,7 @@ from loguru import logger
 
 READY_SCHEMA_VERSION = 1
 _FULL_SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 
 
@@ -120,12 +121,37 @@ class WorkerVersionPreparer:
             target = receipt_path.resolve(strict=True)
             target.relative_to(self.root)
             raw = json.loads(target.read_text(encoding="utf-8"))
-            provenance = raw.pop("installed_provenance")
-            receipt = ReadyReceipt(installed_provenance=InstalledProvenance(**provenance), **raw)
+            receipt = self._decode_receipt(raw)
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
             raise WorkerVersionError(PreparationFailure.CORRUPT_READY, "READY receipt is unreadable or malformed") from exc
-        self._validate_receipt(receipt, target.parent)
+        try:
+            self._validate_receipt(receipt, target.parent)
+        except WorkerVersionError:
+            raise
+        except (OSError, ValueError, TypeError) as exc:
+            raise WorkerVersionError(PreparationFailure.CORRUPT_READY, "READY receipt contains invalid values") from exc
         return receipt
+
+    @staticmethod
+    def _decode_receipt(raw: object) -> ReadyReceipt:
+        """Decode the bounded receipt schema before any field reaches path/regex APIs."""
+
+        if not isinstance(raw, dict):
+            raise TypeError("receipt must be an object")
+        expected = {field.name for field in ReadyReceipt.__dataclass_fields__.values()}
+        if set(raw) != expected or not isinstance(raw.get("installed_provenance"), dict):
+            raise TypeError("receipt fields do not match the schema")
+        provenance_raw = raw["installed_provenance"]
+        if set(provenance_raw) != {"source_revision", "distribution_version"}:
+            raise TypeError("installed provenance fields do not match the schema")
+        string_fields = expected - {"schema_version", "installed_provenance"}
+        if type(raw["schema_version"]) is not int or any(not isinstance(raw[name], str) or not raw[name] for name in string_fields):
+            raise TypeError("receipt scalar fields have invalid types")
+        if any(not isinstance(provenance_raw[name], str) or not provenance_raw[name] for name in provenance_raw):
+            raise TypeError("installed provenance values have invalid types")
+        values = dict(raw)
+        values["installed_provenance"] = InstalledProvenance(**provenance_raw)
+        return ReadyReceipt(**values)
 
     def _prepare_locked(self, intent: PrepareIntent) -> PreparedEnvironment:
         resolved = self._run(["git", "-C", str(self.repository), "rev-parse", "--verify", f"{intent.source_sha}^{{commit}}"], output=True).strip()
@@ -162,7 +188,11 @@ class WorkerVersionPreparer:
             observed = self._observe(environment)
             if observed.source_revision != intent.source_sha:
                 raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "installed source revision does not match requested commit")
-            interpreter = (environment / "bin" / "python").resolve(strict=True)
+            # Keep the venv launcher path. Resolving it would record the base Python
+            # behind uv's symlink and make the receipt unusable by an activator.
+            interpreter = environment.absolute() / "bin" / "python"
+            if not interpreter.exists():
+                raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "installed environment has no Python launcher")
             runtime_id = uuid.uuid4().hex
             bindings = {
                 "attempt_id": intent.attempt_id,
@@ -231,16 +261,29 @@ class WorkerVersionPreparer:
             raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "installed provenance response is invalid") from exc
 
     def _validate_receipt(self, receipt: ReadyReceipt, attempt: Path) -> None:
-        if receipt.schema_version != READY_SCHEMA_VERSION or not _FULL_SHA.fullmatch(receipt.source_sha) or receipt.resolved_commit != receipt.source_sha:
-            raise WorkerVersionError(PreparationFailure.UNAVAILABLE, "READY receipt identity is invalid")
+        if (
+            receipt.schema_version != READY_SCHEMA_VERSION
+            or not _FULL_SHA.fullmatch(receipt.source_sha)
+            or receipt.resolved_commit != receipt.source_sha
+            or not _SHA256.fullmatch(receipt.lock_sha256)
+            or not _SHA256.fullmatch(receipt.content_identity)
+            or not _SAFE_NAME.fullmatch(receipt.attempt_id)
+            or not _SAFE_NAME.fullmatch(receipt.runtime_profile)
+            or receipt.installed_provenance.source_revision != receipt.source_sha
+        ):
+            raise WorkerVersionError(PreparationFailure.CORRUPT_READY, "READY receipt identity is invalid")
         environment = Path(receipt.environment_path)
         interpreter = Path(receipt.interpreter_path)
+        expected_environment = attempt.absolute() / "venv"
+        expected_interpreter = expected_environment / "bin" / "python"
+        if not environment.is_absolute() or not interpreter.is_absolute() or environment != expected_environment or interpreter != expected_interpreter:
+            raise WorkerVersionError(PreparationFailure.CONFLICT, "READY paths do not identify their exact attempt environment")
         try:
             environment.resolve(strict=True).relative_to(attempt.resolve(strict=True))
         except (OSError, ValueError) as exc:
             raise WorkerVersionError(PreparationFailure.CONFLICT, "READY environment is outside its attempt") from exc
-        if interpreter != (environment / "bin" / "python").resolve(strict=True):
-            raise WorkerVersionError(PreparationFailure.CONFLICT, "READY interpreter binding is invalid")
+        if not interpreter.exists() or self._interpreter_prefix(interpreter) != environment:
+            raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "READY interpreter does not execute in its recorded environment")
         checkout_lock = attempt / "source" / "uv.lock"
         try:
             observed_lock = hashlib.sha256(checkout_lock.read_bytes()).hexdigest()
@@ -260,6 +303,13 @@ class WorkerVersionPreparer:
         identity = hashlib.sha256(json.dumps(bindings, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         if observed_lock != receipt.lock_sha256 or observed != receipt.installed_provenance or observed.source_revision != receipt.source_sha or observed.distribution_version != receipt.distribution_version or identity != receipt.content_identity:
             raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "READY bindings no longer match the installed runtime")
+
+    def _interpreter_prefix(self, interpreter: Path) -> Path:
+        output = self._run([str(interpreter), "-c", "import sys; print(sys.prefix)"], output=True, env=self._safe_environment()).strip()
+        try:
+            return Path(output).resolve(strict=True)
+        except OSError as exc:
+            raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "installed interpreter returned an invalid environment prefix") from exc
 
     def _validate_configuration(self) -> None:
         if not self.repository.is_dir() or self.root == self.repository or self.repository in self.root.parents:
