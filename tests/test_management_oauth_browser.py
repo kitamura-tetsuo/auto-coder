@@ -74,7 +74,9 @@ def test_shipped_page_hands_signed_identity_to_real_verifier_and_requires_consen
     )
     firebase_module_urls = {name: f"https://www.gstatic.com/firebasejs/10.14.1/{name}" for name in ("firebase-app.js", "firebase-auth.js")}
     actual_firebase_modules = {url: urllib.request.urlopen(url, timeout=30).read() for url in firebase_module_urls.values()}
+    actual_gapi = urllib.request.urlopen("https://apis.google.com/js/api.js", timeout=30).read().decode()
     assert all(len(source) > 10_000 for source in actual_firebase_modules.values())
+    assert len(actual_gapi) > 10_000
     try:
         with headless_page(viewport={"width": 1024, "height": 768}) as page:
             loaded_firebase_modules = []
@@ -98,10 +100,13 @@ def test_shipped_page_hands_signed_identity_to_real_verifier_and_requires_consen
                 "https://apis.google.com/js/api.js*",
                 lambda route: route.fulfill(
                     content_type="text/javascript",
-                    body="""
-window.gapi = {
-  load: (_name, options) => options.callback(),
-  iframes: {
+                    body=actual_gapi,
+                ),
+            )
+
+            controlled_provider_transport = """
+window.__actualGapiLoaded = typeof window.gapi?.load === 'function';
+window.gapi.iframes = {
   Iframe: function () {}, CROSS_ORIGIN_IFRAMES_FILTER: {},
   getContext: () => ({open: (_options, ready) => {
     const iframe = {
@@ -111,12 +116,8 @@ window.gapi = {
     };
     return ready(iframe);
   }})
-}};
-const callback = new URL(document.currentScript.src).searchParams.get('onload');
-if (callback && window[callback]) window[callback]();
-""",
-                ),
-            )
+};
+"""
 
             def firebase_api(route):
                 if "/v1/projects" in route.request.url:
@@ -139,6 +140,9 @@ if (callback && window[callback]) window[callback]();
             page.context.route("https://test-project.firebaseapp.com/__/auth/**", lambda route: route.fulfill(content_type="text/html", body="controlled provider popup"))
             page.goto(f"{origin}/authorize?{params}")
             page.wait_for_function("document.getElementById('signin').onclick !== null")
+            page.add_script_tag(url="https://apis.google.com/js/api.js")
+            page.evaluate(controlled_provider_transport)
+            assert page.evaluate("window.__actualGapiLoaded") is True
             assert page.locator("#client").text_content() == "browser-client"
             assert page.locator("#resource").text_content() == settings.resource
             assert page.locator("#allow").is_disabled()
