@@ -207,16 +207,20 @@ def create_management_auth_app(
     async def decide(request_id: str, action: str, request: Request) -> Response:
         if action not in {"allow", "deny"} or not _origin_ok(request, settings):
             return _oauth_error("invalid_request")
-        try:
-            body = await request.json()
-        except (ValueError, json.JSONDecodeError):
+        # Use a top-level form navigation so the browser follows the OAuth 303
+        # directly. A fetch would instead try to read the registered callback as
+        # a cross-origin subrequest and can fail before JavaScript can navigate.
+        if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/x-www-form-urlencoded":
+            return _oauth_error("invalid_request")
+        form = await request.form()
+        if len(form.getlist("csrf")) != 1 or len(form.getlist("firebase_id_token")) > 1:
             return _oauth_error("invalid_request")
         cookie = request.cookies.get(_cookie_name(settings, request_id), "")
         try:
             browser, cookie_csrf = cookie.split(".", 1)
         except ValueError:
             return _oauth_error("invalid_request")
-        supplied_csrf = body.get("csrf")
+        supplied_csrf = form.get("csrf")
         if not isinstance(supplied_csrf, str) or not secrets.compare_digest(cookie_csrf, supplied_csrf):
             return _oauth_error("invalid_request")
         try:
@@ -224,7 +228,7 @@ def create_management_auth_app(
                 result = await run_in_threadpool(grants.deny_authorization, request_id, browser, supplied_csrf)
                 response = _redirect(result, denied=True)
             else:
-                token = body.get("firebaseIdToken")
+                token = form.get("firebase_id_token")
                 if not isinstance(token, str) or not token:
                     raise InvalidRequest()
                 result = await run_in_threadpool(grants.approve_authorization, request_id, browser, supplied_csrf, token)

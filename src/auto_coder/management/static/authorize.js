@@ -13,13 +13,12 @@ document.getElementById("signin").onclick = async () => {
     status.textContent = "Signed in. Review the request, then choose Allow or Deny.";
   } catch (_) { status.textContent = "Google sign-in did not complete."; }
 };
-async function decide(action) {
-  const response = await fetch(`/authorize/${encodeURIComponent(data.requestId)}/${action}`, {
-    method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({csrf: data.csrf, firebaseIdToken: action === "allow" ? idToken : undefined}),
-  });
-  if (response.redirected) window.location.assign(response.url);
-  else status.textContent = response.ok ? "Completed." : "Authorization failed.";
+function decide(action) {
+  const form = document.getElementById("decision");
+  document.getElementById("csrf").value = data.csrf;
+  document.getElementById("firebase-token").value = action === "allow" ? idToken : "";
+  form.action = `/authorize/${encodeURIComponent(data.requestId)}/${action}`;
+  form.submit();
 }
 document.getElementById("allow").onclick = () => decide("allow");
 document.getElementById("deny").onclick = () => decide("deny");

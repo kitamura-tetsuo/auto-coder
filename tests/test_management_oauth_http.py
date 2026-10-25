@@ -48,7 +48,7 @@ def test_discovery_consent_exchange_refresh_and_revoke(tmp_path):
     import json
 
     data = json.loads(data_text)
-    approved = client.post(f"/authorize/{data['requestId']}/allow", headers={"Origin": settings.canonical_issuer}, json={"csrf": data["csrf"], "firebaseIdToken": "signed"}, follow_redirects=False)
+    approved = client.post(f"/authorize/{data['requestId']}/allow", headers={"Origin": settings.canonical_issuer}, data={"csrf": data["csrf"], "firebase_id_token": "signed"}, follow_redirects=False)
     assert approved.status_code == 303
     query = parse_qs(urlsplit(approved.headers["location"]).query)
     assert query["state"] == ["state"] and query["iss"] == [settings.canonical_issuer]
@@ -69,11 +69,33 @@ def test_authorization_rejects_duplicates_and_binding_failures(tmp_path):
     import json
 
     data = json.loads(page.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0])
-    wrong_origin = client.post(f"/authorize/{data['requestId']}/deny", headers={"Origin": "https://evil.example"}, json={"csrf": data["csrf"]})
+    wrong_origin = client.post(f"/authorize/{data['requestId']}/deny", headers={"Origin": "https://evil.example"}, data={"csrf": data["csrf"]})
     assert wrong_origin.status_code == 400
-    denied = client.post(f"/authorize/{data['requestId']}/deny", headers={"Origin": settings.canonical_issuer}, json={"csrf": data["csrf"]}, follow_redirects=False)
+    denied = client.post(f"/authorize/{data['requestId']}/deny", headers={"Origin": settings.canonical_issuer}, data={"csrf": data["csrf"]}, follow_redirects=False)
     assert denied.status_code == 303
     query = parse_qs(urlsplit(denied.headers["location"]).query)
     assert query == {"error": ["access_denied"], "state": ["state"], "iss": [settings.canonical_issuer]}
-    replay = client.post(f"/authorize/{data['requestId']}/allow", headers={"Origin": settings.canonical_issuer}, json={"csrf": data["csrf"], "firebaseIdToken": "signed"})
+    replay = client.post(f"/authorize/{data['requestId']}/allow", headers={"Origin": settings.canonical_issuer}, data={"csrf": data["csrf"], "firebase_id_token": "signed"})
     assert replay.status_code == 400 and replay.json() == {"error": "invalid_request"}
+
+
+def test_browser_decision_requires_unique_form_fields(tmp_path):
+    settings, grants, client = setup(tmp_path)
+    page = begin(client, settings)
+    import json
+
+    data = json.loads(page.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0])
+    endpoint = f"/authorize/{data['requestId']}/allow"
+    headers = {"Origin": settings.canonical_issuer}
+    assert client.post(endpoint, headers=headers, json={"csrf": data["csrf"]}).status_code == 400
+    duplicate = client.post(
+        endpoint,
+        headers={**headers, "Content-Type": "application/x-www-form-urlencoded"},
+        content=f"csrf={data['csrf']}&csrf={data['csrf']}&firebase_id_token=signed",
+    )
+    assert duplicate.status_code == 400 and duplicate.json() == {"error": "invalid_request"}
+
+    script = client.get("/assets/authorize.js")
+    assert script.status_code == 200
+    assert "form.submit()" in script.text
+    assert "fetch(" not in script.text

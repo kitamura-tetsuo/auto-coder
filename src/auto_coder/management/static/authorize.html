@@ -8,8 +8,12 @@
     <p>Resource: <strong id="resource"></strong></p>
     <p>Permission: <strong id="scope"></strong> (read only)</p>
     <button id="signin" type="button">Sign in with Google</button>
-    <button id="allow" type="button" disabled>Allow</button>
-    <button id="deny" type="button">Deny</button>
+    <form id="decision" method="post">
+      <input id="csrf" name="csrf" type="hidden">
+      <input id="firebase-token" name="firebase_id_token" type="hidden">
+      <button id="allow" type="button" disabled>Allow</button>
+      <button id="deny" type="button">Deny</button>
+    </form>
     <p id="status" role="status"></p>
   </main>
   <script id="auth-data" type="application/json">__AUTH_DATA__</script>
