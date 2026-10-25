@@ -79,9 +79,12 @@ def _prepare_in_process(repo: str, root: str, uv: str, uv_version: str, sha: str
     return prepared.receipt.installed_runtime_id, prepared.reused, prepared.receipt.interpreter_path
 
 
-def test_real_uv_install_provenance_reconstruction_wrong_source_and_running_sentinel(tmp_path: Path, _use_real_commands: None) -> None:
+def test_real_uv_install_provenance_reconstruction_wrong_source_and_running_sentinel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands: None) -> None:
     repo, sha, uv, uv_version = _create_production_fixture(tmp_path)
     root = tmp_path / "versions"
+    unavailable_docker_socket = tmp_path / "no-docker-runtime" / "docker.sock"
+    monkeypatch.setenv("DOCKER_HOST", f"unix://{unavailable_docker_socket}")
+    assert not unavailable_docker_socket.exists()
     sentinel = tmp_path / "previous-worker"
     _command([str(uv), "venv", "--python", sys.executable, "--no-project", str(sentinel)])
     sentinel_process = subprocess.Popen(
@@ -104,7 +107,10 @@ def test_real_uv_install_provenance_reconstruction_wrong_source_and_running_sent
         assert observation["distribution_version"]["value"] == receipt.distribution_version
         assert sentinel_process.poll() is None
         assert (sentinel / "bin" / "python").lstat() == sentinel_python
-        assert _command([str(interpreter), "-c", "from pathlib import Path; print(Path('/var/run/docker.sock').exists())"]) == "False"
+        # Preparation succeeded with no updater-accessible Docker endpoint. The
+        # host runner may itself expose /var/run/docker.sock, which is unrelated
+        # to the updater's deliberately unavailable configured endpoint.
+        assert not unavailable_docker_socket.exists()
 
         reconstructed = WorkerVersionPreparer(config).read_ready(root / "revisions" / next((root / "revisions").iterdir()).name / "real-install" / "READY.json")
         assert reconstructed.installed_runtime_id == receipt.installed_runtime_id
