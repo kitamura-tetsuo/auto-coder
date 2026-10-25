@@ -83,14 +83,14 @@ class FirebaseOperatorIdentity:
             return self._failure(AdmissionStatus.INVALID, ReasonCode.INVALID_TOKEN)
         try:
             claims = auth.verify_id_token(id_token, app=self._firebase_app(), check_revoked=True, clock_skew_seconds=0)
-        except (auth.InvalidIdTokenError, auth.ExpiredIdTokenError, ValueError):
-            return self._failure(AdmissionStatus.INVALID, ReasonCode.INVALID_TOKEN)
         except auth.RevokedIdTokenError:
             return self._failure(AdmissionStatus.DENIED, ReasonCode.SESSION_REVOKED)
         except auth.UserDisabledError:
             return self._failure(AdmissionStatus.DENIED, ReasonCode.ACCOUNT_DISABLED)
         except auth.UserNotFoundError:
             return self._failure(AdmissionStatus.DENIED, ReasonCode.ACCOUNT_DELETED)
+        except (auth.InvalidIdTokenError, auth.ExpiredIdTokenError, ValueError):
+            return self._failure(AdmissionStatus.INVALID, ReasonCode.INVALID_TOKEN)
         except Exception:
             return self._failure(AdmissionStatus.UNAVAILABLE, ReasonCode.IDENTITY_SERVICE_UNAVAILABLE)
 
