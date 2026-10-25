@@ -20,4 +20,8 @@ shared ownership registry assigns its repository to that channel. Repository
 assignment is atomic and cannot change channels while the old channel's durable
 implementation-slot state is active or unreadable.
 
+Runtime source testing and immutable Git references are a separate publication
+channel documented in `tested-source-references.md`; their eligibility never
+depends on an OCI digest and does not alter these image channels.
+
 This file documents the client-facing features and tools provided by auto-coder.
