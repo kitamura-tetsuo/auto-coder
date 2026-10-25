@@ -5,11 +5,13 @@ import hashlib
 import socket
 import threading
 import time
+import urllib.request
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 import uvicorn
 from fastapi.responses import HTMLResponse
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from auto_coder.management.oauth_config import OAuthClient, OAuthSettings
 from auto_coder.management.oauth_grants import OAuthGrantService
@@ -70,30 +72,106 @@ def test_shipped_page_hands_signed_identity_to_real_verifier_and_requires_consen
             "code_challenge_method": "S256",
         }
     )
+    firebase_module_urls = {name: f"https://www.gstatic.com/firebasejs/10.14.1/{name}" for name in ("firebase-app.js", "firebase-auth.js")}
+    actual_firebase_modules = {url: urllib.request.urlopen(url, timeout=30).read() for url in firebase_module_urls.values()}
+    assert all(len(source) > 10_000 for source in actual_firebase_modules.values())
     try:
         with headless_page(viewport={"width": 1024, "height": 768}) as page:
-            page.route(
-                "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js",
-                lambda route: route.fulfill(content_type="text/javascript", body="export function initializeApp(config) { return config; }"),
-            )
-            token_literal = signed_token().replace("\\", "\\\\").replace("'", "\\'")
-            page.route(
-                "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js",
+            loaded_firebase_modules = []
+            requested_urls = []
+            browser_errors = []
+            page.on("request", lambda request: requested_urls.append(request.url))
+            page.on("console", lambda message: browser_errors.append(message.text) if message.type == "error" else None)
+            page.on("pageerror", lambda error: browser_errors.append(str(error)))
+
+            def load_real_firebase_module(route):
+                loaded_firebase_modules.append(route.request.url)
+                route.fulfill(
+                    status=200,
+                    content_type="text/javascript",
+                    headers={"Access-Control-Allow-Origin": "*"},
+                    body=actual_firebase_modules[route.request.url],
+                )
+
+            page.context.route("https://www.gstatic.com/firebasejs/10.14.1/firebase-*.js", load_real_firebase_module)
+            page.context.route(
+                "https://apis.google.com/js/api.js*",
                 lambda route: route.fulfill(
                     content_type="text/javascript",
-                    body=("export function getAuth(app) { return app; }\n" "export class GoogleAuthProvider {}\n" f"export async function signInWithPopup() {{ return {{user: {{getIdToken: async () => '{token_literal}'}}}}; }}"),
+                    body="""
+window.gapi = {
+  load: (_name, options) => options.callback(),
+  iframes: {
+  Iframe: function () {}, CROSS_ORIGIN_IFRAMES_FILTER: {},
+  getContext: () => ({open: (_options, ready) => {
+    const iframe = {
+      restyle: async () => {}, ping: done => { done(); return Promise.resolve(); },
+      register: (name, handler) => { window.__firebaseAuthEvent = handler; },
+      send: () => {}
+    };
+    return ready(iframe);
+  }})
+}};
+const callback = new URL(document.currentScript.src).searchParams.get('onload');
+if (callback && window[callback]) window[callback]();
+""",
                 ),
             )
+
+            def firebase_api(route):
+                if "/v1/projects" in route.request.url:
+                    route.fulfill(status=200, content_type="application/json", body='{"authorizedDomains":["127.0.0.1"]}')
+                elif "accounts:lookup" in route.request.url:
+                    route.fulfill(
+                        status=200,
+                        content_type="application/json",
+                        body='{"users":[{"localId":"operator","email":"operator@example.test","providerUserInfo":[]}]}',
+                    )
+                else:
+                    token = signed_token()
+                    route.fulfill(
+                        status=200,
+                        content_type="application/json",
+                        body=('{"localId":"operator","email":"operator@example.test",' f'"idToken":"{token}","refreshToken":"controlled-refresh",' '"expiresIn":"3600","providerId":"google.com",' '"rawUserInfo":"{\\"sub\\":\\"operator\\"}"}'),
+                    )
+
+            page.context.route("https://identitytoolkit.googleapis.com/**", firebase_api)
+            page.context.route("https://test-project.firebaseapp.com/__/auth/**", lambda route: route.fulfill(content_type="text/html", body="controlled provider popup"))
             page.goto(f"{origin}/authorize?{params}")
+            page.wait_for_function("document.getElementById('signin').onclick !== null")
             assert page.locator("#client").text_content() == "browser-client"
             assert page.locator("#resource").text_content() == settings.resource
             assert page.locator("#allow").is_disabled()
             with grants.store.connect() as db:
                 assert db.execute("SELECT COUNT(*) FROM codes").fetchone()[0] == 0
 
-            page.locator("#signin").click()
-            page.locator("#allow").wait_for(state="visible")
-            assert not page.locator("#allow").is_disabled()
+            try:
+                with page.expect_popup(timeout=5000) as popup_info:
+                    page.locator("#signin").click()
+            except PlaywrightTimeoutError as exc:
+                raise AssertionError(f"Firebase popup did not open: {page.locator('#status').text_content()}; " f"errors={browser_errors}; requests={requested_urls}") from exc
+            popup = popup_info.value
+            try:
+                popup.wait_for_url("https://test-project.firebaseapp.com/**", wait_until="commit", timeout=5000)
+            except PlaywrightTimeoutError as exc:
+                raise AssertionError(f"Firebase popup used unexpected URL {popup.url}; requests={requested_urls}") from exc
+            event_id = parse_qs(urlsplit(popup.url).query)["eventId"][0]
+            page.wait_for_function("window.__firebaseAuthEvent !== undefined")
+            page.evaluate(
+                """eventId => window.__firebaseAuthEvent({authEvent: {
+                    type: 'signInViaPopup', eventId,
+                    urlResponse: 'http://127.0.0.1/provider-callback',
+                    sessionId: 'controlled-session', postBody: 'providerId=google.com',
+                    tenantId: null
+                }})""",
+                event_id,
+            )
+            deadline = time.monotonic() + 5
+            while page.locator("#allow").is_disabled() and time.monotonic() < deadline:
+                page.wait_for_timeout(25)
+            if page.locator("#allow").is_disabled():
+                raise AssertionError(f"Firebase handoff did not enable consent: {page.locator('#status').text_content()}; " f"errors={browser_errors}; requests={requested_urls}")
+            assert {url.rsplit("/", 1)[-1] for url in loaded_firebase_modules} == {"firebase-app.js", "firebase-auth.js"}
             page.locator("#allow").click()
             page.wait_for_url(f"{callback}*")
             query = parse_qs(urlsplit(page.url).query)

@@ -141,6 +141,34 @@ def test_authorization_rejects_duplicates_and_binding_failures(tmp_path):
     assert replay.status_code == 400 and replay.json() == {"error": "invalid_request"}
 
 
+def test_sdk_authorization_error_redirect_preserves_state_issuer_and_callback(tmp_path):
+    settings, grants, client = setup(tmp_path)
+    response = client.get(
+        "/authorize",
+        params={
+            "response_type": "code",
+            "client_id": "client",
+            "redirect_uri": "http://127.0.0.1:9876/cb",
+            "resource": settings.resource,
+            "state": "original-state",
+            "code_challenge": "x",
+            "code_challenge_method": "S256",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    location = urlsplit(response.headers["location"])
+    assert (location.scheme, location.netloc, location.path) == ("http", "127.0.0.1:9876", "/cb")
+    assert parse_qs(location.query) == {
+        "error": ["invalid_request"],
+        "error_description": ["invalid_request"],
+        "state": ["original-state"],
+        "iss": [settings.canonical_issuer],
+    }
+    assert response.headers["cache-control"] == "no-store"
+    assert "code" not in parse_qs(location.query)
+
+
 def test_browser_decision_requires_unique_form_fields(tmp_path):
     settings, grants, client = setup(tmp_path)
     page = begin(client, settings)
@@ -545,6 +573,12 @@ def test_token_and_revoke_unavailable_and_revoke_isolation(tmp_path, sdk_boundar
     client = TestClient(create_management_auth_app(settings, grants), base_url="http://localhost")
     a = issue_real_credentials(client, settings, signed_token, client_id="client-a", redirect_uri="http://127.0.0.1:9876/a")
     b = issue_real_credentials(client, settings, signed_token, client_id="client-b", redirect_uri="http://127.0.0.1:9876/b", verifier="s" * 43)
+
+    missing_token = client.post("/revoke", data={"client_id": "client-a"})
+    missing_client = client.post("/revoke", data={"token": a["access_token"]})
+    assert missing_token.status_code == 400 and missing_token.json() == {"error": "invalid_request"}
+    assert missing_client.status_code == 400 and missing_client.json() == {"error": "invalid_client"}
+    assert grants.authenticate_access(a["access_token"], settings.resource, ("auto-coder.read",)).client_id == "client-a"
 
     for token in ("unknown-token", b["access_token"]):
         response = client.post("/revoke", data={"client_id": "client-a", "token": token})

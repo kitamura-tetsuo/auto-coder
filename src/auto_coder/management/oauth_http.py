@@ -10,7 +10,7 @@ import secrets
 from contextlib import asynccontextmanager
 from importlib.resources import files
 from typing import Any, AsyncContextManager, Callable, Mapping
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -184,6 +184,20 @@ def create_management_auth_app(
             pending = browser_authorization.get()
             if pending is not None:
                 response.set_cookie(_cookie_name(settings, pending.request_id), f"{pending.browser_secret}.{pending.csrf_secret}", secure=settings.canonical_issuer.startswith("https://"), httponly=True, samesite="lax", max_age=600, path="/")
+            elif 300 <= response.status_code < 400 and response.headers.get("location"):
+                # The SDK constructs authorization-error redirects after this
+                # adapter has validated the exact registered callback, but does
+                # not emit RFC 9207's issuer parameter. Add only that required
+                # parameter without normalizing the registered callback.
+                location = response.headers["location"]
+                split = urlsplit(location)
+                callback = urlsplit(redirect_uri)
+                if (split.scheme, split.netloc, split.path) == (callback.scheme, callback.netloc, callback.path):
+                    parameters = parse_qsl(split.query, keep_blank_values=True)
+                    if not any(name == "iss" for name, _ in parameters):
+                        parameters.append(("iss", settings.canonical_issuer))
+                        response.headers["location"] = urlunsplit((split.scheme, split.netloc, split.path, urlencode(parameters), split.fragment))
+                    response.headers["Cache-Control"] = "no-store"
             return response
         finally:
             authorization_unavailable.reset(unavailable_token)
@@ -304,8 +318,13 @@ def create_management_auth_app(
         if error:
             return error
         get = lambda name: values.get(name, [None])[0]
+        client_id, token_value = get("client_id"), get("token")
+        if not client_id:
+            return _oauth_error("invalid_client")
+        if not token_value:
+            return _oauth_error("invalid_request")
         try:
-            await run_in_threadpool(grants.revoke, get("client_id") or "", get("token") or "")
+            await run_in_threadpool(grants.revoke, client_id, token_value)
         except Unavailable:
             return _oauth_error("temporarily_unavailable", 503)
         except (InvalidClient, InvalidGrant, InvalidRequest, InvalidScope, InvalidTarget):
