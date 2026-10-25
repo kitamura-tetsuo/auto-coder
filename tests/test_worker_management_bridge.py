@@ -190,3 +190,19 @@ def test_actual_daemon_uds_observes_admitted_drain_and_persists_receipt(monkeypa
     assert receipt["unsettled_count"] == 0
     assert receipt["process_run_id"]
     assert not endpoint.exists()
+
+
+def test_actual_daemon_forced_stop_never_persists_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from auto_coder.cli_commands_main import _run_process_issues_daemon
+
+    endpoint = configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    assert engine.request_graceful_shutdown("first signal")
+    engine.request_force_stop("second signal")
+
+    asyncio.run(_run_process_issues_daemon(engine, "owner/repo", False, "127.0.0.1", 0, "critical", None, None))
+
+    assert engine.lifecycle is EngineLifecycle.FORCED
+    assert not endpoint.with_name("last-terminal.json").exists()
