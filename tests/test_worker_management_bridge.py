@@ -16,7 +16,7 @@ import auto_coder.worker_management_bridge as bridge_module
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.automation_engine import AutomationEngine, EngineLifecycle
 from auto_coder.build_provenance import ArtifactField, ControllerArtifactObservation
-from auto_coder.entity_invalidation import EntityIdentity, InvalidationDisposition
+from auto_coder.entity_invalidation import DurableInvalidationQueue, EntityIdentity, InvalidationDisposition
 from auto_coder.health_monitor import HealthMonitor, get_health_monitor
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.worker_management_bridge import (
@@ -564,6 +564,134 @@ def test_socket_logs_correlated_stale_and_draining_refusals_without_caller_secre
         asyncio.run(scenario())
     finally:
         logger.remove(sink)
+
+
+def test_socket_acceptance_rolls_back_every_database_write_when_receipt_insert_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    endpoint = configure(monkeypatch, tmp_path)
+    database = tmp_path / "invalidations.sqlite3"
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(database))
+    monkeypatch.setenv("AUTO_CODER_REVIEW_ADJUDICATION_DB", str(tmp_path / "adjudications.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    engine.startup_reconciled = engine.daemon_serving = True
+    engine._enqueue_pending_invalidations = AsyncMock()
+    engine.review_adjudications.store.associate_issues("owner/repo", 201, (101,))
+    waiter = EntityIdentity("owner/repo", "issue", 500)
+    engine.invalidations.invalidate(waiter)
+    waiter_claim = engine.invalidations.claim("owner/repo")
+    assert waiter_claim is not None and engine.invalidations.begin_processing(waiter_claim)
+    before_wait = engine.invalidations.defer(waiter_claim, "cached_dependency_wait", 10_000_000_000.0)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """CREATE TRIGGER abort_management_receipt BEFORE INSERT ON management_reevaluations
+               BEGIN SELECT RAISE(ABORT, 'receipt insert unavailable'); END"""
+        )
+
+    async def scenario() -> None:
+        identity = configured_identity("owner/repo")
+        assert identity is not None
+        bridge = WorkerManagementBridge(identity, engine)
+        await bridge.start()
+        payload = {
+            "operation_id": "rollback-all",
+            "repository": "owner/repo",
+            "channel": "release",
+            "expected_process_run_id": bridge.artifact.process_run_id,
+            "expected_deployment_generation": "generation-7",
+            "target": {"type": "issue", "number": 101},
+        }
+        try:
+            transport = httpx.AsyncHTTPTransport(uds=str(endpoint))
+            async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+                response = await client.post("/v1/reevaluations", json=payload)
+            assert response.status_code == 503
+            assert response.json()["error"]["code"] == "storage_unavailable"
+        finally:
+            await bridge.close()
+
+    asyncio.run(scenario())
+    engine._enqueue_pending_invalidations.assert_not_awaited()
+
+    def assert_rolled_back(queue: DurableInvalidationQueue) -> None:
+        assert queue.get_reevaluation_receipt("rollback-all") is None
+        assert queue.pending_count("owner/repo") == 1
+        after_wait = queue.get_deferred(waiter)
+        assert after_wait is not None
+        assert (after_wait.generation, after_wait.retry_not_before, after_wait.reason) == (
+            before_wait.generation,
+            before_wait.retry_not_before,
+            before_wait.reason,
+        )
+        with sqlite3.connect(database) as connection:
+            rows = connection.execute("SELECT entity_type, entity_number, generation FROM entity_invalidations ORDER BY entity_type, entity_number").fetchall()
+        assert rows == [("issue", 500, 1)]
+
+    assert_rolled_back(engine.invalidations)
+    assert_rolled_back(DurableInvalidationQueue(database))
+
+
+def test_socket_rejects_corrupt_authoritative_receipt_on_get_and_replay(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    endpoint = configure(monkeypatch, tmp_path)
+    database = tmp_path / "invalidations.sqlite3"
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(database))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    engine.startup_reconciled = engine.daemon_serving = True
+    engine._enqueue_pending_invalidations = AsyncMock()
+
+    async def scenario() -> None:
+        identity = configured_identity("owner/repo")
+        assert identity is not None
+        bridge = WorkerManagementBridge(identity, engine)
+        await bridge.start()
+        payload = {
+            "operation_id": "corrupt-receipt",
+            "repository": "owner/repo",
+            "channel": "release",
+            "expected_process_run_id": bridge.artifact.process_run_id,
+            "expected_deployment_generation": "generation-7",
+            "target": {"type": "pr", "number": 102},
+        }
+        try:
+            transport = httpx.AsyncHTTPTransport(uds=str(endpoint))
+            async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+                accepted = await client.post("/v1/reevaluations", json=payload)
+                assert accepted.status_code == 202
+                with sqlite3.connect(database) as connection:
+                    canonical = connection.execute("SELECT canonical_payload FROM management_reevaluations WHERE operation_id='corrupt-receipt'").fetchone()[0]
+                    connection.execute("UPDATE management_reevaluations SET canonical_payload='not-json' WHERE operation_id='corrupt-receipt'")
+                malformed_get = await client.get("/v1/reevaluations/corrupt-receipt")
+                malformed_replay = await client.post("/v1/reevaluations", json=payload)
+                contradictory = json.loads(canonical)
+                contradictory["target"]["number"] = 999
+                with sqlite3.connect(database) as connection:
+                    connection.execute(
+                        "UPDATE management_reevaluations SET canonical_payload=? WHERE operation_id='corrupt-receipt'",
+                        (json.dumps(contradictory, sort_keys=True, separators=(",", ":")),),
+                    )
+                contradictory_get = await client.get("/v1/reevaluations/corrupt-receipt")
+                contradictory_replay = await client.post("/v1/reevaluations", json=payload)
+                with sqlite3.connect(database) as connection:
+                    connection.execute(
+                        "UPDATE management_reevaluations SET canonical_payload=?, generation=0 WHERE operation_id='corrupt-receipt'",
+                        (canonical,),
+                    )
+                generation_get = await client.get("/v1/reevaluations/corrupt-receipt")
+                generation_replay = await client.post("/v1/reevaluations", json=payload)
+            for response in (
+                malformed_get,
+                malformed_replay,
+                contradictory_get,
+                contradictory_replay,
+                generation_get,
+                generation_replay,
+            ):
+                assert response.status_code == 503
+                assert response.json()["error"]["code"] == "storage_unavailable"
+            assert engine.invalidations.pending_count("owner/repo") == 1
+            engine._enqueue_pending_invalidations.assert_awaited_once_with("owner/repo")
+        finally:
+            await bridge.close()
+
+    asyncio.run(scenario())
 
 
 def test_conflicting_endpoint_is_never_replaced(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

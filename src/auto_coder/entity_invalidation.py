@@ -366,21 +366,36 @@ class DurableInvalidationQueue:
 
     @staticmethod
     def _receipt(row: tuple[Any, ...]) -> ReevaluationReceipt:
-        return ReevaluationReceipt(
-            1,
-            str(row[0]),
-            str(row[2]),
-            str(row[3]),
-            str(row[4]),
-            int(row[5]),
-            str(row[6]),
-            str(row[7]),
-            str(row[8]),
-            str(row[9]),
-            str(row[10]),
-            InvalidationDisposition(str(row[11])),
-            int(row[12]),
-        )
+        operation_id, raw_payload, repository, channel, target_type, target_number = row[:6]
+        requested_process, requested_deployment, accepting_process, accepting_deployment = row[6:10]
+        accepted_at, raw_disposition, generation = row[10:13]
+        strings = (operation_id, repository, channel, requested_process, requested_deployment, accepting_process, accepting_deployment, accepted_at)
+        if any(not isinstance(value, str) or not value for value in strings):
+            raise ValueError("management reevaluation receipt contains an invalid identity")
+        if target_type not in {"issue", "pr"} or isinstance(target_number, bool) or not isinstance(target_number, int) or target_number <= 0:
+            raise ValueError("management reevaluation receipt contains an invalid target")
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation <= 0:
+            raise ValueError("management reevaluation receipt contains an invalid generation")
+        if not isinstance(raw_payload, str) or not isinstance(raw_disposition, str):
+            raise ValueError("management reevaluation receipt contains invalid encoded values")
+        try:
+            accepted_timestamp = datetime.fromisoformat(accepted_at)
+            disposition = InvalidationDisposition(raw_disposition)
+            payload = json.loads(raw_payload)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("management reevaluation receipt is corrupt") from exc
+        if accepted_timestamp.tzinfo is None:
+            raise ValueError("management reevaluation receipt contains an invalid timestamp")
+        expected_payload = {
+            "channel": channel,
+            "expected_deployment_generation": requested_deployment,
+            "expected_process_run_id": requested_process,
+            "repository": repository,
+            "target": {"number": target_number, "type": target_type},
+        }
+        if payload != expected_payload:
+            raise ValueError("management reevaluation receipt canonical payload is inconsistent")
+        return ReevaluationReceipt(1, operation_id, repository, channel, target_type, target_number, requested_process, requested_deployment, accepting_process, accepting_deployment, accepted_at, disposition, generation)
 
     def get_reevaluation_receipt(self, operation_id: str) -> Optional[ReevaluationReceipt]:
         """Read authoritative admission evidence without consulting queue appearance."""
