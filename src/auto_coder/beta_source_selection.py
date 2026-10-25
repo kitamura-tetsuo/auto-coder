@@ -143,7 +143,7 @@ class BetaSourceSelector:
 
     def latest(self) -> SourceExecution:
         runs = self._all(
-            f"actions/workflows/{_WORKFLOW_API_ID}/runs?branch={SOURCE_BRANCH}&status=completed&per_page=100",
+            f"actions/workflows/{_WORKFLOW_API_ID}/runs?branch={SOURCE_BRANCH}&per_page=100",
             "workflow_runs",
             "source-test run listing",
         )
@@ -159,7 +159,18 @@ class BetaSourceSelector:
                 exact = _object(self.client.request("GET", f"actions/runs/{run['id']}/attempts/{attempt}"), "numbered run attempt")
                 if exact.get("id") != run["id"] or exact.get("run_attempt") != attempt:
                     raise BetaSourceError("numbered run-attempt observation is inconsistent")
-                if exact.get("status") == "completed" and exact.get("conclusion") == "success":
+                status = exact.get("status")
+                conclusion = exact.get("conclusion")
+                if status == "completed":
+                    if not isinstance(conclusion, str):
+                        raise BetaSourceError("completed run-attempt conclusion is unavailable")
+                elif status in {"queued", "in_progress", "waiting", "pending", "requested"}:
+                    if conclusion is not None:
+                        raise BetaSourceError("active run-attempt conclusion is inconsistent")
+                    continue
+                else:
+                    raise BetaSourceError("run-attempt status is unavailable or unsupported")
+                if conclusion == "success":
                     executions.append(self.execution(run["id"], attempt))
         if not executions:
             raise BetaSourceError("no eligible successful source execution exists")
@@ -248,19 +259,26 @@ class BetaSourceSelector:
         self.proofs.verify_run(proof.record, recorded_attempt=True)
         self.execution(record.selected_run_id, record.selected_run_attempt)
         current = self._pointer()
-        if current == record.source_sha:
-            return BetaSelectionReceipt(f"refs/tags/{name}", BETA_REF, MutationCertainty.CONFIRMED, record.source_sha, current)
-        if current != record.expected_previous_sha:
-            return BetaSelectionReceipt(f"refs/tags/{name}", BETA_REF, MutationCertainty.SUPERSEDED, record.source_sha, current)
-
         effect_name = self._effect_name(operation_id)
         effect = self._read_record(effect_name)
         if effect is not None:
             if effect != record:
                 raise BetaSourceConflict("pointer-attempt record conflicts with selection history")
+            if current == record.source_sha:
+                return BetaSelectionReceipt(f"refs/tags/{name}", BETA_REF, MutationCertainty.CONFIRMED, record.source_sha, current)
+            if current != record.expected_previous_sha:
+                return BetaSelectionReceipt(f"refs/tags/{name}", BETA_REF, MutationCertainty.SUPERSEDED, record.source_sha, current)
             # The first request may have reached GitHub. An absent pointer is
             # not evidence that resending is safe.
             return BetaSelectionReceipt(f"refs/tags/{name}", BETA_REF, MutationCertainty.SENT_UNKNOWN, record.source_sha, current)
+
+        if current == record.source_sha:
+            # Matching source identity is not operation attribution. Without
+            # this operation's durable pre-send record, another operation or
+            # trusted writer established the current pointer.
+            return BetaSelectionReceipt(f"refs/tags/{name}", BETA_REF, MutationCertainty.SUPERSEDED, record.source_sha, current)
+        if current != record.expected_previous_sha:
+            return BetaSelectionReceipt(f"refs/tags/{name}", BETA_REF, MutationCertainty.SUPERSEDED, record.source_sha, current)
 
         # This is provably the first pointer effect. Re-evaluate eligibility
         # even when history was left behind by a stopped prior invocation.
@@ -272,11 +290,11 @@ class BetaSourceSelector:
         try:
             if current is None:
                 response = self.client.request("POST", "git/refs", {"ref": BETA_REF, "sha": record.source_sha})
-                if response.status not in (201, 422):
+                if response.status not in (201, 422) and response.status < 500:
                     return BetaSelectionReceipt(f"refs/tags/{name}", BETA_REF, MutationCertainty.REJECTED, record.source_sha, current)
             else:
                 response = self.client.request("PATCH", "git/refs/tags/auto-coder-beta-current", {"sha": record.source_sha, "force": False})
-                if response.status != 200:
+                if response.status != 200 and response.status < 500:
                     return BetaSelectionReceipt(f"refs/tags/{name}", BETA_REF, MutationCertainty.REJECTED, record.source_sha, current)
         except RuntimeError:
             pass
@@ -297,7 +315,10 @@ def main() -> None:
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
         raise BetaSourceError("GITHUB_TOKEN is required")
-    receipt = BetaSourceSelector(GitHubGitDataClient(token, args.repository), args.repository).advance(args.operation_id, args.expected_previous_sha)
+    expected_previous_sha = args.expected_previous_sha or None
+    if expected_previous_sha is not None and _SHA.fullmatch(expected_previous_sha) is None:
+        raise BetaSourceError("expected previous source must be a full lowercase SHA-1")
+    receipt = BetaSourceSelector(GitHubGitDataClient(token, args.repository), args.repository).advance(args.operation_id, expected_previous_sha)
     print(json.dumps(asdict(receipt), sort_keys=True))
     if receipt.certainty != MutationCertainty.CONFIRMED:
         raise BetaSourceError(f"beta source advance did not confirm: {receipt.certainty.value}")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -30,10 +31,13 @@ class GitHubBoundary:
         self.pointer_response_lost = False
         self.drop_pointer_response = False
         self.pointer_readback_sha: str | None = None
+        self.pointer_http_status: int | None = None
+        self.pointer_read_unavailable = False
         self.pointer_mutations = 0
         self.after_history = None
         self.failed_attempts: set[tuple[int, int]] = set()
         self.missing_jobs: set[tuple[int, int]] = set()
+        self.attempt_states: dict[tuple[int, int], tuple[object, object]] = {}
         self.before_pointer = None
         self.calls: list[tuple[str, str]] = []
         self.add_proof(SHA_A, PROOF_A, 101, 1)
@@ -47,7 +51,7 @@ class GitHubBoundary:
 
     def request(self, method: str, path: str, payload: dict[str, object] | None = None) -> GitDataResponse:
         self.calls.append((method, path))
-        if method == "GET" and path == "actions/workflows/test-source-for-runtime.yml/runs?branch=main&status=completed&per_page=100&page=1":
+        if method == "GET" and path == "actions/workflows/test-source-for-runtime.yml/runs?branch=main&per_page=100&page=1":
             ids = sorted({run_id for run_id, _attempt in self.executions})
             return GitDataResponse(200, {"total_count": len(ids), "workflow_runs": [{"id": run_id, "run_attempt": max(attempt for candidate, attempt in self.executions if candidate == run_id)} for run_id in ids]})
         if method == "GET" and path.startswith("actions/runs/") and "/attempts/" in path and path.endswith("/jobs?per_page=100"):
@@ -70,10 +74,12 @@ class GitHubBoundary:
             if found is None:
                 return GitDataResponse(404)
             sha, _completed = found
-            conclusion = "failure" if (run_id, attempt) in self.failed_attempts else "success"
-            return GitDataResponse(200, {"id": run_id, "run_attempt": attempt, "workflow_id": 77, "head_sha": sha, "path": WORKFLOW_PATH, "head_branch": "main", "status": "completed", "conclusion": conclusion})
+            status, conclusion = self.attempt_states.get((run_id, attempt), ("completed", "failure" if (run_id, attempt) in self.failed_attempts else "success"))
+            return GitDataResponse(200, {"id": run_id, "run_attempt": attempt, "workflow_id": 77, "head_sha": sha, "path": WORKFLOW_PATH, "head_branch": "main", "status": status, "conclusion": conclusion})
         if method == "GET" and path.startswith("git/ref/tags/"):
             full = "refs/tags/" + path.removeprefix("git/ref/tags/")
+            if full == BETA_REF and self.pointer_read_unavailable and self.pointer_mutations > 0:
+                return GitDataResponse(503)
             value = self.refs.get(full)
             if full == BETA_REF and self.pointer_readback_sha is not None:
                 value = ("commit", self.pointer_readback_sha)
@@ -99,7 +105,7 @@ class GitHubBoundary:
                 self.refs[ref] = (kind, str(payload["sha"]))
                 if ref.endswith("-pointer-attempt") is False and ref.startswith("refs/tags/auto-coder-beta-selection-") and self.after_history:
                     self.after_history()
-            return GitDataResponse(201)
+            return GitDataResponse(self.pointer_http_status or 201)
         if method == "PATCH" and path == "git/refs/tags/auto-coder-beta-current" and payload:
             self.pointer_mutations += 1
             if self.before_pointer:
@@ -109,7 +115,7 @@ class GitHubBoundary:
             self.refs[BETA_REF] = ("commit", str(payload["sha"]))
             if self.pointer_response_lost:
                 raise RuntimeError("response lost")
-            return GitDataResponse(200)
+            return GitDataResponse(self.pointer_http_status or 200)
         raise AssertionError((method, path, payload))
 
 
@@ -208,6 +214,38 @@ def test_cli_workflow_input_publishes_real_git_objects(_use_custom_subprocess_mo
     assert remote._git("rev-parse", "refs/tags/auto-coder-beta-selection-r900^{}") == selected
 
 
+def test_workflow_previous_sha_input_updates_real_git_pointer(_use_custom_subprocess_mock, monkeypatch, tmp_path: Path, capsys) -> None:
+    remote = RealGitDataBoundary(tmp_path / "producer.git")
+    previous = remote.executions[(11, 1)][0]
+    selected = remote._git(
+        "commit-tree",
+        remote._git("mktree", input=""),
+        input="next\n",
+        env={"GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "test@example.com", "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "test@example.com"},
+    )
+    remote._git("update-ref", BETA_REF, previous)
+    remote.executions = {(12, 1): (selected, "2026-10-01T02:00:00Z")}
+    remote.add_proof(selected, "", 102, 1)
+
+    workflow = yaml.safe_load(open(".github/workflows/advance-beta-source.yml", encoding="utf-8"))
+    command = workflow["jobs"]["advance-beta-source"]["steps"][-1]["run"]
+    rendered = command.replace("${{ github.repository }}", "owner/repo").replace("${{ github.run_id }}", "901").replace("${{ inputs.expected_previous_sha }}", previous)
+    tokens = shlex.split(rendered)
+    module_index = tokens.index("auto_coder.beta_source_selection")
+    monkeypatch.setenv("GITHUB_TOKEN", "controlled-token")
+    monkeypatch.setattr("auto_coder.beta_source_selection.GitHubGitDataClient", lambda *_args: remote)
+    monkeypatch.setattr(sys, "argv", ["beta-source-selection", *tokens[module_index + 1 :]])
+
+    main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["certainty"] == "CONFIRMED"
+    assert remote._git("rev-parse", BETA_REF) == selected
+    history_oid = remote._git("rev-parse", "refs/tags/auto-coder-beta-selection-r901")
+    history = remote._git("cat-file", "-p", history_oid).split("\n\n", 1)[1]
+    assert json.loads(history)["expected_previous_sha"] == previous
+
+
 def test_retry_stays_bound_to_record_when_a_later_execution_exists() -> None:
     remote = GitHubBoundary()
     selector(remote).advance("r900", None)
@@ -227,6 +265,30 @@ def test_latest_uses_job_completion_and_rejects_ties() -> None:
     remote.executions[(12, 1)] = (SHA_B, "2026-10-01T01:00:00Z")
     with pytest.raises(BetaSourceError, match="tied"):
         selector(remote).latest()
+
+
+def test_active_rerun_preserves_its_later_successful_prior_attempt() -> None:
+    remote = GitHubBoundary()
+    remote.executions[(12, 1)] = (SHA_B, "2026-10-01T02:00:00Z")
+    remote.executions[(12, 2)] = (SHA_B, "2026-10-01T03:00:00Z")
+    remote.attempt_states[(12, 2)] = ("in_progress", None)
+    remote.add_proof(SHA_B, PROOF_B, 102, 1)
+
+    receipt = selector(remote).advance("r905", None)
+
+    assert receipt.selected_sha == SHA_B
+    assert receipt.certainty == MutationCertainty.CONFIRMED
+
+
+def test_partial_numbered_attempt_prevents_older_selection() -> None:
+    remote = GitHubBoundary()
+    remote.executions[(12, 1)] = (SHA_B, "2026-10-01T02:00:00Z")
+    remote.attempt_states[(12, 1)] = ("completed", None)
+    remote.add_proof(SHA_B, PROOF_B, 102, 1)
+
+    with pytest.raises(BetaSourceError, match="conclusion is unavailable"):
+        selector(remote).advance("r906", None)
+    assert remote.pointer_mutations == 0
 
 
 def test_failed_latest_run_is_ignored_but_incomplete_success_fails_closed() -> None:
@@ -340,6 +402,60 @@ def test_update_response_loss_and_mismatching_readback_are_reconciled() -> None:
     receipt = selector(mismatch).advance("r902", SHA_B)
     assert receipt.certainty == MutationCertainty.SENT_UNKNOWN
     assert receipt.observed_sha == SHA_B
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_http_502_after_applied_pointer_write_uses_exact_readback(existing: bool) -> None:
+    remote = GitHubBoundary()
+    expected = None
+    if existing:
+        remote.executions = {(12, 1): (SHA_B, "2026-10-01T02:00:00Z")}
+        remote.add_proof(SHA_B, PROOF_B, 102, 1)
+        remote.refs[BETA_REF] = ("commit", SHA_A)
+        expected = SHA_A
+    remote.pointer_http_status = 502
+
+    receipt = selector(remote).advance("r907", expected)
+
+    assert receipt.certainty == MutationCertainty.CONFIRMED
+    assert remote.pointer_mutations == 1
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_http_502_with_unavailable_readback_remains_sent_unknown(existing: bool) -> None:
+    remote = GitHubBoundary()
+    expected = None
+    if existing:
+        remote.executions = {(12, 1): (SHA_B, "2026-10-01T02:00:00Z")}
+        remote.add_proof(SHA_B, PROOF_B, 102, 1)
+        remote.refs[BETA_REF] = ("commit", SHA_A)
+        expected = SHA_A
+    remote.pointer_http_status = 502
+    remote.pointer_read_unavailable = True
+
+    receipt = selector(remote).advance("r908", expected)
+
+    assert receipt.certainty == MutationCertainty.SENT_UNKNOWN
+    assert remote.pointer_mutations == 1
+
+
+def test_older_same_sha_operation_does_not_claim_newer_advancement() -> None:
+    remote = GitHubBoundary()
+
+    def stop_after_history() -> None:
+        raise ValueError("controlled stop after history")
+
+    remote.after_history = stop_after_history
+    with pytest.raises(ValueError, match="controlled stop"):
+        selector(remote).advance("r900", None)
+    remote.after_history = None
+    remote.executions[(12, 1)] = (SHA_A, "2026-10-01T02:00:00Z")
+    assert selector(remote).advance("r901", None).certainty == MutationCertainty.CONFIRMED
+
+    older = selector(remote).advance("r900", None)
+
+    assert older.certainty == MutationCertainty.SUPERSEDED
+    assert remote.pointer_mutations == 1
 
 
 def test_manual_supersession_is_reported_without_overwrite() -> None:

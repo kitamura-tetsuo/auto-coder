@@ -13,6 +13,8 @@ derived from exact successful Actions run attempts, all required jobs, and the
 maximum required-job `completed_at`. Missing or partial observations, a tie for
 the greatest completion time, and a latest execution without its immutable
 `auto-coder-tested-<SHA>` annotated tag all fail closed.
+Run discovery includes active reruns so their earlier completed attempts remain
+eligible; an in-progress attempt does not hide a successful prior attempt.
 
 The mutable direct-commit pointer is
 `refs/tags/auto-coder-beta-current`. Before changing it, an operation creates
@@ -34,7 +36,8 @@ The workflow requires `actions: read` and `contents: write`. Its stable Actions
 concurrency group serializes supported workflow writers; this is not a global
 compare-and-swap promise against administrators or other trusted direct Git ref
 writers. Exact readback reconciles a lost write response. Missing readback stays
-uncertain, conflicting immutable history fails, and an unexpectedly superseded
+uncertain, including when GitHub returns a server error after possibly applying
+a write. Conflicting immutable history fails, and an unexpectedly superseded
 pointer is reported rather than overwritten. Selection success means only that
 the history and current Git ref resolve to the verified SHA; installed worker
 source remains a separate runtime observation.
