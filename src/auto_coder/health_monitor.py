@@ -483,6 +483,7 @@ class HealthMonitor:
         self._stage = "startup"
         self._stage_detail = ""
         self._last_heartbeat = time.monotonic()
+        self._heartbeat_sequence = 0
         self._stall_reported = False
         self._peak_reported_rss_mb = 0.0
         self._state_lock = threading.Lock()
@@ -569,6 +570,7 @@ class HealthMonitor:
         """
 
         with self._state_lock:
+            self._heartbeat_sequence += 1
             self._stage = stage
             self._stage_detail = detail
             self._last_heartbeat = time.monotonic()
@@ -577,6 +579,18 @@ class HealthMonitor:
         if was_stalled:
             logger.info(f"Heartbeat resumed at stage '{stage}' {detail}".strip())
             self.record_event("stall_recovered", stage, detail)
+
+    def heartbeat_observation(self) -> dict[str, object]:
+        """Return progress evidence without recording a new heartbeat."""
+        with self._state_lock:
+            if self._heartbeat_sequence == 0:
+                return {"available": False, "sequence": None, "stage": None, "age_seconds": None}
+            return {
+                "available": True,
+                "sequence": self._heartbeat_sequence,
+                "stage": self._stage[:2000],
+                "age_seconds": max(0.0, time.monotonic() - self._last_heartbeat),
+            }
 
     def snapshot(self, reason: str = "periodic") -> ResourceSnapshot:
         """Collect a snapshot without writing it anywhere."""

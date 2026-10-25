@@ -63,7 +63,26 @@ async def _run_process_issues_daemon(
     """Run the production signal, webhook, and engine orchestration."""
     import asyncio
 
+    from .worker_management_bridge import WorkerManagementBridge, configured_identity
+
     loop = asyncio.get_running_loop()
+    bridge_identity = configured_identity(repo_name)
+    bridge = WorkerManagementBridge(bridge_identity, automation_engine) if bridge_identity is not None else None
+    bridge_watch_task: Optional[asyncio.Task[None]] = None
+    if bridge is not None:
+        await bridge.start()
+        automation_engine.graceful_terminal_observer = bridge.persist_graceful_terminal
+
+        async def watch_bridge() -> None:
+            assert bridge.task is not None
+            result = await asyncio.gather(bridge.task, return_exceptions=True)
+            if automation_engine.lifecycle.value == "running":
+                failure = result[0] if result else None
+                detail = type(failure).__name__ if isinstance(failure, BaseException) else "unexpected exit"
+                logger.error(f"Private worker management bridge stopped while the daemon was running: {detail}")
+                automation_engine.request_graceful_shutdown("private management bridge exit")
+
+        bridge_watch_task = asyncio.create_task(watch_bridge(), name="private-worker-management-bridge-watch")
     signal_counts = {signal.SIGINT: 0, signal.SIGTERM: 0}
 
     def handle_shutdown_signal(received: signal.Signals) -> None:
@@ -104,6 +123,11 @@ async def _run_process_issues_daemon(
         else:
             await automation_engine.start_automation(repo_name)
     finally:
+        if bridge is not None:
+            automation_engine.graceful_terminal_observer = None
+            await bridge.close()
+        if bridge_watch_task is not None:
+            await bridge_watch_task
         for shutdown_signal in installed_signals:
             loop.remove_signal_handler(shutdown_signal)
 

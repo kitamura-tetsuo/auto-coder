@@ -1045,6 +1045,8 @@ class AutomationEngine:
         self.adversarial_validation_scheduler = AdversarialValidationScheduler(self.config.adversarial_validation_concurrency)
         self._lifecycle = EngineLifecycle.RUNNING
         self._lifecycle_lock = threading.Lock()
+        self.daemon_serving = False
+        self.graceful_terminal_observer: Optional[Callable[[str], None]] = None
         self._dependency_family_locks: Dict[tuple[str, int], threading.RLock] = {}
         self._dependency_family_locks_guard = threading.Lock()
         self._shutdown_event: Optional[asyncio.Event] = None
@@ -1089,6 +1091,7 @@ class AutomationEngine:
             if self._lifecycle is not EngineLifecycle.RUNNING:
                 return False
             self._lifecycle = EngineLifecycle.DRAINING
+            self.daemon_serving = False
         self.invocation_gate.close_admission(reason)
         logger.warning(f"Graceful shutdown requested by {reason}; entering draining state")
         # Issue #2010 REQ-007: report exactly what graceful draining actually
@@ -2872,9 +2875,16 @@ class AutomationEngine:
                     pass
 
         logger.info(f"Starting automation for repository: {repo_name} with {concurrency} Issue workers and {concurrency} PR workers")
-        self.issue_stage_routing.recover(repo_name)
-        recovered_identities = self.invalidations.recover(repo_name)
-        self._record_recovered_dependency_work(repo_name, recovered_identities)
+
+        def recover_startup_stores() -> None:
+            self.issue_stage_routing.recover(repo_name)
+            recovered_identities = self.invalidations.recover(repo_name)
+            self._record_recovered_dependency_work(repo_name, recovered_identities)
+
+        # Both recoveries acquire SQLite write locks.  The private bridge is
+        # already serving at this point, so never make its event loop wait for
+        # a contended database transaction.
+        await asyncio.to_thread(recover_startup_stores)
         await self._enqueue_pending_invalidations(repo_name)
 
         # Record resource usage and unhandled asyncio errors for the whole run
@@ -2991,7 +3001,17 @@ class AutomationEngine:
         all_loop_tasks.append(local_runner_task)
         shutdown_wait = asyncio.create_task(self._shutdown_event.wait(), name="graceful-shutdown-request")
         try:
-            done, _ = await asyncio.wait({*all_loop_tasks, shutdown_wait}, return_when=asyncio.FIRST_COMPLETED)
+            # Serving starts only after every required steady-state task exists
+            # and immediately before their supervising wait becomes active.
+            self.daemon_serving = self.lifecycle is EngineLifecycle.RUNNING and self.startup_reconciled and all(not task.done() for task in all_loop_tasks)
+            try:
+                done, _ = await asyncio.wait({*all_loop_tasks, shutdown_wait}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                # Cancellation and exceptions skip the statement following an
+                # await.  Clear readiness before any cancellation joins so a
+                # still-responsive bridge cannot report a dead supervisor as
+                # serving while cleanup is blocked on owned work.
+                self.daemon_serving = False
             if shutdown_wait in done:
                 # Admission stopped synchronously when the lifecycle changed.
                 # Cancel loop waiters, but shielded synchronous operations retain
@@ -3009,6 +3029,8 @@ class AutomationEngine:
                         self._lifecycle = EngineLifecycle.STOPPED
                     logger.info("Automation engine graceful drain completed")
                     get_health_monitor().record_event("engine_stop", "gracefully drained", "")
+                    if self.graceful_terminal_observer is not None:
+                        await asyncio.to_thread(self.graceful_terminal_observer, "graceful drain completed")
                 return
 
             shutdown_wait.cancel()
@@ -3041,6 +3063,7 @@ class AutomationEngine:
             get_health_monitor().record_event("engine_stop", f"unhandled error: {type(e).__name__}: {e}", "")
             raise
         finally:
+            self.daemon_serving = False
             if local_runner is not None:
                 local_runner.close(wait=False)
             shutdown_wait.cancel()
