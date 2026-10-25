@@ -1,12 +1,16 @@
 import asyncio
+import io
 import json
 import os
+import sqlite3
 import threading
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from loguru import logger
 
 import auto_coder.worker_management_bridge as bridge_module
 from auto_coder.automation_config import AutomationConfig
@@ -114,6 +118,60 @@ def test_conflicting_endpoint_is_never_replaced(monkeypatch: pytest.MonkeyPatch,
     assert endpoint.read_text() == "operator-owned"
 
 
+def test_concurrent_socket_acquisition_has_one_lifetime_owner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    endpoint = configure(monkeypatch, tmp_path)
+    identity = configured_identity("owner/repo")
+    assert identity is not None
+    first = WorkerManagementBridge(replace(identity, deployment_generation="generation-first"), ObservedEngine())
+    second = WorkerManagementBridge(replace(identity, deployment_generation="generation-second"), ObservedEngine())
+
+    async def scenario() -> None:
+        results = await asyncio.gather(first.start(), second.start(), return_exceptions=True)
+        winners = [bridge for bridge, result in zip((first, second), results) if result is None]
+        losers = [bridge for bridge, result in zip((first, second), results) if isinstance(result, ManagementBridgeConfigurationError)]
+        assert len(winners) == len(losers) == 1
+        winner, loser = winners[0], losers[0]
+        await loser.close()
+        assert endpoint.is_socket()
+        transport = httpx.AsyncHTTPTransport(uds=str(endpoint))
+        async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+            response = await client.get("/v1/observation", params={"nonce": "winner"})
+        assert response.status_code == 200
+        assert response.headers["auto-coder-deployment-generation"] == winner.identity.deployment_generation
+        await winner.close()
+        assert not endpoint.exists()
+
+    asyncio.run(scenario())
+
+
+def test_observation_sanitizes_free_text_before_clipping(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    endpoint = configure(monkeypatch, tmp_path)
+    engine = ObservedEngine()
+    secret = "ghp_" + "a" * 2100
+    engine.startup_reconciliation_error = f"failed /private/operator/db https://user:pass@example.test/x Bearer bearer-secret {secret}"
+
+    async def scenario() -> None:
+        identity = configured_identity("owner/repo")
+        assert identity is not None
+        bridge = WorkerManagementBridge(identity, engine)
+        await bridge.start()
+        try:
+            transport = httpx.AsyncHTTPTransport(uds=str(endpoint))
+            async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+                response = await client.get("/v1/observation", params={"nonce": "redaction"})
+            projected = response.json()["lifecycle"]["startup_reconciliation_error"]
+            assert "[REDACTED_PATH]" in projected
+            assert "[REDACTED_URL]" in projected
+            assert "Bearer [REDACTED]" in projected
+            assert len(projected) < 2000
+            for sensitive in ("/private/operator/db", "user:pass", "bearer-secret", secret):
+                assert sensitive not in projected
+        finally:
+            await bridge.close()
+
+    asyncio.run(scenario())
+
+
 def test_graceful_receipt_requires_stopped_closed_and_settled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     configure(monkeypatch, tmp_path)
     identity = configured_identity("owner/repo")
@@ -162,6 +220,9 @@ def test_actual_daemon_uds_observes_admitted_drain_and_persists_receipt(monkeypa
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     engine = AutomationEngine(MagicMock(), AutomationConfig())
+    sensitive_failure = "database /private/operator/slots.sqlite Bearer credential-canary"
+    captured_logs = io.StringIO()
+    sink = logger.add(captured_logs, format="{message}")
     admitted = engine.invocation_gate.try_admit(repository="owner/repo", target="2599", stage="provider")
     assert admitted is not None
     assert engine.request_graceful_shutdown("test signal")
@@ -184,8 +245,12 @@ def test_actual_daemon_uds_observes_admitted_drain_and_persists_receipt(monkeypa
             assert body["lifecycle"]["daemon_serving"] is False
             assert body["invocations"]["unsettled_count"] == 1
             assert body["invocations"]["unsettled"][0]["invocation_id"] == admitted.identity.invocation_id
+            for _ in range(100):
+                if engine.implementation_slots is not None:
+                    break
+                await asyncio.sleep(0.01)
             assert engine.implementation_slots is not None
-            monkeypatch.setattr(engine.implementation_slots, "snapshot", MagicMock(side_effect=OSError("store unavailable")))
+            monkeypatch.setattr(engine.implementation_slots, "snapshot", MagicMock(side_effect=OSError(sensitive_failure)))
             status = await client.get("/api/status")
             assert status.status_code == 200
             assert status.headers["auto-coder-deployment-generation"] == "generation-7"
@@ -195,7 +260,13 @@ def test_actual_daemon_uds_observes_admitted_drain_and_persists_receipt(monkeypa
         assert admitted.confirm_settled("durable-checkpoint")
         await asyncio.wait_for(daemon, timeout=10)
 
-    asyncio.run(scenario())
+    try:
+        asyncio.run(scenario())
+    finally:
+        logger.remove(sink)
+    assert "public API status: slot_observation_unavailable" in captured_logs.getvalue()
+    assert "credential-canary" not in captured_logs.getvalue()
+    assert "/private/operator/slots.sqlite" not in captured_logs.getvalue()
     receipt = json.loads(endpoint.with_name("last-terminal.json").read_text())
     assert receipt["lifecycle_state"] == "stopped"
     assert receipt["unsettled_count"] == 0
@@ -307,6 +378,44 @@ def test_actual_daemon_is_observable_during_startup_and_cancellation(monkeypatch
 
     asyncio.run(scenario())
     assert not endpoint.with_name("last-terminal.json").exists()
+
+
+def test_actual_daemon_bridge_responds_while_startup_store_recovery_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from auto_coder.cli_commands_main import _run_process_issues_daemon
+
+    endpoint = configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    routing_db = tmp_path / "routing.sqlite3"
+    monkeypatch.setenv("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", str(routing_db))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    blocker = sqlite3.connect(routing_db)
+    blocker.execute("BEGIN IMMEDIATE")
+    blocker.execute("UPDATE issue_lane_arrivals SET state = state")
+
+    async def scenario() -> None:
+        daemon = asyncio.create_task(_run_process_issues_daemon(engine, "owner/repo", False, "127.0.0.1", 0, "critical", None, None))
+        transport = httpx.AsyncHTTPTransport(uds=str(endpoint))
+        async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+            for _ in range(100):
+                try:
+                    response = await asyncio.wait_for(client.get("/v1/observation", params={"nonce": "store recovery"}), timeout=1)
+                    break
+                except httpx.ConnectError:
+                    await asyncio.sleep(0.01)
+            else:
+                raise AssertionError("management socket did not become reachable during store recovery")
+        assert response.status_code == 200
+        assert response.json()["lifecycle"]["daemon_serving"] is False
+        assert not daemon.done()
+        engine.request_graceful_shutdown("test cleanup")
+        blocker.commit()
+        await asyncio.wait_for(daemon, timeout=10)
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        blocker.close()
 
 
 def test_actual_daemon_unexpected_loop_exit_never_persists_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -829,7 +829,7 @@ def public_api_enabled() -> bool:
     return os.environ.get(ENABLE_ENV_VAR) == "1"
 
 
-def init_public_api(app: FastAPI, engine: Any, repo_name: str) -> None:
+def init_public_api(app: FastAPI, engine: Any, repo_name: str, *, safe_failure_logging: bool = False) -> None:
     """Register the four read-only routes on ``app`` (GET only; other methods get 405)."""
     from .public_validation_attempts import (
         InvalidSelection,
@@ -845,13 +845,19 @@ def init_public_api(app: FastAPI, engine: Any, repo_name: str) -> None:
 
     invalid = lambda: error(422, "invalid_request", "Unsupported or invalid query parameters.")  # noqa: E731
 
+    def log_failure(message: str) -> None:
+        if safe_failure_logging:
+            logger.warning(message)
+        else:
+            logger.exception(message)
+
     @app.get("/api/", include_in_schema=False)
     async def api_index() -> Response:
         run_id: Optional[str] = None
         try:
             run_id = await asyncio.to_thread(lambda: get_trace_collector().process_run_id)
         except Exception:
-            logger.exception("public API index: collector unavailable")
+            log_failure("public API index: collector unavailable")
         doc = _index_document(repo_name, run_id)
         return Response(json.dumps(doc, allow_nan=False).encode("utf-8"), media_type="application/json", headers={"Cache-Control": "no-store"})
 
@@ -866,7 +872,7 @@ def init_public_api(app: FastAPI, engine: Any, repo_name: str) -> None:
             try:
                 return await asyncio.to_thread(project)
             except Exception:
-                logger.exception(f"public API status: {code}")
+                log_failure(f"public API status: {code}")
                 blank.error_code = code
                 return blank
 
@@ -894,14 +900,14 @@ def init_public_api(app: FastAPI, engine: Any, repo_name: str) -> None:
         except InvalidRequest:
             return invalid()
         except Exception:
-            logger.exception("public API logs: observation failed")
+            log_failure("public API logs: observation failed")
             return error(503, "observation_unavailable", "Diagnostic events could not be read.")
         if isinstance(result, (ErrorResponse, RetentionGapResponse)):
             return _json_response(result, 409)
         try:
             return await asyncio.to_thread(_json_response, result)
         except Exception:
-            logger.exception("public API logs: projection failed")
+            log_failure("public API logs: projection failed")
             return error(503, "observation_unavailable", "Diagnostic events could not be projected.")
 
     @app.get("/api/validation-attempts", include_in_schema=False)
@@ -923,7 +929,7 @@ def init_public_api(app: FastAPI, engine: Any, repo_name: str) -> None:
             logger.warning("public API validation-attempts: evidence unavailable")
             return unavailable
         except Exception:
-            logger.exception("public API validation-attempts: observation failed")
+            log_failure("public API validation-attempts: observation failed")
             return unavailable
         return Response(body, media_type="application/json", headers={"Cache-Control": "no-store"})
 

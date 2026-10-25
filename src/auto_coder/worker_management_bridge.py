@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import re
+import socket
 import stat
 import tempfile
 from dataclasses import asdict, dataclass
@@ -20,8 +21,7 @@ from .build_provenance import observe_controller_artifact
 from .deployment_channel import validate_repository_ownership
 from .health_monitor import get_health_monitor
 from .logger_config import get_logger
-from .public_api import init_public_api
-from .security_utils import redact_string
+from .public_api import init_public_api, sanitize_text
 
 logger = get_logger(__name__)
 
@@ -69,7 +69,10 @@ def configured_identity(repository: str) -> Optional[BridgeIdentity]:
 
 
 def _safe_text(value: object) -> str:
-    return redact_string(str(value))[:MAX_TEXT]
+    # Reuse the diagnostic projection's full free-text policy.  In particular,
+    # sanitize URLs, authorization values, credentials, and paths before the
+    # shared 2,000-character clipping bound is applied.
+    return sanitize_text(str(value), paths=True)[0]
 
 
 class WorkerManagementBridge:
@@ -86,6 +89,7 @@ class WorkerManagementBridge:
         self.app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
         self.server: Any = None
         self.task: Optional[asyncio.Task[Any]] = None
+        self._listener: Optional[socket.socket] = None
         self._owned_endpoint: Optional[tuple[int, int]] = None
         self._register_routes()
 
@@ -124,7 +128,7 @@ class WorkerManagementBridge:
 
         # This registers only the existing inert projections.  The public
         # application's opt-in flag and route set are not consulted or changed.
-        init_public_api(self.app, self.engine, self.identity.repository)
+        init_public_api(self.app, self.engine, self.identity.repository, safe_failure_logging=True)
 
     def _observation(self, nonce: str) -> dict[str, object]:
         gate = self.engine.invocation_admission_snapshot()
@@ -171,25 +175,34 @@ class WorkerManagementBridge:
     async def start(self) -> None:
         """Start Uvicorn and prove this lifetime owns the resulting inode."""
         path = self.identity.socket_path
-        if path.exists() or path.is_symlink():
-            raise ManagementBridgeConfigurationError("management socket endpoint already exists")
         os.chmod(path.parent, 0o700)
         import uvicorn
 
-        config = uvicorn.Config(self.app, uds=str(path), log_level="warning", access_log=False)
+        # Bind ourselves rather than asking Uvicorn to bind a pathname.  A
+        # Unix bind is the atomic ownership decision: unlike Uvicorn's uds
+        # helper it never unlinks a socket won by a concurrent worker.
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            listener.bind(str(path))
+            listener.listen()
+            listener.setblocking(False)
+        except OSError as exc:
+            listener.close()
+            raise ManagementBridgeConfigurationError("management socket endpoint already exists or cannot be bound") from exc
+        self._listener = listener
+        details = path.stat()
+        self._owned_endpoint = (details.st_dev, details.st_ino)
+        os.chmod(path, 0o600)
+
+        config = uvicorn.Config(self.app, log_level="warning", access_log=False)
         self.server = uvicorn.Server(config)
         self.server.capture_signals = lambda: _NullContext()
-        self.task = asyncio.create_task(self.server.serve(), name="private-worker-management-bridge")
+        self.task = asyncio.create_task(self.server.serve(sockets=[listener]), name="private-worker-management-bridge")
         while not self.server.started:
             if self.task.done():
                 await self.task
                 raise ManagementBridgeConfigurationError("management bridge failed to start")
             await asyncio.sleep(0.01)
-        details = path.stat()
-        if not stat.S_ISSOCK(details.st_mode):
-            raise ManagementBridgeConfigurationError("management endpoint is not a Unix socket")
-        os.chmod(path, 0o600)
-        self._owned_endpoint = (details.st_dev, details.st_ino)
         logger.info("Private worker management bridge started")
 
     async def close(self) -> None:
@@ -199,6 +212,9 @@ class WorkerManagementBridge:
             result = await asyncio.gather(self.task, return_exceptions=True)
             if result and isinstance(result[0], BaseException):
                 logger.error(f"Private worker management bridge stopped with an error: {type(result[0]).__name__}")
+        if self._listener is not None:
+            self._listener.close()
+            self._listener = None
         try:
             details = self.identity.socket_path.lstat()
             if self._owned_endpoint == (details.st_dev, details.st_ino) and stat.S_ISSOCK(details.st_mode):

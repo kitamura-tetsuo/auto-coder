@@ -2875,9 +2875,16 @@ class AutomationEngine:
                     pass
 
         logger.info(f"Starting automation for repository: {repo_name} with {concurrency} Issue workers and {concurrency} PR workers")
-        self.issue_stage_routing.recover(repo_name)
-        recovered_identities = self.invalidations.recover(repo_name)
-        self._record_recovered_dependency_work(repo_name, recovered_identities)
+
+        def recover_startup_stores() -> None:
+            self.issue_stage_routing.recover(repo_name)
+            recovered_identities = self.invalidations.recover(repo_name)
+            self._record_recovered_dependency_work(repo_name, recovered_identities)
+
+        # Both recoveries acquire SQLite write locks.  The private bridge is
+        # already serving at this point, so never make its event loop wait for
+        # a contended database transaction.
+        await asyncio.to_thread(recover_startup_stores)
         await self._enqueue_pending_invalidations(repo_name)
 
         # Record resource usage and unhandled asyncio errors for the whole run
