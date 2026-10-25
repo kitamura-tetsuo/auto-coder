@@ -158,11 +158,12 @@ class OAuthGrantService:
             raise InvalidScope()
         return (SUPPORTED_SCOPE,)
 
-    @staticmethod
-    def _admit(result: AdmissionResult) -> VerifiedPrincipal:
+    def _admit(self, result: AdmissionResult) -> VerifiedPrincipal:
         if result.status is AdmissionStatus.UNAVAILABLE:
             raise Unavailable()
         if result.status is not AdmissionStatus.PERMITTED or result.principal is None:
+            raise Denied()
+        if result.principal.project_id != self.settings.firebase_project_id:
             raise Denied()
         return result.principal
 
@@ -215,7 +216,23 @@ class OAuthGrantService:
                 now = self.clock()
                 if db.execute("UPDATE pending SET status='approved',project=?,uid=?,auth_time=? WHERE id=? AND status='pending'", (principal.project_id, principal.uid, principal.auth_time, request_id)).rowcount != 1:
                     raise InvalidGrant()
-                db.execute("INSERT INTO codes VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL)", (code_hash, request_id, row["client_id"], row["redirect_uri"], row["resource"], row["scope"], row["challenge"], principal.project_id, principal.uid, principal.auth_time, now + 120))
+                db.execute(
+                    "INSERT INTO codes VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL)",
+                    (
+                        code_hash,
+                        request_id,
+                        row["client_id"],
+                        row["redirect_uri"],
+                        row["resource"],
+                        row["scope"],
+                        row["challenge"],
+                        principal.project_id,
+                        principal.uid,
+                        principal.auth_time,
+                        now + 120,
+                        now + self.settings.grant_lifetime,
+                    ),
+                )
                 return AuthorizationRedirect(row["redirect_uri"], row["state"], self.settings.canonical_issuer, code=code)
         except OAuthError:
             raise
@@ -225,11 +242,16 @@ class OAuthGrantService:
     def exchange_code(self, client_id: str, code: str, redirect_uri: str, resource: str, code_verifier: str) -> TokenBundle:
         self._client(client_id, redirect_uri)
         self._resource(resource)
-        snapshot = self.inspect_code(client_id, code)
-        if not snapshot.active:
-            raise InvalidGrant()
-        with self.store.connect() as db:
-            row = db.execute("SELECT * FROM codes WHERE hash=?", (_hash(code),)).fetchone()
+        try:
+            snapshot = self.inspect_code(client_id, code)
+            if not snapshot.active:
+                raise InvalidGrant()
+            with self.store.connect() as db:
+                row = db.execute("SELECT * FROM codes WHERE hash=?", (_hash(code),)).fetchone()
+        except OAuthError:
+            raise
+        except sqlite3.Error as exc:
+            raise Unavailable() from exc
         assert row is not None
         principal = VerifiedPrincipal(row["project"], row["uid"], row["auth_time"])
         self._admit(self.identity.recheck_identity(principal))
@@ -247,7 +269,7 @@ class OAuthGrantService:
                 if (row["client_id"], row["redirect_uri"], row["resource"]) != (client_id, redirect_uri, resource) or not secrets.compare_digest(row["challenge"], _challenge(verifier)):
                     raise InvalidGrant()
                 self._admit(self.identity.check_operator_policy(principal))
-                expires = now + self.settings.grant_lifetime
+                expires = row["grant_expires"]
                 db.execute("UPDATE codes SET consumed=? WHERE hash=? AND consumed IS NULL", (now, _hash(code)))
                 db.execute("INSERT INTO grants VALUES(?,?,?,?,?,?,?,?,?,NULL,NULL)", (grant_id, client_id, resource, row["scope"], principal.project_id, principal.uid, principal.auth_time, now, expires))
                 db.execute("INSERT INTO access_tokens VALUES(?,?,?)", (_hash(access), grant_id, min(now + self.settings.access_lifetime, expires)))
@@ -263,8 +285,11 @@ class OAuthGrantService:
         self._resource(resource)
         if requested_scopes is not None:
             self._scopes(requested_scopes, False)
-        with self.store.connect() as db:
-            row = db.execute("SELECT r.*,g.client_id,g.resource,g.project,g.uid,g.auth_time,g.scope,g.revoked FROM refresh_tokens r JOIN grants g ON g.id=r.grant_id WHERE r.hash=?", (_hash(refresh_token),)).fetchone()
+        try:
+            with self.store.connect() as db:
+                row = db.execute("SELECT r.*,g.client_id,g.resource,g.project,g.uid,g.auth_time,g.scope,g.revoked FROM refresh_tokens r JOIN grants g ON g.id=r.grant_id WHERE r.hash=?", (_hash(refresh_token),)).fetchone()
+        except sqlite3.Error as exc:
+            raise Unavailable() from exc
         if row is None or row["client_id"] != client_id or row["resource"] != resource:
             raise InvalidGrant()
         if row["spent"] is not None:
@@ -306,6 +331,7 @@ class OAuthGrantService:
             now = self.clock()
             if row is None or row["revoked"] is not None or row["access_expires"] <= now or row["expires"] <= now or row["resource"] != resource or row["project"] != self.settings.firebase_project_id:
                 raise InvalidGrant()
+            self._client(row["client_id"])
             granted = tuple(row["scope"].split())
             if not set(required_scopes).issubset(granted):
                 raise InvalidScope()
@@ -338,8 +364,11 @@ class OAuthGrantService:
 
     def inspect_code(self, client_id: str, code: str) -> CredentialInspection:
         self._client(client_id)
-        with self.store.connect() as db:
-            row = db.execute("SELECT * FROM codes WHERE hash=?", (_hash(code),)).fetchone()
+        try:
+            with self.store.connect() as db:
+                row = db.execute("SELECT * FROM codes WHERE hash=?", (_hash(code),)).fetchone()
+        except sqlite3.Error as exc:
+            raise Unavailable() from exc
         if row is None or row["client_id"] != client_id:
             return CredentialInspection(None, None, None, False)
         return CredentialInspection(None, client_id, row["resource"], row["consumed"] is None and row["expires"] > self.clock(), row["consumed"] is not None)
@@ -352,8 +381,11 @@ class OAuthGrantService:
 
     def _inspect_token(self, table: str, client_id: str, token: str) -> CredentialInspection:
         self._client(client_id)
-        with self.store.connect() as db:
-            row = db.execute(f"SELECT t.*,g.client_id,g.resource,g.revoked FROM {table} t JOIN grants g ON g.id=t.grant_id WHERE t.hash=?", (_hash(token),)).fetchone()
+        try:
+            with self.store.connect() as db:
+                row = db.execute(f"SELECT t.*,g.client_id,g.resource,g.revoked FROM {table} t JOIN grants g ON g.id=t.grant_id WHERE t.hash=?", (_hash(token),)).fetchone()
+        except sqlite3.Error as exc:
+            raise Unavailable() from exc
         if row is None or row["client_id"] != client_id:
             return CredentialInspection(None, None, None, False)
         spent = bool(row["spent"] is not None) if table == "refresh_tokens" else False

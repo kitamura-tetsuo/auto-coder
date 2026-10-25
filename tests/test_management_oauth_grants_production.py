@@ -26,6 +26,7 @@ from auto_coder.management.oauth_config import OAuthClient, OAuthSettings
 from auto_coder.management.oauth_grants import (
     AuthorizationRequest,
     Denied,
+    InvalidClient,
     InvalidGrant,
     InvalidRequest,
     OAuthGrantService,
@@ -198,6 +199,124 @@ def test_production_bindings_and_current_authority_cannot_be_bypassed(production
         service.refresh("client", tokens.refresh_token, service.settings.resource)
 
 
+def test_access_admission_rechecks_current_registered_client(production_boundary):
+    service, identity, signed_token, _state, _policy, clock = production_boundary
+    old_tokens = issue(production_boundary, "client-a")
+    replacement_settings = OAuthSettings(
+        service.settings.database_path,
+        service.settings.issuer,
+        service.settings.firebase_project_id,
+        (OAuthClient("client-b", ("https://client-b.example/callback",)),),
+        access_lifetime=service.settings.access_lifetime,
+        grant_lifetime=service.settings.grant_lifetime,
+    )
+    reopened = OAuthGrantService(replacement_settings, identity, lambda: clock[0])
+    with pytest.raises(InvalidClient):
+        reopened.authenticate_access(old_tokens.access_token, reopened.settings.resource, ("auto-coder.read",))
+
+    verifier = "b" * 64
+    pending = reopened.begin_authorization(
+        AuthorizationRequest("client-b", "https://client-b.example/callback", reopened.settings.resource, pkce(verifier)),
+        "browser-b",
+        "csrf-b",
+    )
+    code = reopened.approve_authorization(pending.request_id, "browser-b", "csrf-b", signed_token()).code
+    new_tokens = reopened.exchange_code("client-b", code, "https://client-b.example/callback", reopened.settings.resource, verifier)
+    assert reopened.authenticate_access(new_tokens.access_token, reopened.settings.resource, ("auto-coder.read",)).client_id == "client-b"
+
+
+def test_mismatched_firebase_project_cannot_create_authority(production_boundary, tmp_path):
+    service, identity, signed_token, _state, _policy, clock = production_boundary
+    settings = OAuthSettings(
+        tmp_path / "wrong-project.sqlite",
+        service.settings.issuer,
+        "different-project",
+        service.settings.clients,
+    )
+    mismatched = OAuthGrantService(settings, identity, lambda: clock[0])
+    pending, _ = begin(mismatched, "wrong-project")
+    with pytest.raises(Denied):
+        mismatched.approve_authorization(pending.request_id, "browser-wrong-project", "csrf-wrong-project", signed_token())
+    with sqlite3.connect(settings.database_path) as db:
+        assert db.execute("SELECT count(*) FROM codes").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM grants").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM access_tokens").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM refresh_tokens").fetchone()[0] == 0
+
+
+def test_grant_absolute_expiry_starts_at_approval(production_boundary, tmp_path):
+    service, identity, signed_token, _state, _policy, clock = production_boundary
+    settings = OAuthSettings(
+        tmp_path / "default-lifetime.sqlite",
+        service.settings.issuer,
+        service.settings.firebase_project_id,
+        service.settings.clients,
+    )
+    grants = OAuthGrantService(settings, identity, lambda: clock[0])
+    approved_at = clock[0]
+    pending, verifier = begin(grants, "absolute")
+    code = grants.approve_authorization(pending.request_id, "browser-absolute", "csrf-absolute", signed_token()).code
+    clock[0] += 100
+    reopened = OAuthGrantService(settings, identity, lambda: clock[0])
+    tokens = reopened.exchange_code("client", code, "https://client.example/callback", reopened.settings.resource, verifier)
+    with sqlite3.connect(settings.database_path) as db:
+        deadline = db.execute("SELECT expires FROM grants").fetchone()[0]
+    assert deadline == approved_at + settings.grant_lifetime
+    clock[0] = approved_at + settings.grant_lifetime + 50
+    with pytest.raises(InvalidGrant):
+        OAuthGrantService(settings, identity, lambda: clock[0]).refresh("client", tokens.refresh_token, settings.resource)
+
+
+def test_final_policy_observation_wins_without_consuming_state(production_boundary, monkeypatch):
+    service, identity, signed_token, _state, policy, clock = production_boundary
+    allowed = json.dumps({"project_id": service.settings.firebase_project_id, "allowed_uids": ["operator"]})
+    denied = json.dumps({"project_id": service.settings.firebase_project_id, "allowed_uids": []})
+
+    pending, verifier = begin(service, "fresh-policy")
+    original_verify = identity.verify_login
+
+    def verify_then_remove(token):
+        result = original_verify(token)
+        assert result.principal is not None
+        policy.write_text(denied, encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(identity, "verify_login", verify_then_remove)
+    with pytest.raises(Denied):
+        service.approve_authorization(pending.request_id, "browser-fresh-policy", "csrf-fresh-policy", signed_token())
+    with sqlite3.connect(service.settings.database_path) as db:
+        assert db.execute("SELECT status FROM pending WHERE id=?", (pending.request_id,)).fetchone()[0] == "pending"
+        assert db.execute("SELECT count(*) FROM codes WHERE pending_id=?", (pending.request_id,)).fetchone()[0] == 0
+
+    monkeypatch.setattr(identity, "verify_login", original_verify)
+    policy.write_text(allowed, encoding="utf-8")
+    code = service.approve_authorization(pending.request_id, "browser-fresh-policy", "csrf-fresh-policy", signed_token()).code
+    original_recheck = identity.recheck_identity
+
+    def recheck_then_remove(principal):
+        result = original_recheck(principal)
+        assert result.principal is not None
+        policy.write_text(denied, encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(identity, "recheck_identity", recheck_then_remove)
+    with pytest.raises(Denied):
+        service.exchange_code("client", code, "https://client.example/callback", service.settings.resource, verifier)
+    reopened = OAuthGrantService(service.settings, identity, lambda: clock[0])
+    assert reopened.inspect_code("client", code).active
+
+    monkeypatch.setattr(identity, "recheck_identity", original_recheck)
+    policy.write_text(allowed, encoding="utf-8")
+    tokens = reopened.exchange_code("client", code, "https://client.example/callback", reopened.settings.resource, verifier)
+    monkeypatch.setattr(identity, "recheck_identity", recheck_then_remove)
+    with pytest.raises(Denied):
+        reopened.refresh("client", tokens.refresh_token, reopened.settings.resource)
+    monkeypatch.setattr(identity, "recheck_identity", original_recheck)
+    policy.write_text(allowed, encoding="utf-8")
+    reconstructed = OAuthGrantService(service.settings, identity, lambda: clock[0])
+    assert reconstructed.inspect_refresh("client", tokens.refresh_token).active
+
+
 class _CommitUncertainConnection:
     def __init__(self, connection):
         self.connection = connection
@@ -214,6 +333,54 @@ class _CommitUncertainConnection:
 
     def execute(self, *args, **kwargs):
         return self.connection.execute(*args, **kwargs)
+
+
+class _SelectFailureConnection:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def __enter__(self):
+        self.connection.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return self.connection.__exit__(exc_type, exc, traceback)
+
+    def execute(self, sql, *args, **kwargs):
+        if sql.lstrip().upper().startswith("SELECT"):
+            raise sqlite3.OperationalError("controlled SELECT failure")
+        return self.connection.execute(sql, *args, **kwargs)
+
+
+def test_all_public_read_paths_translate_connection_and_select_failures(production_boundary, monkeypatch):
+    service, _identity, signed_token, _state, _policy, _clock = production_boundary
+    tokens = issue(production_boundary, "read-failure-token")
+    pending, verifier = begin(service, "read-failure-code")
+    code = service.approve_authorization(pending.request_id, "browser-read-failure-code", "csrf-read-failure-code", signed_token()).code
+    operations = (
+        lambda: service.exchange_code("client", code, "https://client.example/callback", service.settings.resource, verifier),
+        lambda: service.refresh("client", tokens.refresh_token, service.settings.resource),
+        lambda: service.inspect_code("client", code),
+        lambda: service.inspect_refresh("client", tokens.refresh_token),
+        lambda: service.inspect_access("client", tokens.access_token),
+    )
+    real_connect = service.store.connect
+    for failure in (
+        lambda: (_ for _ in ()).throw(sqlite3.OperationalError("controlled connection failure")),
+        lambda: _SelectFailureConnection(real_connect()),
+    ):
+        monkeypatch.setattr(service.store, "connect", failure)
+        for operation in operations:
+            with pytest.raises(Unavailable):
+                operation()
+        monkeypatch.setattr(service.store, "connect", real_connect)
+
+    assert service.inspect_code("client", code).active
+    assert service.inspect_refresh("client", tokens.refresh_token).active
+    assert service.inspect_access("client", tokens.access_token).active
+    with sqlite3.connect(service.settings.database_path) as db:
+        assert db.execute("SELECT count(*) FROM grants").fetchone()[0] == 1
+        assert db.execute("SELECT count(*) FROM refresh_tokens").fetchone()[0] == 1
 
 
 def test_uncertain_commit_returns_no_credentials_and_reconstruction_is_authoritative(production_boundary, monkeypatch):

@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS codes (
  hash TEXT PRIMARY KEY, pending_id TEXT NOT NULL, client_id TEXT NOT NULL,
  redirect_uri TEXT NOT NULL, resource TEXT NOT NULL, scope TEXT NOT NULL,
  challenge TEXT NOT NULL, project TEXT NOT NULL, uid TEXT NOT NULL,
- auth_time REAL NOT NULL, expires REAL NOT NULL, consumed REAL);
+ auth_time REAL NOT NULL, expires REAL NOT NULL, grant_expires REAL NOT NULL,
+ consumed REAL);
 CREATE TABLE IF NOT EXISTS grants (
  id TEXT PRIMARY KEY, client_id TEXT NOT NULL, resource TEXT NOT NULL,
  scope TEXT NOT NULL, project TEXT NOT NULL, uid TEXT NOT NULL,
