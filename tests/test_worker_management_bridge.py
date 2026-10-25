@@ -16,6 +16,7 @@ import auto_coder.worker_management_bridge as bridge_module
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.automation_engine import AutomationEngine, EngineLifecycle
 from auto_coder.build_provenance import ArtifactField, ControllerArtifactObservation
+from auto_coder.entity_invalidation import EntityIdentity, InvalidationDisposition
 from auto_coder.health_monitor import HealthMonitor, get_health_monitor
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.worker_management_bridge import (
@@ -168,6 +169,304 @@ def test_real_socket_reevaluation_accepts_replays_conflicts_and_survives_replace
             assert stale_new.json()["error"]["code"] == "not_ready_or_draining"
         finally:
             await replacement.close()
+
+    asyncio.run(scenario())
+
+
+def test_overlapping_socket_duplicates_and_distinct_operations_use_real_queue_transitions(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    endpoint = configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    engine.startup_reconciled = engine.daemon_serving = True
+    engine._enqueue_pending_invalidations = AsyncMock()
+    entered = threading.Event()
+    release = threading.Event()
+    original = engine.invalidations.accept_management_reevaluation
+
+    def held_accept(**kwargs):
+        entered.set()
+        assert release.wait(5)
+        return original(**kwargs)
+
+    monkeypatch.setattr(engine.invalidations, "accept_management_reevaluation", held_accept)
+
+    async def scenario() -> None:
+        identity = configured_identity("owner/repo")
+        assert identity is not None
+        bridge = WorkerManagementBridge(identity, engine)
+        await bridge.start()
+        payload = {
+            "operation_id": "overlap-1",
+            "repository": "owner/repo",
+            "channel": "release",
+            "expected_process_run_id": bridge.artifact.process_run_id,
+            "expected_deployment_generation": "generation-7",
+            "target": {"type": "pr", "number": 90},
+        }
+        try:
+            transport = httpx.AsyncHTTPTransport(uds=str(endpoint))
+            async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+                first = asyncio.create_task(client.post("/v1/reevaluations", json=payload))
+                assert await asyncio.to_thread(entered.wait, 5)
+                second = asyncio.create_task(client.post("/v1/reevaluations", json=payload))
+                await asyncio.sleep(0.05)
+                assert not second.done()
+                release.set()
+                one, two = await asyncio.gather(first, second)
+                different = await client.post("/v1/reevaluations", json={**payload, "operation_id": "overlap-2"})
+            assert {one.status_code, two.status_code} == {200, 202}
+            assert one.json() == two.json()
+            assert different.status_code == 202
+            assert different.json()["invalidation"] == {"disposition": "coalesced", "generation": 1}
+            assert engine.invalidations.pending_count("owner/repo") == 1
+
+            claim = engine.invalidations.claim("owner/repo")
+            assert claim is not None and engine.invalidations.begin_processing(claim)
+            transport = httpx.AsyncHTTPTransport(uds=str(endpoint))
+            async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+                followup = await client.post("/v1/reevaluations", json={**payload, "operation_id": "overlap-3"})
+            assert followup.json()["invalidation"]["disposition"] == InvalidationDisposition.FOLLOWUP_REQUIRED.value
+            assert engine.invalidations.complete(claim) is True
+            next_claim = engine.invalidations.claim("owner/repo")
+            assert next_claim is not None and next_claim.generation == 2
+        finally:
+            await bridge.close()
+
+    asyncio.run(scenario())
+
+
+def test_socket_acceptance_reaches_worker_deferral_without_provider_dispatch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    endpoint = configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    engine.startup_reconciled = engine.daemon_serving = True
+    deadline = MagicMock(not_before=10_000_000_000.0)
+    deadline.reason.value = "ordinary_admission_wait"
+    monkeypatch.setattr(engine, "_future_issue_admission_deferral", lambda *_args: deadline)
+    provider = MagicMock(side_effect=AssertionError("acceptance must not dispatch a provider"))
+    monkeypatch.setattr(engine, "_process_single_candidate", provider)
+
+    async def scenario() -> None:
+        identity = configured_identity("owner/repo")
+        assert identity is not None
+        bridge = WorkerManagementBridge(identity, engine)
+        await bridge.start()
+        payload = {
+            "operation_id": "deferred-1",
+            "repository": "owner/repo",
+            "channel": "release",
+            "expected_process_run_id": bridge.artifact.process_run_id,
+            "expected_deployment_generation": "generation-7",
+            "target": {"type": "issue", "number": 91},
+        }
+        try:
+            transport = httpx.AsyncHTTPTransport(uds=str(endpoint))
+            async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+                response = await client.post("/v1/reevaluations", json=payload)
+            assert response.status_code == 202
+            worker = asyncio.create_task(engine._worker_loop("owner/repo", 1))
+            for _ in range(200):
+                deferred = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "issue", 91))
+                if deferred is not None:
+                    break
+                await asyncio.sleep(0.01)
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+            assert deferred is not None and deferred.reason == "ordinary_admission_wait"
+            provider.assert_not_called()
+        finally:
+            await bridge.close()
+
+    asyncio.run(scenario())
+
+
+def test_socket_drain_and_acceptance_share_one_lifecycle_order(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    endpoint = configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    engine.startup_reconciled = engine.daemon_serving = True
+    engine._enqueue_pending_invalidations = AsyncMock()
+    commit_entered, commit_release = threading.Event(), threading.Event()
+    original_accept = engine.invalidations.accept_management_reevaluation
+
+    def hold_after_acceptance_ownership(**kwargs):
+        commit_entered.set()
+        assert commit_release.wait(5)
+        return original_accept(**kwargs)
+
+    monkeypatch.setattr(engine.invalidations, "accept_management_reevaluation", hold_after_acceptance_ownership)
+
+    async def scenario() -> None:
+        identity = configured_identity("owner/repo")
+        assert identity is not None
+        bridge = WorkerManagementBridge(identity, engine)
+        await bridge.start()
+        payload = {
+            "operation_id": "drain-winner",
+            "repository": "owner/repo",
+            "channel": "release",
+            "expected_process_run_id": bridge.artifact.process_run_id,
+            "expected_deployment_generation": "generation-7",
+            "target": {"type": "pr", "number": 92},
+        }
+        try:
+            transport = httpx.AsyncHTTPTransport(uds=str(endpoint))
+            async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+                accepting = asyncio.create_task(client.post("/v1/reevaluations", json=payload))
+                assert await asyncio.to_thread(commit_entered.wait, 5)
+                draining = asyncio.create_task(asyncio.to_thread(engine.request_graceful_shutdown, "raced drain"))
+                await asyncio.sleep(0.05)
+                assert not draining.done()
+                commit_release.set()
+                accepted, drained = await asyncio.gather(accepting, draining)
+                refused = await client.post("/v1/reevaluations", json={**payload, "operation_id": "drain-loser", "target": {"type": "pr", "number": 93}})
+            assert accepted.status_code == 202 and drained is True
+            assert refused.status_code == 409 and refused.json()["error"]["code"] == "not_ready_or_draining"
+            assert engine.invalidations.pending_count("owner/repo") == 1
+        finally:
+            await bridge.close()
+
+    asyncio.run(scenario())
+
+
+def test_socket_drain_wins_before_acceptance_lifecycle_boundary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    endpoint = configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    engine.startup_reconciled = engine.daemon_serving = True
+    intake_entered, intake_release = threading.Event(), threading.Event()
+    original_commit = engine._commit_private_reevaluation
+
+    def hold_before_lifecycle(*args, **kwargs):
+        intake_entered.set()
+        assert intake_release.wait(5)
+        return original_commit(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "_commit_private_reevaluation", hold_before_lifecycle)
+
+    async def scenario() -> None:
+        identity = configured_identity("owner/repo")
+        assert identity is not None
+        bridge = WorkerManagementBridge(identity, engine)
+        await bridge.start()
+        payload = {
+            "operation_id": "drain-first",
+            "repository": "owner/repo",
+            "channel": "release",
+            "expected_process_run_id": bridge.artifact.process_run_id,
+            "expected_deployment_generation": "generation-7",
+            "target": {"type": "pr", "number": 96},
+        }
+        try:
+            transport = httpx.AsyncHTTPTransport(uds=str(endpoint))
+            async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+                request = asyncio.create_task(client.post("/v1/reevaluations", json=payload))
+                assert await asyncio.to_thread(intake_entered.wait, 5)
+                assert engine.request_graceful_shutdown("drain won race") is True
+                intake_release.set()
+                response = await request
+            assert response.status_code == 409
+            assert response.json()["error"]["code"] == "not_ready_or_draining"
+            assert engine.invalidations.pending_count("owner/repo") == 0
+            assert engine.invalidations.get_reevaluation_receipt("drain-first") is None
+        finally:
+            await bridge.close()
+
+    asyncio.run(scenario())
+
+
+def test_lost_response_recovers_primary_associated_pr_and_old_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    endpoint = configure(monkeypatch, tmp_path)
+    invalidations = tmp_path / "invalidations.sqlite3"
+    adjudications = tmp_path / "adjudications.sqlite3"
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(invalidations))
+    monkeypatch.setenv("AUTO_CODER_REVIEW_ADJUDICATION_DB", str(adjudications))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    engine.startup_reconciled = engine.daemon_serving = True
+    engine.review_adjudications.store.associate_issues("owner/repo", 194, (94,))
+    unavailable = MagicMock(wraps=engine.review_adjudications.mark_unavailable)
+    monkeypatch.setattr(engine.review_adjudications, "mark_unavailable", unavailable)
+    engine._enqueue_pending_invalidations = AsyncMock(side_effect=ConnectionError("response path lost after commit"))
+
+    async def scenario() -> None:
+        identity = configured_identity("owner/repo")
+        assert identity is not None
+        bridge = WorkerManagementBridge(identity, engine)
+        await bridge.start()
+        payload = {
+            "operation_id": "lost-response",
+            "repository": "owner/repo",
+            "channel": "release",
+            "expected_process_run_id": bridge.artifact.process_run_id,
+            "expected_deployment_generation": "generation-7",
+            "target": {"type": "issue", "number": 94},
+        }
+        try:
+            transport = httpx.AsyncHTTPTransport(uds=str(endpoint))
+            async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+                ambiguous = await client.post("/v1/reevaluations", json=payload)
+            assert ambiguous.status_code == 503
+        finally:
+            await bridge.close()
+        unavailable.assert_called_once_with("owner/repo", 194, "contributing Issue invalidated")
+
+        replacement = AutomationEngine(MagicMock(), AutomationConfig())
+        recovered = replacement.invalidations.recover("owner/repo")
+        assert recovered == []  # committed dirty rows need no processing-claim repair
+        assert replacement.invalidations.pending_count("owner/repo") == 2
+        claims = [replacement.invalidations.claim("owner/repo") for _ in range(2)]
+        assert all(claim is not None for claim in claims)
+        recovered_claims = {claim.identity for claim in claims if claim is not None}
+        assert recovered_claims == {EntityIdentity("owner/repo", "issue", 94), EntityIdentity("owner/repo", "pr", 194)}
+        replacement.startup_reconciled = replacement.daemon_serving = True
+        replacement_bridge = WorkerManagementBridge(identity, replacement)
+        replacement_bridge.artifact = replace(replacement_bridge.artifact, process_run_id="new-run")
+        await replacement_bridge.start()
+        try:
+            transport = httpx.AsyncHTTPTransport(uds=str(endpoint))
+            async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+                receipt = await client.get("/v1/reevaluations/lost-response")
+                replay = await client.post("/v1/reevaluations", json=payload)
+            assert receipt.status_code == replay.status_code == 200
+            assert receipt.json() == replay.json()
+            assert receipt.json()["accepting_process_run_id"] == payload["expected_process_run_id"]
+            assert replacement.invalidations.pending_count("owner/repo") == 2
+        finally:
+            await replacement_bridge.close()
+
+    asyncio.run(scenario())
+
+
+def test_socket_storage_failures_never_fabricate_acceptance_or_receipts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    endpoint = configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    engine.startup_reconciled = engine.daemon_serving = True
+
+    async def scenario() -> None:
+        identity = configured_identity("owner/repo")
+        assert identity is not None
+        bridge = WorkerManagementBridge(identity, engine)
+        await bridge.start()
+        payload = {
+            "operation_id": "storage-down",
+            "repository": "owner/repo",
+            "channel": "release",
+            "expected_process_run_id": bridge.artifact.process_run_id,
+            "expected_deployment_generation": "generation-7",
+            "target": {"type": "pr", "number": 95},
+        }
+        try:
+            monkeypatch.setattr(engine.invalidations, "get_reevaluation_receipt", MagicMock(side_effect=sqlite3.OperationalError("unavailable")))
+            transport = httpx.AsyncHTTPTransport(uds=str(endpoint))
+            async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+                acceptance = await client.post("/v1/reevaluations", json=payload)
+                lookup = await client.get("/v1/reevaluations/storage-down")
+            assert acceptance.status_code == lookup.status_code == 503
+            assert acceptance.json()["error"]["code"] == lookup.json()["error"]["code"] == "storage_unavailable"
+            assert engine.invalidations.pending_count("owner/repo") == 0
+        finally:
+            await bridge.close()
 
     asyncio.run(scenario())
 
