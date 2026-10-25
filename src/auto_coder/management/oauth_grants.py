@@ -5,6 +5,7 @@ The service deliberately exposes protocol-neutral typed values.  HTTP adapters m
 """
 
 import base64
+import binascii
 import hashlib
 import secrets
 import sqlite3
@@ -132,6 +133,18 @@ def _challenge(verifier: str) -> str:
     return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
 
 
+def _valid_s256_challenge(challenge: str) -> bool:
+    """Return whether *challenge* is the canonical unpadded encoding of 32 bytes."""
+
+    if not isinstance(challenge, str) or len(challenge) != 43:
+        return False
+    try:
+        digest = base64.b64decode(challenge + "=", altchars=b"-_", validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    return len(digest) == 32 and base64.urlsafe_b64encode(digest).rstrip(b"=").decode() == challenge
+
+
 class OAuthGrantService:
     def __init__(self, settings: OAuthSettings, identity: IdentityAuthority, clock: Callable[[], float] = time.time) -> None:
         self.settings = settings
@@ -171,7 +184,7 @@ class OAuthGrantService:
         self._client(request.client_id, request.redirect_uri)
         self._resource(request.resource)
         scopes = self._scopes(request.scopes, True)
-        if not browser_binding_secret or not csrf_secret or not request.code_challenge or len(request.code_challenge) < 43:
+        if not browser_binding_secret or not csrf_secret or not _valid_s256_challenge(request.code_challenge):
             raise InvalidRequest()
         request_id, now = _secret(), self.clock()
         expires = now + 600

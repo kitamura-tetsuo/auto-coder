@@ -199,6 +199,41 @@ def test_production_bindings_and_current_authority_cannot_be_bypassed(production
         service.refresh("client", tokens.refresh_token, service.settings.resource)
 
 
+@pytest.mark.parametrize(
+    "malformed_challenge",
+    (
+        "!" * 43,
+        "A" * 42,
+        "A" * 44,
+        "A" * 42 + "B",  # decodes to 32 bytes but is not canonical base64url
+    ),
+)
+def test_malformed_s256_challenge_is_rejected_before_persistence(production_boundary, malformed_challenge):
+    service, identity, signed_token, _state, _policy, clock = production_boundary
+    with pytest.raises(InvalidRequest):
+        service.begin_authorization(
+            AuthorizationRequest(
+                "client",
+                "https://client.example/callback",
+                service.settings.resource,
+                malformed_challenge,
+            ),
+            "browser-malformed",
+            "csrf-malformed",
+        )
+
+    reopened = OAuthGrantService(service.settings, identity, lambda: clock[0])
+    with sqlite3.connect(reopened.settings.database_path) as db:
+        assert db.execute("SELECT count(*) FROM pending").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM codes").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM grants").fetchone()[0] == 0
+
+    pending, verifier = begin(reopened, "valid-s256")
+    code = reopened.approve_authorization(pending.request_id, "browser-valid-s256", "csrf-valid-s256", signed_token()).code
+    tokens = reopened.exchange_code("client", code, "https://client.example/callback", reopened.settings.resource, verifier)
+    assert reopened.authenticate_access(tokens.access_token, reopened.settings.resource, ("auto-coder.read",)).principal.uid == "operator"
+
+
 def test_access_admission_rechecks_current_registered_client(production_boundary):
     service, identity, signed_token, _state, _policy, clock = production_boundary
     old_tokens = issue(production_boundary, "client-a")
