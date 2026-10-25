@@ -1,5 +1,7 @@
 # Dashboard observability verification
 
+Management journal operation IDs, phases, targets, and safe categories use the existing Loguru sinks without changing worker command/trace lifecycle events. Its separate contract is documented in [`client-features/management-operation-journal.md`](client-features/management-operation-journal.md).
+
 Local CI base-update diagnostics retain the durable `Update Base` stage and its
 `details.result` key while making the result value truthful to the typed repair
 consumer. Values now distinguish `pushed`, `up_to_date`, `delegated`, `deferred`,
