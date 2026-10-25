@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import parse_qs, urlsplit
@@ -8,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from auto_coder.management.identity import AdmissionResult, AdmissionStatus, VerifiedPrincipal
 from auto_coder.management.oauth_config import OAuthClient, OAuthSettings
-from auto_coder.management.oauth_grants import OAuthGrantService, Unavailable
+from auto_coder.management.oauth_grants import OAuthGrantService
 from auto_coder.management.oauth_http import create_management_auth_app
 from auto_coder.management.oauth_provider import exchange_context
 from tests.test_management_identity_sdk import sdk_boundary  # noqa: F401
@@ -172,6 +173,64 @@ def test_denial_survives_app_reconstruction_with_original_binding(tmp_path):
     assert exchange_context.get() is None
 
 
+def test_deny_wins_while_allow_is_waiting_for_identity_verification(tmp_path):
+    """Exercise the production routes across the contested final transition."""
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class PausedIdentity(Identity):
+        def verify_login(self, token):
+            entered.set()
+            assert release.wait(timeout=5)
+            return super().verify_login(token)
+
+    settings = OAuthSettings(
+        tmp_path / "allow-deny-race.db",
+        "http://localhost",
+        "project",
+        (OAuthClient("client", ("http://127.0.0.1:9876/cb",)),),
+    )
+    grants = OAuthGrantService(settings, PausedIdentity())
+    browser = TestClient(create_management_auth_app(settings, grants), base_url="http://localhost")
+    page = begin(browser, settings)
+    import json
+
+    data = json.loads(page.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0])
+    cookie_name = f"ac_oauth_{data['requestId']}"
+    cookie_value = browser.cookies.get(cookie_name)
+
+    def allow():
+        with TestClient(create_management_auth_app(settings, grants), base_url="http://localhost") as client:
+            client.cookies.set(cookie_name, cookie_value)
+            return client.post(
+                f"/authorize/{data['requestId']}/allow",
+                headers={"Origin": settings.canonical_issuer},
+                data={"csrf": data["csrf"], "firebase_id_token": "signed"},
+                follow_redirects=False,
+            )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(allow)
+        assert entered.wait(timeout=5)
+        denied = browser.post(
+            f"/authorize/{data['requestId']}/deny",
+            headers={"Origin": settings.canonical_issuer},
+            data={"csrf": data["csrf"]},
+            follow_redirects=False,
+        )
+        assert denied.status_code == 303
+        release.set()
+        allowed = future.result(timeout=5)
+
+    assert allowed.status_code == 400
+    assert allowed.json() == {"error": "invalid_grant"}
+    with grants.store.connect() as db:
+        pending = db.execute("SELECT status FROM pending WHERE id=?", (data["requestId"],)).fetchone()
+        assert pending["status"] == "denied"
+        assert db.execute("SELECT COUNT(*) FROM codes").fetchone()[0] == 0
+
+
 def test_overlapping_sdk_exchanges_keep_request_local_values(tmp_path):
     settings, grants, client = setup(tmp_path)
     first_verifier, second_verifier = "a" * 43, "b" * 43
@@ -253,16 +312,23 @@ def test_exact_https_redirect_survives_sdk_url_normalization(tmp_path):
 
 def test_authorization_store_unavailable_returns_direct_503(tmp_path):
     settings, grants, client = setup(tmp_path)
+    original_connect = grants.store.connect
+    with original_connect() as db:
+        before = db.execute("SELECT COUNT(*) FROM pending").fetchone()[0]
 
-    def unavailable(*_args, **_kwargs):
-        raise Unavailable()
+    def unavailable_store():
+        raise sqlite3.OperationalError("SECRET-STORE-CANARY")
 
-    grants.begin_authorization = unavailable
+    grants.store.connect = unavailable_store
     response = begin(client, settings)
     assert response.status_code == 503
     assert response.headers["cache-control"] == "no-store"
     assert "location" not in response.headers
     assert response.json() == {"error": "temporarily_unavailable"}
+    assert "SECRET-STORE-CANARY" not in response.text
+    grants.store.connect = original_connect
+    with original_connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM pending").fetchone()[0] == before
 
 
 def test_consent_uses_durable_pending_client_not_query_discriminator(tmp_path):
