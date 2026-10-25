@@ -43,6 +43,17 @@ class MutationStatus(str, Enum):
     UNAVAILABLE = "unavailable"
 
 
+class ReadStatus(str, Enum):
+    FOUND = "found"
+    NOT_FOUND = "not_found"
+    UNAVAILABLE = "unavailable"
+
+
+class QueryStatus(str, Enum):
+    OK = "ok"
+    UNAVAILABLE = "unavailable"
+
+
 @dataclass(frozen=True)
 class ManagedTarget:
     instance_id: str
@@ -173,9 +184,18 @@ class MutationResult:
 
 
 @dataclass(frozen=True)
+class OperationLookup:
+    status: ReadStatus
+    record: OperationRecord | None = None
+    detail: str = ""
+
+
+@dataclass(frozen=True)
 class OperationPage:
     records: tuple[OperationRecord, ...]
     next_cursor: int | None
+    status: QueryStatus = QueryStatus.OK
+    detail: str = ""
 
 
 @dataclass(frozen=True)
@@ -186,6 +206,9 @@ class HistoryEntry:
     revision: int
     owner_attempt_id: str
     effect_state: EffectState
+    effect_owner_generation: int
+    effect_attempt_id: str
+    correlation_identity: str
     safe_category: str
     receipt: EffectReceipt | None
     recorded_at: float
@@ -195,6 +218,8 @@ class HistoryEntry:
 class HistoryPage:
     entries: tuple[HistoryEntry, ...]
     next_cursor: int | None
+    status: QueryStatus = QueryStatus.OK
+    detail: str = ""
 
 
 def _bounded(value: str, name: str, *, empty: bool = False) -> None:

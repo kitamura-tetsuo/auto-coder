@@ -7,6 +7,7 @@ is deliberately not authorization and no executor or provider is imported.
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import time
 import uuid
@@ -27,14 +28,17 @@ from .operations import (
     MutationResult,
     MutationStatus,
     OperationIntent,
+    OperationLookup,
     OperationPage,
     OperationPhase,
     OperationRecord,
+    QueryStatus,
+    ReadStatus,
     validate_authority,
 )
 
 logger = get_logger(__name__)
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 ACTIVE_PHASES = {OperationPhase.ACCEPTED, OperationPhase.RUNNING, OperationPhase.RECONCILING, OperationPhase.NEEDS_ATTENTION}
 TERMINAL_PHASES = {OperationPhase.SUCCEEDED, OperationPhase.ROLLED_BACK, OperationPhase.FAILED}
 MAX_QUERY_LIMIT = 200
@@ -74,11 +78,19 @@ class ManagementOperationStore:
         CREATE TABLE IF NOT EXISTS operation_history (
           sequence INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL,
           phase TEXT NOT NULL, revision INTEGER NOT NULL, owner_attempt_id TEXT NOT NULL,
-          effect_state TEXT NOT NULL, safe_category TEXT NOT NULL, receipt_json TEXT NOT NULL,
+          effect_state TEXT NOT NULL, effect_owner_generation INTEGER NOT NULL,
+          effect_attempt_id TEXT NOT NULL, correlation_identity TEXT NOT NULL,
+          safe_category TEXT NOT NULL, receipt_json TEXT NOT NULL,
           recorded_at REAL NOT NULL, FOREIGN KEY(operation_id) REFERENCES operations(operation_id));
         """
         )
         return connection
+
+    def _before_admission_transaction(self) -> None:
+        """Test seam immediately before the real admission transaction."""
+
+    def _after_admission_commit(self) -> None:
+        """Delivery seam after commit, before the acknowledgement is read."""
 
     def admit(self, intent: OperationIntent, authority: AcceptedAuthority) -> AdmissionResult:
         try:
@@ -88,6 +100,7 @@ class ManagementOperationStore:
             namespace = self._namespace(intent, authority)
             connection = self._connect()
             try:
+                self._before_admission_transaction()
                 connection.execute("BEGIN IMMEDIATE")
                 old = connection.execute("SELECT * FROM operations WHERE namespace_key=?", (namespace,)).fetchone()
                 if old is not None:
@@ -111,6 +124,7 @@ class ManagementOperationStore:
                 )
                 self._append_history(connection, operation_id, OperationPhase.ACCEPTED, 0, "", EffectAttempt(), "", now)
                 connection.commit()
+                self._after_admission_commit()
                 row = connection.execute("SELECT * FROM operations WHERE operation_id=?", (operation_id,)).fetchone()
                 if row is None:
                     return self._confirm_ambiguous(namespace, fingerprint)
@@ -128,25 +142,37 @@ class ManagementOperationStore:
         except (ValueError, sqlite3.Error, OSError) as exc:
             return AdmissionResult(AdmissionStatus.UNAVAILABLE, detail=self._safe_error(exc))
 
-    def get(self, operation_id: str) -> OperationRecord | None:
-        connection = self._connect()
+    def get(self, operation_id: str) -> OperationLookup:
         try:
-            row = connection.execute("SELECT * FROM operations WHERE operation_id=?", (operation_id,)).fetchone()
-            return None if row is None else self._record(row)
-        finally:
-            connection.close()
+            connection = self._connect()
+            try:
+                row = connection.execute("SELECT * FROM operations WHERE operation_id=?", (operation_id,)).fetchone()
+                if row is None:
+                    return OperationLookup(ReadStatus.NOT_FOUND)
+                return OperationLookup(ReadStatus.FOUND, self._record(row))
+            finally:
+                connection.close()
+        except (ValueError, sqlite3.Error, OSError) as exc:
+            return OperationLookup(ReadStatus.UNAVAILABLE, detail=self._safe_error(exc))
 
-    def find_by_key(self, intent: OperationIntent, authority: AcceptedAuthority) -> OperationRecord | None:
-        connection = self._connect()
+    def find_by_key(self, intent: OperationIntent, authority: AcceptedAuthority) -> OperationLookup:
         try:
-            row = connection.execute("SELECT * FROM operations WHERE namespace_key=?", (self._namespace(intent, authority),)).fetchone()
-            return None if row is None else self._record(row)
-        finally:
-            connection.close()
+            connection = self._connect()
+            try:
+                row = connection.execute("SELECT * FROM operations WHERE namespace_key=?", (self._namespace(intent, authority),)).fetchone()
+                if row is None:
+                    return OperationLookup(ReadStatus.NOT_FOUND)
+                return OperationLookup(ReadStatus.FOUND, self._record(row))
+            finally:
+                connection.close()
+        except (ValueError, sqlite3.Error, OSError) as exc:
+            return OperationLookup(ReadStatus.UNAVAILABLE, detail=self._safe_error(exc))
 
     def transition(self, operation_id: str, expected_revision: int, phase: OperationPhase, *, owner_attempt_id: str = "", safe_error_category: str = "", evidence: EffectReceipt | None = None) -> MutationResult:
-        if phase in TERMINAL_PHASES and evidence is None:
-            return MutationResult(MutationStatus.INVALID, detail="terminal transition requires evidence")
+        if phase in TERMINAL_PHASES:
+            error = self._receipt_error(evidence)
+            if error:
+                return MutationResult(MutationStatus.INVALID, detail=error)
         return self._mutate(operation_id, expected_revision, phase, owner_attempt_id, safe_error_category, None, evidence)
 
     def begin_effect(self, operation_id: str, expected_revision: int, *, owner_attempt_id: str, attempt_id: str, correlation_identity: str) -> MutationResult:
@@ -160,18 +186,23 @@ class ManagementOperationStore:
     def record_effect(self, operation_id: str, expected_revision: int, *, attempt_id: str, state: EffectState, receipt: EffectReceipt) -> MutationResult:
         if state not in {EffectState.CONFIRMED, EffectState.REJECTED}:
             return MutationResult(MutationStatus.INVALID, detail="observation must confirm or reject")
-        try:
-            self._bounded_evidence(receipt.correlation_identity, receipt.observation_source, receipt.safe_result)
-        except ValueError as exc:
-            return MutationResult(MutationStatus.INVALID, detail=str(exc))
-        current = self.get(operation_id)
+        error = self._receipt_error(receipt)
+        if error:
+            return MutationResult(MutationStatus.INVALID, detail=error)
+        lookup = self.get(operation_id)
+        if lookup.status is ReadStatus.UNAVAILABLE:
+            return MutationResult(MutationStatus.UNAVAILABLE, detail=lookup.detail)
+        current = lookup.record
         if current is None or current.effect.attempt_id != attempt_id or current.effect.correlation_identity != receipt.correlation_identity:
             return MutationResult(MutationStatus.STALE, current, "effect correlation mismatch")
         effect = EffectAttempt(state, current.effect.owner_generation, attempt_id, receipt.correlation_identity, receipt)
         return self._mutate(operation_id, expected_revision, current.phase, current.owner_attempt_id, current.safe_error_category, effect, receipt)
 
     def resolve_needs_attention(self, operation_id: str, expected_revision: int, phase: OperationPhase, *, evidence: EffectReceipt) -> MutationResult:
-        current = self.get(operation_id)
+        lookup = self.get(operation_id)
+        if lookup.status is ReadStatus.UNAVAILABLE:
+            return MutationResult(MutationStatus.UNAVAILABLE, detail=lookup.detail)
+        current = lookup.record
         if current is None or current.phase is not OperationPhase.NEEDS_ATTENTION:
             return MutationResult(MutationStatus.INVALID, current, "operation is not awaiting attention")
         return self.transition(operation_id, expected_revision, phase, owner_attempt_id=current.owner_attempt_id, evidence=evidence)
@@ -185,26 +216,32 @@ class ManagementOperationStore:
         if target is not None:
             clauses.append("target_key=?")
             values.append(target.key())
-        connection = self._connect()
         try:
-            rows = connection.execute(f"SELECT * FROM operations WHERE {' AND '.join(clauses)} ORDER BY sequence LIMIT ?", (*values, limit + 1)).fetchall()
-            more = len(rows) > limit
-            rows = rows[:limit]
-            return OperationPage(tuple(self._record(row) for row in rows), int(rows[-1]["sequence"]) if more and rows else None)
-        finally:
-            connection.close()
+            connection = self._connect()
+            try:
+                rows = connection.execute(f"SELECT * FROM operations WHERE {' AND '.join(clauses)} ORDER BY sequence LIMIT ?", (*values, limit + 1)).fetchall()
+                more = len(rows) > limit
+                rows = rows[:limit]
+                return OperationPage(tuple(self._record(row) for row in rows), int(rows[-1]["sequence"]) if more and rows else None)
+            finally:
+                connection.close()
+        except (ValueError, sqlite3.Error, OSError) as exc:
+            return OperationPage((), None, QueryStatus.UNAVAILABLE, self._safe_error(exc))
 
     def history(self, operation_id: str, *, cursor: int = 0, limit: int = 50) -> HistoryPage:
         limit = self._limit(limit)
-        connection = self._connect()
         try:
-            rows = connection.execute("SELECT * FROM operation_history WHERE operation_id=? AND sequence>? ORDER BY sequence LIMIT ?", (operation_id, cursor, limit + 1)).fetchall()
-            more = len(rows) > limit
-            rows = rows[:limit]
-            entries = tuple(self._history(row) for row in rows)
-            return HistoryPage(entries, int(rows[-1]["sequence"]) if more and rows else None)
-        finally:
-            connection.close()
+            connection = self._connect()
+            try:
+                rows = connection.execute("SELECT * FROM operation_history WHERE operation_id=? AND sequence>? ORDER BY sequence LIMIT ?", (operation_id, cursor, limit + 1)).fetchall()
+                more = len(rows) > limit
+                rows = rows[:limit]
+                entries = tuple(self._history(row) for row in rows)
+                return HistoryPage(entries, int(rows[-1]["sequence"]) if more and rows else None)
+            finally:
+                connection.close()
+        except (ValueError, sqlite3.Error, OSError) as exc:
+            return HistoryPage((), None, QueryStatus.UNAVAILABLE, self._safe_error(exc))
 
     def _mutate(self, operation_id: str, expected_revision: int, phase: OperationPhase, owner: str, category: str, effect: EffectAttempt | None, evidence: EffectReceipt | None) -> MutationResult:
         try:
@@ -220,9 +257,26 @@ class ManagementOperationStore:
                 if current.revision != expected_revision or current.phase in TERMINAL_PHASES:
                     connection.rollback()
                     return MutationResult(MutationStatus.STALE, current)
+                if effect is not None and effect.state is EffectState.SENT_UNKNOWN and current.effect.state is EffectState.SENT_UNKNOWN:
+                    connection.rollback()
+                    return MutationResult(MutationStatus.INVALID, current, "unresolved effect cannot be replaced")
                 next_effect = effect or current.effect
-                if evidence is not None and effect is None and next_effect.state is EffectState.NOT_SENT:
-                    next_effect = EffectAttempt(EffectState.CONFIRMED, expected_revision + 1, "", evidence.correlation_identity, evidence)
+                if phase in TERMINAL_PHASES:
+                    error = self._receipt_error(evidence)
+                    if error:
+                        connection.rollback()
+                        return MutationResult(MutationStatus.INVALID, current, error)
+                    assert evidence is not None
+                    if next_effect.state is not EffectState.NOT_SENT and next_effect.correlation_identity != evidence.correlation_identity:
+                        connection.rollback()
+                        return MutationResult(MutationStatus.INVALID, current, "terminal evidence correlation mismatch")
+                    next_effect = EffectAttempt(
+                        EffectState.CONFIRMED,
+                        next_effect.owner_generation or expected_revision + 1,
+                        next_effect.attempt_id,
+                        evidence.correlation_identity,
+                        evidence,
+                    )
                 revision = expected_revision + 1
                 connection.execute(
                     "UPDATE operations SET phase=?,revision=?,owner_attempt_id=?,safe_error_category=?,effect_json=?,updated_at=? WHERE operation_id=? AND revision=?", (phase.value, revision, owner, category, self._effect_json(next_effect), time.time(), operation_id, expected_revision)
@@ -309,12 +363,28 @@ class ManagementOperationStore:
     def _history(cls, row: sqlite3.Row) -> HistoryEntry:
         receipt_data = json.loads(row["receipt_json"])
         receipt = None if receipt_data is None else EffectReceipt(*receipt_data)
-        return HistoryEntry(row["sequence"], row["operation_id"], OperationPhase(row["phase"]), row["revision"], row["owner_attempt_id"], EffectState(row["effect_state"]), row["safe_category"], receipt, row["recorded_at"])
+        return HistoryEntry(
+            row["sequence"],
+            row["operation_id"],
+            OperationPhase(row["phase"]),
+            row["revision"],
+            row["owner_attempt_id"],
+            EffectState(row["effect_state"]),
+            row["effect_owner_generation"],
+            row["effect_attempt_id"],
+            row["correlation_identity"],
+            row["safe_category"],
+            receipt,
+            row["recorded_at"],
+        )
 
     @classmethod
     def _append_history(cls, connection: sqlite3.Connection, operation_id: str, phase: OperationPhase, revision: int, owner: str, effect: EffectAttempt, category: str, now: float) -> None:
         receipt = None if effect.receipt is None else [effect.receipt.correlation_identity, effect.receipt.observation_source, effect.receipt.observed_at, effect.receipt.safe_result]
-        connection.execute("INSERT INTO operation_history(operation_id,phase,revision,owner_attempt_id,effect_state,safe_category,receipt_json,recorded_at) VALUES(?,?,?,?,?,?,?,?)", (operation_id, phase.value, revision, owner, effect.state.value, category, json.dumps(receipt), now))
+        connection.execute(
+            "INSERT INTO operation_history(operation_id,phase,revision,owner_attempt_id,effect_state,effect_owner_generation,effect_attempt_id,correlation_identity,safe_category,receipt_json,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (operation_id, phase.value, revision, owner, effect.state.value, effect.owner_generation, effect.attempt_id, effect.correlation_identity, category, json.dumps(receipt), now),
+        )
 
     @staticmethod
     def _limit(limit: int) -> int:
@@ -326,6 +396,20 @@ class ManagementOperationStore:
     def _bounded_evidence(*values: str) -> None:
         if any(len(value) > 512 or "\x00" in value for value in values):
             raise ValueError("evidence field out of bounds")
+
+    @classmethod
+    def _receipt_error(cls, receipt: EffectReceipt | None) -> str:
+        if receipt is None:
+            return "terminal transition requires evidence"
+        if not receipt.correlation_identity or not receipt.observation_source or not receipt.safe_result:
+            return "terminal evidence fields must be nonempty"
+        if not math.isfinite(receipt.observed_at) or receipt.observed_at <= 0:
+            return "terminal evidence observation time must be positive"
+        try:
+            cls._bounded_evidence(receipt.correlation_identity, receipt.observation_source, receipt.safe_result)
+        except ValueError as exc:
+            return str(exc)
+        return ""
 
     @staticmethod
     def _safe_error(exc: BaseException) -> str:
