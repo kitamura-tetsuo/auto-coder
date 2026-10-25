@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import sqlite3
 import subprocess
 import threading
@@ -15,6 +16,7 @@ from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
 from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore, PRRepairAdmission
 from auto_coder.local_job_runner import LocalJobRunner
+from auto_coder.local_job_workspace_cleanup import reclaim_finalized_workspaces, reclaim_unentered_workspaces
 from auto_coder.local_review_repair import LocalReviewRepairStore
 from auto_coder.pr_processing_evidence import EditingInvocationEvidence
 from auto_coder.pr_repair_workspace import PRRepairSource, PRRepairWorkspaceError, PRRepairWorkspaceProducer
@@ -113,9 +115,10 @@ def test_unentered_retry_prepares_new_workspace(tmp_path: Path, _use_real_comman
     assert retry.record.execution_incarnation != claim.record.execution_incarnation
     assert retry.record.workspace_path == ""
     assert not store.release_unentered_claim(claim, "stale release")
+    producer.cleanup_released_workspaces()
     prepared = producer.prepare(retry, PRRepairSource(repo))
     assert prepared.workspace != original.workspace
-    assert original.workspace.is_dir()
+    assert not original.workspace.parent.exists()
     assert git(prepared.workspace, "rev-parse", "HEAD") == head
     bound = store.get(claim.record.job_id)
     assert bound is not None and bound.workspace_path == str(prepared.workspace)
@@ -127,6 +130,88 @@ def test_unentered_retry_prepares_new_workspace(tmp_path: Path, _use_real_comman
     assert store.mark_provider_entered(retry)
     assert not store.release_unentered_claim(retry, "entered work must stay retained")
     assert store.get(claim.record.job_id).workspace_path == str(prepared.workspace)
+    producer.cleanup_released_workspaces()
+    assert prepared.workspace.is_dir()
+
+
+def test_unentered_cleanup_retries_after_restart_and_rebinding(tmp_path: Path, monkeypatch, _use_real_commands) -> None:
+    repo, head, base = repository(tmp_path)
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    claim = admitted(store, tmp_path, head, base)
+    producer = PRRepairWorkspaceProducer(store, tmp_path / "workspaces")
+    original = producer.prepare(claim, PRRepairSource(repo))
+    assert store.release_unentered_claim(claim, "authority unavailable")
+
+    def fail_removal(_path):
+        raise PermissionError("temporarily busy")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr("auto_coder.local_job_workspace_cleanup.shutil.rmtree", fail_removal)
+        result = reclaim_unentered_workspaces(store, pr_root=tmp_path / "workspaces")
+    assert len(result) == 1 and result[0].decision == "failed"
+    assert original.workspace.is_dir()
+    retry = store.claim(claim.record.job_id, "new-runner")
+    assert retry is not None and retry.acquired
+    prepared = producer.prepare(retry, PRRepairSource(repo))
+
+    result = reclaim_finalized_workspaces(LocalJobStore(store.path), pr_root=tmp_path / "workspaces")
+    assert len(result) == 1 and result[0].decision == "reclaimed"
+    assert not original.workspace.parent.exists()
+    assert prepared.workspace.is_dir()
+    assert store.get(claim.record.job_id).workspace_path == str(prepared.workspace)
+    assert reclaim_unentered_workspaces(store, pr_root=tmp_path / "workspaces") == ()
+
+
+def test_manually_removed_unentered_workspace_is_checkpointed_without_recreation(tmp_path: Path, _use_real_commands) -> None:
+    repo, head, base = repository(tmp_path)
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    claim = admitted(store, tmp_path, head, base)
+    producer = PRRepairWorkspaceProducer(store, tmp_path / "workspaces")
+    prepared = producer.prepare(claim, PRRepairSource(repo))
+    assert store.release_unentered_claim(claim, "authority unavailable")
+    shutil.rmtree(prepared.workspace.parent)
+    result = reclaim_finalized_workspaces(LocalJobStore(store.path), pr_root=tmp_path / "workspaces")
+    assert len(result) == 1 and result[0].decision == "reclaimed"
+    assert not prepared.workspace.parent.exists()
+    assert store.discover_unentered_workspace_reclamations() == ()
+
+
+@pytest.mark.parametrize("tamper", ["symlink", "replacement", "unknown_sibling"])
+def test_unentered_cleanup_preserves_changed_ownership(tmp_path: Path, tamper: str, _use_real_commands) -> None:
+    repo, head, base = repository(tmp_path)
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    claim = admitted(store, tmp_path, head, base)
+    producer = PRRepairWorkspaceProducer(store, tmp_path / "workspaces")
+    prepared = producer.prepare(claim, PRRepairSource(repo))
+    assert store.release_unentered_claim(claim, "authority unavailable")
+    target = prepared.workspace.parent
+    if tamper == "unknown_sibling":
+        marker = target / "unknown"
+        marker.write_text("preserve")
+    else:
+        moved = tmp_path / "moved"
+        target.rename(moved)
+        if tamper == "symlink":
+            target.symlink_to(moved, target_is_directory=True)
+        else:
+            target.mkdir()
+        marker = target / "important"
+        marker.write_text("preserve")
+
+    result = reclaim_unentered_workspaces(store, pr_root=tmp_path / "workspaces")
+    assert len(result) == 1 and result[0].decision == "failed"
+    assert marker.read_text() == "preserve"
+
+
+def test_controller_result_prevents_unentered_release_and_cleanup(tmp_path: Path, _use_real_commands) -> None:
+    _repo, store, claim, producer, prepared, manifest = _conflict_checkpoint(tmp_path, target=21)
+    artifact = store.persist_result_artifact(claim, InvocationOutcome.COMPLETED, manifest.to_json(), executor_token=claim.record.runner_owner)
+    assert artifact is not None
+    assert not store.release_unentered_claim(claim, "must retain controller result")
+    assert not store.release_dead_owner_claim(store.get(claim.record.job_id), "must retain controller result")
+    producer.cleanup_released_workspaces()
+    assert prepared.workspace.is_dir()
+    assert store.get_execution_result_artifact(claim.record.job_id, claim.record.execution_incarnation) == artifact
 
 
 def test_exact_remote_workspace_ignores_dirty_checkout_and_records_modes(tmp_path: Path, _use_real_commands) -> None:
@@ -279,6 +364,7 @@ def test_head_ref_advancement_refuses_preparation_before_provider_entry(tmp_path
         PRRepairWorkspaceProducer(store, tmp_path / "workspaces").prepare(claim, PRRepairSource(repo))
     retained = store.get(claim.record.job_id)
     assert retained is not None and not retained.provider_entered and not retained.workspace_path
+    assert not (tmp_path / "workspaces" / claim.record.job_id / claim.record.execution_incarnation).exists()
 
 
 @pytest.mark.parametrize("admit", [admitted, admitted_conflict])
@@ -313,6 +399,7 @@ def test_unavailable_retained_base_refuses_preparation(tmp_path: Path, _use_real
         PRRepairWorkspaceProducer(store, tmp_path / "workspaces").prepare(claim, PRRepairSource(repo))
     retained = store.get(claim.record.job_id)
     assert retained is not None and not retained.provider_entered and not retained.workspace_path
+    assert not (tmp_path / "workspaces" / claim.record.job_id / claim.record.execution_incarnation).exists()
 
 
 def test_reopened_store_retains_complete_pr_source_authority(tmp_path: Path, _use_real_commands) -> None:

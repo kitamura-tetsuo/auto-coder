@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import stat
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+from loguru import logger
 
 from .checkout_lock import checkout_lock
 from .issue_job_workspace import IssueJobWorkspaceProducer
@@ -146,7 +149,29 @@ class PRRepairWorkspaceProducer:
         workspace = self._root / record.job_id / record.execution_incarnation / "repository"
         if workspace.exists():
             raise PRRepairWorkspaceError("job workspace already exists without a new binding")
-        workspace.parent.mkdir(parents=True, exist_ok=True)
+        workspace.parent.mkdir(parents=True, exist_ok=False)
+        identity = workspace.parent.stat(follow_symlinks=False)
+        try:
+            return self._prepare_repository(claim, repository, workspace, authority)
+        except BaseException:
+            # No adapter can enter a provider until preparation returns. Remove
+            # only the directory this call created, including failed fetches.
+            try:
+                observed = workspace.parent.stat(follow_symlinks=False)
+                if not workspace.parent.is_symlink() and (observed.st_dev, observed.st_ino) == (identity.st_dev, identity.st_ino) and {path.name for path in workspace.parent.iterdir()} <= {"repository"}:
+                    shutil.rmtree(workspace.parent)
+                    logger.info("Removed failed PR workspace preparation job={} path={}", record.job_id, workspace.parent)
+            except OSError as exc:
+                logger.warning("Failed PR workspace preparation cleanup job={} path={} reason={}", record.job_id, workspace.parent, exc)
+            raise
+
+    def cleanup_released_workspaces(self) -> None:
+        from .local_job_workspace_cleanup import reclaim_unentered_workspaces
+
+        reclaim_unentered_workspaces(self._store, pr_root=self._root)
+
+    def _prepare_repository(self, claim: LocalJobClaim, repository: Path, workspace: Path, authority: RetainedPRRepairClaim) -> PreparedPRRepairWorkspace:
+        record = claim.record
         with checkout_lock(str(repository)):
             remote = self._git(repository, "remote", "get-url", "origin")
         for ref in (authority.head_ref, authority.base_ref):

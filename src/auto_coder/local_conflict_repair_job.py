@@ -183,6 +183,9 @@ class LocalConflictRepairJobAdapter:
         except Exception as exc:
             return LocalJobExecutionResult(InvocationOutcome.FAILED, f"{type(exc).__name__}: {exc}", "conflict workspace preparation failed")
 
+    def cleanup_released_workspaces(self) -> None:
+        self._workspaces.cleanup_released_workspaces()
+
     def invoke(self, job: LocalJobRecord) -> LocalJobExecutionResult:
         raise RuntimeError("conflict repair requires the provider-entry checkpoint")
 

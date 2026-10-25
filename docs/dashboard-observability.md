@@ -2542,8 +2542,16 @@ Fair local-job scheduling and fresh workspace binding on positively unentered
 PR retries reuse existing runner/provider-entry and downstream traces; neither
 preparation nor a rejected entry emits completion. Run
 `bash scripts/test.sh tests/test_local_job_runner.py tests/test_pr_repair_workspace.py`
-for later-job progress, exact-incarnation rebinding, retained old directories,
-and entered-work fencing. No event schema or renderer change is required.
+for later-job progress, exact-incarnation rebinding, disposal of released
+unentered directories, and entered-work fencing. Pre-entry disposal is
+observability-neutral: it changes filesystem retention only, while the same
+pending transition, rejected provider entry, and downstream publication evidence
+remain authoritative. Disposal never emits repair success or provider completion.
+The repeated-refusal regression
+`tests/test_z_local_ci_repair_job.py::test_repeated_pre_entry_refusals_do_not_accumulate_workspaces`
+drives production CI admission, preparation, runner release, and immediate
+cleanup, with zero editor calls and no result artifact. Cleanup decisions remain
+in the ordinary logs. No event schema or renderer change is required.
 
 The `pr.repair-delegation` stage reports an accepted/deferred local handoff with
 its local phase while the durable local-job runner owns execution independently

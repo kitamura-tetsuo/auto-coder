@@ -380,7 +380,8 @@ class LocalJobRunner:
                                 self._settle_recovered_handle(refreshed)
                         # Present but invalid evidence remains retained for diagnosis.
                         continue
-                    self.store.release_dead_owner_claim(job, "previous runner owner is authoritatively dead")
+                    if self.store.release_dead_owner_claim(job, "previous runner owner is authoritatively dead"):
+                        self._cleanup_released_workspaces(job.kind)
 
     def _confirm_unsuccessful_continuation(self, job: LocalJobRecord, continuation: LocalJobContinuation | None) -> None:
         if (
@@ -460,6 +461,14 @@ class LocalJobRunner:
             with self._lock:
                 self._recovering_start_notifications.discard(adapter_identity)
 
+    def _cleanup_released_workspaces(self, kind: LocalJobKind) -> None:
+        cleanup = getattr(self.adapters.get(kind), "cleanup_released_workspaces", None)
+        if callable(cleanup):
+            try:
+                cleanup()
+            except Exception as exc:
+                logger.warning("Released local job workspace cleanup failed: {}", exc)
+
     def _execute(self, claim: LocalJobClaim, handle: InvocationHandle) -> None:
         # Keep the same daemon admission gate visible at provider boundaries in
         # this independently owned thread.
@@ -533,6 +542,7 @@ class LocalJobRunner:
             if current is not None and self.completion_wake is not None:
                 self.wake_downstream()
         finally:
+            self._cleanup_released_workspaces(claim.record.kind)
             reset_invocation_gate(gate_token)
 
     def _recover_domain_checkpoint(self, job: LocalJobRecord) -> bool:

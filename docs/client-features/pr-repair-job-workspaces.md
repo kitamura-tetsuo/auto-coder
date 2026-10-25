@@ -18,8 +18,12 @@ adapter may enter a provider.
 When a positively unentered PR job returns to pending, its next successful
 claim clears the previous workspace binding atomically with the new execution
 incarnation. Preparation then creates a fresh private workspace for that
-incarnation and revalidates the retained H/B authority. Earlier directories stay
-on disk; an unsuccessful competing claim cannot clear the current binding.
+incarnation and revalidates the retained H/B authority. Releasing an unentered
+claim atomically records disposal of its producer-bound directory, and the runner
+removes it immediately. Startup/hourly cleanup retries interrupted removals even
+after a new incarnation replaces the binding. Failed preparations remove their
+own partial directories before returning. An unsuccessful competing claim cannot
+clear the current binding or authorize its disposal.
 Entered jobs cannot be returned to pending or acquire a replacement workspace.
 `tests/test_pr_repair_workspace.py::test_unentered_retry_prepares_new_workspace`
 covers both repair kinds and ordinary/dead-owner pre-entry release.

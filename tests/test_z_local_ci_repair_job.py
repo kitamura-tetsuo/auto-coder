@@ -421,6 +421,26 @@ def test_explicit_checked_out_jules_authority_survives_into_production_runner(tm
     runner.close()
 
 
+def test_repeated_pre_entry_refusals_do_not_accumulate_workspaces(tmp_path: Path, _use_real_commands) -> None:
+    harness = Harness.create(tmp_path)
+    job_id = harness.offer_from_pr_handler()
+    harness.authority_head = "superseded"
+    runner = harness.runner()
+    try:
+        for _ in range(3):
+            assert runner.poll() == 1
+            wait_until(lambda: runner.active_count() == 0)
+            refused = harness.store.get(job_id)
+            assert refused is not None and refused.state is LocalJobState.PENDING
+            assert not refused.provider_entered and refused.execution_incarnation == ""
+            assert not Path(refused.workspace_path).parent.exists()
+            assert list((tmp_path / "workspaces").glob("*/*/repository")) == []
+            assert harness.store.get_result_artifact(refused.result_reference) is None
+        assert harness.editor_calls == 0
+    finally:
+        runner.close(wait=True)
+
+
 def test_changed_head_at_pre_entry_barrier_records_no_start(tmp_path: Path, _use_real_commands) -> None:
     """REQ-002/003/006: superseding H after preparation produces zero provider entry."""
     harness = Harness.create(tmp_path)
@@ -439,6 +459,7 @@ def test_changed_head_at_pre_entry_barrier_records_no_start(tmp_path: Path, _use
     assert refused.provider_entered is False and refused.execution_incarnation == ""
     assert "head changed" in refused.diagnostic
     assert harness.editor_calls == 0
+    assert not Path(refused.workspace_path).parent.exists()
     runner.close()
 
 

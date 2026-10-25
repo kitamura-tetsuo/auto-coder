@@ -196,6 +196,43 @@ def _record_decision(results: list[WorkspaceCleanupResult], result: WorkspaceCle
     logger.info("Workspace cleanup decision={} job={} path={} reason={}", result.decision, result.job_id, result.path, result.reason)
 
 
+def reclaim_unentered_workspaces(store: LocalJobStore, *, pr_root: Path | None = None) -> tuple[WorkspaceCleanupResult, ...]:
+    """Dispose only incarnations durably released before provider entry."""
+    root = (pr_root or default_pr_repair_workspace_root()).resolve()
+    results: list[WorkspaceCleanupResult] = []
+    for release in store.discover_unentered_workspace_reclamations():
+        target = Path(release.workspace_root)
+        lock = lock_path(release.repository, store.path, "local-job-workspace", f"{release.job_id}:{release.execution_incarnation}")
+        try:
+            ensure_lock_directory(lock)
+            with file_lock(lock):
+                current = store.get(release.job_id)
+                if current is None or current.repository != release.repository or current.kind != release.kind or current.execution_incarnation == release.execution_incarnation:
+                    raise RuntimeError("unentered release is not confirmed")
+                if release.kind not in {LocalJobKind.PR_CI_FAILURE, LocalJobKind.PR_MERGE_CONFLICT} or target != root / release.job_id / release.execution_incarnation or target.resolve() != target:
+                    raise RuntimeError("unentered workspace is outside its producer root")
+                if store.get_execution_result_artifact(release.job_id, release.execution_incarnation) is not None:
+                    raise RuntimeError("unentered workspace has retained result evidence")
+                release = store.get_workspace_reclamation(release.job_id, release.execution_incarnation) or release
+                if release.phase is WorkspaceReclamationPhase.DELETED:
+                    continue
+                if target.exists():
+                    if not _same_identity(target, release) or {path.name for path in target.iterdir()} - {"repository"}:
+                        raise RuntimeError("unentered workspace identity or ownership changed")
+                if release.phase is WorkspaceReclamationPhase.RELEASED:
+                    if not store.transition_workspace_reclamation(release, WorkspaceReclamationPhase.RELEASED, WorkspaceReclamationPhase.DELETING):
+                        raise RuntimeError("could not checkpoint unentered deletion")
+                if target.exists():
+                    shutil.rmtree(target)
+                if not store.transition_workspace_reclamation(release, WorkspaceReclamationPhase.DELETING, WorkspaceReclamationPhase.DELETED):
+                    raise RuntimeError("could not checkpoint unentered disposal")
+                _record_decision(results, WorkspaceCleanupResult(release.job_id, str(target), "reclaimed", "positively unentered incarnation released"))
+        except Exception as exc:
+            logger.opt(exception=True).warning("Workspace cleanup decision=failed job={} path={} reason={}", release.job_id, target, exc)
+            results.append(WorkspaceCleanupResult(release.job_id, str(target), "failed", str(exc)))
+    return tuple(results)
+
+
 def reclaim_finalized_workspaces(
     store: LocalJobStore,
     *,
@@ -209,7 +246,7 @@ def reclaim_finalized_workspaces(
     retention = workspace_retention_seconds() if retention_seconds is None else retention_seconds
     issue_workspace_root = issue_root or default_issue_job_workspace_root()
     pr_workspace_root = pr_root or default_pr_repair_workspace_root()
-    results: list[WorkspaceCleanupResult] = []
+    results = list(reclaim_unentered_workspaces(store, pr_root=pr_workspace_root))
     for job in store.discover_settled_with_workspaces():
         path = str(Path(job.workspace_path).parent)
         lock = workspace_reclamation_lock(store, job)

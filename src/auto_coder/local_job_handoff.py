@@ -971,8 +971,8 @@ class LocalJobStore:
                 )
                 if cursor.rowcount == 1:
                     # A fresh, unentered PR incarnation prepares its own workspace.
-                    # Keep the previous directory on disk, but do not let its binding
-                    # prevent preparation after an earlier pre-entry refusal.
+                    # Its disposal obligation was saved when the old claim was released.
+                    # Do not let that binding prevent fresh preparation.
                     connection.execute(
                         "UPDATE local_jobs SET workspace_path='', source_commit='', source_ref='', work_branch='', publication_remote='' " "WHERE job_id=? AND execution_incarnation=? AND kind IN (?, ?)",
                         (job_id, incarnation, LocalJobKind.PR_CI_FAILURE.value, LocalJobKind.PR_MERGE_CONFLICT.value),
@@ -1013,45 +1013,45 @@ class LocalJobStore:
 
     def release_unentered_claim(self, claim: LocalJobClaim, diagnostic: str) -> bool:
         """Return a positively unentered incarnation to pending for later retry."""
-        if not claim.acquired:
-            return False
-        try:
-            with self._connect() as connection:
-                cursor = connection.execute(
-                    "UPDATE local_jobs SET state=?, execution_incarnation='', runner_owner='', diagnostic=?, updated_at=? " "WHERE job_id=? AND state=? AND execution_incarnation=? AND provider_entered=0",
-                    (
-                        LocalJobState.PENDING.value,
-                        diagnostic,
-                        time.time(),
-                        claim.record.job_id,
-                        LocalJobState.RUNNING.value,
-                        claim.record.execution_incarnation,
-                    ),
-                )
-            return cursor.rowcount == 1
-        except (OSError, sqlite3.Error):
-            return False
+        return claim.acquired and self._release_unentered(claim.record, diagnostic, dead_owner=False)
 
     def release_dead_owner_claim(self, record: LocalJobRecord, diagnostic: str) -> bool:
         """Recover an exact unentered incarnation after its owner is proven dead."""
         if record.state is not LocalJobState.RUNNING or record.provider_entered or not record.execution_incarnation or not record.runner_owner:
             return False
+        return self._release_unentered(record, diagnostic, dead_owner=True)
+
+    def _release_unentered(self, record: LocalJobRecord, diagnostic: str, *, dead_owner: bool) -> bool:
         try:
             with self._connect() as connection:
-                cursor = connection.execute(
-                    "UPDATE local_jobs SET state=?, execution_incarnation='', runner_owner='', diagnostic=?, updated_at=? " "WHERE job_id=? AND state=? AND execution_incarnation=? AND runner_owner=? AND provider_entered=0",
-                    (
-                        LocalJobState.PENDING.value,
-                        diagnostic,
-                        time.time(),
-                        record.job_id,
-                        LocalJobState.RUNNING.value,
-                        record.execution_incarnation,
-                        record.runner_owner,
-                    ),
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute("SELECT * FROM local_jobs WHERE job_id=?", (record.job_id,)).fetchone()
+                if row is None:
+                    return False
+                current = self._record(row)
+                if current.state is not LocalJobState.RUNNING or current.provider_entered or current.execution_incarnation != record.execution_incarnation or (dead_owner and current.runner_owner != record.runner_owner):
+                    return False
+                is_pr = current.kind in {LocalJobKind.PR_CI_FAILURE, LocalJobKind.PR_MERGE_CONFLICT}
+                if is_pr:
+                    # Controller-only conflict results also need their repository.
+                    if connection.execute("SELECT 1 FROM local_job_results WHERE job_id=? AND execution_incarnation=?", (current.job_id, current.execution_incarnation)).fetchone() is not None:
+                        return False
+                    if connection.execute("SELECT 1 FROM local_job_continuations WHERE job_id=?", (current.job_id,)).fetchone() is not None:
+                        return False
+                    if current.workspace_path and current.workspace_device > 0 and current.workspace_inode > 0:
+                        # Checkpoint disposal in the same transaction as release:
+                        # the next claim must not erase the only old path identity.
+                        connection.execute(
+                            "INSERT OR IGNORE INTO local_job_workspace_reclamations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (current.job_id, current.execution_incarnation, current.kind.value, current.repository, str(Path(current.workspace_path).parent), "", "unentered", time.time(), WorkspaceReclamationPhase.RELEASED.value, current.workspace_device, current.workspace_inode, "", time.time()),
+                        )
+                connection.execute(
+                    "UPDATE local_jobs SET state=?, execution_incarnation='', runner_owner='', diagnostic=?, updated_at=? WHERE job_id=?",
+                    (LocalJobState.PENDING.value, diagnostic, time.time(), current.job_id),
                 )
-            return cursor.rowcount == 1
-        except (OSError, sqlite3.Error):
+                connection.commit()
+            return True
+        except (OSError, sqlite3.Error, ValueError):
             return False
 
     def recover_downstream_pending(self, record: LocalJobRecord, *, executor_token: str = "") -> bool:
@@ -1510,6 +1510,15 @@ class LocalJobStore:
                 (LocalJobState.SETTLED.value,),
             ).fetchall()
         return tuple(self._record(row) for row in rows)
+
+    def discover_unentered_workspace_reclamations(self) -> tuple[WorkspaceReclamationRecord, ...]:
+        """Retain pre-entry disposal obligations across retries and restarts."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM local_job_workspace_reclamations WHERE disposition='unentered' AND phase<>? ORDER BY first_release_at",
+                (WorkspaceReclamationPhase.DELETED.value,),
+            ).fetchall()
+        return tuple(self._reclamation(row) for row in rows)
 
     def get_workspace_reclamation(self, job_id: str, execution_incarnation: str) -> Optional[WorkspaceReclamationRecord]:
         with self._connect() as connection:

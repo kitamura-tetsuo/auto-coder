@@ -26,3 +26,17 @@ available after deletion without recreating a repository, invoking a provider,
 pushing, creating a PR, associating an Issue, or waking CI again. Local-job,
 artifact, continuation, ownership, execution, and effect records are retained;
 cleanup performs no GitHub mutation and terminates no process.
+
+PR CI/conflict incarnations positively released before provider entry are
+disposable immediately, without the successful-publication retention interval.
+The pending transition and disposal receipt are committed together, preserving
+the old path and filesystem identity when a retry clears the workspace binding.
+The runner attempts removal as soon as its adapter returns; startup/hourly
+maintenance retries durable disposal receipts after failures or restarts. A
+retained result artifact (including a controller-only clean merge) or provider
+continuation prevents pre-entry release. Disposal checks the producer root,
+exact incarnation, physical directory identity, and absence of unattributed
+sibling directories; replaced or symlinked paths remain protected. Failed Git
+preparations also remove the partial directory created by that call. Already
+removed released directories can be marked deleted, including after manual
+removal, without recreating them.

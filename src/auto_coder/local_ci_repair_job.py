@@ -66,6 +66,9 @@ class LocalCIRepairJobAdapter:
         claim = self._store.get_pr_repair_claim(job.job_id)
         return bool(job.kind is LocalJobKind.PR_CI_FAILURE and claim is not None and claim.upstream_incarnation == job.upstream_incarnation)
 
+    def cleanup_released_workspaces(self) -> None:
+        self._workspace.cleanup_released_workspaces()
+
     def invoke(self, job: LocalJobRecord) -> LocalJobExecutionResult:
         raise LocalJobProviderEntryRefused("CI repair entry requires the runner checkpoint callback")
 

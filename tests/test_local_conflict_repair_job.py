@@ -151,6 +151,25 @@ def test_changed_authority_before_editor_refuses_entry(tmp_path: Path, _use_real
     assert store.get(claim.record.job_id).provider_entered is False  # type: ignore[union-attr]
 
 
+def test_dead_unentered_conflict_workspace_is_disposed_during_recovery(tmp_path: Path, _use_real_commands) -> None:
+    root, head, base = history(tmp_path)
+    store, claim, _metadata, instance = adapter(tmp_path, root, head, base, lambda *_args: (_ for _ in ()).throw(AssertionError("recovery must not enter editor")))
+    assert store.release_unentered_claim(claim, "prepare dead-owner scenario")
+    dead_claim = store.claim(claim.record.job_id, "process:999999999:1")
+    assert dead_claim is not None and dead_claim.acquired
+    prepared = instance._workspaces.prepare(dead_claim, PRRepairSource(root))
+    runner = LocalJobRunner(store, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={LocalJobKind.PR_MERGE_CONFLICT: instance})
+    try:
+        runner.recover_unsettled()
+        recovered = store.get(claim.record.job_id)
+        assert recovered is not None and recovered.state is LocalJobState.PENDING
+        assert recovered.execution_incarnation == "" and not recovered.provider_entered
+        assert not prepared.workspace.parent.exists()
+        assert store.discover_unentered_workspace_reclamations() == ()
+    finally:
+        runner.close(wait=True)
+
+
 def test_clean_merge_records_controller_result_without_editor_entry(tmp_path: Path, _use_real_commands) -> None:
     root, head, base = history(tmp_path, conflict=False)
     store, claim, _metadata, instance = adapter(tmp_path, root, head, base, lambda _prompt, _root: (_ for _ in ()).throw(AssertionError("editor called")))
