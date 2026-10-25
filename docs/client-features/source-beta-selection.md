@@ -17,12 +17,18 @@ the greatest completion time, and a latest execution without its immutable
 The mutable direct-commit pointer is
 `refs/tags/auto-coder-beta-current`. Before changing it, an operation creates
 and reads back the create-only annotated history ref
-`refs/tags/auto-coder-beta-selection-r<RUN_ID>-a<RUN_ATTEMPT>`. Its canonical
+`refs/tags/auto-coder-beta-selection-r<RUN_ID>`. Actions reruns keep the same
+originating workflow run ID and therefore reconcile the same operation. Its canonical
 JSON annotation contains the selected SHA and exact run/attempt/completion,
 the tested-source ref/object and its original proof-producing run/attempt, the
 expected previous pointer, repository, and operation identity. The annotated
 tag is anchored directly to the selected commit. Workflow retries reuse that
 record and never resample current latest evidence.
+
+Before the first pointer request, the selector rechecks latest eligibility and
+creates the immutable `...-pointer-attempt` record. That record means a pointer
+request may already have been sent; recovery performs readback but never resends
+merely because the mutable ref is absent or temporarily unavailable.
 
 The workflow requires `actions: read` and `contents: write`. Its stable Actions
 concurrency group serializes supported workflow writers; this is not a global

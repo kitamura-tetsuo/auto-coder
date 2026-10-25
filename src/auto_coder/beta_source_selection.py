@@ -9,6 +9,7 @@ import re
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import Enum
+from pathlib import PurePosixPath
 
 from .tested_source_refs import REQUIRED_JOBS, WORKFLOW_PATH, TestedSourcePublisher
 from .util.gh_cache import GitDataResponse, GitHubGitDataClient
@@ -16,7 +17,8 @@ from .util.gh_cache import GitDataResponse, GitHubGitDataClient
 BETA_REF = "refs/tags/auto-coder-beta-current"
 SOURCE_BRANCH = "main"
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
-_OPERATION = re.compile(r"r[1-9][0-9]*-a[1-9][0-9]*\Z")
+_OPERATION = re.compile(r"r[1-9][0-9]*\Z")
+_WORKFLOW_API_ID = PurePosixPath(WORKFLOW_PATH).name
 
 
 class BetaSourceError(RuntimeError):
@@ -141,18 +143,24 @@ class BetaSourceSelector:
 
     def latest(self) -> SourceExecution:
         runs = self._all(
-            f"actions/workflows/{WORKFLOW_PATH}/runs?branch={SOURCE_BRANCH}&status=completed&per_page=100",
+            f"actions/workflows/{_WORKFLOW_API_ID}/runs?branch={SOURCE_BRANCH}&status=completed&per_page=100",
             "workflow_runs",
             "source-test run listing",
         )
         executions: list[SourceExecution] = []
         for run in runs:
-            if not isinstance(run, dict) or type(run.get("id")) is not int:
+            if not isinstance(run, dict) or type(run.get("id")) is not int or type(run.get("run_attempt")) is not int or run["run_attempt"] <= 0:
                 raise BetaSourceError("source-test run listing is malformed")
-            items = self._all(f"actions/runs/{run['id']}/attempts?per_page=100", "workflow_runs", "run-attempt observation")
-            for item in items:
-                if isinstance(item, dict) and item.get("status") == "completed" and item.get("conclusion") == "success" and type(item.get("run_attempt")) is int:
-                    executions.append(self.execution(run["id"], item["run_attempt"]))
+            # GitHub has no attempts collection. The authoritative latest
+            # run_attempt bounds the documented numbered-attempt endpoint.
+            # Every numbered attempt must remain observable so an omitted
+            # successful retry cannot silently change completion ordering.
+            for attempt in range(1, run["run_attempt"] + 1):
+                exact = _object(self.client.request("GET", f"actions/runs/{run['id']}/attempts/{attempt}"), "numbered run attempt")
+                if exact.get("id") != run["id"] or exact.get("run_attempt") != attempt:
+                    raise BetaSourceError("numbered run-attempt observation is inconsistent")
+                if exact.get("status") == "completed" and exact.get("conclusion") == "success":
+                    executions.append(self.execution(run["id"], attempt))
         if not executions:
             raise BetaSourceError("no eligible successful source execution exists")
         greatest = max(_timestamp(item.completed_at) for item in executions)
@@ -167,8 +175,12 @@ class BetaSourceSelector:
 
     def _history_name(self, operation_id: str) -> str:
         if _OPERATION.fullmatch(operation_id) is None:
-            raise BetaSourceError("operation identity must be r<RUN>-a<ATTEMPT>")
+            raise BetaSourceError("operation identity must be r<RUN>")
         return f"auto-coder-beta-selection-{operation_id}"
+
+    @staticmethod
+    def _effect_name(operation_id: str) -> str:
+        return f"auto-coder-beta-selection-{operation_id}-pointer-attempt"
 
     def _read_record(self, name: str) -> BetaSelectionRecord | None:
         response = self.client.request("GET", f"git/ref/tags/{name}")
@@ -201,6 +213,22 @@ class BetaSourceSelector:
             raise BetaSourceConflict("beta pointer is not a direct commit ref")
         return str(target["sha"])
 
+    def _publish_immutable_record(self, name: str, record: BetaSelectionRecord, operation: str) -> None:
+        created = _object(
+            self.client.request("POST", "git/tags", {"tag": name, "message": record.serialize(), "object": record.source_sha, "type": "commit"}),
+            f"{operation} tag creation",
+            201,
+        )
+        oid = created.get("sha")
+        if not isinstance(oid, str) or _SHA.fullmatch(oid) is None:
+            raise BetaSourceError(f"{operation} tag creation returned no object identity")
+        try:
+            self.client.request("POST", "git/refs", {"ref": f"refs/tags/{name}", "sha": oid})
+        except RuntimeError:
+            pass
+        if self._read_record(name) != record:
+            raise BetaSourceConflict(f"immutable {operation} record could not be confirmed")
+
     def advance(self, operation_id: str, expected_previous_sha: str | None) -> BetaSelectionReceipt:
         name = self._history_name(operation_id)
         record = self._read_record(name)
@@ -210,19 +238,7 @@ class BetaSourceSelector:
             if proof is None:
                 raise BetaSourceError("selected proof disappeared")
             record = BetaSelectionRecord(1, self.repository, operation_id, selected.source_sha, selected.run_id, selected.run_attempt, selected.completed_at, proof.tag_ref, proof.tag_object_oid, proof.record.run_id, proof.record.run_attempt, expected_previous_sha)
-            created = _object(self.client.request("POST", "git/tags", {"tag": name, "message": record.serialize(), "object": record.source_sha, "type": "commit"}), "selection tag creation", 201)
-            oid = created.get("sha")
-            if not isinstance(oid, str) or _SHA.fullmatch(oid) is None:
-                raise BetaSourceError("selection tag creation returned no object identity")
-            try:
-                self.client.request("POST", "git/refs", {"ref": f"refs/tags/{name}", "sha": oid})
-            except RuntimeError:
-                pass
-            if self._read_record(name) != record:
-                raise BetaSourceConflict("immutable selection record could not be confirmed")
-            # Serialize workflows, but still close the event-arrival race immediately before effect.
-            if self.latest() != selected:
-                raise BetaSourceConflict("a later eligible execution exists before the first pointer effect")
+            self._publish_immutable_record(name, record, "selection")
         elif record.repository != self.repository or record.operation_id != operation_id:
             raise BetaSourceConflict("operation record belongs to a different operation")
 
@@ -236,6 +252,23 @@ class BetaSourceSelector:
             return BetaSelectionReceipt(f"refs/tags/{name}", BETA_REF, MutationCertainty.CONFIRMED, record.source_sha, current)
         if current != record.expected_previous_sha:
             return BetaSelectionReceipt(f"refs/tags/{name}", BETA_REF, MutationCertainty.SUPERSEDED, record.source_sha, current)
+
+        effect_name = self._effect_name(operation_id)
+        effect = self._read_record(effect_name)
+        if effect is not None:
+            if effect != record:
+                raise BetaSourceConflict("pointer-attempt record conflicts with selection history")
+            # The first request may have reached GitHub. An absent pointer is
+            # not evidence that resending is safe.
+            return BetaSelectionReceipt(f"refs/tags/{name}", BETA_REF, MutationCertainty.SENT_UNKNOWN, record.source_sha, current)
+
+        # This is provably the first pointer effect. Re-evaluate eligibility
+        # even when history was left behind by a stopped prior invocation.
+        selected = self.latest()
+        expected = SourceExecution(record.selected_run_id, record.selected_run_attempt, record.source_sha, record.selected_completed_at)
+        if selected != expected:
+            raise BetaSourceConflict("a later eligible execution exists before the first pointer effect")
+        self._publish_immutable_record(effect_name, record, "pointer-attempt")
         try:
             if current is None:
                 response = self.client.request("POST", "git/refs", {"ref": BETA_REF, "sha": record.source_sha})
@@ -258,7 +291,7 @@ class BetaSourceSelector:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repository", required=True)
-    parser.add_argument("--operation-id", required=True)
+    parser.add_argument("--operation-id", required=True, help="Stable originating Actions run identity, formatted r<RUN_ID>")
     parser.add_argument("--expected-previous-sha")
     args = parser.parse_args()
     token = os.environ.get("GITHUB_TOKEN")

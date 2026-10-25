@@ -32,5 +32,5 @@ jobs:
         run: >-
           uv run python -m auto_coder.beta_source_selection
           --repository '${{ github.repository }}'
-          --operation-id 'r${{ github.run_id }}-a${{ github.run_attempt }}'
+          --operation-id 'r${{ github.run_id }}'
           ${{ inputs.expected_previous_sha && format('--expected-previous-sha {0}', inputs.expected_previous_sha) || '' }}
