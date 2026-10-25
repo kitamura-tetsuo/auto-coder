@@ -94,6 +94,8 @@ def test_receipt_content_identity_binds_lock_runtime_and_paths(tmp_path: Path) -
     lock = b"locked-input"
     (source / "uv.lock").write_bytes(lock)
     observed = InstalledProvenance("a" * 40, "1.0")
+    runtime_id = "d" * 32
+    (environment / ".auto-coder-runtime-id").write_text(runtime_id + "\n")
     bindings = {
         "attempt_id": "attempt",
         "runtime_profile": "python-3.12",
@@ -102,10 +104,10 @@ def test_receipt_content_identity_binds_lock_runtime_and_paths(tmp_path: Path) -
         "source_sha": "a" * 40,
         "distribution_version": "1.0",
         "lock_sha256": hashlib.sha256(lock).hexdigest(),
-        "installed_runtime_id": "opaque",
+        "installed_runtime_id": runtime_id,
     }
     identity = hashlib.sha256(json.dumps(bindings, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    receipt = ReadyReceipt(1, "a" * 40, "a" * 40, bindings["environment_path"], bindings["interpreter_path"], "1.0", bindings["lock_sha256"], "attempt", "python-3.12", "opaque", identity, observed, "now")
+    receipt = ReadyReceipt(1, "a" * 40, "a" * 40, bindings["environment_path"], bindings["interpreter_path"], "1.0", bindings["lock_sha256"], "attempt", "python-3.12", runtime_id, identity, observed, "now")
     ready = attempt / "READY.json"
     WorkerVersionPreparer._publish(ready, receipt)
     preparer = WorkerVersionPreparer(config)

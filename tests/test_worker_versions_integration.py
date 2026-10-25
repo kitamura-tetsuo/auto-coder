@@ -43,6 +43,7 @@ def _create_production_fixture(tmp_path: Path) -> tuple[Path, str, Path, str]:
     for name in ("build_identity.py", "build_provenance.py"):
         shutil.copy2(REPO_ROOT / "src" / "auto_coder" / name, repo / "src" / "auto_coder")
     (repo / "src" / "auto_coder" / "__init__.py").write_text("")
+    (repo / "src" / "auto_coder" / "cli.py").write_text("import argparse\n\ndef main():\n    argparse.ArgumentParser(prog='auto-coder').parse_args()\n")
     (repo / "README.md").write_text("fixture\n")
     (repo / "pyproject.toml").write_text(
         """[build-system]
@@ -55,6 +56,9 @@ name = "auto-coder"
 dynamic = ["version"]
 requires-python = ">=3.12"
 dependencies = []
+
+[project.scripts]
+auto-coder = "auto_coder.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -180,6 +184,39 @@ def test_preinstall_lock_filesystem_failure_is_typed_and_preserves_prior_environ
     assert not list(root.glob("revisions/*/*/READY.json"))
 
 
+def test_retained_revisions_symlink_is_rejected_before_external_writes(tmp_path: Path, _use_real_commands: None) -> None:
+    repo, sha, uv, uv_version = _create_production_fixture(tmp_path)
+    root = tmp_path / "symlink-versions"
+    external = tmp_path / "external-sentinel"
+    root.mkdir()
+    external.mkdir()
+    marker = external / "marker"
+    marker.write_text("unchanged")
+    (root / "revisions").symlink_to(external, target_is_directory=True)
+    config = WorkerVersionConfig(repo, root, Path(sys.executable), uv, uv_version)
+
+    with pytest.raises(WorkerVersionError) as caught:
+        WorkerVersionPreparer(config).prepare(PrepareIntent(sha, "must-not-escape"))
+
+    assert caught.value.failure is PreparationFailure.CONFLICT
+    assert list(external.iterdir()) == [marker]
+    assert marker.read_text() == "unchanged"
+    assert not list(external.glob("**/READY.json"))
+
+
+def test_failing_installed_entrypoint_prevents_ready_publication(tmp_path: Path, _use_real_commands: None) -> None:
+    repo, _sha, uv, uv_version = _create_production_fixture(tmp_path)
+    (repo / "src" / "auto_coder" / "cli.py").write_text("def main():\n    raise SystemExit(19)\n")
+    sha = _commit(repo, "failing installed entrypoint")
+    config = WorkerVersionConfig(repo, tmp_path / "failed-entrypoint", Path(sys.executable), uv, uv_version)
+
+    with pytest.raises(WorkerVersionError) as caught:
+        WorkerVersionPreparer(config).prepare(PrepareIntent(sha, "entrypoint-fails"))
+
+    assert caught.value.failure is PreparationFailure.VERIFICATION_MISMATCH
+    assert not list(config.version_root.glob("revisions/*/*/READY.json"))
+
+
 def test_public_prepare_classifies_real_os_space_failure_without_starting_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands: None) -> None:
     repo, sha, uv, uv_version = _create_production_fixture(tmp_path)
     root = tmp_path / "space-unavailable"
@@ -290,6 +327,26 @@ def test_partial_attempt_frozen_lock_failure_and_cross_runtime_receipt_are_rejec
         WorkerVersionPreparer(config).read_ready(ready)
     assert cross_runtime.value.failure is PreparationFailure.CONFLICT
     ready.write_text(json.dumps(target_payload))
+
+    substituted_identity = dict(target_payload)
+    substituted_identity["installed_runtime_id"] = other.receipt.installed_runtime_id
+    identity_bindings = {
+        "attempt_id": substituted_identity["attempt_id"],
+        "runtime_profile": substituted_identity["runtime_profile"],
+        "environment_path": substituted_identity["environment_path"],
+        "interpreter_path": substituted_identity["interpreter_path"],
+        "source_sha": substituted_identity["source_sha"],
+        "distribution_version": substituted_identity["distribution_version"],
+        "lock_sha256": substituted_identity["lock_sha256"],
+        "installed_runtime_id": substituted_identity["installed_runtime_id"],
+    }
+    substituted_identity["content_identity"] = hashlib.sha256(json.dumps(identity_bindings, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    ready.write_text(json.dumps(substituted_identity))
+    with pytest.raises(WorkerVersionError) as runtime_identity:
+        WorkerVersionPreparer(config).read_ready(ready)
+    assert runtime_identity.value.failure is PreparationFailure.VERIFICATION_MISMATCH
+    ready.write_text(json.dumps(target_payload))
+    assert WorkerVersionPreparer(config).read_ready(ready).installed_runtime_id == target_payload["installed_runtime_id"]
 
     # Model a receipt from a different real runtime while retaining paths that
     # pass structural confinement. Readback must still execute this runtime and

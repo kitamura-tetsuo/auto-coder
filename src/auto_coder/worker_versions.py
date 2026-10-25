@@ -24,6 +24,7 @@ from pathlib import Path
 from loguru import logger
 
 READY_SCHEMA_VERSION = 1
+RUNTIME_ID_FILENAME = ".auto-coder-runtime-id"
 _FULL_SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
@@ -166,8 +167,8 @@ class WorkerVersionPreparer:
         lock_result = self._run_bytes(["git", "-C", str(self.repository), "show", f"{intent.source_sha}:uv.lock"])
         desired_lock = hashlib.sha256(lock_result).hexdigest()
         key = hashlib.sha256(f"{intent.source_sha}\0{desired_lock}\0{self.config.runtime_profile}".encode()).hexdigest()
-        revisions = self.root / "revisions" / key
-        revisions.mkdir(parents=True, exist_ok=True)
+        revisions_root = self._confined_directory(self.root / "revisions")
+        revisions = self._confined_directory(revisions_root / key)
         for ready in sorted(revisions.glob("*/READY.json")):
             try:
                 receipt = self.read_ready(ready)
@@ -181,7 +182,7 @@ class WorkerVersionPreparer:
             raise WorkerVersionError(PreparationFailure.CONFLICT, "preparation attempt already exists without verified READY state")
         checkout = attempt / "source"
         environment = attempt / "venv"
-        attempt.mkdir(parents=True, mode=0o700)
+        self._confined_directory(attempt, mode=0o700)
         try:
             self._checkout(checkout, intent.source_sha)
             lock_bytes = (checkout / "uv.lock").read_bytes()
@@ -200,6 +201,7 @@ class WorkerVersionPreparer:
             if not interpreter.exists():
                 raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "installed environment has no Python launcher")
             runtime_id = uuid.uuid4().hex
+            self._write_runtime_id(environment, runtime_id)
             bindings = {
                 "attempt_id": intent.attempt_id,
                 "runtime_profile": self.config.runtime_profile,
@@ -255,6 +257,13 @@ class WorkerVersionPreparer:
         # Embed through the installed artifact, not through the manager checkout.
         env["AUTO_CODER_SOURCE_REVISION"] = self._run(["git", "-C", str(checkout), "rev-parse", "HEAD"], output=True).strip()
         self._run([str(environment / "bin" / "python"), "-m", "auto_coder.build_provenance", "embed"], env=env)
+        self._verify_entrypoint(environment)
+
+    def _verify_entrypoint(self, environment: Path) -> None:
+        try:
+            self._run([str(environment / "bin" / "auto-coder"), "--help"], env=self._safe_environment())
+        except WorkerVersionError as exc:
+            raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "installed worker entry point is unavailable or failed") from exc
 
     def _observe(self, environment: Path) -> InstalledProvenance:
         output = self._run([str(environment / "bin" / "python"), "-m", "auto_coder.build_provenance"], output=True, env=self._safe_environment())
@@ -292,6 +301,8 @@ class WorkerVersionPreparer:
             raise WorkerVersionError(PreparationFailure.CONFLICT, "READY environment is outside its attempt") from exc
         if not interpreter.exists() or self._interpreter_prefix(interpreter) != environment:
             raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "READY interpreter does not execute in its recorded environment")
+        if self._read_runtime_id(environment) != receipt.installed_runtime_id:
+            raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "READY runtime identity does not match its installed environment")
         checkout_lock = attempt / "source" / "uv.lock"
         try:
             observed_lock = hashlib.sha256(checkout_lock.read_bytes()).hexdigest()
@@ -385,6 +396,48 @@ class WorkerVersionPreparer:
         if exc.errno in {errno.ENOSPC, errno.EDQUOT}:
             return WorkerVersionError(PreparationFailure.INSUFFICIENT_SPACE, "worker revision storage has insufficient space")
         return WorkerVersionError(PreparationFailure.UNAVAILABLE, "worker revision storage is unavailable")
+
+    def _confined_directory(self, path: Path, *, mode: int = 0o700) -> Path:
+        """Create one state directory without following retained symlinks."""
+
+        try:
+            path.relative_to(self.root)
+            if path.exists() or path.is_symlink():
+                if path.is_symlink() or not path.is_dir():
+                    raise WorkerVersionError(PreparationFailure.CONFLICT, "retained version state has an invalid directory structure")
+            else:
+                path.mkdir(mode=mode)
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(self.root)
+            return resolved
+        except WorkerVersionError:
+            raise
+        except ValueError as exc:
+            raise WorkerVersionError(PreparationFailure.CONFLICT, "retained version state escapes the configured root") from exc
+        except OSError as exc:
+            raise self._filesystem_error(exc) from exc
+
+    @staticmethod
+    def _write_runtime_id(environment: Path, runtime_id: str) -> None:
+        marker = environment / RUNTIME_ID_FILENAME
+        try:
+            with marker.open("x", encoding="ascii") as stream:
+                stream.write(runtime_id + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            marker.chmod(0o444)
+        except OSError as exc:
+            raise WorkerVersionPreparer._filesystem_error(exc) from exc
+
+    @staticmethod
+    def _read_runtime_id(environment: Path) -> str:
+        try:
+            runtime_id = (environment / RUNTIME_ID_FILENAME).read_text(encoding="ascii").strip()
+        except (OSError, UnicodeError) as exc:
+            raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "installed runtime identity is unavailable") from exc
+        if not re.fullmatch(r"[0-9a-f]{32}", runtime_id):
+            raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "installed runtime identity is invalid")
+        return runtime_id
 
     @staticmethod
     def _publish(path: Path, receipt: ReadyReceipt) -> None:
