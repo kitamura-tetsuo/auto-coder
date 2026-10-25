@@ -20,6 +20,11 @@ shared ownership registry assigns its repository to that channel. Repository
 assignment is atomic and cannot change channels while the old channel's durable
 implementation-slot state is active or unreadable.
 
+Staged permission for integrated management consumers is a separate concern. The
+[operator-controlled management policy](operator-controlled-management-policy.md)
+uses these channel names and authoritative target mappings without changing
+deployment ownership or direct operator tooling.
+
 Runtime source testing and immutable Git references are a separate publication
 channel documented in `tested-source-references.md`; their eligibility never
 depends on an OCI digest and does not alter these image channels.

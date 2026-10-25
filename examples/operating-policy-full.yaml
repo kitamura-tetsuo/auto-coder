@@ -1,0 +1,10 @@
+profile: full
+targets:
+  beta-service:
+    channel: beta
+    repositories:
+      - example/widgets
+  release-service:
+    channel: release
+    repositories:
+      - example/widgets
