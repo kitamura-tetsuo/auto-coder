@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import subprocess
+import sys
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import yaml
 
 from auto_coder.tested_source_refs import (
     REQUIRED_JOBS,
@@ -15,12 +18,31 @@ from auto_coder.tested_source_refs import (
 from auto_coder.tested_source_refs import TestedSourceError as SourceEvidenceError
 from auto_coder.tested_source_refs import TestedSourcePublisher as SourcePublisher
 from auto_coder.tested_source_refs import TestedSourceRecord as SourceRecord
+from auto_coder.tested_source_refs import main as publication_main
 from auto_coder.tested_source_refs import parse_record, record_from_checkout, serialize_record
 from auto_coder.util.gh_cache import GitDataResponse
 
 SHA = "a" * 40
 OTHER_SHA = "b" * 40
 TAG_OID = "c" * 40
+
+
+def assert_required_workflow_profile(workflow: object) -> None:
+    assert isinstance(workflow, dict)
+    jobs = workflow["jobs"]
+    quality = jobs["source-quality"]
+    complete = jobs["complete-source-tests"]
+    quality_runs = [step["run"] for step in quality["steps"] if isinstance(step, dict) and isinstance(step.get("run"), str)]
+    assert quality_runs == [
+        "uv sync --frozen --dev --extra test",
+        'uv run python -c \'from auto_coder.build_identity import resolve_build_identity; r=resolve_build_identity("."); assert r.state == "clean" and r.source_revision == "${{ github.sha }}"\'\n',
+        "uv run black --check src/ tests/\nuv run isort --check-only src/ tests/\nuv run flake8 src/ tests/\nuv run mypy --config-file pyproject.toml -p auto_coder\n",
+    ]
+    complete_steps = {step.get("name"): step for step in complete["steps"] if isinstance(step, dict) and step.get("name")}
+    assert complete_steps["Install Chromium"] == {"name": "Install Chromium", "run": "uv run playwright install --with-deps chromium"}
+    assert complete_steps["Verify real headless Chromium"] == {"name": "Verify real headless Chromium", "run": "uv run python scripts/browser_preflight.py"}
+    assert complete_steps["Run complete required source selection"] == {"name": "Run complete required source selection", "run": "uv run pytest -m 'not opencode_live' -vv"}
+    assert complete["env"]["AUTO_CODER_REQUIRE_BROWSER"] == "1"
 
 
 def record(**changes: object) -> SourceRecord:
@@ -253,6 +275,8 @@ def test_missing_required_job_refuses_publication() -> None:
 
 def test_workflows_keep_source_authority_independent_from_legacy_image_publish() -> None:
     source = open(".github/workflows/test-source-for-runtime.yml", encoding="utf-8").read()
+    workflow = yaml.safe_load(source)
+    assert_required_workflow_profile(workflow)
     publication = open(".github/workflows/publish-tested-source.yml", encoding="utf-8").read()
     legacy = open(".github/workflows/publish-beta.yml", encoding="utf-8").read()
     assert "docker" not in source.lower()
@@ -266,11 +290,23 @@ def test_workflows_keep_source_authority_independent_from_legacy_image_publish()
     assert "uv run pytest -m 'not opencode_live'" in source
     assert 'AUTO_CODER_REQUIRE_BROWSER: "1"' in source
 
+    narrowed = deepcopy(workflow)
+    narrowed["jobs"]["complete-source-tests"]["steps"][-1]["run"] += " tests/test_tested_source_refs.py"
+    with pytest.raises(AssertionError):
+        assert_required_workflow_profile(narrowed)
 
-def test_checkout_record_uses_real_clean_git_identity_and_locked_input(tmp_path: Path, _use_real_commands) -> None:
+    skipped = deepcopy(workflow)
+    skipped["jobs"]["complete-source-tests"]["steps"][-1]["if"] = "false"
+    with pytest.raises(AssertionError):
+        assert_required_workflow_profile(skipped)
+
+
+def test_checkout_record_uses_real_clean_git_identity_and_locked_input(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    assert_required_workflow_profile(yaml.safe_load(Path(".github/workflows/test-source-for-runtime.yml").read_text(encoding="utf-8")))
     subprocess.run(["git", "init", "-q", tmp_path], check=True)
     subprocess.run(["git", "-C", tmp_path, "config", "user.name", "Test"], check=True)
     subprocess.run(["git", "-C", tmp_path, "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", tmp_path, "remote", "add", "origin", "https://github.com/owner/repo.git"], check=True)
     (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
     subprocess.run(["git", "-C", tmp_path, "add", "uv.lock"], check=True)
     subprocess.run(["git", "-C", tmp_path, "commit", "-qm", "fixture"], check=True)
@@ -279,6 +315,49 @@ def test_checkout_record_uses_real_clean_git_identity_and_locked_input(tmp_path:
     observed = record_from_checkout("owner/repo", sha, 17, 2, 23, tmp_path)
     assert observed.source_sha == sha
     assert len(observed.lock_sha256) == 64
+
+    with pytest.raises(SourceEvidenceError, match="configured publication repository"):
+        record_from_checkout("other/repo", sha, 17, 2, 23, tmp_path)
+
+    clients_created = 0
+
+    def forbidden_client(*_args: object, **_kwargs: object) -> None:
+        nonlocal clients_created
+        clients_created += 1
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GITHUB_TOKEN", "not-logged")
+    monkeypatch.setenv("AUTO_CODER_PUBLICATION_REPOSITORY", "other/repo")
+    monkeypatch.setattr("auto_coder.tested_source_refs.GitHubGitDataClient", forbidden_client)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "tested_source_refs",
+            "--repository",
+            "other/repo",
+            "--source-sha",
+            sha,
+            "--run-id",
+            "17",
+            "--run-attempt",
+            "2",
+            "--workflow-id",
+            "23",
+            "--tagger-date",
+            "2026-01-02T03:04:05Z",
+        ],
+    )
+    with pytest.raises(SourceEvidenceError, match="configured publication repository"):
+        publication_main()
+    assert clients_created == 0
+    monkeypatch.chdir(Path(__file__).parent.parent)
+
+    publication_remote = FakeGitData()
+    publication_remote.source_sha = sha
+    published = publisher(publication_remote).publish(observed, "2026-01-02T03:04:05Z")
+    assert published.direct_commit_sha == sha
+    assert publication_remote.creates == 1
 
     def remote_with_existing(existing_record: SourceRecord) -> FakeGitData:
         remote = FakeGitData()

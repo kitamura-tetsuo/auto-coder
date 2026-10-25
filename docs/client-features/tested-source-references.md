@@ -15,11 +15,13 @@ read the tag object and direct commit and verify the recorded Actions run and
 both required jobs are completed successfully for that exact attempt and SHA.
 
 Only the completion-triggered publication workflow has `contents: write`; test
-jobs have read-only contents permission. Publication is create-only. Existing
-same-SHA tags are reused only after strict tag, annotation, commit, run, and job
-readback. Conflicting data is never overwritten. If a create response is lost,
-only exact readback can establish success; absent or unavailable evidence remains
-uncertain.
+jobs have read-only contents permission. The fixed workflow repository, CLI
+destination, and checked-out GitHub `origin` must all identify the same
+repository before a Git-data client is created. Publication is create-only.
+Existing same-SHA tags are reused only after strict tag, annotation, commit, run,
+and job readback. Conflicting data is never overwritten. If a create response is
+lost, only exact readback can establish success; absent or unavailable evidence
+remains uncertain.
 
 To investigate a conflict or unavailable result, inspect the recorded Actions
 run and attempt, both required job conclusions, `git/ref/tags/<name>`, and its

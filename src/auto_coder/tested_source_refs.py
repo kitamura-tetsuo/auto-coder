@@ -8,6 +8,7 @@ import json
 import os
 import platform
 import re
+import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
@@ -26,6 +27,7 @@ _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 _VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+!-]{0,199}\Z")
+_GITHUB_REMOTE = re.compile(r"(?:https://github\.com/|git@github\.com:)(?P<repository>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?\Z")
 
 
 class TestedSourceError(RuntimeError):
@@ -240,6 +242,18 @@ class TestedSourcePublisher:
 
 
 def record_from_checkout(repository: str, source_sha: str, run_id: int, run_attempt: int, workflow_id: int, checkout: Path = Path(".")) -> TestedSourceRecord:
+    try:
+        remote_url = subprocess.run(
+            ["git", "-C", str(checkout), "config", "--get", "remote.origin.url"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise TestedSourceError("checkout repository provenance is unavailable") from exc
+    remote_match = _GITHUB_REMOTE.fullmatch(remote_url)
+    if remote_match is None or remote_match.group("repository").lower() != repository.lower():
+        raise TestedSourceError("checkout repository does not match the configured publication repository")
     identity = resolve_build_identity(checkout)
     if identity.state != "clean" or identity.source_revision != source_sha:
         raise TestedSourceError("checkout is not the clean exact source commit")
@@ -275,6 +289,9 @@ def main() -> int:
     parser.add_argument("--workflow-id", required=True, type=int)
     parser.add_argument("--tagger-date", required=True)
     args = parser.parse_args()
+    configured_repository = os.environ.get("AUTO_CODER_PUBLICATION_REPOSITORY")
+    if configured_repository != args.repository:
+        raise TestedSourceError("publication repository does not match the configured repository")
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
         raise TestedSourceError("GITHUB_TOKEN is unavailable")
