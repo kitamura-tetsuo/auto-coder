@@ -192,12 +192,11 @@ def create_management_auth_app(
                 location = response.headers["location"]
                 split = urlsplit(location)
                 callback = urlsplit(redirect_uri)
-                if (split.scheme, split.netloc, split.path) == (callback.scheme, callback.netloc, callback.path):
-                    parameters = parse_qsl(split.query, keep_blank_values=True)
-                    if not any(name == "iss" for name, _ in parameters):
-                        parameters.append(("iss", settings.canonical_issuer))
-                        response.headers["location"] = urlunsplit((split.scheme, split.netloc, split.path, urlencode(parameters), split.fragment))
-                    response.headers["Cache-Control"] = "no-store"
+                parameters = parse_qsl(split.query, keep_blank_values=True)
+                if not any(name == "iss" for name, _ in parameters):
+                    parameters.append(("iss", settings.canonical_issuer))
+                response.headers["location"] = urlunsplit((callback.scheme, callback.netloc, callback.path, urlencode(parameters), callback.fragment))
+                response.headers["Cache-Control"] = "no-store"
             return response
         finally:
             authorization_unavailable.reset(unavailable_token)
@@ -327,7 +326,9 @@ def create_management_auth_app(
             await run_in_threadpool(grants.revoke, client_id, token_value)
         except Unavailable:
             return _oauth_error("temporarily_unavailable", 503)
-        except (InvalidClient, InvalidGrant, InvalidRequest, InvalidScope, InvalidTarget):
+        except InvalidClient:
+            return _oauth_error("invalid_client")
+        except (InvalidGrant, InvalidRequest, InvalidScope, InvalidTarget):
             pass
         return Response(status_code=200, headers={"Cache-Control": "no-store"})
 

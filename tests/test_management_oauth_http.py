@@ -374,6 +374,31 @@ def test_exact_https_redirect_survives_sdk_url_normalization(tmp_path):
         )
         assert approved.status_code == 303
         assert approved.headers["location"].startswith(redirect_uri + "?")
+        rejected = client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "client",
+                "redirect_uri": redirect_uri,
+                "resource": settings.resource,
+                "state": "malformed-challenge-state",
+                "code_challenge": "x",
+                "code_challenge_method": "S256",
+            },
+            follow_redirects=False,
+        )
+        rejected_location = urlsplit(rejected.headers["location"])
+        expected_callback = urlsplit(redirect_uri)
+        assert rejected.status_code == 302
+        assert (rejected_location.scheme, rejected_location.netloc, rejected_location.path) == (
+            expected_callback.scheme,
+            expected_callback.netloc,
+            expected_callback.path,
+        )
+        assert parse_qs(rejected_location.query)["state"] == ["malformed-challenge-state"]
+        assert parse_qs(rejected_location.query)["iss"] == [settings.canonical_issuer]
+        assert "code" not in parse_qs(rejected_location.query)
+        assert rejected.headers["cache-control"] == "no-store"
         alternate = redirect_uri + ("/" if redirect_uri == "https://client.example" else "")
         if alternate != redirect_uri:
             refused = client.get("/authorize", params={"response_type": "code", "client_id": "client", "redirect_uri": alternate, "resource": settings.resource, "code_challenge": challenge("v" * 43), "code_challenge_method": "S256"})
@@ -576,8 +601,10 @@ def test_token_and_revoke_unavailable_and_revoke_isolation(tmp_path, sdk_boundar
 
     missing_token = client.post("/revoke", data={"client_id": "client-a"})
     missing_client = client.post("/revoke", data={"token": a["access_token"]})
+    unknown_client = client.post("/revoke", data={"client_id": "unknown-client", "token": a["access_token"]})
     assert missing_token.status_code == 400 and missing_token.json() == {"error": "invalid_request"}
     assert missing_client.status_code == 400 and missing_client.json() == {"error": "invalid_client"}
+    assert unknown_client.status_code == 400 and unknown_client.json() == {"error": "invalid_client"}
     assert grants.authenticate_access(a["access_token"], settings.resource, ("auto-coder.read",)).client_id == "client-a"
 
     for token in ("unknown-token", b["access_token"]):
