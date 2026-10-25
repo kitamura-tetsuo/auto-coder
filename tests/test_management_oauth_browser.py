@@ -108,14 +108,22 @@ def test_shipped_page_hands_signed_identity_to_real_verifier_and_requires_consen
 window.__actualGapiLoaded = typeof window.gapi?.load === 'function';
 window.gapi.iframes = {
   Iframe: function () {}, CROSS_ORIGIN_IFRAMES_FILTER: {},
-  getContext: () => ({open: (_options, ready) => {
-    const iframe = {
-      restyle: async () => {}, ping: done => { done(); return Promise.resolve(); },
-      register: (name, handler) => { window.__firebaseAuthEvent = handler; },
-      send: () => {}
+  getContext: () => ({open: (options, ready) => new Promise((resolve, reject) => {
+    const element = document.createElement('iframe');
+    element.dataset.controlledProvider = 'true';
+    element.src = options.url;
+    element.onload = () => {
+      const iframe = {
+        restyle: async () => {}, ping: done => { done(); return Promise.resolve(); },
+        register: (name, handler) => window.addEventListener('message', event => {
+          if (event.data?.event === name) handler(event.data.payload);
+        }),
+        send: () => {}
+      };
+      ready(iframe).then(resolve, reject);
     };
-    return ready(iframe);
-  }})
+    document.body.appendChild(element);
+  })})
 };
 """
 
@@ -160,14 +168,15 @@ window.gapi.iframes = {
             except PlaywrightTimeoutError as exc:
                 raise AssertionError(f"Firebase popup used unexpected URL {popup.url}; requests={requested_urls}") from exc
             event_id = parse_qs(urlsplit(popup.url).query)["eventId"][0]
-            page.wait_for_function("window.__firebaseAuthEvent !== undefined")
-            page.evaluate(
-                """eventId => window.__firebaseAuthEvent({authEvent: {
+            assert page.locator("iframe[data-controlled-provider='true']").count() == 1
+            assert any("test-project.firebaseapp.com/__/auth/iframe" in url for url in requested_urls)
+            popup.evaluate(
+                """eventId => window.opener.postMessage({event: 'authEvent', payload: {authEvent: {
                     type: 'signInViaPopup', eventId,
                     urlResponse: 'http://127.0.0.1/provider-callback',
                     sessionId: 'controlled-session', postBody: 'providerId=google.com',
                     tenantId: null
-                }})""",
+                }}}, '*')""",
                 event_id,
             )
             deadline = time.monotonic() + 5
