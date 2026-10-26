@@ -406,6 +406,12 @@ def test_executed_candidate_nonzero_exit_restores_previous_runtime(tmp_path: Pat
 
 def test_supervisor_process_crash_after_spawn_never_duplicates_child(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
+    # The deliberately orphaned child must not remain in pytest's CI process
+    # group after the crash harness dies; otherwise a non-reaping container PID
+    # 1 can leave its zombie looking like an active shard member.
+    runtime.executable.write_bytes(CHILD.replace(b"import json, os, signal, sys, time\n", b"import json, os, signal, sys, time\nos.setsid()\n"))
+    runtime.executable.chmod(0o755)
+    runtime = replace(runtime, receipt=f"sha256:{hashlib.sha256(runtime.executable.read_bytes()).hexdigest()}")
     marker = tmp_path / "spawned.pid"
     harness = tmp_path / "crash_supervisor.py"
     harness.write_text(
