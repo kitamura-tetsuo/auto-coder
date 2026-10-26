@@ -279,6 +279,38 @@ def test_scoped_consent_metadata_and_tool_admission_use_production_boundaries(re
     narrowed_binding = grants.inspect_access("alice-client", narrowed_tokens["access_token"])
     assert narrowed_binding.grant_id == retained.grant_id
     assert narrowed_binding.scopes == (READ_SCOPE,)
+    reconstructed = OAuthGrantService(oauth, identity, grants.clock)
+    successor_refresh = reconstructed.inspect_refresh("alice-client", narrowed_tokens["refresh_token"])
+    assert successor_refresh.grant_id == retained.grant_id
+    assert successor_refresh.scopes == (READ_SCOPE,)
+    with TestClient(create_management_app(settings, reconstructed, (tool,)), base_url=origin) as client:
+        successor_widening = client.post(
+            "/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": "alice-client",
+                "refresh_token": narrowed_tokens["refresh_token"],
+                "resource": settings.oauth.resource,
+                "scope": f"{READ_SCOPE} {DEPLOY_SCOPE}",
+            },
+        )
+        assert successor_widening.status_code == 400
+        assert successor_widening.json()["error"] == "invalid_scope"
+        successor = client.post(
+            "/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": "alice-client",
+                "refresh_token": narrowed_tokens["refresh_token"],
+                "resource": settings.oauth.resource,
+            },
+        )
+        assert successor.status_code == 200
+        successor_tokens = successor.json()
+        assert successor_tokens["scope"] == READ_SCOPE
+        assert _mcp(client, successor_tokens["access_token"], "tools/call", 7, {"name": "deploy_probe", "arguments": {}}).status_code == 403
+        assert _mcp(client, successor_tokens["access_token"], "tools/list", 8).status_code == 200
+        assert calls == {"deploy": 1}
     read_only_service_oauth = OAuthSettings(
         oauth.database_path,
         origin,

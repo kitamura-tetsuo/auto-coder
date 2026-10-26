@@ -319,7 +319,7 @@ class OAuthGrantService:
                 db.execute("UPDATE codes SET consumed=? WHERE hash=? AND consumed IS NULL", (now, _hash(code)))
                 db.execute("INSERT INTO grants VALUES(?,?,?,?,?,?,?,?,?,NULL,NULL)", (grant_id, client_id, resource, row["scope"], principal.project_id, principal.uid, principal.auth_time, now, expires))
                 db.execute("INSERT INTO access_tokens VALUES(?,?,?,?)", (_hash(access), grant_id, min(now + self.settings.access_lifetime, expires), row["scope"]))
-                db.execute("INSERT INTO refresh_tokens VALUES(?,?,?,NULL,NULL)", (_hash(refresh), grant_id, expires))
+                db.execute("INSERT INTO refresh_tokens VALUES(?,?,?,NULL,NULL,?)", (_hash(refresh), grant_id, expires, row["scope"]))
             return TokenBundle(access, refresh, "Bearer", self.settings.access_lifetime, row["scope"])
         except OAuthError:
             raise
@@ -333,7 +333,10 @@ class OAuthGrantService:
             requested_scopes = self._scopes(client_id, requested_scopes, False)
         try:
             with self.store.connect() as db:
-                row = db.execute("SELECT r.*,g.client_id,g.resource,g.project,g.uid,g.auth_time,g.scope,g.revoked FROM refresh_tokens r JOIN grants g ON g.id=r.grant_id WHERE r.hash=?", (_hash(refresh_token),)).fetchone()
+                row = db.execute(
+                    "SELECT r.*,r.scope AS refresh_scope,g.client_id,g.resource,g.project,g.uid,g.auth_time,g.scope AS grant_scope,g.revoked FROM refresh_tokens r JOIN grants g ON g.id=r.grant_id WHERE r.hash=?",
+                    (_hash(refresh_token),),
+                ).fetchone()
         except sqlite3.Error as exc:
             raise Unavailable() from exc
         if row is None or row["client_id"] != client_id or row["resource"] != resource:
@@ -343,7 +346,7 @@ class OAuthGrantService:
             raise InvalidGrant()
         principal = VerifiedPrincipal(row["project"], row["uid"], row["auth_time"])
         self._admit(self.identity.recheck_identity(principal))
-        ceiling = tuple(row["scope"].split())
+        ceiling = tuple(row["refresh_scope"].split())
         selected = requested_scopes or ceiling
         if not set(selected) <= set(ceiling):
             raise InvalidScope()
@@ -355,7 +358,10 @@ class OAuthGrantService:
         try:
             with self.store.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
-                row = db.execute("SELECT r.*,g.client_id,g.resource,g.scope,g.expires AS grant_expires,g.revoked FROM refresh_tokens r JOIN grants g ON g.id=r.grant_id WHERE r.hash=?", (_hash(old),)).fetchone()
+                row = db.execute(
+                    "SELECT r.*,g.client_id,g.resource,g.expires AS grant_expires,g.revoked FROM refresh_tokens r JOIN grants g ON g.id=r.grant_id WHERE r.hash=?",
+                    (_hash(old),),
+                ).fetchone()
                 now = self.clock()
                 if row is None or row["client_id"] != client_id or row["resource"] != resource or row["revoked"] is not None or row["expires"] <= now:
                     raise InvalidGrant()
@@ -365,7 +371,7 @@ class OAuthGrantService:
                     raise InvalidGrant()
                 self._admit(self.identity.check_operator_policy(principal))
                 db.execute("UPDATE refresh_tokens SET spent=?,replaced_by=? WHERE hash=? AND spent IS NULL", (now, _hash(refresh), _hash(old)))
-                db.execute("INSERT INTO refresh_tokens VALUES(?,?,?,NULL,NULL)", (_hash(refresh), row["grant_id"], row["grant_expires"]))
+                db.execute("INSERT INTO refresh_tokens VALUES(?,?,?,NULL,NULL,?)", (_hash(refresh), row["grant_id"], row["grant_expires"], " ".join(scopes)))
                 life = min(now + self.settings.access_lifetime, row["grant_expires"])
                 db.execute("INSERT INTO access_tokens VALUES(?,?,?,?)", (_hash(access), row["grant_id"], life, " ".join(scopes)))
             return TokenBundle(access, refresh, "Bearer", max(0, int(life - now)), " ".join(scopes))
@@ -464,7 +470,7 @@ class OAuthGrantService:
             row["resource"],
             row["revoked"] is None and row["expires"] > self.clock() and not spent,
             spent,
-            tuple((row["scope"] if table == "access_tokens" else row["grant_scope"]).split()),
+            tuple(row["scope"].split()),
             row["grant_expires"],
         )
 
