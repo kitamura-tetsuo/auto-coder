@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
 
 SCHEMA_VERSION = "1"
+_SCHEMA_LOCK = threading.Lock()
 
 
 class ChildPhase(str, Enum):
@@ -72,24 +74,25 @@ class BootstrapStore:
         # sqlite3's connection timeout is not consistently applied while two
         # fresh Supervisor processes negotiate WAL mode.  Install the same
         # bounded busy timeout before any schema or journal-mode write.
-        connection.execute("PRAGMA busy_timeout=30000")
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
-        version = connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
-        if version is not None and version[0] != SCHEMA_VERSION:
-            connection.close()
-            raise sqlite3.DatabaseError("unsupported management child schema")
-        connection.execute("INSERT OR IGNORE INTO metadata VALUES('schema_version',?)", (SCHEMA_VERSION,))
-        connection.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS child_state(
-              instance_id TEXT PRIMARY KEY, record_json TEXT NOT NULL, updated_at REAL NOT NULL);
-            CREATE TABLE IF NOT EXISTS effects(
-              operation_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, action TEXT NOT NULL,
-              runtime_ref TEXT NOT NULL, expected_identity TEXT NOT NULL, phase TEXT NOT NULL,
-              result_json TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL);
-            """
-        )
+        with _SCHEMA_LOCK:
+            connection.execute("PRAGMA busy_timeout=30000")
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+            version = connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+            if version is not None and version[0] != SCHEMA_VERSION:
+                connection.close()
+                raise sqlite3.DatabaseError("unsupported management child schema")
+            connection.execute("INSERT OR IGNORE INTO metadata VALUES('schema_version',?)", (SCHEMA_VERSION,))
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS child_state(
+                  instance_id TEXT PRIMARY KEY, record_json TEXT NOT NULL, updated_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS effects(
+                  operation_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, action TEXT NOT NULL,
+                  runtime_ref TEXT NOT NULL, expected_identity TEXT NOT NULL, phase TEXT NOT NULL,
+                  result_json TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL);
+                """
+            )
         return connection
 
     def load(self) -> ChildRecord:
@@ -179,6 +182,12 @@ class BootstrapStore:
             updated = connection.execute("SELECT * FROM effects WHERE operation_id=?", (operation_id,)).fetchone()
         assert updated is not None
         return self._effect(updated)
+
+    def has_unresolved_effects(self) -> bool:
+        """Return whether an action has durable intent without an observation."""
+        with self._connect() as connection:
+            row = connection.execute("SELECT 1 FROM effects WHERE phase='prepared' LIMIT 1").fetchone()
+        return row is not None
 
     @staticmethod
     def _effect(row: sqlite3.Row) -> EffectRecord:

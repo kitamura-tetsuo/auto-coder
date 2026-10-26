@@ -64,7 +64,41 @@ class RuntimeSpec:
             ready = json.loads(self.ready_receipt.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return False
-        return self.source_receipt == actual and ready == {"ready": True, "reference": self.reference, "source_receipt": actual}
+        return self.source_receipt == actual and ready == {"ready": True, "reference": self.reference, "source_receipt": actual} and self._execution_is_source_closed()
+
+    def _execution_is_source_closed(self) -> bool:
+        """Reject configured Python inputs outside the READY source closure."""
+        assert self.source_root is not None
+        try:
+            source_root = self.source_root.resolve(strict=True)
+        except OSError:
+            return False
+
+        environment = dict(self.environment)
+        for name in ("PYTHONPATH", "PYTHONHOME"):
+            value = environment.get(name)
+            if value is None:
+                continue
+            for entry in value.split(os.pathsep):
+                if not entry or not self._inside_source(Path(entry), source_root):
+                    return False
+
+        executable_name = self.executable.name.lower()
+        if "python" in executable_name:
+            service_argument = next((argument for argument in self.arguments if not argument.startswith("-")), None)
+            if service_argument is None or not self._inside_source(Path(service_argument), source_root):
+                return False
+        return True
+
+    @staticmethod
+    def _inside_source(path: Path, source_root: Path) -> bool:
+        if not path.is_absolute():
+            return False
+        try:
+            path.resolve(strict=True).relative_to(source_root)
+        except (OSError, ValueError):
+            return False
+        return True
 
     @staticmethod
     def _source_digest(root: Path) -> str:
@@ -248,11 +282,21 @@ class ManagementBootstrapSupervisor:
             deadline = time.monotonic() + 0.1
             while time.monotonic() < deadline and child.poll() is None:
                 time.sleep(0.01)
+            durable = self.store.load()
+            if durable != running:
+                status = ResultStatus.DRAINING if durable.phase is ChildPhase.DRAINING else ResultStatus.UNKNOWN
+                return self._finish(
+                    operation_id,
+                    status,
+                    durable,
+                    "another Supervisor changed the launched child transition",
+                    persist_state=False,
+                )
             if child.poll() is not None:
                 failed = replace(running, phase=ChildPhase.NEEDS_ATTENTION, pid=0, start_token="", exit_cause=f"startup_exit_{child.returncode}")
                 self.store.save(failed)
                 return self._restore_once(operation_id, failed)
-            return self._finish(operation_id, ResultStatus.OBSERVED_RUNNING, running)
+            return self._finish(operation_id, ResultStatus.OBSERVED_RUNNING, running, persist_state=False)
 
     def request_graceful_stop(self, operation_id: str, attempt_id: str, expected_identity: str) -> Observation:
         with self._lock:
@@ -274,6 +318,17 @@ class ManagementBootstrapSupervisor:
                     "child identity changed",
                     persist_state=False,
                 )
+            pidfd_open = getattr(os, "pidfd_open", None)
+            pidfd_send_signal = getattr(signal, "pidfd_send_signal", None)
+            if pidfd_open is None or pidfd_send_signal is None:
+                return self._finish(operation_id, ResultStatus.UNKNOWN, observed.record, "lifetime-bound process signalling is unavailable", persist_state=False)
+            try:
+                pidfd = pidfd_open(observed.record.pid, 0)
+            except OSError:
+                return self._finish(operation_id, ResultStatus.UNKNOWN, observed.record, "child lifetime disappeared before signalling", persist_state=False)
+            if self._start_token(observed.record.pid) != observed.record.start_token:
+                os.close(pidfd)
+                return self._finish(operation_id, ResultStatus.UNKNOWN, observed.record, "child lifetime changed before signalling", persist_state=False)
             draining = replace(
                 observed.record,
                 phase=ChildPhase.DRAINING,
@@ -285,6 +340,7 @@ class ManagementBootstrapSupervisor:
             # cannot fence another Supervisor process, while an unconditional
             # save would allow both participants to send the cooperative signal.
             if not self.store.reserve(observed.record, draining):
+                os.close(pidfd)
                 winner = self.inspect()
                 if winner.record.phase is ChildPhase.DRAINING and winner.record.effect_operation_id == operation_id and winner.record.effect_attempt_id == attempt_id:
                     # A prepared effect plus the matching draining owner means
@@ -305,7 +361,13 @@ class ManagementBootstrapSupervisor:
                     "another Supervisor reserved a child transition",
                     persist_state=False,
                 )
-            os.kill(draining.pid, signal.SIGTERM)  # exactly one cooperative signal
+            try:
+                try:
+                    pidfd_send_signal(pidfd, signal.SIGTERM, None, 0)
+                except OSError:
+                    return self._finish(operation_id, ResultStatus.UNKNOWN, draining, "child lifetime disappeared during signalling", persist_state=False)
+            finally:
+                os.close(pidfd)
         deadline = time.monotonic() + self.config.graceful_timeout
         while time.monotonic() < deadline:
             if self._start_token(draining.pid) != draining.start_token:
@@ -336,7 +398,10 @@ class ManagementBootstrapSupervisor:
         """Remain alive as PID 1 and reap only the configured child."""
         record = self.store.load()
         if record.pid == 0 and record.phase is ChildPhase.STOPPED and not record.intended_stop and record.child_generation == 0 and self.config.crash_budget > 0:
-            self.start_selected(f"bootstrap-{uuid.uuid4()}", str(uuid.uuid4()), self.config.initial_runtime)
+            if self.store.has_unresolved_effects():
+                self.store.save(replace(record, phase=ChildPhase.UNKNOWN, exit_cause="unresolved_effect"))
+            else:
+                self.start_selected(f"bootstrap-{uuid.uuid4()}", str(uuid.uuid4()), self.config.initial_runtime)
         while True:
             observed = self.inspect()
             if observed.status is ResultStatus.OBSERVED_RUNNING:

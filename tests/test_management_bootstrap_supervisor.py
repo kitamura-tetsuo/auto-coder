@@ -389,6 +389,115 @@ def test_non_initial_runtime_rejects_changed_symlinked_source(tmp_path: Path) ->
     assert result.record.pid == 0
 
 
+def test_ready_runtime_rejects_python_content_outside_source_closure(tmp_path: Path) -> None:
+    initial = _runtime(tmp_path, "initial")
+    candidate = _runtime(tmp_path, "candidate")
+    interpreter = Path(sys.executable).resolve()
+    external_script = tmp_path / "external-service.py"
+    external_module = tmp_path / "external-module"
+    external_script.write_text("import time\nwhile True: time.sleep(1)\n")
+    external_module.mkdir()
+    (external_module / "payload.py").write_text("VALUE = 'ready'\n")
+    candidate = replace(
+        candidate,
+        executable=interpreter,
+        receipt=f"sha256:{hashlib.sha256(interpreter.read_bytes()).hexdigest()}",
+        arguments=(str(external_script),),
+        environment=(("PYTHONPATH", str(external_module)),),
+    )
+    # Both executed inputs can change without changing the independently
+    # persisted READY source receipt; neither may reach process launch.
+    external_script.write_text("raise RuntimeError('changed')\n")
+    (external_module / "payload.py").write_text("VALUE = 'changed'\n")
+    supervisor = _supervisor(tmp_path, initial, candidate)
+    result = supervisor.start_selected("candidate", "attempt", "candidate")
+    assert result.status is ResultStatus.NEEDS_ATTENTION
+    assert result.record.pid == 0
+
+
+def test_run_does_not_bootstrap_with_ledger_only_unresolved_action(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = _runtime(tmp_path)
+    preparer = _supervisor(tmp_path, runtime)
+    harness = tmp_path / "prepare-effect.py"
+    harness.write_text("from pathlib import Path\n" "from auto_coder.management.bootstrap_store import BootstrapStore\n" f"store = BootstrapStore(Path({str(tmp_path / 'state')!r}), 'manager')\n" "store.begin_effect('replacement', 'attempt', 'START_SELECTED', 'candidate', '')\n")
+    subprocess.run([sys.executable, str(harness)], check=True)
+    launched = Path(str(runtime.drain_ack) + ".ready")
+
+    class EndRun(Exception):
+        pass
+
+    monkeypatch.setattr(time, "sleep", lambda _seconds: (_ for _ in ()).throw(EndRun()))
+    with pytest.raises(EndRun):
+        preparer.run()
+    assert preparer.store.load().phase is ChildPhase.UNKNOWN
+    assert preparer.store.load().exit_cause == "unresolved_effect"
+    assert not launched.exists()
+
+
+def test_start_completion_preserves_concurrent_draining_owner(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    ready = tmp_path / "race.ready"
+    signals = tmp_path / "race-signals.log"
+    runtime.executable.write_bytes(COUNTING_CHILD)
+    runtime.executable.chmod(0o755)
+    runtime = replace(runtime, receipt=f"sha256:{hashlib.sha256(COUNTING_CHILD).hexdigest()}", arguments=(str(ready), str(signals)), drain_ack=None)
+    starter = _supervisor(tmp_path, runtime, timeout=0.05)
+    running_saved = threading.Event()
+    resume_start = threading.Event()
+    original_save = starter.store.save
+
+    def pause_after_running(record: ChildRecord) -> None:
+        original_save(record)
+        if record.phase is ChildPhase.RUNNING:
+            running_saved.set()
+            assert resume_start.wait(2)
+
+    starter.store.save = pause_after_running  # type: ignore[method-assign]
+    results: list[Observation] = []
+    thread = threading.Thread(target=lambda: results.append(starter.start_selected("start", "attempt", "one")))
+    thread.start()
+    assert running_saved.wait(2)
+    running = starter.store.load()
+    assert running.phase is ChildPhase.RUNNING
+    deadline = time.monotonic() + 2
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert ready.exists()
+    stopper = ManagementBootstrapSupervisor(starter.config, "stopper")
+    stopped = stopper.request_graceful_stop("stop", "stop-attempt", ManagementBootstrapSupervisor._identity(running))
+    resume_start.set()
+    thread.join(2)
+    try:
+        assert stopped.status is ResultStatus.DRAINING
+        assert len(results) == 1 and results[0].status is ResultStatus.DRAINING
+        durable = starter.store.load()
+        assert durable.phase is ChildPhase.DRAINING
+        assert durable.effect_operation_id == "stop"
+        assert stopper.request_graceful_stop("again", "again-attempt", ManagementBootstrapSupervisor._identity(running)).status is ResultStatus.CONFLICT
+        assert signals.read_text().splitlines() == ["signal"]
+    finally:
+        _stop_process(running.pid)
+
+
+def test_stop_uses_lifetime_handle_when_child_exits_during_reservation(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    supervisor = _supervisor(tmp_path, runtime)
+    started = supervisor.start_selected("start", "attempt", "one")
+    _await_child_ready(runtime)
+    original_reserve = supervisor.store.reserve
+
+    def exit_during_reserve(expected: ChildRecord, prepared: ChildRecord) -> bool:
+        reserved = original_reserve(expected, prepared)
+        if prepared.phase is ChildPhase.DRAINING:
+            _stop_process(expected.pid)
+        return reserved
+
+    supervisor.store.reserve = exit_during_reserve  # type: ignore[method-assign]
+    result = supervisor.request_graceful_stop("stop", "stop-attempt", ManagementBootstrapSupervisor._identity(started.record))
+    assert result.status is ResultStatus.UNKNOWN
+    assert supervisor.store.load().phase is ChildPhase.DRAINING
+
+
 def test_replay_returns_original_generation_after_later_child(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     supervisor = _supervisor(tmp_path, runtime)
