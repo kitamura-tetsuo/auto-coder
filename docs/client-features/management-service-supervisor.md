@@ -27,6 +27,20 @@ receipts are reverified immediately before both launch and recovery. Symlinks ar
 not supported inside a verified source root because their targets are outside the
 closed immutable content receipt.
 
+Non-bootstrap profiles additionally use an `execution_kind` fixed by the trusted
+configuration. `source-script` (the default) executes a receipt-verified shebang
+script **inside** the READY source root, with subsequent arguments treated as
+service data. `python-file` executes a fixed interpreter (whose binary has its
+own receipt) with its **first** argument set to an absolute Python script inside
+the READY source root. In either profile, explicitly configured `PYTHONPATH` and
+`PYTHONHOME` locations must also remain within that source root. Executable
+names do not determine the profile: even a renamed Python interpreter requires
+the `python-file` contract. `python -m`, `python -c`, opaque binary launch modes,
+and arbitrary interpreter flags are not verified by these profiles and must not
+be used for non-bootstrap replacement without a separately defined source-binding
+contract. The initial immutable bootstrap runtime is exempt from this replacement
+source check.
+
 ## Private process contract
 
 `management-child.sqlite3` is a versioned, channel-private store intended for a
@@ -55,7 +69,10 @@ container reconstruction. Following a confirmed candidate launch failure, the
 Supervisor records and makes at most one attempt to run the immediately previous,
 still receipt-verified runtime. `PROCESS_RESTORED` describes only that new process
 lifetime and source binding: it does not roll back OAuth data, the management journal,
-provider requests, configuration, or schemas.
+provider requests, configuration, or schemas. A later `RECONCILE` may observe a
+restored process, but replaying an already completed `START_SELECTED` operation
+returns its original receipt and child generation; reconciliation never rewrites
+that historical response.
 
 Clients should expect a bounded HTTP reconnection gap during replacement and
 reconcile with their immutable operation IDs. OAuth/grant and operation-journal

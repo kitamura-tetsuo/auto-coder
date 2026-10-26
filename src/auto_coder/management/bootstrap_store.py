@@ -177,6 +177,11 @@ class BootstrapStore:
             if row is None:
                 connection.rollback()
                 raise ValueError("effect was not prepared")
+            if row["phase"] != "prepared":
+                # A later process reconciliation must not rewrite a response
+                # already observed for this immutable operation identity.
+                connection.rollback()
+                return self._effect(row)
             connection.execute("UPDATE effects SET phase=?,result_json=?,updated_at=? WHERE operation_id=?", (phase, encoded, time.time(), operation_id))
             connection.commit()
             updated = connection.execute("SELECT * FROM effects WHERE operation_id=?", (operation_id,)).fetchone()

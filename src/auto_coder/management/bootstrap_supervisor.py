@@ -48,6 +48,7 @@ class RuntimeSpec:
     source_root: Path | None = None
     source_receipt: str = ""
     ready_receipt: Path | None = None
+    execution_kind: str = "source-script"
 
     def verify(self, *, initial: bool = False) -> bool:
         if not self.executable.is_absolute() or not self.executable.is_file() or self.executable.is_symlink():
@@ -83,12 +84,21 @@ class RuntimeSpec:
                 if not entry or not self._inside_source(Path(entry), source_root):
                     return False
 
-        executable_name = self.executable.name.lower()
-        if "python" in executable_name:
-            service_argument = next((argument for argument in self.arguments if not argument.startswith("-")), None)
-            if service_argument is None or not self._inside_source(Path(service_argument), source_root):
+        # The execution contract is explicit, not inferred from the executable
+        # basename: a Python interpreter can be copied under an arbitrary name.
+        if self.execution_kind == "source-script":
+            try:
+                with self.executable.open("rb") as stream:
+                    has_shebang = stream.read(2) == b"#!"
+            except OSError:
                 return False
-        return True
+            return has_shebang and self._inside_source(self.executable, source_root)
+        if self.execution_kind == "python-file":
+            # Only a direct absolute script entrypoint is supported here.  -c,
+            # -m, and opaque binary profiles need a separately verified mapping
+            # from their invocation to the actual executed source closure.
+            return bool(self.arguments) and self._inside_source(Path(self.arguments[0]), source_root)
+        return False
 
     @staticmethod
     def _inside_source(path: Path, source_root: Path) -> bool:
@@ -151,6 +161,7 @@ class BootstrapConfig:
                 source_root=Path(item["source_root"]) if item.get("source_root") else None,
                 source_receipt=item.get("source_receipt", ""),
                 ready_receipt=Path(item["ready_receipt"]) if item.get("ready_receipt") else None,
+                execution_kind=item.get("execution_kind", "source-script"),
             )
             for item in raw["runtimes"]
         )
@@ -173,6 +184,8 @@ class BootstrapConfig:
                 raise ValueError("invalid runtime environment")
             if runtime.reference != self.initial_runtime and (runtime.source_root is None or runtime.ready_receipt is None or not runtime.source_receipt):
                 raise ValueError("non-bootstrap runtimes require READY-bound source identity")
+            if runtime.reference != self.initial_runtime and runtime.execution_kind not in {"source-script", "python-file"}:
+                raise ValueError("unsupported non-bootstrap execution profile")
 
 
 @dataclass(frozen=True)
@@ -208,21 +221,31 @@ class ManagementBootstrapSupervisor:
                 return Observation(ResultStatus.STOPPED, record)
             owned = self._children.get(record.pid)
             if owned is not None and owned.poll() is not None:
-                if record.intended_stop:
-                    exited = replace(record, phase=ChildPhase.UNKNOWN, exit_cause="intended_exit_observed")
-                    self.store.save(exited)
-                    return Observation(ResultStatus.UNKNOWN, exited, detail="intended child exit awaits drain evidence")
-                failed = replace(record, phase=ChildPhase.NEEDS_ATTENTION, pid=0, start_token="", exit_cause=f"startup_exit_{owned.returncode}")
-                self.store.save(failed)
-                if failed.previous_runtime and not failed.recovery_used:
-                    return self._restore_once(failed.effect_operation_id, failed)
-                return Observation(ResultStatus.NEEDS_ATTENTION, failed, detail="owned child exited before application readiness")
+                return self._observe_owned_exit(record, owned)
             token = self._start_token(record.pid)
             if token != record.start_token:
+                # The owned process can exit between poll() and /proc reading.
+                # Reap it before classifying its known lifetime as a stale PID.
+                if owned is not None and owned.poll() is not None:
+                    return self._observe_owned_exit(record, owned)
                 uncertain = replace(record, phase=ChildPhase.UNKNOWN, readiness="not_observed")
-                self.store.save(uncertain)
+                if not self.store.reserve(record, uncertain):
+                    return Observation(ResultStatus.UNKNOWN, self.store.load(), detail="child owner changed during OS observation")
                 return Observation(ResultStatus.UNKNOWN, uncertain, detail="recorded OS lifetime is absent or stale")
             return Observation(ResultStatus.DRAINING if record.phase is ChildPhase.DRAINING else ResultStatus.OBSERVED_RUNNING, record, process_ready=True, application_ready=record.readiness == "application_ready")
+
+    def _observe_owned_exit(self, record: ChildRecord, owned: subprocess.Popen[bytes]) -> Observation:
+        if record.intended_stop:
+            exited = replace(record, phase=ChildPhase.UNKNOWN, exit_cause="intended_exit_observed")
+            if not self.store.reserve(record, exited):
+                return Observation(ResultStatus.UNKNOWN, self.store.load(), detail="child owner changed during exit observation")
+            return Observation(ResultStatus.UNKNOWN, exited, detail="intended child exit awaits drain evidence")
+        failed = replace(record, phase=ChildPhase.NEEDS_ATTENTION, pid=0, start_token="", exit_cause=f"startup_exit_{owned.returncode}")
+        if not self.store.reserve(record, failed):
+            return Observation(ResultStatus.UNKNOWN, self.store.load(), detail="child owner changed during exit observation")
+        if failed.previous_runtime and not failed.recovery_used:
+            return self._restore_once(failed.effect_operation_id, failed)
+        return Observation(ResultStatus.NEEDS_ATTENTION, failed, detail="owned child exited before application readiness")
 
     def start_selected(self, operation_id: str, attempt_id: str, runtime_ref: str, expected_identity: str = "") -> Observation:
         with self._lock:
@@ -231,15 +254,22 @@ class ManagementBootstrapSupervisor:
             if replay is not None:
                 return replay
             current = self.inspect()
-            if current.status is ResultStatus.OBSERVED_RUNNING and current.record.effect_operation_id == operation_id and current.record.effect_attempt_id == attempt_id and current.record.selected_runtime == runtime_ref:
-                return self._finish(operation_id, ResultStatus.OBSERVED_RUNNING, current.record, persist_state=False)
+            if current.record.effect_operation_id == operation_id and current.record.effect_attempt_id == attempt_id:
+                # The same action may be in flight in another Supervisor.
+                # A current PID does not make its unfinished effect receipt
+                # safe to complete on that participant's behalf.
+                return Observation(ResultStatus.UNKNOWN, current.record, operation_id, detail="operation effect is still owned and unresolved")
             if current.status in {ResultStatus.OBSERVED_RUNNING, ResultStatus.DRAINING} or (expected_identity and expected_identity != self._identity(current.record)):
                 return self._finish(operation_id, ResultStatus.CONFLICT, current.record, "a child lifetime or expectation conflicts", persist_state=False)
             if current.status is ResultStatus.UNKNOWN:
                 return self._finish(operation_id, ResultStatus.UNKNOWN, current.record, current.detail, persist_state=False)
             runtime = self._runtime(runtime_ref)
             if runtime is None or not runtime.verify(initial=runtime_ref == self.config.initial_runtime):
-                return self._finish(operation_id, ResultStatus.NEEDS_ATTENTION, replace(current.record, phase=ChildPhase.NEEDS_ATTENTION), "runtime receipt is not verified")
+                rejected = replace(current.record, phase=ChildPhase.NEEDS_ATTENTION)
+                if not self.store.reserve(current.record, rejected):
+                    winner = self.inspect()
+                    return self._finish(operation_id, ResultStatus.UNKNOWN if winner.status is ResultStatus.UNKNOWN else ResultStatus.CONFLICT, winner.record, "another Supervisor changed the child while the runtime was verified")
+                return self._finish(operation_id, ResultStatus.NEEDS_ATTENTION, rejected, "runtime receipt is not verified")
             prepared = replace(
                 current.record,
                 phase=ChildPhase.STARTING,
@@ -258,6 +288,8 @@ class ManagementBootstrapSupervisor:
             )
             if not self.store.reserve(current.record, prepared):
                 winner = self.inspect()
+                if winner.record.effect_operation_id == operation_id and winner.record.effect_attempt_id == attempt_id:
+                    return Observation(ResultStatus.UNKNOWN, winner.record, operation_id, detail="operation effect is owned by another Supervisor")
                 return self._finish(operation_id, ResultStatus.CONFLICT if winner.status is not ResultStatus.UNKNOWN else ResultStatus.UNKNOWN, winner.record, "another Supervisor reserved the child generation", persist_state=False)
             try:
                 environment = dict(runtime.environment)
@@ -294,7 +326,8 @@ class ManagementBootstrapSupervisor:
                 )
             if child.poll() is not None:
                 failed = replace(running, phase=ChildPhase.NEEDS_ATTENTION, pid=0, start_token="", exit_cause=f"startup_exit_{child.returncode}")
-                self.store.save(failed)
+                if not self.store.reserve(running, failed):
+                    return Observation(ResultStatus.UNKNOWN, self.store.load(), operation_id, detail="child owner changed during startup exit")
                 return self._restore_once(operation_id, failed)
             return self._finish(operation_id, ResultStatus.OBSERVED_RUNNING, running, persist_state=False)
 
@@ -307,6 +340,8 @@ class ManagementBootstrapSupervisor:
             observed = self.inspect()
             if observed.status is ResultStatus.STOPPED:
                 return self._finish(operation_id, ResultStatus.STOPPED, observed.record)
+            if observed.record.effect_operation_id == operation_id and observed.record.effect_attempt_id == attempt_id:
+                return Observation(ResultStatus.UNKNOWN, observed.record, operation_id, detail="graceful-stop effect is still owned and unresolved")
             if observed.status is not ResultStatus.OBSERVED_RUNNING or expected_identity != self._identity(observed.record):
                 # This is only an observation.  Another Supervisor may have
                 # claimed DRAINING after our read, so persisting this earlier
@@ -375,10 +410,12 @@ class ManagementBootstrapSupervisor:
                 acknowledged = runtime is not None and self._drain_acknowledged(runtime, draining)
                 if not acknowledged:
                     unknown = replace(draining, phase=ChildPhase.UNKNOWN, exit_cause="exit_without_drain_ack")
-                    self.store.save(unknown)
+                    if not self.store.reserve(draining, unknown):
+                        return self._finish(operation_id, ResultStatus.UNKNOWN, self.store.load(), "another Supervisor observed the exit")
                     return self._finish(operation_id, ResultStatus.UNKNOWN, unknown, "child exited without a drain acknowledgement")
                 stopped = replace(draining, phase=ChildPhase.STOPPED, pid=0, start_token="", exit_cause="intended_stop")
-                self.store.save(stopped)
+                if not self.store.reserve(draining, stopped):
+                    return self._finish(operation_id, ResultStatus.UNKNOWN, self.store.load(), "another Supervisor observed the exit")
                 return self._finish(operation_id, ResultStatus.STOPPED, stopped)
             time.sleep(0.02)
         return self._finish(operation_id, ResultStatus.DRAINING, draining, "observation deadline expired; no force signal was sent")
@@ -390,8 +427,9 @@ class ManagementBootstrapSupervisor:
             runtime = self._runtime(record.selected_runtime)
             if runtime is not None and self._drain_acknowledged(runtime, record) and self._start_token(record.pid) != record.start_token:
                 stopped = replace(record, phase=ChildPhase.STOPPED, pid=0, start_token="", exit_cause="intended_stop")
-                self.store.save(stopped)
-                return Observation(ResultStatus.STOPPED, stopped)
+                if self.store.reserve(record, stopped):
+                    return Observation(ResultStatus.STOPPED, stopped)
+                return Observation(ResultStatus.UNKNOWN, self.store.load(), detail="child owner changed during reconciliation")
         return observed
 
     def run(self) -> int:
@@ -399,7 +437,7 @@ class ManagementBootstrapSupervisor:
         record = self.store.load()
         if record.pid == 0 and record.phase is ChildPhase.STOPPED and not record.intended_stop and record.child_generation == 0 and self.config.crash_budget > 0:
             if self.store.has_unresolved_effects():
-                self.store.save(replace(record, phase=ChildPhase.UNKNOWN, exit_cause="unresolved_effect"))
+                self.store.reserve(record, replace(record, phase=ChildPhase.UNKNOWN, exit_cause="unresolved_effect"))
             else:
                 self.start_selected(f"bootstrap-{uuid.uuid4()}", str(uuid.uuid4()), self.config.initial_runtime)
         while True:
@@ -459,7 +497,10 @@ class ManagementBootstrapSupervisor:
             return Observation(ResultStatus.UNKNOWN, self.store.load(), effect.operation_id, detail="corrupt effect receipt")
         return Observation(status, record, effect.operation_id, bool(result.get("process_ready")), bool(result.get("application_ready")), result.get("detail", ""))
 
-    def _finish(self, operation_id: str, status: ResultStatus, record: ChildRecord, detail: str = "", *, persist_state: bool = True) -> Observation:
+    def _finish(self, operation_id: str, status: ResultStatus, record: ChildRecord, detail: str = "", *, persist_state: bool = False) -> Observation:
+        # Effect receipts are observations, not authority to overwrite a newer
+        # child generation or another Supervisor's durable transition claim.
+        # Callers must reserve or save an authoritative transition beforehand.
         if persist_state:
             self.store.save(record)
         process_ready = status in {ResultStatus.OBSERVED_RUNNING, ResultStatus.PROCESS_RESTORED}
@@ -486,8 +527,10 @@ class ManagementBootstrapSupervisor:
         if pid <= 0:
             return ""
         try:
-            fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()
-            return "" if fields[2] == "Z" else fields[21]
+            # Field 2 (comm) is parenthesized and may contain whitespace or
+            # parentheses.  Splitting the entire line shifts field 22.
+            fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+            return "" if fields[0] == "Z" else fields[19]
         except (OSError, IndexError):
             return ""
 

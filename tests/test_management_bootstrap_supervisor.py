@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -73,17 +74,24 @@ while True: time.sleep(.02)
 
 
 def _runtime(tmp_path: Path, name: str = "one") -> RuntimeSpec:
-    executable = tmp_path / f"child-{name}"
+    source = tmp_path / f"source-{name}"
+    source.mkdir()
+    executable = source / f"child-{name}"
     executable.write_bytes(CHILD)
     executable.chmod(0o755)
     digest = hashlib.sha256(CHILD).hexdigest()
-    source = tmp_path / f"source-{name}"
-    source.mkdir()
     (source / "package.txt").write_text(f"package-{name}")
     source_receipt = RuntimeSpec._source_digest(source)
     ready = tmp_path / f"{name}.ready.json"
     ready.write_text(json.dumps({"ready": True, "reference": name, "source_receipt": source_receipt}))
     return RuntimeSpec(name, f"sha256:{digest}", executable, (str(tmp_path / f"{name}.ack"),), (), tmp_path / f"{name}.ack", source, source_receipt, ready)
+
+
+def _resign_runtime(runtime: RuntimeSpec) -> RuntimeSpec:
+    assert runtime.source_root is not None and runtime.ready_receipt is not None
+    source_receipt = RuntimeSpec._source_digest(runtime.source_root)
+    runtime.ready_receipt.write_text(json.dumps({"ready": True, "reference": runtime.reference, "source_receipt": source_receipt}))
+    return replace(runtime, receipt=f"sha256:{hashlib.sha256(runtime.executable.read_bytes()).hexdigest()}", source_receipt=source_receipt)
 
 
 def _http_runtime(tmp_path: Path) -> tuple[RuntimeSpec, Path, Path, Path]:
@@ -120,6 +128,20 @@ def _await_child_ready(runtime: RuntimeSpec) -> None:
     while not ready.exists() and time.monotonic() < deadline:
         time.sleep(0.01)
     assert ready.exists()
+
+
+def test_linux_start_token_handles_process_name_with_spaces() -> None:
+    # Linux comm is parenthesized; whitespace cannot change the starttime field.
+    script = "import ctypes, time; " "ctypes.CDLL(None).prctl(15, b'name with spaces', 0, 0, 0); " "print('ready', flush=True); time.sleep(5)"
+    child = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout is not None and child.stdout.readline().strip() == "ready"
+        raw = Path(f"/proc/{child.pid}/stat").read_text(encoding="utf-8")
+        expected = raw.rsplit(")", 1)[1].split()[19]
+        assert expected.isdigit()
+        assert ManagementBootstrapSupervisor._start_token(child.pid) == expected
+    finally:
+        _stop_process(child.pid)
 
 
 def test_real_child_start_replay_graceful_drain_and_reconstruction(tmp_path: Path) -> None:
@@ -305,11 +327,10 @@ def test_stale_pid_and_corrupt_record_never_authorize_start(tmp_path: Path) -> N
 
 def test_failed_candidate_recovers_previous_verified_runtime_once(tmp_path: Path) -> None:
     old = _runtime(tmp_path, "old")
-    broken_executable = tmp_path / "broken"
-    broken_executable.write_bytes(b"not an executable format")
-    broken_executable.chmod(0o755)
     prepared_bad = _runtime(tmp_path, "bad")
-    bad = RuntimeSpec("bad", f"sha256:{hashlib.sha256(broken_executable.read_bytes()).hexdigest()}", broken_executable, (), (), None, prepared_bad.source_root, prepared_bad.source_receipt, prepared_bad.ready_receipt)
+    # The content is READY-verified, but the shebang interpreter cannot be executed.
+    prepared_bad.executable.write_bytes(b"#!/nonexistent-management-interpreter\n")
+    bad = replace(_resign_runtime(prepared_bad), arguments=(), drain_ack=None)
     supervisor = _supervisor(tmp_path, old, bad)
     first = supervisor.start_selected("old-start", "a", "old")
     try:
@@ -404,6 +425,7 @@ def test_ready_runtime_rejects_python_content_outside_source_closure(tmp_path: P
         receipt=f"sha256:{hashlib.sha256(interpreter.read_bytes()).hexdigest()}",
         arguments=(str(external_script),),
         environment=(("PYTHONPATH", str(external_module)),),
+        execution_kind="python-file",
     )
     # Both executed inputs can change without changing the independently
     # persisted READY source receipt; neither may reach process launch.
@@ -413,6 +435,62 @@ def test_ready_runtime_rejects_python_content_outside_source_closure(tmp_path: P
     result = supervisor.start_selected("candidate", "attempt", "candidate")
     assert result.status is ResultStatus.NEEDS_ATTENTION
     assert result.record.pid == 0
+
+
+def test_renamed_python_interpreter_cannot_run_unverified_entrypoint(tmp_path: Path) -> None:
+    initial = _runtime(tmp_path, "initial")
+    candidate = _runtime(tmp_path, "candidate")
+    renamed_python = tmp_path / "service-runtime"
+    shutil.copy2(Path(sys.executable).resolve(), renamed_python)
+    external_script = tmp_path / "external-service.py"
+    marker = tmp_path / "unexpected-execution"
+    external_script.write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('ready')\n")
+    candidate = replace(
+        candidate,
+        executable=renamed_python,
+        receipt=f"sha256:{hashlib.sha256(renamed_python.read_bytes()).hexdigest()}",
+        arguments=(str(external_script),),
+        execution_kind="python-file",
+    )
+    # Mutating code outside the independently READY-verified tree must not
+    # authorize launch, regardless of the verified interpreter's filename.
+    external_script.write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('changed')\n")
+    supervisor = _supervisor(tmp_path, initial, candidate)
+    assert not candidate.verify()
+    rejected = supervisor.start_selected("candidate", "attempt", "candidate")
+    assert rejected.status is ResultStatus.NEEDS_ATTENTION
+    assert rejected.record.pid == 0
+    assert not marker.exists()
+
+
+def test_python_interpreter_starts_ready_bound_script(tmp_path: Path) -> None:
+    initial = _runtime(tmp_path, "initial")
+    candidate = _runtime(tmp_path, "candidate")
+    interpreter = Path(sys.executable).resolve()
+    assert candidate.source_root is not None
+    service_script = candidate.source_root / "service.py"
+    marker = tmp_path / "verified-execution"
+    service_script.write_text(f"from pathlib import Path\nimport time\nPath({str(marker)!r}).write_text('ready')\nwhile True: time.sleep(.01)\n")
+    candidate = _resign_runtime(candidate)
+    candidate = replace(
+        candidate,
+        executable=interpreter,
+        receipt=f"sha256:{hashlib.sha256(interpreter.read_bytes()).hexdigest()}",
+        arguments=(str(service_script),),
+        execution_kind="python-file",
+    )
+    supervisor = _supervisor(tmp_path, initial, candidate)
+    assert candidate.verify()
+    started = supervisor.start_selected("candidate", "attempt", "candidate")
+    try:
+        assert started.status is ResultStatus.OBSERVED_RUNNING
+        deadline = time.monotonic() + 2
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert marker.read_text() == "ready"
+        assert ManagementBootstrapSupervisor._start_token(started.record.pid) == started.record.start_token
+    finally:
+        _stop_process(started.record.pid)
 
 
 def test_run_does_not_bootstrap_with_ledger_only_unresolved_action(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -477,6 +555,102 @@ def test_start_completion_preserves_concurrent_draining_owner(tmp_path: Path) ->
         assert signals.read_text().splitlines() == ["signal"]
     finally:
         _stop_process(running.pid)
+
+
+def test_late_stop_receipt_cannot_overwrite_new_child_generation(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    first_stop_recorded = threading.Event()
+    release_stop_receipt = threading.Event()
+
+    class PausedStopReceipt(ManagementBootstrapSupervisor):
+        def _finish(
+            self,
+            operation_id: str,
+            status: ResultStatus,
+            record: ChildRecord,
+            detail: str = "",
+            *,
+            persist_state: bool = False,
+        ) -> Observation:
+            if operation_id == "stop" and status is ResultStatus.STOPPED:
+                assert self.store.load().phase is ChildPhase.STOPPED
+                first_stop_recorded.set()
+                assert release_stop_receipt.wait(5)
+            return super()._finish(operation_id, status, record, detail, persist_state=persist_state)
+
+    config = _supervisor(tmp_path, runtime).config
+    stopper = PausedStopReceipt(config, "stopper")
+    first = stopper.start_selected("start-a", "a", "one")
+    _await_child_ready(runtime)
+    stop_results: list[Observation] = []
+    thread = threading.Thread(target=lambda: stop_results.append(stopper.request_graceful_stop("stop", "b", ManagementBootstrapSupervisor._identity(first.record))))
+    thread.start()
+    second: Observation | None = None
+    try:
+        assert first_stop_recorded.wait(5)
+        other = ManagementBootstrapSupervisor(config, "other")
+        second = other.start_selected("start-b", "c", "one")
+        assert second.status is ResultStatus.OBSERVED_RUNNING
+        release_stop_receipt.set()
+        thread.join(5)
+        assert len(stop_results) == 1 and stop_results[0].status is ResultStatus.STOPPED
+        durable = stopper.store.load()
+        assert durable.phase is ChildPhase.RUNNING
+        assert durable.pid == second.record.pid
+        assert durable.child_generation == second.record.child_generation
+        assert other.inspect().status is ResultStatus.OBSERVED_RUNNING
+    finally:
+        release_stop_receipt.set()
+        thread.join(5)
+        _stop_process(first.record.pid)
+        if second is not None:
+            _stop_process(second.record.pid)
+
+
+def test_replay_waits_for_original_inflight_start_receipt(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    ready_to_finish = threading.Event()
+    release_finish = threading.Event()
+
+    class DelayedOriginal(ManagementBootstrapSupervisor):
+        def _finish(
+            self,
+            operation_id: str,
+            status: ResultStatus,
+            record: ChildRecord,
+            detail: str = "",
+            *,
+            persist_state: bool = False,
+        ) -> Observation:
+            if operation_id == "same-start" and status is ResultStatus.OBSERVED_RUNNING:
+                ready_to_finish.set()
+                assert release_finish.wait(5)
+            return super()._finish(operation_id, status, record, detail, persist_state=persist_state)
+
+    config = _supervisor(tmp_path, runtime).config
+    owner = DelayedOriginal(config, "owner")
+    contender = ManagementBootstrapSupervisor(config, "contender")
+    completed: list[Observation] = []
+    thread = threading.Thread(target=lambda: completed.append(owner.start_selected("same-start", "attempt", "one")))
+    thread.start()
+    pid = 0
+    try:
+        assert ready_to_finish.wait(5)
+        pid = owner.store.load().pid
+        pending = contender.start_selected("same-start", "attempt", "one")
+        assert pending.status is ResultStatus.UNKNOWN
+        with sqlite3.connect(owner.store.path) as connection:
+            assert connection.execute("SELECT phase FROM effects WHERE operation_id='same-start'").fetchone() == ("prepared",)
+        release_finish.set()
+        thread.join(5)
+        assert len(completed) == 1 and completed[0].status is ResultStatus.OBSERVED_RUNNING
+        replay = contender.start_selected("same-start", "attempt", "one")
+        assert replay.status is ResultStatus.OBSERVED_RUNNING
+        assert replay.record.pid == pid
+    finally:
+        release_finish.set()
+        thread.join(5)
+        _stop_process(pid)
 
 
 def test_stop_uses_lifetime_handle_when_child_exits_during_reservation(tmp_path: Path) -> None:
@@ -573,7 +747,7 @@ def test_executed_candidate_nonzero_exit_restores_previous_runtime(tmp_path: Pat
     candidate = _runtime(tmp_path, "candidate")
     candidate.executable.write_bytes(b"#!/bin/sh\nexit 23\n")
     candidate.executable.chmod(0o755)
-    candidate = replace(candidate, receipt=f"sha256:{hashlib.sha256(candidate.executable.read_bytes()).hexdigest()}")
+    candidate = _resign_runtime(candidate)
     supervisor = _supervisor(tmp_path, old, candidate)
     first = supervisor.start_selected("old-start", "a", "old")
     _await_child_ready(old)
@@ -677,12 +851,42 @@ def test_two_supervisors_atomically_contend_for_one_child(tmp_path: Path) -> Non
             _stop_process(result.record.pid)
 
 
+def test_owned_exit_between_poll_and_proc_read_is_reconciled(tmp_path: Path) -> None:
+    old = _runtime(tmp_path, "old")
+    candidate = _runtime(tmp_path, "candidate")
+    supervisor = _supervisor(tmp_path, old, candidate)
+    first = supervisor.start_selected("old-start", "a", "old")
+    _await_child_ready(old)
+    assert supervisor.request_graceful_stop("old-stop", "b", ManagementBootstrapSupervisor._identity(first.record)).status is ResultStatus.STOPPED
+    started = supervisor.start_selected("candidate-start", "c", "candidate")
+    assert started.status is ResultStatus.OBSERVED_RUNNING
+    original_token = supervisor._start_token
+
+    def exit_between_observations(pid: int) -> str:
+        if pid == started.record.pid:
+            child = supervisor._children[pid]
+            child.kill()
+            child.wait(2)
+        return original_token(pid)
+
+    supervisor._start_token = exit_between_observations  # type: ignore[method-assign]
+    restored = supervisor.reconcile()
+    try:
+        assert restored.status is ResultStatus.PROCESS_RESTORED
+        assert restored.record.selected_runtime == "old"
+        assert restored.record.pid != started.record.pid
+        assert ManagementBootstrapSupervisor._start_token(restored.record.pid) == restored.record.start_token
+    finally:
+        _stop_process(started.record.pid)
+        _stop_process(restored.record.pid)
+
+
 def test_delayed_candidate_failure_reconciles_one_previous_runtime(tmp_path: Path) -> None:
     old = _runtime(tmp_path, "old")
     candidate = _runtime(tmp_path, "candidate")
     candidate.executable.write_bytes(b"#!/bin/sh\nsleep 0.35\nexit 23\n")
     candidate.executable.chmod(0o755)
-    candidate = replace(candidate, receipt=f"sha256:{hashlib.sha256(candidate.executable.read_bytes()).hexdigest()}")
+    candidate = _resign_runtime(candidate)
     supervisor = _supervisor(tmp_path, old, candidate)
     first = supervisor.start_selected("old-start", "a", "old")
     _await_child_ready(old)
@@ -700,7 +904,8 @@ def test_delayed_candidate_failure_reconciles_one_previous_runtime(tmp_path: Pat
         assert restored.record.recovery_used
         restored_pid = restored.record.pid
         replay = supervisor.start_selected("candidate-start", "c", "candidate")
-        assert replay.status is ResultStatus.PROCESS_RESTORED
-        assert replay.record.pid == restored_pid
+        assert replay.status is ResultStatus.OBSERVED_RUNNING
+        assert replay.record.pid == candidate_result.record.pid
+        assert replay.record.pid != restored_pid
     finally:
         _stop_process(restored.record.pid)
