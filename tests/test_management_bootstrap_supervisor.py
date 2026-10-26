@@ -884,7 +884,11 @@ def test_owned_exit_between_poll_and_proc_read_is_reconciled(tmp_path: Path) -> 
 def test_delayed_candidate_failure_reconciles_one_previous_runtime(tmp_path: Path) -> None:
     old = _runtime(tmp_path, "old")
     candidate = _runtime(tmp_path, "candidate")
-    candidate.executable.write_bytes(b"#!/bin/sh\nsleep 0.35\nexit 23\n")
+    # Leave enough time for start_selected() to return its initial observation
+    # even when a coverage shard is under heavy load.  The former 350 ms delay
+    # could expire during launch-time receipt verification, making the first
+    # observation legitimately report the already-restored previous runtime.
+    candidate.executable.write_bytes(b"#!/bin/sh\nsleep 2\nexit 23\n")
     candidate.executable.chmod(0o755)
     candidate = _resign_runtime(candidate)
     supervisor = _supervisor(tmp_path, old, candidate)
