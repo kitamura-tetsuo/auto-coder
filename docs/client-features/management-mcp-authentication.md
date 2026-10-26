@@ -38,16 +38,29 @@ Terminate HTTPS at a trusted proxy and keep the default loopback bind private:
 services:
   management:
     image: ghcr.io/kitamura-tetsuo/auto-coder:latest
-    command: [auto-coder, management, serve, --config, /config/management.yml]
+    command: [management, serve, --config, /config/management.yml]
+    ports: ["443:443"]
     volumes:
       - ./management.yml:/config/management.yml:ro
       - management-state:/var/lib/auto-coder-management
   proxy:
     image: caddy:2
-    ports: ["443:443"]
+    network_mode: service:management
+    depends_on: [management]
     volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro"]
 volumes:
   management-state: {}
+```
+
+The image already has `auto-coder` as its entrypoint, so the Compose `command`
+contains only its arguments. The proxy deliberately shares the management
+container's network namespace: Caddy can reach the loopback-only listener, and
+only HTTPS port 443 is published. Do not publish port 8081. Use this `Caddyfile`:
+
+```caddyfile
+management.example.com {
+    reverse_proxy 127.0.0.1:8081
+}
 ```
 
 For explicit local development only, set `public_origin` to a loopback HTTP
