@@ -45,4 +45,4 @@ COPY --from=build /usr/local/bin/opencode /usr/local/bin/opencode
 COPY --from=build /usr/local/bin/codex /usr/local/bin/codex
 ENV PATH="/home/node/.opencode/bin:${PATH}"
 WORKDIR /workspace
-ENTRYPOINT ["python", "-m", "auto_coder.worker_supervisor"]
+ENTRYPOINT ["auto-coder"]

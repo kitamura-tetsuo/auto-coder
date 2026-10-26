@@ -6,6 +6,7 @@ import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -342,6 +343,43 @@ def test_missing_staged_runtime_never_falls_back_to_bootstrap(tmp_path: Path) ->
     with patch("auto_coder.worker_supervisor.subprocess.Popen") as spawn:
         assert supervisor.apply({"operation_id": "staged", "operation": "START", "runtime_id": "missingruntime"}) == {"status": "UNAVAILABLE"}
     spawn.assert_not_called()
+
+
+def test_held_staged_verification_does_not_block_inspection(tmp_path: Path) -> None:
+    supervisor = WorkerSupervisor(config(tmp_path))
+    entered = threading.Event()
+    release = threading.Event()
+    result: list[dict[str, object]] = []
+
+    def held_resolution(_runtime_id: object) -> None:
+        entered.set()
+        assert release.wait(timeout=5)
+        return None
+
+    with patch.object(supervisor, "_resolve_runtime", side_effect=held_resolution):
+        request = threading.Thread(
+            target=lambda: result.append(
+                supervisor.apply(
+                    {
+                        "operation_id": "held-stage",
+                        "operation": "START",
+                        "runtime_id": "preparedruntime",
+                    }
+                )
+            )
+        )
+        request.start()
+        assert entered.wait(timeout=2)
+
+        inspection = supervisor.apply({"operation_id": "inspect-during-stage", "operation": "INSPECT"})
+        assert inspection["status"] == "UNKNOWN"
+        assert supervisor.store.read()["operations"] == {}
+
+        release.set()
+        request.join(timeout=2)
+        assert not request.is_alive()
+        assert result == [{"status": "UNAVAILABLE"}]
+        assert supervisor.store.read()["operations"] == {}
 
 
 def test_staged_ready_selection_revalidates_exact_receipt_and_profile(tmp_path: Path) -> None:

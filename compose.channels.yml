@@ -1,6 +1,7 @@
 services:
   release:
     image: ${AUTO_CODER_IMAGE}@${RELEASE_DIGEST}
+    entrypoint: ["python", "-m", "auto_coder.worker_supervisor"]
     environment:
       AUTO_CODER_SUPERVISOR_INSTANCE_ID: release-worker
       AUTO_CODER_REPOSITORY: ${RELEASE_REPOSITORY}
@@ -24,6 +25,7 @@ services:
 
   beta:
     image: ${AUTO_CODER_IMAGE}@${BETA_DIGEST}
+    entrypoint: ["python", "-m", "auto_coder.worker_supervisor"]
     environment:
       AUTO_CODER_SUPERVISOR_INSTANCE_ID: beta-worker
       AUTO_CODER_REPOSITORY: ${BETA_REPOSITORY}

@@ -62,6 +62,7 @@ class WorkerVersionConfig:
     uv_executable: Path
     uv_version: str
     runtime_profile: str = "python-3.12"
+    command_timeout: float | None = None
 
 
 @dataclass(frozen=True)
@@ -352,15 +353,23 @@ class WorkerVersionPreparer:
     def _safe_environment() -> dict[str, str]:
         return {key: value for key, value in os.environ.items() if key not in {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"}}
 
-    @staticmethod
-    def _run(arguments: list[str], *, output: bool = False, env: dict[str, str] | None = None) -> str:
+    def _run(self, arguments: list[str], *, output: bool = False, env: dict[str, str] | None = None) -> str:
         try:
-            result = subprocess.run(arguments, check=True, capture_output=True, text=True, env=env)
+            result = subprocess.run(
+                arguments,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=self.config.command_timeout,
+            )
         except FileNotFoundError as exc:
             raise WorkerVersionError(PreparationFailure.MISSING_CAPABILITY, "required bootstrap executable is unavailable") from exc
         except subprocess.CalledProcessError as exc:
             # Do not include subprocess output: it may contain repository credentials.
             raise WorkerVersionError(WorkerVersionPreparer._classify_process_failure(arguments, exc.stderr), "Git or uv operation failed") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "bootstrap verification timed out") from exc
         return result.stdout if output else ""
 
     @staticmethod

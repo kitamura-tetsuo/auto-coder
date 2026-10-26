@@ -99,8 +99,10 @@ authority. Supervisor logs go to colored-capable stdout and to rotating
 
 The `Supervisor Integration Tests` GitHub Actions workflow builds the checked-out
 production image and runs process/Unix-socket regressions plus network-disabled,
-capability-dropped disposable Docker containers. The production image entrypoint
-must remain PID 1 with no accessible Docker socket/CLI. Separate release/beta
+capability-dropped disposable Docker containers. Each worker service's fixed
+Compose entrypoint makes the Supervisor PID 1 with no accessible Docker socket/CLI,
+while the image's default `auto-coder` entrypoint remains available to management
+and other non-worker services. Separate release/beta
 volumes run a fixed harmless test child backed by the real management bridge:
 the job holds a true SIGTERM drain until that bridge writes a matching terminal
 receipt, rejects changed-payload replay, proves the peer channel remains live,

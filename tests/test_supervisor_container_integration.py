@@ -81,7 +81,7 @@ def _container_facts(container: str) -> dict[str, object]:
 def test_production_entrypoint_is_private_pid1_without_docker_socket(tmp_path: Path) -> None:
     image = _image()
     entry = json.loads(_docker("image", "inspect", "--format", "{{json .Config.Entrypoint}}", image).stdout)
-    assert entry == ["python", "-m", "auto_coder.worker_supervisor"]
+    assert entry == ["auto-coder"]
     runtime, workspace = tmp_path / "runtime", tmp_path / "workspace"
     runtime.mkdir()
     workspace.mkdir()
@@ -102,6 +102,8 @@ def test_production_entrypoint_is_private_pid1_without_docker_socket(tmp_path: P
             f"{os.getuid()}:{os.getgid()}",
             "--security-opt",
             "no-new-privileges:true",
+            "--entrypoint",
+            "python",
             "-v",
             f"{runtime}:/runtime",
             "-v",
@@ -121,6 +123,8 @@ def test_production_entrypoint_is_private_pid1_without_docker_socket(tmp_path: P
             "-e",
             "HOME=/runtime/home",
             image,
+            "-m",
+            "auto_coder.worker_supervisor",
         )
         facts = _wait_for(lambda: (value if value["socket"] else None) if (value := _container_facts(container)) else None)
         assert facts["pid1"][:3] == ["python", "-m", "auto_coder.worker_supervisor"]

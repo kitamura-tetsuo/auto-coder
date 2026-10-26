@@ -272,18 +272,20 @@ class WorkerSupervisor:
         return any(key != excluding and record.get("result", {}).get("status") in statuses for key, record in state["operations"].items())
 
     def apply(self, request: dict[str, Any]) -> dict[str, Any]:
+        operation_id, operation = request.get("operation_id"), request.get("operation")
+        if not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 128 or operation not in {"INSPECT", "START", "REQUEST_GRACEFUL_STOP", "RESTART_WORKER"}:
+            return {"status": "UNSUPPORTED"}
+        if not request.keys() <= self._REQUEST_FIELDS:
+            # A caller may supply identity fences and a runtime ID, but not
+            # executable arguments, users, paths, networks, or new targets.
+            return {"status": "UNSUPPORTED"}
+        for name in ("expected_supervisor_incarnation", "expected_process_run_id", "expected_generation", "expected_runtime_id"):
+            value = request.get(name)
+            if value is not None and (not isinstance(value, str) or not 1 <= len(value) <= 128):
+                return {"status": "UNSUPPORTED"}
+
+        digest = self._digest(request)
         with self._lock:
-            operation_id, operation = request.get("operation_id"), request.get("operation")
-            if not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 128 or operation not in {"INSPECT", "START", "REQUEST_GRACEFUL_STOP", "RESTART_WORKER"}:
-                return {"status": "UNSUPPORTED"}
-            if not request.keys() <= self._REQUEST_FIELDS:
-                # A caller may supply identity fences and a runtime ID, but not
-                # executable arguments, users, paths, networks, or new targets.
-                return {"status": "UNSUPPORTED"}
-            for name in ("expected_supervisor_incarnation", "expected_process_run_id", "expected_generation", "expected_runtime_id"):
-                value = request.get(name)
-                if value is not None and (not isinstance(value, str) or not 1 <= len(value) <= 128):
-                    return {"status": "UNSUPPORTED"}
             if self._shutdown_requested and operation in {"START", "RESTART_WORKER"}:
                 return {"status": "CONFLICT"}
             try:
@@ -291,7 +293,6 @@ class WorkerSupervisor:
             except (OSError, ValueError) as error:
                 logger.error("Supervisor state unavailable for operation: {}", type(error).__name__)
                 return {"status": "NEEDS_ATTENTION"}
-            digest = self._digest(request)
             prior = state["operations"].get(operation_id)
             if prior:
                 return self._reconcile_operation(operation_id, state) if prior["digest"] == digest else {"status": "CONFLICT"}
@@ -302,9 +303,28 @@ class WorkerSupervisor:
                 return {"status": "CONFLICT"}
             if self._unresolved(state, operation_id):
                 return {"status": "NEEDS_ATTENTION"}
-            runtime = self._resolve_runtime(request.get("runtime_id", "bootstrap")) if operation in {"START", "RESTART_WORKER"} else None
-            if operation in {"START", "RESTART_WORKER"} and runtime is None:
-                return {"status": "UNAVAILABLE"}
+
+        # READY verification can execute an interpreter from a prepared runtime.
+        # Keep it outside the lifecycle lock so INSPECT and safe stop requests for
+        # the current child remain available while that bounded probe runs.
+        runtime = self._resolve_runtime(request.get("runtime_id", "bootstrap")) if operation in {"START", "RESTART_WORKER"} else None
+        if operation in {"START", "RESTART_WORKER"} and runtime is None:
+            return {"status": "UNAVAILABLE"}
+
+        with self._lock:
+            try:
+                state = self.store.read()
+            except (OSError, ValueError) as error:
+                logger.error("Supervisor state unavailable for operation: {}", type(error).__name__)
+                return {"status": "NEEDS_ATTENTION"}
+            prior = state["operations"].get(operation_id)
+            if prior:
+                return self._reconcile_operation(operation_id, state) if prior["digest"] == digest else {"status": "CONFLICT"}
+            self._reconcile_worker(state)
+            if not self._fences_match(request, state):
+                return {"status": "CONFLICT"}
+            if self._unresolved(state, operation_id):
+                return {"status": "NEEDS_ATTENTION"}
             state["operations"][operation_id] = {"digest": digest, "request": dict(request), "runtime": runtime, "effect_generation": uuid.uuid4().hex, "result": {"status": "IN_PROGRESS"}}
             self.store.write(state)
             if not self._fences_match(request, state):
@@ -360,7 +380,16 @@ class WorkerSupervisor:
                 pass
         if len(matches) != 1:
             return None
-        preparer = WorkerVersionPreparer(WorkerVersionConfig(self.config.workspace_root, root, self.config.interpreter, Path("/usr/local/bin/uv"), "0.7.22"))
+        preparer = WorkerVersionPreparer(
+            WorkerVersionConfig(
+                self.config.workspace_root,
+                root,
+                self.config.interpreter,
+                Path("/usr/local/bin/uv"),
+                "0.7.22",
+                command_timeout=2.0,
+            )
+        )
         try:
             receipt = preparer.read_ready(matches[0])
         except WorkerVersionError:
