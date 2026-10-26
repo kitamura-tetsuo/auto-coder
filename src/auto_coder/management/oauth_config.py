@@ -76,7 +76,7 @@ class ManagementSettings:
 
     def __post_init__(self) -> None:
         loopback = self.bind_host in {"127.0.0.1", "::1", "localhost"}
-        is_http = self.oauth.canonical_issuer.startswith("http://")
+        is_http = urlsplit(self.oauth.canonical_issuer).scheme.lower() == "http"
         if is_http and not (self.local_development and loopback):
             raise ValueError("HTTP public origins require the loopback development profile")
         if not is_http and self.local_development:

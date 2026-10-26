@@ -99,6 +99,48 @@ clients:
 
 
 @pytest.mark.parametrize(
+    ("scheme", "bind_host", "local_development"),
+    [
+        ("HTTP", "127.0.0.1", False),
+        ("HtTp", "0.0.0.0", True),
+    ],
+)
+def test_actual_management_cli_rejects_noncanonical_http_outside_loopback_profile(
+    tmp_path: Path,
+    _use_real_commands,
+    scheme: str,
+    bind_host: str,
+    local_development: bool,
+) -> None:
+    port = _free_port()
+    config = tmp_path / "management.yml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "state_root": str(tmp_path / "state"),
+                "public_origin": f"{scheme}://127.0.0.1:{port}",
+                "firebase_project_id": "project",
+                "bind_host": bind_host,
+                "port": port,
+                "local_development": local_development,
+                "clients": [{"client_id": "desktop", "redirect_uris": ["http://127.0.0.1:9191/callback"]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["auto-coder", "management", "serve", "--config", str(config)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode != 0
+    assert "HTTP public origins require the loopback development profile" in result.stderr
+    with socket.socket() as connection:
+        assert connection.connect_ex(("127.0.0.1", port)) != 0
+
+
+@pytest.mark.parametrize(
     ("field", "invalid_value", "expected_error"),
     [
         ("client_id", 123, "client_id must be a non-empty string"),
