@@ -25,8 +25,8 @@ CREATE TABLE IF NOT EXISTS grants (
  scope TEXT NOT NULL, project TEXT NOT NULL, uid TEXT NOT NULL,
  auth_time REAL NOT NULL, created REAL NOT NULL, expires REAL NOT NULL,
  revoked REAL, revoke_reason TEXT);
-CREATE TABLE IF NOT EXISTS access_tokens (hash TEXT PRIMARY KEY, grant_id TEXT NOT NULL REFERENCES grants(id), expires REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS refresh_tokens (hash TEXT PRIMARY KEY, grant_id TEXT NOT NULL REFERENCES grants(id), expires REAL NOT NULL, spent REAL, replaced_by TEXT);
+CREATE TABLE IF NOT EXISTS access_tokens (hash TEXT PRIMARY KEY, grant_id TEXT NOT NULL REFERENCES grants(id), expires REAL NOT NULL, scope TEXT);
+CREATE TABLE IF NOT EXISTS refresh_tokens (hash TEXT PRIMARY KEY, grant_id TEXT NOT NULL REFERENCES grants(id), expires REAL NOT NULL, spent REAL, replaced_by TEXT, scope TEXT);
 CREATE INDEX IF NOT EXISTS access_grant ON access_tokens(grant_id);
 CREATE INDEX IF NOT EXISTS refresh_grant ON refresh_tokens(grant_id);
 """
@@ -39,6 +39,14 @@ class OAuthStore:
         try:
             connection = self.connect()
             connection.executescript(SCHEMA)
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(access_tokens)")}
+            if "scope" not in columns:
+                connection.execute("ALTER TABLE access_tokens ADD COLUMN scope TEXT")
+            connection.execute("UPDATE access_tokens SET scope=(SELECT scope FROM grants WHERE grants.id=access_tokens.grant_id) WHERE scope IS NULL")
+            refresh_columns = {row[1] for row in connection.execute("PRAGMA table_info(refresh_tokens)")}
+            if "scope" not in refresh_columns:
+                connection.execute("ALTER TABLE refresh_tokens ADD COLUMN scope TEXT")
+            connection.execute("UPDATE refresh_tokens SET scope=(SELECT scope FROM grants WHERE grants.id=refresh_tokens.grant_id) WHERE scope IS NULL")
             row = connection.execute("SELECT issuer,resource,project FROM authority WHERE singleton=1").fetchone()
             identity = (settings.canonical_issuer, settings.resource, settings.firebase_project_id)
             if row is None:
