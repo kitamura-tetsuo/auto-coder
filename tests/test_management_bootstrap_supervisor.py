@@ -61,6 +61,16 @@ open(port_file, 'w').write(str(server.server_port))
 server.serve_forever()
 """
 
+COUNTING_CHILD = b"""#!/usr/bin/python3
+import os, signal, sys, time
+ready, signals = sys.argv[1:]
+def stop(_signum, _frame):
+    with open(signals, 'a') as stream: stream.write('signal\\n')
+signal.signal(signal.SIGTERM, stop)
+open(ready, 'w').write('ready')
+while True: time.sleep(.02)
+"""
+
 
 def _runtime(tmp_path: Path, name: str = "one") -> RuntimeSpec:
     executable = tmp_path / f"child-{name}"
@@ -150,6 +160,54 @@ def test_deadline_does_not_force_or_duplicate_signal(tmp_path: Path) -> None:
         assert result.status is ResultStatus.DRAINING
         assert ManagementBootstrapSupervisor._start_token(started.record.pid) == started.record.start_token
         assert not runtime.drain_ack.exists()
+    finally:
+        _stop_process(started.record.pid)
+
+
+def test_two_supervisors_atomically_claim_one_graceful_stop_signal(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    ready = tmp_path / "counting.ready"
+    signals = tmp_path / "signals.log"
+    runtime.executable.write_bytes(COUNTING_CHILD)
+    runtime.executable.chmod(0o755)
+    runtime = replace(
+        runtime,
+        receipt=f"sha256:{hashlib.sha256(COUNTING_CHILD).hexdigest()}",
+        arguments=(str(ready), str(signals)),
+        drain_ack=None,
+    )
+    starter = _supervisor(tmp_path, runtime, timeout=0.12)
+    started = starter.start_selected("start", "start-attempt", "one")
+    deadline = time.monotonic() + 2
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ready.exists()
+    identity = ManagementBootstrapSupervisor._identity(started.record)
+    barrier = threading.Barrier(2, timeout=5)
+
+    class Stopper(ManagementBootstrapSupervisor):
+        def inspect(self) -> Observation:
+            observed = super().inspect()
+            if observed.status is ResultStatus.OBSERVED_RUNNING:
+                barrier.wait()
+            return observed
+
+    contenders = [Stopper(starter.config, "stopper-a"), Stopper(starter.config, "stopper-b")]
+    results: list[Observation] = []
+    threads = [threading.Thread(target=lambda supervisor=supervisor: results.append(supervisor.request_graceful_stop("stop", "stop-attempt", identity))) for supervisor in contenders]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+    try:
+        assert all(not thread.is_alive() for thread in threads)
+        assert len(results) == 2
+        assert all(result.status is ResultStatus.DRAINING for result in results)
+        deadline = time.monotonic() + 1
+        while (not signals.exists() or len(signals.read_text().splitlines()) < 1) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert signals.read_text().splitlines() == ["signal"]
+        assert ManagementBootstrapSupervisor._start_token(started.record.pid) == started.record.start_token
     finally:
         _stop_process(started.record.pid)
 

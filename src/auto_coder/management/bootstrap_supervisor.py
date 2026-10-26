@@ -265,8 +265,37 @@ class ManagementBootstrapSupervisor:
                 return self._finish(operation_id, ResultStatus.STOPPED, observed.record)
             if observed.status is not ResultStatus.OBSERVED_RUNNING or expected_identity != self._identity(observed.record):
                 return self._finish(operation_id, ResultStatus.CONFLICT if observed.status is not ResultStatus.UNKNOWN else ResultStatus.UNKNOWN, observed.record, "child identity changed")
-            draining = replace(observed.record, phase=ChildPhase.DRAINING, intended_stop=True)
-            self.store.save(draining)
+            draining = replace(
+                observed.record,
+                phase=ChildPhase.DRAINING,
+                intended_stop=True,
+                effect_operation_id=operation_id,
+                effect_attempt_id=attempt_id,
+            )
+            # The state transition is the durable signal claim.  An object lock
+            # cannot fence another Supervisor process, while an unconditional
+            # save would allow both participants to send the cooperative signal.
+            if not self.store.reserve(observed.record, draining):
+                winner = self.inspect()
+                if winner.record.phase is ChildPhase.DRAINING and winner.record.effect_operation_id == operation_id and winner.record.effect_attempt_id == attempt_id:
+                    # A prepared effect plus the matching draining owner means
+                    # the other participant may have signalled and lost its
+                    # response.  Never signal again or terminalize that ambiguity.
+                    return Observation(
+                        ResultStatus.DRAINING if winner.status is ResultStatus.DRAINING else ResultStatus.UNKNOWN,
+                        winner.record,
+                        operation_id,
+                        winner.process_ready,
+                        winner.application_ready,
+                        "graceful-stop effect is already owned by another Supervisor",
+                    )
+                return self._finish(
+                    operation_id,
+                    ResultStatus.UNKNOWN if winner.status is ResultStatus.UNKNOWN else ResultStatus.CONFLICT,
+                    winner.record,
+                    "another Supervisor reserved a child transition",
+                    persist_state=False,
+                )
             os.kill(draining.pid, signal.SIGTERM)  # exactly one cooperative signal
         deadline = time.monotonic() + self.config.graceful_timeout
         while time.monotonic() < deadline:
