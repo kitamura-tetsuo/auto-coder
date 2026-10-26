@@ -25,11 +25,14 @@ from firebase_admin import credentials
 from google.auth.credentials import AnonymousCredentials
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from mcp.types import ToolAnnotations
 from starlette.testclient import TestClient
 
 from auto_coder.logger_config import setup_logger
+from auto_coder.management.action_scopes import DEPLOY_SCOPE, READ_SCOPE, PendingAuthorityStatus
 from auto_coder.management.app import create_management_app
 from auto_coder.management.identity import FirebaseOperatorIdentity, IdentityConfig
+from auto_coder.management.mcp_resource import ManagementTool
 from auto_coder.management.oauth_config import ManagementSettings, OAuthClient, OAuthSettings
 from auto_coder.management.oauth_grants import InvalidScope, OAuthGrantService
 
@@ -124,7 +127,7 @@ def real_boundary(tmp_path, monkeypatch):
     return settings, grants, identity, signed, policy, state
 
 
-def _issue(client, settings, signed, uid: str, client_id: str) -> dict:
+def _issue(client, settings, signed, uid: str, client_id: str, scope: str = "auto-coder.read") -> dict:
     verifier = (uid[0] * 43) if len(uid) else "v" * 43
     redirect_uri = f"{settings.oauth.canonical_issuer}/{uid}-callback"
     page = client.get(
@@ -134,7 +137,7 @@ def _issue(client, settings, signed, uid: str, client_id: str) -> dict:
             "client_id": client_id,
             "redirect_uri": redirect_uri,
             "resource": settings.oauth.resource,
-            "scope": "auto-coder.read",
+            "scope": scope,
             "state": f"state-{uid}",
             "code_challenge": _challenge(verifier),
             "code_challenge_method": "S256",
@@ -143,6 +146,8 @@ def _issue(client, settings, signed, uid: str, client_id: str) -> dict:
     )
     assert page.status_code == 200
     data = json.loads(page.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0])
+    assert data["scope"] == scope
+    assert [item["scope"] for item in data["scopeLabels"]] == scope.split()
     allowed = client.post(
         f"/authorize/{data['requestId']}/allow",
         headers={"Origin": settings.oauth.canonical_issuer},
@@ -164,6 +169,129 @@ def _issue(client, settings, signed, uid: str, client_id: str) -> dict:
     )
     assert token.status_code == 200
     return token.json()
+
+
+def test_scoped_consent_metadata_and_tool_admission_use_production_boundaries(real_boundary, tmp_path) -> None:
+    _settings, _grants, identity, signed, _policy, state = real_boundary
+    root = tmp_path / "scoped"
+    origin = "https://management.example.com"
+    all_scopes = (READ_SCOPE, DEPLOY_SCOPE)
+    broad_client = OAuthClient("alice-client", (f"{origin}/alice-callback",), allowed_scopes=all_scopes)
+    oauth = OAuthSettings(root / "oauth.sqlite3", origin, "mcp-test-project", (broad_client,), access_lifetime=30, enabled_scopes=all_scopes)
+    settings = ManagementSettings(root, oauth)
+    grants = OAuthGrantService(oauth, identity, clock=lambda: state["now"])
+    calls = {"deploy": 0}
+
+    async def deploy_probe() -> dict[str, object]:
+        calls["deploy"] += 1
+        return {"admitted": True}
+
+    tool = ManagementTool(
+        "deploy_probe",
+        deploy_probe,
+        all_scopes,
+        ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
+    )
+    with TestClient(create_management_app(settings, grants, (tool,)), base_url=origin) as client:
+        authorization_metadata = client.get("/.well-known/oauth-authorization-server").json()
+        resource_metadata = client.get("/.well-known/oauth-protected-resource/mcp").json()
+        assert authorization_metadata["scopes_supported"] == list(all_scopes)
+        assert resource_metadata["scopes_supported"] == list(all_scopes)
+
+        old_read = _issue(client, settings, signed, "alice", "alice-client")
+        denied = _mcp(client, old_read["access_token"], "tools/call", 1, {"name": "deploy_probe", "arguments": {}})
+        assert denied.status_code == 403
+        assert denied.headers["www-authenticate"].endswith(f'scope="{READ_SCOPE} {DEPLOY_SCOPE}"')
+        assert calls == {"deploy": 0}
+        assert _mcp(client, old_read["access_token"], "tools/list", 2).status_code == 200
+
+        requested = f"{READ_SCOPE} {DEPLOY_SCOPE}"
+        deployed = _issue(client, settings, signed, "alice", "alice-client", requested)
+        assert deployed["scope"] == requested
+        admitted = _mcp(client, deployed["access_token"], "tools/call", 3, {"name": "deploy_probe", "arguments": {}})
+        assert admitted.status_code == 200
+        assert admitted.json()["result"]["structuredContent"] == {"admitted": True}
+        assert calls == {"deploy": 1}
+
+    retained = grants.inspect_access("alice-client", deployed["access_token"])
+    assert retained.scopes == all_scopes
+    read_only_service_oauth = OAuthSettings(
+        oauth.database_path,
+        origin,
+        oauth.firebase_project_id,
+        (broad_client,),
+        access_lifetime=30,
+        enabled_scopes=(READ_SCOPE,),
+    )
+    read_only_service = ManagementSettings(root, read_only_service_oauth)
+    with TestClient(
+        create_management_app(read_only_service, OAuthGrantService(read_only_service_oauth, identity, grants.clock), (tool,)),
+        base_url=origin,
+    ) as client:
+        assert _mcp(client, deployed["access_token"], "tools/call", 4, {"name": "deploy_probe", "arguments": {}}).status_code == 403
+        assert _mcp(client, deployed["access_token"], "tools/list", 5).status_code == 200
+        assert calls == {"deploy": 1}
+
+    narrow_client = OAuthClient("alice-client", (f"{origin}/alice-callback",))
+    narrow_client_oauth = OAuthSettings(
+        oauth.database_path,
+        origin,
+        oauth.firebase_project_id,
+        (narrow_client,),
+        access_lifetime=30,
+        enabled_scopes=all_scopes,
+    )
+    narrow_settings = ManagementSettings(root, narrow_client_oauth)
+    with TestClient(
+        create_management_app(narrow_settings, OAuthGrantService(narrow_client_oauth, identity, grants.clock), (tool,)),
+        base_url=origin,
+    ) as client:
+        assert client.get("/.well-known/oauth-protected-resource/mcp").json()["scopes_supported"] == list(all_scopes)
+        assert _mcp(client, deployed["access_token"], "tools/call", 6, {"name": "deploy_probe", "arguments": {}}).status_code == 403
+        assert _mcp(client, deployed["access_token"], "tools/list", 7).status_code == 200
+        assert calls == {"deploy": 1}
+    assert grants.inspect_access("alice-client", deployed["access_token"]).scopes == all_scopes
+
+
+def test_pending_scoped_authority_rereads_real_grant_and_uid_policy(real_boundary, tmp_path) -> None:
+    _settings, _grants, identity, signed, policy, state = real_boundary
+    root = tmp_path / "pending-scoped"
+    origin = "https://management.example.com"
+    scopes = (READ_SCOPE, DEPLOY_SCOPE)
+    client_config = OAuthClient("alice-client", (f"{origin}/alice-callback",), allowed_scopes=scopes)
+    oauth = OAuthSettings(
+        root / "oauth.sqlite3",
+        origin,
+        "mcp-test-project",
+        (client_config,),
+        access_lifetime=30,
+        grant_lifetime=120,
+        enabled_scopes=scopes,
+    )
+    settings = ManagementSettings(root, oauth)
+    grants = OAuthGrantService(oauth, identity, clock=lambda: state["now"])
+    requested = f"{READ_SCOPE} {DEPLOY_SCOPE}"
+    with TestClient(create_management_app(settings, grants), base_url=origin) as browser:
+        tokens = _issue(browser, settings, signed, "alice", "alice-client", requested)
+    authenticated = grants.authenticate_access(tokens["access_token"], oauth.resource, scopes)
+    accepted = grants.accepted_authority(authenticated)
+
+    state["now"] = authenticated.expires_at + 1
+    reopened = OAuthGrantService(oauth, identity, clock=lambda: state["now"])
+    assert reopened.check_pending_authority(accepted, scopes).status is PendingAuthorityStatus.PERMITTED
+
+    policy.write_text(json.dumps({"project_id": "mcp-test-project", "allowed_uids": []}), encoding="utf-8")
+    assert reopened.check_pending_authority(accepted, scopes).status is PendingAuthorityStatus.DENIED
+    policy.write_text(json.dumps({"project_id": "mcp-test-project", "allowed_uids": ["alice"]}), encoding="utf-8")
+    policy.rename(policy.with_suffix(".unavailable"))
+    assert reopened.check_pending_authority(accepted, scopes).status is PendingAuthorityStatus.UNAVAILABLE
+    policy.with_suffix(".unavailable").rename(policy)
+
+    state["now"] = accepted.accepted_at + oauth.grant_lifetime + 1
+    assert reopened.check_pending_authority(accepted, scopes).status is PendingAuthorityStatus.DENIED
+    state["now"] = authenticated.expires_at + 1
+    reopened.revoke("alice-client", tokens["refresh_token"])
+    assert OAuthGrantService(oauth, identity, clock=lambda: state["now"]).check_pending_authority(accepted, scopes).status is PendingAuthorityStatus.DENIED
 
 
 def _mcp(client, token: str, method: str, request_id: int, params=None, extra_headers=None):

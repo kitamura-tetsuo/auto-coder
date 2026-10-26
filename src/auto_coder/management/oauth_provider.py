@@ -9,7 +9,7 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import AnyUrl
 from starlette.concurrency import run_in_threadpool
 
-from .oauth_config import SUPPORTED_SCOPE, OAuthSettings
+from .oauth_config import OAuthSettings
 from .oauth_grants import AuthorizationRequest, OAuthError, OAuthGrantService, Unavailable
 
 
@@ -62,7 +62,15 @@ class ManagementOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode
         client = self.settings.client(client_id)
         if client is None:
             return None
-        return OAuthClientInformationFull(client_id=client.client_id, redirect_uris=[AnyUrl(uri) for uri in client.redirect_uris], token_endpoint_auth_method="none", grant_types=["authorization_code", "refresh_token"], response_types=["code"], scope=SUPPORTED_SCOPE, client_name=client.client_id)
+        return OAuthClientInformationFull(
+            client_id=client.client_id,
+            redirect_uris=[AnyUrl(uri) for uri in client.redirect_uris],
+            token_endpoint_auth_method="none",
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            scope=" ".join(client.allowed_scopes),
+            client_name=client.client_id,
+        )
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         raise NotImplementedError

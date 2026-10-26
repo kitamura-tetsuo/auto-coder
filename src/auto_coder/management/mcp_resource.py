@@ -111,6 +111,17 @@ class ResourceAdmission:
         self.app, self.settings, self.grants, self.required_by_name = app, settings, grants, required_by_name
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope.get("path") == "/.well-known/oauth-protected-resource/mcp":
+            metadata_response = JSONResponse(
+                {
+                    "resource": self.settings.oauth.resource,
+                    "authorization_servers": [self.settings.oauth.canonical_issuer + "/"],
+                    "scopes_supported": list(self.settings.oauth.enabled_scopes),
+                    "bearer_methods_supported": ["header"],
+                }
+            )
+            await metadata_response(scope, receive, send)
+            return
         if scope["type"] != "http" or scope.get("path") != "/mcp":
             await self.app(scope, receive, send)
             return
