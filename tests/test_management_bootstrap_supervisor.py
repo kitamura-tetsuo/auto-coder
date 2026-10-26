@@ -105,6 +105,12 @@ def _stop_process(pid: int) -> None:
             os.kill(pid, 9)
         except ProcessLookupError:
             pass
+        try:
+            os.waitpid(pid, 0)
+        except ChildProcessError:
+            # A child launched by the separate crash harness is reparented and
+            # cannot be reaped by this pytest process.
+            pass
 
 
 def _await_child_ready(runtime: RuntimeSpec) -> None:
@@ -376,6 +382,7 @@ def test_real_http_request_drains_without_force_or_competing_listener(tmp_path: 
         result = supervisor.reconcile()
     assert response == [b"done"]
     assert result.status is ResultStatus.STOPPED
+    _stop_process(started.record.pid)
 
 
 def test_executed_candidate_nonzero_exit_restores_previous_runtime(tmp_path: Path) -> None:
