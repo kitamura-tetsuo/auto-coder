@@ -20,4 +20,7 @@ state. Preparation is serialized and idempotent through the shared immutable env
 producer. It does not activate the result, stop or restart a process, alter OAuth or
 operation stores, collect versions, access Docker, select source automatically, or
 modify active and rollback environments. Partial attempts remain non-ready and
-cleanup is deliberately outside this component.
+are never resumed in place: recovery uses a new attempt identifier while retaining
+the interrupted generation for bounded later cleanup. An incompatible runtime profile
+fails before it can alias an existing READY identity. Cleanup is deliberately outside
+this component.

@@ -7,12 +7,16 @@ import json
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from auto_coder.management.version_staging import ManagementPrepareIntent, ManagementRuntimeConfig, ManagementVersionStager
-from auto_coder.tested_source_refs import SCHEMA_VERSION, TEST_PROFILE, WORKFLOW_PATH, TestedSourceReadback, TestedSourceRecord
+from auto_coder.tested_source_refs import SCHEMA_VERSION, TEST_PROFILE, WORKFLOW_PATH
+from auto_coder.tested_source_refs import TestedSourceError as SourceError
+from auto_coder.tested_source_refs import TestedSourceReadback as SourceReadback
+from auto_coder.tested_source_refs import TestedSourceRecord as SourceRecord
 from auto_coder.worker_versions import PreparationFailure, WorkerVersionError, WorkerVersionPreparer
 
 
@@ -21,16 +25,19 @@ def _run(args: list[str], cwd: Path | None = None) -> str:
 
 
 class Authority:
-    def __init__(self, proof: TestedSourceReadback):
+    def __init__(self, proof: SourceReadback):
         self.proof = proof
         self.verifications = 0
+        self.reject_run = False
 
-    def read(self, sha: str) -> TestedSourceReadback | None:
+    def read(self, sha: str) -> SourceReadback | None:
         return self.proof if self.proof.direct_commit_sha == sha else None
 
-    def verify_run(self, record: TestedSourceRecord, *, recorded_attempt: bool = False) -> None:
+    def verify_run(self, record: SourceRecord, *, recorded_attempt: bool = False) -> None:
         assert recorded_attempt and record == self.proof.record
         self.verifications += 1
+        if self.reject_run:
+            raise SourceError("authoritative run no longer matches")
 
 
 def _fixture(tmp_path: Path, *, serve: bool = True) -> tuple[ManagementRuntimeConfig, str, Authority]:
@@ -76,8 +83,8 @@ where=['src']
     _run(["git", "commit", "-qm", "fixture"], repo)
     sha = _run(["git", "rev-parse", "HEAD"], repo)
     lock = hashlib.sha256((repo / "uv.lock").read_bytes()).hexdigest()
-    record = TestedSourceRecord(SCHEMA_VERSION, "owner/repo", sha, "1.2.3", lock, "3.12", 11, 1, 12, WORKFLOW_PATH, TEST_PROFILE, "success")
-    authority = Authority(TestedSourceReadback(f"refs/tags/auto-coder-tested-{sha}", "b" * 40, sha, record))
+    record = SourceRecord(SCHEMA_VERSION, "owner/repo", sha, "1.2.3", lock, "3.12", 11, 1, 12, WORKFLOW_PATH, TEST_PROFILE, "success")
+    authority = Authority(SourceReadback(f"refs/tags/auto-coder-tested-{sha}", "b" * 40, sha, record))
     config_file = tmp_path / "management.yaml"
     config_file.write_text("compatible")
     config = ManagementRuntimeConfig("manager-a", "owner/repo", repo, tmp_path / "management-versions", Path(sys.executable), uv, _run([str(uv), "--version"]).removeprefix("uv "), management_config=config_file, source_authority=authority)  # type: ignore[arg-type]
@@ -147,6 +154,31 @@ def test_real_prepare_rejects_missing_serving_capability(tmp_path: Path, _use_re
     assert not list(config.version_root.glob("revisions/*/*/MANAGEMENT_READY.json"))
 
 
+@pytest.mark.parametrize("mismatch", ["source", "lock", "test-run"])
+def test_real_installed_runtime_is_not_reused_with_mismatched_source_evidence(tmp_path: Path, mismatch: str, _use_real_commands: None) -> None:
+    config, sha, authority = _fixture(tmp_path)
+    prepared = ManagementVersionStager(config).prepare(ManagementPrepareIntent(sha, "installed"))
+    ready = Path(prepared.receipt.environment_path).parent / "MANAGEMENT_READY.json"
+    original_receipt = ready.read_bytes()
+
+    if mismatch == "source":
+        authority.proof = replace(authority.proof, direct_commit_sha="f" * 40)
+        expected = PreparationFailure.UNAVAILABLE
+    elif mismatch == "lock":
+        authority.proof = replace(authority.proof, record=replace(authority.proof.record, lock_sha256="e" * 64))
+        expected = PreparationFailure.VERIFICATION_MISMATCH
+    else:
+        authority.reject_run = True
+        expected = PreparationFailure.UNAVAILABLE
+
+    with pytest.raises(WorkerVersionError) as caught:
+        ManagementVersionStager(config).prepare(ManagementPrepareIntent(sha, f"mismatch-{mismatch}"))
+
+    assert caught.value.failure is expected
+    assert ready.read_bytes() == original_receipt
+    assert len(list(config.version_root.glob("revisions/*/*/MANAGEMENT_READY.json"))) == 1
+
+
 def test_real_lookup_rejects_changed_profile_and_configuration(tmp_path: Path, _use_real_commands: None) -> None:
     config, sha, _authority = _fixture(tmp_path)
     prepared = ManagementVersionStager(config).prepare(ManagementPrepareIntent(sha, "first"))
@@ -173,6 +205,56 @@ def test_concurrent_same_source_requests_share_real_management_runtime(tmp_path:
 
     assert len(set(identities)) == 1
     assert len(list(config.version_root.glob("revisions/*/*/MANAGEMENT_READY.json"))) == 1
+
+
+def test_concurrent_different_runtime_request_cannot_alias_real_management_runtime(tmp_path: Path, _use_real_commands: None) -> None:
+    config, sha, _authority = _fixture(tmp_path)
+    incompatible = ManagementRuntimeConfig(**{**config.__dict__, "runtime_profile": "unsupported-other-abi"})
+
+    def prepare(selected: ManagementRuntimeConfig) -> tuple[str, str]:
+        try:
+            receipt = ManagementVersionStager(selected).prepare(ManagementPrepareIntent(sha, selected.runtime_profile))
+            return "ready", receipt.receipt.management_runtime_id
+        except WorkerVersionError as exc:
+            return "failed", exc.failure.value
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(prepare, (config, incompatible)))
+
+    assert {status for status, _ in results} == {"ready", "failed"}
+    assert ("failed", PreparationFailure.UNSUPPORTED.value) in results
+    ready = next(config.version_root.glob("revisions/*/*/MANAGEMENT_READY.json"))
+    assert ManagementVersionStager(config).lookup(ready).runtime_profile == "management-python-3.12"
+
+
+def test_lost_installer_acknowledgment_retains_partial_and_restart_uses_new_real_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands: None) -> None:
+    config, sha, _authority = _fixture(tmp_path)
+    protected = tmp_path / "active"
+    protected.mkdir()
+    sentinel = protected / "oauth.sqlite3"
+    sentinel.write_bytes(b"unchanged")
+    config = ManagementRuntimeConfig(**{**config.__dict__, "active_environment": protected})
+    interrupted = ManagementVersionStager(config)
+    real_install = interrupted._preparer._install
+
+    def install_then_lose_ack(checkout: Path, environment: Path) -> None:
+        real_install(checkout, environment)
+        raise WorkerVersionError(PreparationFailure.UNAVAILABLE, "installer acknowledgment was lost")
+
+    monkeypatch.setattr(interrupted._preparer, "_install", install_then_lose_ack)
+    with pytest.raises(WorkerVersionError) as caught:
+        interrupted.prepare(ManagementPrepareIntent(sha, "interrupted-install"))
+    assert caught.value.failure is PreparationFailure.UNAVAILABLE
+    partial = next(config.version_root.glob("revisions/*/interrupted-install"))
+    assert (partial / "venv" / "bin" / "python").exists()
+    assert not (partial / "READY.json").exists()
+    assert sentinel.read_bytes() == b"unchanged"
+
+    recovered = ManagementVersionStager(config).prepare(ManagementPrepareIntent(sha, "restart-install"))
+    assert not recovered.reused
+    assert Path(recovered.receipt.environment_path).parent.name == "restart-install"
+    assert partial.is_dir()
+    assert sentinel.read_bytes() == b"unchanged"
 
 
 def test_lost_management_publication_is_typed_and_restart_recovers_real_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands: None) -> None:
