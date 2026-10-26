@@ -324,7 +324,7 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
             "-v",
             f"{workspace}:/workspace",
             "-v",
-            f"{routing}:/routing:ro",
+            f"{routing}:/routing",
             "-v",
             f"{fixtures}:/fixtures:ro",
             "-e",
@@ -434,6 +434,144 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
         final_stop = {"operation_id": "successor-stop", "operation": "REQUEST_GRACEFUL_STOP", "expected_generation": str(successor["deployment_generation"]), "expected_process_run_id": str(successor["process_run_id"])}
         assert _control(container, final_stop)["status"] in {"DRAINING", "STOPPED"}
         _wait_for(lambda: _control(container, final_stop)["status"] == "STOPPED", timeout=90)
+    finally:
+        logs = _docker("logs", container, timeout=10, check=False)
+        if logs.stdout or logs.stderr:
+            print(logs.stdout + logs.stderr)
+        _docker("rm", "-f", container, check=False)
+
+
+def test_independently_prepared_staged_restart_preserves_held_intent(tmp_path: Path, _use_real_commands: None) -> None:
+    """A dropped-response staged restart cannot be rebound to another valid READY."""
+    image = _image()
+    source = Path(os.environ.get("GITHUB_WORKSPACE", str(Path(__file__).parents[1]))).resolve()
+    revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=source, check=True, capture_output=True, text=True).stdout.strip()
+    runtime, workspace = tmp_path / "runtime", tmp_path / "workspace"
+    for directory in (runtime, workspace, runtime / "home"):
+        directory.mkdir(exist_ok=True)
+    fixtures = _FIXTURES.resolve()
+    user = f"{os.getuid()}:{os.getgid()}"
+
+    prepared = []
+    for attempt in ("held-staged-a", "held-staged-b"):
+        try:
+            result = _docker(
+                "run",
+                "--rm",
+                "--network",
+                "bridge",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges:true",
+                "--user",
+                user,
+                "-v",
+                f"{source}:/source:ro",
+                "-v",
+                f"{runtime}:/runtime",
+                "-v",
+                f"{fixtures}:/fixtures:ro",
+                "-e",
+                "HOME=/runtime/home",
+                "--entrypoint",
+                "python",
+                image,
+                "/fixtures/supervisor_stage_ready.py",
+                revision,
+                attempt,
+                timeout=1200,
+            )
+        except subprocess.CalledProcessError as error:
+            pytest.fail(f"Independent staged preparation {attempt} failed:\n{error.stdout[-8000:]}\n{error.stderr[-8000:]}")
+        prepared.append(json.loads(result.stdout.strip().splitlines()[-1])["receipt"])
+    original, destination = prepared
+    assert original["source_sha"] == destination["source_sha"] == revision
+    assert original["installed_runtime_id"] != destination["installed_runtime_id"]
+    assert original["content_identity"] != destination["content_identity"]
+
+    container = "supervisor-held-staged-" + uuid.uuid4().hex[:12]
+    try:
+        _docker(
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            container,
+            "--network",
+            "none",
+            "--cap-drop",
+            "ALL",
+            "--user",
+            user,
+            "--security-opt",
+            "no-new-privileges:true",
+            "--entrypoint",
+            "python",
+            "-v",
+            f"{runtime}:/runtime",
+            "-v",
+            f"{workspace}:/workspace",
+            "-v",
+            f"{fixtures}:/fixtures:ro",
+            "-e",
+            "HOME=/runtime/home",
+            "-e",
+            "AUTO_CODER_SUPERVISOR_INSTANCE_ID=release-worker",
+            "-e",
+            "AUTO_CODER_CHANNEL=release",
+            "-e",
+            "AUTO_CODER_REPOSITORY=fixture/release",
+            "-e",
+            "AUTO_CODER_RUNTIME_ROOT=/runtime",
+            "-e",
+            "AUTO_CODER_WORKSPACE_ROOT=/workspace",
+            "-e",
+            "AUTO_CODER_SUPERVISOR_AUTO_START=0",
+            image,
+            "/fixtures/supervisor_container_entry.py",
+        )
+        _wait_for(lambda: value if (value := _container_facts(container))["socket"] else None)
+        first = _control(container, {"operation_id": "first-staged", "operation": "START", "runtime_id": original["installed_runtime_id"]})
+        assert first["status"] == "RUNNING"
+        first_worker = _wait_for(lambda: worker if (worker := _inspect_worker(container)) and worker.get("binding_status") == "VERIFIED" else None)
+        assert first_worker["runtime_binding"]["content_identity"] == original["content_identity"]
+
+        restart = {
+            "operation_id": "accepted-staged-restart",
+            "operation": "RESTART_WORKER",
+            "runtime_id": str(destination["installed_runtime_id"]),
+            "expected_generation": str(first_worker["deployment_generation"]),
+            "expected_process_run_id": str(first_worker["process_run_id"]),
+        }
+        _send_without_reading_response(container, restart)
+        _wait_for(lambda: (runtime / "fixture-draining").exists())
+        assert _control(container, restart)["status"] == "DRAINING"
+        assert _control(container, {**restart, "runtime_id": original["installed_runtime_id"]})["status"] == "CONFLICT"
+        assert _control(container, {**restart, "expected_generation": "stale"})["status"] == "CONFLICT"
+        assert _control(container, {**restart, "operation": "REQUEST_GRACEFUL_STOP"})["status"] == "CONFLICT"
+        assert not (runtime / "last-terminal.json").exists()
+        saved = json.loads((runtime / "supervisor" / "state.json").read_text())["operations"][restart["operation_id"]]
+        assert saved["request"] == restart
+        assert saved["result"]["status"] == "DRAINING"
+
+        (runtime / "fixture-release").write_text("release")
+        _wait_for(lambda: _control(container, restart)["status"] == "RUNNING", timeout=90)
+        successor = _wait_for(
+            lambda: worker if (worker := _inspect_worker(container, generation=str(first_worker["deployment_generation"]))) and worker.get("binding_status") == "VERIFIED" else None,
+            timeout=90,
+        )
+        assert successor["runtime_id"] == destination["installed_runtime_id"]
+        assert successor["runtime_binding"]["content_identity"] == destination["content_identity"]
+        assert successor["process_run_id"] != first_worker["process_run_id"]
+        assert _control(container, restart)["worker"]["deployment_generation"] == successor["deployment_generation"]
+        assert _control(container, {**restart, "runtime_id": original["installed_runtime_id"]})["status"] == "CONFLICT"
+        assert _control(container, {"operation_id": "stale-stop-after-restart", "operation": "REQUEST_GRACEFUL_STOP", "expected_generation": str(first_worker["deployment_generation"]), "expected_process_run_id": str(first_worker["process_run_id"])})["status"] == "CONFLICT"
+
+        stop = {"operation_id": "final-staged-stop", "operation": "REQUEST_GRACEFUL_STOP", "expected_generation": str(successor["deployment_generation"]), "expected_process_run_id": str(successor["process_run_id"])}
+        assert _control(container, stop)["status"] in {"DRAINING", "STOPPED"}
+        _wait_for(lambda: _control(container, stop)["status"] == "STOPPED", timeout=90)
+        assert json.loads((runtime / "supervisor" / "state.json").read_text())["operations"][restart["operation_id"]]["request"] == restart
     finally:
         logs = _docker("logs", container, timeout=10, check=False)
         if logs.stdout or logs.stderr:

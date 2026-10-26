@@ -115,9 +115,13 @@ ownership and corrupt pointer recovery. It never mounts production
 state, supplies GitHub tokens, invokes an LLM provider or runs the issue/PR
 scheduler against a real repository.
 
-The Docker fixture intentionally substitutes a test-only child launch command;
-the additional acceptance test instead runs the unchanged production worker
-Compose command (`python -m auto_coder.worker_supervisor`) as PID 1. A disposable
+The dedicated entrypoint check runs the unchanged production worker Compose
+command (`python -m auto_coder.worker_supervisor`) as PID 1. The live-CLI
+acceptance test uses the same production Supervisor with a fixed test launcher
+that execs the real `process-issues` CLI in its selected Python interpreter.
+It passes supported CLI flags to bypass only the external GitHub credential
+preflight and optional secret sync; no application implementation is mocked.
+A disposable
 installer container first creates a real #2610 READY environment through Git
 checkout, frozen `uv` installation, embedded source provenance and independent
 READY verification. Only the installer can download dependencies. The actual
@@ -128,9 +132,12 @@ exit, then a positive staged `process-issues` start using the READY-selected
 interpreter and a fresh worker-owned, nonce-bound UDS observation. Replacing
 READY with a different independently valid runtime identity at the same source
 SHA, changing locked inputs, or replacing the child lifetime must invalidate
-the original binding. Held SIGTERM drain, changed operation payload, response
-loss, reconstruction and peer noninterference remain separately tested against
-the actual worker management bridge. No real GitHub issue is dispatched.
+the original binding. Two independently staged READY environments also exercise
+a held SIGTERM restart through the production typed Supervisor endpoint: lost
+response, same-ID changed intended READY/fences and replay must preserve the
+original accepted destination and start only one successor. Reconstruction and
+peer noninterference are separately exercised against the actual worker
+management bridge. No real GitHub issue is dispatched.
 
 The normal PR test shards exclude the `supervisor_integration` marker. To
 reproduce manually, build the checked-out image with

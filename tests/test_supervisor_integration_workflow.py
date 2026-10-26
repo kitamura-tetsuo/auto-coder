@@ -48,6 +48,7 @@ def test_production_acceptance_covers_real_ready_and_offline_production_cli() ->
     preparer = (ROOT / "tests/fixtures/supervisor_stage_ready.py").read_text()
     offline = (ROOT / "tests/fixtures/supervisor_offline_process_issues.py").read_text()
     assert "def test_real_process_issues_bootstrap_and_staged_ready_binding" in acceptance
+    assert "def test_independently_prepared_staged_restart_preserves_held_intent" in acceptance
     assert "supervisor_stage_ready.py" in acceptance
     assert re.search(r'"--network",\s*"none"', acceptance)
     assert re.search(r'"--entrypoint",\s*"python"', acceptance)
