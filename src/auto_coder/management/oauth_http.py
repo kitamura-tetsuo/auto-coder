@@ -300,8 +300,11 @@ def create_management_auth_app(
         try:
             context: ExchangeContext
             if grant_type == "authorization_code":
-                if get("scope") is not None:
-                    _scope(get("scope"))
+                requested_scopes = _scope(get("scope"))
+                if requested_scopes is not None:
+                    approved = await run_in_threadpool(grants.inspect_code, client_id, get("code") or "")
+                    if approved.active and requested_scopes != approved.scopes:
+                        raise InvalidScope()
                 context = CodeExchangeContext(client_id, get("code") or "", get("redirect_uri") or "", resource, get("code_verifier") or "")
             elif grant_type == "refresh_token":
                 context = RefreshExchangeContext(client_id, get("refresh_token") or "", resource, _scope(get("scope")))

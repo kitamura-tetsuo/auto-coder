@@ -127,7 +127,7 @@ def real_boundary(tmp_path, monkeypatch):
     return settings, grants, identity, signed, policy, state
 
 
-def _issue(client, settings, signed, uid: str, client_id: str, scope: str = "auto-coder.read") -> dict:
+def _authorize_code(client, settings, signed, uid: str, client_id: str, scope: str) -> tuple[str, str, str]:
     verifier = (uid[0] * 43) if len(uid) else "v" * 43
     redirect_uri = f"{settings.oauth.canonical_issuer}/{uid}-callback"
     page = client.get(
@@ -156,6 +156,11 @@ def _issue(client, settings, signed, uid: str, client_id: str, scope: str = "aut
     )
     assert allowed.status_code == 303
     code = parse_qs(urlsplit(allowed.headers["location"]).query)["code"][0]
+    return code, verifier, redirect_uri
+
+
+def _issue(client, settings, signed, uid: str, client_id: str, scope: str = "auto-coder.read") -> dict:
+    code, verifier, redirect_uri = _authorize_code(client, settings, signed, uid, client_id, scope)
     token = client.post(
         "/token",
         data={
@@ -213,8 +218,67 @@ def test_scoped_consent_metadata_and_tool_admission_use_production_boundaries(re
         assert admitted.json()["result"]["structuredContent"] == {"admitted": True}
         assert calls == {"deploy": 1}
 
+        narrowed = client.post(
+            "/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": "alice-client",
+                "refresh_token": deployed["refresh_token"],
+                "resource": settings.oauth.resource,
+                "scope": READ_SCOPE,
+            },
+        )
+        assert narrowed.status_code == 200
+        narrowed_tokens = narrowed.json()
+        assert narrowed_tokens["scope"] == READ_SCOPE
+        assert _mcp(client, narrowed_tokens["access_token"], "tools/call", 4, {"name": "deploy_probe", "arguments": {}}).status_code == 403
+        assert _mcp(client, narrowed_tokens["access_token"], "tools/list", 5).status_code == 200
+        narrowed_identity = _mcp(
+            client,
+            narrowed_tokens["access_token"],
+            "tools/call",
+            6,
+            {"name": "auto_coder_whoami", "arguments": {}},
+        ).json()[
+            "result"
+        ]["structuredContent"]
+        assert narrowed_identity["scopes"] == [READ_SCOPE]
+        assert calls == {"deploy": 1}
+
+        refresh_widening = client.post(
+            "/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": "alice-client",
+                "refresh_token": old_read["refresh_token"],
+                "resource": settings.oauth.resource,
+                "scope": f"{READ_SCOPE} {DEPLOY_SCOPE}",
+            },
+        )
+        assert refresh_widening.status_code == 400
+        assert refresh_widening.json()["error"] == "invalid_scope"
+
+        read_code, read_verifier, read_redirect = _authorize_code(client, settings, signed, "alice", "alice-client", READ_SCOPE)
+        exchange_widening = client.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": "alice-client",
+                "code": read_code,
+                "redirect_uri": read_redirect,
+                "resource": settings.oauth.resource,
+                "code_verifier": read_verifier,
+                "scope": f"{READ_SCOPE} {DEPLOY_SCOPE}",
+            },
+        )
+        assert exchange_widening.status_code == 400
+        assert exchange_widening.json()["error"] == "invalid_scope"
+
     retained = grants.inspect_access("alice-client", deployed["access_token"])
     assert retained.scopes == all_scopes
+    narrowed_binding = grants.inspect_access("alice-client", narrowed_tokens["access_token"])
+    assert narrowed_binding.grant_id == retained.grant_id
+    assert narrowed_binding.scopes == (READ_SCOPE,)
     read_only_service_oauth = OAuthSettings(
         oauth.database_path,
         origin,
