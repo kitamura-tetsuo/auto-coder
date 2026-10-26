@@ -82,3 +82,26 @@ force the worker to meet an observation timeout. Host-side container stop
 policies still determine the ultimate shutdown deadline, outside this process's
 authority. Supervisor logs go to colored-capable stdout and to rotating
 `/runtime/supervisor/supervisor.log` without logging arbitrary request payloads.
+
+## Isolated CI integration
+
+The `Supervisor Integration Tests` GitHub Actions workflow builds the checked-out
+production image and runs process/Unix-socket regressions plus network-disabled,
+capability-dropped disposable Docker containers. The production image entrypoint
+must remain PID 1 with no accessible Docker socket/CLI. Separate release/beta
+volumes run a fixed harmless test child backed by the real management bridge:
+the job holds a true SIGTERM drain until that bridge writes a matching terminal
+receipt, rejects changed-payload replay, proves the peer channel remains live,
+checks a single successor on replayed RESTART, and reconstructs persisted state
+after killing the isolated Supervisor container. It never mounts production
+state, supplies GitHub tokens, invokes an LLM provider or runs the issue/PR
+scheduler against a real repository.
+
+The Docker fixture intentionally substitutes a test-only child launch command;
+it does not prove the full production `process-issues` task scheduler or a
+positive prepared-venv launch end to end. Those remain separate acceptance
+coverage to add before claiming all of #2600/REQ-011 is verified. The normal PR
+test shards exclude the `supervisor_integration` marker. To reproduce manually,
+build the checked-out image with `scripts/prepare_opencode_image.py`, export its
+tag as `AUTOCODER_SUPERVISOR_IMAGE`, and run
+`uv run pytest -m supervisor_integration tests/test_supervisor_container_integration.py`.
