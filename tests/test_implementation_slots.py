@@ -804,10 +804,13 @@ def test_corrupt_state_error_is_distinct_from_permission_failures(tmp_path):
 
 
 def test_cross_identity_processes_racing_final_slot_admit_exactly_one():
-    """TOG-40a52233e11d: flock serializes production admission across processes."""
+    """REQ-001/REQ-002/REQ-004: a published namespace is not consumed early."""
     shared_directory = Path(tempfile.mkdtemp(prefix="auto-coder-slot-race-", dir="/tmp"))
     storage_path = shared_directory / "implementation_slots.json"
     gate_path = shared_directory / "start"
+    published_path = shared_directory / "published"
+    encountered_path = shared_directory / "encountered"
+    release_path = shared_directory / "release"
     first_uid, second_uid, shared_gid = 65532, 65533, os.getgid()
     setup_commands = [
         ["mkdir", str(shared_directory / "runtime")],
@@ -817,15 +820,40 @@ def test_cross_identity_processes_racing_final_slot_admit_exactly_one():
         ["chmod", "2770", str(shared_directory / "runtime")],
     ]
     race_script = """
+import os
 import sys
 import time
 from pathlib import Path
+import auto_coder.runtime_locks as runtime_locks
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 
 storage_path, gate_path, owner_number = Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])
+published_path, encountered_path, release_path = map(Path, sys.argv[4:7])
+role = sys.argv[7]
+if role == "creator":
+    original_chown = runtime_locks.os.chown
+    def controlled_chown(path, uid, gid):
+        if Path(path).name == "locks":
+            published_path.touch()
+            while not release_path.exists():
+                time.sleep(0.005)
+        return original_chown(path, uid, gid)
+    runtime_locks.os.chown = controlled_chown
+else:
+    original_access = runtime_locks.os.access
+    def observed_access(path, mode):
+        accessible = original_access(path, mode)
+        if Path(path).name == "locks" and not accessible:
+            encountered_path.touch()
+        return accessible
+    runtime_locks.os.access = observed_access
+os.umask(0o022)
 print("READY", flush=True)
 while not gate_path.exists():
     time.sleep(0.005)
+if role == "contender":
+    while not published_path.exists():
+        time.sleep(0.005)
 execution_id = ImplementationSlotRepository("owner/repo", 1, storage_path).start_execution(
     ImplementationOwner("issue", owner_number)
 )
@@ -838,11 +866,23 @@ time.sleep(30)
             if os.geteuid() != 0:
                 command = ["sudo", "-n", *command]
             subprocess.run(command, check=True)
-        for uid, owner_number in ((first_uid, 701), (second_uid, 702)):
+        for uid, owner_number, role in ((first_uid, 701, "creator"), (second_uid, 702, "contender")):
             environment = os.environ.copy()
             environment["AUTO_CODER_RUNTIME_ROOT"] = str(shared_directory / "runtime")
             process = subprocess.Popen(
-                [*unix_identity_command(uid, shared_gid), sys.executable, "-c", race_script, str(storage_path), str(gate_path), str(owner_number)],
+                [
+                    *unix_identity_command(uid, shared_gid),
+                    sys.executable,
+                    "-c",
+                    race_script,
+                    str(storage_path),
+                    str(gate_path),
+                    str(owner_number),
+                    str(published_path),
+                    str(encountered_path),
+                    str(release_path),
+                    role,
+                ],
                 cwd=Path(__file__).parents[1],
                 stdout=subprocess.PIPE,
                 text=True,
@@ -853,6 +893,11 @@ time.sleep(30)
         assert [process.stdout.readline().strip() for process in processes] == ["READY", "READY"]
 
         gate_path.touch()
+        deadline = time.monotonic() + 5
+        while not encountered_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert encountered_path.exists()
+        release_path.touch()
         outcomes = [process.stdout.readline().strip() for process in processes]
 
         assert outcomes.count("DENIED") == 1
@@ -861,6 +906,7 @@ time.sleep(30)
         assert len(state) == 1
         assert set(state).issubset({"issue:701", "issue:702"})
     finally:
+        release_path.touch(exist_ok=True)
         for process in processes:
             process.terminate()
             process.wait(timeout=5)

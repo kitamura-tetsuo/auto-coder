@@ -27,6 +27,8 @@ class _FileLockState:
 
 _file_locks: weakref.WeakValueDictionary[tuple[int, str], _FileLockState] = weakref.WeakValueDictionary()
 _file_locks_guard = threading.Lock()
+_SHARED_DIRECTORY_WAIT_SECONDS = 5.0
+_SHARED_DIRECTORY_POLL_SECONDS = 0.01
 
 
 @contextmanager
@@ -121,10 +123,33 @@ def ensure_lock_directory(path: Path, shared_gid: Optional[int] = None) -> None:
         base.mkdir(parents=True, exist_ok=True)
         for part in directory.relative_to(base).parts:
             current /= part
+            created = False
+            deadline = time.monotonic() + _SHARED_DIRECTORY_WAIT_SECONDS
             try:
-                current.mkdir(mode=0o2770)
-            except FileExistsError:
-                continue
+                while True:
+                    try:
+                        current.mkdir(mode=0o2770)
+                        created = True
+                        break
+                    except FileExistsError:
+                        break
+                    except PermissionError:
+                        # A peer can have published the parent with its umask-
+                        # filtered mode and not yet applied the shared metadata.
+                        # Only retry that narrow, observable bootstrap window.
+                        if os.access(current.parent, os.W_OK | os.X_OK):
+                            raise
+                        if time.monotonic() >= deadline:
+                            raise
+                        time.sleep(_SHARED_DIRECTORY_POLL_SECONDS)
+                if not created:
+                    while not os.access(current, os.W_OK | os.X_OK):
+                        if time.monotonic() >= deadline:
+                            raise PermissionError(f"shared directory did not become writable: '{current}'")
+                        time.sleep(_SHARED_DIRECTORY_POLL_SECONDS)
+                    continue
+            except OSError:
+                raise
             try:
                 os.chown(current, -1, shared_gid)
             except OSError:
