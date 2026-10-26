@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
+import tempfile
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from auto_coder.tested_source_refs import TestedSourceError, TestedSourcePublisher, TestedSourceReadback
 from auto_coder.worker_versions import (
+    InstalledProvenance,
     PreparationFailure,
     PrepareIntent,
     ReadyReceipt,
@@ -86,6 +89,20 @@ class _ManagementEnvironmentPreparer(WorkerVersionPreparer):
         except WorkerVersionError as exc:
             raise WorkerVersionError(PreparationFailure.MISSING_CAPABILITY, "installed management entry point is unavailable or incompatible") from exc
 
+    def _observe(self, environment: Path) -> InstalledProvenance:
+        """Observe provenance without allowing the controller CWD onto sys.path."""
+
+        output = self._run([str(environment / "bin" / "python"), "-I", "-m", "auto_coder.build_provenance"], output=True, env=self._safe_environment())
+        try:
+            value = json.loads(output)
+            source = value["source_revision"]
+            version = value["distribution_version"]
+            if not source["available"] or not version["available"]:
+                raise ValueError("unavailable installed identity")
+            return InstalledProvenance(source_revision=source["value"], distribution_version=version["value"])
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "installed provenance response is invalid") from exc
+
 
 class ManagementVersionStager:
     """Management-only adapter around the immutable environment producer."""
@@ -138,6 +155,10 @@ class ManagementVersionStager:
             if not isinstance(raw, dict) or set(raw) != set(ManagementReadyReceipt.__dataclass_fields__):
                 raise ValueError("invalid schema")
             receipt = ManagementReadyReceipt(**raw)
+            environment = Path(receipt.environment_path)
+            expected_environment = path.parent / "venv"
+            if environment != expected_environment or self._content_identity(environment, probe=False) != receipt.installed_content_sha256:
+                raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "installed management content changed before verification")
             worker = self._preparer.read_ready(path.parent / "READY.json")
             proof = self._authenticated_proof(receipt.source_sha)
             expected = self._management_receipt(worker, proof)
@@ -155,10 +176,15 @@ class ManagementVersionStager:
         authority = self.config.source_authority
         if authority is None:
             raise WorkerVersionError(PreparationFailure.UNAVAILABLE, "tested-source authority is not configured")
-        proof = authority.read(source_sha)
-        if proof is None:
-            raise WorkerVersionError(PreparationFailure.UNAVAILABLE, "source has no immutable tested-source evidence")
-        authority.verify_run(proof.record, recorded_attempt=True)
+        try:
+            proof = authority.read(source_sha)
+            if proof is None:
+                raise WorkerVersionError(PreparationFailure.UNAVAILABLE, "source has no immutable tested-source evidence")
+            authority.verify_run(proof.record, recorded_attempt=True)
+        except WorkerVersionError:
+            raise
+        except (TestedSourceError, RuntimeError) as exc:
+            raise WorkerVersionError(PreparationFailure.UNAVAILABLE, "authoritative tested-source transport or evidence is unavailable") from exc
         record = proof.record
         lock = self._preparer._run_bytes(["git", "-C", str(self.config.source_repository.resolve()), "show", f"{source_sha}:uv.lock"])
         if proof.direct_commit_sha != source_sha or record.repository != self.config.trusted_repository or hashlib.sha256(lock).hexdigest() != record.lock_sha256:
@@ -219,21 +245,32 @@ class ManagementVersionStager:
     def _reserve_root(self) -> None:
         self._root.mkdir(parents=True, exist_ok=True, mode=0o700)
         marker = self._root / ".management-root.json"
+        reservation_lock = self._root / ".management-reservation.lock"
         expected = {"schema_version": 1, "instance_id": self.config.instance_id}
-        if marker.exists():
-            self._verify_root_reservation()
-            return
-        foreign = [entry for entry in self._root.iterdir() if entry.name != ".management-root.json"]
-        if foreign:
+        if not marker.exists() and any(entry.name != reservation_lock.name and not entry.name.startswith(".management-root-") for entry in self._root.iterdir()):
             raise WorkerVersionError(PreparationFailure.CONFLICT, "version root contains unreserved foreign state")
-        try:
-            with marker.open("x", encoding="utf-8") as stream:
+        with reservation_lock.open("a+b") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            if marker.exists():
+                self._verify_root_reservation()
+                return
+            for stale in self._root.glob(".management-root-*"):
+                stale.unlink()
+            allowed = {marker.name, reservation_lock.name}
+            if any(entry.name not in allowed for entry in self._root.iterdir()):
+                raise WorkerVersionError(PreparationFailure.CONFLICT, "version root contains unreserved foreign state")
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=self._root, prefix=".management-root-", delete=False) as stream:
                 json.dump(expected, stream, sort_keys=True, separators=(",", ":"))
                 stream.write("\n")
                 stream.flush()
                 os.fsync(stream.fileno())
-        except FileExistsError:
-            self._verify_root_reservation()
+                temporary = Path(stream.name)
+            os.replace(temporary, marker)
+            directory = os.open(self._root, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
 
     def _verify_root_reservation(self) -> None:
         try:
@@ -261,16 +298,19 @@ class ManagementVersionStager:
         env = self._preparer._safe_environment()
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         try:
-            self._preparer._run([str(environment / "bin" / "python"), "-c", script, str(self.config.management_config)], env=env)
+            self._preparer._run([str(environment / "bin" / "python"), "-I", "-c", script, str(self.config.management_config)], env=env)
             self._preparer._run([str(environment / "bin" / "auto-coder"), "management", "serve", "--help"], env=env)
         except WorkerVersionError as exc:
             raise WorkerVersionError(PreparationFailure.MISSING_CAPABILITY, "installed management serving configuration is incompatible") from exc
 
-    def _content_identity(self, environment: Path) -> str:
-        self._verify_compatibility(environment)
+    def _content_identity(self, environment: Path, *, probe: bool = True) -> str:
+        if probe:
+            self._verify_compatibility(environment)
         digest = hashlib.sha256()
         for path in sorted(environment.rglob("*"), key=lambda item: item.relative_to(environment).as_posix()):
             relative = path.relative_to(environment).as_posix().encode()
+            if "__pycache__" in path.parts or path.suffix == ".pyc":
+                continue
             if path.is_symlink():
                 digest.update(b"L\0" + relative + b"\0" + os.readlink(path).encode() + b"\0")
             elif path.is_file():

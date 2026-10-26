@@ -40,6 +40,7 @@ def _fixture(tmp_path: Path, *, serve: bool = True) -> tuple[ManagementRuntimeCo
     management = package / "management"
     management.mkdir(parents=True)
     (package / "__init__.py").write_text("")
+    (package / "lazy_feature.py").write_text("VALUE = 7\n")
     (management / "__init__.py").write_text("")
     (package / "build_provenance.py").write_text(
         "import json,os,sys\nfrom pathlib import Path\np=Path(__file__).with_name('_identity.json')\n"
@@ -103,6 +104,39 @@ def test_real_prepare_lookup_reuse_and_installed_content_tampering(tmp_path: Pat
     with pytest.raises(WorkerVersionError) as caught:
         stager.lookup(ready)
     assert caught.value.failure is PreparationFailure.VERIFICATION_MISMATCH
+
+
+def test_lookup_hashes_before_candidate_execution_and_ignores_runtime_bytecode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands: None) -> None:
+    config, sha, _authority = _fixture(tmp_path)
+    stager = ManagementVersionStager(config)
+    prepared = stager.prepare(ManagementPrepareIntent(sha, "first"))
+    ready = Path(prepared.receipt.environment_path).parent / "MANAGEMENT_READY.json"
+    interpreter = prepared.receipt.interpreter_path
+
+    _run([interpreter, "-c", "import auto_coder.lazy_feature"])
+    assert stager.lookup(ready) == prepared.receipt
+
+    sentinel = tmp_path / "candidate-executed"
+    provenance = Path(_run([interpreter, "-I", "-c", "import auto_coder.build_provenance as p; print(p.__file__)"]).splitlines()[-1])
+    provenance.write_text(provenance.read_text() + f"\nopen({str(sentinel)!r}, 'w').write('executed')\n")
+    with pytest.raises(WorkerVersionError) as caught:
+        stager.lookup(ready)
+    assert caught.value.failure is PreparationFailure.VERIFICATION_MISMATCH
+    assert not sentinel.exists()
+
+
+def test_lookup_isolates_candidate_imports_from_controller_working_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands: None) -> None:
+    config, sha, _authority = _fixture(tmp_path)
+    prepared = ManagementVersionStager(config).prepare(ManagementPrepareIntent(sha, "first"))
+    ready = Path(prepared.receipt.environment_path).parent / "MANAGEMENT_READY.json"
+    foreign = tmp_path / "foreign-cwd" / "auto_coder"
+    foreign.mkdir(parents=True)
+    sentinel = tmp_path / "foreign-imported"
+    (foreign / "__init__.py").write_text(f"open({str(sentinel)!r}, 'w').write('imported')\n")
+    monkeypatch.chdir(foreign.parent)
+
+    assert ManagementVersionStager(config).lookup(ready) == prepared.receipt
+    assert not sentinel.exists()
 
 
 def test_real_prepare_rejects_missing_serving_capability(tmp_path: Path, _use_real_commands: None) -> None:

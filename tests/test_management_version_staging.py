@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import errno
 import hashlib
 from pathlib import Path
@@ -36,6 +37,11 @@ class Authority:
             raise TestedSourceError("invented run")
 
 
+class TransportFailureAuthority(Authority):
+    def read(self, _sha: str) -> SourceReadback | None:
+        raise RuntimeError("GitHub Git-data request unavailable")
+
+
 def _config(tmp_path: Path, **changes: object) -> ManagementRuntimeConfig:
     config_file = tmp_path / "management.yaml"
     config_file.write_text("fixture")
@@ -70,6 +76,18 @@ def test_same_sha_fabricated_run_is_authenticated_before_install(tmp_path: Path)
     assert authority.verified
 
 
+def test_source_authority_transport_failure_is_typed_before_install(tmp_path: Path) -> None:
+    config = _config(tmp_path, source_authority=TransportFailureAuthority(None))
+    config.source_repository.mkdir()
+    stager = ManagementVersionStager(config)
+    stager._preparer.prepare = lambda *_args: pytest.fail("installer must not run")  # type: ignore[method-assign]
+
+    with pytest.raises(WorkerVersionError) as caught:
+        stager.prepare(ManagementPrepareIntent("a" * 40, "attempt"))
+
+    assert caught.value.failure is PreparationFailure.UNAVAILABLE
+
+
 @pytest.mark.parametrize("field", ["active_environment", "rollback_environment"])
 def test_management_root_must_not_overlap_protected_runtime(tmp_path: Path, field: str) -> None:
     root = tmp_path / "versions"
@@ -94,6 +112,20 @@ def test_existing_worker_root_is_not_adopted(tmp_path: Path) -> None:
     with pytest.raises(WorkerVersionError) as caught:
         stager._reserve_root()
     assert caught.value.failure is PreparationFailure.CONFLICT
+
+
+def test_concurrent_root_reservations_publish_one_complete_marker(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+
+    def reserve(_: int) -> None:
+        stager = ManagementVersionStager(config)
+        stager._validate_boundaries()
+        stager._reserve_root()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(reserve, range(32)))
+
+    assert (config.version_root / ".management-root.json").read_text() == '{"instance_id":"manager-a","schema_version":1}\n'
 
 
 def test_adapter_publication_space_error_is_typed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
