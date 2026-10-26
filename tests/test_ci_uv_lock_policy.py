@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -15,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 UV_VERSION = "0.7.22"
 SETUP_UV_ACTION = "astral-sh/setup-uv@v7"
+SHELL_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
 def _run_text(step: object) -> str:
@@ -44,9 +46,43 @@ def _shell_commands(script: str) -> list[list[str]]:
     return commands
 
 
+def _command_argv(command: list[str]) -> list[str]:
+    """Remove shell environment prefixes without hiding the executable."""
+    index = 0
+    if command[:1] == ["env"]:
+        index = 1
+    while index < len(command) and SHELL_ASSIGNMENT.match(command[index]):
+        index += 1
+    return command[index:]
+
+
+def _installs_checked_out_project(arguments: list[str]) -> bool:
+    for index, argument in enumerate(arguments):
+        if argument == "." or argument.startswith(".["):
+            return True
+        if argument in {"-e", "--editable"} and index + 1 < len(arguments):
+            target = arguments[index + 1]
+            if target == "." or target.startswith(".["):
+                return True
+    return False
+
+
+def _is_project_install(command: list[str]) -> bool:
+    argv = _command_argv(command)
+    if argv[:2] == ["uv", "sync"]:
+        return True
+    if argv[:3] == ["uv", "pip", "install"]:
+        return _installs_checked_out_project(argv[3:])
+    if argv[:2] == ["pip", "install"]:
+        return _installs_checked_out_project(argv[2:])
+    if len(argv) >= 4 and argv[0] in {"python", "python3"} and argv[1:4] == ["-m", "pip", "install"]:
+        return _installs_checked_out_project(argv[4:])
+    return False
+
+
 def _install_commands(steps: list[object]) -> list[list[str]]:
     commands = [command for step in steps for command in _shell_commands(_run_text(step))]
-    return [command for command in commands if command[:2] == ["uv", "sync"] or command[:3] == ["uv", "pip", "install"] or command[:2] == ["pip", "install"]]
+    return [command for command in commands if _is_project_install(command)]
 
 
 def _assert_workflow_policy(workflow_paths: list[Path]) -> set[str]:
@@ -65,8 +101,9 @@ def _assert_workflow_policy(workflow_paths: list[Path]) -> set[str]:
             assert len(setup_steps) == 1, f"{identity} must use {SETUP_UV_ACTION} exactly once"
             assert setup_steps[0].get("with", {}).get("version") == UV_VERSION, f"{identity} must pin uv {UV_VERSION}"
             for command in install_commands:
-                assert command[:2] == ["uv", "sync"], f"{identity} has an unlocked install: {shlex.join(command)}"
-                assert "--locked" in command[2:], f"{identity} has an unlocked install: {shlex.join(command)}"
+                argv = _command_argv(command)
+                assert argv[:2] == ["uv", "sync"], f"{identity} has an unlocked install: {shlex.join(command)}"
+                assert "--locked" in argv[2:], f"{identity} has an unlocked install: {shlex.join(command)}"
 
             job_commands = "\n".join(_run_text(step) for step in steps)
             assert "astral.sh/uv/install.sh" not in job_commands
@@ -99,6 +136,8 @@ def test_every_active_project_installing_workflow_uses_one_pinned_locked_uv_setu
         (UV_VERSION, "uv sync", False),
         (UV_VERSION, "uv sync # --locked", False),
         (UV_VERSION, "uv sync --locked\nuv pip install .", False),
+        (UV_VERSION, "UV_NO_PROGRESS=1 uv sync", False),
+        (UV_VERSION, "uv sync --locked\npython -m pip install .", False),
         (None, "uv sync --locked", False),
         ("0.7.21", "uv sync --locked", False),
     ],
@@ -118,12 +157,29 @@ jobs:
 """,
         encoding="utf-8",
     )
+    valid_path = tmp_path / "existing-valid.yml"
+    valid_path.write_text(
+        f"""name: Existing valid workflow
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: {SETUP_UV_ACTION}
+        with:
+          version: "{UV_VERSION}"
+      - run: uv sync --locked
+""",
+        encoding="utf-8",
+    )
 
     if valid:
-        assert _assert_workflow_policy([workflow_path]) == {"future.yaml:python"}
+        assert _assert_workflow_policy([valid_path, workflow_path]) == {
+            "existing-valid.yml:python",
+            "future.yaml:python",
+        }
     else:
         with pytest.raises(AssertionError):
-            _assert_workflow_policy([workflow_path])
+            _assert_workflow_policy([valid_path, workflow_path])
 
 
 def _write_lock_fixture(project: Path) -> None:
