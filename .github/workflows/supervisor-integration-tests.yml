@@ -11,7 +11,7 @@ jobs:
   supervisor-integration:
     name: Supervisor Integration Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       UV_FROZEN: "1"
     steps:
@@ -52,7 +52,7 @@ jobs:
             --log-dir supervisor-integration-logs
 
       - name: Verify isolated Supervisor containers
-        timeout-minutes: 15
+        timeout-minutes: 40
         env:
           AUTOCODER_SUPERVISOR_IMAGE: auto-coder:supervisor-${{ github.sha }}
           AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION: "1"

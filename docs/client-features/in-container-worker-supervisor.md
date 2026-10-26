@@ -116,10 +116,24 @@ state, supplies GitHub tokens, invokes an LLM provider or runs the issue/PR
 scheduler against a real repository.
 
 The Docker fixture intentionally substitutes a test-only child launch command;
-it does not prove the full production `process-issues` task scheduler or a
-positive prepared-venv launch end to end. Those remain separate acceptance
-coverage to add before claiming all of #2600/REQ-011 is verified. The normal PR
-test shards exclude the `supervisor_integration` marker. To reproduce manually,
-build the checked-out image with `scripts/prepare_opencode_image.py`, export its
-tag as `AUTOCODER_SUPERVISOR_IMAGE`, and run
+the additional acceptance test instead runs the unchanged production worker
+Compose command (`python -m auto_coder.worker_supervisor`) as PID 1. A disposable
+installer container first creates a real #2610 READY environment through Git
+checkout, frozen `uv` installation, embedded source provenance and independent
+READY verification. Only the installer can download dependencies. The actual
+worker container has no network, usable GitHub/provider credentials, Docker
+socket or Docker CLI; it uses a fictitious private repository/ownership volume.
+The test verifies the real bootstrap `process-issues` UDS lifetime and graceful
+exit, then a positive staged `process-issues` start using the READY-selected
+interpreter and a fresh worker-owned, nonce-bound UDS observation. Replacing
+READY with a different independently valid runtime identity at the same source
+SHA, changing locked inputs, or replacing the child lifetime must invalidate
+the original binding. Held SIGTERM drain, changed operation payload, response
+loss, reconstruction and peer noninterference remain separately tested against
+the actual worker management bridge. No real GitHub issue is dispatched.
+
+The normal PR test shards exclude the `supervisor_integration` marker. To
+reproduce manually, build the checked-out image with
+`scripts/prepare_opencode_image.py`, export its tag as
+`AUTOCODER_SUPERVISOR_IMAGE`, and run
 `uv run pytest -m supervisor_integration tests/test_supervisor_container_integration.py`.

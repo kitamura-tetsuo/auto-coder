@@ -1,5 +1,6 @@
 """Static guardrails for the dedicated real-process/container integration gate."""
 
+import re
 from pathlib import Path
 
 import yaml
@@ -22,6 +23,7 @@ def test_supervisor_integration_job_runs_independently_on_pull_requests() -> Non
     container = steps["Verify isolated Supervisor containers"]
     assert "-m supervisor_integration" in container["run"]
     assert "tests/test_supervisor_container_integration.py" in container["run"]
+    assert container["timeout-minutes"] >= 40
     assert container["env"]["AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION"] == "1"
     assert container["env"]["AUTOCODER_SUPERVISOR_IMAGE"]
 
@@ -39,3 +41,16 @@ def test_container_fixture_has_no_host_docker_or_external_network_access() -> No
         volumes.extend(service["volumes"])
     assert all("docker.sock" not in mount for mount in volumes)
     assert all("/runtime" in mount or "/workspace" in mount or "/fixtures" in mount for mount in volumes)
+
+
+def test_production_acceptance_covers_real_ready_and_unmodified_worker_command() -> None:
+    acceptance = (ROOT / "tests/test_supervisor_container_integration.py").read_text()
+    preparer = (ROOT / "tests/fixtures/supervisor_stage_ready.py").read_text()
+    assert "def test_real_process_issues_bootstrap_and_staged_ready_binding" in acceptance
+    assert "supervisor_stage_ready.py" in acceptance
+    assert re.search(r'"--network",\s*"none"', acceptance)
+    assert re.search(r'"--entrypoint",\s*"python"', acceptance)
+    assert '"-m", "auto_coder.worker_supervisor"' in acceptance
+    assert "WorkerVersionPreparer(" in preparer
+    assert ".prepare(PrepareIntent(" in preparer
+    assert ".read_ready(ready_path)" in preparer

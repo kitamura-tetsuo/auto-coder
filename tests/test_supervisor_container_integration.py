@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -76,6 +77,16 @@ def _container_facts(container: str) -> dict[str, object]:
     )
     result = _docker("exec", container, "python", "-c", script)
     return json.loads(result.stdout)
+
+
+def _worker_observation(container: str) -> dict[str, object]:
+    """Read fresh #2599 evidence directly from the worker, not cached state."""
+    nonce = uuid.uuid4().hex
+    result = _docker("exec", container, "python", "/fixtures/supervisor_observation_client.py", nonce, timeout=10)
+    observation = json.loads(result.stdout)
+    assert observation["schema_version"] == 1
+    assert observation["nonce"] == nonce
+    return observation
 
 
 def test_production_entrypoint_is_private_pid1_without_docker_socket(tmp_path: Path) -> None:
@@ -231,3 +242,198 @@ def test_release_beta_held_drain_replay_restart_and_crash_reconstruction(tmp_pat
         if logs.stdout or logs.stderr:
             print(logs.stdout + logs.stderr)
         compose_command("down", "--remove-orphans", "--timeout", "3", check=False)
+
+
+def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path) -> None:
+    """REQ-011: run the unchanged worker Compose PID1 command and #2610 runtime.
+
+    Only the isolated preparation container can download dependencies; the
+    Supervisor container cannot reach GitHub or any LLM provider.
+    """
+    image = _image()
+    source = Path(os.environ.get("GITHUB_WORKSPACE", str(Path(__file__).parents[1]))).resolve()
+    revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=source, check=True, capture_output=True, text=True).stdout.strip()
+    runtime, workspace, routing = (tmp_path / name for name in ("runtime", "workspace", "routing"))
+    for directory in (runtime, workspace, routing, runtime / "home", runtime / "logs"):
+        directory.mkdir(exist_ok=True)
+    repository = "fixture/production"
+    (routing / "ownership.json").write_text(json.dumps({repository: "release"}))
+    (runtime / "llm_config.toml").write_text('[backend]\norder = ["jules"]\n\n[backends.jules]\nbackend_type = "jules"\nenabled = true\napi_key = "ci-offline-unused"\n')
+    fixtures = _FIXTURES.resolve()
+    user = f"{os.getuid()}:{os.getgid()}"
+
+    try:
+        prepared = _docker(
+            "run",
+            "--rm",
+            "--network",
+            "bridge",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges:true",
+            "--user",
+            user,
+            "-v",
+            f"{source}:/source:ro",
+            "-v",
+            f"{runtime}:/runtime",
+            "-v",
+            f"{fixtures}:/fixtures:ro",
+            "-e",
+            "HOME=/runtime/home",
+            "--entrypoint",
+            "python",
+            image,
+            "/fixtures/supervisor_stage_ready.py",
+            revision,
+            timeout=1200,
+        )
+    except subprocess.CalledProcessError as error:
+        pytest.fail(f"Real staged preparation failed:\n{error.stdout[-8000:]}\n{error.stderr[-8000:]}")
+    staged = json.loads(prepared.stdout.strip().splitlines()[-1])
+    ready = staged["receipt"]
+    assert ready["source_sha"] == ready["installed_provenance"]["source_revision"] == revision
+    assert ready["installed_runtime_id"] != "bootstrap"
+    ready_path = runtime / Path(staged["ready_path"]).relative_to("/runtime")
+    marker_path = ready_path.parent / "venv" / ".auto-coder-runtime-id"
+    lock_path = ready_path.parent / "source" / "uv.lock"
+    original_ready, original_marker, original_lock = ready_path.read_bytes(), marker_path.read_bytes(), lock_path.read_bytes()
+
+    container = "supervisor-production-" + uuid.uuid4().hex[:12]
+    try:
+        _docker(
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            container,
+            "--network",
+            "none",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges:true",
+            "--user",
+            user,
+            "--entrypoint",
+            "python",
+            "-v",
+            f"{runtime}:/runtime",
+            "-v",
+            f"{workspace}:/workspace",
+            "-v",
+            f"{routing}:/routing:ro",
+            "-v",
+            f"{fixtures}:/fixtures:ro",
+            "-e",
+            "AUTO_CODER_SUPERVISOR_INSTANCE_ID=release-worker",
+            "-e",
+            "AUTO_CODER_CHANNEL=release",
+            "-e",
+            f"AUTO_CODER_REPOSITORY={repository}",
+            "-e",
+            "AUTO_CODER_RUNTIME_ROOT=/runtime",
+            "-e",
+            "AUTO_CODER_WORKSPACE_ROOT=/workspace",
+            "-e",
+            "AUTO_CODER_OWNERSHIP_FILE=/routing/ownership.json",
+            "-e",
+            "AUTO_CODER_ARTIFACT_DIGEST=ci-isolated",
+            "-e",
+            "AUTO_CODER_SUPERVISOR_AUTO_START=1",
+            "-e",
+            "AUTO_CODER_CONFIG_PATH=/runtime/llm_config.toml",
+            "-e",
+            "AUTO_CODER_HEALTH_LOG_ENABLED=0",
+            "-e",
+            "GITHUB_TOKEN=nonfunctional-ci-placeholder",
+            "-e",
+            "HOME=/runtime/home",
+            image,
+            "-m",
+            "auto_coder.worker_supervisor",
+        )
+        facts = _wait_for(lambda: value if (value := _container_facts(container))["socket"] else None)
+        assert facts["pid1"][:3] == ["python", "-m", "auto_coder.worker_supervisor"]
+        assert facts["docker_socket"] is False
+        assert facts["docker_binary"] is None
+
+        bootstrap = _wait_for(lambda: _inspect_worker(container), timeout=60)
+        assert bootstrap["runtime_id"] == "bootstrap"
+        assert bootstrap["binding_status"] == "UNAVAILABLE"
+        initial_observation = _worker_observation(container)
+        assert initial_observation["process_run_id"] == bootstrap["process_run_id"]
+        assert initial_observation["artifact"]["source_revision"]["value"] == revision
+        initial_stop = {"operation_id": "bootstrap-stop", "operation": "REQUEST_GRACEFUL_STOP", "expected_generation": str(bootstrap["deployment_generation"]), "expected_process_run_id": str(bootstrap["process_run_id"])}
+        assert _control(container, initial_stop)["status"] in {"DRAINING", "STOPPED"}
+        _wait_for(lambda: _control(container, initial_stop)["status"] == "STOPPED", timeout=90)
+
+        staged_id = ready["installed_runtime_id"]
+        assert _control(container, {"operation_id": "staged-start", "operation": "START", "runtime_id": staged_id})["status"] == "RUNNING"
+        bound = _wait_for(lambda: worker if (worker := _inspect_worker(container)) and worker.get("binding_status") == "VERIFIED" else None, timeout=90)
+        binding = bound["runtime_binding"]
+        assert bound["runtime_id"] == staged_id
+        assert binding["content_identity"] == ready["content_identity"]
+        assert binding["lock_sha256"] == ready["lock_sha256"]
+        assert binding["source_sha"] == revision
+        assert binding["process_run_id"] == bound["process_run_id"]
+        assert binding["deployment_generation"] == bound["deployment_generation"]
+        assert binding["start_token"] == bound["start_token"]
+        live = _worker_observation(container)
+        assert live["process_run_id"] == bound["process_run_id"]
+        assert live["deployment_generation"] == binding["deployment_generation"]
+        assert live["artifact"]["distribution_version"]["value"] == ready["distribution_version"]
+        assert live["artifact"]["source_revision"]["value"] == revision
+
+        # Independently valid replacement READY, identical source SHA, distinct
+        # runtime/content identity: it must not inherit the old live binding.
+        alternative = dict(ready)
+        alternative_id = uuid.uuid4().hex
+        alternative["installed_runtime_id"] = alternative_id
+        fields = ("attempt_id", "runtime_profile", "environment_path", "interpreter_path", "source_sha", "distribution_version", "lock_sha256", "installed_runtime_id")
+        alternative["content_identity"] = hashlib.sha256(json.dumps({name: alternative[name] for name in fields}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        try:
+            marker_path.write_text(alternative_id + "\n")
+            ready_path.write_text(json.dumps(alternative))
+            checked = json.loads(_docker("exec", container, "python", "/fixtures/supervisor_stage_ready.py", "--verify", staged["ready_path"], timeout=20).stdout)
+            assert checked["installed_runtime_id"] == alternative_id
+            assert checked["source_sha"] == revision
+            assert checked["content_identity"] != binding["content_identity"]
+            unbound = _control(container, {"operation_id": "substituted-ready", "operation": "INSPECT"})
+            assert unbound["status"] == "RUNNING"
+            assert unbound["worker"]["binding_status"] == "UNAVAILABLE"
+            assert "runtime_binding" not in unbound["worker"]
+        finally:
+            marker_path.write_bytes(original_marker)
+            ready_path.write_bytes(original_ready)
+        _wait_for(lambda: worker if (worker := _inspect_worker(container)) and worker.get("binding_status") == "VERIFIED" else None)
+
+        try:
+            lock_path.write_bytes(original_lock + b"\nsubstituted lock for the same revision\n")
+            unbound_lock = _control(container, {"operation_id": "substituted-lock", "operation": "INSPECT"})
+            assert unbound_lock["worker"]["binding_status"] == "UNAVAILABLE"
+            assert "runtime_binding" not in unbound_lock["worker"]
+        finally:
+            lock_path.write_bytes(original_lock)
+        _wait_for(lambda: worker if (worker := _inspect_worker(container)) and worker.get("binding_status") == "VERIFIED" else None)
+
+        stop = {"operation_id": "staged-stop", "operation": "REQUEST_GRACEFUL_STOP", "expected_generation": str(bound["deployment_generation"]), "expected_process_run_id": str(bound["process_run_id"])}
+        assert _control(container, stop)["status"] in {"DRAINING", "STOPPED"}
+        _wait_for(lambda: _control(container, stop)["status"] == "STOPPED", timeout=90)
+        assert _control(container, {**stop, "operation": "RESTART_WORKER"})["status"] == "CONFLICT"
+
+        assert _control(container, {"operation_id": "staged-next", "operation": "START", "runtime_id": staged_id})["status"] == "RUNNING"
+        successor = _wait_for(lambda: worker if (worker := _inspect_worker(container)) and worker.get("binding_status") == "VERIFIED" else None, timeout=90)
+        assert successor["runtime_binding"]["content_identity"] == binding["content_identity"]
+        assert successor["process_run_id"] != bound["process_run_id"]
+        assert successor["deployment_generation"] != bound["deployment_generation"]
+        assert _control(container, {"operation_id": "stale-stop", "operation": "REQUEST_GRACEFUL_STOP", "expected_process_run_id": str(bound["process_run_id"]), "expected_generation": str(bound["deployment_generation"])})["status"] == "CONFLICT"
+        final_stop = {"operation_id": "successor-stop", "operation": "REQUEST_GRACEFUL_STOP", "expected_generation": str(successor["deployment_generation"]), "expected_process_run_id": str(successor["process_run_id"])}
+        assert _control(container, final_stop)["status"] in {"DRAINING", "STOPPED"}
+        _wait_for(lambda: _control(container, final_stop)["status"] == "STOPPED", timeout=90)
+    finally:
+        logs = _docker("logs", container, timeout=10, check=False)
+        if logs.stdout or logs.stderr:
+            print(logs.stdout + logs.stderr)
+        _docker("rm", "-f", container, check=False)
