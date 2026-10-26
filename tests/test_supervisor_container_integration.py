@@ -453,38 +453,52 @@ def test_independently_prepared_staged_restart_preserves_held_intent(tmp_path: P
     user = f"{os.getuid()}:{os.getgid()}"
 
     prepared = []
-    for attempt in ("held-staged-a", "held-staged-b"):
-        try:
-            result = _docker(
-                "run",
-                "--rm",
-                "--network",
-                "bridge",
-                "--cap-drop",
-                "ALL",
-                "--security-opt",
-                "no-new-privileges:true",
-                "--user",
-                user,
-                "-v",
-                f"{source}:/source:ro",
-                "-v",
-                f"{runtime}:/runtime",
-                "-v",
-                f"{fixtures}:/fixtures:ro",
-                "-e",
-                "HOME=/runtime/home",
-                "--entrypoint",
-                "python",
-                image,
-                "/fixtures/supervisor_stage_ready.py",
-                revision,
-                attempt,
-                timeout=1200,
-            )
-        except subprocess.CalledProcessError as error:
-            pytest.fail(f"Independent staged preparation {attempt} failed:\n{error.stdout[-8000:]}\n{error.stderr[-8000:]}")
-        prepared.append(json.loads(result.stdout.strip().splitlines()[-1])["receipt"])
+    first_attempt_path: Path | None = None
+    held_first_attempt = runtime / "held-first-ready"
+    try:
+        for attempt in ("held-staged-a", "held-staged-b"):
+            try:
+                result = _docker(
+                    "run",
+                    "--rm",
+                    "--network",
+                    "bridge",
+                    "--cap-drop",
+                    "ALL",
+                    "--security-opt",
+                    "no-new-privileges:true",
+                    "--user",
+                    user,
+                    "-v",
+                    f"{source}:/source:ro",
+                    "-v",
+                    f"{runtime}:/runtime",
+                    "-v",
+                    f"{fixtures}:/fixtures:ro",
+                    "-e",
+                    "HOME=/runtime/home",
+                    "--entrypoint",
+                    "python",
+                    image,
+                    "/fixtures/supervisor_stage_ready.py",
+                    revision,
+                    attempt,
+                    timeout=1200,
+                )
+            except subprocess.CalledProcessError as error:
+                pytest.fail(f"Independent staged preparation {attempt} failed:\n{error.stdout[-8000:]}\n{error.stderr[-8000:]}")
+            stage = json.loads(result.stdout.strip().splitlines()[-1])
+            prepared.append(stage["receipt"])
+            if first_attempt_path is None:
+                # Preparation correctly reuses an existing READY for the same
+                # source/lock/profile. Temporarily move only this disposable
+                # attempt out of discovery to make a second *real* install.
+                first_attempt_path = runtime / Path(stage["ready_path"]).relative_to("/runtime")
+                first_attempt_path = first_attempt_path.parent
+                first_attempt_path.rename(held_first_attempt)
+    finally:
+        if first_attempt_path is not None and held_first_attempt.exists():
+            held_first_attempt.rename(first_attempt_path)
     original, destination = prepared
     assert original["source_sha"] == destination["source_sha"] == revision
     assert original["installed_runtime_id"] != destination["installed_runtime_id"]
