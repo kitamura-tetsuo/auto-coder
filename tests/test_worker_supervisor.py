@@ -4,7 +4,6 @@ import os
 import socket
 import subprocess
 import sys
-import threading
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -75,43 +74,43 @@ def test_control_socket_survives_client_disconnect_and_remains_queryable(tmp_pat
         process.wait(timeout=5)
 
 
-def test_control_socket_survives_child_exit_before_lifetime_capture(tmp_path: Path) -> None:
+def test_control_socket_survives_child_exit_before_lifetime_capture(
+    tmp_path: Path,
+    _use_real_commands: None,
+    _use_real_sleep: None,
+) -> None:
     launches = tmp_path / "launches"
-    child_command = (
-        sys.executable,
-        "-c",
-        f"from pathlib import Path; Path({str(launches)!r}).open('a').write('x')",
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    child_script = f"from pathlib import Path; Path({str(launches)!r}).open('a').write('x')"
+    entry = (
+        "import sys; from pathlib import Path; "
+        "from auto_coder.worker_supervisor import SupervisorConfig, WorkerSupervisor; "
+        f"config=SupervisorConfig('beta-worker','beta','owner/repo',Path({str(tmp_path)!r}),Path({str(workspace)!r}),Path(sys.executable),"
+        f"Path({str(tmp_path / 'versions')!r}),(sys.executable,'-c',{child_script!r})); "
+        "supervisor=WorkerSupervisor(config); original=supervisor._start_token; first=[True]\n"
+        "def sample(pid):\n"
+        " if first[0]:\n"
+        "  first[0]=False; supervisor.child.wait(timeout=5)\n"
+        " return original(pid)\n"
+        "supervisor._start_token=sample; supervisor.run()"
     )
-    supervisor = WorkerSupervisor(config(tmp_path, child_command))
-    original_start_token = supervisor._start_token
-    first_sample = True
-
-    def sample_after_child_exit(pid: int) -> str:
-        nonlocal first_sample
-        if first_sample:
-            first_sample = False
-            assert supervisor.child is not None
-            supervisor.child.wait(timeout=5)
-        return original_start_token(pid)
-
-    supervisor._start_token = sample_after_child_exit  # type: ignore[method-assign]
-    thread = threading.Thread(target=supervisor.run, daemon=True)
-    thread.start()
-
-    started = request(supervisor.control_socket, {"operation_id": "start", "operation": "START"})
-    assert started == {
-        "status": "UNKNOWN",
-        "reason": "child lifetime unavailable during startup",
-    }
-    inspected = request(supervisor.control_socket, {"operation_id": "inspect", "operation": "INSPECT"})
-    assert inspected["status"] == "UNKNOWN"
-    assert inspected["supervisor_incarnation"] == supervisor.incarnation
-    assert thread.is_alive()
-    assert request(
-        supervisor.control_socket,
-        {"operation_id": "retry", "operation": "START"},
-    ) == {"status": "NEEDS_ATTENTION"}
-    assert launches.read_text() == "x"
+    process = subprocess.Popen([sys.executable, "-c", entry])
+    endpoint = tmp_path / "supervisor" / "control.sock"
+    try:
+        started = request(endpoint, {"operation_id": "start", "operation": "START"})
+        assert started == {
+            "status": "UNKNOWN",
+            "reason": "child lifetime unavailable during startup",
+        }
+        inspected = request(endpoint, {"operation_id": "inspect", "operation": "INSPECT"})
+        assert inspected["status"] == "UNKNOWN"
+        assert process.poll() is None
+        assert request(endpoint, {"operation_id": "retry", "operation": "START"}) == {"status": "NEEDS_ATTENTION"}
+        assert launches.read_text() == "x"
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
 
 
 def test_same_id_changed_operation_preserves_original_acceptance(tmp_path: Path) -> None:
