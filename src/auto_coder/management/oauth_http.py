@@ -21,7 +21,8 @@ from mcp.server.auth.routes import create_auth_routes  # official SDK route prim
 from pydantic import AnyHttpUrl, TypeAdapter
 from starlette.concurrency import run_in_threadpool
 
-from .oauth_config import SUPPORTED_SCOPE, OAuthSettings
+from .action_scopes import validate_scope_set
+from .oauth_config import OAuthSettings
 from .oauth_grants import (
     AuthorizationRequest,
     InvalidClient,
@@ -69,9 +70,10 @@ def _single(values: Mapping[str, list[str]], names: set[str]) -> bool:
 def _scope(raw: str | None) -> tuple[str, ...] | None:
     if raw is None:
         return None
-    if not raw or raw.split() != [SUPPORTED_SCOPE]:
-        raise InvalidScope()
-    return (SUPPORTED_SCOPE,)
+    try:
+        return validate_scope_set(tuple(raw.split()))
+    except ValueError as exc:
+        raise InvalidScope() from exc
 
 
 def _redirect(result: object, *, denied: bool = False) -> RedirectResponse:
@@ -142,7 +144,7 @@ def create_management_auth_app(
                 "response_types_supported": ["code"],
                 "grant_types_supported": ["authorization_code", "refresh_token"],
                 "code_challenge_methods_supported": ["S256"],
-                "scopes_supported": [SUPPORTED_SCOPE],
+                "scopes_supported": list(settings.enabled_scopes),
                 "token_endpoint_auth_methods_supported": ["none"],
                 "revocation_endpoint_auth_methods_supported": ["none"],
                 "authorization_response_iss_parameter_supported": True,
@@ -222,7 +224,8 @@ def create_management_auth_app(
                 "csrf": csrf,
                 "clientId": pending.client_id,
                 "resource": settings.resource,
-                "scope": SUPPORTED_SCOPE,
+                "scope": " ".join(pending.scopes),
+                "scopeLabels": [{"scope": scope, "label": {"auto-coder.read": "Read access", "auto-coder.operate": "Runtime-operation access", "auto-coder.deploy": "Deployment access"}[scope]} for scope in pending.scopes],
                 "firebase": settings.firebase_web_config,
             }
         ).replace("<", "\\u003c")

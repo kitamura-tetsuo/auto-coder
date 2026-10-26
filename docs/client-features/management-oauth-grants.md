@@ -5,8 +5,8 @@ worker workspaces.  Its configured issuer, Firebase project, and exact MCP resou
 are recorded in the database; a database cannot be reopened under a different
 authority.  Deployments use an HTTPS origin and `<origin>/mcp`, except that an
 explicit localhost development profile may use HTTP.  Clients are pre-registered
-public clients with exact redirects, S256 PKCE, and the single
-`auto-coder.read` scope.
+public clients with exact redirects and S256 PKCE. Scope configuration and delayed
+operation authority are documented in `management-action-scopes.md`.
 
 Authorization requests expire within ten minutes and codes within two minutes.
 Codes are single-use. Access tokens last at most fifteen minutes, while grants and

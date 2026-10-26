@@ -6,7 +6,9 @@ from urllib.parse import urlsplit
 
 import yaml
 
-SUPPORTED_SCOPE = "auto-coder.read"
+from .action_scopes import KNOWN_SCOPES, READ_SCOPE, validate_scope_set
+
+SUPPORTED_SCOPE = READ_SCOPE
 
 
 @dataclass(frozen=True)
@@ -14,6 +16,7 @@ class OAuthClient:
     client_id: str
     redirect_uris: tuple[str, ...]
     token_endpoint_auth_method: str = "none"
+    allowed_scopes: tuple[str, ...] = (READ_SCOPE,)
 
     def __post_init__(self) -> None:
         if not isinstance(self.client_id, str) or not self.client_id.strip():
@@ -27,6 +30,7 @@ class OAuthClient:
             loopback = parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "::1", "localhost"} and parsed.port is not None
             if parsed.fragment or not parsed.netloc or (parsed.scheme != "https" and not loopback):
                 raise ValueError("redirect URI must be HTTPS or an explicit-port HTTP loopback URI")
+        validate_scope_set(self.allowed_scopes)
 
 
 @dataclass(frozen=True)
@@ -38,6 +42,7 @@ class OAuthSettings:
     access_lifetime: int = 900
     grant_lifetime: int = 30 * 24 * 60 * 60
     firebase_web_config: dict[str, str] = field(default_factory=dict)
+    enabled_scopes: tuple[str, ...] = (READ_SCOPE,)
 
     def __post_init__(self) -> None:
         parsed = urlsplit(self.issuer)
@@ -50,6 +55,9 @@ class OAuthSettings:
             raise ValueError("project and uniquely identified clients are required")
         if not 0 < self.access_lifetime <= 900 or not 0 < self.grant_lifetime <= 30 * 24 * 60 * 60:
             raise ValueError("OAuth lifetime exceeds the supported maximum")
+        validate_scope_set(self.enabled_scopes)
+        if any(not set(client.allowed_scopes) <= KNOWN_SCOPES for client in self.clients):
+            raise ValueError("client contains an unknown scope")
 
     @property
     def canonical_issuer(self) -> str:
@@ -114,7 +122,10 @@ def load_management_settings(path: Path) -> ManagementSettings:
         redirect_uris = item.get("redirect_uris")
         if not isinstance(redirect_uris, list):
             raise ValueError("redirect_uris must be a list")
-        clients_list.append(OAuthClient(client_id, tuple(redirect_uris)))
+        allowed = item.get("allowed_scopes", [READ_SCOPE])
+        if not isinstance(allowed, list) or any(not isinstance(scope, str) for scope in allowed):
+            raise ValueError("allowed_scopes must be a list of strings")
+        clients_list.append(OAuthClient(client_id, tuple(redirect_uris), allowed_scopes=validate_scope_set(tuple(allowed))))
     clients = tuple(clients_list)
 
     bind_host = raw.get("bind_host", "127.0.0.1")
@@ -129,12 +140,16 @@ def load_management_settings(path: Path) -> ManagementSettings:
     browser_origins = raw.get("allowed_browser_origins", [])
     if not isinstance(browser_origins, list) or any(not isinstance(origin, str) for origin in browser_origins):
         raise ValueError("allowed_browser_origins must be a list of strings")
+    enabled = raw.get("enabled_scopes", [READ_SCOPE])
+    if not isinstance(enabled, list) or any(not isinstance(scope, str) for scope in enabled):
+        raise ValueError("enabled_scopes must be a list of strings")
     oauth = OAuthSettings(
         state_root / "oauth.sqlite3",
         required_string("public_origin"),
         required_string("firebase_project_id"),
         clients,
         firebase_web_config={str(k): str(v) for k, v in dict(raw.get("firebase_web_config", {})).items()},
+        enabled_scopes=validate_scope_set(tuple(enabled)),
     )
     return ManagementSettings(
         state_root,

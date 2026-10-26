@@ -2,7 +2,12 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/fireba
 import { getAuth, GoogleAuthProvider, signInWithPopup } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 
 const data = JSON.parse(document.getElementById("auth-data").textContent);
-for (const name of ["client", "resource", "scope"]) document.getElementById(name).textContent = data[name === "client" ? "clientId" : name];
+for (const name of ["client", "resource"]) document.getElementById(name).textContent = data[name === "client" ? "clientId" : name];
+for (const permission of data.scopeLabels) {
+  const item = document.createElement("li");
+  item.textContent = `${permission.label} (${permission.scope})`;
+  document.getElementById("scope-list").appendChild(item);
+}
 let idToken = null;
 const status = document.getElementById("status");
 document.getElementById("signin").onclick = async () => {
