@@ -3,6 +3,7 @@ import json
 import os
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import time
@@ -129,6 +130,59 @@ def test_control_socket_survives_client_disconnect_and_remains_queryable(tmp_pat
     finally:
         process.terminate()
         process.wait(timeout=5)
+
+
+def test_aborted_control_client_never_terminates_supervisor(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None) -> None:
+    environment = os.environ.copy()
+    environment.update(
+        AUTO_CODER_SUPERVISOR_INSTANCE_ID="beta-worker",
+        AUTO_CODER_CHANNEL="beta",
+        AUTO_CODER_REPOSITORY="owner/repo",
+        AUTO_CODER_RUNTIME_ROOT=str(tmp_path),
+        AUTO_CODER_WORKSPACE_ROOT=str(tmp_path),
+        AUTO_CODER_SUPERVISOR_AUTO_START="0",
+    )
+    endpoint = tmp_path / "supervisor" / "control.sock"
+    process = subprocess.Popen([sys.executable, "-m", "auto_coder.worker_supervisor"], env=environment)
+    try:
+        original = request(endpoint, {"operation_id": "original-inspect", "operation": "INSPECT"})
+        for index in range(8):
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.connect(str(endpoint))
+                client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                client.sendall(json.dumps({"operation_id": f"aborted-{index}", "operation": "INSPECT"}).encode() + b"\n")
+            observed = request(endpoint, {"operation_id": f"after-abort-{index}", "operation": "INSPECT"})
+            assert observed["supervisor_incarnation"] == original["supervisor_incarnation"]
+            assert process.poll() is None
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
+
+
+def test_reset_during_response_write_does_not_escape_request_handler(tmp_path: Path) -> None:
+    supervisor = WorkerSupervisor(config(tmp_path))
+
+    class ResetStream:
+        def readline(self, _limit: int) -> bytes:
+            return b'{"operation_id":"inspect","operation":"INSPECT"}\n'
+
+        def write(self, _payload: bytes) -> None:
+            raise ConnectionResetError("peer closed before response")
+
+    class ResetConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def settimeout(self, _seconds: int) -> None:
+            return None
+
+        def makefile(self, _mode: str) -> ResetStream:
+            return ResetStream()
+
+    supervisor._serve(ResetConnection())  # type: ignore[arg-type]
 
 
 def test_second_supervisor_cannot_take_over_live_control_socket(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None) -> None:

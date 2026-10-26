@@ -469,7 +469,9 @@ class WorkerSupervisor:
             try:
                 stream.write(json.dumps(response, separators=(",", ":")).encode() + b"\n")
                 stream.flush()
-            except BrokenPipeError:
+            except OSError:
+                # A dropped client can raise EPIPE or ECONNRESET. Neither may
+                # end the long-lived Supervisor request service.
                 pass
 
     def run(self) -> None:

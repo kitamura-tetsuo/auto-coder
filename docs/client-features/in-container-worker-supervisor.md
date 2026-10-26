@@ -4,7 +4,8 @@ Release and beta containers use the image-installed `python -m
 auto_coder.worker_supervisor` as their long-lived PID 1. The supervisor owns at
 most one `process-issues` child and accepts one newline-delimited JSON operation
 per connection on the private `/runtime/supervisor/control.sock` Unix socket.
-Client EOF never stops it. Supported operations are `INSPECT`, `START`,
+Client EOF, a transport reset, or a lost response never stops it. Supported
+operations are `INSPECT`, `START`,
 `REQUEST_GRACEFUL_STOP`, and `RESTART_WORKER`; mutating requests require a
 1–128-character `operation_id`. Reusing that ID with a different operation,
 expected identity fence, or intended runtime returns `CONFLICT` without changing
