@@ -69,6 +69,10 @@ class BootstrapStore:
         self.root.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         connection.row_factory = sqlite3.Row
+        # sqlite3's connection timeout is not consistently applied while two
+        # fresh Supervisor processes negotiate WAL mode.  Install the same
+        # bounded busy timeout before any schema or journal-mode write.
+        connection.execute("PRAGMA busy_timeout=30000")
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
         version = connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()

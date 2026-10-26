@@ -353,6 +353,7 @@ def test_stale_drain_receipt_cannot_stop_later_generation(tmp_path: Path) -> Non
         assert result.status in {ResultStatus.UNKNOWN, ResultStatus.CONFLICT}
     finally:
         _stop_process(second.record.pid)
+        _stop_process(supervisor.store.load().pid)
 
 
 def test_real_http_request_drains_without_force_or_competing_listener(tmp_path: Path) -> None:
