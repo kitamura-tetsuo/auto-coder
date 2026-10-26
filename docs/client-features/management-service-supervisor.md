@@ -20,7 +20,10 @@ state, OAuth, and management-operation journal roots, and a closed set of runtim
 profiles. Each runtime has a symbolic `reference`, an executable path, its
 `sha256:<hex>` content receipt, fixed argument vector, fixed environment, and an
 optional drain-acknowledgement path. The initial runtime must name one of those
-profiles. Executables are accepted only after their receipt is verified.
+profiles. Every non-bootstrap runtime also identifies an immutable source root,
+its deterministic content receipt, and an independently written READY receipt that
+binds that content to the configured runtime reference. Executable and source
+receipts are reverified immediately before both launch and recovery.
 
 ## Private process contract
 
@@ -34,7 +37,9 @@ child generation, and Linux PID plus process-start token. Process liveness and
 application readiness are separate: a running PID never asserts OAuth or MCP
 readiness. The bootstrap accepts neither OAuth tokens nor a public IPC listener.
 
-A graceful stop sends one cooperative `SIGTERM`. The next runtime is not started
+A graceful stop sends one cooperative `SIGTERM`. Its JSON drain receipt must match
+the exact generation, launch nonce, PID, and Linux process-start token; a file left
+by an earlier generation is never accepted. The next runtime is not started
 until both actual process exit and the configured child drain acknowledgement are
 observed. A deadline reports `DRAINING`; it does not force-kill the child. Stale OS
 identity, corrupt or unfinished effects, and externally changed state remain

@@ -37,6 +37,9 @@ class ChildRecord:
     exit_cause: str = ""
     effect_operation_id: str = ""
     effect_attempt_id: str = ""
+    drain_nonce: str = ""
+    runtime_receipt: str = ""
+    source_receipt: str = ""
 
 
 @dataclass(frozen=True)

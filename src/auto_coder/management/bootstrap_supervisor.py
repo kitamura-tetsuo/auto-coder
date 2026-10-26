@@ -12,7 +12,7 @@ import subprocess
 import threading
 import time
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from pathlib import Path
 
@@ -45,12 +45,40 @@ class RuntimeSpec:
     arguments: tuple[str, ...]
     environment: tuple[tuple[str, str], ...] = ()
     drain_ack: Path | None = None
+    source_root: Path | None = None
+    source_receipt: str = ""
+    ready_receipt: Path | None = None
 
-    def verify(self) -> bool:
+    def verify(self, *, initial: bool = False) -> bool:
         if not self.executable.is_absolute() or not self.executable.is_file() or self.executable.is_symlink():
             return False
         digest = hashlib.sha256(self.executable.read_bytes()).hexdigest()
-        return self.receipt == f"sha256:{digest}"
+        if self.receipt != f"sha256:{digest}":
+            return False
+        if initial:
+            return True
+        if self.source_root is None or self.ready_receipt is None or not self.source_root.is_absolute() or not self.source_root.is_dir() or self.source_root.is_symlink() or not self.ready_receipt.is_file() or self.ready_receipt.is_symlink():
+            return False
+        actual = self._source_digest(self.source_root)
+        try:
+            ready = json.loads(self.ready_receipt.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        return self.source_receipt == actual and ready == {"ready": True, "reference": self.reference, "source_receipt": actual}
+
+    @staticmethod
+    def _source_digest(root: Path) -> str:
+        digest = hashlib.sha256()
+        try:
+            paths = sorted((path for path in root.rglob("*") if path.is_file() and not path.is_symlink()), key=lambda path: path.relative_to(root).as_posix())
+            for path in paths:
+                relative = path.relative_to(root).as_posix().encode()
+                digest.update(len(relative).to_bytes(4, "big"))
+                digest.update(relative)
+                digest.update(hashlib.sha256(path.read_bytes()).digest())
+        except OSError:
+            return ""
+        return f"sha256:{digest.hexdigest()}"
 
 
 @dataclass(frozen=True)
@@ -81,6 +109,9 @@ class BootstrapConfig:
                 arguments=tuple(item.get("arguments", ())),
                 environment=tuple(sorted(item.get("environment", {}).items())),
                 drain_ack=Path(item["drain_ack"]) if item.get("drain_ack") else None,
+                source_root=Path(item["source_root"]) if item.get("source_root") else None,
+                source_receipt=item.get("source_receipt", ""),
+                ready_receipt=Path(item["ready_receipt"]) if item.get("ready_receipt") else None,
             )
             for item in raw["runtimes"]
         )
@@ -101,6 +132,8 @@ class BootstrapConfig:
                 raise ValueError("unbounded runtime profile")
             if any(not key or "=" in key or len(key) > 128 or len(value) > 4096 for key, value in runtime.environment):
                 raise ValueError("invalid runtime environment")
+            if runtime.reference != self.initial_runtime and (runtime.source_root is None or runtime.ready_receipt is None or not runtime.source_receipt):
+                raise ValueError("non-bootstrap runtimes require READY-bound source identity")
 
 
 @dataclass(frozen=True)
@@ -130,6 +163,8 @@ class ManagementBootstrapSupervisor:
                 record = self.store.load()
             except sqlite3.DatabaseError as exc:
                 return Observation(ResultStatus.UNKNOWN, ChildRecord(self.config.instance_id, ChildPhase.UNKNOWN), detail=str(exc))
+            if record.pid == 0 and record.phase in {ChildPhase.STARTING, ChildPhase.DRAINING, ChildPhase.UNKNOWN, ChildPhase.NEEDS_ATTENTION}:
+                return Observation(ResultStatus.UNKNOWN, record, detail="unresolved process effect has no authoritative OS lifetime")
             if record.pid == 0:
                 return Observation(ResultStatus.STOPPED, record)
             token = self._start_token(record.pid)
@@ -153,7 +188,7 @@ class ManagementBootstrapSupervisor:
             if current.status is ResultStatus.UNKNOWN:
                 return self._finish(operation_id, ResultStatus.UNKNOWN, current.record, current.detail)
             runtime = self._runtime(runtime_ref)
-            if runtime is None or not runtime.verify():
+            if runtime is None or not runtime.verify(initial=runtime_ref == self.config.initial_runtime):
                 return self._finish(operation_id, ResultStatus.NEEDS_ATTENTION, replace(current.record, phase=ChildPhase.NEEDS_ATTENTION), "runtime receipt is not verified")
             prepared = replace(
                 current.record,
@@ -167,10 +202,17 @@ class ManagementBootstrapSupervisor:
                 exit_cause="",
                 effect_operation_id=operation_id,
                 effect_attempt_id=attempt_id,
+                drain_nonce=str(uuid.uuid4()),
+                runtime_receipt=runtime.receipt,
+                source_receipt=runtime.source_receipt,
             )
             self.store.save(prepared)  # durable pre-effect marker
             try:
-                child = subprocess.Popen([str(runtime.executable), *runtime.arguments], env=dict(runtime.environment), start_new_session=False)
+                environment = dict(runtime.environment)
+                environment.update({"AUTO_CODER_CHILD_GENERATION": str(prepared.child_generation), "AUTO_CODER_DRAIN_NONCE": prepared.drain_nonce})
+                if runtime.drain_ack is not None:
+                    environment["AUTO_CODER_DRAIN_RECEIPT"] = str(runtime.drain_ack)
+                child = subprocess.Popen([str(runtime.executable), *runtime.arguments], env=environment, start_new_session=False)
             except OSError:
                 failed = replace(prepared, phase=ChildPhase.NEEDS_ATTENTION, exit_cause="launch_failed")
                 self.store.save(failed)
@@ -183,6 +225,15 @@ class ManagementBootstrapSupervisor:
             self._children[child.pid] = child
             running = replace(prepared, phase=ChildPhase.RUNNING, pid=child.pid, start_token=token)
             self.store.save(running)
+            # A process which exits during the bounded startup observation is a
+            # confirmed failed start, not stale external PID evidence.
+            deadline = time.monotonic() + 0.1
+            while time.monotonic() < deadline and child.poll() is None:
+                time.sleep(0.01)
+            if child.poll() is not None:
+                failed = replace(running, phase=ChildPhase.NEEDS_ATTENTION, pid=0, start_token="", exit_cause=f"startup_exit_{child.returncode}")
+                self.store.save(failed)
+                return self._restore_once(operation_id, failed)
             return self._finish(operation_id, ResultStatus.OBSERVED_RUNNING, running)
 
     def request_graceful_stop(self, operation_id: str, attempt_id: str, expected_identity: str) -> Observation:
@@ -203,7 +254,7 @@ class ManagementBootstrapSupervisor:
         while time.monotonic() < deadline:
             if self._start_token(draining.pid) != draining.start_token:
                 runtime = self._runtime(draining.selected_runtime)
-                acknowledged = runtime is not None and runtime.drain_ack is not None and runtime.drain_ack.exists()
+                acknowledged = runtime is not None and self._drain_acknowledged(runtime, draining)
                 if not acknowledged:
                     unknown = replace(draining, phase=ChildPhase.UNKNOWN, exit_cause="exit_without_drain_ack")
                     self.store.save(unknown)
@@ -219,7 +270,7 @@ class ManagementBootstrapSupervisor:
         record = observed.record
         if observed.status is ResultStatus.UNKNOWN and record.phase is ChildPhase.UNKNOWN and record.intended_stop:
             runtime = self._runtime(record.selected_runtime)
-            if runtime is not None and runtime.drain_ack is not None and runtime.drain_ack.exists() and self._start_token(record.pid) != record.start_token:
+            if runtime is not None and self._drain_acknowledged(runtime, record) and self._start_token(record.pid) != record.start_token:
                 stopped = replace(record, phase=ChildPhase.STOPPED, pid=0, start_token="", exit_cause="intended_stop")
                 self.store.save(stopped)
                 return Observation(ResultStatus.STOPPED, stopped)
@@ -244,17 +295,33 @@ class ManagementBootstrapSupervisor:
         runtime = self._runtime(failed.previous_runtime)
         recovery = replace(failed, recovery_used=True)
         self.store.save(recovery)  # recovery intent precedes launch
-        if runtime is None or not runtime.verify():
+        if runtime is None or not runtime.verify(initial=runtime.reference == self.config.initial_runtime):
             return self._finish(operation_id, ResultStatus.NEEDS_ATTENTION, recovery, "previous runtime receipt is not verified")
         try:
-            child = subprocess.Popen([str(runtime.executable), *runtime.arguments], env=dict(runtime.environment), start_new_session=False)
+            environment = dict(runtime.environment)
+            recovery_nonce = str(uuid.uuid4())
+            environment.update({"AUTO_CODER_CHILD_GENERATION": str(recovery.child_generation + 1), "AUTO_CODER_DRAIN_NONCE": recovery_nonce})
+            if runtime.drain_ack is not None:
+                environment["AUTO_CODER_DRAIN_RECEIPT"] = str(runtime.drain_ack)
+            child = subprocess.Popen([str(runtime.executable), *runtime.arguments], env=environment, start_new_session=False)
         except OSError:
             return self._finish(operation_id, ResultStatus.NEEDS_ATTENTION, recovery, "previous runtime launch failed")
         token = self._start_token(child.pid)
         if not token:
             return self._finish(operation_id, ResultStatus.UNKNOWN, recovery, "recovery OS lifetime is unknown")
         self._children[child.pid] = child
-        restored = replace(recovery, phase=ChildPhase.RUNNING, selected_runtime=runtime.reference, pid=child.pid, start_token=token, child_generation=recovery.child_generation + 1, exit_cause="candidate_launch_failed")
+        restored = replace(
+            recovery,
+            phase=ChildPhase.RUNNING,
+            selected_runtime=runtime.reference,
+            pid=child.pid,
+            start_token=token,
+            child_generation=recovery.child_generation + 1,
+            drain_nonce=recovery_nonce,
+            runtime_receipt=runtime.receipt,
+            source_receipt=runtime.source_receipt,
+            exit_cause="candidate_launch_failed",
+        )
         self.store.save(restored)
         return self._finish(operation_id, ResultStatus.PROCESS_RESTORED, restored)
 
@@ -264,14 +331,30 @@ class ManagementBootstrapSupervisor:
         try:
             result = json.loads(effect.result_json)
             status = ResultStatus(result["status"])
-        except (ValueError, KeyError, json.JSONDecodeError):
+            record_value = result["record"]
+            record_value["phase"] = ChildPhase(record_value["phase"])
+            record = ChildRecord(**record_value)
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError):
             return Observation(ResultStatus.UNKNOWN, self.store.load(), effect.operation_id, detail="corrupt effect receipt")
-        return Observation(status, self.store.load(), effect.operation_id, detail=result.get("detail", ""))
+        return Observation(status, record, effect.operation_id, bool(result.get("process_ready")), bool(result.get("application_ready")), result.get("detail", ""))
 
     def _finish(self, operation_id: str, status: ResultStatus, record: ChildRecord, detail: str = "") -> Observation:
         self.store.save(record)
-        self.store.finish_effect(operation_id, "observed", {"status": status.value, "detail": detail, "identity": self._identity(record)})
-        return Observation(status, record, operation_id, status in {ResultStatus.OBSERVED_RUNNING, ResultStatus.PROCESS_RESTORED}, False, detail)
+        process_ready = status in {ResultStatus.OBSERVED_RUNNING, ResultStatus.PROCESS_RESTORED}
+        encoded_record = asdict(record)
+        encoded_record["phase"] = record.phase.value
+        self.store.finish_effect(operation_id, "observed", {"status": status.value, "detail": detail, "identity": self._identity(record), "record": encoded_record, "process_ready": process_ready, "application_ready": False})
+        return Observation(status, record, operation_id, process_ready, False, detail)
+
+    @staticmethod
+    def _drain_acknowledged(runtime: RuntimeSpec, record: ChildRecord) -> bool:
+        if runtime.drain_ack is None:
+            return False
+        try:
+            receipt = json.loads(runtime.drain_ack.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        return receipt == {"generation": record.child_generation, "nonce": record.drain_nonce, "pid": record.pid, "start_token": record.start_token}
 
     def _runtime(self, reference: str) -> RuntimeSpec | None:
         return next((item for item in self.config.runtimes if item.reference == reference), None)
