@@ -84,6 +84,7 @@ REAL_BROWSER_MODULES = (
     "tests/test_dashboard_adjudication_browser.py",
     "tests/test_dashboard_detail_scroll_stability.py",
     "tests/test_dashboard_slots_scroll_stability.py",
+    "tests/test_management_oauth_browser.py",
 )
 
 

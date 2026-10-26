@@ -1,6 +1,6 @@
 """Configuration for the management OAuth credential authority."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -31,6 +31,7 @@ class OAuthSettings:
     clients: tuple[OAuthClient, ...]
     access_lifetime: int = 900
     grant_lifetime: int = 30 * 24 * 60 * 60
+    firebase_web_config: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         parsed = urlsplit(self.issuer)

@@ -1,0 +1,711 @@
+import base64
+import hashlib
+import io
+import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import parse_qs, urlsplit
+
+import pytest
+from fastapi.testclient import TestClient
+
+from auto_coder.logger_config import setup_logger
+from auto_coder.management.identity import AdmissionResult, AdmissionStatus, VerifiedPrincipal
+from auto_coder.management.oauth_config import OAuthClient, OAuthSettings
+from auto_coder.management.oauth_grants import InvalidGrant, OAuthGrantService
+from auto_coder.management.oauth_http import create_management_auth_app
+from auto_coder.management.oauth_provider import exchange_context
+from tests.test_management_identity_sdk import sdk_boundary  # noqa: F401
+
+
+class Identity:
+    principal = VerifiedPrincipal("project", "operator", 100.0)
+
+    def verify_login(self, token):
+        return AdmissionResult(AdmissionStatus.PERMITTED, "allowed", principal=self.principal)
+
+    def recheck_identity(self, principal):
+        return AdmissionResult(AdmissionStatus.PERMITTED, "allowed", principal=principal)
+
+    def check_operator_policy(self, principal):
+        return AdmissionResult(AdmissionStatus.PERMITTED, "allowed", principal=principal)
+
+
+def challenge(verifier):
+    return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+
+
+def setup(tmp_path):
+    settings = OAuthSettings(tmp_path / "oauth.db", "http://localhost", "project", (OAuthClient("client", ("http://127.0.0.1:9876/cb",)),), firebase_web_config={"apiKey": "public", "authDomain": "project.firebaseapp.com", "projectId": "project"})
+    grants = OAuthGrantService(settings, Identity())
+    return settings, grants, TestClient(create_management_auth_app(settings, grants), base_url="http://localhost")
+
+
+def begin(client, settings, verifier="a" * 43, state="state"):
+    return client.get("/authorize", params={"response_type": "code", "client_id": "client", "redirect_uri": "http://127.0.0.1:9876/cb", "resource": settings.resource, "scope": "auto-coder.read", "state": state, "code_challenge": challenge(verifier), "code_challenge_method": "S256"})
+
+
+def approve(client, settings, verifier):
+    import json
+
+    page = begin(client, settings, verifier=verifier)
+    data = json.loads(page.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0])
+    result = client.post(
+        f"/authorize/{data['requestId']}/allow",
+        headers={"Origin": settings.canonical_issuer},
+        data={"csrf": data["csrf"], "firebase_id_token": "signed"},
+        follow_redirects=False,
+    )
+    return parse_qs(urlsplit(result.headers["location"]).query)["code"][0]
+
+
+def issue_real_credentials(client, settings, signed_token, *, client_id="client", redirect_uri="http://127.0.0.1:9876/cb", verifier="r" * 43):
+    import json
+
+    page = client.get(
+        "/authorize",
+        params={
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "resource": settings.resource,
+            "scope": "auto-coder.read",
+            "state": "real-state",
+            "code_challenge": challenge(verifier),
+            "code_challenge_method": "S256",
+        },
+    )
+    data = json.loads(page.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0])
+    allowed = client.post(
+        f"/authorize/{data['requestId']}/allow",
+        headers={"Origin": settings.canonical_issuer},
+        data={"csrf": data["csrf"], "firebase_id_token": signed_token()},
+        follow_redirects=False,
+    )
+    code = parse_qs(urlsplit(allowed.headers["location"]).query)["code"][0]
+    token = client.post(
+        "/token",
+        data={
+            "grant_type": "authorization_code",
+            "client_id": client_id,
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "resource": settings.resource,
+            "code_verifier": verifier,
+        },
+    )
+    assert token.status_code == 200
+    return token.json()
+
+
+def test_discovery_consent_exchange_refresh_and_revoke(tmp_path):
+    settings, grants, client = setup(tmp_path)
+    metadata = client.get("/.well-known/oauth-authorization-server").json()
+    assert metadata["token_endpoint_auth_methods_supported"] == ["none"]
+    assert metadata["authorization_response_iss_parameter_supported"] is True
+    page = begin(client, settings)
+    assert page.status_code == 200 and "Allow" in page.text
+    assert "script-src 'self' https://www.gstatic.com https://apis.google.com" in page.headers["content-security-policy"]
+    data_text = page.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0]
+    import json
+
+    data = json.loads(data_text)
+    approved = client.post(f"/authorize/{data['requestId']}/allow", headers={"Origin": settings.canonical_issuer}, data={"csrf": data["csrf"], "firebase_id_token": "signed"}, follow_redirects=False)
+    assert approved.status_code == 303
+    query = parse_qs(urlsplit(approved.headers["location"]).query)
+    assert query["state"] == ["state"] and query["iss"] == [settings.canonical_issuer]
+    token = client.post("/token", data={"grant_type": "authorization_code", "client_id": "client", "code": query["code"][0], "redirect_uri": "http://127.0.0.1:9876/cb", "resource": settings.resource, "code_verifier": "a" * 43})
+    assert token.status_code == 200
+    credentials = token.json()
+    refreshed = client.post("/token", data={"grant_type": "refresh_token", "client_id": "client", "refresh_token": credentials["refresh_token"], "resource": settings.resource})
+    assert refreshed.status_code == 200
+    revoked = client.post("/revoke", data={"client_id": "client", "token": refreshed.json()["access_token"]})
+    assert revoked.status_code == 200 and revoked.content == b""
+
+
+def test_authorization_rejects_duplicates_and_binding_failures(tmp_path):
+    settings, grants, client = setup(tmp_path)
+    duplicate = client.get(f"/authorize?response_type=code&client_id=client&client_id=other&redirect_uri=http://127.0.0.1:9876/cb&resource={settings.resource}")
+    assert duplicate.status_code == 400 and duplicate.json() == {"error": "invalid_request"}
+    page = begin(client, settings)
+    import json
+
+    data = json.loads(page.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0])
+    wrong_origin = client.post(f"/authorize/{data['requestId']}/deny", headers={"Origin": "https://evil.example"}, data={"csrf": data["csrf"]})
+    assert wrong_origin.status_code == 400
+    denied = client.post(f"/authorize/{data['requestId']}/deny", headers={"Origin": settings.canonical_issuer}, data={"csrf": data["csrf"]}, follow_redirects=False)
+    assert denied.status_code == 303
+    query = parse_qs(urlsplit(denied.headers["location"]).query)
+    assert query == {"error": ["access_denied"], "state": ["state"], "iss": [settings.canonical_issuer]}
+    replay = client.post(f"/authorize/{data['requestId']}/allow", headers={"Origin": settings.canonical_issuer}, data={"csrf": data["csrf"], "firebase_id_token": "signed"})
+    assert replay.status_code == 400 and replay.json() == {"error": "invalid_request"}
+
+
+def test_sdk_authorization_error_redirect_preserves_state_issuer_and_callback(tmp_path):
+    settings, grants, client = setup(tmp_path)
+    response = client.get(
+        "/authorize",
+        params={
+            "response_type": "code",
+            "client_id": "client",
+            "redirect_uri": "http://127.0.0.1:9876/cb",
+            "resource": settings.resource,
+            "state": "original-state",
+            "code_challenge": "x",
+            "code_challenge_method": "S256",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    location = urlsplit(response.headers["location"])
+    assert (location.scheme, location.netloc, location.path) == ("http", "127.0.0.1:9876", "/cb")
+    assert parse_qs(location.query) == {
+        "error": ["invalid_request"],
+        "error_description": ["invalid_request"],
+        "state": ["original-state"],
+        "iss": [settings.canonical_issuer],
+    }
+    assert response.headers["cache-control"] == "no-store"
+    assert "code" not in parse_qs(location.query)
+
+
+def test_browser_decision_requires_unique_form_fields(tmp_path):
+    settings, grants, client = setup(tmp_path)
+    page = begin(client, settings)
+    import json
+
+    data = json.loads(page.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0])
+    endpoint = f"/authorize/{data['requestId']}/allow"
+    headers = {"Origin": settings.canonical_issuer}
+    assert client.post(endpoint, headers=headers, json={"csrf": data["csrf"]}).status_code == 400
+    duplicate = client.post(
+        endpoint,
+        headers={**headers, "Content-Type": "application/x-www-form-urlencoded"},
+        content=f"csrf={data['csrf']}&csrf={data['csrf']}&firebase_id_token=signed",
+    )
+    assert duplicate.status_code == 400 and duplicate.json() == {"error": "invalid_request"}
+
+    script = client.get("/assets/authorize.js")
+    assert script.status_code == 200
+    assert "form.submit()" in script.text
+    assert "fetch(" not in script.text
+
+
+def test_real_firebase_verifier_is_reached_from_http_allow(tmp_path, sdk_boundary):
+    identity, signed_token, _state, _policy, _now = sdk_boundary
+    settings = OAuthSettings(
+        tmp_path / "real-verifier.db",
+        "http://localhost",
+        "test-project",
+        (OAuthClient("client", ("http://127.0.0.1:9876/cb",)),),
+    )
+    client = TestClient(create_management_auth_app(settings, OAuthGrantService(settings, identity)), base_url="http://localhost")
+    page = begin(client, settings)
+    import json
+
+    data = json.loads(page.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0])
+    result = client.post(
+        f"/authorize/{data['requestId']}/allow",
+        headers={"Origin": settings.canonical_issuer},
+        data={"csrf": data["csrf"], "firebase_id_token": signed_token()},
+        follow_redirects=False,
+    )
+    assert result.status_code == 303
+    assert "code=" in result.headers["location"]
+
+
+def test_denial_survives_app_reconstruction_with_original_binding(tmp_path):
+    settings, grants, client = setup(tmp_path)
+    page = begin(client, settings)
+    import json
+
+    data = json.loads(page.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0])
+    cookie_name = f"ac_oauth_{data['requestId']}"
+    binding = client.cookies.get(cookie_name)
+    denied = client.post(
+        f"/authorize/{data['requestId']}/deny",
+        headers={"Origin": settings.canonical_issuer},
+        data={"csrf": data["csrf"]},
+        follow_redirects=False,
+    )
+    assert denied.status_code == 303
+
+    reconstructed = TestClient(create_management_auth_app(settings, OAuthGrantService(settings, Identity())), base_url="http://localhost")
+    reconstructed.cookies.set(cookie_name, binding)
+    replay = reconstructed.post(
+        f"/authorize/{data['requestId']}/allow",
+        headers={"Origin": settings.canonical_issuer},
+        data={"csrf": data["csrf"], "firebase_id_token": "signed"},
+        follow_redirects=False,
+    )
+    assert replay.status_code == 400
+    assert replay.json() == {"error": "invalid_grant"}
+    assert exchange_context.get() is None
+
+
+def test_deny_wins_while_allow_is_waiting_for_identity_verification(tmp_path):
+    """Exercise the production routes across the contested final transition."""
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class PausedIdentity(Identity):
+        def verify_login(self, token):
+            entered.set()
+            assert release.wait(timeout=5)
+            return super().verify_login(token)
+
+    settings = OAuthSettings(
+        tmp_path / "allow-deny-race.db",
+        "http://localhost",
+        "project",
+        (OAuthClient("client", ("http://127.0.0.1:9876/cb",)),),
+    )
+    grants = OAuthGrantService(settings, PausedIdentity())
+    browser = TestClient(create_management_auth_app(settings, grants), base_url="http://localhost")
+    page = begin(browser, settings)
+    import json
+
+    data = json.loads(page.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0])
+    cookie_name = f"ac_oauth_{data['requestId']}"
+    cookie_value = browser.cookies.get(cookie_name)
+
+    def allow():
+        with TestClient(create_management_auth_app(settings, grants), base_url="http://localhost") as client:
+            client.cookies.set(cookie_name, cookie_value)
+            return client.post(
+                f"/authorize/{data['requestId']}/allow",
+                headers={"Origin": settings.canonical_issuer},
+                data={"csrf": data["csrf"], "firebase_id_token": "signed"},
+                follow_redirects=False,
+            )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(allow)
+        assert entered.wait(timeout=5)
+        denied = browser.post(
+            f"/authorize/{data['requestId']}/deny",
+            headers={"Origin": settings.canonical_issuer},
+            data={"csrf": data["csrf"]},
+            follow_redirects=False,
+        )
+        assert denied.status_code == 303
+        release.set()
+        allowed = future.result(timeout=5)
+
+    assert allowed.status_code == 400
+    assert allowed.json() == {"error": "invalid_grant"}
+    with grants.store.connect() as db:
+        pending = db.execute("SELECT status FROM pending WHERE id=?", (data["requestId"],)).fetchone()
+        assert pending["status"] == "denied"
+        assert db.execute("SELECT COUNT(*) FROM codes").fetchone()[0] == 0
+
+
+def test_overlapping_sdk_exchanges_keep_request_local_values(tmp_path):
+    settings, grants, client = setup(tmp_path)
+    first_verifier, second_verifier = "a" * 43, "b" * 43
+    first_code = approve(client, settings, first_verifier)
+    second_code = approve(client, settings, second_verifier)
+    original = grants.exchange_code
+    barrier = threading.Barrier(2)
+    observed = []
+    observed_lock = threading.Lock()
+
+    def exchange(client_id, code, redirect_uri, resource, verifier):
+        barrier.wait(timeout=5)
+        with observed_lock:
+            observed.append((code, verifier, resource))
+        return original(client_id, code, redirect_uri, resource, verifier)
+
+    grants.exchange_code = exchange
+
+    def redeem(code, verifier):
+        with TestClient(create_management_auth_app(settings, grants), base_url="http://localhost") as concurrent_client:
+            return concurrent_client.post(
+                "/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "client_id": "client",
+                    "code": code,
+                    "redirect_uri": "http://127.0.0.1:9876/cb",
+                    "resource": settings.resource,
+                    "code_verifier": verifier,
+                },
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda item: redeem(*item), [(first_code, first_verifier), (second_code, second_verifier)]))
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert set(observed) == {(first_code, first_verifier, settings.resource), (second_code, second_verifier, settings.resource)}
+    assert exchange_context.get() is None
+
+
+def test_exact_https_redirect_survives_sdk_url_normalization(tmp_path):
+    for redirect_uri in ("https://client.example", "https://client.example/%7Ecallback"):
+        settings = OAuthSettings(
+            tmp_path / ("oauth-" + hashlib.sha256(redirect_uri.encode()).hexdigest() + ".db"),
+            "https://management.example",
+            "project",
+            (OAuthClient("client", (redirect_uri,)),),
+        )
+        client = TestClient(create_management_auth_app(settings, OAuthGrantService(settings, Identity())), base_url=settings.canonical_issuer)
+        response = client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "client",
+                "redirect_uri": redirect_uri,
+                "resource": settings.resource,
+                "code_challenge": challenge("v" * 43),
+                "code_challenge_method": "S256",
+            },
+        )
+        assert response.status_code == 200
+        assert redirect_uri in settings.clients[0].redirect_uris
+        import json
+
+        data = json.loads(response.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0])
+        approved = client.post(
+            f"/authorize/{data['requestId']}/allow",
+            headers={"Origin": settings.canonical_issuer},
+            data={"csrf": data["csrf"], "firebase_id_token": "signed"},
+            follow_redirects=False,
+        )
+        assert approved.status_code == 303
+        assert approved.headers["location"].startswith(redirect_uri + "?")
+        rejected = client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "client",
+                "redirect_uri": redirect_uri,
+                "resource": settings.resource,
+                "state": "malformed-challenge-state",
+                "code_challenge": "x",
+                "code_challenge_method": "S256",
+            },
+            follow_redirects=False,
+        )
+        rejected_location = urlsplit(rejected.headers["location"])
+        expected_callback = urlsplit(redirect_uri)
+        assert rejected.status_code == 302
+        assert (rejected_location.scheme, rejected_location.netloc, rejected_location.path) == (
+            expected_callback.scheme,
+            expected_callback.netloc,
+            expected_callback.path,
+        )
+        assert parse_qs(rejected_location.query)["state"] == ["malformed-challenge-state"]
+        assert parse_qs(rejected_location.query)["iss"] == [settings.canonical_issuer]
+        assert "code" not in parse_qs(rejected_location.query)
+        assert rejected.headers["cache-control"] == "no-store"
+        alternate = redirect_uri + ("/" if redirect_uri == "https://client.example" else "")
+        if alternate != redirect_uri:
+            refused = client.get("/authorize", params={"response_type": "code", "client_id": "client", "redirect_uri": alternate, "resource": settings.resource, "code_challenge": challenge("v" * 43), "code_challenge_method": "S256"})
+            assert refused.status_code == 400
+
+
+def test_authorization_error_replaces_callback_query_issuer(tmp_path):
+    redirect_uri = "https://client.example/cb?tenant=&iss=https%3A%2F%2Fother.example"
+    settings = OAuthSettings(
+        tmp_path / "callback-query.db",
+        "https://management.example",
+        "project",
+        (OAuthClient("client", (redirect_uri,)),),
+    )
+    client = TestClient(create_management_auth_app(settings, OAuthGrantService(settings, Identity())), base_url=settings.canonical_issuer)
+    response = client.get(
+        "/authorize",
+        params={
+            "response_type": "code",
+            "client_id": "client",
+            "redirect_uri": redirect_uri,
+            "resource": settings.resource,
+            "state": "original-state",
+            "code_challenge": "x",
+            "code_challenge_method": "S256",
+        },
+        follow_redirects=False,
+    )
+    location = urlsplit(response.headers["location"])
+    query = parse_qs(location.query, keep_blank_values=True)
+    assert (location.scheme, location.netloc, location.path) == ("https", "client.example", "/cb")
+    assert query["tenant"] == [""]
+    assert query["iss"] == [settings.canonical_issuer]
+    assert query["state"] == ["original-state"]
+    assert "code" not in query
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_authorization_store_unavailable_returns_direct_503(tmp_path):
+    settings, grants, client = setup(tmp_path)
+    original_connect = grants.store.connect
+    with original_connect() as db:
+        before = db.execute("SELECT COUNT(*) FROM pending").fetchone()[0]
+
+    def unavailable_store():
+        raise sqlite3.OperationalError("SECRET-STORE-CANARY")
+
+    grants.store.connect = unavailable_store
+    response = begin(client, settings)
+    assert response.status_code == 503
+    assert response.headers["cache-control"] == "no-store"
+    assert "location" not in response.headers
+    assert response.json() == {"error": "temporarily_unavailable"}
+    assert "SECRET-STORE-CANARY" not in response.text
+    grants.store.connect = original_connect
+    with original_connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM pending").fetchone()[0] == before
+
+
+def test_consent_uses_durable_pending_client_not_query_discriminator(tmp_path):
+    settings = OAuthSettings(
+        tmp_path / "two-clients.db",
+        "http://localhost",
+        "project",
+        (
+            OAuthClient("client-a", ("http://127.0.0.1:9876/cb",)),
+            OAuthClient("client-b", ("http://127.0.0.1:9877/cb",)),
+        ),
+    )
+    client = TestClient(create_management_auth_app(settings, OAuthGrantService(settings, Identity())), base_url="http://localhost")
+    authorization = client.get(
+        "/authorize",
+        params={"response_type": "code", "client_id": "client-a", "redirect_uri": "http://127.0.0.1:9876/cb", "resource": settings.resource, "code_challenge": challenge("a" * 43), "code_challenge_method": "S256"},
+        follow_redirects=False,
+    )
+    assert authorization.status_code == 302
+    consent = client.get(authorization.headers["location"] + "?client_id=client-b")
+    assert consent.status_code == 200
+    assert '"clientId": "client-a"' in consent.text
+    assert '"clientId": "client-b"' not in consent.text
+
+
+def test_same_code_contention_and_binding_failures_reach_real_authority(tmp_path, sdk_boundary):
+    identity, signed_token, _state, _policy, _now = sdk_boundary
+    settings = OAuthSettings(
+        tmp_path / "code-contention.db",
+        "http://localhost",
+        "test-project",
+        (OAuthClient("client", ("http://127.0.0.1:9876/cb",)),),
+    )
+    grants = OAuthGrantService(settings, identity)
+    client = TestClient(create_management_auth_app(settings, grants), base_url="http://localhost")
+    verifier = "c" * 43
+
+    import json
+
+    page = begin(client, settings, verifier=verifier)
+    data = json.loads(page.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0])
+    allowed = client.post(
+        f"/authorize/{data['requestId']}/allow",
+        headers={"Origin": settings.canonical_issuer},
+        data={"csrf": data["csrf"], "firebase_id_token": signed_token()},
+        follow_redirects=False,
+    )
+    code = parse_qs(urlsplit(allowed.headers["location"]).query)["code"][0]
+
+    original_inspect = grants.inspect_code
+    load_barrier = threading.Barrier(2)
+
+    def inspect(client_id, candidate):
+        snapshot = original_inspect(client_id, candidate)
+        load_barrier.wait(timeout=5)
+        return snapshot
+
+    grants.inspect_code = inspect
+
+    def redeem(candidate, candidate_verifier=verifier, resource=settings.resource):
+        with TestClient(create_management_auth_app(settings, grants), base_url="http://localhost") as request_client:
+            return request_client.post(
+                "/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "client_id": "client",
+                    "code": candidate,
+                    "redirect_uri": "http://127.0.0.1:9876/cb",
+                    "resource": resource,
+                    "code_verifier": candidate_verifier,
+                },
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _: redeem(code), range(2)))
+    assert sorted(response.status_code for response in responses) == [200, 400]
+    assert [response.json().get("error") for response in responses].count("invalid_grant") == 1
+    with grants.store.connect() as db:
+        row = db.execute("SELECT consumed FROM codes").fetchone()
+        assert row["consumed"] is not None
+        assert db.execute("SELECT COUNT(*) FROM grants").fetchone()[0] == 1
+
+    grants.inspect_code = original_inspect
+    second = issue_real_credentials(client, settings, signed_token, verifier="d" * 43)
+    assert second["access_token"]
+    wrong_resource_loads = 0
+
+    def count_inspect(client_id, candidate):
+        nonlocal wrong_resource_loads
+        wrong_resource_loads += 1
+        return original_inspect(client_id, candidate)
+
+    grants.inspect_code = count_inspect
+    wrong_resource = redeem("not-loaded", resource="http://localhost/other")
+    assert wrong_resource.status_code == 400
+    assert wrong_resource.json() == {"error": "invalid_target"}
+    assert wrong_resource_loads == 0
+
+    page = begin(client, settings, verifier="e" * 43)
+    data = json.loads(page.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0])
+    allowed = client.post(
+        f"/authorize/{data['requestId']}/allow",
+        headers={"Origin": settings.canonical_issuer},
+        data={"csrf": data["csrf"], "firebase_id_token": signed_token()},
+        follow_redirects=False,
+    )
+    wrong_verifier_code = parse_qs(urlsplit(allowed.headers["location"]).query)["code"][0]
+    wrong_verifier = redeem(wrong_verifier_code, candidate_verifier="f" * 43)
+    assert wrong_verifier.status_code == 400
+    assert wrong_verifier.json()["error"] == "invalid_grant"
+    assert wrong_resource_loads == 1
+
+
+def test_refresh_replay_contention_revokes_winner_credentials(tmp_path, sdk_boundary):
+    identity, signed_token, _state, _policy, _now = sdk_boundary
+    settings = OAuthSettings(
+        tmp_path / "refresh-contention.db",
+        "http://localhost",
+        "test-project",
+        (OAuthClient("client", ("http://127.0.0.1:9876/cb",)),),
+    )
+    grants = OAuthGrantService(settings, identity)
+    client = TestClient(create_management_auth_app(settings, grants), base_url="http://localhost")
+    initial = issue_real_credentials(client, settings, signed_token)
+    original_inspect = grants.inspect_refresh
+    load_barrier = threading.Barrier(2)
+
+    def inspect(client_id, token):
+        snapshot = original_inspect(client_id, token)
+        load_barrier.wait(timeout=5)
+        return snapshot
+
+    grants.inspect_refresh = inspect
+
+    def rotate():
+        with TestClient(create_management_auth_app(settings, grants), base_url="http://localhost") as request_client:
+            return request_client.post(
+                "/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": "client",
+                    "refresh_token": initial["refresh_token"],
+                    "resource": settings.resource,
+                },
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _: rotate(), range(2)))
+    assert sorted(response.status_code for response in responses) == [200, 400]
+    winner = next(response.json() for response in responses if response.status_code == 200)
+    assert next(response.json() for response in responses if response.status_code == 400)["error"] == "invalid_grant"
+    with grants.store.connect() as db:
+        grant = db.execute("SELECT revoked,revoke_reason FROM grants").fetchone()
+        assert grant["revoked"] is not None
+        assert grant["revoke_reason"] == "refresh_replay"
+    with pytest.raises(InvalidGrant):
+        grants.authenticate_access(winner["access_token"], settings.resource, ("auto-coder.read",))
+
+
+def test_token_and_revoke_unavailable_and_revoke_isolation(tmp_path, sdk_boundary):
+    identity, signed_token, state, _policy, _now = sdk_boundary
+    settings = OAuthSettings(
+        tmp_path / "unavailable-and-revoke.db",
+        "http://localhost",
+        "test-project",
+        (
+            OAuthClient("client-a", ("http://127.0.0.1:9876/a",)),
+            OAuthClient("client-b", ("http://127.0.0.1:9876/b",)),
+        ),
+    )
+    grants = OAuthGrantService(settings, identity)
+    client = TestClient(create_management_auth_app(settings, grants), base_url="http://localhost")
+    a = issue_real_credentials(client, settings, signed_token, client_id="client-a", redirect_uri="http://127.0.0.1:9876/a")
+    b = issue_real_credentials(client, settings, signed_token, client_id="client-b", redirect_uri="http://127.0.0.1:9876/b", verifier="s" * 43)
+
+    missing_token = client.post("/revoke", data={"client_id": "client-a"})
+    missing_client = client.post("/revoke", data={"token": a["access_token"]})
+    unknown_client = client.post("/revoke", data={"client_id": "unknown-client", "token": a["access_token"]})
+    assert missing_token.status_code == 400 and missing_token.json() == {"error": "invalid_request"}
+    assert missing_client.status_code == 400 and missing_client.json() == {"error": "invalid_client"}
+    assert unknown_client.status_code == 400 and unknown_client.json() == {"error": "invalid_client"}
+    assert grants.authenticate_access(a["access_token"], settings.resource, ("auto-coder.read",)).client_id == "client-a"
+
+    for token in ("unknown-token", b["access_token"]):
+        response = client.post("/revoke", data={"client_id": "client-a", "token": token})
+        assert response.status_code == 200 and response.content == b""
+    authenticated = grants.authenticate_access(b["access_token"], settings.resource, ("auto-coder.read",))
+    assert authenticated.client_id == "client-b"
+    first = client.post("/revoke", data={"client_id": "client-a", "token": a["access_token"]})
+    repeated = client.post("/revoke", data={"client_id": "client-a", "token": a["access_token"]})
+    assert (first.status_code, first.content) == (200, b"")
+    assert (repeated.status_code, repeated.content) == (200, b"")
+
+    secret = "SECRET-IDENTITY-CANARY"
+    import json
+
+    page = client.get(
+        "/authorize",
+        params={
+            "response_type": "code",
+            "client_id": "client-b",
+            "redirect_uri": "http://127.0.0.1:9876/b",
+            "resource": settings.resource,
+            "code_challenge": challenge("t" * 43),
+            "code_challenge_method": "S256",
+        },
+    )
+    data = json.loads(page.text.split('<script id="auth-data" type="application/json">', 1)[1].split("</script>", 1)[0])
+    allowed = client.post(
+        f"/authorize/{data['requestId']}/allow",
+        headers={"Origin": settings.canonical_issuer},
+        data={"csrf": data["csrf"], "firebase_id_token": signed_token()},
+        follow_redirects=False,
+    )
+    code = parse_qs(urlsplit(allowed.headers["location"]).query)["code"][0]
+    state["transport_error"] = secret
+    state["fail_on"] = "accounts:lookup"
+    console = io.StringIO()
+    setup_logger(log_level="WARNING", stream=console)
+    exchange = client.post(
+        "/token",
+        data={
+            "grant_type": "authorization_code",
+            "client_id": "client-b",
+            "code": code,
+            "redirect_uri": "http://127.0.0.1:9876/b",
+            "resource": settings.resource,
+            "code_verifier": "t" * 43,
+        },
+    )
+    refresh = client.post(
+        "/token",
+        data={"grant_type": "refresh_token", "client_id": "client-b", "refresh_token": b["refresh_token"], "resource": settings.resource},
+    )
+    for response in (exchange, refresh):
+        assert response.status_code == 503
+        assert response.json() == {"error": "temporarily_unavailable"}
+        assert "location" not in response.headers and secret not in response.text
+    assert secret not in console.getvalue()
+
+    state["transport_error"] = None
+    original_connect = grants.store.connect
+
+    def unavailable_store():
+        raise sqlite3.OperationalError("SECRET-STORE-CANARY")
+
+    grants.store.connect = unavailable_store
+    revoked = client.post("/revoke", data={"client_id": "client-b", "token": b["access_token"]})
+    assert revoked.status_code == 503
+    assert revoked.json() == {"error": "temporarily_unavailable"}
+    assert "location" not in revoked.headers
+    assert "SECRET-STORE-CANARY" not in revoked.text
+    grants.store.connect = original_connect
