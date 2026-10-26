@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 import shlex
 import shutil
 import subprocess
@@ -16,7 +15,6 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 UV_VERSION = "0.7.22"
 SETUP_UV_ACTION = "astral-sh/setup-uv@v7"
-PROJECT_INSTALL = re.compile(r"\buv sync\b|\buv pip install\b|\bpip install\b[^\n]*(?:-e\s+\.|\s\.)")
 
 
 def _run_text(step: object) -> str:
@@ -24,6 +22,55 @@ def _run_text(step: object) -> str:
         return ""
     command = step.get("run", "")
     return command if isinstance(command, str) else ""
+
+
+def _shell_commands(script: str) -> list[list[str]]:
+    """Tokenize simple workflow run blocks while discarding shell comments."""
+    commands: list[list[str]] = []
+    for line in script.replace("\\\n", " ").splitlines():
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        lexer.commenters = "#"
+        command: list[str] = []
+        for token in lexer:
+            if token and all(character in ";&|" for character in token):
+                if command:
+                    commands.append(command)
+                    command = []
+            else:
+                command.append(token)
+        if command:
+            commands.append(command)
+    return commands
+
+
+def _install_commands(steps: list[object]) -> list[list[str]]:
+    commands = [command for step in steps for command in _shell_commands(_run_text(step))]
+    return [command for command in commands if command[:2] == ["uv", "sync"] or command[:3] == ["uv", "pip", "install"] or command[:2] == ["pip", "install"]]
+
+
+def _assert_workflow_policy(workflow_paths: list[Path]) -> set[str]:
+    discovered: set[str] = set()
+    for workflow_path in workflow_paths:
+        workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+        for job_name, job in workflow.get("jobs", {}).items():
+            steps = job.get("steps", [])
+            install_commands = _install_commands(steps)
+            if not install_commands:
+                continue
+
+            identity = f"{workflow_path.name}:{job_name}"
+            discovered.add(identity)
+            setup_steps = [step for step in steps if step.get("uses") == SETUP_UV_ACTION]
+            assert len(setup_steps) == 1, f"{identity} must use {SETUP_UV_ACTION} exactly once"
+            assert setup_steps[0].get("with", {}).get("version") == UV_VERSION, f"{identity} must pin uv {UV_VERSION}"
+            for command in install_commands:
+                assert command[:2] == ["uv", "sync"], f"{identity} has an unlocked install: {shlex.join(command)}"
+                assert "--locked" in command[2:], f"{identity} has an unlocked install: {shlex.join(command)}"
+
+            job_commands = "\n".join(_run_text(step) for step in steps)
+            assert "astral.sh/uv/install.sh" not in job_commands
+    return discovered
 
 
 def _sync_commands(workflow_path: Path) -> list[str]:
@@ -40,30 +87,43 @@ def _sync_commands(workflow_path: Path) -> list[str]:
 
 def test_every_active_project_installing_workflow_uses_one_pinned_locked_uv_setup() -> None:
     """Discover future workflows instead of maintaining an allowlist."""
-    discovered: set[str] = set()
-
     workflow_paths = sorted((*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")))
-    for workflow_path in workflow_paths:
-        workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
-        for job_name, job in workflow.get("jobs", {}).items():
-            steps = job.get("steps", [])
-            install_steps = [step for step in steps if PROJECT_INSTALL.search(_run_text(step))]
-            if not install_steps:
-                continue
-
-            discovered.add(f"{workflow_path.name}:{job_name}")
-            setup_steps = [step for step in steps if step.get("uses") == SETUP_UV_ACTION]
-            assert len(setup_steps) == 1, f"{workflow_path}:{job_name} must use {SETUP_UV_ACTION} exactly once"
-            assert setup_steps[0].get("with", {}).get("version") == UV_VERSION
-            sync_steps = [step for step in install_steps if "uv sync" in _run_text(step)]
-            assert sync_steps, f"{workflow_path}:{job_name} must install dependencies with uv sync"
-            assert all("--locked" in _run_text(step) for step in sync_steps)
-
-            job_commands = "\n".join(_run_text(step) for step in steps)
-            assert "astral.sh/uv/install.sh" not in job_commands
-            assert "uv pip install -e ." not in job_commands
-
+    discovered = _assert_workflow_policy(workflow_paths)
     assert discovered, "expected at least one active project-installing Python workflow"
+
+
+@pytest.mark.parametrize(
+    ("setup_version", "install_script", "valid"),
+    [
+        (UV_VERSION, "uv sync --locked", True),
+        (UV_VERSION, "uv sync", False),
+        (UV_VERSION, "uv sync # --locked", False),
+        (UV_VERSION, "uv sync --locked\nuv pip install .", False),
+        (None, "uv sync --locked", False),
+        ("0.7.21", "uv sync --locked", False),
+    ],
+)
+def test_future_workflow_policy_rejects_each_unlocked_or_unpinned_install(tmp_path: Path, setup_version: str | None, install_script: str, valid: bool) -> None:
+    setup_with = "" if setup_version is None else f'\n        with:\n          version: "{setup_version}"'
+    workflow_path = tmp_path / "future.yaml"
+    workflow_path.write_text(
+        f"""name: Future Python workflow
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: {SETUP_UV_ACTION}{setup_with}
+      - run: |
+          {install_script.replace(chr(10), chr(10) + "          ")}
+""",
+        encoding="utf-8",
+    )
+
+    if valid:
+        assert _assert_workflow_policy([workflow_path]) == {"future.yaml:python"}
+    else:
+        with pytest.raises(AssertionError):
+            _assert_workflow_policy([workflow_path])
 
 
 def _write_lock_fixture(project: Path) -> None:
