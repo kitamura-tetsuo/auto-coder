@@ -69,6 +69,34 @@ def test_management_invalid_config_never_serves(monkeypatch, tmp_path: Path, _us
     serve.assert_not_called()
 
 
+def test_actual_management_cli_rejects_null_project_before_listening(tmp_path: Path, _use_real_commands) -> None:
+    port = _free_port()
+    config = tmp_path / "management.yml"
+    config.write_text(
+        f"""state_root: {tmp_path / 'state'}
+public_origin: http://127.0.0.1:{port}
+firebase_project_id: null
+bind_host: 127.0.0.1
+port: {port}
+local_development: true
+clients:
+  - client_id: desktop
+    redirect_uris: [http://127.0.0.1:9191/callback]
+""",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["auto-coder", "management", "serve", "--config", str(config)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode != 0
+    assert "firebase_project_id must be a non-empty string" in result.stderr
+    with socket.socket() as connection:
+        assert connection.connect_ex(("127.0.0.1", port)) != 0
+
+
 def test_actual_management_cli_serves_alongside_worker_lock(tmp_path: Path, _use_real_commands) -> None:
     port = _free_port()
     state = tmp_path / "state"

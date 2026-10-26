@@ -89,15 +89,22 @@ def load_management_settings(path: Path) -> ManagementSettings:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("management configuration must be a mapping")
-    state_root = Path(str(raw["state_root"])).expanduser().resolve()
+
+    def required_string(name: str) -> str:
+        value = raw.get(name)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{name} must be a non-empty string")
+        return value
+
+    state_root = Path(required_string("state_root")).expanduser().resolve()
     clients_raw = raw["clients"]
     if not isinstance(clients_raw, list):
         raise ValueError("clients must be a list")
-    clients = tuple(OAuthClient(str(item["client_id"]), tuple(str(uri) for uri in item["redirect_uris"])) for item in clients_raw)
+    clients = tuple(OAuthClient(item["client_id"], tuple(item["redirect_uris"])) for item in clients_raw)
     oauth = OAuthSettings(
         state_root / "oauth.sqlite3",
-        str(raw["public_origin"]),
-        str(raw["firebase_project_id"]),
+        required_string("public_origin"),
+        required_string("firebase_project_id"),
         clients,
         firebase_web_config={str(k): str(v) for k, v in dict(raw.get("firebase_web_config", {})).items()},
     )

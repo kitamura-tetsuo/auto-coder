@@ -4,6 +4,7 @@ from contextvars import ContextVar, Token
 from dataclasses import asdict, dataclass
 from urllib.parse import urlsplit
 
+from loguru import logger
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
@@ -104,20 +105,26 @@ class ResourceAdmission:
         authorization = headers.get(b"authorization", b"").decode("latin-1")
         parts = authorization.split(" ")
         if len(parts) != 2 or parts[0] != "Bearer" or not parts[1]:
+            logger.warning("Management MCP authentication outcome: invalid_credentials")
             await self._refusal(scope, receive, send, 401, "invalid_token")
             return
         context_token: Token[AuthenticatedGrant | None] | None = None
         try:
             grant = self.grants.authenticate_access(parts[1], self.settings.oauth.resource, (SUPPORTED_SCOPE,))
+            logger.info("Management MCP authentication outcome: authorized")
             context_token = _grant.set(grant)
             await self.app(scope, receive, send)
         except InvalidScope:
+            logger.warning("Management MCP authentication outcome: insufficient_scope")
             await self._refusal(scope, receive, send, 403, "insufficient_scope")
         except Denied:
+            logger.warning("Management MCP authentication outcome: forbidden")
             await self._refusal(scope, receive, send, 403, "access_denied")
         except Unavailable:
+            logger.error("Management MCP authentication outcome: authority_unavailable")
             await self._refusal(scope, receive, send, 503, "temporarily_unavailable")
         except OAuthError:
+            logger.warning("Management MCP authentication outcome: invalid_credentials")
             await self._refusal(scope, receive, send, 401, "invalid_token")
         finally:
             if context_token is not None:

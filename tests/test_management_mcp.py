@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import hashlib
+import io
 import json
 import socket
 import threading
@@ -26,6 +27,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from starlette.testclient import TestClient
 
+from auto_coder.logger_config import setup_logger
 from auto_coder.management.app import create_management_app
 from auto_coder.management.identity import FirebaseOperatorIdentity, IdentityConfig
 from auto_coder.management.oauth_config import ManagementSettings, OAuthClient, OAuthSettings
@@ -93,13 +95,13 @@ def real_boundary(tmp_path, monkeypatch):
     policy = tmp_path / "allowed_uids.json"
     policy.write_text(json.dumps({"project_id": project, "allowed_uids": ["alice", "bob"]}), encoding="utf-8")
     port = _free_port()
-    origin = f"http://127.0.0.1:{port}"
+    origin = "https://management.example.com"
     clients = (
         OAuthClient("alice-client", (f"{origin}/alice-callback",)),
         OAuthClient("bob-client", (f"{origin}/bob-callback",)),
     )
     oauth = OAuthSettings(tmp_path / "oauth.sqlite3", origin, project, clients, access_lifetime=30)
-    settings = ManagementSettings(tmp_path, oauth, port=port, local_development=True, allowed_browser_origins=(origin,))
+    settings = ManagementSettings(tmp_path, oauth, port=port, allowed_browser_origins=("https://console.example.com",))
     identity = FirebaseOperatorIdentity(IdentityConfig(project, policy), clock=lambda: state["now"])
     grants = OAuthGrantService(oauth, identity, clock=lambda: state["now"])
 
@@ -294,6 +296,27 @@ def test_real_authority_refusals_revocation_policy_and_restart(real_boundary, mo
         assert _mcp(client, fresh, "tools/list", 5).status_code == 503
 
 
+def test_authentication_outcomes_are_logged_without_credentials(real_boundary, tmp_path) -> None:
+    settings, grants, _identity, signed, _policy, _state = real_boundary
+    output = io.StringIO()
+    log_file = tmp_path / "management.log"
+    setup_logger(stream=output, log_file=str(log_file))
+    with TestClient(create_management_app(settings, grants), base_url=settings.oauth.canonical_issuer) as client:
+        credentials = _issue(client, settings, signed, "alice", "alice-client")
+        token = credentials["access_token"]
+        unknown = "unknown-token-canary"
+        assert client.post("/mcp?secret=query-canary", json={}).status_code == 401
+        assert _mcp(client, unknown, "tools/list", 1).status_code == 401
+        assert _mcp(client, token, "tools/list", 2).status_code == 200
+        client.post("/revoke", data={"client_id": "alice-client", "token": token})
+        assert _mcp(client, token, "tools/list", 3).status_code == 401
+    text = output.getvalue() + log_file.read_text(encoding="utf-8")
+    for outcome in ("invalid_credentials", "authorized"):
+        assert f"Management MCP authentication outcome: {outcome}" in text
+    for secret in (token, unknown, "query-canary", credentials["refresh_token"]):
+        assert secret not in text
+
+
 def test_real_overlapping_requests_keep_request_local_identity(real_boundary) -> None:
     settings, grants, _identity, signed, _policy, _state = real_boundary
     app = create_management_app(settings, grants)
@@ -370,6 +393,8 @@ def test_refresh_replay_revokes_next_mcp_request_and_survives_restart(real_bound
 @pytest.mark.asyncio
 async def test_live_sdk_http_client_calls_real_resource(real_boundary) -> None:
     settings, grants, _identity, signed, _policy, _state = real_boundary
+    with TestClient(create_management_app(settings, grants), base_url=settings.oauth.canonical_issuer) as browser:
+        token = _issue(browser, settings, signed, "alice", "alice-client")["access_token"]
     server = uvicorn.Server(uvicorn.Config(create_management_app(settings, grants), host=settings.bind_host, port=settings.port, log_level="error"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -378,10 +403,9 @@ async def test_live_sdk_http_client_calls_real_resource(real_boundary) -> None:
         time.sleep(0.01)
     assert server.started
     try:
-        with httpx.Client(base_url=settings.oauth.canonical_issuer) as browser:
-            token = _issue(browser, settings, signed, "alice", "alice-client")["access_token"]
-        async with httpx.AsyncClient(headers={"Authorization": f"Bearer {token}"}) as authorized:
-            async with streamable_http_client(settings.oauth.resource, http_client=authorized) as (read, write, _):
+        internal_origin = f"http://{settings.bind_host}:{settings.port}"
+        async with httpx.AsyncClient(headers={"Authorization": f"Bearer {token}", "Host": "management.example.com"}, trust_env=False) as authorized:
+            async with streamable_http_client(f"{internal_origin}/mcp", http_client=authorized) as (read, write, _):
                 async with ClientSession(read, write) as session:
                     initialized = await session.initialize()
                     assert initialized.protocolVersion == "2025-11-25"
