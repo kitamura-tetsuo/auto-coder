@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      UV_FROZEN: "1"
+      UV_LOCKED: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -31,7 +31,7 @@ jobs:
           version: "0.7.22"
 
       - name: Install locked test dependencies
-        run: uv sync --frozen --dev --extra test
+        run: uv sync --locked --dev --extra test
 
       - name: Test real worker processes and management bridge
         timeout-minutes: 10

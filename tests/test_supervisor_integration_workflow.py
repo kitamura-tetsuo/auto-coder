@@ -17,8 +17,10 @@ def test_supervisor_integration_job_runs_independently_on_pull_requests() -> Non
     job = workflow["jobs"]["supervisor-integration"]
     assert job["name"] == "Supervisor Integration Tests"
     assert job["runs-on"] == "ubuntu-latest"
+    assert job["env"]["UV_LOCKED"] == "1"
     steps = {step["name"]: step for step in job["steps"]}
     assert steps["Install uv"]["with"]["version"] == "0.7.22"
+    assert "uv sync --locked --dev --extra test" in steps["Install locked test dependencies"]["run"]
     build = steps["Build the checked-out production image"]["run"]
     assert "scripts/prepare_opencode_image.py" in build
     container = steps["Verify isolated Supervisor containers"]
