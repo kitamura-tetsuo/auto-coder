@@ -27,6 +27,8 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.22"
 
       - name: Install locked test dependencies
         run: uv sync --frozen --dev --extra test
