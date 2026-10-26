@@ -245,10 +245,11 @@ def test_release_beta_held_drain_replay_restart_and_crash_reconstruction(tmp_pat
 
 
 def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, _use_real_commands: None) -> None:
-    """REQ-011: run the unchanged worker Compose PID1 command and #2610 runtime.
+    """REQ-011: run the real Supervisor and CLI in bootstrap and #2610 runtime.
 
-    Only the isolated preparation container can download dependencies; the
-    Supervisor container cannot reach GitHub or any LLM provider.
+    Only the isolated preparation container can download dependencies. A
+    fixture uses supported process-issues flags to avoid a live credential
+    preflight; the real worker and Supervisor run without external network.
     """
     image = _image()
     source = Path(os.environ.get("GITHUB_WORKSPACE", str(Path(__file__).parents[1]))).resolve()
@@ -347,15 +348,16 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
             "-e",
             "AUTO_CODER_HEALTH_LOG_ENABLED=0",
             "-e",
+            "AUTO_CODER_DISABLE_AUTO_UPDATE=1",
+            "-e",
             "GITHUB_TOKEN=nonfunctional-ci-placeholder",
             "-e",
             "HOME=/runtime/home",
             image,
-            "-m",
-            "auto_coder.worker_supervisor",
+            "/fixtures/supervisor_offline_pid1.py",
         )
         facts = _wait_for(lambda: value if (value := _container_facts(container))["socket"] else None)
-        assert facts["pid1"][:3] == ["python", "-m", "auto_coder.worker_supervisor"]
+        assert facts["pid1"][:2] == ["python", "/fixtures/supervisor_offline_pid1.py"]
         assert facts["docker_socket"] is False
         assert facts["docker_binary"] is None
 

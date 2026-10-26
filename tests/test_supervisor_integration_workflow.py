@@ -43,14 +43,19 @@ def test_container_fixture_has_no_host_docker_or_external_network_access() -> No
     assert all("/runtime" in mount or "/workspace" in mount or "/fixtures" in mount for mount in volumes)
 
 
-def test_production_acceptance_covers_real_ready_and_unmodified_worker_command() -> None:
+def test_production_acceptance_covers_real_ready_and_offline_production_cli() -> None:
     acceptance = (ROOT / "tests/test_supervisor_container_integration.py").read_text()
     preparer = (ROOT / "tests/fixtures/supervisor_stage_ready.py").read_text()
+    offline = (ROOT / "tests/fixtures/supervisor_offline_process_issues.py").read_text()
     assert "def test_real_process_issues_bootstrap_and_staged_ready_binding" in acceptance
     assert "supervisor_stage_ready.py" in acceptance
     assert re.search(r'"--network",\s*"none"', acceptance)
     assert re.search(r'"--entrypoint",\s*"python"', acceptance)
-    assert '"-m", "auto_coder.worker_supervisor"' in acceptance
+    assert "supervisor_offline_pid1.py" in acceptance
+    assert '"process-issues"' in offline
+    assert '"--github-token"' in offline
+    assert '"--skip-codex-auth-secret-sync"' in offline
+    assert "os.execv(sys.executable, command)" in offline
     assert "WorkerVersionPreparer(" in preparer
     assert ".prepare(PrepareIntent(" in preparer
     assert ".read_ready(ready_path)" in preparer
