@@ -33,6 +33,7 @@ from .cli_commands_deployment import deployment_group
 from .cli_commands_health import health
 from .cli_commands_lock import lock_group, unlock
 from .cli_commands_main import create_feature_issues, fix_to_pass_tests_command, process_issues, serve
+from .cli_commands_management import management_group
 from .cli_commands_mcp import mcp_group
 from .cli_commands_mcp_pdb import mcp_pdb_group
 from .cli_commands_pending_work import pending_work_group
@@ -125,7 +126,7 @@ def main(ctx: click.Context, force: bool) -> None:
         invoked_cmd = ctx.invoked_subcommand if hasattr(ctx, "invoked_subcommand") else None
 
         # Skip lock check for read-only commands
-        management_commands = ["config", "auth-status", "unlock", "get-actions-logs", "mcp-pdb", "health", "usage-amount", "deployment", "pending-work", "pr-repair", "review"]
+        management_commands = ["config", "auth-status", "unlock", "get-actions-logs", "mcp-pdb", "management", "health", "usage-amount", "deployment", "pending-work", "pr-repair", "review"]
         is_unlock = invoked_cmd == "unlock" or "unlock" in sys.argv
 
         if not (invoked_cmd in management_commands or has_help_flag or is_unlock):
@@ -174,8 +175,9 @@ def main(ctx: click.Context, force: bool) -> None:
             # Store in ctx.with_resource to keep it alive for the entire command execution
             ctx.with_resource(lock_manager_context(force))
 
-        record_startup_options(sys.argv, os.environ)
-        check_for_updates_and_restart()
+        if invoked_cmd != "management":
+            record_startup_options(sys.argv, os.environ)
+            check_for_updates_and_restart()
 
 
 # Set the command name to 'auto-coder' when used as a CLI
@@ -193,6 +195,7 @@ main.add_command(config_group)
 main.add_command(lock_group)  # Keep for backward compatibility
 main.add_command(mcp_group)
 main.add_command(mcp_pdb_group)
+main.add_command(management_group)
 main.add_command(pending_work_group)
 main.add_command(pr_repair_group)
 main.add_command(review_group)
