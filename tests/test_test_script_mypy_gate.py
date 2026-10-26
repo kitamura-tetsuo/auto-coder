@@ -176,11 +176,17 @@ def _seed_fixture_repo(repo: Path, cache_dir: Path) -> None:
 
 
 def _provision_uv_venv(repo: Path) -> None:
-    """Mirror the real PR Tests workflow's own pre-sync ("uv sync --dev --extra test")
+    """Mirror the real PR Tests workflow's own pre-sync ("uv sync --locked --dev --extra test")
 
     that runs as a separate step before scripts/test.sh is ever invoked.
     """
-    result = subprocess.run(["uv", "sync", "--dev", "--extra", "test", "-q"], cwd=repo, env=_uv_env(), capture_output=True, text=True)
+    result = subprocess.run(
+        ["uv", "sync", "--locked", "--dev", "--extra", "test", "-q"],
+        cwd=repo,
+        env=_uv_env(),
+        capture_output=True,
+        text=True,
+    )
     assert result.returncode == 0, result.stdout + result.stderr
 
 

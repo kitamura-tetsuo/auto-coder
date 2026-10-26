@@ -20,13 +20,12 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.22"
       - name: Install dependencies
         run: |
-          uv sync --extra dev
+          uv sync --locked --extra dev
       - name: Check repository hygiene
         run: scripts/check_repository_hygiene.py --source head --repo .
       - name: Black (check)
@@ -55,19 +54,14 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.22"
 
       - name: Sync dependencies with uv
         run: |
-          uv sync --dev --extra test
+          uv sync --locked --dev --extra test
 
-      - name: Install package in development mode
-        run: |
-          # Install package with console scripts to make auto-coder command available
-          uv pip install -e .
 
       - name: Test CLI entry point
         if: matrix.group == 1

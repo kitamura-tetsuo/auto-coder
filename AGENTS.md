@@ -77,7 +77,7 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
   * **Tests with Coverage** (pytest with coverage reports)
   * Target Python version: 3.12
 * The `Lint & Type Check` job installs the checked-out project's own quality tools on
-  a fresh runner with `uv sync --extra dev` (the `[project.optional-dependencies].dev`
+  a fresh runner with `uv sync --locked --extra dev` (the `[project.optional-dependencies].dev`
   extra: black, isort, flake8, mypy, and their typing dependencies) rather than relying
   on preinstalled tools or a developer's local environment. It never installs commit
   hooks, and it does not rewrite or commit source files.
