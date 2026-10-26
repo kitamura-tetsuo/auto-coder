@@ -197,6 +197,20 @@ def test_real_discovery_firebase_exchange_and_whoami(real_boundary) -> None:
         assert identity == {"project_id": "mcp-test-project", "uid": "alice", "client_id": "alice-client", "scopes": ["auto-coder.read"], "resource": settings.oauth.resource}
 
 
+def test_stateless_get_and_delete_refuse_unauthenticated_requests(real_boundary) -> None:
+    settings, grants, _identity, signed, _policy, _state = real_boundary
+    with TestClient(create_management_app(settings, grants), base_url=settings.oauth.canonical_issuer) as client:
+        token = _issue(client, settings, signed, "alice", "alice-client")["access_token"]
+        for method in ("GET", "DELETE"):
+            missing = client.request(method, "/mcp")
+            assert missing.status_code == 401
+            assert "resource_metadata" in missing.headers["www-authenticate"]
+            invalid = client.request(method, "/mcp", headers={"Authorization": "Bearer invalid"})
+            assert invalid.status_code == 401
+        authorized_delete = client.request("DELETE", "/mcp", headers={"Authorization": f"Bearer {token}"})
+        assert authorized_delete.status_code == 405
+
+
 def test_production_origin_transport_accepts_only_configured_host_and_origins(real_boundary, tmp_path) -> None:
     _local, _grants, identity, signed, _policy, state = real_boundary
     root = tmp_path / "production"

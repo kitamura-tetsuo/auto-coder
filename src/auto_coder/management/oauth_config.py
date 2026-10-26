@@ -16,9 +16,13 @@ class OAuthClient:
     token_endpoint_auth_method: str = "none"
 
     def __post_init__(self) -> None:
-        if not self.client_id or self.token_endpoint_auth_method != "none" or not self.redirect_uris:
+        if not isinstance(self.client_id, str) or not self.client_id.strip():
+            raise ValueError("client_id must be a non-empty string")
+        if self.token_endpoint_auth_method != "none" or not self.redirect_uris:
             raise ValueError("invalid public OAuth client")
         for uri in self.redirect_uris:
+            if not isinstance(uri, str) or not uri:
+                raise ValueError("redirect_uris must contain non-empty strings")
             parsed = urlsplit(uri)
             loopback = parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "::1", "localhost"} and parsed.port is not None
             if parsed.fragment or not parsed.netloc or (parsed.scheme != "https" and not loopback):
@@ -100,7 +104,31 @@ def load_management_settings(path: Path) -> ManagementSettings:
     clients_raw = raw["clients"]
     if not isinstance(clients_raw, list):
         raise ValueError("clients must be a list")
-    clients = tuple(OAuthClient(item["client_id"], tuple(item["redirect_uris"])) for item in clients_raw)
+    clients_list = []
+    for item in clients_raw:
+        if not isinstance(item, dict):
+            raise ValueError("each client must be a mapping")
+        client_id = item.get("client_id")
+        if not isinstance(client_id, str) or not client_id.strip():
+            raise ValueError("client_id must be a non-empty string")
+        redirect_uris = item.get("redirect_uris")
+        if not isinstance(redirect_uris, list):
+            raise ValueError("redirect_uris must be a list")
+        clients_list.append(OAuthClient(client_id, tuple(redirect_uris)))
+    clients = tuple(clients_list)
+
+    bind_host = raw.get("bind_host", "127.0.0.1")
+    if not isinstance(bind_host, str) or not bind_host.strip():
+        raise ValueError("bind_host must be a non-empty string")
+    port = raw.get("port", 8081)
+    if type(port) is not int:
+        raise ValueError("port must be an integer")
+    local_development = raw.get("local_development", False)
+    if not isinstance(local_development, bool):
+        raise ValueError("local_development must be a boolean")
+    browser_origins = raw.get("allowed_browser_origins", [])
+    if not isinstance(browser_origins, list) or any(not isinstance(origin, str) for origin in browser_origins):
+        raise ValueError("allowed_browser_origins must be a list of strings")
     oauth = OAuthSettings(
         state_root / "oauth.sqlite3",
         required_string("public_origin"),
@@ -111,8 +139,8 @@ def load_management_settings(path: Path) -> ManagementSettings:
     return ManagementSettings(
         state_root,
         oauth,
-        str(raw.get("bind_host", "127.0.0.1")),
-        int(raw.get("port", 8081)),
-        bool(raw.get("local_development", False)),
-        tuple(str(origin) for origin in raw.get("allowed_browser_origins", [])),
+        bind_host,
+        port,
+        local_development,
+        tuple(browser_origins),
     )

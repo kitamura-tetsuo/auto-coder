@@ -8,6 +8,7 @@ import urllib.request
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
 import yaml
 from click.testing import CliRunner
 
@@ -93,6 +94,51 @@ clients:
     )
     assert result.returncode != 0
     assert "firebase_project_id must be a non-empty string" in result.stderr
+    with socket.socket() as connection:
+        assert connection.connect_ex(("127.0.0.1", port)) != 0
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value", "expected_error"),
+    [
+        ("client_id", 123, "client_id must be a non-empty string"),
+        ("client_id", True, "client_id must be a non-empty string"),
+        ("client_id", None, "client_id must be a non-empty string"),
+        ("redirect_uris", "http://127.0.0.1:9191/callback", "redirect_uris must be a list"),
+        ("redirect_uris", [123], "redirect_uris must contain non-empty strings"),
+        ("local_development", "true", "local_development must be a boolean"),
+        ("port", True, "port must be an integer"),
+        ("bind_host", None, "bind_host must be a non-empty string"),
+        ("allowed_browser_origins", "https://console.example.com", "allowed_browser_origins must be a list of strings"),
+    ],
+)
+def test_actual_management_cli_rejects_malformed_settings_before_listening(tmp_path: Path, _use_real_commands, field: str, invalid_value: object, expected_error: str) -> None:
+    port = _free_port()
+    settings = {
+        "state_root": str(tmp_path / "state"),
+        "public_origin": f"http://127.0.0.1:{port}",
+        "firebase_project_id": "project",
+        "bind_host": "127.0.0.1",
+        "port": port,
+        "local_development": True,
+        "clients": [{"client_id": "desktop", "redirect_uris": ["http://127.0.0.1:9191/callback"]}],
+    }
+    if field in {"client_id", "redirect_uris"}:
+        settings["clients"][0][field] = invalid_value
+    else:
+        settings[field] = invalid_value
+    config = tmp_path / "management.yml"
+    config.write_text(yaml.safe_dump(settings), encoding="utf-8")
+
+    result = subprocess.run(
+        ["auto-coder", "management", "serve", "--config", str(config)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode != 0
+    assert f"invalid management configuration: {expected_error}" in result.stderr
     with socket.socket() as connection:
         assert connection.connect_ex(("127.0.0.1", port)) != 0
 
