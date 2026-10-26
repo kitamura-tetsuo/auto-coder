@@ -377,7 +377,11 @@ CrashWindowSupervisor(config).start_selected('lost-start', 'attempt', 'one')
 
 def test_two_supervisors_atomically_contend_for_one_child(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
-    barrier = threading.Barrier(2)
+    # Coverage shards can leave only a small amount of CPU available to these
+    # contenders.  Keep the admission rendezvous bounded, but do not make the
+    # process-safety oracle depend on both threads being scheduled within two
+    # seconds.
+    barrier = threading.Barrier(2, timeout=15)
 
     class Contender(ManagementBootstrapSupervisor):
         def inspect(self) -> Observation:
@@ -389,15 +393,25 @@ def test_two_supervisors_atomically_contend_for_one_child(tmp_path: Path) -> Non
     first = Contender(_supervisor(tmp_path, runtime).config, "first")
     second = Contender(_supervisor(tmp_path, runtime).config, "second")
     results: list[Observation] = []
+    errors: list[BaseException] = []
+
+    def contend(supervisor: ManagementBootstrapSupervisor, operation_id: str, attempt_id: str) -> None:
+        try:
+            results.append(supervisor.start_selected(operation_id, attempt_id, "one"))
+        except BaseException as exc:
+            errors.append(exc)
+
     threads = [
-        threading.Thread(target=lambda: results.append(first.start_selected("first-start", "a", "one"))),
-        threading.Thread(target=lambda: results.append(second.start_selected("second-start", "b", "one"))),
+        threading.Thread(target=contend, args=(first, "first-start", "a")),
+        threading.Thread(target=contend, args=(second, "second-start", "b")),
     ]
     for thread in threads:
         thread.start()
     for thread in threads:
-        thread.join(3)
+        thread.join(20)
     try:
+        assert all(not thread.is_alive() for thread in threads)
+        assert errors == []
         assert len(results) == 2
         assert sum(result.status is ResultStatus.OBSERVED_RUNNING for result in results) == 1
         assert sum(result.status in {ResultStatus.CONFLICT, ResultStatus.UNKNOWN} for result in results) == 1
