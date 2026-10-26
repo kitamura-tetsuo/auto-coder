@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import socket
@@ -5,11 +6,13 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import asdict, replace
 from pathlib import Path
 from unittest.mock import patch
 
 from auto_coder.worker_supervisor import SupervisorConfig, WorkerSupervisor
 from auto_coder.worker_supervisor_store import SupervisorStore
+from auto_coder.worker_versions import InstalledProvenance, ReadyReceipt, WorkerVersionPreparer
 
 
 def config(tmp_path: Path, command: tuple[str, ...] | None = None) -> SupervisorConfig:
@@ -56,6 +59,7 @@ def test_control_socket_survives_client_disconnect_and_remains_queryable(tmp_pat
         AUTO_CODER_REPOSITORY="owner/repo",
         AUTO_CODER_RUNTIME_ROOT=str(tmp_path),
         AUTO_CODER_WORKSPACE_ROOT=str(tmp_path),
+        AUTO_CODER_SUPERVISOR_AUTO_START="0",
     )
     endpoint = tmp_path / "supervisor" / "control.sock"
     process = subprocess.Popen([sys.executable, "-m", "auto_coder.worker_supervisor"], env=environment)
@@ -176,6 +180,50 @@ def test_missing_staged_runtime_never_falls_back_to_bootstrap(tmp_path: Path) ->
     spawn.assert_not_called()
 
 
+def test_staged_ready_selection_revalidates_exact_receipt_and_profile(tmp_path: Path) -> None:
+    supervisor = WorkerSupervisor(config(tmp_path))
+    runtime_id = "d" * 32
+    attempt = tmp_path / "versions" / "revisions" / ("k" * 64) / "attempt"
+    environment = attempt / "venv"
+    interpreter = environment / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text("test interpreter")
+    (environment / ".auto-coder-runtime-id").write_text(runtime_id + "\n")
+    source = attempt / "source"
+    source.mkdir()
+    lock = b"first locked environment"
+    (source / "uv.lock").write_bytes(lock)
+    provenance = InstalledProvenance("a" * 40, "1.0")
+    bindings = {
+        "attempt_id": "attempt",
+        "runtime_profile": "python-3.12",
+        "environment_path": str(environment.resolve()),
+        "interpreter_path": str(interpreter),
+        "source_sha": provenance.source_revision,
+        "distribution_version": provenance.distribution_version,
+        "lock_sha256": hashlib.sha256(lock).hexdigest(),
+        "installed_runtime_id": runtime_id,
+    }
+    identity = hashlib.sha256(json.dumps(bindings, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    receipt = ReadyReceipt(1, "a" * 40, "a" * 40, bindings["environment_path"], bindings["interpreter_path"], "1.0", bindings["lock_sha256"], "attempt", "python-3.12", runtime_id, identity, provenance, "2026-10-26T00:00:00+00:00")
+    ready_path = attempt / "READY.json"
+    ready_path.write_text(json.dumps(asdict(receipt)))
+
+    with patch.object(WorkerVersionPreparer, "_observe", return_value=provenance), patch.object(WorkerVersionPreparer, "_interpreter_prefix", return_value=environment.resolve()):
+        selected = supervisor._resolve_runtime(runtime_id)
+        assert selected is not None
+        assert selected["ready"]["lock_sha256"] == hashlib.sha256(lock).hexdigest()
+        assert supervisor._verify_runtime(selected) == selected
+        ready_path.write_text(json.dumps(asdict(replace(receipt, installed_at="replaced"))))
+        assert supervisor._verify_runtime(selected) is None
+        ready_path.write_text(json.dumps(asdict(receipt)))
+        (source / "uv.lock").write_bytes(b"changed same-source lock")
+        assert supervisor._verify_runtime(selected) is None
+        (source / "uv.lock").write_bytes(lock)
+        with patch.object(WorkerVersionPreparer, "read_ready", return_value=replace(receipt, runtime_profile="python-3.13")):
+            assert supervisor._resolve_runtime(runtime_id) is None
+
+
 def test_stop_reconciles_only_matching_terminal_receipt_and_exit(tmp_path: Path) -> None:
     supervisor = WorkerSupervisor(config(tmp_path, (sys.executable, "-c", "import time; time.sleep(60)")))
     worker = supervisor.apply({"operation_id": "start", "operation": "START"})["worker"]
@@ -191,3 +239,139 @@ def test_stop_reconciles_only_matching_terminal_receipt_and_exit(tmp_path: Path)
     receipt = {"schema_version": 1, "repository": "owner/repo", "channel": "beta", "deployment_generation": worker["deployment_generation"], "process_run_id": "real-worker-run", "lifecycle_state": "stopped", "is_graceful_ready": True, "unsettled_count": 0}
     (tmp_path / "last-terminal.json").write_text(json.dumps(receipt))
     assert supervisor.apply(stop) == {"status": "STOPPED"}
+
+
+def test_restart_refuses_changed_staged_ready_during_held_drain(tmp_path: Path) -> None:
+    supervisor = WorkerSupervisor(config(tmp_path, (sys.executable, "-c", "import time; time.sleep(60)")))
+    worker = supervisor.apply({"operation_id": "first", "operation": "START"})["worker"]
+    assert isinstance(worker, dict)
+    state = supervisor.store.read()
+    state["worker"]["process_run_id"] = "worker-run"
+    supervisor.store.write(state)
+    ready = {"installed_runtime_id": "runtimeA", "content_identity": "content1", "source_sha": "a" * 40}
+    selected = {"runtime_id": "runtimeA", "interpreter_path": sys.executable, "ready": ready, "ready_path": "/private/READY.json"}
+    restart = {"operation_id": "restart", "operation": "RESTART_WORKER", "runtime_id": "runtimeA", "expected_generation": worker["deployment_generation"]}
+
+    with patch.object(supervisor, "_resolve_runtime", return_value=selected) as resolve:
+        assert supervisor.apply(restart)["status"] == "DRAINING"
+        assert supervisor.child is not None
+        supervisor.child.wait(timeout=5)
+        receipt = {"schema_version": 1, "repository": "owner/repo", "channel": "beta", "deployment_generation": worker["deployment_generation"], "process_run_id": "worker-run", "lifecycle_state": "stopped", "is_graceful_ready": True, "unsettled_count": 0}
+        (tmp_path / "last-terminal.json").write_text(json.dumps(receipt))
+        resolve.return_value = {**selected, "ready": {**ready, "content_identity": "content2"}}
+        assert supervisor.apply(restart) == {"status": "UNAVAILABLE"}
+        assert supervisor.apply(restart) == {"status": "UNAVAILABLE"}
+
+    persisted = supervisor.store.read()
+    assert persisted["worker"] is None
+    assert persisted["operations"]["restart"]["runtime"] == selected
+    assert persisted["last_worker"]["deployment_generation"] == worker["deployment_generation"]
+
+
+def test_fresh_staged_runtime_binding_never_returns_stale_verified_identity(tmp_path: Path) -> None:
+    supervisor = WorkerSupervisor(config(tmp_path, (sys.executable, "-c", "import time; time.sleep(60)")))
+    started = supervisor.apply({"operation_id": "start", "operation": "START"})
+    worker = started["worker"]
+    ready = {"interpreter_path": sys.executable, "source_sha": "a" * 40, "distribution_version": "1.0", "installed_provenance": {"source_revision": "a" * 40, "distribution_version": "1.0"}, "content_identity": "bound-content", "lock_sha256": "b" * 64}
+    state = supervisor.store.read()
+    state["worker"].update(runtime_id="runtimeA", ready=ready, ready_path="/private/READY.json")
+    state["selected_runtime_id"] = "runtimeA"
+    supervisor.store.write(state)
+    artifact = {"source_revision": {"value": "a" * 40, "available": True}, "distribution_version": {"value": "1.0", "available": True}}
+    observation = {"process_run_id": "genuine-run", "artifact": artifact}
+    selected = {"runtime_id": "runtimeA", "interpreter_path": sys.executable, "ready": ready, "ready_path": "/private/READY.json"}
+    try:
+        with patch.object(supervisor, "_verify_runtime", return_value=selected) as verify, patch.object(supervisor, "_observation", return_value=observation) as observe:
+            first = supervisor.inspect()["worker"]
+            assert first["binding_status"] == "VERIFIED"
+            assert first["runtime_binding"]["content_identity"] == "bound-content"
+
+            observe.return_value = {"process_run_id": "genuine-run", "artifact": {**artifact, "distribution_version": {"value": "2.0", "available": True}}}
+            second = supervisor.inspect()["worker"]
+            assert second["binding_status"] == "CONFLICT"
+            assert "runtime_binding" not in second
+
+            observe.return_value = observation
+            verify.return_value = None
+            third = supervisor.inspect()["worker"]
+            assert third["binding_status"] == "UNAVAILABLE"
+            assert "runtime_binding" not in third
+            assert observe.call_count == 3
+    finally:
+        assert supervisor.child is not None
+        supervisor.child.terminate()
+        supervisor.child.wait(timeout=5)
+
+
+def test_pid1_start_on_boot_and_sigterm_drains_child(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    child_script = "import time; time.sleep(60)"
+    entry = (
+        "from pathlib import Path; from auto_coder.worker_supervisor import SupervisorConfig, WorkerSupervisor; "
+        f"WorkerSupervisor(SupervisorConfig('beta-worker', 'beta', 'owner/repo', Path({str(tmp_path)!r}), "
+        f"Path({str(workspace)!r}), Path({sys.executable!r}), "
+        f"child_command=({sys.executable!r}, '-c', {child_script!r}), start_on_boot=True)).run()"
+    )
+    process = subprocess.Popen([sys.executable, "-c", entry])
+    try:
+        inspected = request(tmp_path / "supervisor" / "control.sock", {"operation_id": "inspect", "operation": "INSPECT"})
+        assert inspected["status"] == "RUNNING"
+        assert inspected["worker"]["process_run_id"] is None
+        process.terminate()
+        assert process.wait(timeout=10) == 0
+        state = json.loads((tmp_path / "supervisor" / "state.json").read_text())
+        assert state["worker"]["stop_requested"] is True
+        assert state["operations"]["container-shutdown-" + inspected["supervisor_incarnation"]]["request"]["operation"] == "REQUEST_GRACEFUL_STOP"
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
+def test_real_management_bridge_held_drain_and_original_stop_replay(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None) -> None:
+    fixture = Path(__file__).parent / "fixtures" / "supervisor_bridge_worker.py"
+    supervisor = WorkerSupervisor(config(tmp_path, (sys.executable, str(fixture))))
+    started = supervisor.apply({"operation_id": "start", "operation": "START"})
+    assert started["status"] == "RUNNING"
+    try:
+        for _ in range(300):
+            live = supervisor.inspect()["worker"]
+            if live["process_run_id"]:
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("real management bridge never exposed its worker-owned run ID")
+        assert live["process_run_id"] != live["deployment_generation"]
+        assert live["binding_status"] == "UNAVAILABLE"  # No invented bootstrap lock identity.
+
+        stop = {"operation_id": "stop", "operation": "REQUEST_GRACEFUL_STOP", "expected_process_run_id": live["process_run_id"], "expected_generation": live["deployment_generation"]}
+        assert supervisor.apply(stop)["status"] == "DRAINING"
+        for _ in range(300):
+            if (tmp_path / "fixture-draining").exists():
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("real bridge worker never entered held drain")
+
+        assert supervisor.apply({**stop, "operation": "RESTART_WORKER"}) == {"status": "CONFLICT"}
+        assert supervisor.apply({**stop, "expected_generation": "stale"}) == {"status": "CONFLICT"}
+        assert supervisor.apply(stop)["status"] == "DRAINING"
+        assert supervisor.child is not None
+        assert supervisor.child.poll() is None
+        assert not (tmp_path / "last-terminal.json").exists()
+
+        (tmp_path / "fixture-release").write_text("release")
+        supervisor.child.wait(timeout=10)
+        assert supervisor.apply(stop) == {"status": "STOPPED"}
+        assert supervisor.apply(stop) == {"status": "STOPPED"}
+        receipt = json.loads((tmp_path / "last-terminal.json").read_text())
+        assert receipt["process_run_id"] == live["process_run_id"]
+        assert receipt["deployment_generation"] == live["deployment_generation"]
+        assert receipt["terminal_reason"] == "supervisor SIGTERM"
+        assert supervisor.store.read()["operations"]["stop"]["request"] == stop
+    finally:
+        (tmp_path / "fixture-release").write_text("release")
+        if supervisor.child is not None and supervisor.child.poll() is None:
+            supervisor.child.terminate()
+            supervisor.child.wait(timeout=10)

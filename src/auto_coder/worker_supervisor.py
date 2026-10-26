@@ -9,6 +9,7 @@ import os
 import signal
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import threading
@@ -17,6 +18,8 @@ import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+
+from loguru import logger
 
 from .worker_supervisor_store import SupervisorStore
 from .worker_versions import WorkerVersionConfig, WorkerVersionError, WorkerVersionPreparer
@@ -32,6 +35,7 @@ class SupervisorConfig:
     interpreter: Path
     version_root: Path | None = None
     child_command: tuple[str, ...] | None = None
+    start_on_boot: bool = False
 
     @classmethod
     def environment(cls) -> "SupervisorConfig":
@@ -40,7 +44,16 @@ class SupervisorConfig:
         if not all(values.values()):
             raise ValueError("supervisor instance, channel, and repository are required")
         runtime = Path(os.environ.get("AUTO_CODER_RUNTIME_ROOT", "/runtime"))
-        return cls(values[names[0]], values[names[1]], values[names[2]], runtime, Path(os.environ.get("AUTO_CODER_WORKSPACE_ROOT", "/workspace")), Path(os.environ.get("AUTO_CODER_BOOTSTRAP_INTERPRETER", sys.executable)), Path(os.environ.get("AUTO_CODER_VERSION_ROOT", runtime / "worker-versions")))
+        return cls(
+            values[names[0]],
+            values[names[1]],
+            values[names[2]],
+            runtime,
+            Path(os.environ.get("AUTO_CODER_WORKSPACE_ROOT", "/workspace")),
+            Path(os.environ.get("AUTO_CODER_BOOTSTRAP_INTERPRETER", sys.executable)),
+            Path(os.environ.get("AUTO_CODER_VERSION_ROOT", runtime / "worker-versions")),
+            start_on_boot=os.environ.get("AUTO_CODER_SUPERVISOR_AUTO_START", "1") == "1",
+        )
 
 
 class _UnixHTTPConnection(http.client.HTTPConnection):
@@ -63,6 +76,7 @@ class WorkerSupervisor:
         self.child: subprocess.Popen[bytes] | None = None
         self.incarnation = uuid.uuid4().hex
         self._lock = threading.RLock()
+        self._shutdown_requested = False
 
     @property
     def control_socket(self) -> Path:
@@ -74,10 +88,18 @@ class WorkerSupervisor:
 
     @staticmethod
     def _start_token(pid: int) -> str:
-        fields = Path(f"/proc/{pid}/stat").read_text().split()
-        if fields[2] == "Z":
+        # The comm field is parenthesized and may contain spaces/parentheses.
+        # Parse after its final ")" so the Linux starttime field stays stable.
+        record = Path(f"/proc/{pid}/stat").read_text()
+        closing = record.rfind(") ")
+        if closing < 0:
+            raise ValueError("invalid Linux process stat")
+        fields = record[closing + 2 :].split()
+        if len(fields) <= 19:
+            raise ValueError("incomplete Linux process stat")
+        if fields[0] in {"Z", "X"}:
             raise ProcessLookupError(pid)
-        return fields[21]
+        return fields[19]
 
     def _is_alive(self, worker: object) -> bool:
         if not isinstance(worker, dict):
@@ -93,49 +115,110 @@ class WorkerSupervisor:
         return hashlib.sha256(json.dumps({key: request.get(key) for key in keys}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
     def _receipt(self, worker: dict[str, Any]) -> bool:
+        if not worker.get("stop_requested") or not worker.get("process_run_id"):
+            return False
         try:
             value = json.loads(self.worker_socket.with_name("last-terminal.json").read_text())
         except (OSError, ValueError, TypeError):
+            return False
+        if not isinstance(value, dict):
             return False
         expected = {"schema_version": 1, "repository": self.config.repository, "channel": self.config.channel, "deployment_generation": worker.get("deployment_generation"), "process_run_id": worker.get("process_run_id"), "lifecycle_state": "stopped", "is_graceful_ready": True, "unsettled_count": 0}
         return all(value.get(key) == expected_value for key, expected_value in expected.items())
 
     def _observation(self, worker: dict[str, Any]) -> dict[str, Any] | None:
         nonce = uuid.uuid4().hex
+        connection = _UnixHTTPConnection(self.worker_socket)
         try:
             before = self._start_token(int(worker["pid"]))
-            connection = _UnixHTTPConnection(self.worker_socket)
+            if before != worker["start_token"]:
+                return None
+            connection.connect()
+            assert connection.sock is not None
+            peer_pid = struct.unpack("3i", connection.sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))[0]
+            if peer_pid != worker["pid"]:
+                return None
             connection.request("GET", f"/v1/observation?nonce={nonce}")
             response = connection.getresponse()
             body = json.loads(response.read()) if response.status == 200 else None
-            connection.close()
             after = self._start_token(int(worker["pid"]))
         except (OSError, ValueError, http.client.HTTPException):
             return None
+        finally:
+            connection.close()
         valid = (
             isinstance(body, dict)
+            and body.get("schema_version") == 1
             and before == after == worker["start_token"]
             and body.get("nonce") == nonce
             and body.get("repository") == self.config.repository
             and body.get("channel") == self.config.channel
             and body.get("deployment_generation") == worker["deployment_generation"]
             and isinstance(body.get("process_run_id"), str)
+            and 1 <= len(body["process_run_id"]) <= 128
         )
         return body if valid else None
+
+    @staticmethod
+    def _artifact_matches_ready(artifact: object, ready: dict[str, Any]) -> bool:
+        if not isinstance(artifact, dict):
+            return False
+        source, version = artifact.get("source_revision"), artifact.get("distribution_version")
+        return (
+            isinstance(source, dict)
+            and isinstance(version, dict)
+            and source.get("available") is True
+            and version.get("available") is True
+            and source.get("value") == ready["source_sha"] == ready["installed_provenance"]["source_revision"]
+            and version.get("value") == ready["distribution_version"] == ready["installed_provenance"]["distribution_version"]
+        )
 
     def _reconcile_worker(self, state: dict[str, Any]) -> None:
         worker = state.get("worker")
         if not isinstance(worker, dict):
             return
         alive = self._is_alive(worker)
-        if alive and not worker.get("process_run_id"):
+        if alive:
+            worker.pop("runtime_binding", None)
             observation = self._observation(worker)
             if observation:
+                if worker.get("process_run_id") not in (None, observation["process_run_id"]):
+                    worker["binding_status"] = "CONFLICT"
+                    self.store.write(state)
+                    return
                 worker["process_run_id"] = observation["process_run_id"]
                 worker["binding_observed_at"] = time.time()
-                worker["runtime_binding"] = observation.get("artifact")
-                self.store.write(state)
+                worker["observed_artifact"] = observation.get("artifact")
+                if worker["runtime_id"] == "bootstrap":
+                    worker["binding_status"] = "UNAVAILABLE"
+                elif state.get("selected_runtime_id") != worker["runtime_id"]:
+                    worker["binding_status"] = "CONFLICT"
+                else:
+                    selected = self._verify_runtime({"runtime_id": worker["runtime_id"], "interpreter_path": worker["ready"].get("interpreter_path"), "ready": worker["ready"], "ready_path": worker.get("ready_path")}) if isinstance(worker.get("ready"), dict) else None
+                    if selected is None:
+                        worker["binding_status"] = "UNAVAILABLE"
+                    elif not self._artifact_matches_ready(observation.get("artifact"), worker["ready"]):
+                        worker["binding_status"] = "CONFLICT"
+                    else:
+                        worker["binding_status"] = "VERIFIED"
+                        worker["runtime_binding"] = {
+                            "runtime_id": worker["runtime_id"],
+                            "content_identity": worker["ready"]["content_identity"],
+                            "lock_sha256": worker["ready"]["lock_sha256"],
+                            "source_sha": worker["ready"]["source_sha"],
+                            "distribution_version": worker["ready"]["distribution_version"],
+                            "process_run_id": worker["process_run_id"],
+                            "deployment_generation": worker["deployment_generation"],
+                            "start_token": worker["start_token"],
+                            "observed_at": worker["binding_observed_at"],
+                        }
+            else:
+                worker["binding_status"] = "UNAVAILABLE"
+            self.store.write(state)
+        if not alive and self.child is not None and self.child.pid == worker["pid"]:
+            self.child.poll()
         if not alive and self._receipt(worker):
+            worker["ended_at"] = time.time()
             state.update(last_worker=worker, worker=None, stopped=True, stop_verified=True)
             self.store.write(state)
 
@@ -168,6 +251,8 @@ class WorkerSupervisor:
             operation_id, operation = request.get("operation_id"), request.get("operation")
             if not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 128 or operation not in {"INSPECT", "START", "REQUEST_GRACEFUL_STOP", "RESTART_WORKER"}:
                 return {"status": "UNSUPPORTED"}
+            if self._shutdown_requested and operation in {"START", "RESTART_WORKER"}:
+                return {"status": "CONFLICT"}
             state, digest = self.store.read(), self._digest(request)
             prior = state["operations"].get(operation_id)
             if prior:
@@ -192,8 +277,19 @@ class WorkerSupervisor:
             return self._finish(operation_id, state, result)
 
     def _finish(self, operation_id: str, state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
-        state["operations"][operation_id]["result"] = result
+        record = state["operations"][operation_id]
+        record["result"] = result
         self.store.write(state)
+        worker = state.get("worker") or state.get("last_worker")
+        identity = worker if isinstance(worker, dict) else {}
+        logger.info(
+            "Supervisor operation={} id_hash={} status={} pid={} generation={}",
+            record["request"]["operation"],
+            hashlib.sha256(operation_id.encode()).hexdigest()[:12],
+            result.get("status"),
+            identity.get("pid"),
+            identity.get("deployment_generation"),
+        )
         return result
 
     def _reconcile_operation(self, operation_id: str, state: dict[str, Any]) -> dict[str, Any]:
@@ -231,18 +327,49 @@ class WorkerSupervisor:
             receipt = preparer.read_ready(matches[0])
         except WorkerVersionError:
             return None
-        return {"runtime_id": runtime_id, "interpreter_path": receipt.interpreter_path, "ready": asdict(receipt)}
+        if receipt.runtime_profile != preparer.config.runtime_profile or receipt.installed_runtime_id != runtime_id:
+            return None
+        return {"runtime_id": runtime_id, "interpreter_path": receipt.interpreter_path, "ready": asdict(receipt), "ready_path": str(matches[0].resolve())}
+
+    def _verify_runtime(self, runtime: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Revalidate the originally accepted selection at the actual effect boundary."""
+        if runtime is None:
+            return None
+        if runtime.get("runtime_id") == "bootstrap":
+            return runtime if runtime == self._resolve_runtime("bootstrap") and self.config.interpreter.is_file() else None
+        selected = self._resolve_runtime(runtime.get("runtime_id"))
+        return selected if selected == runtime else None
 
     def _start(self, state: dict[str, Any], runtime: dict[str, Any] | None) -> dict[str, Any]:
         if runtime is None or state.get("worker") is not None:
             return {"status": "CONFLICT"}
+        if self._verify_runtime(runtime) is None:
+            return {"status": "UNAVAILABLE"}
         generation = uuid.uuid4().hex
         environment = os.environ.copy()
-        environment.update(AUTO_CODER_DEPLOYMENT_GENERATION=generation, AUTO_CODER_MANAGEMENT_SOCKET=str(self.worker_socket))
+        environment.update(
+            AUTO_CODER_DEPLOYMENT_GENERATION=generation,
+            AUTO_CODER_MANAGEMENT_SOCKET=str(self.worker_socket),
+            AUTO_CODER_REPOSITORY=self.config.repository,
+            AUTO_CODER_CHANNEL=self.config.channel,
+            AUTO_CODER_RUNTIME_ROOT=str(self.config.runtime_root),
+            AUTO_CODER_WORKSPACE_ROOT=str(self.config.workspace_root),
+        )
+        if runtime["runtime_id"] != "bootstrap":
+            # Prevent an inherited Python override from importing bootstrap code
+            # while a staged interpreter claims to execute an immutable install.
+            environment.pop("PYTHONPATH", None)
+            environment.pop("PYTHONHOME", None)
+            environment["VIRTUAL_ENV"] = runtime["ready"]["environment_path"]
+            environment["PATH"] = str(Path(runtime["ready"]["environment_path"]) / "bin") + os.pathsep + environment.get("PATH", "")
         command = list(self.config.child_command) if self.config.child_command else [runtime["interpreter_path"], "-m", "auto_coder.cli", "process-issues", "--repo", self.config.repository, "--log-file", str(self.config.runtime_root / "logs" / "auto-coder.log")]
         state.update(selected_runtime_id=runtime["runtime_id"], stop_verified=False, launch_intent={"generation": generation, "runtime": runtime, "at": time.time()})
         self.store.write(state)
-        self.child = subprocess.Popen(command, cwd=self.config.workspace_root, env=environment, start_new_session=False)
+        try:
+            self.child = subprocess.Popen(command, cwd=self.config.workspace_root, env=environment, start_new_session=False)
+        except OSError:
+            # The pre-spawn intent is deliberately retained for safe reconstruction.
+            return {"status": "UNKNOWN", "reason": "child launch unavailable"}
         state["launch_intent"]["pid"] = self.child.pid
         self.store.write(state)
         try:
@@ -261,7 +388,7 @@ class WorkerSupervisor:
                 "status": "UNKNOWN",
                 "reason": "child lifetime unavailable during startup",
             }
-        worker = {"pid": self.child.pid, "start_token": start_token, "process_run_id": None, "deployment_generation": generation, "runtime_id": runtime["runtime_id"], "ready": runtime["ready"], "started_at": time.time()}
+        worker = {"pid": self.child.pid, "start_token": start_token, "process_run_id": None, "deployment_generation": generation, "runtime_id": runtime["runtime_id"], "ready": runtime["ready"], "ready_path": runtime.get("ready_path"), "started_at": time.time()}
         state.update(worker=worker, stopped=False, launch_intent=None)
         return {"status": "RUNNING", "worker": worker}
 
@@ -275,19 +402,32 @@ class WorkerSupervisor:
         if not worker.get("stop_requested"):
             worker.update(stop_requested=True, stop_requested_at=time.time())
             self.store.write(state)
-            if not self._is_alive(worker):
+            # Use an fd for the actual process lifetime. Checking /proc and then
+            # calling kill(pid) leaves a PID-reuse window even on a private host.
+            try:
+                pid_fd = os.pidfd_open(int(worker["pid"]))
+                try:
+                    if self._start_token(int(worker["pid"])) != worker["start_token"]:
+                        return {"status": "UNKNOWN", "worker": worker}
+                    signal.pidfd_send_signal(pid_fd, signal.SIGTERM)
+                finally:
+                    os.close(pid_fd)
+            except OSError:
                 return {"status": "UNKNOWN", "worker": worker}
-            os.kill(int(worker["pid"]), signal.SIGTERM)
         return {"status": "DRAINING", "worker": worker}
 
     def _serve(self, connection: socket.socket) -> None:
         with connection:
+            connection.settimeout(2)
             stream = connection.makefile("rwb")
             try:
                 request = json.loads(stream.readline(256 * 1024))
                 response = self.apply(request) if isinstance(request, dict) else {"status": "UNSUPPORTED"}
-            except (ValueError, json.JSONDecodeError):
+            except (OSError, ValueError, json.JSONDecodeError):
                 response = {"status": "UNSUPPORTED"}
+            except Exception as error:
+                logger.error("Supervisor request failed: {}", type(error).__name__)
+                response = {"status": "UNKNOWN"}
             try:
                 stream.write(json.dumps(response, separators=(",", ":")).encode() + b"\n")
                 stream.flush()
@@ -309,17 +449,49 @@ class WorkerSupervisor:
         listener.bind(str(self.control_socket))
         os.chmod(self.control_socket, 0o600)
         listener.listen(8)
+        listener.settimeout(0.25)
+        previous_handler = None
+        if threading.current_thread() is threading.main_thread():
+            previous_handler = signal.getsignal(signal.SIGTERM)
+            signal.signal(signal.SIGTERM, self._handle_shutdown)
         try:
+            if self.config.start_on_boot and not self.store.path.exists():
+                # A fresh channel container retains its previous automatic worker
+                # startup. A persisted stop/crash never triggers a resurrection.
+                result = self.apply({"operation_id": "bootstrap-initial-start", "operation": "START"})
+                logger.info("Initial worker start: {}", result.get("status"))
+            shutdown_operation = {"operation_id": "container-shutdown-" + self.incarnation, "operation": "REQUEST_GRACEFUL_STOP"}
             while True:
-                connection, _ = listener.accept()
+                if self._shutdown_requested:
+                    result = self.apply(shutdown_operation)
+                    state = self.store.read()
+                    if state.get("worker") is None or not self._is_alive(state.get("worker")):
+                        logger.info("Supervisor container shutdown; worker status: {}", result.get("status"))
+                        return
+                try:
+                    connection, _ = listener.accept()
+                except socket.timeout:
+                    continue
                 self._serve(connection)
         finally:
+            if previous_handler is not None:
+                signal.signal(signal.SIGTERM, previous_handler)
             listener.close()
             self.control_socket.unlink(missing_ok=True)
 
+    def _handle_shutdown(self, _signum: int, _frame: object) -> None:
+        self._shutdown_requested = True
+
 
 def main() -> None:
-    WorkerSupervisor(SupervisorConfig.environment()).run()
+    config = SupervisorConfig.environment()
+    directory = config.runtime_root / "supervisor"
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    logger.remove()
+    layout = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | {file}:{function}:{line} | {message}"
+    logger.add(sys.stdout, colorize=sys.stdout.isatty(), format=layout)
+    logger.add(directory / "supervisor.log", rotation="10 MB", retention="5 days", format=layout)
+    WorkerSupervisor(config).run()
 
 
 if __name__ == "__main__":
