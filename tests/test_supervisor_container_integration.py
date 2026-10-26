@@ -244,7 +244,7 @@ def test_release_beta_held_drain_replay_restart_and_crash_reconstruction(tmp_pat
         compose_command("down", "--remove-orphans", "--timeout", "3", check=False)
 
 
-def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path) -> None:
+def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, _use_real_commands: None) -> None:
     """REQ-011: run the unchanged worker Compose PID1 command and #2610 runtime.
 
     Only the isolated preparation container can download dependencies; the
