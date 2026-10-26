@@ -22,6 +22,15 @@ class SupervisorStore:
             return {"schema_version": 1, "operations": {}, "worker": None, "stopped": False}
         if not isinstance(value, dict) or value.get("schema_version") != 1:
             raise ValueError("invalid supervisor state")
+        selected = value.get("selected_runtime_id")
+        if "selected_runtime_id" in value:
+            if not isinstance(selected, str) or not 1 <= len(selected) <= 128 or not selected.isalnum():
+                raise ValueError("invalid selected runtime pointer")
+        elif value.get("worker") is not None or value.get("last_worker") is not None or value.get("launch_intent") is not None or value.get("stopped") is True:
+            raise ValueError("missing selected runtime pointer for prior worker")
+        worker = value.get("worker")
+        if isinstance(worker, dict) and worker.get("runtime_id") != selected:
+            raise ValueError("selected runtime differs from recorded worker")
         return value
 
     def write(self, value: dict[str, Any]) -> None:

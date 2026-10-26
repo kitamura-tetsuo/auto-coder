@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import http.client
 import json
@@ -69,6 +70,18 @@ class _UnixHTTPConnection(http.client.HTTPConnection):
 
 class WorkerSupervisor:
     """Durable single-child state machine and private typed-operation server."""
+
+    _REQUEST_FIELDS = frozenset(
+        {
+            "operation_id",
+            "operation",
+            "expected_supervisor_incarnation",
+            "expected_process_run_id",
+            "expected_generation",
+            "expected_runtime_id",
+            "runtime_id",
+        }
+    )
 
     def __init__(self, config: SupervisorConfig) -> None:
         self.config = config
@@ -224,7 +237,11 @@ class WorkerSupervisor:
 
     def inspect(self) -> dict[str, Any]:
         with self._lock:
-            state = self.store.read()
+            try:
+                state = self.store.read()
+            except (OSError, ValueError) as error:
+                logger.error("Supervisor state unavailable during inspection: {}", type(error).__name__)
+                return {"status": "NEEDS_ATTENTION", "supervisor_incarnation": self.incarnation, "worker": None, "alive": False}
             self._reconcile_worker(state)
             worker, alive = state.get("worker"), self._is_alive(state.get("worker"))
             status = "DRAINING" if alive and isinstance(worker, dict) and worker.get("stop_requested") else "RUNNING" if alive else "UNKNOWN" if worker is not None else "STOPPED" if state.get("stopped") else "UNKNOWN"
@@ -251,9 +268,22 @@ class WorkerSupervisor:
             operation_id, operation = request.get("operation_id"), request.get("operation")
             if not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 128 or operation not in {"INSPECT", "START", "REQUEST_GRACEFUL_STOP", "RESTART_WORKER"}:
                 return {"status": "UNSUPPORTED"}
+            if not request.keys() <= self._REQUEST_FIELDS:
+                # A caller may supply identity fences and a runtime ID, but not
+                # executable arguments, users, paths, networks, or new targets.
+                return {"status": "UNSUPPORTED"}
+            for name in ("expected_supervisor_incarnation", "expected_process_run_id", "expected_generation", "expected_runtime_id"):
+                value = request.get(name)
+                if value is not None and (not isinstance(value, str) or not 1 <= len(value) <= 128):
+                    return {"status": "UNSUPPORTED"}
             if self._shutdown_requested and operation in {"START", "RESTART_WORKER"}:
                 return {"status": "CONFLICT"}
-            state, digest = self.store.read(), self._digest(request)
+            try:
+                state = self.store.read()
+            except (OSError, ValueError) as error:
+                logger.error("Supervisor state unavailable for operation: {}", type(error).__name__)
+                return {"status": "NEEDS_ATTENTION"}
+            digest = self._digest(request)
             prior = state["operations"].get(operation_id)
             if prior:
                 return self._reconcile_operation(operation_id, state) if prior["digest"] == digest else {"status": "CONFLICT"}
@@ -435,8 +465,21 @@ class WorkerSupervisor:
                 pass
 
     def run(self) -> None:
-        """Serve one-request connections forever; EOF/disconnect is not shutdown."""
+        """Hold one exclusive runtime owner for the lifetime of the server."""
         self.control_socket.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lock_path = self.control_socket.parent / "owner.lock"
+        owner_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+        try:
+            try:
+                fcntl.flock(owner_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise RuntimeError("Supervisor runtime is already owned") from error
+            self._run_exclusive()
+        finally:
+            os.close(owner_fd)
+
+    def _run_exclusive(self) -> None:
+        """Serve requests without letting a contender replace our socket."""
         try:
             details = self.control_socket.lstat()
             if stat.S_ISSOCK(details.st_mode):

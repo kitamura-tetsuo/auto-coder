@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -50,6 +51,62 @@ def test_store_rejects_corrupt_schema(tmp_path: Path) -> None:
         raise AssertionError("corrupt state was accepted")
 
 
+def test_corrupt_selected_runtime_pointer_refuses_start_without_replacement(tmp_path: Path) -> None:
+    supervisor = WorkerSupervisor(config(tmp_path))
+    state = supervisor.store.read()
+    state["selected_runtime_id"] = {"unexpected": "object"}
+    supervisor.store.write(state)
+    persisted = supervisor.store.path.read_bytes()
+
+    with patch("auto_coder.worker_supervisor.subprocess.Popen") as spawn:
+        assert supervisor.apply({"operation_id": "new", "operation": "START"}) == {"status": "NEEDS_ATTENTION"}
+        spawn.assert_not_called()
+    assert supervisor.store.path.read_bytes() == persisted
+
+
+def test_missing_selected_runtime_pointer_with_prior_worker_refuses_start(tmp_path: Path) -> None:
+    supervisor = WorkerSupervisor(config(tmp_path))
+    state = supervisor.store.read()
+    state["last_worker"] = {"runtime_id": "bootstrap", "deployment_generation": "earlier"}
+    state["stopped"] = True
+    supervisor.store.write(state)
+
+    with patch("auto_coder.worker_supervisor.subprocess.Popen") as spawn:
+        assert supervisor.apply({"operation_id": "new", "operation": "START"}) == {"status": "NEEDS_ATTENTION"}
+        spawn.assert_not_called()
+
+
+def test_corrupt_persisted_runtime_pointer_is_fenced_through_control_socket(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None) -> None:
+    environment = os.environ.copy()
+    environment.update(
+        AUTO_CODER_SUPERVISOR_INSTANCE_ID="beta-worker",
+        AUTO_CODER_CHANNEL="beta",
+        AUTO_CODER_REPOSITORY="owner/repo",
+        AUTO_CODER_RUNTIME_ROOT=str(tmp_path),
+        AUTO_CODER_WORKSPACE_ROOT=str(tmp_path),
+        AUTO_CODER_SUPERVISOR_AUTO_START="0",
+    )
+    process = subprocess.Popen([sys.executable, "-m", "auto_coder.worker_supervisor"], env=environment)
+    endpoint = tmp_path / "supervisor" / "control.sock"
+    try:
+        assert request(endpoint, {"operation_id": "initial-inspect", "operation": "INSPECT"})["status"] == "UNKNOWN"
+        state_file = tmp_path / "supervisor" / "state.json"
+        corrupt_cases = (
+            {"schema_version": 1, "operations": {}, "worker": None, "stopped": False, "selected_runtime_id": {"bad": "pointer"}},
+            {"schema_version": 1, "operations": {}, "worker": None, "stopped": True, "last_worker": {"runtime_id": "bootstrap"}},
+        )
+        for index, state in enumerate(corrupt_cases):
+            state_file.write_text(json.dumps(state))
+            original = state_file.read_bytes()
+            assert request(endpoint, {"operation_id": f"start-{index}", "operation": "START"}) == {"status": "NEEDS_ATTENTION"}
+            assert request(endpoint, {"operation_id": f"inspect-{index}", "operation": "INSPECT"})["status"] == "NEEDS_ATTENTION"
+            assert state_file.read_bytes() == original
+            assert process.poll() is None
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
+
+
 def test_control_socket_survives_client_disconnect_and_remains_queryable(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None) -> None:
     environment = os.environ.copy()
     environment.update(
@@ -72,6 +129,39 @@ def test_control_socket_survives_client_disconnect_and_remains_queryable(tmp_pat
     finally:
         process.terminate()
         process.wait(timeout=5)
+
+
+def test_second_supervisor_cannot_take_over_live_control_socket(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None) -> None:
+    environment = os.environ.copy()
+    environment.update(
+        AUTO_CODER_SUPERVISOR_INSTANCE_ID="beta-worker",
+        AUTO_CODER_CHANNEL="beta",
+        AUTO_CODER_REPOSITORY="owner/repo",
+        AUTO_CODER_RUNTIME_ROOT=str(tmp_path),
+        AUTO_CODER_WORKSPACE_ROOT=str(tmp_path),
+        AUTO_CODER_SUPERVISOR_AUTO_START="0",
+    )
+    endpoint = tmp_path / "supervisor" / "control.sock"
+    first = subprocess.Popen([sys.executable, "-m", "auto_coder.worker_supervisor"], env=environment)
+    second: subprocess.Popen[bytes] | None = None
+    try:
+        original = request(endpoint, {"operation_id": "inspect-first", "operation": "INSPECT"})
+        second = subprocess.Popen(
+            [sys.executable, "-m", "auto_coder.worker_supervisor"],
+            env=environment,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        assert second.wait(timeout=10) != 0
+        still_owned = request(endpoint, {"operation_id": "inspect-after-contender", "operation": "INSPECT"})
+        assert still_owned["supervisor_incarnation"] == original["supervisor_incarnation"]
+        assert first.poll() is None
+    finally:
+        if second is not None and second.poll() is None:
+            second.terminate()
+            second.wait(timeout=5)
+        first.terminate()
+        first.wait(timeout=5)
 
 
 def test_control_socket_survives_child_exit_before_lifetime_capture(
@@ -121,6 +211,27 @@ def test_same_id_changed_operation_preserves_original_acceptance(tmp_path: Path)
     assert supervisor.apply({"operation_id": "K", "operation": "START"}) == {"status": "CONFLICT"}
     persisted = json.loads((tmp_path / "supervisor" / "state.json").read_text())
     assert persisted["operations"]["K"]["request"] == original
+
+
+def test_typed_operation_rejects_untrusted_launch_parameters(tmp_path: Path) -> None:
+    supervisor = WorkerSupervisor(config(tmp_path))
+    malicious_fields = (
+        ("command", ["/bin/sh", "-c", "unexpected"]),
+        ("interpreter", "/tmp/other-python"),
+        ("user", "root"),
+        ("network", "host"),
+        ("target", "other/repository"),
+    )
+
+    class Child:
+        pid = 123
+
+    with patch("auto_coder.worker_supervisor.subprocess.Popen", return_value=Child()) as spawn, patch.object(supervisor, "_start_token", return_value="77"):
+        for index, (field, value) in enumerate(malicious_fields):
+            result = supervisor.apply({"operation_id": f"reject-{index}", "operation": "START", field: value})
+            assert result == {"status": "UNSUPPORTED"}
+        spawn.assert_not_called()
+    assert not supervisor.store.path.exists()
 
 
 def test_start_uses_fixed_configuration_and_fences_second_start(tmp_path: Path) -> None:
@@ -374,3 +485,89 @@ def test_real_management_bridge_held_drain_and_original_stop_replay(tmp_path: Pa
         if supervisor.child is not None and supervisor.child.poll() is None:
             supervisor.child.terminate()
             supervisor.child.wait(timeout=10)
+
+
+def test_real_held_stop_survives_lost_response_and_supervisor_death(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None) -> None:
+    fixture = Path(__file__).parent / "fixtures" / "supervisor_bridge_worker.py"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    entry = (
+        "import sys; from pathlib import Path; "
+        "from auto_coder.worker_supervisor import SupervisorConfig, WorkerSupervisor; "
+        f"config=SupervisorConfig('beta-worker','beta','owner/repo',Path({str(tmp_path)!r}),"
+        f"Path({str(workspace)!r}),Path(sys.executable),"
+        f"child_command=(sys.executable,{str(fixture)!r}),start_on_boot=True); "
+        "WorkerSupervisor(config).run()"
+    )
+    endpoint = tmp_path / "supervisor" / "control.sock"
+    first = subprocess.Popen([sys.executable, "-c", entry])
+    second: subprocess.Popen[bytes] | None = None
+    worker_pid: int | None = None
+    worker_token: str | None = None
+    try:
+        for _ in range(500):
+            status = request(endpoint, {"operation_id": "inspect-live", "operation": "INSPECT"})
+            worker = status.get("worker")
+            if isinstance(worker, dict) and worker.get("process_run_id"):
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("production bridge did not expose its live process-run ID")
+        worker_pid = worker["pid"]
+        worker_token = worker["start_token"]
+        stop = {
+            "operation_id": "held-original",
+            "operation": "REQUEST_GRACEFUL_STOP",
+            "expected_process_run_id": worker["process_run_id"],
+            "expected_generation": worker["deployment_generation"],
+        }
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.connect(str(endpoint))
+            client.sendall(json.dumps(stop).encode() + b"\n")
+            # Close without observing the result, as with a dropped transport.
+
+        for _ in range(300):
+            if (tmp_path / "fixture-draining").exists():
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("real child did not enter held drain")
+
+        accepted = json.loads((tmp_path / "supervisor" / "state.json").read_text())["operations"]["held-original"]
+        assert accepted["request"] == stop
+        assert accepted["result"]["status"] == "DRAINING"
+        first.kill()
+        first.wait(timeout=5)
+
+        second = subprocess.Popen([sys.executable, "-c", entry])
+        replay = request(endpoint, stop)
+        assert replay["status"] == "DRAINING"
+        assert request(endpoint, {**stop, "operation": "RESTART_WORKER"}) == {"status": "CONFLICT"}
+        assert request(endpoint, {**stop, "expected_generation": "changed"}) == {"status": "CONFLICT"}
+        assert request(endpoint, {"operation_id": "another-start", "operation": "START"}) == {"status": "NEEDS_ATTENTION"}
+        assert not (tmp_path / "last-terminal.json").exists()
+
+        (tmp_path / "fixture-release").write_text("release")
+        for _ in range(500):
+            if request(endpoint, stop) == {"status": "STOPPED"}:
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("reconstructed stop did not reconcile terminal receipt and exit")
+        saved = json.loads((tmp_path / "supervisor" / "state.json").read_text())
+        assert saved["operations"]["held-original"]["request"] == stop
+        assert saved["operations"]["held-original"]["result"] == {"status": "STOPPED"}
+        assert saved["last_worker"]["pid"] == worker_pid
+        assert saved["worker"] is None
+    finally:
+        (tmp_path / "fixture-release").write_text("release")
+        for process in (first, second):
+            if process is not None and process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+        if worker_pid is not None and worker_token is not None:
+            try:
+                if WorkerSupervisor._start_token(worker_pid) == worker_token:
+                    os.kill(worker_pid, signal.SIGTERM)
+            except (OSError, ValueError):
+                pass

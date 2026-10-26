@@ -9,7 +9,9 @@ Client EOF never stops it. Supported operations are `INSPECT`, `START`,
 1–128-character `operation_id`. Reusing that ID with a different operation,
 expected identity fence, or intended runtime returns `CONFLICT` without changing
 the original accepted request. An identical replay returns or reconciles only
-its durable result.
+its durable result. Requests carrying unrecognized fields (such as executable
+commands, alternate users, paths, network modes or target repositories) are
+rejected without starting a child.
 
 ## One-time deployment and startup
 
@@ -38,8 +40,14 @@ fsynced on the channel-private persistent volume. It records the selected
 runtime ID, process PID and Linux start token, deployment generation, actual
 worker-owned process-run ID once observed, immutable READY selection, launch
 intent, effect-generation identifiers, operation payload hashes and final
-receipts. Supervisor `incarnation` changes with every PID-1 start; a persisted
-unresolved effect remains fenced across that change.
+receipts. A persistent `owner.lock` holds an exclusive OS lock for PID 1's
+entire lifetime. A second Supervisor pointed at the same volume fails before
+touching the existing control socket or spawning a competing worker; a genuine
+PID-1 exit releases the lock for recovery. A malformed selected-runtime pointer,
+or a missing pointer when the store records a prior worker, is treated as
+`NEEDS_ATTENTION` and cannot be silently overwritten by START. Supervisor
+`incarnation` changes with every PID-1 start; a persisted unresolved effect
+remains fenced across that change.
 
 ## Runtime identity and inspection
 
@@ -93,7 +101,11 @@ volumes run a fixed harmless test child backed by the real management bridge:
 the job holds a true SIGTERM drain until that bridge writes a matching terminal
 receipt, rejects changed-payload replay, proves the peer channel remains live,
 checks a single successor on replayed RESTART, and reconstructs persisted state
-after killing the isolated Supervisor container. It never mounts production
+after killing the isolated Supervisor container. A separate real-process test
+keeps the management-bridge child in held drain after dropping the original
+stop response and killing its Supervisor; a reconstructed Supervisor must
+replay only that accepted stop. The suite also checks duplicate Supervisor
+ownership and corrupt pointer recovery. It never mounts production
 state, supplies GitHub tokens, invokes an LLM provider or runs the issue/PR
 scheduler against a real repository.
 
