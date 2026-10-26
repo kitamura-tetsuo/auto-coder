@@ -228,6 +228,21 @@ retains every finding independently of attached-thread counts. Run
 tests/test_pr_adversarial_review_audit.py tests/test_adversarial_validation_pr_flow.py
 tests/test_dashboard_reviews.py` to exercise root confirmation, retained
 audit effects, production-stage consumption, and the existing history projection.
+
+Invalid controller-reference bindings are rejected at validation as `ERROR` with
+`diagnostic_category=correction_reference_invalid`, before independent closure or
+actionable finding reconciliation. The existing native report retains a bounded
+raw-answer preview; the existing publication effect can confirm
+the diagnostic `COMMENT` without asserting repair or closure. This changes no
+trace fields or dashboard projection. Run
+`bash scripts/test.sh tests/test_effective_decision_pr_flow.py::test_unknown_canonical_reference_publishes_diagnostic_without_closing_threads
+tests/test_pr_finding_reconciliation.py -k 'unknown_canonical_reference or production_ordinary_prompt or first_ordinary_review'`
+for the PR #5783 failure, withheld thread dispositions, successful diagnostic
+publication, the production failure stage and dashboard review-history projection,
+preserved blocker ownership, and a valid forced same-head retry. Run
+`bash scripts/test.sh tests/test_pr_finding_reconciliation.py::test_invalid_reference_withholds_closure_and_dynamic_check_authority`
+for unknown and duplicated IDs withholding lifecycle closure and dynamic checks.
+
 `test_publication_confirms_one_root_per_blocker` verifies both distinct-defect
 publication and equivalent-observation consolidation without a pending intent.
 `tests/test_pr_finding_reconciliation.py::test_two_tier_historical_roots_preserve_distinct_retained_owners`

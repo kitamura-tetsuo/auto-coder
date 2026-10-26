@@ -133,7 +133,7 @@ def validate_correction_reference(
         return None, "Canonical correction reference has no controller-supplied context"
     references = [reference for reference in context.references if reference.correction_identity == identity]
     if len(references) != 1:
-        return None, "Canonical correction reference was not supplied exactly once in this invocation"
+        return None, f"Canonical correction reference {identity!r} was supplied {len(references)} times; expected exactly once in this invocation"
     reference = references[0]
     if not scope_fingerprint or scope_fingerprint != reference.scope_fingerprint:
         return None, "Canonical correction reference contradicts the immutable scope binding"

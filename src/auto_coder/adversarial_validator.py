@@ -3540,10 +3540,25 @@ def _enforce_coverage_and_verdict_precedence(
             "IMPLEMENTATION" if is_finding else "TEST_ORACLE",
         )
         if reference_error:
-            result.result = "BLOCKED"
-            result.diagnostic_category = "correction_reference_invalid"
-            result.diagnostic_reason = reference_error
-            return result
+            # A malformed binding invalidates this response's authority. Keep
+            # the raw answer for diagnosis, but do not let its findings reach
+            # reconciliation or its closure claims resolve historical threads.
+            return replace(
+                result,
+                result="ERROR",
+                raw_model_result=result.raw_model_result or result.result,
+                summary="Invalid validator response: correction reference could not be authenticated; independent validation must be repeated",
+                diagnostic_category="correction_reference_invalid",
+                diagnostic_reason=reference_error,
+                findings=[],
+                test_oracle_gaps=[],
+                thread_dispositions=[],
+                closure_assessment=None,
+                closure_assessment_diagnostic="Closure claims withheld because the response contains an invalid correction reference",
+                dynamic_check_requested=None,
+                unexplained_changes=[],
+                publish_clarification_thread=False,
+            )
 
     _normalize_findings_and_gaps(result, context)
 

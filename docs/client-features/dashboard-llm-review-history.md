@@ -176,6 +176,14 @@ in processing status and the trace. Confirming original anchors after a later
 commit allows normal validation and repair routing to resume; it does not grant
 merge approval from an older verdict.
 
+An invalid canonical correction reference appears as an `ERROR` review with
+`correction_reference_invalid`, the rejected binding reason, and the existing
+bounded raw-answer preview. The native GitHub review also labels the original
+model verdict as historical evidence. Successful diagnostic publication
+confirms only the native `COMMENT`, without a correction handoff or thread
+closure. Existing audit and history fields carry this distinction; an error
+diagnostic never counts as an independently verified correction or merge approval.
+
 Saved non-pass review replay recognizes exact `STILL_VALID` thread dispositions,
 including strong-audit roots, without requiring repeated finding prose. The
 existing repair-delegation stage reflects local admission failure as `FAILED`
