@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -15,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 UV_VERSION = "0.7.22"
 SETUP_UV_ACTION = "astral-sh/setup-uv@v7"
+PROJECT_INSTALL = re.compile(r"\buv sync\b|\buv pip install\b|\bpip install\b[^\n]*(?:-e\s+\.|\s\.)")
 
 
 def _run_text(step: object) -> str:
@@ -40,11 +42,12 @@ def test_every_active_project_installing_workflow_uses_one_pinned_locked_uv_setu
     """Discover future workflows instead of maintaining an allowlist."""
     discovered: set[str] = set()
 
-    for workflow_path in sorted(WORKFLOWS.glob("*.yml")):
+    workflow_paths = sorted((*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")))
+    for workflow_path in workflow_paths:
         workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
         for job_name, job in workflow.get("jobs", {}).items():
             steps = job.get("steps", [])
-            install_steps = [step for step in steps if "uv sync" in _run_text(step)]
+            install_steps = [step for step in steps if PROJECT_INSTALL.search(_run_text(step))]
             if not install_steps:
                 continue
 
@@ -52,7 +55,9 @@ def test_every_active_project_installing_workflow_uses_one_pinned_locked_uv_setu
             setup_steps = [step for step in steps if step.get("uses") == SETUP_UV_ACTION]
             assert len(setup_steps) == 1, f"{workflow_path}:{job_name} must use {SETUP_UV_ACTION} exactly once"
             assert setup_steps[0].get("with", {}).get("version") == UV_VERSION
-            assert all("--locked" in _run_text(step) for step in install_steps)
+            sync_steps = [step for step in install_steps if "uv sync" in _run_text(step)]
+            assert sync_steps, f"{workflow_path}:{job_name} must install dependencies with uv sync"
+            assert all("--locked" in _run_text(step) for step in sync_steps)
 
             job_commands = "\n".join(_run_text(step) for step in steps)
             assert "astral.sh/uv/install.sh" not in job_commands

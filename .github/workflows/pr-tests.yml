@@ -62,7 +62,6 @@ jobs:
         run: |
           uv sync --locked --dev --extra test
 
-
       - name: Test CLI entry point
         if: matrix.group == 1
         run: |
