@@ -23,7 +23,9 @@ optional drain-acknowledgement path. The initial runtime must name one of those
 profiles. Every non-bootstrap runtime also identifies an immutable source root,
 its deterministic content receipt, and an independently written READY receipt that
 binds that content to the configured runtime reference. Executable and source
-receipts are reverified immediately before both launch and recovery.
+receipts are reverified immediately before both launch and recovery. Symlinks are
+not supported inside a verified source root because their targets are outside the
+closed immutable content receipt.
 
 ## Private process contract
 
@@ -36,6 +38,8 @@ receipts. The contract reports the Supervisor incarnation, runtime reference,
 child generation, and Linux PID plus process-start token. Process liveness and
 application readiness are separate: a running PID never asserts OAuth or MCP
 readiness. The bootstrap accepts neither OAuth tokens nor a public IPC listener.
+An atomic durable generation reservation fences concurrent Supervisor participants;
+only the winner can spawn, while a stale contender receives `CONFLICT` or `UNKNOWN`.
 
 A graceful stop sends one cooperative `SIGTERM`. Its JSON drain receipt must match
 the exact generation, launch nonce, PID, and Linux process-start token; a file left

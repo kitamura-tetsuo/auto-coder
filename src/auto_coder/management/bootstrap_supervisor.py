@@ -70,7 +70,12 @@ class RuntimeSpec:
     def _source_digest(root: Path) -> str:
         digest = hashlib.sha256()
         try:
-            paths = sorted((path for path in root.rglob("*") if path.is_file() and not path.is_symlink()), key=lambda path: path.relative_to(root).as_posix())
+            members = list(root.rglob("*"))
+            # Source closures containing links are unsupported: neither the
+            # link target nor its containment is immutable under this receipt.
+            if any(path.is_symlink() for path in members):
+                return ""
+            paths = sorted((path for path in members if path.is_file()), key=lambda path: path.relative_to(root).as_posix())
             for path in paths:
                 relative = path.relative_to(root).as_posix().encode()
                 digest.update(len(relative).to_bytes(4, "big"))
@@ -167,6 +172,17 @@ class ManagementBootstrapSupervisor:
                 return Observation(ResultStatus.UNKNOWN, record, detail="unresolved process effect has no authoritative OS lifetime")
             if record.pid == 0:
                 return Observation(ResultStatus.STOPPED, record)
+            owned = self._children.get(record.pid)
+            if owned is not None and owned.poll() is not None:
+                if record.intended_stop:
+                    exited = replace(record, phase=ChildPhase.UNKNOWN, exit_cause="intended_exit_observed")
+                    self.store.save(exited)
+                    return Observation(ResultStatus.UNKNOWN, exited, detail="intended child exit awaits drain evidence")
+                failed = replace(record, phase=ChildPhase.NEEDS_ATTENTION, pid=0, start_token="", exit_cause=f"startup_exit_{owned.returncode}")
+                self.store.save(failed)
+                if failed.previous_runtime and not failed.recovery_used:
+                    return self._restore_once(failed.effect_operation_id, failed)
+                return Observation(ResultStatus.NEEDS_ATTENTION, failed, detail="owned child exited before application readiness")
             token = self._start_token(record.pid)
             if token != record.start_token:
                 uncertain = replace(record, phase=ChildPhase.UNKNOWN, readiness="not_observed")
@@ -206,7 +222,9 @@ class ManagementBootstrapSupervisor:
                 runtime_receipt=runtime.receipt,
                 source_receipt=runtime.source_receipt,
             )
-            self.store.save(prepared)  # durable pre-effect marker
+            if not self.store.reserve(current.record, prepared):
+                winner = self.inspect()
+                return self._finish(operation_id, ResultStatus.CONFLICT if winner.status is not ResultStatus.UNKNOWN else ResultStatus.UNKNOWN, winner.record, "another Supervisor reserved the child generation", persist_state=False)
             try:
                 environment = dict(runtime.environment)
                 environment.update({"AUTO_CODER_CHILD_GENERATION": str(prepared.child_generation), "AUTO_CODER_DRAIN_NONCE": prepared.drain_nonce})
@@ -338,8 +356,9 @@ class ManagementBootstrapSupervisor:
             return Observation(ResultStatus.UNKNOWN, self.store.load(), effect.operation_id, detail="corrupt effect receipt")
         return Observation(status, record, effect.operation_id, bool(result.get("process_ready")), bool(result.get("application_ready")), result.get("detail", ""))
 
-    def _finish(self, operation_id: str, status: ResultStatus, record: ChildRecord, detail: str = "") -> Observation:
-        self.store.save(record)
+    def _finish(self, operation_id: str, status: ResultStatus, record: ChildRecord, detail: str = "", *, persist_state: bool = True) -> Observation:
+        if persist_state:
+            self.store.save(record)
         process_ready = status in {ResultStatus.OBSERVED_RUNNING, ResultStatus.PROCESS_RESTORED}
         encoded_record = asdict(record)
         encoded_record["phase"] = record.phase.value

@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from auto_coder.management.bootstrap_store import ChildPhase, ChildRecord
-from auto_coder.management.bootstrap_supervisor import BootstrapConfig, ManagementBootstrapSupervisor, ResultStatus, RuntimeSpec
+from auto_coder.management.bootstrap_supervisor import BootstrapConfig, ManagementBootstrapSupervisor, Observation, ResultStatus, RuntimeSpec
 
 CHILD = b"""#!/usr/bin/python3
 import json, os, signal, sys, time
@@ -230,6 +230,28 @@ def test_non_initial_runtime_requires_current_ready_source_receipt(tmp_path: Pat
     assert rejected.record.pid == 0
 
 
+def test_non_initial_runtime_rejects_changed_symlinked_source(tmp_path: Path) -> None:
+    initial = _runtime(tmp_path, "initial")
+    candidate = _runtime(tmp_path, "candidate")
+    assert candidate.source_root is not None
+    target = tmp_path / "outside.py"
+    target.write_text("VALUE = 'ready'\n")
+    linked = candidate.source_root / "payload.py"
+    linked.symlink_to(target)
+    # Model a legacy READY producer that omitted links, then change executed content.
+    linked.unlink()
+    receipt = RuntimeSpec._source_digest(candidate.source_root)
+    linked.symlink_to(target)
+    assert candidate.ready_receipt is not None
+    candidate.ready_receipt.write_text(json.dumps({"ready": True, "reference": "candidate", "source_receipt": receipt}))
+    candidate = replace(candidate, source_receipt=receipt)
+    target.write_text("VALUE = 'changed'\n")
+    supervisor = _supervisor(tmp_path, initial, candidate)
+    result = supervisor.start_selected("candidate", "attempt", "candidate")
+    assert result.status is ResultStatus.NEEDS_ATTENTION
+    assert result.record.pid == 0
+
+
 def test_replay_returns_original_generation_after_later_child(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     supervisor = _supervisor(tmp_path, runtime)
@@ -337,7 +359,7 @@ CrashWindowSupervisor(config).start_selected('lost-start', 'attempt', 'one')
     )
     process = subprocess.Popen([sys.executable, str(harness)])
     deadline = time.monotonic() + 5
-    while not marker.exists() and time.monotonic() < deadline:
+    while (not marker.exists() or not marker.read_text()) and time.monotonic() < deadline:
         time.sleep(0.01)
     assert marker.exists()
     child_pid = int(marker.read_text())
@@ -351,3 +373,66 @@ CrashWindowSupervisor(config).start_selected('lost-start', 'attempt', 'one')
         assert ManagementBootstrapSupervisor._start_token(child_pid)
     finally:
         _stop_process(child_pid)
+
+
+def test_two_supervisors_atomically_contend_for_one_child(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    barrier = threading.Barrier(2)
+
+    class Contender(ManagementBootstrapSupervisor):
+        def inspect(self) -> Observation:
+            observed = super().inspect()
+            if observed.status is ResultStatus.STOPPED:
+                barrier.wait(timeout=2)
+            return observed
+
+    first = Contender(_supervisor(tmp_path, runtime).config, "first")
+    second = Contender(_supervisor(tmp_path, runtime).config, "second")
+    results: list[Observation] = []
+    threads = [
+        threading.Thread(target=lambda: results.append(first.start_selected("first-start", "a", "one"))),
+        threading.Thread(target=lambda: results.append(second.start_selected("second-start", "b", "one"))),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(3)
+    try:
+        assert len(results) == 2
+        assert sum(result.status is ResultStatus.OBSERVED_RUNNING for result in results) == 1
+        assert sum(result.status in {ResultStatus.CONFLICT, ResultStatus.UNKNOWN} for result in results) == 1
+        pids = {result.record.pid for result in results if result.status is ResultStatus.OBSERVED_RUNNING}
+        assert len(pids) == 1
+        assert all(ManagementBootstrapSupervisor._start_token(pid) for pid in pids)
+    finally:
+        for result in results:
+            _stop_process(result.record.pid)
+
+
+def test_delayed_candidate_failure_reconciles_one_previous_runtime(tmp_path: Path) -> None:
+    old = _runtime(tmp_path, "old")
+    candidate = _runtime(tmp_path, "candidate")
+    candidate.executable.write_bytes(b"#!/bin/sh\nsleep 0.35\nexit 23\n")
+    candidate.executable.chmod(0o755)
+    candidate = replace(candidate, receipt=f"sha256:{hashlib.sha256(candidate.executable.read_bytes()).hexdigest()}")
+    supervisor = _supervisor(tmp_path, old, candidate)
+    first = supervisor.start_selected("old-start", "a", "old")
+    _await_child_ready(old)
+    assert supervisor.request_graceful_stop("old-stop", "b", ManagementBootstrapSupervisor._identity(first.record)).status is ResultStatus.STOPPED
+    candidate_result = supervisor.start_selected("candidate-start", "c", "candidate")
+    assert candidate_result.status is ResultStatus.OBSERVED_RUNNING
+    deadline = time.monotonic() + 2
+    restored = supervisor.reconcile()
+    while restored.status is ResultStatus.OBSERVED_RUNNING and restored.record.pid == candidate_result.record.pid and time.monotonic() < deadline:
+        time.sleep(0.02)
+        restored = supervisor.reconcile()
+    try:
+        assert restored.status is ResultStatus.PROCESS_RESTORED
+        assert restored.record.selected_runtime == "old"
+        assert restored.record.recovery_used
+        restored_pid = restored.record.pid
+        replay = supervisor.start_selected("candidate-start", "c", "candidate")
+        assert replay.status is ResultStatus.PROCESS_RESTORED
+        assert replay.record.pid == restored_pid
+    finally:
+        _stop_process(restored.record.pid)

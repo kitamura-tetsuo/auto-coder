@@ -114,6 +114,34 @@ class BootstrapStore:
                 (self.instance_id, json.dumps(encoded, sort_keys=True), time.time()),
             )
 
+    def reserve(self, expected: ChildRecord, prepared: ChildRecord) -> bool:
+        """Atomically reserve the instance only if its full durable state is unchanged."""
+        if expected.instance_id != self.instance_id or prepared.instance_id != self.instance_id:
+            raise ValueError("management child instance mismatch")
+        expected_json = self._record_json(expected)
+        prepared_json = self._record_json(prepared)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT record_json FROM child_state WHERE instance_id=?", (self.instance_id,)).fetchone()
+            if row is None:
+                if expected != ChildRecord(self.instance_id):
+                    connection.rollback()
+                    return False
+                connection.execute("INSERT INTO child_state VALUES(?,?,?)", (self.instance_id, prepared_json, time.time()))
+            elif row[0] != expected_json:
+                connection.rollback()
+                return False
+            else:
+                connection.execute("UPDATE child_state SET record_json=?,updated_at=? WHERE instance_id=?", (prepared_json, time.time(), self.instance_id))
+            connection.commit()
+            return True
+
+    @staticmethod
+    def _record_json(record: ChildRecord) -> str:
+        encoded = asdict(record)
+        encoded["phase"] = record.phase.value
+        return json.dumps(encoded, sort_keys=True)
+
     def begin_effect(self, operation_id: str, attempt_id: str, action: str, runtime_ref: str, expected_identity: str) -> EffectRecord:
         if not operation_id or not attempt_id or not action:
             raise ValueError("operation, attempt, and action identities are required")
