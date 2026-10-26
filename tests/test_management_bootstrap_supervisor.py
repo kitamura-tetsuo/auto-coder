@@ -218,7 +218,7 @@ def test_two_supervisors_atomically_claim_one_graceful_stop_signal(tmp_path: Pat
         _stop_process(started.record.pid)
 
 
-def test_stale_stop_observation_cannot_roll_back_draining_owner(tmp_path: Path) -> None:
+def test_stale_start_observation_cannot_roll_back_draining_owner(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     ready = tmp_path / "counting.ready"
     signals = tmp_path / "signals.log"
@@ -269,7 +269,7 @@ def test_stale_stop_observation_cannot_roll_back_draining_owner(tmp_path: Path) 
     results: list[Observation] = []
     threads = [
         threading.Thread(target=lambda: results.append(winner.request_graceful_stop("winning-stop", "winner-attempt", identity))),
-        threading.Thread(target=lambda: results.append(stale.request_graceful_stop("stale-stop", "stale-attempt", "stale-identity"))),
+        threading.Thread(target=lambda: results.append(stale.start_selected("stale-start", "stale-attempt", "one", "stale-identity"))),
     ]
     for thread in threads:
         thread.start()
@@ -279,7 +279,7 @@ def test_stale_stop_observation_cannot_roll_back_draining_owner(tmp_path: Path) 
         assert all(not thread.is_alive() for thread in threads)
         assert {result.status for result in results} == {ResultStatus.DRAINING, ResultStatus.CONFLICT}
         assert starter.store.load().phase is ChildPhase.DRAINING
-        replay = stale.request_graceful_stop("stale-stop", "stale-attempt", "stale-identity")
+        replay = stale.start_selected("stale-start", "stale-attempt", "one", "stale-identity")
         assert replay.status is ResultStatus.CONFLICT
         third = starter.request_graceful_stop("third-stop", "third-attempt", identity)
         assert third.status is ResultStatus.CONFLICT

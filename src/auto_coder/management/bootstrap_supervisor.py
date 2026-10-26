@@ -198,11 +198,11 @@ class ManagementBootstrapSupervisor:
                 return replay
             current = self.inspect()
             if current.status is ResultStatus.OBSERVED_RUNNING and current.record.effect_operation_id == operation_id and current.record.effect_attempt_id == attempt_id and current.record.selected_runtime == runtime_ref:
-                return self._finish(operation_id, ResultStatus.OBSERVED_RUNNING, current.record)
+                return self._finish(operation_id, ResultStatus.OBSERVED_RUNNING, current.record, persist_state=False)
             if current.status in {ResultStatus.OBSERVED_RUNNING, ResultStatus.DRAINING} or (expected_identity and expected_identity != self._identity(current.record)):
-                return self._finish(operation_id, ResultStatus.CONFLICT, current.record, "a child lifetime or expectation conflicts")
+                return self._finish(operation_id, ResultStatus.CONFLICT, current.record, "a child lifetime or expectation conflicts", persist_state=False)
             if current.status is ResultStatus.UNKNOWN:
-                return self._finish(operation_id, ResultStatus.UNKNOWN, current.record, current.detail)
+                return self._finish(operation_id, ResultStatus.UNKNOWN, current.record, current.detail, persist_state=False)
             runtime = self._runtime(runtime_ref)
             if runtime is None or not runtime.verify(initial=runtime_ref == self.config.initial_runtime):
                 return self._finish(operation_id, ResultStatus.NEEDS_ATTENTION, replace(current.record, phase=ChildPhase.NEEDS_ATTENTION), "runtime receipt is not verified")
