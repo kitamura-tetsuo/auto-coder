@@ -4,6 +4,7 @@ import concurrent.futures
 import errno
 import hashlib
 import json
+import py_compile
 import shutil
 import subprocess
 import sys
@@ -132,6 +133,29 @@ def test_lookup_hashes_before_candidate_execution_and_ignores_runtime_bytecode(t
     assert not sentinel.exists()
 
 
+def test_lookup_rejects_executable_cached_bytecode_before_running_it(tmp_path: Path, _use_real_commands: None) -> None:
+    config, sha, _authority = _fixture(tmp_path)
+    prepared = ManagementVersionStager(config).prepare(ManagementPrepareIntent(sha, "first"))
+    ready = Path(prepared.receipt.environment_path).parent / "MANAGEMENT_READY.json"
+    interpreter = prepared.receipt.interpreter_path
+    source = Path(_run([interpreter, "-I", "-c", "import auto_coder.build_provenance as p; print(p.__file__)"]).splitlines()[-1])
+    _run([interpreter, "-c", "import auto_coder.build_provenance"])
+    cache = Path(_run([interpreter, "-I", "-c", "import auto_coder.build_provenance as p; print(p.__cached__)"]).splitlines()[-1])
+    original_header = cache.read_bytes()[:16]
+    sentinel = tmp_path / "cached-bytecode-executed"
+    malicious_source = tmp_path / "malicious.py"
+    malicious_source.write_text("import json\n" + f"open({str(sentinel)!r}, 'w').write('executed')\n" + f"print(json.dumps({{'source_revision':{{'available':True,'value':{sha!r}}},'distribution_version':{{'available':True,'value':'1.2.3'}}}}))\n")
+    replacement = tmp_path / "replacement.pyc"
+    py_compile.compile(str(malicious_source), cfile=str(replacement), dfile=str(source), doraise=True)
+    cache.write_bytes(original_header + replacement.read_bytes()[16:])
+
+    with pytest.raises(WorkerVersionError) as caught:
+        ManagementVersionStager(config).lookup(ready)
+
+    assert caught.value.failure is PreparationFailure.VERIFICATION_MISMATCH
+    assert not sentinel.exists()
+
+
 def test_lookup_isolates_candidate_imports_from_controller_working_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands: None) -> None:
     config, sha, _authority = _fixture(tmp_path)
     prepared = ManagementVersionStager(config).prepare(ManagementPrepareIntent(sha, "first"))
@@ -192,6 +216,26 @@ def test_real_lookup_rejects_changed_profile_and_configuration(tmp_path: Path, _
     with pytest.raises(WorkerVersionError) as changed:
         ManagementVersionStager(config).lookup(ready)
     assert changed.value.failure is PreparationFailure.VERIFICATION_MISMATCH
+
+
+def test_real_python_patch_identity_is_bound_and_cannot_silently_reuse(tmp_path: Path, _use_real_commands: None) -> None:
+    alternate = Path("/usr/bin/python3.12")
+    if not alternate.exists() or _run([str(alternate), "-c", "import sys; print(sys.version)"]) == _run([sys.executable, "-c", "import sys; print(sys.version)"]):
+        pytest.skip("a second real Python 3.12 patch runtime is unavailable")
+    config, sha, _authority = _fixture(tmp_path)
+    first = ManagementVersionStager(config).prepare(ManagementPrepareIntent(sha, "first-runtime"))
+    assert first.receipt.python_full_version == _run([sys.executable, "-c", "import sys; print(sys.version)"])
+    assert first.receipt.python_abi
+    assert first.receipt.python_implementation == "cpython"
+    assert len(first.receipt.python_executable_sha256) == 64
+
+    alternate_config = ManagementRuntimeConfig(**{**config.__dict__, "python_executable": alternate})
+    with pytest.raises(WorkerVersionError) as caught:
+        ManagementVersionStager(alternate_config).prepare(ManagementPrepareIntent(sha, "second-runtime"))
+
+    assert caught.value.failure is PreparationFailure.CONFLICT
+    ready = next(config.version_root.glob("revisions/*/*/MANAGEMENT_READY.json"))
+    assert ManagementVersionStager(config).lookup(ready) == first.receipt
 
 
 def test_concurrent_same_source_requests_share_real_management_runtime(tmp_path: Path, _use_real_commands: None) -> None:

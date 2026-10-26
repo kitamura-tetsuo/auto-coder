@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import tempfile
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -63,6 +64,10 @@ class ManagementReadyReceipt:
     lock_sha256: str
     runtime_profile: str
     python_version: str
+    python_full_version: str
+    python_abi: str
+    python_implementation: str
+    python_executable_sha256: str
     installer_identity: str
     environment_path: str
     interpreter_path: str
@@ -196,6 +201,10 @@ class ManagementVersionStager:
         if worker.distribution_version != record.distribution_version:
             raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "installed distribution does not match authoritative source evidence")
         tree = self._preparer._run(["git", "-C", str(self.config.source_repository.resolve()), "rev-parse", f"{worker.source_sha}^{{tree}}"], output=True).strip()
+        configured_python = self._python_identity(self.config.python_executable)
+        installed_python = self._python_identity(Path(worker.interpreter_path))
+        if configured_python != installed_python:
+            raise WorkerVersionError(PreparationFailure.CONFLICT, "installed Python runtime does not match the controller-configured runtime")
         receipt = ManagementReadyReceipt(
             MANAGEMENT_READY_SCHEMA,
             worker.installed_runtime_id,
@@ -209,6 +218,7 @@ class ManagementVersionStager:
             worker.lock_sha256,
             worker.runtime_profile,
             record.python_version,
+            *installed_python,
             f"uv {self.config.uv_version}",
             worker.environment_path,
             worker.interpreter_path,
@@ -303,7 +313,41 @@ class ManagementVersionStager:
         except WorkerVersionError as exc:
             raise WorkerVersionError(PreparationFailure.MISSING_CAPABILITY, "installed management serving configuration is incompatible") from exc
 
+    def _python_identity(self, executable: Path) -> tuple[str, str, str, str]:
+        script = "import hashlib,json,sys,sysconfig; print(json.dumps([sys.version,sysconfig.get_config_var('SOABI') or '',sys.implementation.name,hashlib.sha256(open(sys.executable,'rb').read()).hexdigest()]))"
+        try:
+            values = json.loads(self._preparer._run([str(executable), "-I", "-S", "-c", script], output=True, env=self._preparer._safe_environment()))
+            if not isinstance(values, list) or len(values) != 4 or any(not isinstance(value, str) or not value for value in values):
+                raise ValueError("invalid Python identity")
+            return values[0], values[1], values[2], values[3]
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise WorkerVersionError(PreparationFailure.UNSUPPORTED, "Python runtime identity is unavailable") from exc
+
+    def _validate_bytecode_caches(self, environment: Path) -> None:
+        """Accept generated caches only when they exactly compile from retained source."""
+
+        script = "import py_compile,sys; py_compile.compile(sys.argv[1],cfile=sys.argv[2],dfile=sys.argv[1],doraise=True,optimize=int(sys.argv[3]))"
+        for cache in environment.rglob("*.pyc"):
+            try:
+                source = Path(__import__("importlib.util").util.source_from_cache(str(cache)))
+            except (ValueError, AttributeError) as exc:
+                raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "installed bytecode cache has no verifiable source") from exc
+            if not source.is_file():
+                raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "installed bytecode cache source is unavailable")
+            match = re.search(r"\.opt-(\d+)\.pyc$", cache.name)
+            optimize = match.group(1) if match else "0"
+            with tempfile.NamedTemporaryFile(dir=self._root, prefix=".verified-pyc-", delete=False) as stream:
+                compiled = Path(stream.name)
+            compiled.unlink()
+            try:
+                self._preparer._run([str(self.config.python_executable), "-I", "-S", "-B", "-c", script, str(source), str(compiled), optimize], env=self._preparer._safe_environment())
+                if compiled.read_bytes() != cache.read_bytes():
+                    raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "installed bytecode cache does not match retained source")
+            finally:
+                compiled.unlink(missing_ok=True)
+
     def _content_identity(self, environment: Path, *, probe: bool = True) -> str:
+        self._validate_bytecode_caches(environment)
         if probe:
             self._verify_compatibility(environment)
         digest = hashlib.sha256()
