@@ -264,7 +264,16 @@ class ManagementBootstrapSupervisor:
             if observed.status is ResultStatus.STOPPED:
                 return self._finish(operation_id, ResultStatus.STOPPED, observed.record)
             if observed.status is not ResultStatus.OBSERVED_RUNNING or expected_identity != self._identity(observed.record):
-                return self._finish(operation_id, ResultStatus.CONFLICT if observed.status is not ResultStatus.UNKNOWN else ResultStatus.UNKNOWN, observed.record, "child identity changed")
+                # This is only an observation.  Another Supervisor may have
+                # claimed DRAINING after our read, so persisting this earlier
+                # snapshot could roll the durable stop owner back to RUNNING.
+                return self._finish(
+                    operation_id,
+                    ResultStatus.CONFLICT if observed.status is not ResultStatus.UNKNOWN else ResultStatus.UNKNOWN,
+                    observed.record,
+                    "child identity changed",
+                    persist_state=False,
+                )
             draining = replace(
                 observed.record,
                 phase=ChildPhase.DRAINING,

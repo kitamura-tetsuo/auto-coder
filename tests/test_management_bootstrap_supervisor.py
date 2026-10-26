@@ -218,6 +218,79 @@ def test_two_supervisors_atomically_claim_one_graceful_stop_signal(tmp_path: Pat
         _stop_process(started.record.pid)
 
 
+def test_stale_stop_observation_cannot_roll_back_draining_owner(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    ready = tmp_path / "counting.ready"
+    signals = tmp_path / "signals.log"
+    runtime.executable.write_bytes(COUNTING_CHILD)
+    runtime.executable.chmod(0o755)
+    runtime = replace(
+        runtime,
+        receipt=f"sha256:{hashlib.sha256(COUNTING_CHILD).hexdigest()}",
+        arguments=(str(ready), str(signals)),
+        drain_ack=None,
+    )
+    starter = _supervisor(tmp_path, runtime, timeout=0.12)
+    started = starter.start_selected("start", "start-attempt", "one")
+    deadline = time.monotonic() + 2
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ready.exists()
+    identity = ManagementBootstrapSupervisor._identity(started.record)
+    both_observed = threading.Barrier(2, timeout=5)
+
+    class Contender(ManagementBootstrapSupervisor):
+        def inspect(self) -> Observation:
+            observed = super().inspect()
+            if observed.status is ResultStatus.OBSERVED_RUNNING:
+                both_observed.wait()
+            return observed
+
+    winner = Contender(starter.config, "winner")
+
+    class DelayedStale(Contender):
+        def _finish(
+            self,
+            operation_id: str,
+            status: ResultStatus,
+            record: ChildRecord,
+            detail: str = "",
+            *,
+            persist_state: bool = True,
+        ) -> Observation:
+            if status is ResultStatus.CONFLICT:
+                deadline = time.monotonic() + 2
+                while self.store.load().phase is not ChildPhase.DRAINING and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert self.store.load().phase is ChildPhase.DRAINING
+            return super()._finish(operation_id, status, record, detail, persist_state=persist_state)
+
+    stale = DelayedStale(starter.config, "stale")
+    results: list[Observation] = []
+    threads = [
+        threading.Thread(target=lambda: results.append(winner.request_graceful_stop("winning-stop", "winner-attempt", identity))),
+        threading.Thread(target=lambda: results.append(stale.request_graceful_stop("stale-stop", "stale-attempt", "stale-identity"))),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+    try:
+        assert all(not thread.is_alive() for thread in threads)
+        assert {result.status for result in results} == {ResultStatus.DRAINING, ResultStatus.CONFLICT}
+        assert starter.store.load().phase is ChildPhase.DRAINING
+        replay = stale.request_graceful_stop("stale-stop", "stale-attempt", "stale-identity")
+        assert replay.status is ResultStatus.CONFLICT
+        third = starter.request_graceful_stop("third-stop", "third-attempt", identity)
+        assert third.status is ResultStatus.CONFLICT
+        deadline = time.monotonic() + 1
+        while (not signals.exists() or not signals.read_text().splitlines()) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert signals.read_text().splitlines() == ["signal"]
+    finally:
+        _stop_process(started.record.pid)
+
+
 def test_stale_pid_and_corrupt_record_never_authorize_start(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     supervisor = _supervisor(tmp_path, runtime)
