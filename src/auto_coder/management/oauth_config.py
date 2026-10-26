@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import yaml
+
 SUPPORTED_SCOPE = "auto-coder.read"
 
 
@@ -55,3 +57,55 @@ class OAuthSettings:
 
     def client(self, client_id: str) -> OAuthClient | None:
         return next((client for client in self.clients if client.client_id == client_id), None)
+
+
+@dataclass(frozen=True)
+class ManagementSettings:
+    """Validated settings for the standalone management process."""
+
+    state_root: Path
+    oauth: OAuthSettings
+    bind_host: str = "127.0.0.1"
+    port: int = 8081
+    local_development: bool = False
+    allowed_browser_origins: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        loopback = self.bind_host in {"127.0.0.1", "::1", "localhost"}
+        is_http = self.oauth.canonical_issuer.startswith("http://")
+        if is_http and not (self.local_development and loopback):
+            raise ValueError("HTTP public origins require the loopback development profile")
+        if not is_http and self.local_development:
+            raise ValueError("the development profile requires a loopback HTTP origin")
+        if not 1 <= self.port <= 65535:
+            raise ValueError("port must be between 1 and 65535")
+        if self.oauth.database_path.parent != self.state_root:
+            raise ValueError("OAuth state must be stored directly in state_root")
+
+
+def load_management_settings(path: Path) -> ManagementSettings:
+    """Load management YAML without accepting request-derived authority values."""
+
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("management configuration must be a mapping")
+    state_root = Path(str(raw["state_root"])).expanduser().resolve()
+    clients_raw = raw["clients"]
+    if not isinstance(clients_raw, list):
+        raise ValueError("clients must be a list")
+    clients = tuple(OAuthClient(str(item["client_id"]), tuple(str(uri) for uri in item["redirect_uris"])) for item in clients_raw)
+    oauth = OAuthSettings(
+        state_root / "oauth.sqlite3",
+        str(raw["public_origin"]),
+        str(raw["firebase_project_id"]),
+        clients,
+        firebase_web_config={str(k): str(v) for k, v in dict(raw.get("firebase_web_config", {})).items()},
+    )
+    return ManagementSettings(
+        state_root,
+        oauth,
+        str(raw.get("bind_host", "127.0.0.1")),
+        int(raw.get("port", 8081)),
+        bool(raw.get("local_development", False)),
+        tuple(str(origin) for origin in raw.get("allowed_browser_origins", [])),
+    )

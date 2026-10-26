@@ -110,7 +110,12 @@ class ManagementOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode
         item = await run_in_threadpool(self.grants.inspect_refresh, client.client_id or "", refresh_token)
         if item.grant_id is None:  # spent records intentionally reach replay handling
             return None
-        return RefreshToken(token=refresh_token, client_id=client.client_id or "", scopes=list(item.scopes), expires_at=int(item.expires_at or 0), resource=item.resource)
+        return RefreshToken(
+            token=refresh_token,
+            client_id=client.client_id or "",
+            scopes=list(item.scopes),
+            expires_at=int(item.expires_at or 0),
+        )
 
     async def exchange_refresh_token(self, client: OAuthClientInformationFull, refresh_token: RefreshToken, scopes: list[str]) -> OAuthToken:
         context = exchange_context.get()
