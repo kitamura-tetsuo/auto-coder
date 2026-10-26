@@ -112,6 +112,8 @@ class BootstrapStore:
             )
 
     def begin_effect(self, operation_id: str, attempt_id: str, action: str, runtime_ref: str, expected_identity: str) -> EffectRecord:
+        if not operation_id or not attempt_id or not action:
+            raise ValueError("operation, attempt, and action identities are required")
         for value in (operation_id, attempt_id, action, runtime_ref, expected_identity):
             if len(value) > 256 or "\x00" in value:
                 raise ValueError("effect identity is not bounded")

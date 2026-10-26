@@ -139,3 +139,9 @@ def test_config_rejects_remote_listener_and_separates_state_roots(tmp_path: Path
     runtime = _runtime(tmp_path)
     with pytest.raises(ValueError):
         BootstrapConfig("manager", tmp_path, tmp_path, tmp_path / "journal", "http://0.0.0.0:80", "one", (runtime,)).validate()
+
+
+def test_effect_identity_must_be_nonempty(tmp_path: Path) -> None:
+    supervisor = _supervisor(tmp_path, _runtime(tmp_path))
+    with pytest.raises(ValueError):
+        supervisor.start_selected("", "attempt", "one")

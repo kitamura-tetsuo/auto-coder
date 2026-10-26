@@ -215,7 +215,15 @@ class ManagementBootstrapSupervisor:
         return self._finish(operation_id, ResultStatus.DRAINING, draining, "observation deadline expired; no force signal was sent")
 
     def reconcile(self) -> Observation:
-        return self.inspect()
+        observed = self.inspect()
+        record = observed.record
+        if observed.status is ResultStatus.UNKNOWN and record.phase is ChildPhase.UNKNOWN and record.intended_stop:
+            runtime = self._runtime(record.selected_runtime)
+            if runtime is not None and runtime.drain_ack is not None and runtime.drain_ack.exists() and self._start_token(record.pid) != record.start_token:
+                stopped = replace(record, phase=ChildPhase.STOPPED, pid=0, start_token="", exit_cause="intended_stop")
+                self.store.save(stopped)
+                return Observation(ResultStatus.STOPPED, stopped)
+        return observed
 
     def run(self) -> int:
         """Remain alive as PID 1 and reap only the configured child."""
