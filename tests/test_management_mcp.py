@@ -1,5 +1,6 @@
 """Production-boundary regressions for the management MCP resource."""
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -293,33 +294,77 @@ def test_real_authority_refusals_revocation_policy_and_restart(real_boundary, mo
         assert _mcp(client, fresh, "tools/list", 5).status_code == 503
 
 
-def test_real_overlapping_requests_keep_request_local_identity(real_boundary, monkeypatch) -> None:
+def test_real_overlapping_requests_keep_request_local_identity(real_boundary) -> None:
     settings, grants, _identity, signed, _policy, _state = real_boundary
-    with TestClient(create_management_app(settings, grants), base_url=settings.oauth.canonical_issuer) as client:
+    app = create_management_app(settings, grants)
+    admission = app.routes[-1].app
+    downstream = admission.app
+
+    class PostAuthenticationBarrier:
+        def __init__(self):
+            self.entered = 0
+            self.release = asyncio.Event()
+
+        async def __call__(self, scope, receive, send):
+            self.entered += 1
+            if self.entered == 2:
+                self.release.set()
+            await asyncio.wait_for(self.release.wait(), timeout=5)
+            await downstream(scope, receive, send)
+
+    barrier = PostAuthenticationBarrier()
+    admission.app = barrier
+    with TestClient(app, base_url=settings.oauth.canonical_issuer) as client:
         tokens = {uid: _issue(client, settings, signed, uid, f"{uid}-client")["access_token"] for uid in ("alice", "bob")}
-        original = grants.authenticate_access
-        barrier = threading.Barrier(2)
-        local = threading.local()
-
-        def authenticate(token, resource, scopes):
-            result = original(token, resource, scopes)
-            if not getattr(local, "paused", False):
-                local.paused = True
-                barrier.wait(timeout=5)
-            return result
-
-        monkeypatch.setattr(grants, "authenticate_access", authenticate)
 
         def call(item):
             uid, token = item
-            with TestClient(create_management_app(settings, grants), base_url=settings.oauth.canonical_issuer) as concurrent:
-                response = _mcp(concurrent, token, "tools/call", 1, {"name": "auto_coder_whoami", "arguments": {}})
-                return uid, response.json()["result"]["structuredContent"]
+            response = _mcp(client, token, "tools/call", 1, {"name": "auto_coder_whoami", "arguments": {}})
+            return uid, response.json()["result"]["structuredContent"]
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = dict(pool.map(call, tokens.items()))
+        assert barrier.entered == 2
         assert results["alice"]["uid"] == "alice" and results["alice"]["client_id"] == "alice-client"
         assert results["bob"]["uid"] == "bob" and results["bob"]["client_id"] == "bob-client"
+        assert _mcp(client, "denied-after-overlap", "tools/call", 2, {"name": "auto_coder_whoami", "arguments": {}}).status_code == 401
+        after = _mcp(client, tokens["alice"], "tools/call", 3, {"name": "auto_coder_whoami", "arguments": {}})
+        assert after.json()["result"]["structuredContent"]["uid"] == "alice"
+        assert after.json()["result"]["structuredContent"]["client_id"] == "alice-client"
+
+
+def test_refresh_replay_revokes_next_mcp_request_and_survives_restart(real_boundary) -> None:
+    settings, grants, identity, signed, _policy, _state = real_boundary
+    with TestClient(create_management_app(settings, grants), base_url=settings.oauth.canonical_issuer) as client:
+        issued = _issue(client, settings, signed, "alice", "alice-client")
+        rotated = client.post(
+            "/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": "alice-client",
+                "refresh_token": issued["refresh_token"],
+                "resource": settings.oauth.resource,
+            },
+        )
+        assert rotated.status_code == 200
+        replay = client.post(
+            "/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": "alice-client",
+                "refresh_token": issued["refresh_token"],
+                "resource": settings.oauth.resource,
+            },
+        )
+        assert replay.status_code == 400
+        assert replay.json()["error"] == "invalid_grant"
+        assert _mcp(client, issued["access_token"], "tools/list", 1).status_code == 401
+        assert _mcp(client, rotated.json()["access_token"], "tools/list", 2).status_code == 401
+
+    reopened = OAuthGrantService(settings.oauth, identity, grants.clock)
+    with TestClient(create_management_app(settings, reopened), base_url=settings.oauth.canonical_issuer) as client:
+        assert _mcp(client, issued["access_token"], "tools/list", 3).status_code == 401
+        assert _mcp(client, rotated.json()["access_token"], "tools/list", 4).status_code == 401
 
 
 @pytest.mark.asyncio
