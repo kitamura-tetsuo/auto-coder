@@ -16,10 +16,12 @@ jobs:
         with:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.22"
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - run: uv sync --frozen --dev --extra test
+      - run: uv sync --locked --dev --extra test
       - name: Establish exact clean source identity
         run: |
           uv run python -c 'from auto_coder.build_identity import resolve_build_identity; r=resolve_build_identity("."); assert r.state == "clean" and r.source_revision == "${{ github.sha }}"'
@@ -41,10 +43,12 @@ jobs:
         with:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.22"
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - run: uv sync --frozen --dev --extra test
+      - run: uv sync --locked --dev --extra test
       - name: Install Chromium
         run: uv run playwright install --with-deps chromium
       - name: Verify real headless Chromium

@@ -17,10 +17,12 @@ jobs:
         with:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.22"
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - run: uv sync --dev --extra test
+      - run: uv sync --locked --dev --extra test
       - run: bash scripts/test.sh -m "not opencode_live"
       - name: Establish clean build identity
         run: |

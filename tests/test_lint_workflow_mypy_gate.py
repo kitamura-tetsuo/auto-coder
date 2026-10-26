@@ -116,7 +116,7 @@ def test_workflow_static_contract_matches_requirements() -> None:
         assert "|| true" not in run and "continue-on-error" not in run and "set +e" not in run
 
     install = _lint_step("Install dependencies")
-    assert "uv sync --extra dev" in install["run"]
+    assert "uv sync --locked --extra dev" in install["run"]
 
     hygiene = _lint_step("Check repository hygiene")
     assert hygiene["run"].strip() == "scripts/check_repository_hygiene.py --source head --repo ."
@@ -237,7 +237,7 @@ def test_fresh_environment_setup_provisions_tools_and_all_checks_pass(tmp_path: 
     """Reproduce the lint job's actual setup + check commands from scratch.
 
     The checkout has no preinstalled Black/isort/Flake8/mypy and no installed
-    git hooks -- ``uv sync --extra dev`` is the only thing that makes those
+    git hooks -- ``uv sync --locked --extra dev`` is the only thing that makes those
     tools available, exactly as on a fresh GitHub Actions runner.
     """
     repo = tmp_path / "repo"

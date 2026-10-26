@@ -34,7 +34,7 @@ def assert_required_workflow_profile(workflow: object) -> None:
     complete = jobs["complete-source-tests"]
     quality_runs = [step["run"] for step in quality["steps"] if isinstance(step, dict) and isinstance(step.get("run"), str)]
     assert quality_runs == [
-        "uv sync --frozen --dev --extra test",
+        "uv sync --locked --dev --extra test",
         'uv run python -c \'from auto_coder.build_identity import resolve_build_identity; r=resolve_build_identity("."); assert r.state == "clean" and r.source_revision == "${{ github.sha }}"\'\n',
         "uv run black --check src/ tests/\nuv run isort --check-only src/ tests/\nuv run flake8 src/ tests/\nuv run mypy --config-file pyproject.toml -p auto_coder\n",
     ]
