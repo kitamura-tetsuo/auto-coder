@@ -412,6 +412,18 @@ def test_fresh_staged_runtime_binding_never_returns_stale_verified_identity(tmp_
         supervisor.child.terminate()
         supervisor.child.wait(timeout=5)
 
+    dead = supervisor.inspect()["worker"]
+    assert dead["binding_status"] == "UNAVAILABLE"
+    assert "runtime_binding" not in dead
+    persisted = supervisor.store.read()["worker"]
+    assert persisted["binding_status"] == "UNAVAILABLE"
+    assert "runtime_binding" not in persisted
+
+    reconstructed = WorkerSupervisor(config(tmp_path, (sys.executable, "-c", "pass")))
+    after_reconstruction = reconstructed.inspect()["worker"]
+    assert after_reconstruction["binding_status"] == "UNAVAILABLE"
+    assert "runtime_binding" not in after_reconstruction
+
 
 def test_pid1_start_on_boot_and_sigterm_drains_child(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None) -> None:
     workspace = tmp_path / "workspace"

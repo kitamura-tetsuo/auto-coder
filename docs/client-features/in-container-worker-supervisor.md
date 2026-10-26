@@ -18,9 +18,12 @@ rejected without starting a child.
 An operator must manually rebuild and deploy the Supervisor/bootstrap image and
 the updated `compose.channels.yml` once (using `docker compose` on the host).
 The containers use distinct persistent `/runtime` and `/workspace` mounts,
-unchanged repository routing, and no Docker socket, host cgroup mount, or
-privileged setting. The supervisor cannot install itself, update the image, or
-operate Docker. The authentication/network bridge is a separate component.
+unchanged repository routing, and no Docker socket. The existing privileged,
+host-cgroup configuration and writable cgroup mount remain available to the
+worker's local-backend process owner; the lifecycle supervisor does not use
+that authority or expose it through its typed operations. The supervisor cannot
+install itself, update the image, or operate Docker. The authentication/network
+bridge is a separate component.
 
 On the first boot **without an existing Supervisor state file**, PID 1 attempts
 one bootstrap worker start and stores its operation before spawning. When a

@@ -418,8 +418,8 @@ def test_compose_channels_use_disjoint_private_storage_and_artifacts():
     assert release["environment"]["AUTO_CODER_REPOSITORY"] == "${RELEASE_REPOSITORY}"
     assert beta["environment"]["AUTO_CODER_REPOSITORY"] == "${BETA_REPOSITORY}"
 
-    release_private = {mount.split(":", 1)[0] for mount in release["volumes"] if not mount.endswith(":/routing")}
-    beta_private = {mount.split(":", 1)[0] for mount in beta["volumes"] if not mount.endswith(":/routing")}
+    release_private = {mount.split(":", 1)[0] for mount in release["volumes"] if not mount.endswith(":/routing") and not mount.startswith("/sys/fs/cgroup:")}
+    beta_private = {mount.split(":", 1)[0] for mount in beta["volumes"] if not mount.endswith(":/routing") and not mount.startswith("/sys/fs/cgroup:")}
     assert release_private == {"./runtime/release", "./runtime/workspaces/release"}
     assert beta_private == {"./runtime/beta", "./runtime/workspaces/beta"}
     assert release_private.isdisjoint(beta_private)

@@ -191,8 +191,14 @@ class WorkerSupervisor:
         if not isinstance(worker, dict):
             return
         alive = self._is_alive(worker)
+        # A binding describes the currently observed OS lifetime, never merely
+        # the last successful observation.  Invalidate it before any liveness
+        # branch so a crashed/replaced child cannot retain VERIFIED state.
+        worker.pop("runtime_binding", None)
+        if not alive:
+            worker["binding_status"] = "UNAVAILABLE"
+            self.store.write(state)
         if alive:
-            worker.pop("runtime_binding", None)
             observation = self._observation(worker)
             if observation:
                 if worker.get("process_run_id") not in (None, observation["process_run_id"]):
@@ -212,6 +218,8 @@ class WorkerSupervisor:
                         worker["binding_status"] = "UNAVAILABLE"
                     elif not self._artifact_matches_ready(observation.get("artifact"), worker["ready"]):
                         worker["binding_status"] = "CONFLICT"
+                    elif not self._is_alive(worker):
+                        worker["binding_status"] = "UNAVAILABLE"
                     else:
                         worker["binding_status"] = "VERIFIED"
                         worker["runtime_binding"] = {

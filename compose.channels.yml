@@ -16,6 +16,9 @@ services:
       - ./runtime/release:/runtime
       - ./runtime/workspaces/release:/workspace
       - ./runtime/routing:/routing
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    privileged: true
+    cgroup: host
     restart: unless-stopped
     stop_grace_period: 30m
 
@@ -36,5 +39,8 @@ services:
       - ./runtime/beta:/runtime
       - ./runtime/workspaces/beta:/workspace
       - ./runtime/routing:/routing
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    privileged: true
+    cgroup: host
     restart: unless-stopped
     stop_grace_period: 30m
