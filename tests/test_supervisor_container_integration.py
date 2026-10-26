@@ -298,6 +298,7 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
     assert ready["installed_runtime_id"] != "bootstrap"
     ready_path = runtime / Path(staged["ready_path"]).relative_to("/runtime")
     marker_path = ready_path.parent / "venv" / ".auto-coder-runtime-id"
+    marker_mode = marker_path.stat().st_mode & 0o777
     lock_path = ready_path.parent / "source" / "uv.lock"
     original_ready, original_marker, original_lock = ready_path.read_bytes(), marker_path.read_bytes(), lock_path.read_bytes()
 
@@ -396,6 +397,9 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
         fields = ("attempt_id", "runtime_profile", "environment_path", "interpreter_path", "source_sha", "distribution_version", "lock_sha256", "installed_runtime_id")
         alternative["content_identity"] = hashlib.sha256(json.dumps({name: alternative[name] for name in fields}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         try:
+            # #2610 deliberately makes installed runtime markers read-only.
+            # This attacker-controlled mutation is confined to disposable CI.
+            marker_path.chmod(marker_mode | 0o200)
             marker_path.write_text(alternative_id + "\n")
             ready_path.write_text(json.dumps(alternative))
             checked = json.loads(_docker("exec", container, "python", "/fixtures/supervisor_stage_ready.py", "--verify", staged["ready_path"], timeout=20).stdout)
@@ -408,6 +412,7 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
             assert "runtime_binding" not in unbound["worker"]
         finally:
             marker_path.write_bytes(original_marker)
+            marker_path.chmod(marker_mode)
             ready_path.write_bytes(original_ready)
         _wait_for(lambda: worker if (worker := _inspect_worker(container)) and worker.get("binding_status") == "VERIFIED" else None)
 
