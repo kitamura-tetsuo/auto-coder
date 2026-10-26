@@ -2,12 +2,13 @@
 
 from contextvars import ContextVar, Token
 from dataclasses import asdict, dataclass
-from typing import Awaitable, Callable
+from urllib.parse import urlsplit
 
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import AnyHttpUrl
 from starlette.responses import JSONResponse, Response
@@ -44,12 +45,21 @@ class WhoAmI:
 
 def create_mcp_resource(settings: ManagementSettings, grants: OAuthGrantService) -> tuple[FastMCP, ASGIApp]:
     verifier = GrantTokenVerifier(settings, grants)
+    public_authority = urlsplit(settings.oauth.canonical_issuer).netloc
+    bind_authority = f"{settings.bind_host}:{settings.port}"
+    allowed_hosts = list(dict.fromkeys((public_authority, bind_authority, settings.bind_host)))
+    allowed_origins = list(dict.fromkeys((settings.oauth.canonical_issuer, *settings.allowed_browser_origins)))
     server = FastMCP(
         "Auto-Coder Management",
         token_verifier=verifier,
         streamable_http_path="/mcp",
         stateless_http=True,
         json_response=True,
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=allowed_hosts,
+            allowed_origins=allowed_origins,
+        ),
         auth=AuthSettings(
             issuer_url=AnyHttpUrl(settings.oauth.canonical_issuer),
             resource_server_url=AnyHttpUrl(settings.oauth.resource),

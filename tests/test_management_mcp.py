@@ -163,10 +163,12 @@ def _issue(client, settings, signed, uid: str, client_id: str) -> dict:
     return token.json()
 
 
-def _mcp(client, token: str, method: str, request_id: int, params=None):
+def _mcp(client, token: str, method: str, request_id: int, params=None, extra_headers=None):
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json, text/event-stream"}
+    headers.update(extra_headers or {})
     return client.post(
         "/mcp",
-        headers={"Authorization": f"Bearer {token}", "Accept": "application/json, text/event-stream"},
+        headers=headers,
         json={"jsonrpc": "2.0", "id": request_id, "method": method, "params": params or {}},
     )
 
@@ -190,6 +192,59 @@ def test_real_discovery_firebase_exchange_and_whoami(real_boundary) -> None:
         assert listed[0]["annotations"]["readOnlyHint"] and listed[0]["annotations"]["idempotentHint"]
         identity = _mcp(client, token, "tools/call", 3, {"name": "auto_coder_whoami", "arguments": {}}).json()["result"]["structuredContent"]
         assert identity == {"project_id": "mcp-test-project", "uid": "alice", "client_id": "alice-client", "scopes": ["auto-coder.read"], "resource": settings.oauth.resource}
+
+
+def test_production_origin_transport_accepts_only_configured_host_and_origins(real_boundary, tmp_path) -> None:
+    _local, _grants, identity, signed, _policy, state = real_boundary
+    root = tmp_path / "production"
+    origin = "https://management.example.com"
+    oauth = OAuthSettings(
+        root / "oauth.sqlite3",
+        origin,
+        "mcp-test-project",
+        (OAuthClient("alice-client", (f"{origin}/alice-callback",)),),
+        access_lifetime=30,
+    )
+    settings = ManagementSettings(
+        root,
+        oauth,
+        bind_host="127.0.0.1",
+        port=8081,
+        allowed_browser_origins=("https://console.example.com",),
+    )
+    grants = OAuthGrantService(oauth, identity, clock=lambda: state["now"])
+    app = create_management_app(settings, grants)
+    with TestClient(app, base_url=origin) as client:
+        token = _issue(client, settings, signed, "alice", "alice-client")["access_token"]
+        headers = {"Origin": "https://console.example.com"}
+        initialized = _mcp(
+            client,
+            token,
+            "initialize",
+            1,
+            {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "proxy-test", "version": "1"}},
+            headers,
+        )
+        assert initialized.status_code == 200
+        assert _mcp(client, token, "tools/list", 2, extra_headers=headers).status_code == 200
+        whoami = _mcp(
+            client,
+            token,
+            "tools/call",
+            3,
+            {"name": "auto_coder_whoami", "arguments": {}},
+            headers,
+        )
+        assert whoami.status_code == 200
+        assert whoami.json()["result"]["structuredContent"]["resource"] == f"{origin}/mcp"
+
+        wrong_origin = _mcp(client, token, "tools/list", 4, extra_headers={"Origin": "https://attacker.example"})
+        assert wrong_origin.status_code == 403
+        wrong_host = _mcp(client, token, "tools/list", 5, extra_headers={"Host": "attacker.example"})
+        assert wrong_host.status_code == 421
+        metadata = client.get("/.well-known/oauth-protected-resource/mcp", headers={"Host": "attacker.example"}).json()
+        assert metadata["resource"] == f"{origin}/mcp"
+        assert metadata["authorization_servers"] == [origin + "/"]
 
 
 def test_real_authority_refusals_revocation_policy_and_restart(real_boundary, monkeypatch, tmp_path) -> None:
