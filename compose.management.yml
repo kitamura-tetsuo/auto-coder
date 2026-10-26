@@ -1,0 +1,20 @@
+services:
+  management:
+    image: ${AUTO_CODER_IMAGE}@${MANAGEMENT_DIGEST}
+    entrypoint: ["python", "-m", "auto_coder.management.bootstrap_supervisor"]
+    command: ["--config", "/bootstrap/config.json"]
+    init: false
+    restart: unless-stopped
+    stop_grace_period: 30m
+    environment:
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./runtime/management/bootstrap:/bootstrap:ro
+      - ./runtime/management/child-state:/management-child-state
+      - ./runtime/management/oauth:/management-oauth
+      - ./runtime/management/operations:/management-operations
+      - ./runtime/management/versions:/management-versions:ro
+    ports:
+      - "127.0.0.1:${MANAGEMENT_PORT}:${MANAGEMENT_PORT}"
+    # Deliberately no Docker socket, privileged mode, or worker runtime mounts.
+

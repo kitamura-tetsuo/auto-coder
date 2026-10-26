@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Authorize Auto-Coder</title></head>
+<body>
+  <main>
+    <h1>Authorize Auto-Coder</h1>
+    <p>Client: <strong id="client"></strong></p>
+    <p>Resource: <strong id="resource"></strong></p>
+    <p>Permission: <strong id="scope"></strong> (read only)</p>
+    <button id="signin" type="button">Sign in with Google</button>
+    <form id="decision" method="post">
+      <input id="csrf" name="csrf" type="hidden">
+      <input id="firebase-token" name="firebase_id_token" type="hidden">
+      <button id="allow" type="button" disabled>Allow</button>
+      <button id="deny" type="button">Deny</button>
+    </form>
+    <p id="status" role="status"></p>
+  </main>
+  <script id="auth-data" type="application/json">__AUTH_DATA__</script>
+  <script type="module" src="/assets/authorize.js"></script>
+</body>
+</html>

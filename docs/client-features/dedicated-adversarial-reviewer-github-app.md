@@ -25,6 +25,13 @@ than fabricated line locations. An invalid changed-file anchor or any review API
 failure leaves publication unsuccessful. GitHub's existing review-thread
 resolution state remains the only acknowledgement state used by merge gating.
 
+Malformed canonical correction bindings are rejected before publication as
+`ERROR` diagnostics. Their model-reported findings and closure claims are not
+authorized effects: the native `COMMENT` review publishes the invalid-reference
+reason without inline findings, independent closure, or repair dispatch. The raw
+answer is retained for diagnosis and existing unresolved threads keep blocking
+merge until a new valid independent attempt completes.
+
 This native review is the sole and authoritative publication path: Auto-Coder
 does not additionally post the validation result as a regular user-authenticated
 PR comment. The review body carries the same versioned machine-readable marker

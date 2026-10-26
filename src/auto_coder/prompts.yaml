@@ -925,6 +925,11 @@ pr:
     Requirement, uses a new observation label without the `canonical:` prefix
     and omits both fingerprint fields. Never invent canonical references or
     reuse one for a changed boundary, Requirement set or required correction.
+    Copy canonical IDs verbatim from this invocation's references, without
+    shortening, reconstructing, or substituting an ID from conversation history.
+    If no supplied reference matches, use a new non-canonical observation label;
+    never guess an existing ID. An invalid binding rejects the entire response,
+    including thread-closure claims, and requires independent validation again.
     Unknown or contradictory references require reconciliation. These bindings
     verify routing; they do not establish that two arbitrary prose descriptions
     are equivalent and do not authorize closure of any historical finding.

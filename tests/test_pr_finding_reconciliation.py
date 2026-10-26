@@ -2062,8 +2062,58 @@ def test_recorded_gap_compaction_rejects_every_conflicting_canonical_binding(bin
     assert not parsed.test_oracle_gaps
 
 
-@pytest.mark.parametrize("invalid_reference", [False, True])
-def test_production_ordinary_prompt_supplies_references_and_validates_response(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid_reference: bool) -> None:
+@pytest.mark.parametrize("mismatch", ["unknown", "duplicate"])
+def test_invalid_reference_withholds_closure_and_dynamic_check_authority(ledger: CanonicalPRBlockerLedger, mismatch: str) -> None:
+    from dataclasses import replace
+
+    from auto_coder.adversarial_validator import AdversarialValidationContext, ReviewThreadDisposition, _apply_coverage_and_verdict_precedence
+    from auto_coder.pr_review_execution import FindingDisposition, ReviewExecutionResult, ReviewMode
+
+    owner, finding = _admit_incident(ledger)
+    result = _reference_result(ledger, finding, owner)
+    context = result.correction_reference_context
+    assert context is not None
+    if mismatch == "unknown":
+        finding.correction_identity = "canonical:blk_unknown"
+    else:
+        context = replace(context, references=context.references * 2)
+        finding.correction_context_fingerprint = context.fingerprint
+    result.raw_response = "Rejected reviewer answer retained verbatim"
+    result.source_response_id = "original-response"
+    result.thread_dispositions = [ReviewThreadDisposition("thread-1", "ADDRESSED", "Corrected", "Regression verifies correction")]
+    result.dynamic_check_requested = "tests/test_boundary.py"
+    result.closure_assessment = ReviewExecutionResult(
+        mode=ReviewMode.ORDINARY_CLOSURE,
+        round_id="strong-round",
+        attempt_id="ordinary-attempt",
+        head_sha="head",
+        base_sha="base",
+        contract_identity="contract",
+        policy_identity="policy",
+        finding_set_revision=1,
+        reviewer_provenance="reviewer/model",
+        verdict="PASS",
+        dispositions=(FindingDisposition("finding-1", "FIXED", "Independent evidence"),),
+    )
+
+    rejected = _apply_coverage_and_verdict_precedence(result, AdversarialValidationContext(correction_reference_context=context))
+
+    assert rejected.result == "ERROR"
+    assert not rejected.allows_auto_merge
+    assert rejected.findings == []
+    assert rejected.thread_dispositions == []
+    assert rejected.closure_assessment is None
+    assert rejected.dynamic_check_requested is None
+    assert rejected.raw_response == result.raw_response
+    assert rejected.source_response_id == "original-response"
+    assert rejected.correction_reference_context == context
+    assert rejected.diagnostic_reason == f"Canonical correction reference {finding.correction_identity!r} was supplied {0 if mismatch == 'unknown' else 2} times; expected exactly once in this invocation"
+    repeated = _apply_coverage_and_verdict_precedence(rejected, AdversarialValidationContext(correction_reference_context=context))
+    assert repeated == rejected
+
+
+@pytest.mark.parametrize("invalid_reference", ["", "scope", "unknown"])
+def test_production_ordinary_prompt_supplies_references_and_validates_response(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid_reference: str) -> None:
     from dataclasses import asdict
 
     from auto_coder.accepted_finding_bridge import AcceptedFindingBridge
@@ -2101,14 +2151,22 @@ def test_production_ordinary_prompt_supplies_references_and_validates_response(t
         assert reference["required_outcome"] == finding.required_behavior
         restatement = asdict(finding)
         restatement.update(
-            correction_identity=reference["correction_identity"],
-            correction_scope_fingerprint="contradictory-scope" if invalid_reference else reference["scope_fingerprint"],
+            correction_identity="canonical:blk_43a1256826" if invalid_reference == "unknown" else reference["correction_identity"],
+            correction_scope_fingerprint="contradictory-scope" if invalid_reference == "scope" else reference["scope_fingerprint"],
             correction_context_fingerprint=supplied["context_fingerprint"],
             actual_behavior="The JOIN child binding disappears before its ON qualifier is visited.",
         )
         independent = asdict(finding)
         independent.update(finding_identity="independent-delete", correction_identity="retain-delete-rows", actual_behavior="Delete loses independent destination rows", required_behavior="Retain unrelated destination rows during rollback")
-        return json.dumps({"result": "NEEDS_FIX", "summary": "Two independent current corrections.", "findings": [restatement, independent], "requirement_coverage": [{"requirement_id": finding.requirement_id, "status": "VIOLATED", "evidence": "Current code exhibits both counterexamples."}]})
+        return json.dumps(
+            {
+                "result": "NEEDS_FIX",
+                "summary": "Two independent current corrections.",
+                "findings": [restatement, independent],
+                "requirement_coverage": [{"requirement_id": finding.requirement_id, "status": "VIOLATED", "evidence": "Current code exhibits both counterexamples."}],
+                "thread_dispositions": [{"thread_id": f"thread-{index}", "status": "ADDRESSED", "rationale": "The old finding was corrected", "evidence": "Current code and regression tests verify the fix"} for index in range(4)],
+            }
+        )
 
     monkeypatch.setattr("auto_coder.adversarial_validator.run_llm_prompt", model_response)
     manager = MagicMock()
@@ -2123,13 +2181,24 @@ def test_production_ordinary_prompt_supplies_references_and_validates_response(t
     )
     assert len(prompts) == 1
     assert result.correction_reference_context == context.correction_reference_context
-    assert len(result.findings) == 2
     if invalid_reference:
-        assert result.result == "BLOCKED"
+        assert result.result == "ERROR"
+        assert result.raw_model_result == "NEEDS_FIX"
         assert result.diagnostic_category == "correction_reference_invalid"
+        assert result.findings == []
+        assert result.test_oracle_gaps == []
+        assert result.thread_dispositions == []
+        assert result.closure_assessment is None
+        assert "Two independent current corrections." in result.raw_response
         assert len(ledger.get_snapshot(origin, REPO, PR_NUMBER).blockers) == 1
+        diagnostic = reconcile_pr_findings_before_publication(ledger, origin, REPO, PR_NUMBER, 5729, "head", "base", result, HistoricalRootParseResult(), attempt_id="invalid-diagnostic")
+        assert not diagnostic.is_ambiguous
+        assert diagnostic.unrooted_findings == ()
+        assert diagnostic.unrooted_gaps == ()
     else:
         assert result.result == "NEEDS_FIX"
+        assert len(result.findings) == 2
+        assert len(result.thread_dispositions) == 4
         reconciled = reconcile_pr_findings_before_publication(ledger, origin, REPO, PR_NUMBER, 5729, "head", "base", result, HistoricalRootParseResult(), attempt_id="ordinary")
         assert not reconciled.is_ambiguous
         assert reconciled.blocker_for_finding[0] == (0, owner)
@@ -2202,7 +2271,7 @@ def test_first_ordinary_review_retains_input_binding_without_supplying_canonical
     assert retained.validation_snapshot == supplied_contexts[0]["validation_snapshot"]
     assert retained.requirement_manifest_identity == supplied_contexts[0]["requirement_manifest_identity"]
     assert deserialize_ordinary_result(serialize_ordinary_result(result)).correction_reference_context == retained
-    assert result.result == ("BLOCKED" if asserts_reference else "NEEDS_FIX")
+    assert result.result == ("ERROR" if asserts_reference else "NEEDS_FIX")
     if asserts_reference:
         assert result.diagnostic_category == "correction_reference_invalid"
     else:

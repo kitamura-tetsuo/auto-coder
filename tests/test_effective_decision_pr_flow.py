@@ -510,6 +510,77 @@ def make_flow(flow_env: Env, monkeypatch: pytest.MonkeyPatch, pr: int, origin: s
     return flow
 
 
+def test_unknown_canonical_reference_publishes_diagnostic_without_closing_threads(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PR #5783: a misspelled owner must not resolve threads then fail publication."""
+    from auto_coder.dashboard_reviews import list_row
+    from auto_coder.execution_trace import Outcome
+    from auto_coder.pr_processor import _record_pr_stage
+    from auto_coder.review_audit import ReviewAuditStore
+
+    audit = ReviewAuditStore(flow_env.tmp / "review-audit")
+    monkeypatch.setattr("auto_coder.review_capture.recorder._global_audit_store", audit)
+    flow = make_flow(flow_env, monkeypatch, 5783, "cloud")
+    flow.accept_finding(gap=False)
+    before = flow_env.ledger.get_snapshot("https://api.github.com", REPO, flow.pr)
+    payload = json.loads(ordinary_response(flow.thread_id, status="ADDRESSED", result="NEEDS_FIX"))
+    payload["requirement_coverage"][0]["status"] = "VIOLATED"
+    payload["findings"] = [
+        {
+            "requirement_id": "#2401/REQ-001",
+            "finding_identity": "missing-production-regression",
+            "evidence_classification": "DEMONSTRATED",
+            "correction_identity": "canonical:blk_43a1256826",
+            "correction_scope_fingerprint": "invented-scope",
+            "correction_context_fingerprint": "invented-context",
+            "violated_requirement": "Preserve state",
+            "reachability": "src/state.py:delete_two",
+            "required_behavior": "Preserve both values",
+            "actual_behavior": "The second value is lost",
+            "evidence": "The production entry point drops the second value",
+            "counterexample": "Delete loses the second value while tests pass",
+            "anchor_path": "src/state.py",
+        }
+    ]
+    flow.model_responses = [json.dumps(payload)]
+
+    with patch("auto_coder.pr_processor._record_pr_stage", wraps=_record_pr_stage) as record_stage:
+        actions = flow.run(force=True)
+
+    assert flow.model_calls == 1
+    assert [review["event"] for review in flow.reviews] == ["COMMENT"], actions
+    review = flow.reviews[0]
+    assert "comments" not in review
+    assert "correction_reference_invalid" in review["body"]
+    assert "canonical:blk_43a1256826" in review["body"]
+    assert "adversarial validation: ERROR" in review["body"]
+    assert not any("publication blocked" in action or "Reopened" in action for action in actions), actions
+    flow.client.resolve_review_thread.assert_not_called()
+    flow.client.unresolve_review_thread.assert_not_called()
+    assert flow.handoffs == 0
+    flow.merge.assert_not_called()
+    failures = [call for call in record_stage.call_args_list if call.args[1] == "pr.adversarial-validation" and call.args[3] == Outcome.FAILED]
+    assert len(failures) == 1
+    assert failures[0].args[4]["diagnostic_category"] == "correction_reference_invalid"
+    history = audit.get_recent_history(REPO, target_type="pr", target_number=str(flow.pr), review_kind="pr_adversarial")
+    assert len(history.records) == 1
+    retained = history.records[0]
+    assert list_row(retained).verdict == "ERROR"
+    assert retained.native_report["diagnostic_category"] == "correction_reference_invalid"
+    assert "canonical:blk_43a1256826" in retained.native_report["raw_response_preview"]
+    assert any(effect.disposition == "confirmed" and effect.details.get("phase") == "publication" for effect in retained.effects)
+    after = flow_env.ledger.get_snapshot("https://api.github.com", REPO, flow.pr)
+    assert [(blocker.blocker_id, blocker.disposition) for blocker in after.blockers] == [(blocker.blocker_id, blocker.disposition) for blocker in before.blockers]
+
+    # A fresh, valid same-head attempt can still uphold the real accepted owner.
+    flow.saved_status = "ERROR"
+    flow.model_responses = [ordinary_response(flow.thread_id)]
+    retried = flow.run(force=True)
+    assert flow.model_calls == 2
+    assert [review["event"] for review in flow.reviews] == ["COMMENT", "REQUEST_CHANGES"], retried
+    assert flow.handoffs == 1
+    flow.merge.assert_not_called()
+
+
 # -- AS-001 -----------------------------------------------------------------
 
 

@@ -26,6 +26,7 @@
   "README.md",
   "SINGLETON_IMPLEMENTATION_SUMMARY.md",
   "compose.channels.yml",
+  "compose.management.yml",
   "main_issue_proposal.md",
   "monitor_proxy.sh",
   "npm-install-124033.sh",

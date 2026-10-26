@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse, Response
 
 from .build_provenance import observe_controller_artifact
 from .deployment_channel import validate_repository_ownership
+from .entity_invalidation import ReevaluationOperationConflict, ReevaluationReceipt
 from .health_monitor import get_health_monitor
 from .logger_config import get_logger
 from .public_api import init_public_api, sanitize_text
@@ -29,10 +30,16 @@ MAX_DOCUMENT_BYTES = 256 * 1024
 MAX_UNSETTLED = 500
 MAX_TEXT = 2000
 _NONCE = re.compile(r"^[\x20-\x7e]{1,128}$")
+_OPERATION_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+_IDENTITY = re.compile(r"^[\x21-\x7e]{1,2000}$")
 
 
 class ManagementBridgeConfigurationError(RuntimeError):
     """The opt-in bridge cannot safely establish its private endpoint."""
+
+
+class WrongWorkerTarget(ValueError):
+    """A valid command names a different configured worker identity."""
 
 
 @dataclass(frozen=True)
@@ -126,9 +133,125 @@ class WorkerManagementBridge:
                 logger.error(f"Private worker observation unavailable: {type(exc).__name__}")
                 return JSONResponse({"error": {"code": "observation_unavailable", "message": "Worker observation is unavailable."}}, status_code=503)
 
+        @self.app.post("/v1/reevaluations", include_in_schema=False)
+        async def reevaluate(request: Request) -> Response:
+            try:
+                raw = await request.body()
+                if len(raw) > 16 * 1024:
+                    return self._error("invalid_request", "Request is invalid.", 422)
+                body = json.loads(raw)
+                parsed = self._parse_reevaluation(body)
+            except WrongWorkerTarget:
+                return self._error("wrong_target", "Command targets a different worker.", 409)
+            except (ValueError, TypeError, json.JSONDecodeError):
+                return self._error("invalid_request", "Request is invalid.", 422)
+            try:
+                receipt, replay = await self.engine.accept_private_reevaluation(
+                    **parsed,
+                    current_process_run_id=self.artifact.process_run_id or "",
+                    current_deployment_generation=self.identity.deployment_generation,
+                )
+            except ReevaluationOperationConflict:
+                logger.warning("Private reevaluation refused code=operation_payload_conflict operation_id={}", parsed["operation_id"])
+                return self._error("operation_payload_conflict", "Operation identity is already bound.", 409)
+            except RuntimeError as exc:
+                code = str(exc)
+                if code == "wrong_incarnation":
+                    self._record_reevaluation_refusal(parsed, code)
+                    return self._error(code, "Worker identity does not match.", 409)
+                if code == "worker_not_ready":
+                    self._record_reevaluation_refusal(parsed, "not_ready_or_draining")
+                    return self._error("not_ready_or_draining", "Worker is not accepting commands.", 409)
+                logger.error("Private reevaluation storage unavailable operation_id={}", parsed["operation_id"])
+                return self._error("storage_unavailable", "Authoritative storage is unavailable.", 503)
+            except Exception as exc:
+                logger.error("Private reevaluation storage unavailable operation_id={} error={}", parsed["operation_id"], type(exc).__name__)
+                return self._error("storage_unavailable", "Authoritative storage is unavailable.", 503)
+            logger.info("Private reevaluation response operation_id={} replay={}", parsed["operation_id"], replay)
+            return JSONResponse(self._receipt_document(receipt), status_code=200 if replay else 202)
+
+        @self.app.get("/v1/reevaluations/{operation_id}", include_in_schema=False)
+        async def reevaluation_receipt(operation_id: str, request: Request) -> Response:
+            if request.query_params or not _OPERATION_ID.fullmatch(operation_id):
+                return self._error("invalid_identity", "Operation identity is invalid.", 422)
+            try:
+                receipt = await asyncio.to_thread(self.engine.invalidations.get_reevaluation_receipt, operation_id)
+            except Exception as exc:
+                logger.error("Private reevaluation receipt unavailable operation_id={} error={}", operation_id, type(exc).__name__)
+                return self._error("storage_unavailable", "Authoritative storage is unavailable.", 503)
+            if receipt is None:
+                return self._error("not_found", "No committed acceptance receipt exists.", 404)
+            return JSONResponse(self._receipt_document(receipt))
+
         # This registers only the existing inert projections.  The public
         # application's opt-in flag and route set are not consulted or changed.
         init_public_api(self.app, self.engine, self.identity.repository, safe_failure_logging=True)
+
+    @staticmethod
+    def _error(code: str, message: str, status: int) -> JSONResponse:
+        return JSONResponse({"error": {"code": code, "message": message}}, status_code=status)
+
+    def _parse_reevaluation(self, body: object) -> dict[str, object]:
+        required = {"operation_id", "repository", "channel", "expected_process_run_id", "expected_deployment_generation", "target"}
+        if not isinstance(body, dict) or set(body) != required:
+            raise ValueError("closed schema")
+        target = body["target"]
+        if not isinstance(target, dict) or set(target) != {"type", "number"}:
+            raise ValueError("closed target schema")
+        operation_id = body["operation_id"]
+        strings = [body[key] for key in ("repository", "channel", "expected_process_run_id", "expected_deployment_generation")]
+        if not isinstance(operation_id, str) or not _OPERATION_ID.fullmatch(operation_id):
+            raise ValueError("invalid operation identity")
+        if any(not isinstance(value, str) or not _IDENTITY.fullmatch(value) for value in strings):
+            raise ValueError("invalid identity")
+        number = target["number"]
+        if target["type"] not in {"issue", "pr"} or isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+            raise ValueError("invalid target")
+        if body["repository"] != self.identity.repository or body["channel"] != self.identity.channel:
+            raise WrongWorkerTarget("foreign worker")
+        return {
+            "operation_id": operation_id,
+            "repository": body["repository"],
+            "channel": body["channel"],
+            "target_type": target["type"],
+            "target_number": number,
+            "expected_process_run_id": body["expected_process_run_id"],
+            "expected_deployment_generation": body["expected_deployment_generation"],
+        }
+
+    def _record_reevaluation_refusal(self, parsed: dict[str, object], code: str) -> None:
+        """Emit bounded command correlation without becoming refusal authority."""
+        try:
+            logger.warning(
+                "Private reevaluation refused code={} operation_id={} target={}#{} process_run_id={} deployment_generation={}",
+                code,
+                parsed["operation_id"],
+                parsed["target_type"],
+                parsed["target_number"],
+                self.artifact.process_run_id or "unavailable",
+                self.identity.deployment_generation,
+            )
+        except Exception:
+            # Diagnostic sinks are explicitly non-authoritative. A broken sink
+            # cannot turn a refusal into acceptance or change its typed result.
+            pass
+
+    @staticmethod
+    def _receipt_document(receipt: ReevaluationReceipt) -> dict[str, object]:
+        return {
+            "schema_version": receipt.schema_version,
+            "operation_id": receipt.operation_id,
+            "repository": receipt.repository,
+            "channel": receipt.channel,
+            "target": {"type": receipt.target_type, "number": receipt.target_number},
+            "requested_process_run_id": receipt.requested_process_run_id,
+            "requested_deployment_generation": receipt.requested_deployment_generation,
+            "accepting_process_run_id": receipt.accepting_process_run_id,
+            "accepting_deployment_generation": receipt.accepting_deployment_generation,
+            "accepted_at": receipt.accepted_at,
+            "invalidation": {"disposition": receipt.disposition.value, "generation": receipt.generation},
+            "outcome": receipt.outcome,
+        }
 
     def _observation(self, nonce: str) -> dict[str, object]:
         gate = self.engine.invocation_admission_snapshot()

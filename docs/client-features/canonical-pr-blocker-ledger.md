@@ -66,6 +66,19 @@ same implementation owner, so presentation cannot create another repair allowanc
 Existing duplicate owners are never deleted, merged, closed or budget-reset by
 this mapping.
 
+An unknown canonical reference, a duplicated reference in the controller context,
+or a contradictory binding invalidates the ordinary review response before any
+thread closure or finding reconciliation. The result
+is `ERROR` with `correction_reference_invalid`; the diagnostic names an unknown
+reference and its supplied occurrence count. The raw response and invocation
+context remain available for diagnosis, while actionable findings, test gaps,
+thread dispositions, and closure assessments from that response are withheld.
+The reviewer App publishes the diagnostic as a native `COMMENT` review, without
+creating a new blocker or closing and reopening existing threads. Existing
+obligations remain open and merge stays blocked. IDs are never repaired by fuzzy
+matching; a fresh independent validation must return valid bindings. An explicit
+forced same-head retry remains eligible after this diagnostic.
+
 ## Concurrency, Idempotency, and Durability Guarantees
 
 State transitions are durable and use optimistic locking:

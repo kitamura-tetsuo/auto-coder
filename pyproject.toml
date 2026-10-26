@@ -53,6 +53,7 @@ dependencies = [
     "uvicorn>=0.53.0",
     "nicegui>=1.4.0",
     "firebase-admin>=7.0.0",
+    "mcp==1.30.0",
 ]
 
 [project.optional-dependencies]
@@ -88,7 +89,7 @@ auto-coder = "auto_coder.cli:main"
 
 # Include package data files
 [tool.setuptools.package-data]
-auto_coder = ["prompts.yaml", "*.yml", "*.yaml", "*.json"]
+auto_coder = ["prompts.yaml", "*.yml", "*.yaml", "*.json", "management/static/*.html", "management/static/*.js"]
 
 [tool.setuptools.dynamic]
 version = {attr = "auto_coder_build_backend.get_build_version"}
