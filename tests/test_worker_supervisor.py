@@ -545,7 +545,13 @@ def test_real_held_stop_survives_lost_response_and_supervisor_death(tmp_path: Pa
         else:
             raise AssertionError("real child did not enter held drain")
 
-        accepted = json.loads((tmp_path / "supervisor" / "state.json").read_text())["operations"]["held-original"]
+        for _ in range(300):
+            accepted = json.loads((tmp_path / "supervisor" / "state.json").read_text())["operations"]["held-original"]
+            if accepted["result"]["status"] == "DRAINING":
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("lost-response stop acceptance did not persist DRAINING")
         assert accepted["request"] == stop
         assert accepted["result"]["status"] == "DRAINING"
         first.kill()
