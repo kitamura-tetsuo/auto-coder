@@ -29,6 +29,7 @@ services:
       - ./runtime/management/child-state:/management-child-state
       - ./runtime/management/oauth:/management-oauth
       - ./runtime/management/operations:/management-operations
+      - ./runtime/management/policy:/management-policy:ro
       - ./runtime/management/versions:/management-versions:ro
     ports:
       - "127.0.0.1:${MANAGEMENT_PORT}:${MANAGEMENT_PORT}"

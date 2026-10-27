@@ -1,9 +1,10 @@
 # Authenticated management MCP service
 
 Auto-Coder can run a management-only Streamable HTTP MCP service independently
-of an automation worker. This stage exposes only the read-only,
-idempotent `auto_coder_whoami` tool; it does not report worker health or provide
-worker, update, restart, repository, Docker, or host-command capabilities.
+of an automation worker. The `auto_coder_whoami` identity tool remains read-only
+and idempotent. Additional fixed runtime inspection and single-target
+reevaluation tools are described in `management-runtime-mcp.md`. Neither stage
+provides arbitrary commands, Docker control, or worker update/restart authority.
 
 Create a persistent directory outside release/beta state and workspaces. Its
 `allowed_uids.json` uses the operator-policy format, and the service creates its

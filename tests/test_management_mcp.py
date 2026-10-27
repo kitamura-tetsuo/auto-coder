@@ -414,9 +414,20 @@ def test_real_discovery_firebase_exchange_and_whoami(real_boundary) -> None:
         }
         token = _issue(client, settings, signed, "alice", "alice-client")["access_token"]
         assert _mcp(client, token, "initialize", 1, {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}).status_code == 200
-        listed = _mcp(client, token, "tools/list", 2).json()["result"]["tools"]
-        assert [tool["name"] for tool in listed] == ["auto_coder_whoami"]
+        list_response = _mcp(client, token, "tools/list", 2)
+        assert list_response.headers["cache-control"] == "no-store"
+        listed = list_response.json()["result"]["tools"]
+        assert [tool["name"] for tool in listed] == [
+            "auto_coder_whoami",
+            "auto_coder_status",
+            "auto_coder_logs",
+            "auto_coder_validation_attempt",
+            "auto_coder_operation_get",
+            "auto_coder_reevaluate_target",
+        ]
         assert listed[0]["annotations"]["readOnlyHint"] and listed[0]["annotations"]["idempotentHint"]
+        assert all(tool["annotations"]["readOnlyHint"] for tool in listed[1:5])
+        assert listed[5]["annotations"]["readOnlyHint"] is False
         identity = _mcp(client, token, "tools/call", 3, {"name": "auto_coder_whoami", "arguments": {}}).json()["result"]["structuredContent"]
         assert identity == {"project_id": "mcp-test-project", "uid": "alice", "client_id": "alice-client", "scopes": ["auto-coder.read"], "resource": settings.oauth.resource}
 

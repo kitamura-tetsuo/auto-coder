@@ -81,6 +81,8 @@ class ManagementSettings:
     port: int = 8081
     local_development: bool = False
     allowed_browser_origins: tuple[str, ...] = ()
+    operating_policy_path: Path | None = None
+    operation_state_root: Path | None = None
 
     def __post_init__(self) -> None:
         loopback = self.bind_host in {"127.0.0.1", "::1", "localhost"}
@@ -93,6 +95,10 @@ class ManagementSettings:
             raise ValueError("port must be between 1 and 65535")
         if self.oauth.database_path.parent != self.state_root:
             raise ValueError("OAuth state must be stored directly in state_root")
+        if self.operating_policy_path is not None and not self.operating_policy_path.is_absolute():
+            raise ValueError("operating policy must use an absolute operator-owned path")
+        if self.operation_state_root is not None and not self.operation_state_root.is_absolute():
+            raise ValueError("operation state root must be absolute")
 
 
 def load_management_settings(path: Path) -> ManagementSettings:
@@ -151,6 +157,15 @@ def load_management_settings(path: Path) -> ManagementSettings:
         firebase_web_config={str(k): str(v) for k, v in dict(raw.get("firebase_web_config", {})).items()},
         enabled_scopes=validate_scope_set(tuple(enabled)),
     )
+
+    def optional_path(name: str) -> Path | None:
+        value = raw.get(name)
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value or not Path(value).is_absolute():
+            raise ValueError(f"{name} must be an absolute path")
+        return Path(value)
+
     return ManagementSettings(
         state_root,
         oauth,
@@ -158,4 +173,6 @@ def load_management_settings(path: Path) -> ManagementSettings:
         port,
         local_development,
         tuple(browser_origins),
+        optional_path("operating_policy_path"),
+        optional_path("operation_state_root"),
     )
