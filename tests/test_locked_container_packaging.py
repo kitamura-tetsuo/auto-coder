@@ -117,5 +117,5 @@ def test_actual_dependency_stage_rejects_a_stale_lock_without_rewriting_it(tmp_p
     normalized_output = output.lower()
     assert "lockfile" in normalized_output
     assert "needs to be updated" in normalized_output
-    assert "--locked was provided" in normalized_output
+    assert "`--locked` was provided" in normalized_output
     assert (context / "uv.lock").read_bytes() == original_lock
