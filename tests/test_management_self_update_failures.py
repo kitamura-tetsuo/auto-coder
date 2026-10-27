@@ -124,7 +124,9 @@ def test_authenticated_stale_child_lifetime_cannot_switch_or_release_uncertain_l
         assert retained is not None
         assert retained.authority == original.authority
         assert retained.intent == original.intent
-        assert retained.owner_attempt_id == original.owner_attempt_id
+        # The refusal/attention phase has no active dispatcher owner. The
+        # durable physical attempt below must still retain its original fence.
+        assert retained.owner_attempt_id == ""
         assert (retained.effect.attempt_id, retained.effect.owner_generation) == (original.effect.attempt_id, original.effect.owner_generation)
         if boundary == "preflight":
             # The durable refusal adds its own observation correlation without
