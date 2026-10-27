@@ -94,17 +94,21 @@ class ManagementRuntime:
     async def _monitor_lifecycle(self) -> None:
         while True:
             await asyncio.sleep(2)
-            cursor = 0
-            while True:
-                page = await asyncio.to_thread(self.journal.list_operations, cursor=cursor, limit=100, outstanding_only=True)
-                if page.status.value != "ok":
-                    break
-                for record in page.records:
-                    if record.intent.action in LIFECYCLE_ACTIONS:
-                        await self.dispatcher.submit(record.operation_id)
-                if page.next_cursor is None:
-                    break
-                cursor = page.next_cursor
+            await self._poll_lifecycle_once()
+
+    async def _poll_lifecycle_once(self) -> None:
+        """Run one real journal-backed lifecycle monitor sweep."""
+        cursor = 0
+        while True:
+            page = await asyncio.to_thread(self.journal.list_operations, cursor=cursor, limit=100, outstanding_only=True)
+            if page.status.value != "ok":
+                break
+            for record in page.records:
+                if record.intent.action in LIFECYCLE_ACTIONS:
+                    await self.dispatcher.submit(record.operation_id)
+            if page.next_cursor is None:
+                break
+            cursor = page.next_cursor
 
     @staticmethod
     def _response(status: str, reason: str, **fields: object) -> dict[str, object]:

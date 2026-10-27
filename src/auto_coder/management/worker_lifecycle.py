@@ -162,39 +162,36 @@ class WorkerLifecycle:
                 evidence = await asyncio.to_thread(lambda: self._source().read(str(selected_git_sha)).canonical())
             except (SourceEvidenceError, RuntimeError, OSError, ValueError):
                 return self._answer("UNAVAILABLE", "beta_source_evidence_unavailable_or_ineligible")
-        admission = await asyncio.to_thread(self.runtime.journal.admit, intent, original)
+        now = time.time()
+        incumbent_worker = inspected[1].get("worker")
+        incumbent = incumbent_worker if isinstance(incumbent_worker, dict) else {}
+        snapshot: dict[str, object] = {
+            "schema_version": 1,
+            "stage": "ACCEPTED",
+            "action": action,
+            "accepted_evidence": evidence,
+            "revalidation_observation": None,
+            "source_sha": selected_git_sha,
+            "incumbent": {
+                "process_run_id": expected_process_run_id,
+                "deployment_generation": expected_deployment_generation,
+                "runtime_id": expected_runtime_id,
+                "supervisor_generation": expected_supervisor_generation,
+            },
+            "previous_runtime_verified": bool(isinstance(incumbent.get("runtime_binding"), dict) and incumbent.get("binding_status") == "VERIFIED"),
+            "previous_binding": incumbent.get("runtime_binding"),
+            "staged": None,
+            "steps": {},
+            "new_worker": None,
+            "heartbeats": [],
+            "recovery_attempts": 0,
+            "accepted_at": now,
+            "original_deadline": now + 900,
+            "deadline": now + 900,
+        }
+        admission = await asyncio.to_thread(self.runtime.journal.admit, intent, original, lifecycle_snapshot=snapshot)
         if admission.status not in {AdmissionStatus.CREATED, AdmissionStatus.REPLAY} or admission.record is None:
             return self._answer(admission.status.value.upper(), "journal_" + admission.status.value, operation_id=admission.record.operation_id if admission.record else None)
-        if admission.status is AdmissionStatus.CREATED:
-            now = time.time()
-            incumbent_worker = inspected[1].get("worker")
-            incumbent = incumbent_worker if isinstance(incumbent_worker, dict) else {}
-            snapshot: dict[str, object] = {
-                "schema_version": 1,
-                "stage": "ACCEPTED",
-                "action": action,
-                "accepted_evidence": evidence,
-                "revalidation_observation": None,
-                "source_sha": selected_git_sha,
-                "incumbent": {
-                    "process_run_id": expected_process_run_id,
-                    "deployment_generation": expected_deployment_generation,
-                    "runtime_id": expected_runtime_id,
-                    "supervisor_generation": expected_supervisor_generation,
-                },
-                "previous_runtime_verified": bool(isinstance(incumbent.get("runtime_binding"), dict) and incumbent.get("binding_status") == "VERIFIED"),
-                "previous_binding": incumbent.get("runtime_binding"),
-                "staged": None,
-                "steps": {},
-                "new_worker": None,
-                "heartbeats": [],
-                "recovery_attempts": 0,
-                "accepted_at": now,
-                "original_deadline": now + 900,
-                "deadline": now + 900,
-            }
-            if not await asyncio.to_thread(self.runtime.journal.lifecycle_save, admission.record.operation_id, -1, snapshot):
-                return self._answer("NEEDS_ATTENTION", "accepted_evidence_not_durable", operation_id=admission.record.operation_id)
         updated = await self.runtime.dispatcher.submit(admission.record.operation_id)
         return self.project(updated or admission.record)
 
@@ -247,15 +244,31 @@ class WorkerLifecycle:
             result = self.runtime.journal.transition(record.operation_id, record.revision, phase, safe_error_category=reason, evidence=receipt if phase is not OperationPhase.NEEDS_ATTENTION else None)
         return result.record or record
 
+    @staticmethod
+    def _original_supervisor(client: WorkerNetworkClient, snapshot: dict[str, object]) -> str:
+        """Bootstrap a fresh signed client without rebinding a journaled effect."""
+        incumbent = snapshot.get("incumbent")
+        if not isinstance(incumbent, dict) or not isinstance(incumbent.get("supervisor_generation"), str):
+            return "UNAVAILABLE"
+        inspected = client.inspect_supervisor()
+        data = inspected.data
+        if inspected.result_code != "OK" or not isinstance(data, dict) or data.get("supervisor_incarnation") != inspected.supervisor_generation:
+            return "UNAVAILABLE"
+        if inspected.supervisor_generation != incumbent["supervisor_generation"]:
+            return "CHANGED"
+        return "SAME"
+
     def _step(self, record: OperationRecord, version: int, snapshot: dict[str, object], name: str, client: WorkerNetworkClient, operation: str, runtime_id: str | None) -> OperationRecord:
         steps = snapshot["steps"]
         assert isinstance(steps, dict)
+        identity = self._original_supervisor(client, snapshot)
+        if identity == "CHANGED":
+            return self._finish(record, version, snapshot, "NEEDS_ATTENTION", "original_supervisor_incarnation_changed")
+        if identity != "SAME":
+            return record
         if name not in steps:
             fence = snapshot["incumbent"]
             assert isinstance(fence, dict)
-            generation = client.inspect_supervisor()
-            if generation.result_code != "OK" or generation.supervisor_generation != fence.get("supervisor_generation"):
-                return self._finish(record, version, snapshot, "NEEDS_ATTENTION", "original_supervisor_incarnation_changed")
             refusal = self._authority_refusal(record)
             if refusal is not None:
                 return self._finish(record, version, snapshot, "NEEDS_ATTENTION", refusal)
@@ -525,6 +538,8 @@ class WorkerLifecycle:
 
     def _observe_uncertain_steps(self, record: OperationRecord, version: int, snapshot: dict[str, object], client: WorkerNetworkClient) -> None:
         """An expired/revoked lane remains read-reconcilable, never re-dispatched."""
+        if self._original_supervisor(client, snapshot) != "SAME":
+            return
         steps = snapshot.get("steps")
         if not isinstance(steps, dict):
             return

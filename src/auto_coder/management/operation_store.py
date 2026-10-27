@@ -106,9 +106,7 @@ class ManagementOperationStore:
 
     def lifecycle_save(self, operation_id: str, expected_revision: int, snapshot: dict[str, object]) -> bool:
         """CAS-write one bounded snapshot to the same durable SQLite journal."""
-        encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), allow_nan=False)
-        if len(encoded.encode("utf-8")) > 32768 or snapshot.get("schema_version") != 1:
-            raise ValueError("invalid or unbounded worker lifecycle evidence")
+        encoded = self._encode_lifecycle(snapshot)
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -128,18 +126,28 @@ class ManagementOperationStore:
         finally:
             connection.close()
 
+    @staticmethod
+    def _encode_lifecycle(snapshot: dict[str, object]) -> str:
+        encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        if len(encoded.encode("utf-8")) > 32768 or snapshot.get("schema_version") != 1:
+            raise ValueError("invalid or unbounded worker lifecycle evidence")
+        return encoded
+
     def _before_admission_transaction(self) -> None:
         """Test seam immediately before the real admission transaction."""
 
     def _after_admission_commit(self) -> None:
         """Delivery seam after commit, before the acknowledgement is read."""
 
-    def admit(self, intent: OperationIntent, authority: AcceptedAuthority) -> AdmissionResult:
+    def admit(self, intent: OperationIntent, authority: AcceptedAuthority, *, lifecycle_snapshot: dict[str, object] | None = None) -> AdmissionResult:
         try:
             parameters = intent.normalized_parameters()
             validate_authority(authority)
             fingerprint = intent.fingerprint()
             namespace = self._namespace(intent, authority)
+            lifecycle_json: str | None = None
+            if lifecycle_snapshot is not None:
+                lifecycle_json = self._encode_lifecycle(lifecycle_snapshot)
             connection = self._connect()
             try:
                 self._before_admission_transaction()
@@ -166,6 +174,10 @@ class ManagementOperationStore:
                     "INSERT INTO operations(operation_id,namespace_key,target_key,intent_json,fingerprint,authority_json,phase,revision,owner_attempt_id,safe_error_category,effect_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (operation_id, namespace, intent.target.key(), self._intent_json(normalized), fingerprint, self._authority_json(authority), OperationPhase.ACCEPTED.value, 0, "", "", self._effect_json(EffectAttempt()), now, now),
                 )
+                if lifecycle_json is not None:
+                    # An ACCEPTED lifecycle row must never be visible without
+                    # its immutable original evidence, fence and deadline.
+                    connection.execute("INSERT INTO worker_lifecycle VALUES (?,?,?,?)", (operation_id, 0, lifecycle_json, now))
                 self._append_history(connection, operation_id, OperationPhase.ACCEPTED, 0, "", EffectAttempt(), "", now)
                 connection.commit()
                 self._after_admission_commit()

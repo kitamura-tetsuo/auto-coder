@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -15,8 +17,9 @@ from auto_coder.management.action_scopes import DEPLOY_SCOPE, READ_SCOPE
 from auto_coder.management.app import create_management_app
 from auto_coder.management.oauth_config import ManagementSettings, OAuthClient, OAuthSettings
 from auto_coder.management.oauth_grants import OAuthGrantService
+from auto_coder.management.operation_store import ManagementOperationStore
 from auto_coder.management.source_evidence import BetaEvidenceReader
-from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkResult
+from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkClient, WorkerNetworkResult
 from auto_coder.util.gh_cache import GitDataResponse
 from tests.test_beta_source_selection import SHA_A, GitHubBoundary, selector
 from tests.test_management_mcp import _issue
@@ -269,6 +272,76 @@ def test_superseded_same_sha_selection_refuses_unsent_drain(real_boundary, tmp_p
     assert reader.read(SHA_A).source_sha == SHA_A
 
 
+@pytest.mark.parametrize("interruption", ("monitor", "manager_reconstruction"))
+def test_authenticated_lifecycle_admission_is_atomic_before_ack(real_boundary, tmp_path: Path, monkeypatch, interruption: str) -> None:
+    """An independent dispatcher must never see an unbound ACCEPTED lane."""
+    base, _base_grants, identity, signed, _uids, state = real_boundary
+    origin = base.oauth.canonical_issuer
+    oauth = OAuthSettings(base.oauth.database_path, origin, base.oauth.firebase_project_id, (OAuthClient("alice-client", (origin + "/alice-callback",), allowed_scopes=(READ_SCOPE, DEPLOY_SCOPE)),), enabled_scopes=(READ_SCOPE, DEPLOY_SCOPE))
+    policy = tmp_path / "operator.yaml"
+    policy.write_text("profile: beta\ntargets:\n  beta-worker:\n    channel: beta\n    repositories: [fixture/beta]\n", encoding="utf-8")
+    token_path = tmp_path / "source-token"
+    token_path.write_text("x" * 40, encoding="utf-8")
+    settings = ManagementSettings(tmp_path, oauth, port=base.port, operating_policy_path=policy, operation_state_root=tmp_path / "journal", source_repository="owner/repo", source_evidence_token_file=token_path)
+    grants = OAuthGrantService(oauth, identity, clock=lambda: state["now"])
+    remote = GitEvidenceBoundary()
+    assert selector(remote).advance("r77", None).certainty is MutationCertainty.CONFIRMED
+    reader = BetaEvidenceReader(remote, "owner/repo")  # type: ignore[arg-type]
+    original_evidence = reader.read(SHA_A).canonical()
+    monkeypatch.setattr("auto_coder.management.worker_lifecycle.WorkerLifecycle._source", lambda _self: reader)
+    bridge = LifecycleBridge()
+    app = create_management_app(settings, grants, worker_clients={"beta": bridge})  # type: ignore[dict-item]
+    entered, release = threading.Event(), threading.Event()
+
+    def pause_after_atomic_commit() -> None:
+        entered.set()
+        assert release.wait(timeout=15), "lifecycle admission acknowledgement was never released"
+
+    with TestClient(app, base_url=origin) as client:
+        bearer = _issue(client, settings, signed, "alice", "alice-client", READ_SCOPE + " " + DEPLOY_SCOPE)["access_token"]
+        runtime = app.state.management_runtime
+        runtime.journal._after_admission_commit = pause_after_atomic_commit
+        arguments = {
+            "target_id": "beta-worker",
+            "selected_git_sha": SHA_A,
+            "idempotency_key": "atomic-boundary",
+            "expected_supervisor_generation": bridge.supervisor_generation,
+            "expected_process_run_id": "run-old",
+            "expected_deployment_generation": "generation-old",
+            "expected_runtime_id": "runtime-old",
+        }
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pending = pool.submit(_call, client, bearer, "auto_coder_deploy_beta_source", arguments)
+                assert entered.wait(timeout=5)
+                restarted_store = ManagementOperationStore(settings.operation_state_root or settings.state_root)
+                active = restarted_store.list_operations(outstanding_only=True).records
+                assert len(active) == 1
+                operation_id = active[0].operation_id
+                accepted = restarted_store.lifecycle_snapshot(operation_id)
+                assert accepted is not None
+                assert accepted[1]["accepted_evidence"] == original_evidence
+                assert accepted[1]["original_deadline"] >= accepted[1]["accepted_at"] + 900
+                if interruption == "monitor":
+                    assert client.portal is not None
+                    client.portal.call(runtime._poll_lifecycle_once)
+                else:
+                    reconstructed = create_management_app(settings, grants, worker_clients={"beta": bridge})  # type: ignore[dict-item]
+                    with TestClient(reconstructed, base_url=origin):
+                        assert reconstructed.state.management_runtime.journal.lifecycle_snapshot(operation_id) is not None
+                assert restarted_store.lifecycle_snapshot(operation_id) is not None
+                release.set()
+                response = pending.result(timeout=10)
+        finally:
+            release.set()
+        assert response["operation_id"] == operation_id
+        assert _call(client, bearer, "auto_coder_deploy_beta_source", arguments)["operation_id"] == operation_id
+        _drive(app, operation_id, 32)
+        finished = _call(client, bearer, "auto_coder_operation_get", {"target_id": "beta-worker", "operation_id": operation_id})
+        assert finished["status"] == "SUCCEEDED", finished
+        assert len(bridge.actions) == len(set(bridge.actions)) == 3
+
+
 @pytest.mark.parametrize("expire_drain", (False, True))
 def test_authenticated_real_bridge_held_drain_lost_reply_and_management_reconstruction(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None, expire_drain: bool) -> None:
     """Exercise real PID/UDS/HTTP signals from OAuth through a persisted MCP operation."""
@@ -336,19 +409,21 @@ def test_authenticated_real_bridge_held_drain_lost_reply_and_management_reconstr
                 assert _call(client, bearer, "auto_coder_operation_get", {"target_id": "beta-worker", "operation_id": operation_id})["status"] == "NEEDS_ATTENTION"
                 assert supervisor.child.poll() is None
 
-        # Rebuild the management service, but retain its original journal and
-        # actual running Supervisor; the lost POST must never be dispatched twice.
-        next_app = create_management_app(settings, grants, worker_clients={"beta": worker_client})
+        # A new management process starts with no cached signed Supervisor
+        # identity. It must bootstrap before reading the original receipt.
+        reconstructed_client = WorkerNetworkClient(worker_client.config)
+        assert reconstructed_client.supervisor_generation is None
+        next_app = create_management_app(settings, grants, worker_clients={"beta": reconstructed_client})
         with TestClient(next_app, base_url=origin) as client:
             (tmp_path / "child" / "fixture-release").write_text("release", encoding="utf-8")
-            for _ in range(250):
-                _drive(next_app, operation_id, 1)
+            for _ in range(200):
                 observed = next_app.state.management_runtime.journal.lifecycle_snapshot(operation_id)
                 if observed and ((not expire_drain and observed[1]["stage"] == "SUCCEEDED") or (expire_drain and observed[1]["stage"] == "NEEDS_ATTENTION" and observed[1]["steps"]["drain"]["state"] == "CONFIRMED")):
                     break
-                time.sleep(0.02)
+                time.sleep(0.05)
             else:
                 raise AssertionError("real Supervisor stop receipt was not reconciled")
+            assert reconstructed_client.supervisor_generation == supervisor.incarnation
             assert _call(client, bearer, "auto_coder_operation_get", {"target_id": "beta-worker", "operation_id": operation_id})["status"] == ("NEEDS_ATTENTION" if expire_drain else "SUCCEEDED")
             assert _call(client, bearer, "auto_coder_stop_worker", arguments)["operation_id"] == operation_id
             assert len(requests) == 1
