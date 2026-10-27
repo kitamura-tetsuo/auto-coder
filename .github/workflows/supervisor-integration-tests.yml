@@ -38,6 +38,7 @@ jobs:
         run: |
           uv run pytest -q -vv \
             tests/test_worker_supervisor.py \
+            tests/test_worker_supervisor_bridge.py \
             tests/test_worker_versions.py \
             tests/test_worker_management_bridge.py::test_real_unix_socket_observes_same_engine_and_read_does_not_heartbeat \
             tests/test_worker_management_bridge.py::test_graceful_receipt_requires_stopped_closed_and_settled
@@ -61,6 +62,7 @@ jobs:
         run: |
           uv run pytest -q -vv -m supervisor_integration \
             tests/test_supervisor_container_integration.py \
+            tests/test_worker_network_integration.py \
             --junitxml=supervisor-integration-logs/results.xml
 
       - name: Upload integration diagnostics

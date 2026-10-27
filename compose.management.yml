@@ -8,6 +8,22 @@ services:
     stop_grace_period: 30m
     environment:
       PYTHONUNBUFFERED: "1"
+      AUTO_CODER_RELEASE_SUPERVISOR_INSTANCE_ID: release-worker
+      AUTO_CODER_RELEASE_REPOSITORY: ${RELEASE_REPOSITORY:?Release repository is required}
+      AUTO_CODER_RELEASE_BRIDGE_ADDRESS: ${RELEASE_WORKER_BRIDGE_ADDRESS:?Release private address is required}
+      AUTO_CODER_RELEASE_BRIDGE_PORT: ${RELEASE_WORKER_BRIDGE_PORT:?Release private port is required}
+      AUTO_CODER_RELEASE_BRIDGE_SECRET_FILE: /run/secrets/release_worker_bridge
+      AUTO_CODER_BETA_SUPERVISOR_INSTANCE_ID: beta-worker
+      AUTO_CODER_BETA_REPOSITORY: ${BETA_REPOSITORY:?Beta repository is required}
+      AUTO_CODER_BETA_BRIDGE_ADDRESS: ${BETA_WORKER_BRIDGE_ADDRESS:?Beta private address is required}
+      AUTO_CODER_BETA_BRIDGE_PORT: ${BETA_WORKER_BRIDGE_PORT:?Beta private port is required}
+      AUTO_CODER_BETA_BRIDGE_SECRET_FILE: /run/secrets/beta_worker_bridge
+    secrets:
+      - release_worker_bridge
+      - beta_worker_bridge
+    networks:
+      default: {}
+      management_private: {}
     volumes:
       - ./runtime/management/bootstrap:/bootstrap:ro
       - ./runtime/management/child-state:/management-child-state
@@ -17,4 +33,16 @@ services:
     ports:
       - "127.0.0.1:${MANAGEMENT_PORT}:${MANAGEMENT_PORT}"
     # Deliberately no Docker socket, privileged mode, or worker runtime mounts.
+
+secrets:
+  release_worker_bridge:
+    file: ${RELEASE_WORKER_BRIDGE_SECRET_FILE:?Release credential file is required}
+  beta_worker_bridge:
+    file: ${BETA_WORKER_BRIDGE_SECRET_FILE:?Beta credential file is required}
+
+networks:
+  default: {}
+  management_private:
+    external: true
+    name: ${AUTO_CODER_PRIVATE_NETWORK:?Existing private Docker network is required}
 

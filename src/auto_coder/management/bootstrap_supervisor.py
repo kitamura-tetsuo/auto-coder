@@ -293,6 +293,12 @@ class ManagementBootstrapSupervisor:
                 return self._finish(operation_id, ResultStatus.CONFLICT if winner.status is not ResultStatus.UNKNOWN else ResultStatus.UNKNOWN, winner.record, "another Supervisor reserved the child generation", persist_state=False)
             try:
                 environment = dict(runtime.environment)
+                # Compose/bootstrap provisions fixed machine-transport endpoints.
+                # Forward only this validated, closed set into replaceable MCP
+                # children; OAuth tokens and arbitrary inherited env stay out.
+                from .worker_network_client import configured_worker_bridge_environment
+
+                environment.update(configured_worker_bridge_environment())
                 environment.update({"AUTO_CODER_CHILD_GENERATION": str(prepared.child_generation), "AUTO_CODER_DRAIN_NONCE": prepared.drain_nonce})
                 if runtime.drain_ack is not None:
                     environment["AUTO_CODER_DRAIN_RECEIPT"] = str(runtime.drain_ack)
