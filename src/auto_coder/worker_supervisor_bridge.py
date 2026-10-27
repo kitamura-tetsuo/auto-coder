@@ -363,7 +363,19 @@ class _BridgeHandler(BaseHTTPRequestHandler):
     @staticmethod
     def _parse_json(body: bytes, required: set[str], optional: set[str] | None = None) -> dict[str, Any] | None:
         try:
-            value = json.loads(body)
+
+            def closed_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+                value: dict[str, object] = {}
+                for key, item in pairs:
+                    if key in value:
+                        raise ValueError("duplicate JSON key")
+                    value[key] = item
+                return value
+
+            def invalid_constant(_value: str) -> object:
+                raise ValueError("non-finite JSON number")
+
+            value = json.loads(body, object_pairs_hook=closed_object, parse_constant=invalid_constant)
             if not isinstance(value, dict) or not required <= value.keys() or not value.keys() <= required | (optional or set()):
                 return None
             return value

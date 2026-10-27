@@ -64,6 +64,41 @@ def _drop_stop_response(client: WorkerNetworkClient, operation_id: str) -> None:
         connection.close()
 
 
+def _auth_attack_receipts(client: WorkerNetworkClient) -> dict[str, object]:
+    nonce, request_id, timestamp = uuid.uuid4().hex, uuid.uuid4().hex, str(int(time.time()))
+    generation = client.supervisor_generation
+    assert generation is not None
+    path = "/v1/supervisor"
+    valid = request_mac(client.config.secret, method="GET", target=path, instance=client.config.instance_id, generation=generation, timestamp=timestamp, nonce=nonce, request_id=request_id, body=b"")
+    headers = {
+        "X-AC-Version": "1",
+        "X-AC-Instance": client.config.instance_id,
+        "X-AC-Supervisor-Generation": generation,
+        "X-AC-Timestamp": timestamp,
+        "X-AC-Nonce": nonce,
+        "X-AC-Request-Id": request_id,
+        "X-AC-Signature": valid,
+    }
+
+    def request(selected: dict[str, str]) -> int:
+        connection = http.client.HTTPConnection(client.config.address, client.config.port, timeout=5)
+        try:
+            connection.request("GET", path, headers=selected)
+            response = connection.getresponse()
+            response.read()
+            return response.status
+        finally:
+            connection.close()
+
+    result = [request(headers), request(headers)]
+    invalid_key = dict(headers, **{"X-AC-Nonce": uuid.uuid4().hex, "X-AC-Signature": "0" * 64})
+    result.append(request(invalid_key))
+    expired = dict(headers, **{"X-AC-Nonce": uuid.uuid4().hex, "X-AC-Timestamp": str(int(time.time()) - 1000)})
+    expired["X-AC-Signature"] = request_mac(client.config.secret, method="GET", target=path, instance=client.config.instance_id, generation=generation, timestamp=expired["X-AC-Timestamp"], nonce=expired["X-AC-Nonce"], request_id=request_id, body=b"")
+    result.append(request(expired))
+    return {"statuses": result}
+
+
 def main() -> None:
     command, channel = sys.argv[1:3]
     config = WorkerEndpointConfig.environment(channel)
@@ -74,6 +109,9 @@ def main() -> None:
     inspected = client.inspect_supervisor()
     if command == "inspect" or command == "swapped-target":
         result = inspected
+    elif command == "auth-attacks":
+        print(json.dumps(_auth_attack_receipts(client), sort_keys=True))
+        return
     elif command == "observe":
         result = client.observe_worker("fixture-request-" + uuid.uuid4().hex)
     elif command == "drop-stop":
@@ -82,6 +120,24 @@ def main() -> None:
         return
     elif command == "read-operation":
         result = client.read_worker_operation(sys.argv[3])
+    elif command == "prepare-version":
+        result = client.prepare_version(sys.argv[3], sys.argv[4])
+    elif command == "read-preparation":
+        result = client.read_preparation(sys.argv[3])
+    elif command == "start-staged":
+        if inspected.result_code != "OK" or inspected.data is None:
+            raise RuntimeError("Supervisor inspection is not authenticated")
+        result = client.dispatch_worker_operation(
+            sys.argv[3],
+            "START",
+            process_run_id=None,
+            deployment_generation=None,
+            selected_runtime_id=inspected.data.get("selected_runtime_id"),
+            runtime_id=sys.argv[4],
+        )
+    elif command == "stale-observation":
+        client.worker_process_run_id, client.worker_deployment_generation = sys.argv[3:5]
+        result = client.observe_worker()
     elif command == "stale-stop":
         observed = _observation(client)
         client.supervisor_generation = sys.argv[3]

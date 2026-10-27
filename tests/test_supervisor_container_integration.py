@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
+import random
 import subprocess
 import time
 import uuid
@@ -302,7 +304,17 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
     lock_path = ready_path.parent / "source" / "uv.lock"
     original_ready, original_marker, original_lock = ready_path.read_bytes(), marker_path.read_bytes(), lock_path.read_bytes()
 
+    # Join the genuine staged-runtime worker to a disposable private network.
+    # Only the installer above has external egress; this network is internal.
+    secret = runtime / "private-network-secret"
+    secret.write_bytes(base64.b64encode(os.urandom(48)) + b"\n")
+    subnet_octet = random.SystemRandom().randrange(64, 239)
+    worker_ip = f"10.251.{subnet_octet}.11"
+    network_name = "supervisor-stage-net-" + uuid.uuid4().hex[:12]
+    _docker("network", "create", "--driver", "bridge", "--internal", "--subnet", f"10.251.{subnet_octet}.0/24", network_name)
+
     container = "supervisor-production-" + uuid.uuid4().hex[:12]
+    manager = "supervisor-manager-" + uuid.uuid4().hex[:12]
     try:
         _docker(
             "run",
@@ -311,7 +323,9 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
             "--name",
             container,
             "--network",
-            "none",
+            network_name,
+            "--ip",
+            worker_ip,
             "--cap-drop",
             "ALL",
             "--security-opt",
@@ -328,6 +342,8 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
             f"{routing}:/routing",
             "-v",
             f"{fixtures}:/fixtures:ro",
+            "-v",
+            f"{source}:/source:ro",
             "-e",
             "AUTO_CODER_SUPERVISOR_INSTANCE_ID=release-worker",
             "-e",
@@ -344,6 +360,14 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
             "AUTO_CODER_ARTIFACT_DIGEST=ci-isolated",
             "-e",
             "AUTO_CODER_SUPERVISOR_AUTO_START=1",
+            "-e",
+            "AUTO_CODER_SOURCE_REPOSITORY_ROOT=/source",
+            "-e",
+            f"AUTO_CODER_BRIDGE_BIND_ADDRESS={worker_ip}",
+            "-e",
+            "AUTO_CODER_BRIDGE_PORT=8843",
+            "-e",
+            "AUTO_CODER_BRIDGE_SECRET_FILE=/runtime/private-network-secret",
             "-e",
             "AUTO_CODER_CONFIG_PATH=/runtime/llm_config.toml",
             "-e",
@@ -362,18 +386,66 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
         assert facts["docker_socket"] is False
         assert facts["docker_binary"] is None
 
+        _docker(
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            manager,
+            "--network",
+            network_name,
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges:true",
+            "--user",
+            user,
+            "-v",
+            f"{fixtures}:/fixtures:ro",
+            "-v",
+            f"{secret}:/worker-key:ro",
+            "-e",
+            "AUTO_CODER_RELEASE_SUPERVISOR_INSTANCE_ID=release-worker",
+            "-e",
+            f"AUTO_CODER_RELEASE_REPOSITORY={repository}",
+            "-e",
+            f"AUTO_CODER_RELEASE_BRIDGE_ADDRESS={worker_ip}",
+            "-e",
+            "AUTO_CODER_RELEASE_BRIDGE_PORT=8843",
+            "-e",
+            "AUTO_CODER_RELEASE_BRIDGE_SECRET_FILE=/worker-key",
+            "--entrypoint",
+            "sleep",
+            image,
+            "infinity",
+        )
+
+        def via_manager(*arguments: str) -> dict[str, object]:
+            command = _docker("exec", manager, "python", "/fixtures/supervisor_network_client_fixture.py", *arguments, timeout=15)
+            return json.loads(command.stdout)
+
         bootstrap = _wait_for(lambda: _inspect_worker(container), timeout=60)
         assert bootstrap["runtime_id"] == "bootstrap"
         assert bootstrap["binding_status"] == "UNAVAILABLE"
         initial_observation = _worker_observation(container)
         assert initial_observation["process_run_id"] == bootstrap["process_run_id"]
+        genuine_stage = via_manager("prepare-version", "release", "network-ready-stage", revision)
+        assert genuine_stage["result_code"] in {"IN_PROGRESS", "READY"}
+        confirmed_stage = _wait_for(
+            lambda: (result if result["result_code"] == "READY" else None) if (result := via_manager("read-preparation", "release", "network-ready-stage")) else None,
+            timeout=60,
+        )
+        assert confirmed_stage["data"]["installed_runtime_id"] == ready["installed_runtime_id"]
+        assert confirmed_stage["data"]["content_identity"] == ready["content_identity"]
+        assert confirmed_stage["data"]["lock_sha256"] == ready["lock_sha256"]
+        assert "environment_path" not in confirmed_stage["data"]
         assert initial_observation["artifact"]["source_revision"]["value"] == revision
         initial_stop = {"operation_id": "bootstrap-stop", "operation": "REQUEST_GRACEFUL_STOP", "expected_generation": str(bootstrap["deployment_generation"]), "expected_process_run_id": str(bootstrap["process_run_id"])}
         assert _control(container, initial_stop)["status"] in {"DRAINING", "STOPPED"}
         _wait_for(lambda: _control(container, initial_stop)["status"] == "STOPPED", timeout=90)
 
         staged_id = ready["installed_runtime_id"]
-        assert _control(container, {"operation_id": "staged-start", "operation": "START", "runtime_id": staged_id})["status"] == "RUNNING"
+        assert via_manager("start-staged", "release", "staged-start", staged_id)["result_code"] == "RUNNING"
         bound = _wait_for(lambda: worker if (worker := _inspect_worker(container)) and worker.get("binding_status") == "VERIFIED" else None, timeout=90)
         binding = bound["runtime_binding"]
         assert bound["runtime_id"] == staged_id
@@ -388,6 +460,13 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
         assert live["deployment_generation"] == binding["deployment_generation"]
         assert live["artifact"]["distribution_version"]["value"] == ready["distribution_version"]
         assert live["artifact"]["source_revision"]["value"] == revision
+        network_observed = via_manager("observe", "release")
+        assert network_observed["result_code"] == "OK"
+        assert network_observed["data"]["binding_status"] == "VERIFIED"
+        assert network_observed["data"]["runtime_binding"]["content_identity"] == ready["content_identity"]
+        assert network_observed["data"]["runtime_binding"]["lock_sha256"] == ready["lock_sha256"]
+        assert network_observed["data"]["observation"]["process_run_id"] == bound["process_run_id"]
+        assert network_observed["data"]["observation"]["nonce"].startswith("fixture-request-")
 
         # Independently valid replacement READY, identical source SHA, distinct
         # runtime/content identity: it must not inherit the old live binding.
@@ -410,6 +489,10 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
             assert unbound["status"] == "RUNNING"
             assert unbound["worker"]["binding_status"] == "UNAVAILABLE"
             assert "runtime_binding" not in unbound["worker"]
+            replaced_ready = via_manager("observe", "release")
+            assert replaced_ready["result_code"] == "OK"
+            assert replaced_ready["data"]["binding_status"] != "VERIFIED"
+            assert replaced_ready["data"]["runtime_binding"] is None
         finally:
             marker_path.write_bytes(original_marker)
             marker_path.chmod(marker_mode)
@@ -435,6 +518,8 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
         assert successor["runtime_binding"]["content_identity"] == binding["content_identity"]
         assert successor["process_run_id"] != bound["process_run_id"]
         assert successor["deployment_generation"] != bound["deployment_generation"]
+        stale_network = via_manager("stale-observation", "release", str(bound["process_run_id"]), str(bound["deployment_generation"]))
+        assert stale_network["result_code"] == "CONFLICT"
         assert _control(container, {"operation_id": "stale-stop", "operation": "REQUEST_GRACEFUL_STOP", "expected_process_run_id": str(bound["process_run_id"]), "expected_generation": str(bound["deployment_generation"])})["status"] == "CONFLICT"
         final_stop = {"operation_id": "successor-stop", "operation": "REQUEST_GRACEFUL_STOP", "expected_generation": str(successor["deployment_generation"]), "expected_process_run_id": str(successor["process_run_id"])}
         assert _control(container, final_stop)["status"] in {"DRAINING", "STOPPED"}
@@ -469,6 +554,8 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
         if logs.stdout or logs.stderr:
             print(logs.stdout + logs.stderr)
         _docker("rm", "-f", container, check=False)
+        _docker("rm", "-f", manager, check=False)
+        _docker("network", "rm", network_name, check=False)
 
 
 def test_independently_prepared_staged_restart_preserves_held_intent(tmp_path: Path, _use_real_commands: None) -> None:

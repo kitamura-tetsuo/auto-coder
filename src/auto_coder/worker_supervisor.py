@@ -289,7 +289,7 @@ class WorkerSupervisor:
             self._reconcile_worker(state)
             worker, alive = state.get("worker"), self._is_alive(state.get("worker"))
             status = "DRAINING" if alive and isinstance(worker, dict) and worker.get("stop_requested") else "RUNNING" if alive else "UNKNOWN" if worker is not None else "STOPPED" if state.get("stopped") else "UNKNOWN"
-            return {"status": status, "supervisor_incarnation": self.incarnation, "worker": worker, "alive": alive}
+            return {"status": status, "supervisor_incarnation": self.incarnation, "selected_runtime_id": state.get("selected_runtime_id"), "worker": worker, "alive": alive}
 
     @staticmethod
     def project_worker(worker: object) -> dict[str, Any] | None:
@@ -301,7 +301,7 @@ class WorkerSupervisor:
 
     @classmethod
     def project_result(cls, result: dict[str, Any]) -> dict[str, Any]:
-        projected: dict[str, Any] = {key: result[key] for key in ("status", "supervisor_incarnation", "alive", "reason") if key in result}
+        projected: dict[str, Any] = {key: result[key] for key in ("status", "supervisor_incarnation", "selected_runtime_id", "alive", "reason") if key in result}
         if "worker" in result:
             projected["worker"] = cls.project_worker(result["worker"])
         return projected

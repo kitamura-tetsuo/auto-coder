@@ -101,6 +101,8 @@ def test_two_channel_manager_restart_peer_isolation_and_lost_response(tmp_path: 
         assert release_seen["observation"]["process_run_id"] != beta_seen["observation"]["process_run_id"]
         assert beta_seen["observation"]["nonce"].startswith("fixture-request-")
 
+        assert manager_call(manager, "auth-attacks", "release")["statuses"] == [200, 401, 401, 401]
+
         swapped = manager_call(manager, "swapped-target", "beta")
         assert swapped["result_code"] == "UNKNOWN"  # Target does not possess the beta key.
         stale = manager_call(manager, "stale-stop", "beta", "replaced-supervisor-incarnation")
