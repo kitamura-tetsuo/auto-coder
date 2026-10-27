@@ -17,6 +17,11 @@ authoritative `channel` (`beta` or `release`) and a non-empty list of permitted
 `owner/name` repository identities. Unknown fields, profiles, channels, malformed
 documents, and unreadable explicitly selected files fail closed.
 
+For the separate, default-disabled management-service self-update target, the
+operator may configure the additional `management_self_update` namespace described
+in `management-self-update-authorization.md`. It is not a worker target and does
+not change any row of the beta/release action matrix below.
+
 Only a trusted local operator changes this file. There is intentionally no request,
 model-output, CI-result, acceptance, approval, or transition API that changes the
 profile or mapping, and there is no automatic escalation. A consumer calls

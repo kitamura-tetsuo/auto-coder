@@ -96,11 +96,24 @@ class PolicyTarget:
     repositories: tuple[str, ...]
 
 
+MANAGEMENT_REPOSITORY = "kitamura-tetsuo/auto-coder"
+
+
+@dataclass(frozen=True)
+class ManagementSelfUpdatePolicy:
+    """Opt-in for one management instance, never a worker-channel target."""
+
+    enabled: bool
+    instance_id: str
+    repository: str
+
+
 @dataclass(frozen=True)
 class OperatingPolicy:
     profile: PolicyProfile
     targets: tuple[PolicyTarget, ...]
     revision: str
+    management_self_update: ManagementSelfUpdatePolicy | None = None
 
 
 @dataclass(frozen=True)
@@ -157,17 +170,20 @@ def load_operating_policy(path: Path) -> PolicyLoadResult:
     except (yaml.YAMLError, ValueError, TypeError):
         return PolicyLoadResult(None, DecisionOutcome.UNAVAILABLE, ReasonCode.POLICY_MALFORMED, _invalid_revision(raw))
 
-    normalized = {
+    normalized: dict[str, object] = {
         "profile": policy.profile.value,
         "targets": {target.target_id: {"channel": target.channel.value, "repositories": list(target.repositories)} for target in sorted(policy.targets, key=lambda item: item.target_id)},
     }
-    snapshot = OperatingPolicy(policy.profile, policy.targets, _content_revision(normalized))
+    if policy.management_self_update is not None:
+        management = policy.management_self_update
+        normalized["management_self_update"] = {"enabled": management.enabled, "instance_id": management.instance_id, "repository": management.repository}
+    snapshot = OperatingPolicy(policy.profile, policy.targets, _content_revision(normalized), policy.management_self_update)
     return PolicyLoadResult(snapshot, DecisionOutcome.ALLOWED, ReasonCode.ALLOWED_INSPECTION, snapshot.revision)
 
 
 def _parse_policy(document: object) -> OperatingPolicy:
-    if not isinstance(document, dict) or set(document) - {"profile", "targets"}:
-        raise ValueError("policy must be a mapping with only profile and targets")
+    if not isinstance(document, dict) or set(document) - {"profile", "targets", "management_self_update"}:
+        raise ValueError("policy has unknown fields")
     profile_value = document.get("profile", PolicyProfile.OBSERVE.value)
     if not isinstance(profile_value, str):
         raise ValueError("profile must be a string")
@@ -195,7 +211,16 @@ def _parse_policy(document: object) -> OperatingPolicy:
         if len(set(repositories)) != len(repositories):
             raise ValueError("repositories must be unique")
         targets.append(PolicyTarget(target_id, channel, tuple(sorted(repositories))))
-    return OperatingPolicy(profile, tuple(sorted(targets, key=lambda item: item.target_id)), "")
+    management = None
+    if "management_self_update" in document:
+        value = document["management_self_update"]
+        if not isinstance(value, dict) or set(value) != {"enabled", "instance_id", "repository"}:
+            raise ValueError("management_self_update requires enabled, instance_id and repository")
+        enabled, instance_id, repository = value["enabled"], value["instance_id"], value["repository"]
+        if type(enabled) is not bool or not isinstance(instance_id, str) or not instance_id.strip() or len(instance_id) > 128 or "\x00" in instance_id or repository != MANAGEMENT_REPOSITORY:
+            raise ValueError("invalid management self-update configuration")
+        management = ManagementSelfUpdatePolicy(enabled, instance_id, repository)
+    return OperatingPolicy(profile, tuple(sorted(targets, key=lambda item: item.target_id)), "", management)
 
 
 def evaluate_operating_policy(path: Path, intent: PolicyIntent) -> PolicyDecision:
