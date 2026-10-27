@@ -781,9 +781,15 @@ def substantive_discussion_digest(thread: ReviewThread, authenticated_controller
     # conservatively mismatches instead of excluding unproven housekeeping.
     receipt = parse_owned_receipt(thread, authenticated_controller_login) if authenticated_controller_login else None
     receipt_comment_id = receipt.comment_id if receipt is not None else None
+    two_tier_status_ids = []
+    if authenticated_controller_login:
+        status_pattern = re.compile(r"\A<!-- auto-coder-two-tier-closure:v1:[0-9a-f]{64} -->\n" r"Independently validated \*\*(?:FIXED|INVALID)\*\* against " r"`[0-9a-f]{40,64}`\.\n\n\S[\s\S]*\Z")
+        two_tier_status_ids = [comment.database_id for comment in thread.comments if is_same_github_login(comment.author_login, authenticated_controller_login) and status_pattern.fullmatch(comment.body)]
+        if len(two_tier_status_ids) > 1:
+            raise ValueError("Review thread has ambiguous owned two-tier closure status")
     comments = []
     for comment in thread.comments:
-        if receipt_comment_id is not None and comment.database_id == receipt_comment_id:
+        if (receipt_comment_id is not None and comment.database_id == receipt_comment_id) or comment.database_id in two_tier_status_ids:
             continue
         if comment.database_id is None or (comment.author_id is None and not comment.author_login.strip()):
             raise ValueError("Review-thread discussion identity is incomplete")

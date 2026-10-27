@@ -84,6 +84,20 @@ def _closure_client(claimed=None):
 
 
 class TestClassifyReviewThreads:
+    def test_schema_valid_owned_two_tier_status_is_housekeeping_only(self):
+        root = _comment(CODEX_LOGIN, "finding", database_id=1)
+        thread = _thread("t1", False, [root])
+        before = substantive_discussion_digest(thread, "auto-coder[bot]")
+        thread.comments.append(
+            _comment(
+                "auto-coder[bot]",
+                "<!-- auto-coder-two-tier-closure:v1:" + "a" * 64 + " -->\nIndependently validated **FIXED** against `" + "b" * 40 + "`.\n\nVerified production evidence.",
+                database_id=2,
+            )
+        )
+
+        assert substantive_discussion_digest(thread, "auto-coder[bot]") == before
+
     def test_controller_two_tier_marker_lookalike_remains_substantive(self):
         thread = _thread(
             "t1",
