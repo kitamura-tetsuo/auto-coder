@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 
@@ -25,6 +26,9 @@ def main() -> None:
         crash = Path(os.environ["AUTO_CODER_RUNTIME_ROOT"]) / "fixture-crash-next-staged"
         if crash.exists():
             crash.unlink()
+            # Ensure the real Supervisor records the child's PID/start token
+            # before the fixture process exits unexpectedly.
+            time.sleep(0.75)
             raise SystemExit("fixture intentional staged-worker activation failure")
     token = os.environ["GITHUB_TOKEN"]
     command = [
