@@ -213,7 +213,8 @@ class BetaSourceSelector:
             record = BetaSelectionRecord(**data)
         except (json.JSONDecodeError, TypeError) as exc:
             raise BetaSourceConflict("selection history annotation is invalid") from exc
-        if record.serialize() != message or tag.get("object") != {"type": "commit", "sha": record.source_sha}:
+        direct = tag.get("object")
+        if record.serialize() != message or not isinstance(direct, dict) or direct.get("type") != "commit" or direct.get("sha") != record.source_sha:
             raise BetaSourceConflict("selection history content or commit anchor conflicts")
         return record
 
@@ -253,7 +254,8 @@ class BetaSourceSelector:
                 if not isinstance(previous_name, str) or re.fullmatch(r"auto-coder-beta-selection-r[1-9][0-9]*", previous_name) is None:
                     raise BetaSourceConflict("current selection has no valid immutable operation identity")
                 prior_ref = _object(self.client.request("GET", f"git/ref/tags/{previous_name}"), "prior selection history ref")
-                if prior_ref.get("object") != {"type": "tag", "sha": current_oid}:
+                prior_target = prior_ref.get("object")
+                if not isinstance(prior_target, dict) or prior_target.get("type") != "tag" or prior_target.get("sha") != current_oid:
                     raise BetaSourceConflict("current selection history object is not immutable")
                 current_record = self._read_record(previous_name)
                 if current_record is None or current_record.serialize() != previous_tag.get("message") or current_record.repository != self.repository or current_record.operation_id != previous_name.removeprefix("auto-coder-beta-selection-"):

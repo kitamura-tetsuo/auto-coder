@@ -115,10 +115,12 @@ class BetaEvidenceReader:
             raise SourceEvidenceError("current selection tag is not a bounded operation record")
         assert isinstance(name, str)
         record = selector._read_record(name)
-        if not isinstance(record, BetaSelectionRecord) or record.serialize() != message or tag.get("object") != {"type": "commit", "sha": source_sha}:
+        tagged_commit = tag.get("object")
+        if not isinstance(record, BetaSelectionRecord) or record.serialize() != message or not isinstance(tagged_commit, dict) or tagged_commit.get("type") != "commit" or tagged_commit.get("sha") != source_sha:
             raise SourceEvidenceError("current selection record differs from its immutable history")
         history = _document(self.client.request("GET", f"git/ref/tags/{name}"), "selection history ref")
-        if history.get("ref") != f"refs/tags/{name}" or history.get("object") != {"type": "tag", "sha": oid}:
+        history_target = history.get("object")
+        if history.get("ref") != f"refs/tags/{name}" or not isinstance(history_target, dict) or history_target.get("type") != "tag" or history_target.get("sha") != oid:
             raise SourceEvidenceError("current selection history identity has changed")
         if record.schema_version != 1 or record.repository != self.repository or record.operation_id != match.group(1) or record.source_sha != source_sha or record.selected_run_attempt <= 0:
             raise SourceEvidenceError("selection operation identity conflicts with its source")

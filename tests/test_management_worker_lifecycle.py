@@ -30,6 +30,14 @@ class GitEvidenceBoundary(GitHubBoundary):
             self.refs["refs/tags/auto-coder-beta-selection-current"] = ("tag", str(payload["sha"]))
             return GitDataResponse(200)
         result = super().request(method, path, payload)
+        if method == "GET" and (path.startswith("git/tags/") or path.startswith("git/ref/tags/")) and isinstance(result.data, dict):
+            # The real GitHub Git-object endpoint includes a URL beside the
+            # type and SHA. An exact two-key dict equality rejects production.
+            document = dict(result.data)
+            target = document.get("object")
+            if isinstance(target, dict):
+                document["object"] = {**target, "url": "https://api.github.com/repos/owner/repo/git/commits/example"}
+                return GitDataResponse(result.status, document)
         if method == "GET" and path.endswith("/jobs?per_page=100") and isinstance(result.data, dict):
             jobs = result.data.get("jobs")
             if isinstance(jobs, list):
@@ -153,7 +161,7 @@ class LifecycleBridge:
         }
         observation = {
             "repository": self.config.repository,
-            "channel": "beta",
+            "channel": self.config.channel,
             "nonce": nonce,
             "process_run_id": self.worker["process_run_id"],
             "deployment_generation": self.worker["deployment_generation"],
@@ -336,3 +344,28 @@ def test_authenticated_real_bridge_held_drain_lost_reply_and_management_reconstr
         if supervisor.child is not None and supervisor.child.poll() is None:
             supervisor.child.terminate()
             supervisor.child.wait(timeout=5)
+
+
+def test_full_policy_allows_release_process_restart_but_never_beta_source_update(real_boundary, tmp_path: Path) -> None:
+    base, _base_grants, identity, signed, _uids, state = real_boundary
+    origin = base.oauth.canonical_issuer
+    oauth = OAuthSettings(base.oauth.database_path, origin, base.oauth.firebase_project_id, (OAuthClient("alice-client", (origin + "/alice-callback",), allowed_scopes=(READ_SCOPE, DEPLOY_SCOPE)),), enabled_scopes=(READ_SCOPE, DEPLOY_SCOPE))
+    policy = tmp_path / "operator.yaml"
+    policy.write_text("profile: full\ntargets:\n  release-worker:\n    channel: release\n    repositories: [fixture/release]\n", encoding="utf-8")
+    settings = ManagementSettings(tmp_path, oauth, port=base.port, operating_policy_path=policy, operation_state_root=tmp_path / "journal")
+    bridge = LifecycleBridge()
+    bridge.config = WorkerEndpointConfig("release-worker", "release", "fixture/release", "10.23.10.11", 17890, b"r" * 48)
+    app = create_management_app(settings, OAuthGrantService(oauth, identity, clock=lambda: state["now"]), worker_clients={"release": bridge})  # type: ignore[dict-item]
+    with TestClient(app, base_url=origin) as client:
+        bearer = _issue(client, settings, signed, "alice", "alice-client", READ_SCOPE + " " + DEPLOY_SCOPE)["access_token"]
+        arguments = {"target_id": "release-worker", "idempotency_key": "release-restart", "expected_supervisor_generation": "supervisor-a", "expected_process_run_id": "run-old", "expected_deployment_generation": "generation-old", "expected_runtime_id": "runtime-old"}
+        denied = _call(client, bearer, "auto_coder_deploy_beta_source", {**arguments, "selected_git_sha": SHA_A})
+        assert denied["status"] == "DENIED"
+        before = _call(client, bearer, "auto_coder_deployment_status", {"target_id": "release-worker"})
+        assert before["status"] == "OK" and before["process_state"] == "RUNNING"
+        accepted = _call(client, bearer, "auto_coder_restart_worker", arguments)
+        operation_id = str(accepted["operation_id"])
+        _drive(app, operation_id)
+        completed = _call(client, bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
+        assert completed["status"] == "SUCCEEDED", completed
+        assert [name for name, _id in bridge.actions] == ["REQUEST_GRACEFUL_STOP", "START"]
