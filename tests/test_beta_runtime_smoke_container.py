@@ -325,7 +325,7 @@ def test_local_smoke_uses_installed_worker_real_progress_and_original_journal(re
             "HOME": "/runtime/home",
         }
         launch = ["run", "-d", "--rm", "--name", worker_name, "--network", network, "--ip", address, "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--user", host_user, "--entrypoint", "python"]
-        for host, guest, mode in ((runtime, "/runtime", ""), (workspace, "/workspace", ""), (routing, "/routing", "ro"), (fixtures, "/fixtures", "ro"), (trust, "/ci-trust", "ro"), (source, "/source", "ro")):
+        for host, guest, mode in ((runtime, "/runtime", ""), (workspace, "/workspace", ""), (routing, "/routing", ""), (fixtures, "/fixtures", "ro"), (trust, "/ci-trust", "ro"), (source, "/source", "ro")):
             launch.extend(["-v", f"{host}:{guest}" + (f":{mode}" if mode else "")])
         for key, value in environment.items():
             launch.extend(["-e", f"{key}={value}"])

@@ -205,8 +205,10 @@ Storage corruption, failed writes, or uncertain commit delivery remain
 
 The following mappings preserve the original qualified requirement ownership.
 #2605 retains the authenticated adoption/publication boundary and its separate
-publisher-to-promotion integration; this implementation does not rename,
-remove, weaken, or re-own any #2605 requirement.
+producer-to-publisher integration with independent publication readback. The
+complete producer-to-publisher-to-promotion integration remains owned by
+#2606. This implementation does not rename, remove, weaken, or re-own any
+#2605 requirement.
 
 | Source obligation retained by #2605 | #2614 implementation responsibility | Verification |
 | --- | --- | --- |
