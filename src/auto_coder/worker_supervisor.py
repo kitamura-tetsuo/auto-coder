@@ -20,6 +20,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 from loguru import logger
 
@@ -193,7 +194,7 @@ class WorkerSupervisor:
 
     def _observation(self, worker: dict[str, Any], nonce: str | None = None) -> dict[str, Any] | None:
         nonce = nonce or uuid.uuid4().hex
-        result = self.worker_http(worker, "GET", f"/v1/observation?nonce={nonce}")
+        result = self.worker_http(worker, "GET", "/v1/observation?" + urlencode({"nonce": nonce}))
         if result is None or result[0] != 200:
             return None
         body = result[1]

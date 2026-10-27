@@ -146,7 +146,7 @@ class WorkerNetworkClient:
         return self._call("POST", "/v1/reevaluations", body, worker_run=process_run_id, worker_generation=deployment_generation)
 
     def read_reevaluation(self, operation_id: str) -> WorkerNetworkResult:
-        self._validate_operation_id(operation_id)
+        self._validate_reevaluation_id(operation_id)
         if not self._has_worker_identity():
             return self._unavailable_without_worker()
         return self._call("GET", "/v1/reevaluations/" + operation_id, worker_run=self.worker_process_run_id or "", worker_generation=self.worker_deployment_generation or "")
@@ -192,9 +192,16 @@ class WorkerNetworkClient:
         return self._call("GET", "/v1/worker-operations/" + operation_id)
 
     @staticmethod
-    def _validate_operation_id(value: str) -> None:
+    def _validate_operation_id(value: object) -> None:
         if not isinstance(value, str) or not 1 <= len(value) <= 128 or not value[0].isalnum() or any(char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-" for char in value):
             raise ValueError("invalid operation ID")
+
+    @staticmethod
+    def _validate_reevaluation_id(value: object) -> None:
+        # The existing UDS producer permits namespace separators and leading
+        # punctuation; do not narrow its durable operation identity contract.
+        if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", value) is None:
+            raise ValueError("invalid reevaluation operation ID")
 
     @staticmethod
     def _unknown(result: WorkerNetworkResult) -> WorkerNetworkResult:
@@ -205,7 +212,10 @@ class WorkerNetworkClient:
         if generation is None:
             raise ValueError("read the signed Supervisor identity before making worker requests")
         if document is not None:
-            self._validate_operation_id(str(document.get("operation_id", "")))
+            if target == "/v1/reevaluations":
+                self._validate_reevaluation_id(document.get("operation_id"))
+            else:
+                self._validate_operation_id(document.get("operation_id"))
         body = json.dumps(document, separators=(",", ":"), sort_keys=True, allow_nan=False).encode() if document is not None else b""
         if len(body) > 16 * 1024:
             raise ValueError("request exceeds size limit")

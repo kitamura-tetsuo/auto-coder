@@ -195,6 +195,10 @@ def test_worker_lifecycle_live_uds_loss_recovery_and_stopped_observation(tmp_pat
         assert seen["nonce"] == "nonce-bridge-acceptance"
         assert seen["process_run_id"]
         assert seen["deployment_generation"] == started["worker"]["deployment_generation"]
+        escaped_nonce = client.observe_worker("nonce with & separator")
+        assert escaped_nonce.result_code == "OK"
+        assert escaped_nonce.data is not None
+        assert escaped_nonce.data["observation"]["nonce"] == "nonce with & separator"
         assert observation["binding_status"] == "UNAVAILABLE"  # Bootstrap has no staged READY.
         assert observation["runtime_binding"] is None
 
@@ -202,6 +206,20 @@ def test_worker_lifecycle_live_uds_loss_recovery_and_stopped_observation(tmp_pat
         assert fresh.data is not None and fresh.data["status"] == "RUNNING"
         assert "interpreter_path" not in json.dumps(fresh.data)
         assert "environment_path" not in json.dumps(fresh.data)
+        # The upstream reevaluation UDS producer accepts namespaced IDs; its
+        # test engine has no reevaluation sink, so forwarding yields 503 rather
+        # than a transport-level 422 for a valid existing protocol identity.
+        forwarded = client.accept_reevaluation(
+            "management:2602:1",
+            process_run_id=seen["process_run_id"],
+            deployment_generation=seen["deployment_generation"],
+            target_type="issue",
+            number=2611,
+        )
+        assert forwarded.result_code == "UNAVAILABLE"
+        assert client.read_reevaluation("management:2602:1").result_code == "UNAVAILABLE"
+        with pytest.raises(ValueError, match="reevaluation operation"):
+            client.read_reevaluation("management/invalid")
         client.worker_process_run_id = "stale-process-run"
         assert client.diagnostics("status").result_code == "CONFLICT"
         client.inspect_supervisor()

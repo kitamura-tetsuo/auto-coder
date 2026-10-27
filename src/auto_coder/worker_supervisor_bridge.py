@@ -39,8 +39,9 @@ if TYPE_CHECKING:
 
 _IDENTITY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}\Z")
 _OPERATION = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+_REEVALUATION_OPERATION = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
 _HEX_SIGNATURE = re.compile(r"[0-9a-f]{64}\Z")
-_NONCE = re.compile(r"[\x21-\x7e]{1,128}\Z")
+_NONCE = re.compile(r"[\x20-\x7e]{1,128}\Z")
 _SHA = re.compile(r"(?:[a-f0-9]{40}|[a-f0-9]{64})\Z")
 _DIAGNOSTIC_PARAMS = {
     "status": {"limit"},
@@ -301,7 +302,7 @@ class _BridgeHandler(BaseHTTPRequestHandler):
 
         if method == "POST" and path == "/v1/reevaluations" and not pairs:
             value = self._parse_json(body, {"operation_id", "repository", "channel", "expected_process_run_id", "expected_deployment_generation", "target"})
-            if value is None or not _OPERATION.fullmatch(str(value.get("operation_id", ""))):
+            if value is None or not isinstance(value["operation_id"], str) or not _REEVALUATION_OPERATION.fullmatch(value["operation_id"]):
                 return 422, "UNSUPPORTED", None
             if value["repository"] != self.server.bridge_config.repository or value["channel"] != self.server.bridge_config.channel:
                 return 409, "CONFLICT", None
@@ -313,7 +314,7 @@ class _BridgeHandler(BaseHTTPRequestHandler):
 
         if method == "GET" and path.startswith("/v1/reevaluations/") and not pairs:
             operation_id = path.removeprefix("/v1/reevaluations/")
-            if not _OPERATION.fullmatch(operation_id):
+            if not _REEVALUATION_OPERATION.fullmatch(operation_id):
                 return 422, "UNSUPPORTED", None
             return self._translate_upstream(self._worker_request("GET", f"/v1/reevaluations/{operation_id}"))
 
