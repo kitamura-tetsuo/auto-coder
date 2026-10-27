@@ -561,14 +561,14 @@ class WorkerSupervisor:
             or previous.get("runtime_id") != runtime.get("runtime_id")
             or previous.get("ready") != runtime.get("ready")
             or state.get("selected_runtime_id") != failed.get("runtime_id")
-            or state.get("prior_recovery_attempted")
+            or state.get("prior_recovery_generation") == failed.get("deployment_generation")
         ):
             return {"status": "CONFLICT"}
         if self._verify_runtime(runtime) is None:
             return {"status": "UNAVAILABLE"}
         # No SIGKILL or forced drain is permitted. Only the exact exited OS
         # lifetime may be replaced; the attempt is durable before Popen.
-        state.update(prior_recovery_attempted=True, failed_worker=failed, worker=None, stopped=True, stop_verified=False)
+        state.update(prior_recovery_attempted=True, prior_recovery_generation=failed["deployment_generation"], failed_worker=failed, worker=None, stopped=True, stop_verified=False)
         self.store.write(state)
         return self._start(state, runtime)
 
