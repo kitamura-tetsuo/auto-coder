@@ -9,6 +9,26 @@ updates:
       # Keep receiving compatible fastcore 1.x updates until ghapi 2.x is adopted.
       - dependency-name: "fastcore"
         versions: [">=2.0.0"]
+  - package-ecosystem: "uv"
+    directory: "/scripts/process_issues_watcher"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "uv"
+    directory: "/src/auto_coder/mcp_servers/test_watcher"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "uv"
+    directory: "/utils/clone-issue"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "uv"
+    directory: "/utils/github-sub-issue"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
