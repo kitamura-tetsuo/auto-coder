@@ -92,7 +92,7 @@ def test_actual_dependency_stage_rejects_a_stale_lock_without_rewriting_it(tmp_p
     )
     pyproject = context / "pyproject.toml"
     pyproject.write_text(
-        pyproject.read_text(encoding="utf-8").replace("dependencies = [", 'dependencies = [\n    "auto-coder-stale-lock-sentinel==1.0.0",', 1),
+        pyproject.read_text(encoding="utf-8").replace("dependencies = [", 'dependencies = [\n    "boltons==25.0.0",', 1),
         encoding="utf-8",
     )
     original_lock = (context / "uv.lock").read_bytes()
@@ -115,6 +115,7 @@ def test_actual_dependency_stage_rejects_a_stale_lock_without_rewriting_it(tmp_p
     assert result.returncode != 0
     output = result.stdout + result.stderr
     normalized_output = output.lower()
-    assert "auto-coder-stale-lock-sentinel" in normalized_output
-    assert "no solution found" in normalized_output or ("lockfile" in normalized_output and ("out of date" in normalized_output or "locked" in normalized_output))
+    assert "lockfile" in normalized_output
+    assert "needs to be updated" in normalized_output
+    assert "--locked was provided" in normalized_output
     assert (context / "uv.lock").read_bytes() == original_lock
