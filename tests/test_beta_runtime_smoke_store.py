@@ -176,7 +176,11 @@ def test_lost_commit_acknowledgement_requires_exact_durable_readback(tmp_path: P
     assert len(store.list_operations().records) == 1
 
 
-@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf"), "x" * (1024 * 1024)])
+@pytest.mark.parametrize(
+    "bad",
+    [float("nan"), float("inf"), float("-inf"), "x" * (1024 * 1024)],
+    ids=["nan", "inf", "neg-inf", "oversized-string"],
+)
 def test_nonfinite_or_unbounded_evidence_cannot_be_written(tmp_path: Path, bad: object) -> None:
     store, operation_id = _admitted(tmp_path)
     invalid = _snapshot()
