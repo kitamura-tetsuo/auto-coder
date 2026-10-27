@@ -89,6 +89,36 @@ def test_authenticated_beta_source_installs_real_version_and_reconciles_after_lo
     fixtures = Path(__file__).parent / "fixtures"
     host_user = f"{os.getuid()}:{os.getgid()}"
 
+    # Resolve api.github.com to an actual HTTPS server inside the private
+    # Docker network. This keeps real production GitHub transport, complete
+    # startup enumeration and daemon readiness intact without live accounts.
+    # Only this test's worker trusts the short-lived fixture certificate.
+    trust = tmp_path / "ci-trust"
+    trust.mkdir()
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            str(trust / "github.key"),
+            "-out",
+            str(trust / "github.crt"),
+            "-subj",
+            "/CN=api.github.com",
+            "-addext",
+            "subjectAltName=DNS:api.github.com",
+            "-days",
+            "1",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
     # The installed version is produced by uv --locked in a disposable
     # external-egress container, not fabricated by the manager or Supervisor.
     staged = _docker(
@@ -140,9 +170,39 @@ def test_authenticated_beta_source_installs_real_version_and_reconciles_after_lo
     subnet = random.SystemRandom().randrange(64, 239)
     network_name = "real-beta-management-" + uuid.uuid4().hex[:12]
     worker_name = "real-beta-worker-" + uuid.uuid4().hex[:12]
+    github_name = "fixture-github-" + uuid.uuid4().hex[:12]
     worker_ip = f"10.251.{subnet}.11"
     _docker("network", "create", "--driver", "bridge", "--internal", "--subnet", f"10.251.{subnet}.0/24", network_name)
     try:
+        _docker(
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            github_name,
+            "--network",
+            network_name,
+            "--network-alias",
+            "api.github.com",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges:true",
+            "--sysctl",
+            "net.ipv4.ip_unprivileged_port_start=0",
+            "--user",
+            host_user,
+            "--entrypoint",
+            "python",
+            "-v",
+            f"{trust}:/ci-trust:ro",
+            "-v",
+            f"{fixtures}:/fixtures:ro",
+            image,
+            "/fixtures/supervisor_fake_github_https.py",
+            timeout=60,
+        )
+        _wait_for(lambda: "fixture GitHub HTTPS ready" if "fixture GitHub HTTPS ready" in _docker("logs", github_name, timeout=10).stdout else None, timeout=20)
         _docker(
             "run",
             "-d",
@@ -169,6 +229,8 @@ def test_authenticated_beta_source_installs_real_version_and_reconciles_after_lo
             f"{routing}:/routing",
             "-v",
             f"{fixtures}:/fixtures:ro",
+            "-v",
+            f"{trust}:/ci-trust:ro",
             "-v",
             f"{source}:/source:ro",
             "-e",
@@ -205,6 +267,10 @@ def test_authenticated_beta_source_installs_real_version_and_reconciles_after_lo
             "AUTO_CODER_DISABLE_AUTO_UPDATE=1",
             "-e",
             "GITHUB_TOKEN=nonfunctional-ci-placeholder",
+            "-e",
+            "SSL_CERT_FILE=/ci-trust/github.crt",
+            "-e",
+            "REQUESTS_CA_BUNDLE=/ci-trust/github.crt",
             "-e",
             "HOME=/runtime/home",
             image,
@@ -326,5 +392,9 @@ def test_authenticated_beta_source_installs_real_version_and_reconciles_after_lo
         logs = _docker("logs", worker_name, timeout=10, check=False)
         if logs.stdout or logs.stderr:
             print((logs.stdout + logs.stderr)[-12000:])
+        github_logs = _docker("logs", github_name, timeout=10, check=False)
+        if github_logs.stdout or github_logs.stderr:
+            print((github_logs.stdout + github_logs.stderr)[-4000:])
         _docker("rm", "-f", worker_name, check=False)
+        _docker("rm", "-f", github_name, check=False)
         _docker("network", "rm", network_name, check=False)
