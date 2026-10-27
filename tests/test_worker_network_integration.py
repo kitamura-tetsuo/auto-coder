@@ -101,6 +101,16 @@ def test_two_channel_manager_restart_peer_isolation_and_lost_response(tmp_path: 
         assert release_seen["observation"]["process_run_id"] != beta_seen["observation"]["process_run_id"]
         assert beta_seen["observation"]["nonce"].startswith("fixture-request-")
 
+        # The consuming management adapter must preserve genuine live UDS
+        # observations without promoting bootstrap-only health into a verified
+        # staged READY/content/locked-input binding.
+        beta_runtime = manager_call(manager, "runtime-observe", "beta")
+        release_runtime = manager_call(manager, "runtime-observe", "release")
+        assert beta_runtime["binding_status"] == release_runtime["binding_status"] == "UNAVAILABLE"
+        assert beta_runtime["status"] == release_runtime["status"] == "UNAVAILABLE"
+        assert beta_runtime["observation"]["process_run_id"] == beta_seen["observation"]["process_run_id"]
+        assert release_runtime["observation"]["process_run_id"] == release_seen["observation"]["process_run_id"]
+
         assert manager_call(manager, "auth-attacks", "release")["statuses"] == [200, 401, 401, 401]
         swapped_responses = manager_call(manager, "cross-request-swap", "release")
         assert swapped_responses["upstream_statuses"] == [200, 200]

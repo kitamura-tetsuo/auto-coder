@@ -421,7 +421,8 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
         )
 
         def via_manager(*arguments: str) -> dict[str, object]:
-            command = _docker("exec", manager, "python", "/fixtures/supervisor_network_client_fixture.py", *arguments, timeout=15)
+            command = _docker("exec", manager, "python", "/fixtures/supervisor_network_client_fixture.py", *arguments, timeout=15, check=False)
+            assert command.returncode == 0, f"manager client failed for {arguments}: {command.stderr[-3000:]}"
             return json.loads(command.stdout)
 
         bootstrap = _wait_for(lambda: _inspect_worker(container), timeout=60)
@@ -467,6 +468,14 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
         assert network_observed["data"]["runtime_binding"]["lock_sha256"] == ready["lock_sha256"]
         assert network_observed["data"]["observation"]["process_run_id"] == bound["process_run_id"]
         assert network_observed["data"]["observation"]["nonce"].startswith("fixture-request-")
+        # Exercise the actual management MCP runtime's signed cross-layer
+        # readiness join, not only the prerequisite transport projection.
+        runtime_observed = via_manager("runtime-observe", "release")
+        assert runtime_observed["status"] == "OK"
+        assert runtime_observed["binding_status"] == "VERIFIED"
+        assert runtime_observed["runtime_binding"]["content_identity"] == ready["content_identity"]
+        assert runtime_observed["runtime_binding"]["lock_sha256"] == ready["lock_sha256"]
+        assert runtime_observed["observation"]["process_run_id"] == bound["process_run_id"]
 
         # Independently valid replacement READY, identical source SHA, distinct
         # runtime/content identity: it must not inherit the old live binding.
@@ -493,6 +502,7 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
             assert replaced_ready["result_code"] == "OK"
             assert replaced_ready["data"]["binding_status"] != "VERIFIED"
             assert replaced_ready["data"]["runtime_binding"] is None
+            assert via_manager("runtime-observe", "release")["status"] != "OK"
         finally:
             marker_path.write_bytes(original_marker)
             marker_path.chmod(marker_mode)
@@ -504,6 +514,9 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
             unbound_lock = _control(container, {"operation_id": "substituted-lock", "operation": "INSPECT"})
             assert unbound_lock["worker"]["binding_status"] == "UNAVAILABLE"
             assert "runtime_binding" not in unbound_lock["worker"]
+            # Matching source SHA cannot substitute for a real locked-input
+            # digest from the *installed* READY receipt.
+            assert via_manager("runtime-observe", "release")["status"] != "OK"
         finally:
             lock_path.write_bytes(original_lock)
         _wait_for(lambda: worker if (worker := _inspect_worker(container)) and worker.get("binding_status") == "VERIFIED" else None)
@@ -518,6 +531,9 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
         assert successor["runtime_binding"]["content_identity"] == binding["content_identity"]
         assert successor["process_run_id"] != bound["process_run_id"]
         assert successor["deployment_generation"] != bound["deployment_generation"]
+        successor_observed = via_manager("runtime-observe", "release")
+        assert successor_observed["status"] == "OK"
+        assert successor_observed["observation"]["process_run_id"] == successor["process_run_id"]
         stale_network = via_manager("stale-observation", "release", str(bound["process_run_id"]), str(bound["deployment_generation"]))
         assert stale_network["result_code"] == "CONFLICT"
         assert _control(container, {"operation_id": "stale-stop", "operation": "REQUEST_GRACEFUL_STOP", "expected_process_run_id": str(bound["process_run_id"]), "expected_generation": str(bound["deployment_generation"])})["status"] == "CONFLICT"

@@ -6,14 +6,21 @@ import http.client
 import json
 import socket
 import sys
+import tempfile
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
+from auto_coder.management.identity import FirebaseOperatorIdentity, IdentityConfig
+from auto_coder.management.mcp_runtime_tools import ManagementRuntime, ResolvedWorker
+from auto_coder.management.oauth_config import ManagementSettings, OAuthClient, OAuthSettings
+from auto_coder.management.oauth_grants import OAuthGrantService
 from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkClient
+from auto_coder.operating_policy import ActionClass
 from auto_coder.worker_network_protocol import request_mac
 
 
@@ -164,8 +171,32 @@ def _swapped_observation_responses(client: WorkerNetworkClient) -> dict[str, obj
     }
 
 
+def _actual_runtime_observation(channel: str) -> dict[str, object]:
+    """Exercise the manager's real nonce/READY join across the private bridge."""
+
+    with tempfile.TemporaryDirectory(prefix="supervisor-management-") as temp:
+        root = Path(temp)
+        config = WorkerEndpointConfig.environment(channel)
+        policy = root / "operator-policy.yaml"
+        policy.write_text(
+            f"profile: full\ntargets:\n  {channel}-worker:\n    channel: {channel}\n    repositories: [{json.dumps(config.repository)}]\n",
+            encoding="utf-8",
+        )
+        oauth = OAuthSettings(root / "oauth.sqlite3", "http://127.0.0.1:17881", "fixture-project", (OAuthClient("fixture-client", ("http://127.0.0.1:17882/callback",)),))
+        settings = ManagementSettings(root, oauth, local_development=True, operating_policy_path=policy)
+        identity = FirebaseOperatorIdentity(IdentityConfig("fixture-project", root / "allowed_uids.json"))
+        clients = {channel: WorkerNetworkClient(config)}
+        runtime = ManagementRuntime(settings, OAuthGrantService(oauth, identity), clients)
+        target = runtime._resolve(channel + "-worker", ActionClass.INSPECT)
+        assert isinstance(target, ResolvedWorker)
+        return runtime._observe(target)
+
+
 def main() -> None:
     command, channel = sys.argv[1:3]
+    if command == "runtime-observe":
+        print(json.dumps(_actual_runtime_observation(channel), sort_keys=True))
+        return
     config = WorkerEndpointConfig.environment(channel)
     if command == "swapped-target":
         peer = WorkerEndpointConfig.environment("release" if channel == "beta" else "beta")

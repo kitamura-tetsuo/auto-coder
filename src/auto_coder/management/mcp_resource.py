@@ -15,13 +15,23 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import AnyHttpUrl
 from starlette.responses import JSONResponse, Response
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .action_scopes import READ_SCOPE, validate_scope_set
 from .oauth_config import ManagementSettings
 from .oauth_grants import AuthenticatedGrant, Denied, InvalidScope, OAuthError, OAuthGrantService, Unavailable
 
 _grant: ContextVar[AuthenticatedGrant | None] = ContextVar("management_authenticated_grant", default=None)
+
+
+def current_management_grant() -> AuthenticatedGrant:
+    """Read the actual current bearer admission, never caller-supplied identity."""
+
+    grant = _grant.get()
+    access = get_access_token()
+    if grant is None or access is None or access.client_id != grant.client_id or access.resource != grant.resource:
+        raise PermissionError("authenticated management context is unavailable")
+    return grant
 
 
 class GrantTokenVerifier(TokenVerifier):
@@ -125,6 +135,15 @@ class ResourceAdmission:
         if scope["type"] != "http" or scope.get("path") != "/mcp":
             await self.app(scope, receive, send)
             return
+        original_send = send
+
+        async def no_store_send(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = [(key, value) for key, value in message.get("headers", []) if key.lower() != b"cache-control"]
+                message["headers"] = [*headers, (b"cache-control", b"no-store")]
+            await original_send(message)
+
+        send = no_store_send
         headers = {key.lower(): value for key, value in scope.get("headers", [])}
         if scope.get("method") == "OPTIONS":
             origin = headers.get(b"origin", b"").decode()
