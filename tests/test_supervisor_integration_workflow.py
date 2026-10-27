@@ -21,6 +21,12 @@ def test_supervisor_integration_job_runs_independently_on_pull_requests() -> Non
     steps = {step["name"]: step for step in job["steps"]}
     assert steps["Install uv"]["with"]["version"] == "0.7.22"
     assert "uv sync --locked --dev --extra test" in steps["Install locked test dependencies"]["run"]
+    management = steps["Verify authenticated management self-update"]
+    assert management["timeout-minutes"] == 25
+    assert "-m supervisor_integration" in management["run"]
+    assert "tests/test_management_self_update_integration.py" in management["run"]
+    assert "tests/test_management_self_update_failures.py" in management["run"]
+    assert "--junitxml=supervisor-integration-logs/management-self-update.xml" in management["run"]
     build = steps["Build the checked-out production image"]["run"]
     assert "scripts/prepare_opencode_image.py" in build
     assert "-o timeout=60" in steps["Test real worker processes and management bridge"]["run"]

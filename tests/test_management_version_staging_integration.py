@@ -4,6 +4,7 @@ import concurrent.futures
 import errno
 import hashlib
 import json
+import os
 import py_compile
 import shutil
 import subprocess
@@ -13,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from auto_coder.management.version_staging import ManagementPrepareIntent, ManagementRuntimeConfig, ManagementVersionStager
+from auto_coder.management.version_staging import ManagementPrepareIntent, ManagementRuntimeConfig, ManagementVersionStager, _ManagementEnvironmentPreparer
 from auto_coder.tested_source_refs import SCHEMA_VERSION, TEST_PROFILE, WORKFLOW_PATH
 from auto_coder.tested_source_refs import TestedSourceError as SourceError
 from auto_coder.tested_source_refs import TestedSourceReadback as SourceReadback
@@ -23,6 +24,27 @@ from auto_coder.worker_versions import PreparationFailure, WorkerVersionError, W
 
 def _run(args: list[str], cwd: Path | None = None) -> str:
     return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+
+def test_real_frozen_sync_accepts_locked_outer_ci_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands: None) -> None:
+    uv = shutil.which("uv") or pytest.fail("uv required")
+    project = tmp_path / "offline-project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text("[project]\nname='management-frozen-environment'\nversion='1.0.0'\nrequires-python='>=3.12'\ndependencies=[]\n", encoding="utf-8")
+    fixture_environment = {key: value for key, value in os.environ.items() if key != "UV_LOCKED"}
+    subprocess.run([uv, "lock", "--offline", "--python", sys.executable, "--project", str(project)], env=fixture_environment, check=True, capture_output=True, text=True, timeout=30)
+    original_lock = (project / "uv.lock").read_bytes()
+
+    # uv 0.7.22 rejects inherited --locked together with the installer's explicit
+    # --frozen. Exercise its real command parser and installation, not an env
+    # assertion or a substituted installer result.
+    monkeypatch.setenv("UV_LOCKED", "1")
+    environment = _ManagementEnvironmentPreparer._safe_environment()
+    subprocess.run([uv, "sync", "--frozen", "--offline", "--no-editable", "--python", sys.executable, "--project", str(project)], env=environment, check=True, capture_output=True, text=True, timeout=30)
+
+    interpreter = project / ".venv" / "bin" / "python"
+    assert Path(_run([str(interpreter), "-I", "-c", "import sys; print(sys.prefix)"])).resolve() == interpreter.parent.parent.resolve()
+    assert (project / "uv.lock").read_bytes() == original_lock
 
 
 class Authority:

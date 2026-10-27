@@ -65,9 +65,16 @@ class ManagementTool:
     handler: Callable[..., Awaitable[dict[str, object]]]
     required_scopes: tuple[str, ...]
     annotations: ToolAnnotations
+    allowed_arguments: tuple[str, ...] | None = None
 
 
-def create_mcp_resource(settings: ManagementSettings, grants: OAuthGrantService, tools: tuple[ManagementTool, ...] = ()) -> tuple[FastMCP, ASGIApp]:
+def create_mcp_resource(
+    settings: ManagementSettings,
+    grants: OAuthGrantService,
+    tools: tuple[ManagementTool, ...] = (),
+    *,
+    identity_observer: Callable[[AuthenticatedGrant], Awaitable[None]] | None = None,
+) -> tuple[FastMCP, ASGIApp]:
     verifier = GrantTokenVerifier(settings, grants)
     public_authority = urlsplit(settings.oauth.canonical_issuer).netloc
     bind_authority = f"{settings.bind_host}:{settings.port}"
@@ -102,6 +109,8 @@ def create_mcp_resource(settings: ManagementSettings, grants: OAuthGrantService,
         access = get_access_token()
         if grant is None or access is None or access.client_id != grant.client_id:
             raise PermissionError("authenticated request context is unavailable")
+        if identity_observer is not None:
+            await identity_observer(grant)
         return asdict(WhoAmI(grant.principal.project_id, grant.principal.uid, grant.client_id, grant.scopes, grant.resource))
 
     required_by_name: dict[str, tuple[str, ...]] = {"auto_coder_whoami": (READ_SCOPE,)}
@@ -111,14 +120,16 @@ def create_mcp_resource(settings: ManagementSettings, grants: OAuthGrantService,
         required_by_name[tool.name] = validate_scope_set(tool.required_scopes)
         server.tool(name=tool.name, annotations=tool.annotations, structured_output=True)(tool.handler)
 
-    return server, ResourceAdmission(server.streamable_http_app(), settings, grants, required_by_name)
+    arguments_by_name = {tool.name: tool.allowed_arguments for tool in tools if tool.allowed_arguments is not None}
+    return server, ResourceAdmission(server.streamable_http_app(), settings, grants, required_by_name, arguments_by_name)
 
 
 class ResourceAdmission:
     """Authenticate every protocol request before the SDK dispatcher runs."""
 
-    def __init__(self, app: ASGIApp, settings: ManagementSettings, grants: OAuthGrantService, required_by_name: dict[str, tuple[str, ...]]) -> None:
+    def __init__(self, app: ASGIApp, settings: ManagementSettings, grants: OAuthGrantService, required_by_name: dict[str, tuple[str, ...]], arguments_by_name: dict[str, tuple[str, ...]] | None = None) -> None:
         self.app, self.settings, self.grants, self.required_by_name = app, settings, grants, required_by_name
+        self.arguments_by_name = arguments_by_name or {}
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http" and scope.get("path") == "/.well-known/oauth-protected-resource/mcp":
@@ -196,6 +207,11 @@ class ResourceAdmission:
                         await self._refusal(scope, selected_receive, send, 403, "insufficient_scope", ())
                         return
                     required = self.required_by_name[name]
+                    allowed = self.arguments_by_name.get(name)
+                    arguments = params.get("arguments", {}) if isinstance(params, dict) else None
+                    if allowed is not None and (not isinstance(arguments, dict) or set(arguments) - set(allowed)):
+                        await self._refusal(scope, selected_receive, send, 400, "invalid_request")
+                        return
             grant = self.grants.authenticate_access(parts[1], self.settings.oauth.resource, required)
             logger.info("Management MCP authentication outcome: authorized")
             context_token = _grant.set(grant)

@@ -84,6 +84,12 @@ class ManagementSettings:
     allowed_browser_origins: tuple[str, ...] = ()
     operating_policy_path: Path | None = None
     operation_state_root: Path | None = None
+    bootstrap_config_path: Path | None = None
+    self_update_source_repository: Path | None = None
+    self_update_python_executable: Path | None = None
+    self_update_uv_executable: Path | None = None
+    self_update_uv_version: str = ""
+    config_path: Path | None = None
     source_repository: str | None = None
     source_evidence_token_file: Path | None = None
 
@@ -102,6 +108,12 @@ class ManagementSettings:
             raise ValueError("operating policy must use an absolute operator-owned path")
         if self.operation_state_root is not None and not self.operation_state_root.is_absolute():
             raise ValueError("operation state root must be absolute")
+        for name in ("bootstrap_config_path", "self_update_source_repository", "self_update_python_executable", "self_update_uv_executable", "config_path"):
+            path = getattr(self, name)
+            if path is not None and not path.is_absolute():
+                raise ValueError(f"{name} must be an absolute operator-owned path")
+        if not isinstance(self.self_update_uv_version, str) or len(self.self_update_uv_version) > 64 or "\x00" in self.self_update_uv_version:
+            raise ValueError("self_update_uv_version must be a bounded string")
         if self.source_repository is not None and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", self.source_repository) is None:
             raise ValueError("source repository must be an exact GitHub owner/name")
         if self.source_evidence_token_file is not None and not self.source_evidence_token_file.is_absolute():
@@ -174,14 +186,20 @@ def load_management_settings(path: Path) -> ManagementSettings:
         return Path(value)
 
     return ManagementSettings(
-        state_root,
-        oauth,
-        bind_host,
-        port,
-        local_development,
-        tuple(browser_origins),
-        optional_path("operating_policy_path"),
-        optional_path("operation_state_root"),
-        raw.get("source_repository") if raw.get("source_repository") is None or isinstance(raw.get("source_repository"), str) else required_string("source_repository"),
-        optional_path("source_evidence_token_file"),
+        state_root=state_root,
+        oauth=oauth,
+        bind_host=bind_host,
+        port=port,
+        local_development=local_development,
+        allowed_browser_origins=tuple(browser_origins),
+        operating_policy_path=optional_path("operating_policy_path"),
+        operation_state_root=optional_path("operation_state_root"),
+        bootstrap_config_path=optional_path("bootstrap_config_path"),
+        self_update_source_repository=optional_path("self_update_source_repository"),
+        self_update_python_executable=optional_path("self_update_python_executable"),
+        self_update_uv_executable=optional_path("self_update_uv_executable"),
+        self_update_uv_version=raw.get("self_update_uv_version", ""),
+        config_path=path.resolve(),
+        source_repository=raw.get("source_repository") if raw.get("source_repository") is None or isinstance(raw.get("source_repository"), str) else required_string("source_repository"),
+        source_evidence_token_file=optional_path("source_evidence_token_file"),
     )
