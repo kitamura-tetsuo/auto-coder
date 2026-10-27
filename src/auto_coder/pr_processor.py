@@ -2459,7 +2459,13 @@ def _include_pending_local_repair_threads(
     settled = {item.blocker_id for item in generation.settlements}
     pending = set(generation.covered_blocker_ids) - settled
     threads = github_client.get_pr_review_threads_strict(repo_name, pr_number)
-    authenticated_controller_login = github_client.get_authenticated_user_login()
+    try:
+        authenticated_controller_login = github_client.get_authenticated_user_login()
+        if not isinstance(authenticated_controller_login, str) or not authenticated_controller_login.strip():
+            authenticated_controller_login = ""
+    except Exception as exc:
+        logger.warning(f"Could not authenticate local-repair housekeeping ownership for PR #{pr_number}: {exc}")
+        authenticated_controller_login = ""
     existing = {thread.thread_id: thread for thread in claimed}
     selected_existing = []
     retained = []
