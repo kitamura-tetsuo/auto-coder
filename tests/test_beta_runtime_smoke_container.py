@@ -165,7 +165,14 @@ def _configure_lifecycle(app, reader: BetaEvidenceReader) -> None:
 
 
 def _accepted(journal: ManagementOperationStore, client: WorkerNetworkClient, deployed: str, source: str, key: str):
-    previous = journal.get(deployed).record
+    def settled_deployment():
+        record = journal.get(deployed).record
+        snapshot = journal.lifecycle_snapshot(deployed)
+        assert record is not None and snapshot is not None
+        return record if record.phase is OperationPhase.SUCCEEDED and snapshot[1].get("stage") == "SUCCEEDED" else None
+
+    # Lifecycle completion and operation settlement use separate transactions.
+    previous = _wait_for(settled_deployment, timeout=20)
     assert previous is not None and previous.phase is OperationPhase.SUCCEEDED
     observed = client.inspect_supervisor()
     assert observed.result_code == "OK" and observed.data is not None
