@@ -42,6 +42,7 @@ SCHEMA_VERSION = "2"
 ACTIVE_PHASES = {OperationPhase.ACCEPTED, OperationPhase.RUNNING, OperationPhase.RECONCILING, OperationPhase.NEEDS_ATTENTION}
 TERMINAL_PHASES = {OperationPhase.SUCCEEDED, OperationPhase.ROLLED_BACK, OperationPhase.FAILED}
 MAX_QUERY_LIMIT = 200
+MAX_SMOKE_SNAPSHOT_BYTES = 1024 * 1024
 
 
 class ManagementOperationStore:
@@ -86,9 +87,119 @@ class ManagementOperationStore:
           operation_id TEXT PRIMARY KEY, revision INTEGER NOT NULL,
           snapshot_json TEXT NOT NULL, updated_at REAL NOT NULL,
           FOREIGN KEY(operation_id) REFERENCES operations(operation_id));
+        CREATE TABLE IF NOT EXISTS beta_runtime_smoke (
+          operation_id TEXT PRIMARY KEY, revision INTEGER NOT NULL,
+          snapshot_json TEXT NOT NULL, updated_at REAL NOT NULL,
+          FOREIGN KEY(operation_id) REFERENCES operations(operation_id));
         """
         )
         return connection
+
+    def smoke_snapshot(self, operation_id: str) -> tuple[int, dict[str, object]] | None:
+        """Read the exact acceptance operation's local smoke evidence.
+
+        Storage and schema errors propagate: an unavailable journal must never
+        look like an uncaptured operation or a completed durable result.
+        """
+        connection = self._connect()
+        try:
+            row = connection.execute("SELECT revision,snapshot_json FROM beta_runtime_smoke WHERE operation_id=?", (operation_id,)).fetchone()
+            if row is None:
+                return None
+            if type(row["revision"]) is not int or row["revision"] < 0:
+                raise ValueError("invalid beta runtime smoke revision")
+            return row["revision"], self._decode_smoke(row["snapshot_json"])
+        finally:
+            connection.close()
+
+    def smoke_save(self, operation_id: str, expected_revision: int, snapshot: dict[str, object]) -> bool:
+        """CAS-persist local evidence without admitting or settling an operation.
+
+        Original request, profile, window and captured identities cannot change.
+        Samples are append-only and a completed result freezes the entire row.
+        Exact terminal replay is harmless even after a lost commit response.
+        """
+        if type(expected_revision) is not int or expected_revision < -1:
+            raise ValueError("invalid beta runtime smoke expected revision")
+        encoded = self._encode_smoke(snapshot)
+        proposed = self._decode_smoke(encoded)
+        connection = self._connect()
+        try:
+            self._before_smoke_transaction()
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute("SELECT 1 FROM operations WHERE operation_id=?", (operation_id,)).fetchone() is None:
+                connection.rollback()
+                return False
+            current = connection.execute("SELECT revision,snapshot_json FROM beta_runtime_smoke WHERE operation_id=?", (operation_id,)).fetchone()
+            if current is None:
+                if expected_revision != -1:
+                    connection.rollback()
+                    return False
+                connection.execute("INSERT INTO beta_runtime_smoke VALUES (?,?,?,?)", (operation_id, 0, encoded, time.time()))
+            else:
+                previous = self._decode_smoke(current["snapshot_json"])
+                if previous["result"] is not None:
+                    connection.rollback()
+                    return encoded == self._encode_smoke(previous)
+                if current["revision"] != expected_revision or not self._smoke_extension(previous, proposed):
+                    connection.rollback()
+                    return False
+                connection.execute("UPDATE beta_runtime_smoke SET revision=?,snapshot_json=?,updated_at=? WHERE operation_id=?", (expected_revision + 1, encoded, time.time(), operation_id))
+            connection.commit()
+            self._after_smoke_commit()
+            return True
+        finally:
+            connection.close()
+
+    def _before_smoke_transaction(self) -> None:
+        """Test seam before independent connections contend for the real write."""
+
+    def _after_smoke_commit(self) -> None:
+        """Delivery seam after durable write and before caller acknowledgement."""
+
+    @staticmethod
+    def _encode_smoke(snapshot: dict[str, object]) -> str:
+        if (
+            type(snapshot.get("schema_version")) is not int
+            or snapshot["schema_version"] != 1
+            or not {"binding", "profile", "window", "capture", "samples", "result"} <= snapshot.keys()
+            or not isinstance(snapshot.get("binding"), dict)
+            or any(snapshot.get(key) is not None and not isinstance(snapshot[key], dict) for key in ("profile", "window", "capture", "result"))
+            or not isinstance(snapshot.get("samples"), list)
+        ):
+            raise ValueError("invalid beta runtime smoke snapshot")
+        samples = snapshot["samples"]
+        assert isinstance(samples, list)
+        if any(not isinstance(sample, dict) for sample in samples):
+            raise ValueError("invalid beta runtime smoke samples")
+        encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        if len(encoded.encode("utf-8")) > MAX_SMOKE_SNAPSHOT_BYTES:
+            raise ValueError("unbounded beta runtime smoke evidence")
+        return encoded
+
+    @classmethod
+    def _decode_smoke(cls, encoded: str) -> dict[str, object]:
+        if not isinstance(encoded, str) or len(encoded.encode("utf-8")) > MAX_SMOKE_SNAPSHOT_BYTES:
+            raise ValueError("invalid stored beta runtime smoke evidence")
+        value = json.loads(encoded)
+        if not isinstance(value, dict):
+            raise ValueError("invalid stored beta runtime smoke evidence")
+        # Re-encoding validates the schema and rejects non-finite JSON numbers.
+        cls._encode_smoke(value)
+        return value
+
+    @staticmethod
+    def _smoke_extension(previous: dict[str, object], proposed: dict[str, object]) -> bool:
+        def canonical(value: object) -> str:
+            return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+        if any(canonical(previous[key]) != canonical(proposed[key]) for key in ("binding", "profile", "window")):
+            return False
+        if previous["capture"] is not None and canonical(previous["capture"]) != canonical(proposed["capture"]):
+            return False
+        old_samples, new_samples = previous["samples"], proposed["samples"]
+        assert isinstance(old_samples, list) and isinstance(new_samples, list)
+        return len(new_samples) >= len(old_samples) and canonical(new_samples[: len(old_samples)]) == canonical(old_samples)
 
     def lifecycle_snapshot(self, operation_id: str) -> tuple[int, dict[str, object]] | None:
         """Read the original source evidence and each pre-effect fence atomically."""
