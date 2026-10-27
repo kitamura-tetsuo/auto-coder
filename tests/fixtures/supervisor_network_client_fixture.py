@@ -176,15 +176,16 @@ def _actual_runtime_observation(channel: str) -> dict[str, object]:
 
     with tempfile.TemporaryDirectory(prefix="supervisor-management-") as temp:
         root = Path(temp)
+        config = WorkerEndpointConfig.environment(channel)
         policy = root / "operator-policy.yaml"
         policy.write_text(
-            "profile: beta\ntargets:\n  beta-worker:\n    channel: beta\n    repositories: [fixture/beta]\n  release-worker:\n    channel: release\n    repositories: [fixture/release]\n",
+            f"profile: full\ntargets:\n  {channel}-worker:\n    channel: {channel}\n    repositories: [{json.dumps(config.repository)}]\n",
             encoding="utf-8",
         )
         oauth = OAuthSettings(root / "oauth.sqlite3", "http://127.0.0.1:17881", "fixture-project", (OAuthClient("fixture-client", ("http://127.0.0.1:17882/callback",)),))
         settings = ManagementSettings(root, oauth, local_development=True, operating_policy_path=policy)
         identity = FirebaseOperatorIdentity(IdentityConfig("fixture-project", root / "allowed_uids.json"))
-        clients = {channel: WorkerNetworkClient(WorkerEndpointConfig.environment(channel))}
+        clients = {channel: WorkerNetworkClient(config)}
         runtime = ManagementRuntime(settings, OAuthGrantService(oauth, identity), clients)
         target = runtime._resolve(channel + "-worker", ActionClass.INSPECT)
         assert isinstance(target, ResolvedWorker)

@@ -421,7 +421,8 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
         )
 
         def via_manager(*arguments: str) -> dict[str, object]:
-            command = _docker("exec", manager, "python", "/fixtures/supervisor_network_client_fixture.py", *arguments, timeout=15)
+            command = _docker("exec", manager, "python", "/fixtures/supervisor_network_client_fixture.py", *arguments, timeout=15, check=False)
+            assert command.returncode == 0, f"manager client failed for {arguments}: {command.stderr[-3000:]}"
             return json.loads(command.stdout)
 
         bootstrap = _wait_for(lambda: _inspect_worker(container), timeout=60)
