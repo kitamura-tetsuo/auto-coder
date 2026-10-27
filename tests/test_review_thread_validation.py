@@ -84,6 +84,24 @@ def _closure_client(claimed=None):
 
 
 class TestClassifyReviewThreads:
+    def test_controller_two_tier_marker_lookalike_remains_substantive(self):
+        thread = _thread(
+            "t1",
+            False,
+            [
+                _comment(CODEX_LOGIN, "finding", database_id=1),
+                _comment(
+                    "auto-coder[bot]",
+                    "<!-- auto-coder-two-tier-closure:v1: malformed -->\nCounterexample A",
+                    database_id=2,
+                ),
+            ],
+        )
+        before = substantive_discussion_digest(thread, "auto-coder[bot]")
+        thread.comments[1].body = "<!-- auto-coder-two-tier-closure:v1: malformed -->\nCounterexample B"
+
+        assert substantive_discussion_digest(thread, "auto-coder[bot]") != before
+
     def test_resolved_thread_is_ignored(self):
         threads = [_thread("t1", True, [_comment(CODEX_LOGIN, "finding")])]
         result = classify_review_threads(threads, ELIGIBLE_AUTHOR_IDS)
@@ -351,8 +369,25 @@ class TestResolveAddressedReviewThreads:
             discussion_evidence_digest=substantive_discussion_digest(remote_thread, "auto-coder[bot]"),
         )
 
-    def _disposition(self, thread_id="t1", status="ADDRESSED"):
-        return ReviewThreadDisposition(thread_id=thread_id, status=status, rationale="Verified the fix directly", evidence="Reproduced the original failing path; now passes")
+    def _disposition(
+        self,
+        thread_id="t1",
+        status="ADDRESSED",
+        root_comment_database_id=42,
+        discussion_evidence_digest="",
+    ):
+        validated_thread = _thread(
+            thread_id,
+            False,
+            [_comment(CODEX_LOGIN, "finding", database_id=root_comment_database_id)],
+        )
+        return ReviewThreadDisposition(
+            thread_id=thread_id,
+            status=status,
+            rationale="Verified the fix directly",
+            evidence="Reproduced the original failing path; now passes",
+            discussion_evidence_digest=discussion_evidence_digest or substantive_discussion_digest(validated_thread, "auto-coder[bot]"),
+        )
 
     def test_addressed_thread_is_resolved(self):
         client = _closure_client()
@@ -393,7 +428,7 @@ class TestResolveAddressedReviewThreads:
             1,
             "sha1",
             [claimed],
-            [self._disposition()],
+            [self._disposition(discussion_evidence_digest=claimed.discussion_evidence_digest)],
         )
 
         assert report == []
@@ -558,7 +593,7 @@ class TestResolveAddressedReviewThreads:
             1,
             "sha1",
             claimed,
-            [self._disposition("t1"), self._disposition("t2")],
+            [self._disposition("t1", root_comment_database_id=1), self._disposition("t2", root_comment_database_id=2)],
         )
 
         assert report.resolved_thread_ids == ("t1",)
@@ -576,7 +611,7 @@ class TestResolveAddressedReviewThreads:
         client = _closure_client([self._claimed("t1", 1), self._claimed("t2", 2)])
         client.get_pull_request_head_sha_strict.return_value = "sha1"
         claimed = [self._claimed("t1", 1), self._claimed("t2", 2)]
-        dispositions = [self._disposition("t1"), self._disposition("t2")]
+        dispositions = [self._disposition("t1", root_comment_database_id=1), self._disposition("t2", root_comment_database_id=2)]
 
         resolved = resolve_addressed_review_threads(client, "owner/repo", 1, "sha1", claimed, dispositions)
 
@@ -907,7 +942,7 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         first_client = _closure_client(claimed)
         first_client.get_pull_request_head_sha_strict.side_effect = ["sha1", "sha1", "sha2"]
         first_client.update_review_thread_comment.side_effect = RuntimeError("receipt cleanup failed")
-        dispositions = [ReviewThreadDisposition(thread_id="thread-1", status="ADDRESSED", rationale="fixed", evidence="verified")]
+        dispositions = [ReviewThreadDisposition(thread_id="thread-1", status="ADDRESSED", rationale="fixed", evidence="verified", discussion_evidence_digest=claimed[0].discussion_evidence_digest)]
 
         with patch.object(registry, "record_marker_cleanup", side_effect=OSError("disk full")):
             resolved = resolve_addressed_review_threads(
@@ -1032,7 +1067,7 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         first_client = _closure_client(claimed)
         first_client.get_pull_request_head_sha_strict.side_effect = ["sha1", "sha1", "sha2"]
         first_client.update_review_thread_comment.side_effect = RuntimeError("receipt cleanup failed after confirmed rollback")
-        dispositions = [ReviewThreadDisposition(thread_id="thread-1", status="ADDRESSED", rationale="fixed", evidence="verified")]
+        dispositions = [ReviewThreadDisposition(thread_id="thread-1", status="ADDRESSED", rationale="fixed", evidence="verified", discussion_evidence_digest=claimed[0].discussion_evidence_digest)]
 
         resolved = resolve_addressed_review_threads(
             first_client,

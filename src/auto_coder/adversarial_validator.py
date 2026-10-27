@@ -459,6 +459,9 @@ class ReviewThreadDisposition:
     evidence: str = ""
     blocker_id: Optional[str] = None
     concern_ids: tuple[str, ...] = ()
+    # Controller-bound identity of the complete discussion supplied with the
+    # validator request.  This is deliberately not model-authored.
+    discussion_evidence_digest: str = ""
 
 
 VALID_REVIEW_THREAD_DISPOSITION_STATUSES = {"ADDRESSED", "STILL_VALID", "INCONCLUSIVE"}
@@ -4537,6 +4540,15 @@ def run_adversarial_validation(
         result.reviewer_session_registry = registry
         if not defer_session_persistence:
             registry.save(checkpoint)
+
+    discussion_digests = {thread.thread_id: thread.discussion_evidence_digest for thread in claimed_review_threads}
+    result.thread_dispositions = [
+        replace(
+            disposition,
+            discussion_evidence_digest=discussion_digests.get(disposition.thread_id, ""),
+        )
+        for disposition in result.thread_dispositions
+    ]
 
     get_trace_logger().log(
         "Adversarial Validation Result",

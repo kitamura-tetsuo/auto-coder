@@ -785,13 +785,6 @@ def substantive_discussion_digest(thread: ReviewThread, authenticated_controller
     for comment in thread.comments:
         if receipt_comment_id is not None and comment.database_id == receipt_comment_id:
             continue
-        # The pre-existing two-tier closure transport publishes this
-        # controller-owned status before its resolve mutation. It is protocol
-        # output from the accepted decision, not reviewer discussion input.
-        # Author authentication is essential: copied marker text remains
-        # substantive discussion.
-        if authenticated_controller_login and is_same_github_login(comment.author_login, authenticated_controller_login) and comment.body.lstrip().startswith("<!-- auto-coder-two-tier-closure:v1:"):
-            continue
         if comment.database_id is None or (comment.author_id is None and not comment.author_login.strip()):
             raise ValueError("Review-thread discussion identity is incomplete")
         comments.append(
@@ -957,6 +950,14 @@ def resolve_addressed_review_threads(
 
     evaluations = adjudicate_claimed_thread_closures(candidates, dispositions, snapshot=snapshot)
 
+    disposition_digests = {disposition.thread_id: disposition.discussion_evidence_digest for disposition in dispositions}
+    closure_claims = tuple(
+        replace(
+            thread,
+            discussion_evidence_digest=disposition_digests.get(thread.thread_id, ""),
+        )
+        for thread in claimed
+    )
     addressed_thread_ids = {disposition.thread_id for disposition in dispositions if disposition.status == "ADDRESSED"}
     if addressed_thread_ids:
         exec_result = execute_durable_thread_closures(
@@ -969,7 +970,7 @@ def resolve_addressed_review_threads(
             api_origin=api_origin,
             stale_registry=stale_registry,
             expected_ledger_revision=expected_ledger_revision,
-            claimed_threads=claimed,
+            claimed_threads=closure_claims,
         )
     else:
         exec_result = ClosureExecutionResult(
@@ -982,7 +983,8 @@ def resolve_addressed_review_threads(
         owned = tuple(e for e in evaluations if e.thread_id == thread.thread_id)
         decisions = tuple(dict.fromkeys(e.effective_status for e in owned))
         decision = "MISSING" if thread.thread_id not in returned_disposition_ids else decisions[0] if len(decisions) == 1 else "INCONCLUSIVE"
-        accepted = bool(owned) and all(e.is_accepted for e in owned)
+        accepted_ids = {e.thread_id for e in exec_result.accepted_closures}
+        accepted = bool(owned) and all(e.is_accepted for e in owned) and thread.thread_id in accepted_ids
         completed = thread.thread_id in exec_result.resolved_thread_ids
         thread_errors = [error for error in exec_result.errors if error.startswith(f"{thread.thread_id}|")]
         phase = "complete" if completed else "disposition"
