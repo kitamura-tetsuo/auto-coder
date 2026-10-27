@@ -229,6 +229,8 @@ def test_authenticated_beta_deploy_replays_exact_evidence_and_only_stops_after_r
         if intervention == "selection_changed":
             assert completed["status"] == "SUPERSEDED"
             assert [name for name, _id in bridge.actions] == ["PREPARE"]
+            snapshot = runtime.journal.lifecycle_snapshot(operation_id)
+            assert snapshot is not None and snapshot[1]["revalidation_observation"]["matched"] is False
             return
         if intervention == "source_unavailable":
             assert completed["status"] == "NEEDS_ATTENTION"
@@ -251,6 +253,8 @@ def test_authenticated_beta_deploy_replays_exact_evidence_and_only_stops_after_r
         data = app.state.management_runtime.journal.lifecycle_snapshot(operation_id)
         assert data is not None
         assert json.loads(data[1]["accepted_evidence"])["selection_operation_id"] == "r77"
+        assert data[1]["revalidation_observation"]["matched"] is True
+        assert data[1]["original_deadline"] > data[1]["accepted_at"]
 
 
 def test_superseded_same_sha_selection_refuses_unsent_drain(real_boundary, tmp_path: Path, monkeypatch) -> None:
@@ -265,7 +269,8 @@ def test_superseded_same_sha_selection_refuses_unsent_drain(real_boundary, tmp_p
     assert reader.read(SHA_A).source_sha == SHA_A
 
 
-def test_authenticated_real_bridge_held_drain_lost_reply_and_management_reconstruction(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None) -> None:
+@pytest.mark.parametrize("expire_drain", (False, True))
+def test_authenticated_real_bridge_held_drain_lost_reply_and_management_reconstruction(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None, expire_drain: bool) -> None:
     """Exercise real PID/UDS/HTTP signals from OAuth through a persisted MCP operation."""
     base, _base_grants, identity, signed, _uids, state = real_boundary
     origin = base.oauth.canonical_issuer
@@ -320,6 +325,16 @@ def test_authenticated_real_bridge_held_drain_lost_reply_and_management_reconstr
                 raise AssertionError("real invocation never entered cooperative drain")
             assert supervisor.child is not None and supervisor.child.poll() is None
             assert _call(client, bearer, "auto_coder_operation_get", {"target_id": "beta-worker", "operation_id": operation_id})["status"] == "DRAINING"
+            if expire_drain:
+                journal = first_app.state.management_runtime.journal
+                persisted = journal.lifecycle_snapshot(operation_id)
+                assert persisted is not None
+                revision, snapshot = persisted
+                snapshot["deadline"] = time.time() - 1
+                assert journal.lifecycle_save(operation_id, revision, snapshot)
+                _drive(first_app, operation_id, 1)
+                assert _call(client, bearer, "auto_coder_operation_get", {"target_id": "beta-worker", "operation_id": operation_id})["status"] == "NEEDS_ATTENTION"
+                assert supervisor.child.poll() is None
 
         # Rebuild the management service, but retain its original journal and
         # actual running Supervisor; the lost POST must never be dispatched twice.
@@ -329,12 +344,12 @@ def test_authenticated_real_bridge_held_drain_lost_reply_and_management_reconstr
             for _ in range(250):
                 _drive(next_app, operation_id, 1)
                 observed = next_app.state.management_runtime.journal.lifecycle_snapshot(operation_id)
-                if observed and observed[1]["stage"] == "SUCCEEDED":
+                if observed and ((not expire_drain and observed[1]["stage"] == "SUCCEEDED") or (expire_drain and observed[1]["stage"] == "NEEDS_ATTENTION" and observed[1]["steps"]["drain"]["state"] == "CONFIRMED")):
                     break
                 time.sleep(0.02)
             else:
                 raise AssertionError("real Supervisor stop receipt was not reconciled")
-            assert _call(client, bearer, "auto_coder_operation_get", {"target_id": "beta-worker", "operation_id": operation_id})["status"] == "SUCCEEDED"
+            assert _call(client, bearer, "auto_coder_operation_get", {"target_id": "beta-worker", "operation_id": operation_id})["status"] == ("NEEDS_ATTENTION" if expire_drain else "SUCCEEDED")
             assert _call(client, bearer, "auto_coder_stop_worker", arguments)["operation_id"] == operation_id
             assert len(requests) == 1
             assert worker_client.inspect_supervisor().data["status"] == "STOPPED"

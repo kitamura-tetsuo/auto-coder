@@ -174,6 +174,7 @@ class WorkerLifecycle:
                 "stage": "ACCEPTED",
                 "action": action,
                 "accepted_evidence": evidence,
+                "revalidation_observation": None,
                 "source_sha": selected_git_sha,
                 "incumbent": {
                     "process_run_id": expected_process_run_id,
@@ -189,6 +190,7 @@ class WorkerLifecycle:
                 "heartbeats": [],
                 "recovery_attempts": 0,
                 "accepted_at": now,
+                "original_deadline": now + 900,
                 "deadline": now + 900,
             }
             if not await asyncio.to_thread(self.runtime.journal.lifecycle_save, admission.record.operation_id, -1, snapshot):
@@ -213,12 +215,14 @@ class WorkerLifecycle:
             channel=record.intent.target.channel,
             instance_id=record.intent.target.instance_id,
             source_sha=snapshot.get("source_sha"),
+            revalidation_observation=snapshot.get("revalidation_observation"),
             incumbent=snapshot.get("incumbent"),
             staged=snapshot.get("staged"),
             new_worker=snapshot.get("new_worker"),
             steps=snapshot.get("steps"),
             heartbeats=snapshot.get("heartbeats"),
             recovery_attempts=snapshot.get("recovery_attempts"),
+            original_deadline=snapshot.get("original_deadline"),
             deadline=snapshot.get("deadline"),
         )
 
@@ -261,7 +265,10 @@ class WorkerLifecycle:
                     original = json.loads(str(snapshot["accepted_evidence"]))
                     currently_selected = self._source().read(str(original["source_sha"])).canonical()
                 except (SourceEvidenceError, RuntimeError, OSError, KeyError, ValueError, TypeError):
+                    snapshot["revalidation_observation"] = {"checked_at": time.time(), "availability": "unavailable"}
                     return self._finish(record, version, snapshot, "NEEDS_ATTENTION", "beta_selection_revalidation_unavailable")
+                current_record = json.loads(currently_selected)
+                snapshot["revalidation_observation"] = {"checked_at": time.time(), "availability": "confirmed", "selection_oid": current_record["selection_oid"], "matched": currently_selected == snapshot["accepted_evidence"]}
                 if currently_selected != snapshot["accepted_evidence"]:
                     return self._finish(record, version, snapshot, "SUPERSEDED", "original_beta_selection_or_proof_changed")
             effect_id = {"prepare": "p", "drain": "d", "start": "s", "recovery": "r"}[name] + "-" + record.operation_id
