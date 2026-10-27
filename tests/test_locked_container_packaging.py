@@ -114,5 +114,7 @@ def test_actual_dependency_stage_rejects_a_stale_lock_without_rewriting_it(tmp_p
 
     assert result.returncode != 0
     output = result.stdout + result.stderr
-    assert "lockfile" in output.lower() and ("out of date" in output.lower() or "locked" in output.lower())
+    normalized_output = output.lower()
+    assert "auto-coder-stale-lock-sentinel" in normalized_output
+    assert "no solution found" in normalized_output or ("lockfile" in normalized_output and ("out of date" in normalized_output or "locked" in normalized_output))
     assert (context / "uv.lock").read_bytes() == original_lock
