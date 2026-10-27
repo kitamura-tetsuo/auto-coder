@@ -439,6 +439,31 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
         final_stop = {"operation_id": "successor-stop", "operation": "REQUEST_GRACEFUL_STOP", "expected_generation": str(successor["deployment_generation"]), "expected_process_run_id": str(successor["process_run_id"])}
         assert _control(container, final_stop)["status"] in {"DRAINING", "STOPPED"}
         _wait_for(lambda: _control(container, final_stop)["status"] == "STOPPED", timeout=90)
+
+        # A genuine VERIFIED staged binding must disappear if its OS lifetime
+        # dies unexpectedly, without an intervening orderly STOP or INSPECT.
+        assert _control(container, {"operation_id": "death-test-start", "operation": "START", "runtime_id": staged_id})["status"] == "RUNNING"
+        before_death = _wait_for(
+            lambda: worker if (worker := _inspect_worker(container)) and worker.get("binding_status") == "VERIFIED" else None,
+            timeout=90,
+        )
+        assert before_death["runtime_binding"]["content_identity"] == binding["content_identity"]
+        _docker("exec", container, "python", "-c", f"import os,signal; os.kill({int(before_death['pid'])},signal.SIGKILL)")
+
+        def inspect_dead() -> dict[str, object] | None:
+            result = _control(container, {"operation_id": "inspect-death-" + uuid.uuid4().hex, "operation": "INSPECT"})
+            worker = result.get("worker")
+            return result if result["status"] == "UNKNOWN" and isinstance(worker, dict) and worker.get("binding_status") == "UNAVAILABLE" else None
+
+        after_death = _wait_for(inspect_dead)
+        assert after_death["worker"]["pid"] == before_death["pid"]
+        assert "runtime_binding" not in after_death["worker"]
+        repeated_death = _wait_for(inspect_dead)
+        assert "runtime_binding" not in repeated_death["worker"]
+        persisted_dead = json.loads((runtime / "supervisor" / "state.json").read_text())
+        assert persisted_dead["worker"]["binding_status"] == "UNAVAILABLE"
+        assert "runtime_binding" not in persisted_dead["worker"]
+        assert _control(container, {"operation_id": "no-replacement-after-crash", "operation": "START", "runtime_id": staged_id})["status"] == "CONFLICT"
     finally:
         logs = _docker("logs", container, timeout=10, check=False)
         if logs.stdout or logs.stderr:

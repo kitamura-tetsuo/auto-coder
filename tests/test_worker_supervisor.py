@@ -320,6 +320,50 @@ def test_stale_worker_fences_do_not_signal_current_real_child(tmp_path: Path) ->
         supervisor.child.wait(timeout=5)
 
 
+def test_persisted_stale_pid_start_token_cannot_signal_live_replacement(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None) -> None:
+    supervisor = WorkerSupervisor(config(tmp_path, (sys.executable, "-c", "import time; time.sleep(60)")))
+    started = supervisor.apply({"operation_id": "original-start", "operation": "START"})
+    worker = started["worker"]
+    assert isinstance(worker, dict)
+    assert supervisor.child is not None
+
+    # A different live process occupies the persisted PID, but not its lifetime.
+    time.sleep(0.1)
+    replacement = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        replacement_token = WorkerSupervisor._start_token(replacement.pid)
+        assert replacement_token != worker["start_token"]
+        state = supervisor.store.read()
+        state["worker"]["pid"] = replacement.pid
+        supervisor.store.write(state)
+
+        recovered = WorkerSupervisor(config(tmp_path, (sys.executable, "-c", "import time; time.sleep(60)")))
+        inspected = recovered.apply({"operation_id": "stale-inspect", "operation": "INSPECT"})
+        assert inspected["status"] == "UNKNOWN"
+        assert inspected["worker"]["pid"] == replacement.pid
+        assert inspected["worker"]["binding_status"] == "UNAVAILABLE"
+        assert "runtime_binding" not in inspected["worker"]
+
+        stop = recovered.apply(
+            {
+                "operation_id": "stale-lifetime-stop",
+                "operation": "REQUEST_GRACEFUL_STOP",
+                "expected_generation": worker["deployment_generation"],
+            }
+        )
+        assert stop["status"] == "UNKNOWN"
+        assert replacement.poll() is None
+        assert supervisor.child.poll() is None
+        assert recovered.apply({"operation_id": "unsafe-restart", "operation": "START"}) == {"status": "NEEDS_ATTENTION"}
+        assert recovered.child is None
+        assert not recovered.store.read()["worker"].get("stop_requested")
+    finally:
+        replacement.terminate()
+        replacement.wait(timeout=5)
+        supervisor.child.terminate()
+        supervisor.child.wait(timeout=5)
+
+
 def test_crash_without_terminal_receipt_stays_unknown_and_blocks_start(tmp_path: Path) -> None:
     supervisor = WorkerSupervisor(config(tmp_path, (sys.executable, "-c", "pass")))
     assert supervisor.apply({"operation_id": "start", "operation": "START"})["status"] == "RUNNING"
@@ -416,6 +460,28 @@ def test_staged_ready_selection_revalidates_exact_receipt_and_profile(tmp_path: 
         assert selected is not None
         assert selected["ready"]["lock_sha256"] == hashlib.sha256(lock).hexdigest()
         assert supervisor._verify_runtime(selected) == selected
+
+        # Exercise the production default command branch with a validated
+        # staged selection, not a custom-command fixture's PATH resolution.
+        class Child:
+            pid = 123
+
+        with patch("auto_coder.worker_supervisor.subprocess.Popen", return_value=Child()) as spawn, patch.object(supervisor, "_start_token", return_value="77"):
+            result = supervisor.apply({"operation_id": "staged-default", "operation": "START", "runtime_id": runtime_id})
+        assert result["status"] == "RUNNING"
+        assert spawn.call_args.args[0] == [
+            str(interpreter),
+            "-m",
+            "auto_coder.cli",
+            "process-issues",
+            "--repo",
+            "owner/repo",
+            "--log-file",
+            str(tmp_path / "logs" / "auto-coder.log"),
+        ]
+        assert spawn.call_args.kwargs["env"]["VIRTUAL_ENV"] == str(environment.resolve())
+        assert spawn.call_args.kwargs["env"]["PATH"].split(os.pathsep)[0] == str(interpreter.parent)
+        assert spawn.call_args.kwargs["cwd"] == tmp_path / "workspace"
         ready_path.write_text(json.dumps(asdict(replace(receipt, installed_at="replaced"))))
         assert supervisor._verify_runtime(selected) is None
         ready_path.write_text(json.dumps(asdict(receipt)))
@@ -498,15 +564,28 @@ def test_fresh_staged_runtime_binding_never_returns_stale_verified_identity(tmp_
             third = supervisor.inspect()["worker"]
             assert third["binding_status"] == "UNAVAILABLE"
             assert "runtime_binding" not in third
-            assert observe.call_count == 3
+            # Reestablish VERIFIED immediately before actual OS death: a dead
+            # child's old receipt must never remain an authoritative binding.
+            verify.return_value = selected
+            fresh = supervisor.inspect()["worker"]
+            assert fresh["binding_status"] == "VERIFIED"
+            assert fresh["runtime_binding"]["start_token"] == worker["start_token"]
+            assert observe.call_count == 4
+            assert supervisor.child is not None
+            supervisor.child.terminate()
+            supervisor.child.wait(timeout=5)
     finally:
         assert supervisor.child is not None
-        supervisor.child.terminate()
-        supervisor.child.wait(timeout=5)
+        if supervisor.child.poll() is None:
+            supervisor.child.terminate()
+            supervisor.child.wait(timeout=5)
 
     dead = supervisor.inspect()["worker"]
     assert dead["binding_status"] == "UNAVAILABLE"
     assert "runtime_binding" not in dead
+    repeated = supervisor.inspect()["worker"]
+    assert repeated["binding_status"] == "UNAVAILABLE"
+    assert "runtime_binding" not in repeated
     persisted = supervisor.store.read()["worker"]
     assert persisted["binding_status"] == "UNAVAILABLE"
     assert "runtime_binding" not in persisted
