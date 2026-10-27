@@ -78,6 +78,21 @@ class BetaEvidenceReader:
         self.client = client
         self.repository = repository
 
+    def read_current(self) -> VerifiedBetaEvidence:
+        """Read the confirmed selection, without discovering a newer CI run.
+
+        A sampler must distinguish a verified replacement (including another
+        same-SHA selection) from missing or inconsistent remote evidence.
+        """
+        selector = BetaSourceSelector(self.client, self.repository)
+        source_sha = selector._pointer()
+        if source_sha is None:
+            raise SourceEvidenceError("current beta source unavailable")
+        evidence = self.read(source_sha)
+        if selector._pointer() != evidence.source_sha or selector._current_selection_oid() != evidence.selection_oid:
+            raise SourceEvidenceError("beta selection moved during observation")
+        return evidence
+
     def _jobs(self, run_id: int, attempt: int) -> tuple[RequiredJob, ...]:
         data = _document(self.client.request("GET", f"actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100"), "source required jobs")
         values = data.get("jobs")

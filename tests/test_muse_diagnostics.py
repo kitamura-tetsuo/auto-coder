@@ -182,26 +182,27 @@ def test_pending_snapshot_reaches_both_sinks_before_completion_and_names_wait(tm
     console, log_file = sinks
     manager, gate, seen = _gated(tmp_path, monkeypatch, "silent")
     call = _Call(manager)
-    snapshot = _wait_for(
-        lambda: seen.exists()
-        and next(
-            (heartbeat for heartbeat in reversed(_heartbeats(log_file)) if heartbeat["phase"] == "turn_submission"),
-            None,
+    try:
+        snapshot = _wait_for(
+            lambda: seen.exists()
+            and next(
+                (heartbeat for heartbeat in reversed(_heartbeats(log_file)) if heartbeat["phase"] == "turn_submission" and heartbeat["wait"]["reason"] == "response_wait" and heartbeat["wait"]["request"]["write"] == "complete"),
+                None,
+            )
         )
-    )
-    assert _heartbeats_in(console.getvalue())
-    assert snapshot["phase"] == "turn_submission"
-    assert snapshot["wait"]["reason"] == "response_wait"
-    assert snapshot["wait"]["request"]["method"] == "turn/start"
-    assert snapshot["wait"]["request"]["write"] == "complete"
-    assert snapshot["wait"]["request"]["response_received"] is False
-    assert snapshot["identity"]["turn"] == "unobserved"
-    assert snapshot["milestones"]["assistant_text"]["state"] == "unobserved"
-    assert snapshot["budgets"]["execution_remaining_s"] > 0
-    assert call.thread.is_alive()
-
-    gate.write_text("go")
-    call.join()
+        assert _heartbeats_in(console.getvalue())
+        assert snapshot["phase"] == "turn_submission"
+        assert snapshot["wait"]["reason"] == "response_wait"
+        assert snapshot["wait"]["request"]["method"] == "turn/start"
+        assert snapshot["wait"]["request"]["write"] == "complete"
+        assert snapshot["wait"]["request"]["response_received"] is False
+        assert snapshot["identity"]["turn"] == "unobserved"
+        assert snapshot["milestones"]["assistant_text"]["state"] == "unobserved"
+        assert snapshot["budgets"]["execution_remaining_s"] > 0
+        assert call.thread.is_alive()
+    finally:
+        gate.write_text("go")
+        call.join()
     assert call.result == "gated-answer"
     assert [record["kind"] for record in _records(log_file.read_text())].count("end") == 1
 
