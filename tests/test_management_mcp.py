@@ -424,6 +424,11 @@ def test_real_discovery_firebase_exchange_and_whoami(real_boundary) -> None:
             "auto_coder_validation_attempt",
             "auto_coder_operation_get",
             "auto_coder_reevaluate_target",
+            "auto_coder_deployment_status",
+            "auto_coder_start_worker",
+            "auto_coder_stop_worker",
+            "auto_coder_restart_worker",
+            "auto_coder_deploy_beta_source",
         ]
         assert listed[0]["annotations"]["readOnlyHint"] and listed[0]["annotations"]["idempotentHint"]
         assert all(tool["annotations"]["readOnlyHint"] for tool in listed[1:5])

@@ -14,6 +14,13 @@ its durable result. Requests carrying unrecognized fields (such as executable
 commands, alternate users, paths, network modes or target repositories) are
 rejected without starting a child.
 
+The authenticated manager may also use the fixed `RECOVER_PREVIOUS` action,
+but only for a demonstrably exited failed successor and the immediately prior
+independently verified non-bootstrap READY environment. The Supervisor
+persists one recovery attempt before spawning it; it never forcibly stops a
+still-running child. See `in-container-worker-source-updates.md` for the
+original grant, policy and restored-worker readiness checks.
+
 ## One-time deployment and startup
 
 An operator must manually rebuild and deploy the Supervisor/bootstrap image and
@@ -87,6 +94,9 @@ successor. Losing a response or restarting PID 1 does not authorize replay to
 repeat an ambiguous effect. An unresolved acceptance/launch or a crashed child
 without terminal evidence remains `UNKNOWN`/`NEEDS_ATTENTION` and prevents
 another start until deliberate operator reconciliation.
+
+The narrow `RECOVER_PREVIOUS` exception can replace the exact confirmed-exited
+failed child without a graceful receipt; ordinary `START` remains blocked.
 
 When Docker sends PID 1 SIGTERM for a manual container stop, the Supervisor
 requests the same cooperative drain and waits for the child to exit; it does not

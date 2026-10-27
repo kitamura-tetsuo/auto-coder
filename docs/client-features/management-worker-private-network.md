@@ -105,6 +105,11 @@ accepted operation. Responses are `Cache-Control: no-store`.
 | `POST /v1/worker-version-preparations` and `GET /v1/worker-version-preparations/{operation_id}` | Exact full source SHA via the trusted #2610 preparer, durable operation ID and independently verified READY readback; never an arbitrary path/URL |
 | `POST /v1/worker-operations` and `GET /v1/worker-operations/{operation_id}` | Fixed `START`, `REQUEST_GRACEFUL_STOP`, `RESTART_WORKER` via the real PID-1 Supervisor and its durable lifecycle-operation ledger |
 
+The same closed worker-operation route also accepts `RECOVER_PREVIOUS` only
+for the original, confirmed-exited successor lifetime and the immediately
+previous verified prepared runtime. This is not a generic restart or arbitrary
+rollback command; the manager journals its one-at-most attempt separately.
+
 All POSTs reject unknown fields and require an immutable operation ID. Worker
 mutations also require actual expected `process_run_id`, deployment generation
 and existing selected runtime pointer; the currently authenticated Supervisor

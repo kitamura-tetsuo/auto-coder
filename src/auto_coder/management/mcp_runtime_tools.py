@@ -17,7 +17,7 @@ from pydantic import StrictInt
 
 from auto_coder.operating_policy import ActionClass, DecisionOutcome, PolicyIntent, TargetChannel, evaluate_snapshot, load_operating_policy
 
-from .action_scopes import OPERATE_SCOPE, READ_SCOPE
+from .action_scopes import DEPLOY_SCOPE, OPERATE_SCOPE, READ_SCOPE
 from .action_scopes import AcceptedAuthority as GrantAuthority
 from .action_scopes import PendingAuthorityStatus
 from .mcp_resource import ManagementTool, current_management_grant
@@ -38,6 +38,7 @@ from .operations import (
     OperationRecord,
     ReadStatus,
 )
+from .worker_lifecycle import LIFECYCLE_ACTIONS, WorkerLifecycle
 from .worker_network_client import WorkerNetworkClient, WorkerNetworkResult
 
 REEVALUATE_ACTION = "reevaluate_target"
@@ -73,6 +74,41 @@ class ManagementRuntime:
         self.dispatcher = ManagementOperationDispatcher(self.journal)
         self.dispatcher.register(REEVALUATE_ACTION, OperationHandler(self._forward_reevaluation, self._reconcile_reevaluation))
         self._worker_locks = {channel: threading.RLock() for channel in clients}
+        self.lifecycle = WorkerLifecycle(self)
+        for action in sorted(LIFECYCLE_ACTIONS):
+            self.dispatcher.register(action, OperationHandler(self.lifecycle.process, self.lifecycle.process))
+        self._lifecycle_monitor: asyncio.Task[None] | None = None
+
+    async def start_monitor(self) -> None:
+        self._lifecycle_monitor = asyncio.create_task(self._monitor_lifecycle(), name="management-worker-lifecycle-monitor")
+
+    async def stop_monitor(self) -> None:
+        if self._lifecycle_monitor is not None:
+            self._lifecycle_monitor.cancel()
+            try:
+                await self._lifecycle_monitor
+            except asyncio.CancelledError:
+                pass
+            self._lifecycle_monitor = None
+
+    async def _monitor_lifecycle(self) -> None:
+        while True:
+            await asyncio.sleep(2)
+            await self._poll_lifecycle_once()
+
+    async def _poll_lifecycle_once(self) -> None:
+        """Run one real journal-backed lifecycle monitor sweep."""
+        cursor = 0
+        while True:
+            page = await asyncio.to_thread(self.journal.list_operations, cursor=cursor, limit=100, outstanding_only=True)
+            if page.status.value != "ok":
+                break
+            for record in page.records:
+                if record.intent.action in LIFECYCLE_ACTIONS:
+                    await self.dispatcher.submit(record.operation_id)
+            if page.next_cursor is None:
+                break
+            cursor = page.next_cursor
 
     @staticmethod
     def _response(status: str, reason: str, **fields: object) -> dict[str, object]:
@@ -289,11 +325,56 @@ class ManagementRuntime:
         owned = self._owned_operation(target_id, operation_id, grant)
         if not isinstance(owned, OperationRecord):
             return owned
+        if owned.intent.action in LIFECYCLE_ACTIONS:
+            # An inspection-only MCP call must not become the actuator for
+            # the next worker-changing step. The service dispatcher owns it.
+            return self.lifecycle.project(owned)
         if owned.effect.state in {EffectState.SENT_UNKNOWN, EffectState.CONFIRMED} and owned.phase not in {OperationPhase.SUCCEEDED, OperationPhase.FAILED, OperationPhase.ROLLED_BACK}:
             updated = await self.dispatcher.submit(operation_id)
             if updated is not None:
                 owned = updated
         return self._project_operation(owned)
+
+    async def deployment_status(self, target_id: str) -> dict[str, object]:
+        self._grant((READ_SCOPE,))
+        resolved = self._resolve(target_id, ActionClass.INSPECT)
+        if not isinstance(resolved, ResolvedWorker):
+            return resolved
+        with self._worker_locks[resolved.client.config.channel]:
+            result = resolved.client.inspect_supervisor()
+            if result.result_code != "OK" or not isinstance(result.data, dict):
+                return self._response("UNAVAILABLE", "supervisor_status_unavailable")
+            data = result.data
+            output = self._response(
+                "OK",
+                "supervisor_observed",
+                instance_id=resolved.target.instance_id,
+                channel=resolved.target.channel,
+                repository=resolved.target.repository,
+                supervisor_generation=result.supervisor_generation,
+                process_state=data.get("status"),
+                alive=data.get("alive"),
+                selected_runtime_id=data.get("selected_runtime_id"),
+                worker=data.get("worker"),
+            )
+            if data.get("alive") is True and data.get("status") == "RUNNING":
+                observed = self._observe(resolved)
+                output["worker_observation"] = observed.get("observation")
+                output["installed_binding_status"] = observed.get("binding_status")
+                output["installed_runtime"] = observed.get("runtime_binding")
+            return output
+
+    async def start_worker(self, target_id: str, idempotency_key: str, expected_supervisor_generation: str, expected_runtime_id: str | None = None) -> dict[str, object]:
+        return await self.lifecycle.admit("start_worker", target_id, idempotency_key, expected_supervisor_generation, None, None, expected_runtime_id)
+
+    async def stop_worker(self, target_id: str, idempotency_key: str, expected_supervisor_generation: str, expected_process_run_id: str, expected_deployment_generation: str, expected_runtime_id: str) -> dict[str, object]:
+        return await self.lifecycle.admit("stop_worker", target_id, idempotency_key, expected_supervisor_generation, expected_process_run_id, expected_deployment_generation, expected_runtime_id)
+
+    async def restart_worker(self, target_id: str, idempotency_key: str, expected_supervisor_generation: str, expected_process_run_id: str, expected_deployment_generation: str, expected_runtime_id: str) -> dict[str, object]:
+        return await self.lifecycle.admit("restart_worker", target_id, idempotency_key, expected_supervisor_generation, expected_process_run_id, expected_deployment_generation, expected_runtime_id)
+
+    async def deploy_beta_source(self, target_id: str, selected_git_sha: str, idempotency_key: str, expected_supervisor_generation: str, expected_runtime_id: str | None = None, expected_process_run_id: str | None = None, expected_deployment_generation: str | None = None) -> dict[str, object]:
+        return await self.lifecycle.admit("deploy_beta_source", target_id, idempotency_key, expected_supervisor_generation, expected_process_run_id, expected_deployment_generation, expected_runtime_id, selected_git_sha)
 
     @staticmethod
     def _ready_to_reevaluate(observed: dict[str, object], expected_run: str, expected_generation: str) -> bool:
@@ -513,4 +594,9 @@ class ManagementRuntime:
             ManagementTool("auto_coder_validation_attempt", self.validation_attempt, (READ_SCOPE,), read),
             ManagementTool("auto_coder_operation_get", self.operation_get, (READ_SCOPE,), read),
             ManagementTool("auto_coder_reevaluate_target", self.reevaluate_target, (READ_SCOPE, OPERATE_SCOPE), mutation),
+            ManagementTool("auto_coder_deployment_status", self.deployment_status, (READ_SCOPE,), read),
+            ManagementTool("auto_coder_start_worker", self.start_worker, (READ_SCOPE, DEPLOY_SCOPE), mutation),
+            ManagementTool("auto_coder_stop_worker", self.stop_worker, (READ_SCOPE, DEPLOY_SCOPE), mutation),
+            ManagementTool("auto_coder_restart_worker", self.restart_worker, (READ_SCOPE, DEPLOY_SCOPE), mutation),
+            ManagementTool("auto_coder_deploy_beta_source", self.deploy_beta_source, (READ_SCOPE, DEPLOY_SCOPE), mutation),
         )

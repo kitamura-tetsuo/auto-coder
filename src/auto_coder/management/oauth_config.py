@@ -1,5 +1,6 @@
 """Configuration for the management OAuth credential authority."""
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -83,6 +84,8 @@ class ManagementSettings:
     allowed_browser_origins: tuple[str, ...] = ()
     operating_policy_path: Path | None = None
     operation_state_root: Path | None = None
+    source_repository: str | None = None
+    source_evidence_token_file: Path | None = None
 
     def __post_init__(self) -> None:
         loopback = self.bind_host in {"127.0.0.1", "::1", "localhost"}
@@ -99,6 +102,10 @@ class ManagementSettings:
             raise ValueError("operating policy must use an absolute operator-owned path")
         if self.operation_state_root is not None and not self.operation_state_root.is_absolute():
             raise ValueError("operation state root must be absolute")
+        if self.source_repository is not None and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", self.source_repository) is None:
+            raise ValueError("source repository must be an exact GitHub owner/name")
+        if self.source_evidence_token_file is not None and not self.source_evidence_token_file.is_absolute():
+            raise ValueError("source evidence token must use an absolute operator-owned path")
 
 
 def load_management_settings(path: Path) -> ManagementSettings:
@@ -175,4 +182,6 @@ def load_management_settings(path: Path) -> ManagementSettings:
         tuple(browser_origins),
         optional_path("operating_policy_path"),
         optional_path("operation_state_root"),
+        raw.get("source_repository") if raw.get("source_repository") is None or isinstance(raw.get("source_repository"), str) else required_string("source_repository"),
+        optional_path("source_evidence_token_file"),
     )
