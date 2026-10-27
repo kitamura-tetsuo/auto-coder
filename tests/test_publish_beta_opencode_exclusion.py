@@ -88,6 +88,7 @@ def test_publish_beta_selection_excludes_all_live_tests_from_actual_collection()
         "tests/test_opencode_container_runtime.py",
         "tests/test_opencode_noedit_live.py",
         "tests/test_muse_background_live.py",
+        "tests/test_locked_container_packaging.py",
     ]
 
     beta_collect = subprocess.run(
@@ -135,6 +136,9 @@ def test_publish_beta_selection_excludes_all_live_tests_from_actual_collection()
     }
     assert static_container_tests <= beta_names
     assert not (static_container_tests & live_names)
+    assert "test_dockerfile_uses_the_committed_lock_for_a_production_install" in beta_names
+    assert "test_built_image_runs_locked_distributions_and_provenance" in live_names
+    assert "test_actual_dependency_stage_rejects_a_stale_lock_without_rewriting_it" in live_names
 
 
 def test_publish_beta_selection_conserves_dynamically_added_live_and_browser_probes(tmp_path):
