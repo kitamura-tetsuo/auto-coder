@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import time
 from pathlib import Path
 
 from auto_coder.automation_engine import EngineLifecycle
@@ -39,6 +40,18 @@ async def run() -> None:
     )
     engine = _Engine()
     bridge = WorkerManagementBridge(identity, engine)
+    # Hold an actual worker-produced UDS response, not a fabricated network
+    # response, so the private Supervisor transport's timeout is exercised.
+    original_observation = bridge._observation
+
+    def optionally_slow_observation(nonce: str) -> dict[str, object]:
+        if (root / "fixture-hold-observation").exists():
+            (root / "fixture-observation-entered").write_text("entered")
+            while (root / "fixture-hold-observation").exists():
+                time.sleep(0.03)
+        return original_observation(nonce)
+
+    bridge._observation = optionally_slow_observation  # type: ignore[method-assign]
     loop = asyncio.get_running_loop()
     stop_requested = asyncio.Event()
     loop.add_signal_handler(signal.SIGTERM, stop_requested.set)

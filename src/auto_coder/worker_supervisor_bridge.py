@@ -290,8 +290,12 @@ class _BridgeHandler(BaseHTTPRequestHandler):
             return 200, "OK", supervisor.project_result(supervisor.inspect())
 
         if method == "GET" and path == "/v1/worker-observation" and len(pairs) == 1 and pairs[0][0] == "nonce" and _NONCE.fullmatch(pairs[0][1]):
-            result = supervisor.observe_worker(pairs[0][1])
-            return (200, "OK", result) if result is not None else (503, "UNAVAILABLE", None)
+            status, result = supervisor.observe_worker(
+                pairs[0][1],
+                expected_process_run_id=self._expected_worker_run,
+                expected_deployment_generation=self._expected_worker_generation,
+            )
+            return (200, "OK", result) if status == "OK" else (409, "CONFLICT", None) if status == "CONFLICT" else (503, "UNAVAILABLE", None)
 
         if method == "GET" and path.startswith("/v1/diagnostics/"):
             kind = path.removeprefix("/v1/diagnostics/")

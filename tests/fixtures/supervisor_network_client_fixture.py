@@ -6,9 +6,12 @@ import http.client
 import json
 import socket
 import sys
+import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, replace
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkClient
 from auto_coder.worker_network_protocol import request_mac
@@ -99,6 +102,68 @@ def _auth_attack_receipts(client: WorkerNetworkClient) -> dict[str, object]:
     return {"statuses": result}
 
 
+def _swapped_observation_responses(client: WorkerNetworkClient) -> dict[str, object]:
+    """Exchange two *genuine* UDS-backed, signed network responses in transit."""
+    receipts: list[tuple[int, list[tuple[str, str]], bytes]] = []
+    lock = threading.Lock()
+    arrived = threading.Barrier(2)
+
+    class SwapRelay(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, _format: str, *_arguments: object) -> None:
+            return
+
+        def do_GET(self) -> None:
+            upstream = http.client.HTTPConnection(client.config.address, client.config.port, timeout=5)
+            try:
+                forwarded_headers = {name: value for name, value in self.headers.items() if name.lower() not in {"host", "connection"}}
+                upstream.request("GET", self.path, headers=forwarded_headers)
+                response = upstream.getresponse()
+                received = (response.status, response.getheaders(), response.read())
+            finally:
+                upstream.close()
+            with lock:
+                position = len(receipts)
+                receipts.append(received)
+            arrived.wait(timeout=8)
+            status, headers, payload = receipts[1 - position]
+            self.send_response(status)
+            for name, value in headers:
+                if name.lower() not in {"server", "date", "connection", "transfer-encoding"}:
+                    self.send_header(name, value)
+            self.end_headers()
+            self.wfile.write(payload)
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), SwapRelay) as relay:
+        server_thread = threading.Thread(target=relay.serve_forever, daemon=True)
+        server_thread.start()
+        try:
+
+            def observe() -> object:
+                proxy_config = replace(client.config, address="127.0.0.1", port=relay.server_port)
+                proxy = WorkerNetworkClient(proxy_config)
+                proxy.supervisor_generation = client.supervisor_generation
+                proxy.worker_process_run_id = client.worker_process_run_id
+                proxy.worker_deployment_generation = client.worker_deployment_generation
+                return proxy.observe_worker("swapped-" + uuid.uuid4().hex)
+
+            with ThreadPoolExecutor(max_workers=2) as workers:
+                results = list(workers.map(lambda _: observe(), range(2)))
+        finally:
+            relay.shutdown()
+            server_thread.join(timeout=5)
+    authentic_payloads = [json.loads(raw) for _, _, raw in receipts]
+    return {
+        "upstream_statuses": [status for status, _, _ in receipts],
+        "upstream_request_ids": [value["request_id"] for value in authentic_payloads],
+        "upstream_nonces": [value["data"]["observation"]["nonce"] for value in authentic_payloads],
+        "upstream_runs": [value["data"]["observation"]["process_run_id"] for value in authentic_payloads],
+        "returned_codes": [result.result_code for result in results],
+        "returned_data": [result.data for result in results],
+    }
+
+
 def main() -> None:
     command, channel = sys.argv[1:3]
     config = WorkerEndpointConfig.environment(channel)
@@ -109,6 +174,9 @@ def main() -> None:
     inspected = client.inspect_supervisor()
     if command == "inspect" or command == "swapped-target":
         result = inspected
+    elif command == "cross-request-swap":
+        print(json.dumps(_swapped_observation_responses(client), sort_keys=True))
+        return
     elif command == "auth-attacks":
         print(json.dumps(_auth_attack_receipts(client), sort_keys=True))
         return

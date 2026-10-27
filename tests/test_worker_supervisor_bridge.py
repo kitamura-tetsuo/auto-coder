@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -20,7 +21,7 @@ import pytest
 from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkClient, configured_worker_bridge_environment
 from auto_coder.worker_network_protocol import load_machine_secret, request_mac
 from auto_coder.worker_supervisor import SupervisorConfig, WorkerSupervisor
-from auto_coder.worker_supervisor_bridge import SupervisorBridgeConfig, SupervisorBridgeServer
+from auto_coder.worker_supervisor_bridge import SupervisorBridgeConfig, SupervisorBridgeServer, _BridgeHandler
 from auto_coder.worker_versions import InstalledProvenance, PreparedEnvironment, ReadyReceipt
 
 
@@ -247,6 +248,66 @@ def test_worker_lifecycle_live_uds_loss_recovery_and_stopped_observation(tmp_pat
         assert client.read_worker_operation("unknown-operation").result_code == "NOT_FOUND"
     finally:
         if worker_pid is not None and supervisor.child is not None and supervisor.child.poll() is None:
+            supervisor.child.terminate()
+            supervisor.child.wait(timeout=5)
+        listener.close()
+
+
+def test_observation_keeps_signed_worker_generation_across_authentication_dispatch_race(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None) -> None:
+    supervisor = _supervisor(tmp_path)
+    listener, client = _bridge(supervisor, os.urandom(48))
+    release = threading.Event()
+    entered = threading.Event()
+    original_dispatch = _BridgeHandler._dispatch
+    try:
+        started = supervisor.apply({"operation_id": "race-first-start", "operation": "START"})
+        assert started["status"] == "RUNNING"
+        first = None
+        for _ in range(100):
+            inspected = client.inspect_supervisor()
+            if inspected.data is not None and isinstance(inspected.data.get("worker"), dict) and inspected.data["worker"].get("process_run_id"):
+                first = inspected.data["worker"]
+                break
+            time.sleep(0.02)
+        assert first is not None
+
+        def pause_after_authentication(handler: _BridgeHandler, method: str, body: bytes):
+            if handler.path.startswith("/v1/worker-observation?"):
+                entered.set()
+                assert release.wait(timeout=8), "observation dispatch barrier was not released"
+            return original_dispatch(handler, method, body)
+
+        with patch.object(_BridgeHandler, "_dispatch", pause_after_authentication), ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(client.observe_worker, "signed-first-run")
+            assert entered.wait(timeout=5)
+            try:
+                stop = supervisor.apply({"operation_id": "race-first-stop", "operation": "REQUEST_GRACEFUL_STOP", "expected_process_run_id": first["process_run_id"], "expected_generation": first["deployment_generation"]})
+                assert stop["status"] in {"DRAINING", "STOPPED"}
+                (tmp_path / "fixture-release").write_text("release")
+                deadline = time.monotonic() + 3
+                while supervisor.inspect()["status"] != "STOPPED" and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                assert supervisor.inspect()["status"] == "STOPPED"
+                assert supervisor.read_operation("race-first-stop")["status"] == "STOPPED"
+                successor = supervisor.apply({"operation_id": "race-second-start", "operation": "START"})
+                assert successor["status"] == "RUNNING"
+                assert successor["worker"]["deployment_generation"] != first["deployment_generation"]
+                assert supervisor.inspect()["worker"]["deployment_generation"] != first["deployment_generation"]
+            finally:
+                release.set()
+            stale = pending.result(timeout=5)
+            assert stale.result_code == "CONFLICT"
+            assert stale.http_status == 409
+        for _ in range(100):
+            assert client.inspect_supervisor().result_code == "OK"
+            if client.observe_worker("new-run-observation").result_code == "OK":
+                break
+            time.sleep(0.02)
+        else:
+            pytest.fail("new worker did not expose its own real observation")
+    finally:
+        release.set()
+        if supervisor.child is not None and supervisor.child.poll() is None:
             supervisor.child.terminate()
             supervisor.child.wait(timeout=5)
         listener.close()

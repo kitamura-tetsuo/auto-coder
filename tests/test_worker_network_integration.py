@@ -102,6 +102,33 @@ def test_two_channel_manager_restart_peer_isolation_and_lost_response(tmp_path: 
         assert beta_seen["observation"]["nonce"].startswith("fixture-request-")
 
         assert manager_call(manager, "auth-attacks", "release")["statuses"] == [200, 401, 401, 401]
+        swapped_responses = manager_call(manager, "cross-request-swap", "release")
+        assert swapped_responses["upstream_statuses"] == [200, 200]
+        assert len(set(swapped_responses["upstream_request_ids"])) == 2
+        assert len(set(swapped_responses["upstream_nonces"])) == 2
+        assert swapped_responses["upstream_runs"] == [release_seen["observation"]["process_run_id"]] * 2
+        assert swapped_responses["returned_codes"] == ["UNKNOWN", "UNKNOWN"]
+        assert swapped_responses["returned_data"] == [None, None]
+
+        held_uds = root / "release" / "fixture-hold-observation"
+        entered_uds = root / "release" / "fixture-observation-entered"
+        held_uds.write_text("hold")
+        try:
+            began = time.monotonic()
+            slow = manager_call(manager, "observe", "release")
+            assert time.monotonic() - began < 15
+            assert entered_uds.is_file()  # Real worker UDS producer entered the held path.
+            assert slow["result_code"] in {"UNAVAILABLE", "UNKNOWN"}
+            assert slow["data"] is None
+            health = manager_call(manager, "inspect", "release")
+            assert health["result_code"] == "OK" and health["data"]["alive"] is True
+            assert health["data"]["worker"]["binding_status"] != "VERIFIED"
+            assert manager_call(manager, "read-operation", "release", "slow-unrecorded")["result_code"] == "NOT_FOUND"
+            assert observe("beta") is not None
+        finally:
+            held_uds.unlink(missing_ok=True)
+        after_slow = _wait_for(lambda: observe("release"))
+        assert after_slow["observation"]["process_run_id"] == release_seen["observation"]["process_run_id"]
 
         swapped = manager_call(manager, "swapped-target", "beta")
         assert swapped["result_code"] == "UNKNOWN"  # Target does not possess the beta key.

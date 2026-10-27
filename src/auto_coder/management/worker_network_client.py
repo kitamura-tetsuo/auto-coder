@@ -109,11 +109,20 @@ class WorkerNetworkClient:
         if not self._has_worker_identity():
             return self._unavailable_without_worker()
         expected = nonce or uuid.uuid4().hex
-        result = self._call("GET", "/v1/worker-observation?" + urlencode({"nonce": expected}), worker_run=self.worker_process_run_id or "", worker_generation=self.worker_deployment_generation or "")
+        request_run = self.worker_process_run_id or ""
+        request_generation = self.worker_deployment_generation or ""
+        result = self._call("GET", "/v1/worker-observation?" + urlencode({"nonce": expected}), worker_run=request_run, worker_generation=request_generation)
         if result.result_code == "OK":
             data = result.data
             observed = data.get("observation") if isinstance(data, dict) else None
-            if not isinstance(observed, dict) or observed.get("nonce") != expected or observed.get("repository") != self.config.repository or observed.get("channel") != self.config.channel:
+            if (
+                not isinstance(observed, dict)
+                or observed.get("nonce") != expected
+                or observed.get("repository") != self.config.repository
+                or observed.get("channel") != self.config.channel
+                or observed.get("process_run_id") != request_run
+                or observed.get("deployment_generation") != request_generation
+            ):
                 return self._unknown(result)
             assert isinstance(data, dict)
             binding = data.get("runtime_binding")

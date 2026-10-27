@@ -307,16 +307,20 @@ class WorkerSupervisor:
             projected["worker"] = cls.project_worker(result["worker"])
         return projected
 
-    def observe_worker(self, nonce: str) -> dict[str, Any] | None:
-        """Join one fresh UDS response to the exact independently verified READY."""
+    def observe_worker(self, nonce: str, *, expected_process_run_id: str, expected_deployment_generation: str) -> tuple[str, dict[str, Any] | None]:
+        """Preserve the signed worker fence through one atomic UDS/READY join."""
         with self._lock:
             inspection = self.inspect()
             worker = inspection.get("worker")
             if not inspection["alive"] or not isinstance(worker, dict):
-                return None
+                return "UNAVAILABLE", None
+            if worker.get("process_run_id") != expected_process_run_id or worker.get("deployment_generation") != expected_deployment_generation:
+                return "CONFLICT", None
             observed = self._observation(worker, nonce)
-            if observed is None or observed["process_run_id"] != worker.get("process_run_id"):
-                return None
+            if observed is None:
+                return "UNAVAILABLE", None
+            if observed.get("process_run_id") != expected_process_run_id or observed.get("deployment_generation") != expected_deployment_generation:
+                return "CONFLICT", None
             binding_status = "UNAVAILABLE"
             binding = None
             if worker["runtime_id"] != "bootstrap":
@@ -340,7 +344,7 @@ class WorkerSupervisor:
                             binding_status = "VERIFIED"
                     else:
                         binding_status = "CONFLICT"
-            return {"observation": observed, "binding_status": binding_status, "runtime_binding": binding}
+            return "OK", {"observation": observed, "binding_status": binding_status, "runtime_binding": binding}
 
     def read_operation(self, operation_id: str) -> dict[str, Any]:
         with self._lock:
