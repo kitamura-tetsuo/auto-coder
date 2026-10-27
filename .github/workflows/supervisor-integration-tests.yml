@@ -63,6 +63,7 @@ jobs:
           uv run pytest -q -vv -m supervisor_integration \
             tests/test_supervisor_container_integration.py \
             tests/test_worker_network_integration.py \
+            tests/test_management_beta_deploy_container.py \
             --junitxml=supervisor-integration-logs/results.xml
 
       - name: Upload integration diagnostics
