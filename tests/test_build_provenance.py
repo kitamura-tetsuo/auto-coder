@@ -201,5 +201,5 @@ def test_dockerfile_embeds_after_install_with_existing_build_arg_and_label() -> 
     text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "ARG AUTO_CODER_SOURCE_REVISION=unknown" in text
     assert "LABEL org.opencontainers.image.revision=$AUTO_CODER_SOURCE_REVISION" in text
-    assert text.index("pip install --no-cache-dir /wheels/*.whl") < text.index(_dockerfile_embed_command())
+    assert text.index("COPY --from=python-environment /opt/auto-coder/.venv /opt/auto-coder/.venv") < text.index(_dockerfile_embed_command())
     assert text.index("ARG AUTO_CODER_SOURCE_REVISION") < text.index(_dockerfile_embed_command())
