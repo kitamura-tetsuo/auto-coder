@@ -47,6 +47,14 @@ jobs:
           uv run pytest -q -vv \
             tests/test_worker_management_bridge.py::test_actual_daemon_uds_observes_admitted_drain_and_persists_receipt
 
+      - name: Verify authenticated management self-update
+        timeout-minutes: 20
+        run: |
+          uv run pytest -q -vv -m supervisor_integration \
+            tests/test_management_self_update_integration.py \
+            tests/test_management_self_update_failures.py \
+            --junitxml=supervisor-integration-logs/management-self-update.xml
+
       - name: Build the checked-out production image
         timeout-minutes: 25
         run: |

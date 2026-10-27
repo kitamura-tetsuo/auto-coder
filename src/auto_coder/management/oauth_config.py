@@ -83,6 +83,12 @@ class ManagementSettings:
     allowed_browser_origins: tuple[str, ...] = ()
     operating_policy_path: Path | None = None
     operation_state_root: Path | None = None
+    bootstrap_config_path: Path | None = None
+    self_update_source_repository: Path | None = None
+    self_update_python_executable: Path | None = None
+    self_update_uv_executable: Path | None = None
+    self_update_uv_version: str = ""
+    config_path: Path | None = None
 
     def __post_init__(self) -> None:
         loopback = self.bind_host in {"127.0.0.1", "::1", "localhost"}
@@ -99,6 +105,12 @@ class ManagementSettings:
             raise ValueError("operating policy must use an absolute operator-owned path")
         if self.operation_state_root is not None and not self.operation_state_root.is_absolute():
             raise ValueError("operation state root must be absolute")
+        for name in ("bootstrap_config_path", "self_update_source_repository", "self_update_python_executable", "self_update_uv_executable", "config_path"):
+            path = getattr(self, name)
+            if path is not None and not path.is_absolute():
+                raise ValueError(f"{name} must be an absolute operator-owned path")
+        if not isinstance(self.self_update_uv_version, str) or len(self.self_update_uv_version) > 64 or "\x00" in self.self_update_uv_version:
+            raise ValueError("self_update_uv_version must be a bounded string")
 
 
 def load_management_settings(path: Path) -> ManagementSettings:
@@ -175,4 +187,10 @@ def load_management_settings(path: Path) -> ManagementSettings:
         tuple(browser_origins),
         optional_path("operating_policy_path"),
         optional_path("operation_state_root"),
+        optional_path("bootstrap_config_path"),
+        optional_path("self_update_source_repository"),
+        optional_path("self_update_python_executable"),
+        optional_path("self_update_uv_executable"),
+        raw.get("self_update_uv_version", ""),
+        path.resolve(),
     )

@@ -30,6 +30,8 @@ class ManagementOperationDispatcher:
         self._handlers: dict[str, OperationHandler] = {}
         self._queue: asyncio.Queue[tuple[str, asyncio.Future[OperationRecord | None] | None] | None] = asyncio.Queue(maxsize=capacity)
         self._task: asyncio.Task[None] | None = None
+        self._scheduled: set[str] = set()
+        self._active_operation_id: str | None = None
 
     def register(self, action: str, handler: OperationHandler) -> None:
         if not action or action in self._handlers or self._task is not None:
@@ -47,6 +49,7 @@ class ManagementOperationDispatcher:
                 await self.stop()
                 raise RuntimeError("management operation journal is unavailable")
             for record in page.records:
+                self._scheduled.add(record.operation_id)
                 await self._queue.put((record.operation_id, None))
             if page.next_cursor is None:
                 break
@@ -59,12 +62,36 @@ class ManagementOperationDispatcher:
         await self._task
         self._task = None
 
+    async def drain(self) -> None:
+        """Complete the startup journal reconciliation before exposing readiness."""
+        if self._task is None:
+            raise RuntimeError("management operation dispatcher is unavailable")
+        await self._queue.join()
+
     async def submit(self, operation_id: str) -> OperationRecord | None:
         if self._task is None:
             raise RuntimeError("management operation dispatcher is unavailable")
         response: asyncio.Future[OperationRecord | None] = asyncio.get_running_loop().create_future()
         await self._queue.put((operation_id, response))
         return await response
+
+    def enqueue(self, operation_id: str) -> bool:
+        """Queue a durable operation without holding its initiating HTTP request.
+
+        This uses the same sole worker as ``submit``. Repeated readbacks share a
+        queued/in-flight attempt; the journal remains authoritative if the
+        bounded queue is full or the process exits before it consumes this ID.
+        """
+        if self._task is None:
+            raise RuntimeError("management operation dispatcher is unavailable")
+        if operation_id in self._scheduled or operation_id == self._active_operation_id:
+            return True
+        try:
+            self._queue.put_nowait((operation_id, None))
+        except asyncio.QueueFull:
+            return False
+        self._scheduled.add(operation_id)
+        return True
 
     async def _run(self) -> None:
         while True:
@@ -73,6 +100,7 @@ class ManagementOperationDispatcher:
                 self._queue.task_done()
                 return
             operation_id, response = queued
+            self._active_operation_id = operation_id
             try:
                 result = await asyncio.to_thread(self._process, operation_id)
             except Exception as exc:
@@ -82,6 +110,9 @@ class ManagementOperationDispatcher:
                 result = None
             if response is not None and not response.done():
                 response.set_result(result)
+            if response is None:
+                self._scheduled.discard(operation_id)
+            self._active_operation_id = None
             self._queue.task_done()
 
     def _process(self, operation_id: str) -> OperationRecord | None:

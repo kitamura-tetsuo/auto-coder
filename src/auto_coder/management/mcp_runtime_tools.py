@@ -16,8 +16,9 @@ from mcp.types import ToolAnnotations
 from pydantic import StrictInt
 
 from auto_coder.operating_policy import ActionClass, DecisionOutcome, PolicyIntent, TargetChannel, evaluate_snapshot, load_operating_policy
+from auto_coder.tested_source_refs import TestedSourcePublisher
 
-from .action_scopes import OPERATE_SCOPE, READ_SCOPE
+from .action_scopes import DEPLOY_SCOPE, OPERATE_SCOPE, READ_SCOPE
 from .action_scopes import AcceptedAuthority as GrantAuthority
 from .action_scopes import PendingAuthorityStatus
 from .mcp_resource import ManagementTool, current_management_grant
@@ -38,6 +39,8 @@ from .operations import (
     OperationRecord,
     ReadStatus,
 )
+from .self_update_operation import ManagementSelfUpdateHandler
+from .self_update_policy import ManagementUpdateAction
 from .worker_network_client import WorkerNetworkClient, WorkerNetworkResult
 
 REEVALUATE_ACTION = "reevaluate_target"
@@ -65,13 +68,15 @@ class ResolvedWorker:
 class ManagementRuntime:
     """One service-lifetime adapter, with no Docker or worker scheduling powers."""
 
-    def __init__(self, settings: ManagementSettings, grants: OAuthGrantService, clients: dict[str, WorkerNetworkClient]) -> None:
+    def __init__(self, settings: ManagementSettings, grants: OAuthGrantService, clients: dict[str, WorkerNetworkClient], *, self_update_source_authority: TestedSourcePublisher | None = None) -> None:
         self.settings = settings
         self.grants = grants
         self.clients = clients
         self.journal = ManagementOperationStore(settings.operation_state_root or settings.state_root)
         self.dispatcher = ManagementOperationDispatcher(self.journal)
         self.dispatcher.register(REEVALUATE_ACTION, OperationHandler(self._forward_reevaluation, self._reconcile_reevaluation))
+        self.self_update = ManagementSelfUpdateHandler(settings, grants, self.journal, self_update_source_authority)
+        self.dispatcher.register(ManagementUpdateAction.SELF_UPDATE.value, OperationHandler(self.self_update.forward, self.self_update.reconcile))
         self._worker_locks = {channel: threading.RLock() for channel in clients}
 
     @staticmethod
@@ -254,7 +259,7 @@ class ManagementRuntime:
     def _project_operation(record: OperationRecord) -> dict[str, object]:
         receipt = record.effect.receipt
         return {
-            "status": "accepted_for_reevaluation" if record.phase is OperationPhase.SUCCEEDED and record.effect.state is EffectState.CONFIRMED else record.phase.value.upper(),
+            "status": "accepted_for_reevaluation" if record.intent.action == REEVALUATE_ACTION and record.phase is OperationPhase.SUCCEEDED and record.effect.state is EffectState.CONFIRMED else record.phase.value.upper(),
             "operation_id": record.operation_id,
             "target": asdict(record.intent.target),
             "action": record.intent.action,
@@ -284,8 +289,19 @@ class ManagementRuntime:
             return self._response("NOT_FOUND", "operation_not_found")
         return record
 
-    async def operation_get(self, target_id: str, operation_id: str) -> dict[str, object]:
+    async def operation_get(self, operation_id: str, target_id: str | None = None) -> dict[str, object]:
         grant = self._grant((READ_SCOPE,))
+        management = await asyncio.to_thread(self.self_update.owned_operation, operation_id, grant)
+        if management is not None:
+            if isinstance(management, dict):
+                return management
+            if target_id is not None and target_id != management.intent.target.instance_id:
+                return self._response("NOT_FOUND", "operation_not_found")
+            await self.observe_authenticated_identity(grant)
+            queued = self.dispatcher.enqueue(operation_id)
+            return {**await asyncio.to_thread(self.self_update.project, management), "dispatch_queued": queued}
+        if target_id is None:
+            return self._response("INVALID_REQUEST", "worker_target_id_required")
         owned = self._owned_operation(target_id, operation_id, grant)
         if not isinstance(owned, OperationRecord):
             return owned
@@ -294,6 +310,17 @@ class ManagementRuntime:
             if updated is not None:
                 owned = updated
         return self._project_operation(owned)
+
+    async def update_management_service(self, source_sha: str, idempotency_key: str) -> dict[str, object]:
+        grant = self._grant((READ_SCOPE, DEPLOY_SCOPE))
+        admitted = await asyncio.to_thread(self.self_update.admit, source_sha, idempotency_key, grant)
+        if isinstance(admitted, dict):
+            return admitted
+        queued = self.dispatcher.enqueue(admitted.operation_id)
+        return {**await asyncio.to_thread(self.self_update.project, admitted), "dispatch_queued": queued}
+
+    async def observe_authenticated_identity(self, grant: AuthenticatedGrant) -> None:
+        await asyncio.to_thread(self.self_update.observe_authenticated_identity, grant)
 
     @staticmethod
     def _ready_to_reevaluate(observed: dict[str, object], expected_run: str, expected_generation: str) -> bool:
@@ -513,4 +540,5 @@ class ManagementRuntime:
             ManagementTool("auto_coder_validation_attempt", self.validation_attempt, (READ_SCOPE,), read),
             ManagementTool("auto_coder_operation_get", self.operation_get, (READ_SCOPE,), read),
             ManagementTool("auto_coder_reevaluate_target", self.reevaluate_target, (READ_SCOPE, OPERATE_SCOPE), mutation),
+            ManagementTool("auto_coder_update_management_service", self.update_management_service, (READ_SCOPE, DEPLOY_SCOPE), ToolAnnotations(readOnlyHint=False, idempotentHint=True, destructiveHint=True, openWorldHint=False), ("source_sha", "idempotency_key")),
         )

@@ -39,14 +39,18 @@ the `python-file` contract. `python -m`, `python -c`, opaque binary launch modes
 and arbitrary interpreter flags are not verified by these profiles and must not
 be used for non-bootstrap replacement without a separately defined source-binding
 contract. The initial immutable bootstrap runtime is exempt from this replacement
-source check.
+source check. The dedicated `management-installed` profile additionally supports
+an independently verified `ManagementReadyReceipt`: it binds the installed
+interpreter, full environment content, original source receipt, and fixed
+`python -I -B -m auto_coder.cli management serve --config` invocation. Its
+configuration and handoff flow are documented in `management-mcp-self-update.md`.
 
 ## Private process contract
 
-`management-child.sqlite3` is a versioned, channel-private store intended for a
-future authenticated management service adapter. It is deliberately separate from
+`management-child.sqlite3` is a versioned, channel-private store consumed by the
+authenticated management self-update adapter. It is deliberately separate from
 OAuth/grant storage and the management-operation journal. The fixed operations are
-`SUPERVISE`, `INSPECT`, `REQUEST_GRACEFUL_STOP`, `START_SELECTED`, and `RECONCILE`;
+`SUPERVISE`, `INSPECT`, `REQUEST_GRACEFUL_STOP`, `START_SELECTED`, `RESTORE_PREVIOUS`, and `RECONCILE`;
 their bounded operation and attempt identities fence durable pre-effect and observed
 receipts. The contract reports the Supervisor incarnation, runtime reference,
 child generation, and Linux PID plus process-start token. Process liveness and

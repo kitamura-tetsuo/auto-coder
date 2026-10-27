@@ -1,7 +1,9 @@
 # Authenticated runtime diagnostics and single-target reevaluation
 
 The independent `auto-coder management serve --config PATH` process exposes
-five additional fixed MCP tools beside `auto_coder_whoami`. It does **not** run
+fixed MCP diagnostics and reevaluation tools beside `auto_coder_whoami`. The
+separately opted-in management self-update tool is documented in
+`management-mcp-self-update.md`. This process does **not** run
 an `AutomationEngine`, execute GitHub/provider jobs, control Docker, start or
 stop containers, or schedule a new retry system. Only the existing worker UDS
 producer can accept a single Issue/PR reevaluation.
@@ -59,7 +61,7 @@ new effect, and it does not erase a previously committed receipt.
 | `auto_coder_status` | `auto-coder.read` | `target_id`, optional `limit` (1–500) | Bounded `/api/status` plus nonce-bound worker lifecycle, heartbeat and installed runtime evidence |
 | `auto_coder_logs` | `auto-coder.read` | `target_id`, optional `limit`, `item_type`, `item_number`, `execution_id`, `process_run_id`, `after_sequence`, `cursor` | Existing source-redacted, bounded log projection and retention-gap outcomes |
 | `auto_coder_validation_attempt` | `auto-coder.read` | `target_id`, required positive `pr_number`, and exactly one of `attempt_id` or `attempt_sequence` | Existing exact validation-attempt projection and no-match/unavailable outcomes |
-| `auto_coder_operation_get` | `auto-coder.read` | `target_id`, `operation_id` | Non-secret original actor/client, immutable intent, effect state and verified receipt; exact read-only reconciliation is allowed |
+| `auto_coder_operation_get` | `auto-coder.read` | `operation_id`, plus `target_id` for worker operations | Non-secret original actor/client, immutable intent, effect state and verified receipt; exact read-only reconciliation is allowed |
 | `auto_coder_reevaluate_target` | `auto-coder.read` and `auto-coder.operate` | `target_id`, `target_type` (`issue`/`pr`), positive `number`, `idempotency_key` (1–128 characters), `expected_process_run_id`, `expected_deployment_generation` | One journaled reevaluation request for the current live worker incarnation |
 
 The MCP tool schema rejects unknown arguments. The service also rejects Boolean

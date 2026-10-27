@@ -88,6 +88,10 @@ class GitHubGitDataClient:
         self._base = f"{api_url.rstrip('/')}/repos/{repository}"
         self._timeout = timeout
         self._headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if not token:
+            # Original source evidence for public repositories can be read
+            # without provisioning a credential to a replaceable manager.
+            self._headers.pop("Authorization")
 
     def request(self, method: str, path: str, payload: dict[str, object] | None = None) -> GitDataResponse:
         """Perform one non-cached request; transport ambiguity remains an error."""

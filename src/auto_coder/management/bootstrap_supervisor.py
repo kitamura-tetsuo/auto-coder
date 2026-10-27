@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
 import signal
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -25,6 +27,7 @@ class Action(str, Enum):
     REQUEST_GRACEFUL_STOP = "REQUEST_GRACEFUL_STOP"
     START_SELECTED = "START_SELECTED"
     RECONCILE = "RECONCILE"
+    RESTORE_PREVIOUS = "RESTORE_PREVIOUS"
 
 
 class ResultStatus(str, Enum):
@@ -51,6 +54,10 @@ class RuntimeSpec:
     execution_kind: str = "source-script"
 
     def verify(self, *, initial: bool = False) -> bool:
+        if self.execution_kind == "management-installed":
+            from .self_update_handoff import verify_installed_runtime
+
+            return verify_installed_runtime(self)
         if not self.executable.is_absolute() or not self.executable.is_file() or self.executable.is_symlink():
             return False
         digest = hashlib.sha256(self.executable.read_bytes()).hexdigest()
@@ -141,13 +148,16 @@ class BootstrapConfig:
     runtimes: tuple[RuntimeSpec, ...]
     graceful_timeout: float = 30.0
     crash_budget: int = 1
+    management_version_root: Path | None = None
+    management_config: Path | None = None
+    verification_timeout: float = 120.0
 
     @classmethod
     def read(cls, path: Path) -> "BootstrapConfig":
         if not path.is_absolute() or path.is_symlink():
             raise ValueError("bootstrap configuration must be an absolute regular file")
         raw = json.loads(path.read_text(encoding="utf-8"))
-        allowed = {"instance_id", "state_root", "oauth_root", "journal_root", "listener_url", "initial_runtime", "runtimes", "graceful_timeout", "crash_budget"}
+        allowed = {"instance_id", "state_root", "oauth_root", "journal_root", "listener_url", "initial_runtime", "runtimes", "graceful_timeout", "crash_budget", "management_version_root", "management_config", "verification_timeout"}
         if set(raw) - allowed:
             raise ValueError("unknown bootstrap configuration field")
         runtimes = tuple(
@@ -165,7 +175,20 @@ class BootstrapConfig:
             )
             for item in raw["runtimes"]
         )
-        config = cls(raw["instance_id"], Path(raw["state_root"]), Path(raw["oauth_root"]), Path(raw["journal_root"]), raw["listener_url"], raw["initial_runtime"], runtimes, float(raw.get("graceful_timeout", 30)), int(raw.get("crash_budget", 1)))
+        config = cls(
+            raw["instance_id"],
+            Path(raw["state_root"]),
+            Path(raw["oauth_root"]),
+            Path(raw["journal_root"]),
+            raw["listener_url"],
+            raw["initial_runtime"],
+            runtimes,
+            float(raw.get("graceful_timeout", 30)),
+            int(raw.get("crash_budget", 1)),
+            Path(raw["management_version_root"]) if raw.get("management_version_root") else None,
+            Path(raw["management_config"]) if raw.get("management_config") else None,
+            float(raw.get("verification_timeout", 120)),
+        )
         config.validate()
         return config
 
@@ -177,6 +200,15 @@ class BootstrapConfig:
         refs = {runtime.reference for runtime in self.runtimes}
         if len(refs) != len(self.runtimes) or self.initial_runtime not in refs or self.crash_budget < 0 or not 0 < self.graceful_timeout <= 3600:
             raise ValueError("invalid runtime profile")
+        if (self.management_version_root is None) != (self.management_config is None) or not 0 < self.verification_timeout <= 3600:
+            raise ValueError("invalid management self-update bootstrap profile")
+        if self.management_version_root is not None:
+            assert self.management_config is not None
+            if not self.management_version_root.is_absolute() or not self.management_config.is_absolute():
+                raise ValueError("management self-update paths must be absolute")
+            root = self.management_version_root.resolve()
+            if any(root == path.resolve() or root in path.resolve().parents or path.resolve() in root.parents for path in (self.state_root, self.oauth_root, self.journal_root)):
+                raise ValueError("management runtime root overlaps retained bootstrap or operator state")
         for runtime in self.runtimes:
             if not runtime.reference or len(runtime.reference) > 128 or len(runtime.arguments) > 64 or any(len(arg) > 4096 or "\x00" in arg for arg in runtime.arguments):
                 raise ValueError("unbounded runtime profile")
@@ -184,8 +216,14 @@ class BootstrapConfig:
                 raise ValueError("invalid runtime environment")
             if runtime.reference != self.initial_runtime and (runtime.source_root is None or runtime.ready_receipt is None or not runtime.source_receipt):
                 raise ValueError("non-bootstrap runtimes require READY-bound source identity")
-            if runtime.reference != self.initial_runtime and runtime.execution_kind not in {"source-script", "python-file"}:
+            if runtime.reference != self.initial_runtime and runtime.execution_kind not in {"source-script", "python-file", "management-installed"}:
                 raise ValueError("unsupported non-bootstrap execution profile")
+            if runtime.execution_kind == "management-installed":
+                if self.management_config is None or self.management_version_root is None or runtime.source_root is None:
+                    raise ValueError("management installed runtime requires the fixed bootstrap profile")
+                runtime.source_root.resolve().relative_to(self.management_version_root.resolve())
+                if runtime.arguments != ("-I", "-B", "-m", "auto_coder.cli", "management", "serve", "--config", str(self.management_config)):
+                    raise ValueError("management installed runtime must use the fixed serving entrypoint")
 
 
 @dataclass(frozen=True)
@@ -248,7 +286,7 @@ class ManagementBootstrapSupervisor:
         failed = replace(record, phase=ChildPhase.NEEDS_ATTENTION, pid=0, start_token="", exit_cause=f"startup_exit_{owned.returncode}")
         if not self.store.reserve(record, failed):
             return Observation(ResultStatus.UNKNOWN, self.store.load(), detail="child owner changed during exit observation")
-        if failed.previous_runtime and not failed.recovery_used:
+        if failed.previous_runtime and not failed.recovery_used and record.readiness != "application_ready":
             return self._restore_once(failed.effect_operation_id, failed)
         return Observation(ResultStatus.NEEDS_ATTENTION, failed, detail="owned child exited before application readiness")
 
@@ -271,9 +309,28 @@ class ManagementBootstrapSupervisor:
             runtime = self._runtime(runtime_ref)
             if runtime is None or not runtime.verify(initial=runtime_ref == self.config.initial_runtime):
                 rejected = replace(current.record, phase=ChildPhase.NEEDS_ATTENTION)
+                returning = current.record.phase is ChildPhase.STOPPED and bool(current.record.selected_runtime) and current.record.intended_stop
+                if returning:
+                    rejected = replace(
+                        rejected,
+                        selected_runtime=runtime_ref,
+                        previous_runtime=current.record.selected_runtime,
+                        child_generation=current.record.child_generation + 1,
+                        supervisor_incarnation=self.incarnation,
+                        intended_stop=False,
+                        readiness="not_observed",
+                        recovery_used=False,
+                        exit_cause="candidate_verification_failed",
+                        effect_operation_id=operation_id,
+                        effect_attempt_id=attempt_id,
+                        runtime_receipt=runtime.receipt if runtime is not None else "",
+                        source_receipt=runtime.source_receipt if runtime is not None else "",
+                    )
                 if not self.store.reserve(current.record, rejected):
                     winner = self.inspect()
                     return self._finish(operation_id, ResultStatus.UNKNOWN if winner.status is ResultStatus.UNKNOWN else ResultStatus.CONFLICT, winner.record, "another Supervisor changed the child while the runtime was verified")
+                if returning:
+                    return self._restore_once(operation_id, rejected)
                 return self._finish(operation_id, ResultStatus.NEEDS_ATTENTION, rejected, "runtime receipt is not verified")
             prepared = replace(
                 current.record,
@@ -290,6 +347,7 @@ class ManagementBootstrapSupervisor:
                 drain_nonce=str(uuid.uuid4()),
                 runtime_receipt=runtime.receipt,
                 source_receipt=runtime.source_receipt,
+                recovery_used=False,
             )
             if not self.store.reserve(current.record, prepared):
                 winner = self.inspect()
@@ -302,6 +360,10 @@ class ManagementBootstrapSupervisor:
                 # replacement; arbitrary inherited environment does not.
                 environment.update(self._worker_bridge_environment)
                 environment.update({"AUTO_CODER_CHILD_GENERATION": str(prepared.child_generation), "AUTO_CODER_DRAIN_NONCE": prepared.drain_nonce})
+                if runtime.execution_kind == "management-installed":
+                    environment.update({"AUTO_CODER_MANAGEMENT_RUNTIME_ID": runtime.reference, "AUTO_CODER_MANAGEMENT_RECEIPT_ID": runtime.source_receipt})
+                    if operation_id.endswith(":start"):
+                        environment["AUTO_CODER_SELF_UPDATE_OPERATION_ID"] = operation_id.removesuffix(":start")
                 if runtime.drain_ack is not None:
                     environment["AUTO_CODER_DRAIN_RECEIPT"] = str(runtime.drain_ack)
                 child = subprocess.Popen([str(runtime.executable), *runtime.arguments], env=environment, start_new_session=False)
@@ -442,6 +504,16 @@ class ManagementBootstrapSupervisor:
 
     def run(self) -> int:
         """Remain alive as PID 1 and reap only the configured child."""
+        self.config.state_root.mkdir(parents=True, exist_ok=True)
+        with (self.config.state_root / ".supervisor-owner.lock").open("a+b") as ownership:
+            fcntl.flock(ownership.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return self._run_owned()
+
+    def _run_owned(self) -> int:
+        from .self_update_handoff import SelfUpdateHandoffConsumer
+
+        self.store.publish_supervisor(self.incarnation, os.getpid(), self._start_token(os.getpid()))
+        consumer = SelfUpdateHandoffConsumer(self) if self.config.management_config is not None else None
         record = self.store.load()
         if record.pid == 0 and record.phase is ChildPhase.STOPPED and not record.intended_stop and record.child_generation == 0 and self.config.crash_budget > 0:
             if self.store.has_unresolved_effects():
@@ -449,25 +521,69 @@ class ManagementBootstrapSupervisor:
             else:
                 self.start_selected(f"bootstrap-{uuid.uuid4()}", str(uuid.uuid4()), self.config.initial_runtime)
         while True:
-            observed = self.inspect()
-            if observed.status is ResultStatus.OBSERVED_RUNNING:
-                child = self._children.get(observed.record.pid)
-                if child is not None and child.poll() is not None:
-                    self.store.save(replace(observed.record, phase=ChildPhase.STOPPED, pid=0, start_token="", exit_cause="unexpected_exit"))
+            self.store.publish_supervisor(self.incarnation, os.getpid(), self._start_token(os.getpid()))
+            # inspect() owns exit classification and the one-time safety return.
+            # A second poll/save here can lose an exit between observations and
+            # bypass that durable recovery transition.
+            self.inspect()
+            if consumer is not None:
+                consumer.tick()
             time.sleep(0.2)
+
+    def restore_previous(self, operation_id: str, attempt_id: str, expected_identity: str, previous_runtime: str) -> Observation:
+        """Make the single pre-authorized safety return after proven child exit."""
+        with self._lock:
+            effect = self.store.begin_effect(operation_id, attempt_id, Action.RESTORE_PREVIOUS.value, previous_runtime, expected_identity)
+            replay = self._replay(effect)
+            if replay is not None:
+                return replay
+            observed = self.reconcile()
+            if observed.status is not ResultStatus.STOPPED or self._identity(observed.record) != expected_identity or observed.record.previous_runtime != previous_runtime:
+                return self._finish(operation_id, ResultStatus.UNKNOWN, observed.record, "previous-runtime restore requires the exact stopped candidate lifetime")
+            return self._restore_once(operation_id, observed.record)
+
+    def restore_stopped_original(self, operation_id: str, attempt_id: str, expected_identity: str, previous_runtime: str) -> Observation:
+        """Return the drained original when forward authority is no longer live."""
+        with self._lock:
+            effect = self.store.begin_effect(operation_id, attempt_id, Action.RESTORE_PREVIOUS.value, previous_runtime, expected_identity)
+            replay = self._replay(effect)
+            if replay is not None:
+                return replay
+            observed = self.reconcile()
+            if observed.status is not ResultStatus.STOPPED or self._identity(observed.record) != expected_identity or observed.record.selected_runtime != previous_runtime or not observed.record.intended_stop:
+                return self._finish(operation_id, ResultStatus.UNKNOWN, observed.record, "original-runtime return requires the exact drained original lifetime")
+            refused = replace(
+                observed.record,
+                phase=ChildPhase.NEEDS_ATTENTION,
+                previous_runtime=previous_runtime,
+                child_generation=observed.record.child_generation + 1,
+                recovery_used=False,
+                intended_stop=False,
+                exit_cause="forward_authority_refused_after_drain",
+                effect_operation_id=operation_id,
+                effect_attempt_id=attempt_id,
+            )
+            if not self.store.reserve(observed.record, refused):
+                return Observation(ResultStatus.UNKNOWN, self.store.load(), operation_id, detail="original-runtime return owner changed")
+            return self._restore_once(operation_id, refused)
 
     def _restore_once(self, operation_id: str, failed: ChildRecord) -> Observation:
         if failed.recovery_used or not failed.previous_runtime:
             return self._finish(operation_id, ResultStatus.NEEDS_ATTENTION, failed, "no verified previous runtime is available")
         runtime = self._runtime(failed.previous_runtime)
         recovery = replace(failed, recovery_used=True)
-        self.store.save(recovery)  # recovery intent precedes launch
+        # This durable claim precedes launch and fences another participant.
+        if not self.store.reserve(failed, recovery):
+            return Observation(ResultStatus.UNKNOWN, self.store.load(), operation_id, detail="another Supervisor owns the safety return")
         if runtime is None or not runtime.verify(initial=runtime.reference == self.config.initial_runtime):
             return self._finish(operation_id, ResultStatus.NEEDS_ATTENTION, recovery, "previous runtime receipt is not verified")
         try:
             environment = dict(runtime.environment)
+            environment.update(self._worker_bridge_environment)
             recovery_nonce = str(uuid.uuid4())
             environment.update({"AUTO_CODER_CHILD_GENERATION": str(recovery.child_generation + 1), "AUTO_CODER_DRAIN_NONCE": recovery_nonce})
+            if runtime.execution_kind == "management-installed":
+                environment.update({"AUTO_CODER_MANAGEMENT_RUNTIME_ID": runtime.reference, "AUTO_CODER_MANAGEMENT_RECEIPT_ID": runtime.source_receipt})
             if runtime.drain_ack is not None:
                 environment["AUTO_CODER_DRAIN_RECEIPT"] = str(runtime.drain_ack)
             child = subprocess.Popen([str(runtime.executable), *runtime.arguments], env=environment, start_new_session=False)
@@ -488,8 +604,19 @@ class ManagementBootstrapSupervisor:
             runtime_receipt=runtime.receipt,
             source_receipt=runtime.source_receipt,
             exit_cause="candidate_launch_failed",
+            intended_stop=False,
+            supervisor_incarnation=self.incarnation,
+            readiness="not_observed",
         )
         self.store.save(restored)
+        deadline = time.monotonic() + 0.1
+        while time.monotonic() < deadline and child.poll() is None:
+            time.sleep(0.01)
+        if child.poll() is not None:
+            failed_restore = replace(restored, phase=ChildPhase.NEEDS_ATTENTION, pid=0, start_token="", exit_cause="previous_runtime_start_failed")
+            if self.store.reserve(restored, failed_restore):
+                return self._finish(operation_id, ResultStatus.NEEDS_ATTENTION, failed_restore, "the one previous-runtime process exited during startup")
+            return Observation(ResultStatus.UNKNOWN, self.store.load(), operation_id, detail="restore lifetime changed during startup observation")
         return self._finish(operation_id, ResultStatus.PROCESS_RESTORED, restored)
 
     def _replay(self, effect: EffectRecord) -> Observation | None:
@@ -528,7 +655,13 @@ class ManagementBootstrapSupervisor:
         return receipt == {"generation": record.child_generation, "nonce": record.drain_nonce, "pid": record.pid, "start_token": record.start_token}
 
     def _runtime(self, reference: str) -> RuntimeSpec | None:
-        return next((item for item in self.config.runtimes if item.reference == reference), None)
+        configured = next((item for item in self.config.runtimes if item.reference == reference), None)
+        if configured is not None or self.config.management_version_root is None:
+            return configured
+        from .self_update_handoff import HandoffStore, runtime_for_receipt
+
+        receipt = HandoffStore(self.config.state_root, self.config.instance_id).runtime(reference)
+        return runtime_for_receipt(self.config, receipt) if receipt is not None else None
 
     @staticmethod
     def _start_token(pid: int) -> str:
@@ -548,11 +681,19 @@ class ManagementBootstrapSupervisor:
 
 
 def main() -> None:
+    from ..logger_config import setup_logger
+
     parser = argparse.ArgumentParser(description="Auto-Coder immutable management child supervisor")
     parser.add_argument("--config", required=True, type=Path)
     args = parser.parse_args()
-    raise SystemExit(ManagementBootstrapSupervisor(BootstrapConfig.read(args.config)).run())
+    config = BootstrapConfig.read(args.config)
+    setup_logger(stream=sys.stdout, log_file=str(config.state_root / "logs" / "management-bootstrap.log"))
+    raise SystemExit(ManagementBootstrapSupervisor(config).run())
 
 
 if __name__ == "__main__":
-    main()
+    # Keep one canonical set of enum/dataclass identities when the supported
+    # module CLI composes the separately imported durable handoff consumer.
+    from auto_coder.management.bootstrap_supervisor import main as canonical_main
+
+    canonical_main()

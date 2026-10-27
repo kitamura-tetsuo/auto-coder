@@ -91,9 +91,22 @@ class BootstrapStore:
                   operation_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, action TEXT NOT NULL,
                   runtime_ref TEXT NOT NULL, expected_identity TEXT NOT NULL, phase TEXT NOT NULL,
                   result_json TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS supervisor_presence(
+                  instance_id TEXT PRIMARY KEY, incarnation TEXT NOT NULL, pid INTEGER NOT NULL,
+                  start_token TEXT NOT NULL, updated_at REAL NOT NULL);
                 """
             )
         return connection
+
+    def publish_supervisor(self, incarnation: str, pid: int, start_token: str) -> None:
+        """Record only the live loop owner's reuse-safe OS identity."""
+        if not incarnation or pid <= 0 or not start_token:
+            raise ValueError("Supervisor presence requires its actual process lifetime")
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO supervisor_presence VALUES(?,?,?,?,?) ON CONFLICT(instance_id) DO UPDATE SET incarnation=excluded.incarnation,pid=excluded.pid,start_token=excluded.start_token,updated_at=excluded.updated_at",
+                (self.instance_id, incarnation, pid, start_token, time.time()),
+            )
 
     def load(self) -> ChildRecord:
         with self._connect() as connection:

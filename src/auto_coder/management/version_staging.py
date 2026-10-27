@@ -88,6 +88,15 @@ class PreparedManagementRuntime:
 class _ManagementEnvironmentPreparer(WorkerVersionPreparer):
     """Use the generic installer with a management-specific runtime probe."""
 
+    @staticmethod
+    def _safe_environment() -> dict[str, str]:
+        environment = WorkerVersionPreparer._safe_environment()
+        # Installation already requires the verified lock via --frozen. Pinned
+        # uv releases reject that explicit mode when CI also exports UV_LOCKED.
+        environment.pop("UV_LOCKED", None)
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        return environment
+
     def _verify_entrypoint(self, environment: Path) -> None:
         try:
             self._run([str(environment / "bin" / "auto-coder"), "management", "--help"], env=self._safe_environment())
@@ -97,7 +106,7 @@ class _ManagementEnvironmentPreparer(WorkerVersionPreparer):
     def _observe(self, environment: Path) -> InstalledProvenance:
         """Observe provenance without allowing the controller CWD onto sys.path."""
 
-        output = self._run([str(environment / "bin" / "python"), "-I", "-m", "auto_coder.build_provenance"], output=True, env=self._safe_environment())
+        output = self._run([str(environment / "bin" / "python"), "-I", "-B", "-m", "auto_coder.build_provenance"], output=True, env=self._safe_environment())
         try:
             value = json.loads(output)
             source = value["source_revision"]
@@ -308,7 +317,7 @@ class ManagementVersionStager:
         env = self._preparer._safe_environment()
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         try:
-            self._preparer._run([str(environment / "bin" / "python"), "-I", "-c", script, str(self.config.management_config)], env=env)
+            self._preparer._run([str(environment / "bin" / "python"), "-I", "-B", "-c", script, str(self.config.management_config)], env=env)
             self._preparer._run([str(environment / "bin" / "auto-coder"), "management", "serve", "--help"], env=env)
         except WorkerVersionError as exc:
             raise WorkerVersionError(PreparationFailure.MISSING_CAPABILITY, "installed management serving configuration is incompatible") from exc

@@ -299,3 +299,34 @@ def test_terminal_failure_preserves_correlated_rejected_effect(tmp_path: Path) -
     terminal_history = reopened.history(record.operation_id).entries[-1]
     assert terminal_history.effect_state is EffectState.REJECTED
     assert terminal_history.effect_attempt_id == "attempt"
+
+
+def test_proven_unsent_refusal_is_durable_without_send_or_lane_leak(tmp_path: Path) -> None:
+    store = ManagementOperationStore(tmp_path)
+    accepted = store.admit(intent(), authority()).record
+    assert accepted is not None
+    evidence = EffectReceipt("not-started:" + accepted.operation_id, "management-preflight", 3, "DENIED:original_grant_revoked")
+    refused = store.reject_before_effect(accepted.operation_id, accepted.revision, category="DENIED:original_grant_revoked", evidence=evidence)
+    assert refused.status is MutationStatus.UPDATED and refused.record is not None
+    assert refused.record.phase is OperationPhase.FAILED
+    assert refused.record.effect.state is EffectState.REJECTED
+    assert refused.record.effect.attempt_id == "" and refused.record.effect.owner_generation == 0
+    assert ManagementOperationStore(tmp_path).get(accepted.operation_id).record == refused.record
+    assert all(entry.effect_state is not EffectState.SENT_UNKNOWN for entry in store.history(accepted.operation_id).entries)
+    replay = store.admit(intent(), authority(99))
+    assert replay.status is AdmissionStatus.REPLAY and replay.record == refused.record
+    assert store.admit(intent("another"), authority()).status is AdmissionStatus.CREATED
+
+
+def test_unsent_refusal_cannot_release_a_potentially_delivered_effect(tmp_path: Path) -> None:
+    store = ManagementOperationStore(tmp_path)
+    accepted = store.admit(intent(), authority()).record
+    assert accepted is not None
+    sent = store.begin_effect(accepted.operation_id, accepted.revision, owner_attempt_id="owner", attempt_id="attempt", correlation_identity="exact-child").record
+    assert sent is not None
+    evidence = EffectReceipt("not-started:" + accepted.operation_id, "management-preflight", 3, "DENIED")
+    for expected in (accepted.revision, sent.revision):
+        refused = store.reject_before_effect(accepted.operation_id, expected, category="DENIED", evidence=evidence)
+        assert refused.status is MutationStatus.STALE
+        assert store.get(accepted.operation_id).record == sent
+    assert store.admit(intent("competitor"), authority()).status is AdmissionStatus.BUSY

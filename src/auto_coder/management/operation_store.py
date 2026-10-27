@@ -185,6 +185,20 @@ class ManagementOperationStore:
         effect = EffectAttempt(EffectState.SENT_UNKNOWN, expected_revision + 1, attempt_id, correlation_identity)
         return self._mutate(operation_id, expected_revision, OperationPhase.RECONCILING, owner_attempt_id, "", effect, None)
 
+    def reject_before_effect(self, operation_id: str, expected_revision: int, *, category: str, evidence: EffectReceipt) -> MutationResult:
+        """Settle a proven unsent refusal without manufacturing a send attempt."""
+        error = self._receipt_error(evidence)
+        if error:
+            return MutationResult(MutationStatus.INVALID, detail=error)
+        lookup = self.get(operation_id)
+        if lookup.status is ReadStatus.UNAVAILABLE:
+            return MutationResult(MutationStatus.UNAVAILABLE, detail=lookup.detail)
+        record = lookup.record
+        if record is None or record.revision != expected_revision or record.effect.state is not EffectState.NOT_SENT:
+            return MutationResult(MutationStatus.STALE, record, "operation is no longer provably unsent")
+        effect = EffectAttempt(EffectState.REJECTED, record.effect.owner_generation, "", evidence.correlation_identity, evidence)
+        return self._mutate(operation_id, expected_revision, OperationPhase.FAILED, record.owner_attempt_id, category, effect, evidence)
+
     def record_effect(self, operation_id: str, expected_revision: int, *, attempt_id: str, state: EffectState, receipt: EffectReceipt) -> MutationResult:
         if state not in {EffectState.CONFIRMED, EffectState.REJECTED}:
             return MutationResult(MutationStatus.INVALID, detail="observation must confirm or reject")

@@ -11,6 +11,19 @@ scripts/test.sh tests/test_worker_management_bridge.py -k reevaluation`.
 
 Management journal operation IDs, phases, targets, and safe categories use the existing Loguru sinks without changing worker command/trace lifecycle events. Its separate contract is documented in [`client-features/management-operation-journal.md`](client-features/management-operation-journal.md).
 
+Management self-update adds a fixed authenticated MCP origin to that same journal
+and dispatcher. Admission and durable Supervisor handoff log the operation ID and
+exact source SHA; reconnect-proof failures log only a safe category. Its protected
+readback joins the original journal to process receipts rather than creating a
+worker execution or dashboard outcome. No worker trace schema or dashboard
+renderer changes are required because worker admission, provider execution, and
+beta/release state remain untouched. The production origin, actual replacement,
+reconnect, and bounded recovery are verified by `bash scripts/test.sh
+tests/test_management_self_update_integration.py
+tests/test_management_self_update_supervisor.py`. Operator-visible states and
+recovery instructions are documented in
+[`client-features/management-mcp-self-update.md`](client-features/management-mcp-self-update.md).
+
 Local CI base-update diagnostics retain the durable `Update Base` stage and its
 `details.result` key while making the result value truthful to the typed repair
 consumer. Values now distinguish `pushed`, `up_to_date`, `delegated`, `deferred`,
