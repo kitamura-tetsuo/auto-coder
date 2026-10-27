@@ -117,6 +117,14 @@ def test_manager_requires_two_distinct_configured_secrets(tmp_path: Path, monkey
     monkeypatch.setenv("AUTO_CODER_BETA_BRIDGE_SECRET_FILE", configured["AUTO_CODER_RELEASE_BRIDGE_SECRET_FILE"])
     with pytest.raises(ValueError, match="distinct"):
         configured_worker_bridge_environment()
+    monkeypatch.setenv("AUTO_CODER_BETA_BRIDGE_SECRET_FILE", configured["AUTO_CODER_BETA_BRIDGE_SECRET_FILE"])
+    monkeypatch.setenv("AUTO_CODER_BETA_BRIDGE_ADDRESS", "0.0.0.0")
+    with pytest.raises(ValueError, match="private Docker"):
+        configured_worker_bridge_environment()
+    monkeypatch.setenv("AUTO_CODER_BETA_BRIDGE_ADDRESS", "10.31.2.12")
+    monkeypatch.setenv("AUTO_CODER_BETA_REPOSITORY", "fixture/beta\nother")
+    with pytest.raises(ValueError, match="identity"):
+        configured_worker_bridge_environment()
 
 
 def test_real_http_signature_replay_identity_and_wrong_generation(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None) -> None:
@@ -130,6 +138,7 @@ def test_real_http_signature_replay_identity_and_wrong_generation(tmp_path: Path
         assert client.supervisor_generation == supervisor.incarnation
         assert client.observe_worker().result_code == "UNAVAILABLE"
         assert _raw(client, "/v1/supervisor")[0] == 200
+        assert _raw(client, "/v1/supervisor", headers={"X-AC-Version": "2"})[0] == 401
         assert _raw(client, "/v1/supervisor", timestamp=str(int(time.time()) - 1000))[0] == 401
 
         wrong = WorkerNetworkClient(WorkerEndpointConfig("release-worker", "release", "fixture/release", "127.0.0.1", client.config.port, key))

@@ -11,6 +11,7 @@ import http.client
 import ipaddress
 import json
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -25,6 +26,8 @@ from auto_coder.worker_network_protocol import (
     request_mac,
     response_mac,
 )
+
+_BRIDGE_IDENTITY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}\Z")
 
 
 @dataclass(frozen=True)
@@ -48,9 +51,9 @@ class WorkerEndpointConfig:
             raise ValueError("worker network endpoint is not fully configured")
         address = ipaddress.ip_address(values["BRIDGE_ADDRESS"])
         port = int(values["BRIDGE_PORT"])
-        if address.version != 4 or not address.is_private or address.is_loopback or address.is_link_local or not 1024 <= port <= 65535:
+        if address.version != 4 or not address.is_private or address.is_loopback or address.is_link_local or address.is_unspecified or not 1024 <= port <= 65535:
             raise ValueError("worker network endpoint must be a fixed private Docker IPv4 address and port")
-        if "/" not in values["REPOSITORY"] or not values["SUPERVISOR_INSTANCE_ID"].strip():
+        if "/" not in values["REPOSITORY"] or not _BRIDGE_IDENTITY.fullmatch(values["REPOSITORY"]) or not _BRIDGE_IDENTITY.fullmatch(values["SUPERVISOR_INSTANCE_ID"]):
             raise ValueError("worker network identity is invalid")
         return cls(values["SUPERVISOR_INSTANCE_ID"], channel, values["REPOSITORY"], str(address), port, load_machine_secret(Path(values["BRIDGE_SECRET_FILE"])))
 
