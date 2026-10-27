@@ -2,6 +2,7 @@
 
 import json
 import os
+import select
 import subprocess
 import sys
 import tempfile
@@ -803,7 +804,8 @@ def test_corrupt_state_error_is_distinct_from_permission_failures(tmp_path):
         slots.active_owners()
 
 
-def test_cross_identity_processes_racing_final_slot_admit_exactly_one():
+@pytest.mark.parametrize("crash_after_persist", [False, True], ids=["admission", "post-persist-crash"])
+def test_cross_identity_processes_racing_final_slot_admit_exactly_one(crash_after_persist):
     """REQ-001/REQ-002/REQ-004: a published namespace is not consumed early."""
     shared_directory = Path(tempfile.mkdtemp(prefix="auto-coder-slot-race-", dir="/tmp"))
     storage_path = shared_directory / "implementation_slots.json"
@@ -830,6 +832,7 @@ from auto_coder.implementation_slots import ImplementationOwner, ImplementationS
 storage_path, gate_path, owner_number = Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])
 published_path, encountered_path, release_path = map(Path, sys.argv[4:7])
 role = sys.argv[7]
+crash_after_persist = sys.argv[8] == "1"
 if role == "creator":
     original_chown = runtime_locks.os.chown
     def controlled_chown(path, uid, gid):
@@ -857,10 +860,28 @@ if role == "contender":
 execution_id = ImplementationSlotRepository("owner/repo", 1, storage_path).start_execution(
     ImplementationOwner("issue", owner_number)
 )
+if crash_after_persist and execution_id is not None:
+    # Reproduce a winner exiting after persisting its owner but before reporting.
+    os._exit(77)
 print(execution_id or "DENIED", flush=True)
 time.sleep(30)
 """
     processes = []
+
+    def participant_diagnostics():
+        details = []
+        for process in processes:
+            exit_code = process.poll()
+            stderr = process.stderr.read().strip() if exit_code is not None and process.stderr is not None else "<still running>"
+            details.append({"pid": process.pid, "exit": exit_code, "stderr": stderr})
+        return details
+
+    def read_participant_line(process):
+        assert process.stdout is not None
+        readable, _, _ = select.select([process.stdout], [], [], 15)
+        assert readable, f"Participant {process.pid} did not report within 15 seconds: {participant_diagnostics()}"
+        return process.stdout.readline().strip()
+
     try:
         for command in setup_commands:
             if os.geteuid() != 0:
@@ -882,15 +903,18 @@ time.sleep(30)
                     str(encountered_path),
                     str(release_path),
                     role,
+                    "1" if crash_after_persist else "0",
                 ],
                 cwd=Path(__file__).parents[1],
                 stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 env=environment,
             )
             assert process.stdout is not None
             processes.append(process)
-        assert [process.stdout.readline().strip() for process in processes] == ["READY", "READY"]
+        ready = [read_participant_line(process) for process in processes]
+        assert ready == ["READY", "READY"], f"Unexpected startup output {ready!r}: {participant_diagnostics()}"
 
         gate_path.touch()
         deadline = time.monotonic() + 5
@@ -898,13 +922,31 @@ time.sleep(30)
             time.sleep(0.005)
         assert encountered_path.exists()
         release_path.touch()
-        outcomes = [process.stdout.readline().strip() for process in processes]
-
-        assert outcomes.count("DENIED") == 1
-        assert sum(outcome != "DENIED" for outcome in outcomes) == 1
+        outcomes = [read_participant_line(process) for process in processes]
         state = json.loads(storage_path.read_text(encoding="utf-8"))
-        assert len(state) == 1
-        assert set(state).issubset({"issue:701", "issue:702"})
+
+        def assert_successful_admission():
+            assert all(outcomes), f"Empty admission outcome: {outcomes!r}; {participant_diagnostics()}"
+            assert outcomes.count("DENIED") == 1
+            assert sum(outcome != "DENIED" for outcome in outcomes) == 1
+            winner_index = next(index for index, outcome in enumerate(outcomes) if outcome != "DENIED")
+            winner_key = f"issue:{(701, 702)[winner_index]}"
+            assert set(state) == {winner_key}
+            executions = state[winner_key]["executions"]
+            assert len(executions) == 1
+            assert executions[0]["id"] == outcomes[winner_index]
+            assert executions[0]["pid"] == processes[winner_index].pid
+            assert all(process.poll() is None for process in processes), f"Participant exited during durable-state observation: {participant_diagnostics()}"
+
+        if crash_after_persist:
+            # The state write happened, but the admitting participant never
+            # reported its execution ID. The normal success oracle must fail.
+            assert sum(process.poll() == 77 for process in processes) == 1, participant_diagnostics()
+            with pytest.raises(AssertionError, match="Empty admission outcome"):
+                assert_successful_admission()
+        else:
+            assert all(process.poll() is None for process in processes), f"Participant exited before state read: {participant_diagnostics()}"
+            assert_successful_admission()
     finally:
         release_path.touch(exist_ok=True)
         for process in processes:
