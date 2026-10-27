@@ -235,6 +235,12 @@ External CI/Firebase HTTP services in these tests are disposable local services.
 The tests execute real source checks, installed package probes, OAuth/PKCE/grant
 code, protected MCP requests, SQLite stores, and actual Supervisor child processes;
 they do not contact or mutate a live operator deployment.
+Stale retained process-lifetime evidence is exercised both during update preflight
+and after the durable Supervisor handoff. Authenticated update and operation-get
+calls must leave the original OS process alive without new stop/start receipts;
+fresh reconnects and same-key replay preserve the original attempt, while an
+uncertain handoff retains its exclusion lane. The matching-identity update test
+remains the positive control for a successful replacement.
 The two authenticated process suites carry the `supervisor_integration` marker
 and run in the existing dedicated Supervisor Integration Tests workflow, alongside
 its worker/process integration gates. Ordinary PR unit-test shards exclude that
