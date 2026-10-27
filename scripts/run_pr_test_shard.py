@@ -68,7 +68,8 @@ def _retain_partial_reports(log_dir: Path, attempt: int) -> None:
         shutil.move(str(path), destination / path.name)
 
 
-def _drain(selector: selectors.BaseSelector, output_files: dict[str, object]) -> None:
+def _drain(selector: selectors.BaseSelector, output_files: dict[str, object], progress_tail: bytearray) -> bool:
+    completed_test = False
     for key, _ in selector.select(timeout=0):
         stream = key.fileobj
         try:
@@ -82,6 +83,15 @@ def _drain(selector: selectors.BaseSelector, output_files: dict[str, object]) ->
         output_file = output_files[key.data]
         output_file.write(chunk)  # type: ignore[attr-defined]
         output_file.flush()  # type: ignore[attr-defined]
+        if key.data == "stdout":
+            progress_tail.extend(chunk)
+            while b"\n" in progress_tail:
+                line, _, remaining = progress_tail.partition(b"\n")
+                if any(marker in line for marker in (b" PASSED [", b" FAILED [", b" SKIPPED [", b" XFAIL [", b" XPASS [")):
+                    completed_test = True
+                progress_tail[:] = remaining
+            if len(progress_tail) > 4096:
+                del progress_tail[:-512]
         target = sys.stdout.buffer if key.data == "stdout" else sys.stderr.buffer
         try:
             target.write(chunk)
@@ -89,6 +99,7 @@ def _drain(selector: selectors.BaseSelector, output_files: dict[str, object]) ->
         except BrokenPipeError:
             # The artifact logs remain authoritative if the console consumer disappears.
             pass
+    return completed_test
 
 
 def _stop_group(process: subprocess.Popen[bytes], pgid: int, grace: float) -> bool:
@@ -169,23 +180,38 @@ def _run_attempt(group: int, attempt: int, timeout: float, grace: float, log_dir
         selector.register(stream, selectors.EVENT_READ, name)
 
     deadline = started + timeout
+    # A busy shard can pass thousands of tests beyond its historical wall
+    # estimate. Allow one bounded extension only for real pytest progress;
+    # a stalled test still fails after at most three minutes without progress.
+    progress_idle_limit = min(timeout, 180.0)
+    absolute_deadline = deadline + min(timeout / 2, 180.0)
+    last_test_progress: float | None = None
+    progress_tail = bytearray()
     result = "infrastructure"
     with (log_dir / f"attempt-{attempt}.stdout.log").open("ab", buffering=0) as stdout_log, (log_dir / f"attempt-{attempt}.stderr.log").open("ab", buffering=0) as stderr_log:
         output_files = {"stdout": stdout_log, "stderr": stderr_log}
         while True:
-            _drain(selector, output_files)
+            if _drain(selector, output_files, progress_tail):
+                last_test_progress = time.monotonic()
             now = time.monotonic()
             if cancel_signal is not None:
                 logger.error("Attempt {} cancelled by signal {} after {:.3f}s", attempt, cancel_signal, now - started)
                 result = "cancelled" if _stop_group(process, pgid, grace) else "cleanup-failure"
                 break
+            if last_test_progress is not None and now - last_test_progress >= progress_idle_limit:
+                logger.error("Attempt {} stopped after {:.3f}s without a completed pytest test", attempt, now - last_test_progress)
+                result = "timeout" if _stop_group(process, pgid, grace) else "cleanup-failure"
+                break
+            if now >= deadline and last_test_progress is not None and now - last_test_progress < progress_idle_limit and deadline < absolute_deadline:
+                deadline = min(absolute_deadline, now + progress_idle_limit)
+                logger.info("Attempt {} extending bounded deadline to {:.3f}s: pytest tests are still completing", attempt, deadline - started)
             if now >= deadline:
                 logger.error("Attempt {} timed out after {:.3f}s", attempt, now - started)
                 result = "timeout" if _stop_group(process, pgid, grace) else "cleanup-failure"
                 break
             status = process.poll()
             if status is not None and not _group_members(pgid):
-                _drain(selector, output_files)
+                _drain(selector, output_files, progress_tail)
                 elapsed = time.monotonic() - started
                 if status == 0:
                     logger.success("Attempt {} succeeded with status 0 after {:.3f}s", attempt, elapsed)

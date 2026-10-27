@@ -123,6 +123,39 @@ def test_two_timeouts_fail_and_keep_both_logs(tmp_path):
     assert (logs / "attempt-2.supervisor.log").exists()
 
 
+def test_completed_pytest_progress_permits_one_bounded_wall_extension(tmp_path):
+    result = _run_step(
+        tmp_path,
+        3,
+        "#!/bin/bash\necho invoked >> invocations\nsleep .10\necho 'tests/example.py::test_one PASSED [ 10%]'\nsleep .20\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "invocations").read_text().splitlines() == ["invoked"]
+    assert "extending bounded deadline" in result.stderr
+
+
+def test_unrelated_output_cannot_extend_stalled_test_progress(tmp_path):
+    result = _run_step(
+        tmp_path,
+        3,
+        """#!/bin/bash
+count=$(cat count 2>/dev/null || echo 0)
+count=$((count + 1)); echo "$count" > count
+if [ "$count" = 1 ]; then
+  echo 'tests/example.py::test_one PASSED [ 10%]'
+  while :; do echo 'unrelated process output'; sleep .02; done
+fi
+echo retry-succeeded
+""",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "count").read_text().strip() == "2"
+    assert "without a completed pytest test" in result.stderr
+    assert "retry-succeeded" in result.stdout
+
+
 def test_retry_removes_partial_coverage(tmp_path):
     result = _run_step(
         tmp_path,
@@ -150,7 +183,7 @@ def test_workflow_contract_and_aggregate_shell():
     shard = workflow["jobs"]["tests-shard"]
     assert shard["strategy"] == {"fail-fast": False, "matrix": {"group": [1, 2, 3, 4]}}
     test_step = next(step for step in shard["steps"] if step["name"].startswith("Run tests"))
-    assert test_step["timeout-minutes"] == 18
+    assert test_step["timeout-minutes"] == 24
     assert "--attempt-timeout 480" in test_step["run"]
     assert "--termination-grace 10" in test_step["run"]
     assert "--max-attempts 2" in test_step["run"]
