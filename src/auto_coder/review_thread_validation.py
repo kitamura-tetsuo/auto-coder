@@ -751,7 +751,7 @@ def classify_review_threads(
                     root_author_login=root.author_login,
                     original_finding=root.body,
                     discussion=discussion,
-                    discussion_evidence_digest=(substantive_discussion_digest(thread, authenticated_controller_login) if authenticated_controller_login else ""),
+                    discussion_evidence_digest=substantive_discussion_digest(thread, authenticated_controller_login),
                     is_change_provenance=CHANGE_PROVENANCE_CLARIFICATION_MARKER in root.body,
                     claim_evidence="\n\n".join(f"{comment.author_login or '(unknown author)'}: {comment.body}" for comment in claim_comments),
                     blocker_ids=tuple(blocker_ids),
@@ -776,19 +776,28 @@ def substantive_discussion_digest(thread: ReviewThread, authenticated_controller
     """
     if not thread.comments or thread.comments_truncated:
         raise ValueError("Review-thread discussion evidence is incomplete")
-    receipt = parse_owned_receipt(thread, authenticated_controller_login)
+    # Without authenticated controller identity, retain every comment. If one
+    # was actually an owned receipt, the later authenticated authority check
+    # conservatively mismatches instead of excluding unproven housekeeping.
+    receipt = parse_owned_receipt(thread, authenticated_controller_login) if authenticated_controller_login else None
     receipt_comment_id = receipt.comment_id if receipt is not None else None
     comments = []
     for comment in thread.comments:
         if receipt_comment_id is not None and comment.database_id == receipt_comment_id:
             continue
-        if comment.database_id is None or comment.author_id is None:
+        # The pre-existing two-tier closure transport publishes this
+        # controller-owned status before its resolve mutation. It is protocol
+        # output from the accepted decision, not reviewer discussion input.
+        # Author authentication is essential: copied marker text remains
+        # substantive discussion.
+        if authenticated_controller_login and is_same_github_login(comment.author_login, authenticated_controller_login) and comment.body.lstrip().startswith("<!-- auto-coder-two-tier-closure:v1:"):
+            continue
+        if comment.database_id is None or (comment.author_id is None and not comment.author_login.strip()):
             raise ValueError("Review-thread discussion identity is incomplete")
         comments.append(
             {
                 "comment_id": comment.database_id,
-                "author_id": comment.author_id,
-                "author_login": comment.author_login,
+                "author": {"database_id": comment.author_id, "login": comment.author_login},
                 "body": comment.body,
                 "in_reply_to_id": comment.in_reply_to_id,
             }

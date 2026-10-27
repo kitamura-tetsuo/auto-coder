@@ -589,16 +589,23 @@ def _execute_durable_thread_closures(
     norm_origin = normalize_api_origin(api_origin)
     rollback_registry = stale_registry or StaleReviewThreadRegistry()
 
-    def _discussion_is_still_current(claimed_thread: ClaimedReviewThread, observation: Any) -> bool:
+    def _discussion_digest(observation: Any, authenticated_controller_login: str) -> str:
         from .review_thread_validation import substantive_discussion_digest
 
+        return substantive_discussion_digest(observation.thread, authenticated_controller_login)
+
+    def _validated_substantive_digest(claimed_thread: ClaimedReviewThread, observation: Any) -> Optional[str]:
+        """Normalize an authenticated receipt only after proving raw freshness."""
         if not claimed_thread.discussion_evidence_digest:
-            return False
+            return None
         try:
-            return substantive_discussion_digest(observation.thread, observation.authenticated_login) == claimed_thread.discussion_evidence_digest
+            substantive = _discussion_digest(observation, observation.authenticated_login)
+            complete = _discussion_digest(observation, "")
+            if claimed_thread.discussion_evidence_digest in (substantive, complete):
+                return substantive
         except Exception as exc:
             logger.error(f"Could not verify discussion evidence for thread {claimed_thread.thread_id}: {exc}")
-            return False
+        return None
 
     def _head_is_still_current() -> bool:
         try:
@@ -641,6 +648,7 @@ def _execute_durable_thread_closures(
     # read is intentionally before ledger persistence, not merely before the
     # later GitHub mutation.
     current_evaluations: list[ClosureEvaluationResult] = []
+    validated_discussion_digests: dict[str, str] = {}
     for evaluation in evaluations:
         if not evaluation.is_accepted:
             current_evaluations.append(evaluation)
@@ -661,9 +669,11 @@ def _execute_durable_thread_closures(
         except Exception as exc:
             errors.append(f"{evaluation.thread_id}|discussion-freshness|Authoritative discussion is unavailable: {exc}")
             continue
-        if not _discussion_is_still_current(claimed_thread, observation):
+        current_digest = _validated_substantive_digest(claimed_thread, observation)
+        if current_digest is None:
             errors.append(f"{evaluation.thread_id}|discussion-freshness|Discussion changed since independent validation")
             continue
+        validated_discussion_digests[evaluation.thread_id] = current_digest
         current_evaluations.append(evaluation)
 
     evaluations = tuple(current_evaluations)
@@ -852,7 +862,16 @@ def _execute_durable_thread_closures(
             errors.append(f"{thread_id}|intent-publication|{exc}")
             continue
 
-        if not _discussion_is_still_current(claimed_thread, observation):
+        observed_discussion_digest: Optional[str] = None
+        expected_discussion_digest = validated_discussion_digests.get(thread_id)
+        try:
+            observed_discussion_digest = _discussion_digest(observation, observation.authenticated_login)
+            discussion_is_current = observed_discussion_digest == expected_discussion_digest
+        except Exception as exc:
+            logger.error(f"Could not verify discussion evidence for thread {thread_id}: {exc}")
+            discussion_is_current = False
+        if not discussion_is_current:
+            logger.warning(f"Discussion evidence changed before resolving {thread_id}: " f"expected {expected_discussion_digest}, observed {observed_discussion_digest}")
             errors.append(f"{thread_id}|discussion-freshness|Discussion changed immediately before resolve mutation")
             continue
 

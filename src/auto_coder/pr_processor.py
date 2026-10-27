@@ -2185,15 +2185,18 @@ def _get_claimed_review_thread_state(
 
     eligible_author_ids = _resolve_eligible_review_thread_ids(repo_name)
     try:
-        classification = classify_review_threads(threads, eligible_author_ids)
-        authenticated_controller_login = ""
-        if classification.claimed:
+        try:
             authenticated_controller_login = client.get_authenticated_user_login()
-            classification = classify_review_threads(
-                threads,
-                eligible_author_ids,
-                authenticated_controller_login=authenticated_controller_login,
-            )
+            if not isinstance(authenticated_controller_login, str) or not authenticated_controller_login.strip():
+                authenticated_controller_login = ""
+        except Exception as exc:
+            logger.warning(f"Could not authenticate discussion-housekeeping ownership for PR #{pr_number}: {exc}")
+            authenticated_controller_login = ""
+        classification = classify_review_threads(
+            threads,
+            eligible_author_ids,
+            authenticated_controller_login=authenticated_controller_login,
+        )
     except Exception as e:
         logger.error(f"Failed to bind complete review-thread discussion for PR #{pr_number}: {e}")
         return ClaimedReviewThreadGateState(lookup_error=str(e))
@@ -2418,7 +2421,7 @@ def _allow_older_head_adversarial_threads(
                 root_author_login=root.author_login,
                 original_finding=root.body,
                 discussion="\n\n".join(f"{comment.author_login or '(unknown author)'}: {comment.body}" for comment in comments),
-                discussion_evidence_digest=(substantive_discussion_digest(thread, state.authenticated_controller_login) if state.authenticated_controller_login else ""),
+                discussion_evidence_digest=substantive_discussion_digest(thread, state.authenticated_controller_login),
                 revalidation_after_head_change=not forced and not after_pass,
                 revalidation_forced=forced and not after_pass,
                 revalidation_after_pass=after_pass,
