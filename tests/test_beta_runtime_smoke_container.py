@@ -191,10 +191,18 @@ def _accepted(journal: ManagementOperationStore, client: WorkerNetworkClient, de
 
 def _release_local_lane(journal: ManagementOperationStore, operation_id: str) -> None:
     """The external acceptance consumer owns journal settlement, never sampling."""
-    record = journal.get(operation_id).record
-    assert record is not None
-    result = journal.transition(operation_id, record.revision, OperationPhase.FAILED, evidence=EffectReceipt(operation_id, "integration-acceptance-consumer", time.time(), "local-only-integration-finished"))
-    assert result.status is MutationStatus.UPDATED
+    for _ in range(3):
+        record = journal.get(operation_id).record
+        assert record is not None
+        receipt = EffectReceipt(record.effect.correlation_identity or operation_id, "integration-acceptance-consumer", time.time(), "local-only-integration-finished")
+        if record.phase is OperationPhase.NEEDS_ATTENTION:
+            result = journal.resolve_needs_attention(operation_id, record.revision, OperationPhase.FAILED, evidence=receipt)
+        else:
+            result = journal.transition(operation_id, record.revision, OperationPhase.FAILED, evidence=receipt)
+        if result.status is MutationStatus.UPDATED:
+            return
+        assert result.status is MutationStatus.STALE, result
+    raise AssertionError("acceptance consumer could not settle the original lane")
 
 
 def _finish(producer: BetaRuntimeSmokeProducer, operation_id: str, *, timeout: float = 190):
@@ -568,6 +576,10 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
     previous = journal.get(deployed_id).record
     pending = journal.admit(OperationIntent(previous.intent.target, "deploy_beta_source", previous.intent.parameters, "held-unresolved-update", previous.intent.expected_incarnation, previous.intent.expected_artifact), previous.authority)
     assert pending.status is AdmissionStatus.CREATED and pending.record is not None
+    # Exercise the real monitor's missing-evidence hold deterministically;
+    # cleanup must use its evidence-bearing NEEDS_ATTENTION resolution path.
+    app.state.management_runtime.lifecycle.process(pending.record)
+    assert journal.get(pending.record.operation_id).record.phase is OperationPhase.NEEDS_ATTENTION
     attempted = journal.admit(replace(first.intent, idempotency_key="blocked-by-update"), first.authority)
     assert attempted.status is AdmissionStatus.BUSY
     assert producer.advance(pending.record.operation_id).state.value == "CONFLICT"
