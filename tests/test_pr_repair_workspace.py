@@ -203,6 +203,44 @@ def test_unentered_cleanup_preserves_changed_ownership(tmp_path: Path, tamper: s
     assert marker.read_text() == "preserve"
 
 
+def test_unentered_cleanup_survives_filesystem_device_renumbering(tmp_path: Path, _use_real_commands) -> None:
+    repo, head, base = repository(tmp_path)
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    claim = admitted(store, tmp_path, head, base)
+    producer = PRRepairWorkspaceProducer(store, tmp_path / "workspaces")
+    prepared = producer.prepare(claim, PRRepairSource(repo))
+    assert store.release_unentered_claim(claim, "authority unavailable")
+    target = prepared.workspace.parent
+    observed_device = target.stat().st_dev
+    # A reboot can renumber the block device (e.g. 259:4 -> 259:2) while inodes persist.
+    with store._connect() as connection:
+        connection.execute("UPDATE local_job_workspace_reclamations SET device=? WHERE job_id=?", (observed_device + 2, claim.record.job_id))
+
+    result = reclaim_unentered_workspaces(store, pr_root=tmp_path / "workspaces")
+
+    assert [(item.decision, item.reason) for item in result] == [("reclaimed", "positively unentered incarnation released")]
+    assert not target.exists()
+    assert store.discover_unentered_workspace_reclamations() == ()
+
+
+def test_unentered_cleanup_rejects_renumbered_device_with_different_inode(tmp_path: Path, _use_real_commands) -> None:
+    repo, head, base = repository(tmp_path)
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    claim = admitted(store, tmp_path, head, base)
+    producer = PRRepairWorkspaceProducer(store, tmp_path / "workspaces")
+    prepared = producer.prepare(claim, PRRepairSource(repo))
+    assert store.release_unentered_claim(claim, "authority unavailable")
+    target = prepared.workspace.parent
+    observed = target.stat()
+    with store._connect() as connection:
+        connection.execute("UPDATE local_job_workspace_reclamations SET device=?, inode=? WHERE job_id=?", (observed.st_dev + 2, observed.st_ino + 1, claim.record.job_id))
+
+    result = reclaim_unentered_workspaces(store, pr_root=tmp_path / "workspaces")
+
+    assert [(item.decision, item.reason) for item in result] == [("failed", "unentered workspace identity or ownership changed")]
+    assert prepared.workspace.is_dir()
+
+
 def test_controller_result_prevents_unentered_release_and_cleanup(tmp_path: Path, _use_real_commands) -> None:
     _repo, store, claim, producer, prepared, manifest = _conflict_checkpoint(tmp_path, target=21)
     artifact = store.persist_result_artifact(claim, InvocationOutcome.COMPLETED, manifest.to_json(), executor_token=claim.record.runner_owner)

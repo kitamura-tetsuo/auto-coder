@@ -143,6 +143,27 @@ def test_replacement_before_first_release_scan_is_never_adopted(tmp_path: Path, 
     assert marker.read_text(encoding="utf-8") == "unrelated replacement"
 
 
+def test_finalized_release_survives_filesystem_device_renumbering(tmp_path: Path, _use_real_commands) -> None:
+    store, checkpoint, _finalizer = _published(tmp_path)
+    root = tmp_path / "workspaces"
+    renumbered = checkpoint.workspace.parent.stat().st_dev + 2
+    # A reboot can renumber the block device while the inode stays the same.
+    with store._connect() as connection:
+        connection.execute("UPDATE local_jobs SET workspace_device=? WHERE job_id=?", (renumbered, checkpoint.job_id))
+
+    first = reclaim_finalized_workspaces(LocalJobStore(store.path), now=1.0, retention_seconds=10.0, issue_root=root)
+    assert [(item.decision, item.reason) for item in first] == [("retained", "retention period has not elapsed")]
+    release = store.get_workspace_reclamation(checkpoint.job_id, checkpoint.execution_incarnation)
+    assert release is not None and release.device == checkpoint.workspace.parent.stat().st_dev
+
+    with store._connect() as connection:
+        connection.execute("UPDATE local_job_workspace_reclamations SET device=? WHERE job_id=?", (renumbered, checkpoint.job_id))
+    second = reclaim_finalized_workspaces(LocalJobStore(store.path), now=20.0, retention_seconds=10.0, issue_root=root)
+
+    assert [(item.decision, item.reason) for item in second] == [("reclaimed", "positive release expired")]
+    assert not checkpoint.workspace.parent.exists()
+
+
 def test_unproven_or_external_workspace_is_retained(tmp_path: Path, _use_real_commands) -> None:
     store, checkpoint, _finalizer = _published(tmp_path)
     external = tmp_path / "external"

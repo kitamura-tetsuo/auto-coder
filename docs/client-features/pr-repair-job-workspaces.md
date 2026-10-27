@@ -24,6 +24,14 @@ removes it immediately. Startup/hourly cleanup retries interrupted removals even
 after a new incarnation replaces the binding. Failed preparations remove their
 own partial directories before returning. An unsuccessful competing claim cannot
 clear the current binding or authorize its disposal.
+Physical workspace identity is the bound directory's inode plus device. Because
+block device numbers can be renumbered across reboots or remounts (for example
+`259:4` becoming `259:2`) while inodes persist, cleanup accepts a differing
+device only when the inode matches and the producer root itself now reports the
+same device as the target; a different inode is still treated as a replacement.
+`tests/test_pr_repair_workspace.py::test_unentered_cleanup_survives_filesystem_device_renumbering`
+and `tests/test_local_job_workspace_cleanup.py::test_finalized_release_survives_filesystem_device_renumbering`
+cover this.
 Entered jobs cannot be returned to pending or acquire a replacement workspace.
 `tests/test_pr_repair_workspace.py::test_unentered_retry_prepares_new_workspace`
 covers both repair kinds and ordinary/dead-owner pre-entry release.

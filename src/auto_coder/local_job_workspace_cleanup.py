@@ -183,12 +183,33 @@ def _writers_released(store: LocalJobStore, record: LocalJobRecord, target: Path
     return bool(continuation.writer_owner) and writer_group_settled(continuation.writer_owner)
 
 
-def _same_identity(path: Path, record: WorkspaceReclamationRecord) -> bool:
+def _matches_identity(observed: os.stat_result, device: int, inode: int, producer_root: Path) -> bool:
+    """Compare a producer-bound physical identity, tolerating filesystem renumbering.
+
+    Block device numbers are not stable across reboots or remounts (for example,
+    NVMe enumeration order can change ``259:4`` into ``259:2``), while inode
+    numbers on the same filesystem are. A differing device is accepted only when
+    the inode matches and the producer root itself now reports the observed
+    device, i.e. the whole filesystem was renumbered rather than the target
+    being replaced by a directory from another filesystem.
+    """
+    if inode <= 0 or observed.st_ino != inode:
+        return False
+    if observed.st_dev == device:
+        return True
+    try:
+        root_device = producer_root.stat().st_dev
+    except OSError:
+        return False
+    return root_device == observed.st_dev
+
+
+def _same_identity(path: Path, record: WorkspaceReclamationRecord, producer_root: Path) -> bool:
     try:
         observed = path.stat(follow_symlinks=False)
     except FileNotFoundError:
         return record.phase is WorkspaceReclamationPhase.DELETING
-    return not path.is_symlink() and stat.S_ISDIR(observed.st_mode) and observed.st_dev == record.device and observed.st_ino == record.inode
+    return not path.is_symlink() and stat.S_ISDIR(observed.st_mode) and _matches_identity(observed, record.device, record.inode, producer_root)
 
 
 def _record_decision(results: list[WorkspaceCleanupResult], result: WorkspaceCleanupResult) -> None:
@@ -217,7 +238,7 @@ def reclaim_unentered_workspaces(store: LocalJobStore, *, pr_root: Path | None =
                 if release.phase is WorkspaceReclamationPhase.DELETED:
                     continue
                 if target.exists():
-                    if not _same_identity(target, release) or {path.name for path in target.iterdir()} - {"repository"}:
+                    if not _same_identity(target, release, root) or {path.name for path in target.iterdir()} - {"repository"}:
                         raise RuntimeError("unentered workspace identity or ownership changed")
                 if release.phase is WorkspaceReclamationPhase.RELEASED:
                     if not store.transition_workspace_reclamation(release, WorkspaceReclamationPhase.RELEASED, WorkspaceReclamationPhase.DELETING):
@@ -258,13 +279,14 @@ def reclaim_finalized_workspaces(
                     raise RuntimeError("durable job binding changed")
                 evidence = authenticated_successful_disposition(store, current)
                 target_info = _target(current, issue_workspace_root, pr_workspace_root)
+                producer_root = issue_workspace_root if current.kind is LocalJobKind.ISSUE_IMPLEMENTATION else pr_workspace_root
                 release = store.get_workspace_reclamation(current.job_id, current.execution_incarnation)
                 if release is None:
                     if evidence is None or target_info is None or not _writers_released(store, current, target_info[0]):
                         _record_decision(results, WorkspaceCleanupResult(current.job_id, path, "retained", "positive release evidence is incomplete"))
                         continue
                     target, identity = target_info
-                    if current.workspace_device <= 0 or current.workspace_inode <= 0 or (identity.st_dev, identity.st_ino) != (current.workspace_device, current.workspace_inode):
+                    if current.workspace_device <= 0 or not _matches_identity(identity, current.workspace_device, current.workspace_inode, producer_root):
                         _record_decision(results, WorkspaceCleanupResult(current.job_id, path, "retained", "producer-bound physical identity is unavailable or changed"))
                         continue
                     release = store.release_workspace(WorkspaceReclamationRecord(current.job_id, current.execution_incarnation, current.kind, current.repository, str(target), evidence[0], evidence[1], timestamp, WorkspaceReclamationPhase.RELEASED, identity.st_dev, identity.st_ino))
@@ -279,7 +301,7 @@ def reclaim_finalized_workspaces(
                     _record_decision(results, WorkspaceCleanupResult(current.job_id, release.workspace_root, "retained", "release authority or physical identity changed"))
                     continue
                 if target.exists():
-                    if target_info is None or str(target_info[0]) != release.workspace_root or not _same_identity(target, release):
+                    if target_info is None or str(target_info[0]) != release.workspace_root or not _same_identity(target, release, producer_root):
                         _record_decision(results, WorkspaceCleanupResult(current.job_id, release.workspace_root, "retained", "release authority or physical identity changed"))
                         continue
                     if not _writers_released(store, current, target):
