@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from auto_coder.build_identity import BuildIdentity, deserialize_build_identity, serialize_build_identity
+
 REPO_ROOT = Path(__file__).parents[1]
 
 
@@ -19,6 +21,21 @@ def _prepared_image() -> str:
     image = os.environ.get("AUTOCODER_OPENCODE_IMAGE") or os.environ.get("AUTO_CODER_OPENCODE_IMAGE")
     assert image, "the live workflow must provide the image built from this checkout"
     return image
+
+
+def _build_identity_arg() -> str:
+    revision = "a" * 40
+    payload = serialize_build_identity(
+        BuildIdentity(
+            state="clean",
+            version=f"1970.1.1.1+g{revision}",
+            source_revision=revision,
+            source_date_epoch=1,
+            revision_count=1,
+            reason=None,
+        )
+    )
+    return base64.b64encode(payload.encode()).decode()
 
 
 def test_dockerfile_uses_the_committed_lock_for_a_production_install() -> None:
@@ -30,6 +47,13 @@ def test_dockerfile_uses_the_committed_lock_for_a_production_install() -> None:
     assert "pip install" not in dockerfile
     assert "COPY --from=python-environment /opt/auto-coder/.venv /opt/auto-coder/.venv" in dockerfile
     assert 'ENV PATH="/opt/auto-coder/.venv/bin:/home/node/.opencode/bin:${PATH}"' in dockerfile
+
+
+def test_stale_lock_build_argument_is_a_valid_build_identity() -> None:
+    record = deserialize_build_identity(base64.b64decode(_build_identity_arg()).decode())
+
+    assert record.state == "clean"
+    assert record.source_revision == "a" * 40
 
 
 @pytest.mark.opencode_live
@@ -72,16 +96,7 @@ def test_actual_dependency_stage_rejects_a_stale_lock_without_rewriting_it(tmp_p
         encoding="utf-8",
     )
     original_lock = (context / "uv.lock").read_bytes()
-    identity = base64.b64encode(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "state": "clean",
-                "source_revision": "a" * 40,
-                "version": "0.0.0+g" + "a" * 12,
-            }
-        ).encode()
-    ).decode()
+    identity = _build_identity_arg()
 
     result = subprocess.run(
         [
