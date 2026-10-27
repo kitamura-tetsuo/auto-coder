@@ -133,6 +133,31 @@ def test_shared_directory_existing_paths_and_creation_failure_preserve_permissio
     assert stat.S_IMODE((existing / "owner").stat().st_mode) == 0o2770
 
 
+def test_shared_directory_waits_for_peer_to_finish_published_level(monkeypatch, tmp_path):
+    runtime = tmp_path / "runtime"
+    locks = runtime / "locks"
+    runtime.mkdir()
+    locks.mkdir()
+    monkeypatch.setenv("AUTO_CODER_RUNTIME_ROOT", str(runtime))
+    original_access = os.access
+    checks = 0
+
+    def delayed_access(path, mode):
+        nonlocal checks
+        if path == locks and mode == os.W_OK | os.X_OK:
+            checks += 1
+            return checks > 1
+        return original_access(path, mode)
+
+    monkeypatch.setattr(os, "access", delayed_access)
+
+    ensure_lock_directory(locks / "owner" / "state.lock", os.getgid())
+
+    assert checks == 2
+    assert stat.S_IMODE(locks.stat().st_mode) != 0o2770
+    assert stat.S_IMODE((locks / "owner").stat().st_mode) == 0o2770
+
+
 def test_file_lock_reentry_keeps_outer_file_locked(tmp_path):
     path = tmp_path / "shared.lock"
     with file_lock(path):
