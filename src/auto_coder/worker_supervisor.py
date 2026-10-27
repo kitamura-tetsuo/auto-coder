@@ -483,7 +483,7 @@ class WorkerSupervisor:
 
     def apply(self, request: dict[str, Any]) -> dict[str, Any]:
         operation_id, operation = request.get("operation_id"), request.get("operation")
-        if not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 128 or operation not in {"INSPECT", "START", "REQUEST_GRACEFUL_STOP", "RESTART_WORKER"}:
+        if not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 128 or operation not in {"INSPECT", "START", "REQUEST_GRACEFUL_STOP", "RESTART_WORKER", "RECOVER_PREVIOUS"}:
             return {"status": "UNSUPPORTED"}
         if not request.keys() <= self._REQUEST_FIELDS:
             # A caller may supply identity fences and a runtime ID, but not
@@ -519,8 +519,8 @@ class WorkerSupervisor:
         # READY verification can execute an interpreter from a prepared runtime.
         # Keep it outside the lifecycle lock so INSPECT and safe stop requests for
         # the current child remain available while that bounded probe runs.
-        runtime = self._resolve_runtime(request.get("runtime_id", "bootstrap")) if operation in {"START", "RESTART_WORKER"} else None
-        if operation in {"START", "RESTART_WORKER"} and runtime is None:
+        runtime = self._resolve_runtime(request.get("runtime_id", "bootstrap")) if operation in {"START", "RESTART_WORKER", "RECOVER_PREVIOUS"} else None
+        if operation in {"START", "RESTART_WORKER", "RECOVER_PREVIOUS"} and runtime is None:
             return {"status": "UNAVAILABLE"}
 
         with self._lock:
@@ -541,10 +541,36 @@ class WorkerSupervisor:
             self.store.write(state)
             if not self._fences_match(request, state):
                 return self._finish(operation_id, state, {"status": "CONFLICT"})
-            result = self._start(state, runtime) if operation == "START" else self._stop(state)
+            if operation == "RECOVER_PREVIOUS":
+                result = self._recover_previous(state, runtime)
+            else:
+                result = self._start(state, runtime) if operation == "START" else self._stop(state)
             if operation == "RESTART_WORKER" and result["status"] == "STOPPED":
                 result = self._start(state, runtime)
             return self._finish(operation_id, state, result)
+
+    def _recover_previous(self, state: dict[str, Any], runtime: dict[str, Any] | None) -> dict[str, Any]:
+        """One separately journaled prior-READY recovery after actual child exit."""
+        failed, previous = state.get("worker"), state.get("last_worker")
+        if (
+            not isinstance(failed, dict)
+            or not isinstance(previous, dict)
+            or self._is_alive(failed)
+            or runtime is None
+            or runtime.get("runtime_id") == "bootstrap"
+            or previous.get("runtime_id") != runtime.get("runtime_id")
+            or previous.get("ready") != runtime.get("ready")
+            or state.get("selected_runtime_id") != failed.get("runtime_id")
+            or state.get("prior_recovery_attempted")
+        ):
+            return {"status": "CONFLICT"}
+        if self._verify_runtime(runtime) is None:
+            return {"status": "UNAVAILABLE"}
+        # No SIGKILL or forced drain is permitted. Only the exact exited OS
+        # lifetime may be replaced; the attempt is durable before Popen.
+        state.update(prior_recovery_attempted=True, failed_worker=failed, worker=None, stopped=True, stop_verified=False)
+        self.store.write(state)
+        return self._start(state, runtime)
 
     def _finish(self, operation_id: str, state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
         record = state["operations"][operation_id]

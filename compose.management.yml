@@ -21,6 +21,7 @@ services:
     secrets:
       - release_worker_bridge
       - beta_worker_bridge
+      - source_evidence_read
     networks:
       default: {}
       management_private: {}
@@ -40,6 +41,8 @@ secrets:
     file: ${RELEASE_WORKER_BRIDGE_SECRET_FILE:?Release credential file is required}
   beta_worker_bridge:
     file: ${BETA_WORKER_BRIDGE_SECRET_FILE:?Beta credential file is required}
+  source_evidence_read:
+    file: ${AUTO_CODER_SOURCE_EVIDENCE_TOKEN_FILE:?Read-only source-evidence credential file is required}
 
 networks:
   default: {}

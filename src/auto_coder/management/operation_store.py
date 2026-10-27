@@ -82,9 +82,51 @@ class ManagementOperationStore:
           effect_attempt_id TEXT NOT NULL, correlation_identity TEXT NOT NULL,
           safe_category TEXT NOT NULL, receipt_json TEXT NOT NULL,
           recorded_at REAL NOT NULL, FOREIGN KEY(operation_id) REFERENCES operations(operation_id));
+        CREATE TABLE IF NOT EXISTS worker_lifecycle (
+          operation_id TEXT PRIMARY KEY, revision INTEGER NOT NULL,
+          snapshot_json TEXT NOT NULL, updated_at REAL NOT NULL,
+          FOREIGN KEY(operation_id) REFERENCES operations(operation_id));
         """
         )
         return connection
+
+    def lifecycle_snapshot(self, operation_id: str) -> tuple[int, dict[str, object]] | None:
+        """Read the original source evidence and each pre-effect fence atomically."""
+        connection = self._connect()
+        try:
+            row = connection.execute("SELECT revision,snapshot_json FROM worker_lifecycle WHERE operation_id=?", (operation_id,)).fetchone()
+            if row is None:
+                return None
+            value = json.loads(row["snapshot_json"])
+            if not isinstance(value, dict) or value.get("schema_version") != 1:
+                raise ValueError("invalid worker lifecycle snapshot")
+            return int(row["revision"]), value
+        finally:
+            connection.close()
+
+    def lifecycle_save(self, operation_id: str, expected_revision: int, snapshot: dict[str, object]) -> bool:
+        """CAS-write one bounded snapshot to the same durable SQLite journal."""
+        encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        if len(encoded.encode("utf-8")) > 32768 or snapshot.get("schema_version") != 1:
+            raise ValueError("invalid or unbounded worker lifecycle evidence")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute("SELECT 1 FROM operations WHERE operation_id=?", (operation_id,)).fetchone() is None:
+                connection.rollback()
+                return False
+            current = connection.execute("SELECT revision FROM worker_lifecycle WHERE operation_id=?", (operation_id,)).fetchone()
+            if current is None and expected_revision == -1:
+                connection.execute("INSERT INTO worker_lifecycle VALUES (?,?,?,?)", (operation_id, 0, encoded, time.time()))
+            elif current is not None and current["revision"] == expected_revision:
+                connection.execute("UPDATE worker_lifecycle SET revision=?,snapshot_json=?,updated_at=? WHERE operation_id=?", (expected_revision + 1, encoded, time.time(), operation_id))
+            else:
+                connection.rollback()
+                return False
+            connection.commit()
+            return True
+        finally:
+            connection.close()
 
     def _before_admission_transaction(self) -> None:
         """Test seam immediately before the real admission transaction."""

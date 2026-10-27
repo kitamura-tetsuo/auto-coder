@@ -33,9 +33,11 @@ def create_management_app(
     async def lifespan(_: FastAPI):
         async with mcp.session_manager.run():
             await runtime.dispatcher.start()
+            await runtime.start_monitor()
             try:
                 yield
             finally:
+                await runtime.stop_monitor()
                 await runtime.dispatcher.stop()
 
     app = create_management_auth_app(settings.oauth, grants, lifespan=lifespan)

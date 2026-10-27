@@ -1,7 +1,7 @@
 # Authenticated runtime diagnostics and single-target reevaluation
 
 The independent `auto-coder management serve --config PATH` process exposes
-five additional fixed MCP tools beside `auto_coder_whoami`. It does **not** run
+ten additional fixed MCP tools beside `auto_coder_whoami`. It does **not** run
 an `AutomationEngine`, execute GitHub/provider jobs, control Docker, start or
 stop containers, or schedule a new retry system. Only the existing worker UDS
 producer can accept a single Issue/PR reevaluation.
@@ -14,6 +14,8 @@ The management configuration adds two absolute paths:
 state_root: /management-oauth
 operation_state_root: /management-operations
 operating_policy_path: /management-policy/operating-policy.yaml
+source_repository: kitamura-tetsuo/auto-coder
+source_evidence_token_file: /run/secrets/source_evidence_read
 ```
 
 The remaining `public_origin`, Firebase project, bind and statically registered
@@ -61,6 +63,14 @@ new effect, and it does not erase a previously committed receipt.
 | `auto_coder_validation_attempt` | `auto-coder.read` | `target_id`, required positive `pr_number`, and exactly one of `attempt_id` or `attempt_sequence` | Existing exact validation-attempt projection and no-match/unavailable outcomes |
 | `auto_coder_operation_get` | `auto-coder.read` | `target_id`, `operation_id` | Non-secret original actor/client, immutable intent, effect state and verified receipt; exact read-only reconciliation is allowed |
 | `auto_coder_reevaluate_target` | `auto-coder.read` and `auto-coder.operate` | `target_id`, `target_type` (`issue`/`pr`), positive `number`, `idempotency_key` (1–128 characters), `expected_process_run_id`, `expected_deployment_generation` | One journaled reevaluation request for the current live worker incarnation |
+| `auto_coder_deployment_status` | `auto-coder.read` | `target_id` | Signed Supervisor state and actual installed worker observation where available |
+| `auto_coder_start_worker` | `auto-coder.read` and `auto-coder.deploy` | `target_id`, `idempotency_key`, `expected_supervisor_generation`, optional `expected_runtime_id` | Start the existing selected runtime only after a genuine stop |
+| `auto_coder_stop_worker` | `auto-coder.read` and `auto-coder.deploy` | `target_id`, `idempotency_key`, `expected_supervisor_generation`, `expected_process_run_id`, `expected_deployment_generation`, `expected_runtime_id` | Request graceful stop and await terminal receipt plus OS exit |
+| `auto_coder_restart_worker` | `auto-coder.read` and `auto-coder.deploy` | The same generation-fenced arguments as `stop_worker` | Gracefully stop and start the selected runtime using separate journaled effects |
+| `auto_coder_deploy_beta_source` | `auto-coder.read` and `auto-coder.deploy` | `target_id`, `selected_git_sha`, `idempotency_key`, `expected_supervisor_generation`, optional `expected_process_run_id`, `expected_deployment_generation`, `expected_runtime_id` | Stage and activate only the exactly selected tested beta source |
+
+See [`in-container-worker-source-updates.md`](in-container-worker-source-updates.md)
+for deployment evidence, credentials, operation progress and recovery limitations.
 
 The MCP tool schema rejects unknown arguments. The service also rejects Boolean
 or nonpositive item numbers, invalid identity/key characters and out-of-range

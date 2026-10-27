@@ -11,6 +11,15 @@ scripts/test.sh tests/test_worker_management_bridge.py -k reevaluation`.
 
 Management journal operation IDs, phases, targets, and safe categories use the existing Loguru sinks without changing worker command/trace lifecycle events. Its separate contract is documented in [`client-features/management-operation-journal.md`](client-features/management-operation-journal.md).
 
+Authenticated source deployment and process-control operations add separate
+SQLite lifecycle snapshots and Supervisor readback evidence. These remain
+management diagnostics queried through MCP, not a dashboard-owned Issue/PR
+processing origin, provider routing decision, trace stage or renderer outcome.
+The ordinary worker trace producers and dashboards are unchanged; the focused
+authenticated test in `tests/test_management_worker_lifecycle.py` checks that
+the management operation reports source selection, stop, new-worker and
+recovery outcomes independently of Issue/PR completion.
+
 Local CI base-update diagnostics retain the durable `Update Base` stage and its
 `details.result` key while making the result value truthful to the typed repair
 consumer. Values now distinguish `pushed`, `up_to_date`, `delegated`, `deferred`,
