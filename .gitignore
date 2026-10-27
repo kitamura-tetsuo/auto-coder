@@ -248,6 +248,7 @@ pyright_results.json
 /=1.0.0
 /<MagicMock*
 /opencode-live-logs/
+/supervisor-integration-logs/
 /pr-test-logs/
 
 node_modules/

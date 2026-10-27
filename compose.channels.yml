@@ -1,11 +1,14 @@
 services:
   release:
     image: ${AUTO_CODER_IMAGE}@${RELEASE_DIGEST}
-    command: ["process-issues", "--repo", "${RELEASE_REPOSITORY}", "--log-file", "/runtime/logs/auto-coder.log"]
+    entrypoint: ["python", "-m", "auto_coder.worker_supervisor"]
     environment:
+      AUTO_CODER_SUPERVISOR_INSTANCE_ID: release-worker
+      AUTO_CODER_REPOSITORY: ${RELEASE_REPOSITORY}
       AUTO_CODER_CHANNEL: release
       AUTO_CODER_ARTIFACT_DIGEST: ${RELEASE_DIGEST}
       AUTO_CODER_RUNTIME_ROOT: /runtime
+      AUTO_CODER_WORKSPACE_ROOT: /workspace
       AUTO_CODER_OWNERSHIP_FILE: /routing/ownership.json
       AUTO_CODER_LOCAL_WORKER_UID: "65532"
       AUTO_CODER_LOCAL_WORKER_GID: "65532"
@@ -22,11 +25,14 @@ services:
 
   beta:
     image: ${AUTO_CODER_IMAGE}@${BETA_DIGEST}
-    command: ["process-issues", "--repo", "${BETA_REPOSITORY}", "--log-file", "/runtime/logs/auto-coder.log"]
+    entrypoint: ["python", "-m", "auto_coder.worker_supervisor"]
     environment:
+      AUTO_CODER_SUPERVISOR_INSTANCE_ID: beta-worker
+      AUTO_CODER_REPOSITORY: ${BETA_REPOSITORY}
       AUTO_CODER_CHANNEL: beta
       AUTO_CODER_ARTIFACT_DIGEST: ${BETA_DIGEST}
       AUTO_CODER_RUNTIME_ROOT: /runtime
+      AUTO_CODER_WORKSPACE_ROOT: /workspace
       AUTO_CODER_OWNERSHIP_FILE: /routing/ownership.json
       AUTO_CODER_LOCAL_WORKER_UID: "65532"
       AUTO_CODER_LOCAL_WORKER_GID: "65532"

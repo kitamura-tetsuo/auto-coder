@@ -1,0 +1,40 @@
+services:
+  release:
+    image: ${AUTOCODER_SUPERVISOR_IMAGE:?Production image is required}
+    entrypoint: ["python", "/fixtures/supervisor_container_entry.py"]
+    user: "${SUPERVISOR_HOST_UID:?Host UID is required}:${SUPERVISOR_HOST_GID:?Host GID is required}"
+    network_mode: none
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      AUTO_CODER_SUPERVISOR_INSTANCE_ID: release-worker
+      AUTO_CODER_CHANNEL: release
+      AUTO_CODER_REPOSITORY: fixture/release
+      AUTO_CODER_RUNTIME_ROOT: /runtime
+      AUTO_CODER_WORKSPACE_ROOT: /workspace
+      AUTO_CODER_SUPERVISOR_AUTO_START: "1"
+      HOME: /runtime/home
+    volumes:
+      - ${SUPERVISOR_FIXTURES_DIR:?Fixture path is required}:/fixtures:ro
+      - ${SUPERVISOR_RUN_ROOT:?Runtime path is required}/release:/runtime
+      - ${SUPERVISOR_RUN_ROOT}/release-workspace:/workspace
+
+  beta:
+    image: ${AUTOCODER_SUPERVISOR_IMAGE:?Production image is required}
+    entrypoint: ["python", "/fixtures/supervisor_container_entry.py"]
+    user: "${SUPERVISOR_HOST_UID}:${SUPERVISOR_HOST_GID}"
+    network_mode: none
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      AUTO_CODER_SUPERVISOR_INSTANCE_ID: beta-worker
+      AUTO_CODER_CHANNEL: beta
+      AUTO_CODER_REPOSITORY: fixture/beta
+      AUTO_CODER_RUNTIME_ROOT: /runtime
+      AUTO_CODER_WORKSPACE_ROOT: /workspace
+      AUTO_CODER_SUPERVISOR_AUTO_START: "1"
+      HOME: /runtime/home
+    volumes:
+      - ${SUPERVISOR_FIXTURES_DIR}:/fixtures:ro
+      - ${SUPERVISOR_RUN_ROOT}/beta:/runtime
+      - ${SUPERVISOR_RUN_ROOT}/beta-workspace:/workspace

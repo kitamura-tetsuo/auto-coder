@@ -1140,4 +1140,6 @@ def test_container_entrypoint_and_compose_grace_preserve_sigterm_delivery():
     assert set(compose["services"]) == {"release", "beta"}
     for service in compose["services"].values():
         assert service["stop_grace_period"] == "30m"
-        assert service["command"][0] == "process-issues"
+        assert service["environment"]["AUTO_CODER_SUPERVISOR_INSTANCE_ID"]
+        assert service["entrypoint"] == ["python", "-m", "auto_coder.worker_supervisor"]
+        assert "command" not in service

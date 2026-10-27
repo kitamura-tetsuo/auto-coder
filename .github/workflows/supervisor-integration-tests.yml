@@ -1,0 +1,72 @@
+name: Supervisor Integration Tests
+
+'on':
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  supervisor-integration:
+    name: Supervisor Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      UV_LOCKED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.22"
+
+      - name: Install locked test dependencies
+        run: uv sync --locked --dev --extra test
+
+      - name: Test real worker processes and management bridge
+        timeout-minutes: 10
+        run: |
+          uv run pytest -q -vv \
+            tests/test_worker_supervisor.py \
+            tests/test_worker_versions.py \
+            tests/test_worker_management_bridge.py::test_real_unix_socket_observes_same_engine_and_read_does_not_heartbeat \
+            tests/test_worker_management_bridge.py::test_graceful_receipt_requires_stopped_closed_and_settled
+          # Isolate the production daemon composition from long-lived process
+          # fixture state while retaining its complete UDS/terminal oracle.
+          uv run pytest -q -vv \
+            tests/test_worker_management_bridge.py::test_actual_daemon_uds_observes_admitted_drain_and_persists_receipt
+
+      - name: Build the checked-out production image
+        timeout-minutes: 25
+        run: |
+          uv run python scripts/prepare_opencode_image.py \
+            --tag "auto-coder:supervisor-${{ github.sha }}" \
+            --log-dir supervisor-integration-logs
+
+      - name: Verify isolated Supervisor containers
+        timeout-minutes: 40
+        env:
+          AUTOCODER_SUPERVISOR_IMAGE: auto-coder:supervisor-${{ github.sha }}
+          AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION: "1"
+        run: |
+          uv run pytest -q -vv -m supervisor_integration \
+            tests/test_supervisor_container_integration.py \
+            --junitxml=supervisor-integration-logs/results.xml
+
+      - name: Upload integration diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: supervisor-integration-${{ github.run_attempt }}
+          path: supervisor-integration-logs/
+          if-no-files-found: ignore
