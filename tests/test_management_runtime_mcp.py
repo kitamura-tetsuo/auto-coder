@@ -6,6 +6,7 @@ integration suite; this file exercises management consumption of its typed API.
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 
 import pytest
@@ -15,6 +16,7 @@ from auto_coder.management.action_scopes import OPERATE_SCOPE, READ_SCOPE
 from auto_coder.management.app import create_management_app
 from auto_coder.management.oauth_config import ManagementSettings, OAuthClient, OAuthSettings
 from auto_coder.management.oauth_grants import OAuthGrantService
+from auto_coder.management.operations import ActionParameter, AdmissionStatus, ManagedTarget, OperationIntent, OperationPhase
 from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkResult
 from tests.test_management_mcp import _issue, _mcp, real_boundary
 
@@ -216,7 +218,7 @@ def test_original_grant_revoked_after_commit_and_before_dispatch(runtime_boundar
 
 
 def test_lost_response_reconciles_exact_receipt_without_resend_after_restart(runtime_boundary) -> None:
-    settings, _grants, signed, _policy, beta, _release = runtime_boundary
+    settings, grants, signed, _policy, beta, _release = runtime_boundary
     beta.lost_response = True
     app = _application(runtime_boundary)
     with TestClient(app, base_url=settings.oauth.canonical_issuer) as client:
@@ -226,11 +228,48 @@ def test_lost_response_reconciles_exact_receipt_without_resend_after_restart(run
         assert first["effect_state"] == "sent_unknown"
         assert beta.send_calls == 1
         op_id = first["operation_id"]
+        grants.revoke("bob-client", token)
     # The original worker receipt was committed; only a GET is now allowed.
     with TestClient(_application(runtime_boundary), base_url=settings.oauth.canonical_issuer) as client:
-        recovered = _call(client, token, "auto_coder_operation_get", {"target_id": "beta-worker", "operation_id": op_id})
+        fresh_token = _issue(client, settings, signed, "bob", "bob-client", READ_SCOPE)["access_token"]
+        recovered = _call(client, fresh_token, "auto_coder_operation_get", {"target_id": "beta-worker", "operation_id": op_id})
         assert recovered["status"] == "accepted_for_reevaluation"
         assert beta.send_calls == 1 and beta.read_calls >= 1
+
+
+def test_reconstructed_unsent_operation_checks_original_revoked_grant(runtime_boundary) -> None:
+    settings, grants, signed, _policy, beta, _release = runtime_boundary
+    app = _application(runtime_boundary)
+    with TestClient(app, base_url=settings.oauth.canonical_issuer) as client:
+        token = _issue(client, settings, signed, "bob", "bob-client", READ_SCOPE + " " + OPERATE_SCOPE)["access_token"]
+        verified = grants.authenticate_access(token, settings.oauth.resource, (READ_SCOPE, OPERATE_SCOPE))
+        original = app.state.management_runtime._journal_authority(verified, grants.accepted_authority(verified))
+        intent = OperationIntent(
+            ManagedTarget(beta.config.instance_id, beta.config.channel, beta.config.repository),
+            "reevaluate_target",
+            (ActionParameter("target_id", "beta-worker"), ActionParameter("target_type", "issue"), ActionParameter("number", 2603)),
+            "durable-before-manager-restart",
+            beta.run,
+            beta.deployment,
+        )
+        admitted = app.state.management_runtime.journal.admit(intent, original)
+        assert admitted.status is AdmissionStatus.CREATED and admitted.record is not None
+        operation_id = admitted.record.operation_id
+        grants.revoke("bob-client", token)
+        assert beta.send_calls == 0
+    # Lifespan restoration must not treat a queued operation as a new grant.
+    restarted = _application(runtime_boundary)
+    with TestClient(restarted, base_url=settings.oauth.canonical_issuer):
+        deadline = time.monotonic() + 5
+        while True:
+            result = restarted.state.management_runtime.journal.get(operation_id)
+            if result.record is not None and result.record.phase is OperationPhase.NEEDS_ATTENTION:
+                break
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+        assert result.record is not None and result.record.phase is OperationPhase.NEEDS_ATTENTION
+        assert result.record.safe_error_category == "original_authority_denied"
+        assert beta.send_calls == 0
 
 
 def test_misleading_supervisor_health_and_invalid_request_never_admit(runtime_boundary) -> None:
