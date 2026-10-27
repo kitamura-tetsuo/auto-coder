@@ -32,6 +32,11 @@ jobs:
         run: |
           uv sync --locked --dev --extra test
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
       - name: Install pinned OpenCode CLI
         run: |
           npm install -g opencode-ai@1.18.31
