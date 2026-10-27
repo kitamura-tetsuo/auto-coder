@@ -50,7 +50,11 @@ def _result(app, operation_id: str) -> dict[str, object]:
 
 
 def _await_stage(app, operation_id: str, expected: str, *, timeout: float = 120) -> dict[str, object]:
-    return _wait_for(lambda: result if (result := _result(app, operation_id)).get("stage") == expected else None, timeout=timeout)
+    try:
+        return _wait_for(lambda: result if (result := _result(app, operation_id)).get("stage") == expected else None, timeout=timeout)
+    except AssertionError as error:
+        snapshot = _result(app, operation_id)
+        raise AssertionError(f"lifecycle did not reach {expected}: stage={snapshot.get('stage')} reason={snapshot.get('reason')} steps={snapshot.get('steps')}") from error
 
 
 def _argument(client: WorkerNetworkClient, sha: str, key: str) -> dict[str, object]:
@@ -184,6 +188,8 @@ def test_authenticated_beta_source_installs_real_version_and_reconciles_after_lo
             "-e",
             "AUTO_CODER_SUPERVISOR_AUTO_START=1",
             "-e",
+            "AUTO_CODER_FIXTURE_HOLD_BOOTSTRAP=1",
+            "-e",
             "AUTO_CODER_SOURCE_REPOSITORY_ROOT=/source",
             "-e",
             f"AUTO_CODER_BRIDGE_BIND_ADDRESS={worker_ip}",
@@ -240,6 +246,9 @@ def test_authenticated_beta_source_installs_real_version_and_reconciles_after_lo
             accepted = _call(http, bearer, "auto_coder_deploy_beta_source", arguments)
             operation_id = str(accepted["operation_id"])
             _wait_for(lambda: sent_stops if sent_stops else None, timeout=120)
+            _wait_for(lambda: (runtime / "fixture-draining").exists(), timeout=30)
+            still_held = network_client.inspect_supervisor()
+            assert still_held.data is not None and still_held.data["alive"] is True
             assert _result(first_app, operation_id)["accepted_evidence"] == original_evidence
 
         # A new management process/client has no cached bridge incarnation.
@@ -247,6 +256,7 @@ def test_authenticated_beta_source_installs_real_version_and_reconciles_after_lo
         fresh_client = WorkerNetworkClient(config)
         assert fresh_client.supervisor_generation is None
         second_app = create_management_app(settings, grants, worker_clients={"beta": fresh_client})
+        (runtime / "fixture-release").write_text("release", encoding="utf-8")
         with TestClient(second_app, base_url=origin) as http:
             _await_stage(second_app, operation_id, "SUCCEEDED", timeout=180)
             assert len(sent_stops) == 1
@@ -313,5 +323,8 @@ def test_authenticated_beta_source_installs_real_version_and_reconciles_after_lo
             _await_stage(second_app, revoked_id, "NEEDS_ATTENTION", timeout=90)
             assert "drain" not in _result(second_app, revoked_id)["steps"]
     finally:
+        logs = _docker("logs", worker_name, timeout=10, check=False)
+        if logs.stdout or logs.stderr:
+            print((logs.stdout + logs.stderr)[-12000:])
         _docker("rm", "-f", worker_name, check=False)
         _docker("network", "rm", network_name, check=False)

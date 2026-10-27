@@ -12,6 +12,11 @@ import sys
 
 
 def main() -> None:
+    if os.environ.get("AUTO_CODER_FIXTURE_HOLD_BOOTSTRAP") == "1" and "/worker-versions/" not in os.environ.get("VIRTUAL_ENV", ""):
+        # The disposable bootstrap incumbent holds a genuine UDS/OS drain;
+        # the subsequently selected locked-uv runtime still executes the
+        # unmodified production process-issues CLI below.
+        os.execv(sys.executable, [sys.executable, "/fixtures/supervisor_bridge_worker.py"])
     token = os.environ["GITHUB_TOKEN"]
     command = [
         sys.executable,
