@@ -376,6 +376,66 @@ def test_crash_without_terminal_receipt_stays_unknown_and_blocks_start(tmp_path:
     assert supervisor.apply({"operation_id": "new", "operation": "START"}) == {"status": "NEEDS_ATTENTION"}
 
 
+def test_confirmed_crashed_successor_allows_one_previous_prepared_runtime_recovery(tmp_path: Path) -> None:
+    """Use real OS child lifetimes; only the READY producer is controlled here."""
+    supervisor = WorkerSupervisor(config(tmp_path, (sys.executable, "-c", "import time; time.sleep(60)")))
+    old = {"runtime_id": "preparedOld", "interpreter_path": sys.executable, "ready": {"installed_runtime_id": "preparedOld", "environment_path": str(tmp_path)}, "ready_path": "/versions/old/READY.json"}
+    new = {"runtime_id": "preparedNew", "interpreter_path": sys.executable, "ready": {"installed_runtime_id": "preparedNew", "environment_path": str(tmp_path)}, "ready_path": "/versions/new/READY.json"}
+    selections = {"preparedOld": old, "preparedNew": new}
+    with patch.object(supervisor, "_resolve_runtime", side_effect=selections.get), patch.object(supervisor, "_verify_runtime", side_effect=lambda runtime: runtime if runtime in (old, new) else None):
+        first = supervisor.apply({"operation_id": "old-start", "operation": "START", "runtime_id": "preparedOld"})
+        assert first["status"] == "RUNNING"
+        state = supervisor.store.read()
+        state["worker"]["process_run_id"] = "old-worker-run"
+        supervisor.store.write(state)
+        stop = {"operation_id": "old-stop", "operation": "REQUEST_GRACEFUL_STOP", "expected_process_run_id": "old-worker-run", "expected_generation": first["worker"]["deployment_generation"], "expected_runtime_id": "preparedOld"}
+        try:
+            assert supervisor.apply(stop)["status"] == "DRAINING"
+            assert supervisor.child is not None
+            supervisor.child.wait(timeout=5)
+            receipt = {"schema_version": 1, "repository": "owner/repo", "channel": "beta", "deployment_generation": first["worker"]["deployment_generation"], "process_run_id": "old-worker-run", "lifecycle_state": "stopped", "is_graceful_ready": True, "unsettled_count": 0}
+            (tmp_path / "last-terminal.json").write_text(json.dumps(receipt))
+            assert supervisor.apply(stop)["status"] == "STOPPED"
+            next_child = supervisor.apply({"operation_id": "new-start", "operation": "START", "runtime_id": "preparedNew", "expected_runtime_id": "preparedOld"})
+            assert next_child["status"] == "RUNNING"
+            assert supervisor.child is not None
+            supervisor.child.kill()
+            supervisor.child.wait(timeout=5)
+            assert supervisor.inspect()["alive"] is False
+            recover = {"operation_id": "restore-prior", "operation": "RECOVER_PREVIOUS", "runtime_id": "preparedOld", "expected_runtime_id": "preparedNew", "expected_generation": next_child["worker"]["deployment_generation"], "expected_process_run_id": None}
+            restored = supervisor.apply(recover)
+            assert restored["status"] == "RUNNING"
+            assert restored["worker"]["runtime_id"] == "preparedOld"
+            assert supervisor.store.read()["prior_recovery_attempted"] is True
+            assert supervisor.apply(recover) == restored
+            assert supervisor.apply({**recover, "operation_id": "second-recovery"})["status"] == "CONFLICT"
+        finally:
+            if supervisor.child is not None and supervisor.child.poll() is None:
+                supervisor.child.terminate()
+                supervisor.child.wait(timeout=5)
+
+
+def test_previous_runtime_recovery_limit_is_per_failed_process_generation(tmp_path: Path) -> None:
+    supervisor = WorkerSupervisor(config(tmp_path))
+    old = {"runtime_id": "preparedOld", "ready": {"source_sha": "a" * 40}, "interpreter_path": sys.executable}
+    prior = {"runtime_id": "preparedOld", "ready": old["ready"]}
+
+    def failed_state(generation: str) -> dict[str, object]:
+        state = supervisor.store.read()
+        state.update(worker={"runtime_id": "preparedNew", "deployment_generation": generation}, last_worker=prior, selected_runtime_id="preparedNew", stopped=False)
+        return state
+
+    with patch.object(supervisor, "_is_alive", return_value=False), patch.object(supervisor, "_verify_runtime", return_value=old), patch.object(supervisor, "_start", return_value={"status": "RUNNING"}) as start:
+        first = failed_state("failed-generation-a")
+        assert supervisor._recover_previous(first, old)["status"] == "RUNNING"
+        assert first["prior_recovery_generation"] == "failed-generation-a"
+        assert supervisor._recover_previous({**first, "worker": {"runtime_id": "preparedNew", "deployment_generation": "failed-generation-a"}, "selected_runtime_id": "preparedNew"}, old)["status"] == "CONFLICT"
+        second = failed_state("failed-generation-b")
+        assert supervisor._recover_previous(second, old)["status"] == "RUNNING"
+        assert second["prior_recovery_generation"] == "failed-generation-b"
+        assert start.call_count == 2
+
+
 def test_reconstruction_fences_unresolved_durable_effect(tmp_path: Path) -> None:
     first = WorkerSupervisor(config(tmp_path))
     state = first.store.read()

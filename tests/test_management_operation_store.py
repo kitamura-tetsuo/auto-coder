@@ -130,6 +130,58 @@ def test_commit_response_loss_uses_exact_key_readback(tmp_path: Path) -> None:
     assert len(ManagementOperationStore(tmp_path).list_operations().records) == 1
 
 
+def test_lifecycle_admission_and_original_evidence_commit_as_one_row_pair(tmp_path: Path) -> None:
+    entered, release = threading.Event(), threading.Event()
+
+    class PausedAcknowledgementStore(ManagementOperationStore):
+        def _after_admission_commit(self) -> None:
+            entered.set()
+            assert release.wait(timeout=15)
+
+    snapshot: dict[str, object] = {
+        "schema_version": 1,
+        "stage": "ACCEPTED",
+        "accepted_evidence": '{"source_sha":"original","selection_oid":"original-record"}',
+        "incumbent": {"supervisor_generation": "original-supervisor"},
+        "original_deadline": 123456,
+    }
+    store = PausedAcknowledgementStore(tmp_path)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(store.admit, intent(), authority(), lifecycle_snapshot=snapshot)
+            assert entered.wait(timeout=5)
+            # Simulate the outstanding-operation reader of the live monitor
+            # and an independent process reconstructed before ACK delivery.
+            restarted = ManagementOperationStore(tmp_path)
+            active = restarted.list_operations(outstanding_only=True).records
+            assert len(active) == 1
+            assert restarted.lifecycle_snapshot(active[0].operation_id) == (0, snapshot)
+            changed = dict(snapshot, accepted_evidence="replaced", original_deadline=456)
+            replay = restarted.admit(intent(), authority(), lifecycle_snapshot=changed)
+            assert replay.status is AdmissionStatus.REPLAY
+            assert restarted.lifecycle_snapshot(active[0].operation_id) == (0, snapshot)
+            release.set()
+            initial = pending.result(timeout=5)
+    finally:
+        release.set()
+    assert initial.status is AdmissionStatus.CREATED
+    assert initial.record and initial.record.operation_id == active[0].operation_id
+
+
+def test_failed_lifecycle_admission_rolls_back_lane_and_evidence_together(tmp_path: Path) -> None:
+    class HistoryFailureStore(ManagementOperationStore):
+        @classmethod
+        def _append_history(cls, *args, **kwargs):
+            raise sqlite3.OperationalError("injected failure before COMMIT")
+
+    snapshot: dict[str, object] = {"schema_version": 1, "accepted_evidence": "original"}
+    failed = HistoryFailureStore(tmp_path).admit(intent(), authority(), lifecycle_snapshot=snapshot)
+    assert failed.status is AdmissionStatus.UNAVAILABLE
+    store = ManagementOperationStore(tmp_path)
+    assert store.list_operations().records == ()
+    assert store.admit(intent("competitor"), authority(), lifecycle_snapshot=snapshot).status is AdmissionStatus.CREATED
+
+
 def test_corrupt_storage_is_typed_unavailable_and_does_not_release_lane(tmp_path: Path) -> None:
     good_root, corrupt_root = tmp_path / "good", tmp_path / "corrupt"
     good = ManagementOperationStore(good_root)

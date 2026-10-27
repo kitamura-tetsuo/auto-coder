@@ -9,9 +9,27 @@ from __future__ import annotations
 
 import os
 import sys
+import time
+from pathlib import Path
 
 
 def main() -> None:
+    if os.environ.get("AUTO_CODER_FIXTURE_HOLD_BOOTSTRAP") == "1" and "/worker-versions/" not in os.environ.get("VIRTUAL_ENV", ""):
+        # The disposable bootstrap incumbent holds a genuine UDS/OS drain;
+        # the subsequently selected locked-uv runtime still executes the
+        # unmodified production process-issues CLI below.
+        os.execv(sys.executable, [sys.executable, "/fixtures/supervisor_bridge_worker.py"])
+    if os.environ.get("AUTO_CODER_FIXTURE_FAIL_STAGED_ONCE") == "1" and "/worker-versions/" in os.environ.get("VIRTUAL_ENV", ""):
+        # Crash one genuine Supervisor-launched staged process before it can
+        # publish a producer heartbeat; a recovered previous runtime must
+        # execute the unmodified production CLI on its next start.
+        crash = Path(os.environ["AUTO_CODER_RUNTIME_ROOT"]) / "fixture-crash-next-staged"
+        if crash.exists():
+            crash.unlink()
+            # Ensure the real Supervisor records the child's PID/start token
+            # before the fixture process exits unexpectedly.
+            time.sleep(0.75)
+            raise SystemExit("fixture intentional staged-worker activation failure")
     token = os.environ["GITHUB_TOKEN"]
     command = [
         sys.executable,

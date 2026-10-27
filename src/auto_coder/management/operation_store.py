@@ -82,9 +82,56 @@ class ManagementOperationStore:
           effect_attempt_id TEXT NOT NULL, correlation_identity TEXT NOT NULL,
           safe_category TEXT NOT NULL, receipt_json TEXT NOT NULL,
           recorded_at REAL NOT NULL, FOREIGN KEY(operation_id) REFERENCES operations(operation_id));
+        CREATE TABLE IF NOT EXISTS worker_lifecycle (
+          operation_id TEXT PRIMARY KEY, revision INTEGER NOT NULL,
+          snapshot_json TEXT NOT NULL, updated_at REAL NOT NULL,
+          FOREIGN KEY(operation_id) REFERENCES operations(operation_id));
         """
         )
         return connection
+
+    def lifecycle_snapshot(self, operation_id: str) -> tuple[int, dict[str, object]] | None:
+        """Read the original source evidence and each pre-effect fence atomically."""
+        connection = self._connect()
+        try:
+            row = connection.execute("SELECT revision,snapshot_json FROM worker_lifecycle WHERE operation_id=?", (operation_id,)).fetchone()
+            if row is None:
+                return None
+            value = json.loads(row["snapshot_json"])
+            if not isinstance(value, dict) or value.get("schema_version") != 1:
+                raise ValueError("invalid worker lifecycle snapshot")
+            return int(row["revision"]), value
+        finally:
+            connection.close()
+
+    def lifecycle_save(self, operation_id: str, expected_revision: int, snapshot: dict[str, object]) -> bool:
+        """CAS-write one bounded snapshot to the same durable SQLite journal."""
+        encoded = self._encode_lifecycle(snapshot)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute("SELECT 1 FROM operations WHERE operation_id=?", (operation_id,)).fetchone() is None:
+                connection.rollback()
+                return False
+            current = connection.execute("SELECT revision FROM worker_lifecycle WHERE operation_id=?", (operation_id,)).fetchone()
+            if current is None and expected_revision == -1:
+                connection.execute("INSERT INTO worker_lifecycle VALUES (?,?,?,?)", (operation_id, 0, encoded, time.time()))
+            elif current is not None and current["revision"] == expected_revision:
+                connection.execute("UPDATE worker_lifecycle SET revision=?,snapshot_json=?,updated_at=? WHERE operation_id=?", (expected_revision + 1, encoded, time.time(), operation_id))
+            else:
+                connection.rollback()
+                return False
+            connection.commit()
+            return True
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _encode_lifecycle(snapshot: dict[str, object]) -> str:
+        encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        if len(encoded.encode("utf-8")) > 32768 or snapshot.get("schema_version") != 1:
+            raise ValueError("invalid or unbounded worker lifecycle evidence")
+        return encoded
 
     def _before_admission_transaction(self) -> None:
         """Test seam immediately before the real admission transaction."""
@@ -92,12 +139,15 @@ class ManagementOperationStore:
     def _after_admission_commit(self) -> None:
         """Delivery seam after commit, before the acknowledgement is read."""
 
-    def admit(self, intent: OperationIntent, authority: AcceptedAuthority) -> AdmissionResult:
+    def admit(self, intent: OperationIntent, authority: AcceptedAuthority, *, lifecycle_snapshot: dict[str, object] | None = None) -> AdmissionResult:
         try:
             parameters = intent.normalized_parameters()
             validate_authority(authority)
             fingerprint = intent.fingerprint()
             namespace = self._namespace(intent, authority)
+            lifecycle_json: str | None = None
+            if lifecycle_snapshot is not None:
+                lifecycle_json = self._encode_lifecycle(lifecycle_snapshot)
             connection = self._connect()
             try:
                 self._before_admission_transaction()
@@ -124,6 +174,10 @@ class ManagementOperationStore:
                     "INSERT INTO operations(operation_id,namespace_key,target_key,intent_json,fingerprint,authority_json,phase,revision,owner_attempt_id,safe_error_category,effect_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (operation_id, namespace, intent.target.key(), self._intent_json(normalized), fingerprint, self._authority_json(authority), OperationPhase.ACCEPTED.value, 0, "", "", self._effect_json(EffectAttempt()), now, now),
                 )
+                if lifecycle_json is not None:
+                    # An ACCEPTED lifecycle row must never be visible without
+                    # its immutable original evidence, fence and deadline.
+                    connection.execute("INSERT INTO worker_lifecycle VALUES (?,?,?,?)", (operation_id, 0, lifecycle_json, now))
                 self._append_history(connection, operation_id, OperationPhase.ACCEPTED, 0, "", EffectAttempt(), "", now)
                 connection.commit()
                 self._after_admission_commit()

@@ -37,12 +37,14 @@ def create_management_app(
     async def lifespan(_: FastAPI):
         async with mcp.session_manager.run():
             await runtime.dispatcher.start()
+            await runtime.start_monitor()
             try:
                 await runtime.dispatcher.drain()
                 runtime.self_update.startup_reconciled = True
                 yield
             finally:
                 runtime.self_update.startup_reconciled = False
+                await runtime.stop_monitor()
                 await runtime.dispatcher.stop()
         # Uvicorn drains active requests before lifespan shutdown. Complete
         # dispatcher and MCP cleanup before acknowledging the exact child;

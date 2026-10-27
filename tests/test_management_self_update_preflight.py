@@ -152,6 +152,49 @@ def test_real_candidate_and_previous_read_same_wal_state_without_live_changes(re
     assert journal.get(operation.operation_id).record == operation
 
 
+def test_worker_source_authority_is_removed_from_each_private_installed_probe(retained_state, _use_real_commands) -> None:
+    config, _, journal, operation, previous, old_package, candidate, candidate_package = retained_state
+    token_file = config.parent / "source-evidence-token"
+    token_file.write_text("disposable-source-read-credential", encoding="utf-8")
+    raw = yaml.safe_load(config.read_text(encoding="utf-8"))
+    raw.update(source_repository="kitamura-tetsuo/auto-coder", source_evidence_token_file=str(token_file))
+    config.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    settings = load_management_settings(config)
+    assert settings.source_repository == "kitamura-tetsuo/auto-coder"
+    assert settings.source_evidence_token_file == token_file
+    configuration = config.read_bytes()
+    credential = token_file.read_bytes()
+    configuration_sha256 = hashlib.sha256(configuration).hexdigest()
+    previous = replace(previous, configuration_sha256=configuration_sha256)
+    candidate = replace(candidate, configuration_sha256=configuration_sha256)
+    before = _live_snapshot(settings, journal)
+
+    # Execute the real installed app constructor in all three private probes.
+    # A retained live source credential path must fail before app construction;
+    # no mocked constructor or synthetic success response can satisfy the test.
+    for package in (old_package, candidate_package):
+        with (package / "management" / "app.py").open("a", encoding="utf-8") as stream:
+            stream.write(
+                "\n_original_create_management_app = create_management_app\n"
+                "def create_management_app(settings, *args, **kwargs):\n"
+                "    assert settings.source_repository is None\n"
+                "    assert settings.source_evidence_token_file is None\n"
+                "    return _original_create_management_app(settings, *args, **kwargs)\n"
+            )
+
+    receipt = ManagementSelfUpdatePreflight(config).verify(candidate, previous)
+
+    assert receipt.candidate_receipt_identity == candidate.receipt_identity
+    assert receipt.previous_receipt_identity == previous.receipt_identity
+    assert receipt.configuration_sha256 == configuration_sha256
+    assert receipt.oauth_snapshot_sha256 == before[0].identity
+    assert receipt.journal_snapshot_sha256 == before[1].identity
+    assert _live_snapshot(settings, journal) == before
+    assert journal.get(operation.operation_id).record == operation
+    assert config.read_bytes() == configuration
+    assert token_file.read_bytes() == credential
+
+
 @pytest.mark.parametrize("mutation", ["DELETE FROM access_tokens", "DELETE FROM grants", "ALTER TABLE access_tokens RENAME COLUMN scope TO broken_scope"])
 def test_candidate_destructive_store_initialization_is_rejected_without_touching_live_state(retained_state, mutation: str, _use_real_commands) -> None:
     config, settings, journal, _, previous, _, candidate, package = retained_state

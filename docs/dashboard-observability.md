@@ -20,9 +20,19 @@ renderer changes are required because worker admission, provider execution, and
 beta/release state remain untouched. The production origin, actual replacement,
 reconnect, and bounded recovery are verified by `bash scripts/test.sh
 tests/test_management_self_update_integration.py
+tests/test_management_self_update_failures.py
 tests/test_management_self_update_supervisor.py`. Operator-visible states and
 recovery instructions are documented in
 [`client-features/management-mcp-self-update.md`](client-features/management-mcp-self-update.md).
+
+Authenticated worker source deployment and process-control operations add separate
+SQLite lifecycle snapshots and Supervisor readback evidence. These remain
+management diagnostics queried through MCP, not a dashboard-owned Issue/PR
+processing origin, provider routing decision, trace stage or renderer outcome.
+The ordinary worker trace producers and dashboards are unchanged; the focused
+authenticated test in `tests/test_management_worker_lifecycle.py` checks that
+the management operation reports source selection, stop, new-worker and
+recovery outcomes independently of Issue/PR completion.
 
 Local CI base-update diagnostics retain the durable `Update Base` stage and its
 `details.result` key while making the result value truthful to the typed repair

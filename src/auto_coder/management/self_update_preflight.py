@@ -193,7 +193,7 @@ class ManagementSelfUpdatePreflight:
                 # Forwarding is deliberately absent in this disposable app. The
                 # stager already validates the original configuration parser;
                 # this target probe never receives paths to live operator state.
-                for name in ("bootstrap_config_path", "self_update_source_repository", "self_update_python_executable", "self_update_uv_executable", "self_update_uv_version"):
+                for name in ("bootstrap_config_path", "self_update_source_repository", "self_update_python_executable", "self_update_uv_executable", "self_update_uv_version", "source_repository", "source_evidence_token_file"):
                     raw.pop(name, None)
                 fixture_config = root / "management.yaml"
                 fixture_config.write_text(yaml.safe_dump(raw), encoding="utf-8")

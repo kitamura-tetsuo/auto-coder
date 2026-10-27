@@ -41,3 +41,13 @@ a write. Conflicting immutable history fails, and an unexpectedly superseded
 pointer is reported rather than overwritten. Selection success means only that
 the history and current Git ref resolve to the verified SHA; installed worker
 source remains a separate runtime observation.
+
+The selector also maintains the mutable
+`refs/tags/auto-coder-beta-selection-current` ref pointing to the exact
+annotated history tag **object** for the confirmed selection. Unlike the
+direct-commit source pointer, this identifies a new beta-selection operation
+even when its SHA is unchanged. A newly successful same-SHA run or retry
+attempt may be selected when the operator supplies the actual previous SHA;
+the selected execution must still be the latest successful eligible attempt.
+The manager requires both refs and the immutable selection object to agree
+before replacing a worker. The source pointer alone is never selection proof.

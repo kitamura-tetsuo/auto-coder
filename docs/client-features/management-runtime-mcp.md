@@ -1,27 +1,33 @@
 # Authenticated runtime diagnostics and single-target reevaluation
 
 The independent `auto-coder management serve --config PATH` process exposes
-fixed MCP diagnostics and reevaluation tools beside `auto_coder_whoami`. The
-separately opted-in management self-update tool is documented in
-`management-mcp-self-update.md`. This process does **not** run
-an `AutomationEngine`, execute GitHub/provider jobs, control Docker, start or
+fixed MCP diagnostics, single-target reevaluation, and worker lifecycle tools
+beside `auto_coder_whoami`. These tools share one durable management dispatcher.
+The separately opted-in management self-update tool is documented in
+[`management-mcp-self-update.md`](management-mcp-self-update.md). This process does
+**not** run an `AutomationEngine`, execute GitHub/provider jobs, control Docker, start or
 stop containers, or schedule a new retry system. Only the existing worker UDS
 producer can accept a single Issue/PR reevaluation.
 
 ## Trusted deployment configuration
 
-The management configuration adds two absolute paths:
+Runtime tools use a retained operation store and a read-only operating policy.
+Worker source deployment also uses a configured source repository and read
+credential:
 
 ```yaml
 state_root: /management-oauth
 operation_state_root: /management-operations
 operating_policy_path: /management-policy/operating-policy.yaml
+source_repository: kitamura-tetsuo/auto-coder
+source_evidence_token_file: /run/secrets/source_evidence_read
 ```
 
 The remaining `public_origin`, Firebase project, bind and statically registered
-OAuth-client fields follow `management-mcp-authentication.md`. The two new paths
-are optional for deployments that use only `auto_coder_whoami`; runtime tools
-then return `UNAVAILABLE` and never grant mutation authority. Operators should
+OAuth-client fields follow `management-mcp-authentication.md`. The
+`operation_state_root` and `operating_policy_path` fields are optional for
+deployments that use only `auto_coder_whoami`; runtime tools then return
+`UNAVAILABLE` and never grant mutation authority. Operators should
 provision `operating_policy_path` **read-only** from the controller, not inside a
 worker filesystem, workspace, or manager-writable operation store. An absent,
 malformed, duplicate-key or unreadable policy is not interpreted as `beta`.
@@ -63,6 +69,14 @@ new effect, and it does not erase a previously committed receipt.
 | `auto_coder_validation_attempt` | `auto-coder.read` | `target_id`, required positive `pr_number`, and exactly one of `attempt_id` or `attempt_sequence` | Existing exact validation-attempt projection and no-match/unavailable outcomes |
 | `auto_coder_operation_get` | `auto-coder.read` | `operation_id`, plus `target_id` for worker operations | Non-secret original actor/client, immutable intent, effect state and verified receipt; exact read-only reconciliation is allowed |
 | `auto_coder_reevaluate_target` | `auto-coder.read` and `auto-coder.operate` | `target_id`, `target_type` (`issue`/`pr`), positive `number`, `idempotency_key` (1–128 characters), `expected_process_run_id`, `expected_deployment_generation` | One journaled reevaluation request for the current live worker incarnation |
+| `auto_coder_deployment_status` | `auto-coder.read` | `target_id` | Signed Supervisor state and actual installed worker observation where available |
+| `auto_coder_start_worker` | `auto-coder.read` and `auto-coder.deploy` | `target_id`, `idempotency_key`, `expected_supervisor_generation`, optional `expected_runtime_id` | Start the existing selected runtime only after a genuine stop |
+| `auto_coder_stop_worker` | `auto-coder.read` and `auto-coder.deploy` | `target_id`, `idempotency_key`, `expected_supervisor_generation`, `expected_process_run_id`, `expected_deployment_generation`, `expected_runtime_id` | Request graceful stop and await terminal receipt plus OS exit |
+| `auto_coder_restart_worker` | `auto-coder.read` and `auto-coder.deploy` | The same generation-fenced arguments as `stop_worker` | Gracefully stop and start the selected runtime using separate journaled effects |
+| `auto_coder_deploy_beta_source` | `auto-coder.read` and `auto-coder.deploy` | `target_id`, `selected_git_sha`, `idempotency_key`, `expected_supervisor_generation`, optional `expected_process_run_id`, `expected_deployment_generation`, `expected_runtime_id` | Stage and activate only the exactly selected tested beta source |
+
+See [`in-container-worker-source-updates.md`](in-container-worker-source-updates.md)
+for deployment evidence, credentials, operation progress and recovery limitations.
 
 The MCP tool schema rejects unknown arguments. The service also rejects Boolean
 or nonpositive item numbers, invalid identity/key characters and out-of-range
@@ -98,10 +112,13 @@ token refresh cannot expand that authority. Access-token expiry alone does not
 cancel an already admitted operation, while grant expiry, revocation, removed
 consent, missing operator policy or a profile downgrade prevent the new effect.
 The operation journal (`management-operation-journal.md`) commits intent and
-non-secret authenticated authority before the worker request. One dispatcher
-owns registered handlers and per-target journal exclusion; unknown actions
-remain `NEEDS_ATTENTION`. Its queue is only a delivery mechanism for already
-accepted management operations, never an alternate Issue/PR scheduler.
+non-secret authenticated authority before the worker request. Reevaluation,
+worker lifecycle, and management self-update handlers share one dispatcher
+with per-target journal exclusion; unknown actions remain `NEEDS_ATTENTION`.
+Its queue is only a delivery mechanism for already accepted management
+operations, never an alternate Issue/PR scheduler. Worker lifecycle and
+management self-update use their documented bound effect sequences and recovery
+rules within this same dispatcher.
 
 The response `accepted_for_reevaluation` is returned only after validating the
 actual worker's durable invalidation receipt: same operation ID, target,
@@ -114,9 +131,9 @@ replay returns the original operation and original acceptance, not a new effect.
 are distinct. Lost responses, manager restarts, network failures or replaced
 workers never release a possibly-sent operation's lane by timeout.
 
-Once the journal records `sent_unknown`, its dispatcher may **only read** the
-receipt for that exact operation ID from the fixed worker endpoint. It must
-never forward the same action again, issue a substitute key or infer success
+For a reevaluation attempt recorded as `sent_unknown`, the dispatcher may
+**only read** the receipt for that exact operation ID from the fixed worker
+endpoint. It must never forward the same action again, issue a substitute key or infer success
 from a missing result. Auth/policy downgrades do not forbid this exact read-only
 reconciliation. A durable confirmed receipt can finish the journal operation
 after a crash without repeating the worker command.
