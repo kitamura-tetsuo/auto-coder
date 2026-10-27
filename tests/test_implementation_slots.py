@@ -851,7 +851,7 @@ else:
         return accessible
     runtime_locks.os.access = observed_access
 os.umask(0o022)
-print("READY", flush=True)
+print(f"READY {os.getpid()}", flush=True)
 while not gate_path.exists():
     time.sleep(0.005)
 if role == "contender":
@@ -914,7 +914,9 @@ time.sleep(30)
             assert process.stdout is not None
             processes.append(process)
         ready = [read_participant_line(process) for process in processes]
-        assert ready == ["READY", "READY"], f"Unexpected startup output {ready!r}: {participant_diagnostics()}"
+        assert all(len(line.split()) == 2 and line.split()[0] == "READY" and line.split()[1].isdigit() for line in ready), f"Unexpected startup output {ready!r}: {participant_diagnostics()}"
+        participant_pids = [int(line.split()[1]) for line in ready]
+        assert len(set(participant_pids)) == 2
 
         gate_path.touch()
         deadline = time.monotonic() + 5
@@ -935,7 +937,8 @@ time.sleep(30)
             executions = state[winner_key]["executions"]
             assert len(executions) == 1
             assert executions[0]["id"] == outcomes[winner_index]
-            assert executions[0]["pid"] == processes[winner_index].pid
+            # Under sudo, Popen.pid names the wrapper, not the Python child.
+            assert executions[0]["pid"] == participant_pids[winner_index]
             assert all(process.poll() is None for process in processes), f"Participant exited during durable-state observation: {participant_diagnostics()}"
 
         if crash_after_persist:
