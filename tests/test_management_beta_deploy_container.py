@@ -54,7 +54,13 @@ def _await_stage(app, operation_id: str, expected: str, *, timeout: float = 120)
         return _wait_for(lambda: result if (result := _result(app, operation_id)).get("stage") == expected else None, timeout=timeout)
     except AssertionError as error:
         snapshot = _result(app, operation_id)
-        raise AssertionError(f"lifecycle did not reach {expected}: stage={snapshot.get('stage')} reason={snapshot.get('reason')} steps={snapshot.get('steps')}") from error
+        try:
+            live = app.state.management_runtime.clients["beta"].observe_worker()
+            worker = live.data.get("observation") if isinstance(live.data, dict) else None
+            producer = {"result_code": live.result_code, "worker": worker}
+        except (OSError, RuntimeError, ValueError) as observation_error:
+            producer = {"error": type(observation_error).__name__}
+        raise AssertionError(f"lifecycle did not reach {expected}: stage={snapshot.get('stage')} reason={snapshot.get('reason')} steps={snapshot.get('steps')} producer={producer}") from error
 
 
 def _argument(client: WorkerNetworkClient, sha: str, key: str) -> dict[str, object]:
@@ -203,7 +209,7 @@ def test_authenticated_beta_source_installs_real_version_and_reconciles_after_lo
             timeout=60,
         )
         _wait_for(lambda: "fixture GitHub HTTPS ready" if "fixture GitHub HTTPS ready" in _docker("logs", github_name, timeout=10).stdout else None, timeout=20)
-        _docker(
+        worker_launch = (
             "run",
             "-d",
             "--rm",
@@ -252,6 +258,8 @@ def test_authenticated_beta_source_installs_real_version_and_reconciles_after_lo
             "-e",
             "AUTO_CODER_FIXTURE_HOLD_BOOTSTRAP=1",
             "-e",
+            "AUTO_CODER_FIXTURE_FAIL_STAGED_ONCE=1",
+            "-e",
             "AUTO_CODER_SOURCE_REPOSITORY_ROOT=/source",
             "-e",
             f"AUTO_CODER_BRIDGE_BIND_ADDRESS={worker_ip}",
@@ -275,8 +283,8 @@ def test_authenticated_beta_source_installs_real_version_and_reconciles_after_lo
             "HOME=/runtime/home",
             image,
             "/fixtures/supervisor_offline_pid1.py",
-            timeout=60,
         )
+        _docker(*worker_launch, timeout=60)
         facts = _wait_for(lambda: result if (result := _container_facts(worker_name))["socket"] else None, timeout=30)
         assert facts["docker_socket"] is False and facts["docker_binary"] is None
         _wait_for(lambda: _inspect_worker(worker_name), timeout=90)
@@ -342,52 +350,117 @@ def test_authenticated_beta_source_installs_real_version_and_reconciles_after_lo
             # authenticated request with unchanged original immutable proof.
             remote.executions[(12, 1)] = (sha, "2026-10-02T03:00:00Z")
             assert selector(remote).advance("r78", sha).certainty is MutationCertainty.CONFIRMED
-            new_run = _call(http, bearer, "auto_coder_deploy_beta_source", _argument(fresh_client, sha, "real-deploy-new-run"))
+            new_arguments = _argument(fresh_client, sha, "real-deploy-new-run")
+            new_run = _call(http, bearer, "auto_coder_deploy_beta_source", new_arguments)
             next_id = str(new_run["operation_id"])
+            assert _call(http, bearer, "auto_coder_deploy_beta_source", new_arguments)["operation_id"] == next_id
             _await_stage(second_app, next_id, "SUCCEEDED", timeout=180)
             next_evidence = json.loads(str(_result(second_app, next_id)["accepted_evidence"]))
             assert next_evidence["proof_run_id"] == 101
             assert (next_evidence["selected_run_id"], next_evidence["selected_run_attempt"]) == (12, 1)
             assert next_evidence["tested_source_oid"] == json.loads(original_evidence)["tested_source_oid"]
 
+        # The later same-SHA selection is also reconstructed in a genuinely
+        # fresh manager and signed client, not only the first deployment.
+        third_client = WorkerNetworkClient(config)
+        assert third_client.supervisor_generation is None
+        third_app = create_management_app(settings, grants, worker_clients={"beta": third_client})
+        with TestClient(third_app, base_url=origin) as http:
+            assert _call(http, bearer, "auto_coder_deploy_beta_source", new_arguments)["operation_id"] == next_id
+            assert json.loads(str(_result(third_app, next_id)["accepted_evidence"])) == next_evidence
+
             # At the retry attempt, supersession before the first replacement
             # is fenced even though the selected source SHA is unchanged.
             remote.executions[(12, 2)] = (sha, "2026-10-03T04:00:00Z")
             assert selector(remote).advance("r79", sha).certainty is MutationCertainty.CONFIRMED
+            assert _call(http, bearer, "auto_coder_deploy_beta_source", new_arguments)["operation_id"] == next_id
+            assert json.loads(str(_result(third_app, next_id)["accepted_evidence"])) == next_evidence
             gate_entered, gate_release = threading.Event(), threading.Event()
-            lifecycle = second_app.state.management_runtime.lifecycle
+            lifecycle = third_app.state.management_runtime.lifecycle
             original_step = lifecycle._step
             target: dict[str, str] = {}
 
             def barrier_step(record, version, snapshot, name, client, operation, runtime_id):
-                if name == "drain" and record.operation_id == target.get("id"):
+                if name == "drain":
                     gate_entered.set()
-                    assert gate_release.wait(timeout=15)
+                    assert gate_release.wait(timeout=45)
                 return original_step(record, version, snapshot, name, client, operation, runtime_id)
 
             monkeypatch.setattr(lifecycle, "_step", barrier_step)
-            retry = _call(http, bearer, "auto_coder_deploy_beta_source", _argument(fresh_client, sha, "real-deploy-retry"))
+            retry = _call(http, bearer, "auto_coder_deploy_beta_source", _argument(third_client, sha, "real-deploy-retry"))
             target["id"] = str(retry["operation_id"])
             assert gate_entered.wait(timeout=90)
             try:
-                retry_evidence = json.loads(str(_result(second_app, target["id"])["accepted_evidence"]))
+                retry_evidence = json.loads(str(_result(third_app, target["id"])["accepted_evidence"]))
                 assert retry_evidence["proof_run_id"] == 101
                 assert (retry_evidence["selected_run_id"], retry_evidence["selected_run_attempt"]) == (12, 2)
                 remote.executions[(13, 1)] = (sha, "2026-10-04T05:00:00Z")
                 assert selector(remote).advance("r80", sha).certainty is MutationCertainty.CONFIRMED
             finally:
                 gate_release.set()
-            _await_stage(second_app, target["id"], "SUPERSEDED", timeout=90)
-            assert "drain" not in _result(second_app, target["id"])["steps"]
+            _await_stage(third_app, target["id"], "SUPERSEDED", timeout=90)
+            assert "drain" not in _result(third_app, target["id"])["steps"]
 
-            # Revocation of the accepted original grant must also stop new
-            # effects; direct journal inspection remains available afterward.
-            revoked_arguments = _argument(fresh_client, sha, "real-deploy-revoked")
+            # Crash the next real installed child after Supervisor START.
+            # Its failed OS lifetime must trigger exactly one previous READY
+            # runtime recovery, whose producer also has to prove readiness.
+            remote.executions[(14, 1)] = (sha, "2026-10-05T06:00:00Z")
+            assert selector(remote).advance("r81", sha).certainty is MutationCertainty.CONFIRMED
+            (runtime / "fixture-crash-next-staged").write_text("crash-once", encoding="utf-8")
+            failed = _call(http, bearer, "auto_coder_deploy_beta_source", _argument(third_client, sha, "real-deploy-failed-activation"))
+            failed_id = str(failed["operation_id"])
+            failed_snapshot = _await_stage(third_app, failed_id, "FAILED", timeout=210)
+            assert failed_snapshot["reason"] == "new_beta_worker_failed_previous_runtime_restored"
+            assert failed_snapshot["recovery_attempts"] == 1
+            assert failed_snapshot["steps"]["start"]["state"] == "CONFIRMED"
+            assert failed_snapshot["steps"]["recovery"]["state"] == "CONFIRMED"
+            assert len(failed_snapshot["heartbeats"]) >= 2
+            assert not (runtime / "fixture-crash-next-staged").exists()
+            recovered = third_client.observe_worker()
+            assert recovered.result_code == "OK" and isinstance(recovered.data, dict)
+            assert recovered.data["binding_status"] == "VERIFIED"
+            assert recovered.data["runtime_binding"]["runtime_id"] == failed_snapshot["previous_binding"]["runtime_id"]
+
+            # Revocation is synchronized before the first replacement effect
+            # and must prevent a new drain even with a completed preparation.
+            revoke_entered, revoke_release = threading.Event(), threading.Event()
+
+            def pause_before_revoked_drain(record, version, current, name, client, operation, runtime_id):
+                if name == "drain":
+                    revoke_entered.set()
+                    assert revoke_release.wait(timeout=45)
+                return original_step(record, version, current, name, client, operation, runtime_id)
+
+            monkeypatch.setattr(lifecycle, "_step", pause_before_revoked_drain)
+            revoked_arguments = _argument(third_client, sha, "real-deploy-revoked")
             revoked = _call(http, bearer, "auto_coder_deploy_beta_source", revoked_arguments)
             revoked_id = str(revoked["operation_id"])
-            grants.revoke("alice-client", bearer)
-            _await_stage(second_app, revoked_id, "NEEDS_ATTENTION", timeout=90)
-            assert "drain" not in _result(second_app, revoked_id)["steps"]
+            assert revoke_entered.wait(timeout=90)
+            try:
+                grants.revoke("alice-client", bearer)
+            finally:
+                revoke_release.set()
+            _await_stage(third_app, revoked_id, "NEEDS_ATTENTION", timeout=90)
+            assert "drain" not in _result(third_app, revoked_id)["steps"]
+
+        # Kill the actual Supervisor PID 1 with a retained original journal
+        # and bring up a fresh Supervisor incarnation from the same volume.
+        # Reconstruction must preserve that original operation and must not
+        # dispatch a replacement under a new Supervisor's authority.
+        old_incarnation = third_client.supervisor_generation
+        prior_revoked = _result(third_app, revoked_id)
+        _docker("kill", "--signal", "KILL", worker_name)
+        _wait_for(lambda: "removed" if not _docker("ps", "-a", "--filter", f"name=^{worker_name}$", "-q").stdout.strip() else None, timeout=30)
+        _docker(*worker_launch, timeout=60)
+        _wait_for(lambda: facts if (facts := _container_facts(worker_name))["socket"] else None, timeout=30)
+        reconstructed_client = WorkerNetworkClient(config)
+        rebuilt = _wait_for(lambda: observation if (observation := reconstructed_client.inspect_supervisor()).result_code == "OK" else None, timeout=45)
+        assert rebuilt.supervisor_generation != old_incarnation
+        fourth_app = create_management_app(settings, grants, worker_clients={"beta": reconstructed_client})
+        with TestClient(fourth_app, base_url=origin):
+            assert _result(fourth_app, revoked_id)["accepted_evidence"] == prior_revoked["accepted_evidence"]
+            assert _result(fourth_app, revoked_id)["stage"] == "NEEDS_ATTENTION"
+            assert "drain" not in _result(fourth_app, revoked_id)["steps"]
     finally:
         logs = _docker("logs", worker_name, timeout=10, check=False)
         if logs.stdout or logs.stderr:

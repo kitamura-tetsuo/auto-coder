@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 
 def main() -> None:
@@ -17,6 +18,14 @@ def main() -> None:
         # the subsequently selected locked-uv runtime still executes the
         # unmodified production process-issues CLI below.
         os.execv(sys.executable, [sys.executable, "/fixtures/supervisor_bridge_worker.py"])
+    if os.environ.get("AUTO_CODER_FIXTURE_FAIL_STAGED_ONCE") == "1" and "/worker-versions/" in os.environ.get("VIRTUAL_ENV", ""):
+        # Crash one genuine Supervisor-launched staged process before it can
+        # publish a producer heartbeat; a recovered previous runtime must
+        # execute the unmodified production CLI on its next start.
+        crash = Path(os.environ["AUTO_CODER_RUNTIME_ROOT"]) / "fixture-crash-next-staged"
+        if crash.exists():
+            crash.unlink()
+            raise SystemExit("fixture intentional staged-worker activation failure")
     token = os.environ["GITHUB_TOKEN"]
     command = [
         sys.executable,
