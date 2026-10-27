@@ -7,6 +7,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import signal
 import socket
 import stat
@@ -19,11 +20,15 @@ import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 from loguru import logger
 
 from .worker_supervisor_store import SupervisorStore
-from .worker_versions import WorkerVersionConfig, WorkerVersionError, WorkerVersionPreparer
+from .worker_versions import PrepareIntent, WorkerVersionConfig, WorkerVersionError, WorkerVersionPreparer
+
+_FULL_SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+_OPERATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 
 
 @dataclass(frozen=True)
@@ -37,6 +42,10 @@ class SupervisorConfig:
     version_root: Path | None = None
     child_command: tuple[str, ...] | None = None
     start_on_boot: bool = False
+    source_repository: Path | None = None
+    bridge_bind_address: str | None = None
+    bridge_port: int | None = None
+    bridge_secret_file: Path | None = None
 
     @classmethod
     def environment(cls) -> "SupervisorConfig":
@@ -54,6 +63,10 @@ class SupervisorConfig:
             Path(os.environ.get("AUTO_CODER_BOOTSTRAP_INTERPRETER", sys.executable)),
             Path(os.environ.get("AUTO_CODER_VERSION_ROOT", runtime / "worker-versions")),
             start_on_boot=os.environ.get("AUTO_CODER_SUPERVISOR_AUTO_START", "1") == "1",
+            source_repository=Path(os.environ["AUTO_CODER_SOURCE_REPOSITORY_ROOT"]) if "AUTO_CODER_SOURCE_REPOSITORY_ROOT" in os.environ else None,
+            bridge_bind_address=os.environ.get("AUTO_CODER_BRIDGE_BIND_ADDRESS"),
+            bridge_port=int(os.environ["AUTO_CODER_BRIDGE_PORT"]) if os.environ.get("AUTO_CODER_BRIDGE_PORT", "").isdigit() else None,
+            bridge_secret_file=Path(os.environ["AUTO_CODER_BRIDGE_SECRET_FILE"]) if "AUTO_CODER_BRIDGE_SECRET_FILE" in os.environ else None,
         )
 
 
@@ -90,6 +103,7 @@ class WorkerSupervisor:
         self.incarnation = uuid.uuid4().hex
         self._lock = threading.RLock()
         self._shutdown_requested = False
+        self._active_preparations: set[str] = set()
 
     @property
     def control_socket(self) -> Path:
@@ -139,8 +153,8 @@ class WorkerSupervisor:
         expected = {"schema_version": 1, "repository": self.config.repository, "channel": self.config.channel, "deployment_generation": worker.get("deployment_generation"), "process_run_id": worker.get("process_run_id"), "lifecycle_state": "stopped", "is_graceful_ready": True, "unsettled_count": 0}
         return all(value.get(key) == expected_value for key, expected_value in expected.items())
 
-    def _observation(self, worker: dict[str, Any]) -> dict[str, Any] | None:
-        nonce = uuid.uuid4().hex
+    def worker_http(self, worker: dict[str, Any], method: str, target: str, body: bytes = b"") -> tuple[int, dict[str, Any]] | None:
+        """Read one bounded response from the actual, PID-verified worker socket."""
         connection = _UnixHTTPConnection(self.worker_socket)
         try:
             before = self._start_token(int(worker["pid"]))
@@ -151,18 +165,41 @@ class WorkerSupervisor:
             peer_pid = struct.unpack("3i", connection.sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))[0]
             if peer_pid != worker["pid"]:
                 return None
-            connection.request("GET", f"/v1/observation?nonce={nonce}")
+            headers = {"Content-Type": "application/json"} if method == "POST" else {}
+            connection.request(method, target, body=body if method == "POST" else None, headers=headers)
             response = connection.getresponse()
-            body = json.loads(response.read()) if response.status == 200 else None
+            raw = response.read(256 * 1024 + 1)
+            if len(raw) > 256 * 1024:
+                return None
+            value = json.loads(raw)
+            producer_run = response.getheader("Auto-Coder-Process-Run-Id")
+            producer_generation = response.getheader("Auto-Coder-Deployment-Generation")
             after = self._start_token(int(worker["pid"]))
-        except (OSError, ValueError, http.client.HTTPException):
+        except (OSError, ValueError, TypeError, http.client.HTTPException):
             return None
         finally:
             connection.close()
+        if (
+            before != after
+            or not isinstance(value, dict)
+            or producer_generation != worker["deployment_generation"]
+            or not isinstance(producer_run, str)
+            or not 1 <= len(producer_run) <= 128
+            or producer_run == "unavailable"
+            or worker.get("process_run_id") not in (None, producer_run)
+            or (target.startswith("/v1/observation?") and value.get("process_run_id") != producer_run)
+        ):
+            return None
+        return response.status, value
+
+    def _observation(self, worker: dict[str, Any], nonce: str | None = None) -> dict[str, Any] | None:
+        nonce = nonce or uuid.uuid4().hex
+        result = self.worker_http(worker, "GET", "/v1/observation?" + urlencode({"nonce": nonce}))
+        if result is None or result[0] != 200:
+            return None
+        body = result[1]
         valid = (
-            isinstance(body, dict)
-            and body.get("schema_version") == 1
-            and before == after == worker["start_token"]
+            body.get("schema_version") == 1
             and body.get("nonce") == nonce
             and body.get("repository") == self.config.repository
             and body.get("channel") == self.config.channel
@@ -253,10 +290,183 @@ class WorkerSupervisor:
             self._reconcile_worker(state)
             worker, alive = state.get("worker"), self._is_alive(state.get("worker"))
             status = "DRAINING" if alive and isinstance(worker, dict) and worker.get("stop_requested") else "RUNNING" if alive else "UNKNOWN" if worker is not None else "STOPPED" if state.get("stopped") else "UNKNOWN"
-            return {"status": status, "supervisor_incarnation": self.incarnation, "worker": worker, "alive": alive}
+            return {"status": status, "supervisor_incarnation": self.incarnation, "selected_runtime_id": state.get("selected_runtime_id"), "worker": worker, "alive": alive}
+
+    @staticmethod
+    def project_worker(worker: object) -> dict[str, Any] | None:
+        """Expose identity and genuine READY binding, never local installation paths."""
+        if not isinstance(worker, dict):
+            return None
+        allowed = ("process_run_id", "deployment_generation", "runtime_id", "binding_status", "runtime_binding", "stop_requested")
+        return {key: worker[key] for key in allowed if key in worker}
+
+    @classmethod
+    def project_result(cls, result: dict[str, Any]) -> dict[str, Any]:
+        projected: dict[str, Any] = {key: result[key] for key in ("status", "supervisor_incarnation", "selected_runtime_id", "alive", "reason") if key in result}
+        if "worker" in result:
+            projected["worker"] = cls.project_worker(result["worker"])
+        return projected
+
+    def observe_worker(self, nonce: str, *, expected_process_run_id: str, expected_deployment_generation: str) -> tuple[str, dict[str, Any] | None]:
+        """Preserve the signed worker fence through one atomic UDS/READY join."""
+        with self._lock:
+            inspection = self.inspect()
+            worker = inspection.get("worker")
+            if not inspection["alive"] or not isinstance(worker, dict):
+                return "UNAVAILABLE", None
+            if worker.get("process_run_id") != expected_process_run_id or worker.get("deployment_generation") != expected_deployment_generation:
+                return "CONFLICT", None
+            observed = self._observation(worker, nonce)
+            if observed is None:
+                return "UNAVAILABLE", None
+            if observed.get("process_run_id") != expected_process_run_id or observed.get("deployment_generation") != expected_deployment_generation:
+                return "CONFLICT", None
+            binding_status = "UNAVAILABLE"
+            binding = None
+            if worker["runtime_id"] != "bootstrap":
+                state = self.store.read()
+                selected = self._resolve_runtime(worker["runtime_id"])
+                if state.get("selected_runtime_id") != worker["runtime_id"]:
+                    binding_status = "CONFLICT"
+                elif selected is not None and isinstance(worker.get("ready"), dict):
+                    if selected.get("ready") == worker["ready"] and self._artifact_matches_ready(observed.get("artifact"), worker["ready"]):
+                        if self._is_alive(worker):
+                            ready = worker["ready"]
+                            binding = {
+                                "runtime_id": worker["runtime_id"],
+                                "content_identity": ready["content_identity"],
+                                "lock_sha256": ready["lock_sha256"],
+                                "source_sha": ready["source_sha"],
+                                "distribution_version": ready["distribution_version"],
+                                "process_run_id": observed["process_run_id"],
+                                "deployment_generation": observed["deployment_generation"],
+                            }
+                            binding_status = "VERIFIED"
+                    else:
+                        binding_status = "CONFLICT"
+            return "OK", {"observation": observed, "binding_status": binding_status, "runtime_binding": binding}
+
+    def read_operation(self, operation_id: str) -> dict[str, Any]:
+        with self._lock:
+            try:
+                state = self.store.read()
+            except (OSError, ValueError):
+                return {"status": "UNKNOWN"}
+            record = state["operations"].get(operation_id)
+            if record is None:
+                return {"status": "NOT_FOUND"}
+            result = self.project_result(self._reconcile_operation(operation_id, state))
+            result.update(operation_id=operation_id, intent_digest=record["digest"])
+            return result
+
+    def _version_preparer(self) -> WorkerVersionPreparer:
+        if self.config.source_repository is None:
+            raise ValueError("trusted source repository is not configured")
+        return WorkerVersionPreparer(
+            WorkerVersionConfig(
+                source_repository=self.config.source_repository,
+                version_root=self.config.version_root or self.config.runtime_root / "worker-versions",
+                python_executable=self.config.interpreter,
+                uv_executable=Path("/usr/local/bin/uv"),
+                uv_version="0.7.22",
+                command_timeout=600,
+            )
+        )
+
+    @staticmethod
+    def _ready_projection(receipt: Any) -> dict[str, Any]:
+        return {
+            "status": "READY",
+            "installed_runtime_id": receipt.installed_runtime_id,
+            "source_sha": receipt.source_sha,
+            "lock_sha256": receipt.lock_sha256,
+            "content_identity": receipt.content_identity,
+            "distribution_version": receipt.distribution_version,
+            "runtime_profile": receipt.runtime_profile,
+        }
+
+    def prepare_version(self, operation_id: str, source_sha: str) -> dict[str, Any]:
+        """Durably admit a fixed-source stage, with asynchronous typed readback."""
+        if not _OPERATION_ID.fullmatch(operation_id) or not _FULL_SHA.fullmatch(source_sha):
+            return {"status": "UNSUPPORTED"}
+        if self.config.source_repository is None:
+            return {"status": "UNAVAILABLE"}
+        digest = hashlib.sha256(f"{operation_id}\0{source_sha}".encode()).hexdigest()
+        attempt_id = hashlib.sha256(f"worker-preparation\0{operation_id}".encode()).hexdigest()[:32]
+        with self._lock:
+            try:
+                state = self.store.read()
+            except (OSError, ValueError):
+                return {"status": "UNKNOWN"}
+            if operation_id in state["operations"]:
+                return {"status": "CONFLICT"}
+            preparations = state.setdefault("preparations", {})
+            prior = preparations.get(operation_id)
+            if prior is not None:
+                return self.read_preparation(operation_id) if prior.get("digest") == digest else {"status": "CONFLICT"}
+            if any(record.get("result", {}).get("status") == "IN_PROGRESS" for record in preparations.values()):
+                return {"status": "CONFLICT"}
+            preparations[operation_id] = {"digest": digest, "source_sha": source_sha, "attempt_id": attempt_id, "result": {"status": "IN_PROGRESS"}}
+            self.store.write(state)
+            self._active_preparations.add(operation_id)
+            thread = threading.Thread(target=self._complete_preparation, args=(operation_id, source_sha, attempt_id), daemon=True, name="worker-version-preparation")
+            thread.start()
+            return {"status": "IN_PROGRESS", "operation_id": operation_id, "source_sha": source_sha}
+
+    def _complete_preparation(self, operation_id: str, source_sha: str, attempt_id: str) -> None:
+        try:
+            prepared = self._version_preparer().prepare(PrepareIntent(source_sha, attempt_id))
+            result = self._ready_projection(prepared.receipt)
+        except WorkerVersionError as error:
+            result = {"status": "FAILED", "reason": error.failure.value}
+        except Exception as error:
+            logger.error("Worker version preparation unavailable: {}", type(error).__name__)
+            result = {"status": "UNKNOWN"}
+        with self._lock:
+            try:
+                state = self.store.read()
+                record = state.setdefault("preparations", {}).get(operation_id)
+                if record is not None and record.get("source_sha") == source_sha:
+                    record["result"] = result
+                    self.store.write(state)
+            except (OSError, ValueError) as error:
+                logger.error("Worker preparation receipt storage unavailable: {}", type(error).__name__)
+            finally:
+                self._active_preparations.discard(operation_id)
+
+    def read_preparation(self, operation_id: str) -> dict[str, Any]:
+        with self._lock:
+            try:
+                state = self.store.read()
+            except (OSError, ValueError):
+                return {"status": "UNKNOWN"}
+            record = state.get("preparations", {}).get(operation_id)
+            if record is None:
+                return {"status": "NOT_FOUND"}
+            result = record["result"]
+            if result.get("status") != "IN_PROGRESS" or operation_id in self._active_preparations:
+                return {**result, "operation_id": operation_id, "source_sha": record["source_sha"]}
+            # A new Supervisor lifetime has no owner for the old effect. Only
+            # an independently verified READY at the exact attempt can recover it.
+            try:
+                preparer = self._version_preparer()
+                matches = list(preparer.root.glob(f"revisions/*/{record['attempt_id']}/READY.json"))
+                if len(matches) == 1:
+                    receipt = preparer.read_ready(matches[0])
+                    if receipt.source_sha == record["source_sha"]:
+                        result = self._ready_projection(receipt)
+                    else:
+                        result = {"status": "CONFLICT"}
+                else:
+                    result = {"status": "UNKNOWN"}
+            except (OSError, ValueError, WorkerVersionError):
+                result = {"status": "UNKNOWN"}
+            record["result"] = result
+            self.store.write(state)
+            return {**result, "operation_id": operation_id, "source_sha": record["source_sha"]}
 
     def _fences_match(self, request: dict[str, Any], state: dict[str, Any]) -> bool:
-        if request.get("expected_supervisor_incarnation") not in (None, self.incarnation):
+        if "expected_supervisor_incarnation" in request and request["expected_supervisor_incarnation"] != self.incarnation:
             return False
         worker = state.get("worker")
         current = (
@@ -264,7 +474,7 @@ class WorkerSupervisor:
             worker.get("deployment_generation") if isinstance(worker, dict) else None,
             worker.get("runtime_id") if isinstance(worker, dict) else state.get("selected_runtime_id"),
         )
-        return all(request.get(key) in (None, value) for key, value in zip(("expected_process_run_id", "expected_generation", "expected_runtime_id"), current))
+        return all(key not in request or request[key] == value for key, value in zip(("expected_process_run_id", "expected_generation", "expected_runtime_id"), current))
 
     @staticmethod
     def _unresolved(state: dict[str, Any], excluding: str) -> bool:
@@ -293,6 +503,8 @@ class WorkerSupervisor:
             except (OSError, ValueError) as error:
                 logger.error("Supervisor state unavailable for operation: {}", type(error).__name__)
                 return {"status": "NEEDS_ATTENTION"}
+            if operation_id in state.get("preparations", {}):
+                return {"status": "CONFLICT"}
             prior = state["operations"].get(operation_id)
             if prior:
                 return self._reconcile_operation(operation_id, state) if prior["digest"] == digest else {"status": "CONFLICT"}
@@ -519,6 +731,9 @@ class WorkerSupervisor:
 
     def _run_exclusive(self) -> None:
         """Serve requests without letting a contender replace our socket."""
+        from .worker_supervisor_bridge import SupervisorBridgeConfig, SupervisorBridgeServer
+
+        bridge_config = SupervisorBridgeConfig.from_supervisor(self)
         try:
             details = self.control_socket.lstat()
             if stat.S_ISSOCK(details.st_mode):
@@ -536,7 +751,11 @@ class WorkerSupervisor:
         if threading.current_thread() is threading.main_thread():
             previous_handler = signal.getsignal(signal.SIGTERM)
             signal.signal(signal.SIGTERM, self._handle_shutdown)
+        bridge = None
         try:
+            if bridge_config is not None:
+                bridge = SupervisorBridgeServer(bridge_config, self)
+                bridge.start()
             if self.config.start_on_boot and not self.store.path.exists():
                 # A fresh channel container retains its previous automatic worker
                 # startup. A persisted stop/crash never triggers a resurrection.
@@ -556,6 +775,8 @@ class WorkerSupervisor:
                     continue
                 self._serve(connection)
         finally:
+            if bridge is not None:
+                bridge.close()
             if previous_handler is not None:
                 signal.signal(signal.SIGTERM, previous_handler)
             listener.close()

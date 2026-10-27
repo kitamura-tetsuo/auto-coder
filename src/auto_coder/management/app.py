@@ -9,6 +9,7 @@ from .mcp_resource import ManagementTool, create_mcp_resource
 from .oauth_config import ManagementSettings
 from .oauth_grants import OAuthGrantService
 from .oauth_http import create_management_auth_app
+from .worker_network_client import WorkerEndpointConfig, WorkerNetworkClient, configured_worker_bridge_environment
 
 
 def create_management_app(
@@ -27,5 +28,9 @@ def create_management_app(
             yield
 
     app = create_management_auth_app(settings.oauth, grants, lifespan=lifespan)
+    if configured_worker_bridge_environment():
+        # Future bounded MCP tools receive these fixed clients, not arbitrary
+        # URLs or an OAuth token forwarded through the worker transport.
+        app.state.worker_network_clients = {channel: WorkerNetworkClient(WorkerEndpointConfig.environment(channel)) for channel in ("beta", "release")}
     app.mount("/", resource)
     return app

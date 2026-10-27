@@ -203,6 +203,11 @@ class ManagementBootstrapSupervisor:
 
     def __init__(self, config: BootstrapConfig, incarnation: str | None = None) -> None:
         config.validate()
+        from .worker_network_client import configured_worker_bridge_environment
+
+        # Validate the complete trusted bootstrap environment before recording
+        # an effect or launching a management child.
+        self._worker_bridge_environment = configured_worker_bridge_environment()
         self.config = config
         self.store = BootstrapStore(config.state_root, config.instance_id)
         self.incarnation = incarnation or str(uuid.uuid4())
@@ -293,6 +298,9 @@ class ManagementBootstrapSupervisor:
                 return self._finish(operation_id, ResultStatus.CONFLICT if winner.status is not ResultStatus.UNKNOWN else ResultStatus.UNKNOWN, winner.record, "another Supervisor reserved the child generation", persist_state=False)
             try:
                 environment = dict(runtime.environment)
+                # Fixed bootstrap machine-transport endpoints survive child
+                # replacement; arbitrary inherited environment does not.
+                environment.update(self._worker_bridge_environment)
                 environment.update({"AUTO_CODER_CHILD_GENERATION": str(prepared.child_generation), "AUTO_CODER_DRAIN_NONCE": prepared.drain_nonce})
                 if runtime.drain_ack is not None:
                     environment["AUTO_CODER_DRAIN_RECEIPT"] = str(runtime.drain_ack)

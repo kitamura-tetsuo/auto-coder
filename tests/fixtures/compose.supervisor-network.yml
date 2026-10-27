@@ -1,0 +1,90 @@
+services:
+  release:
+    image: ${AUTOCODER_SUPERVISOR_IMAGE:?Prepared image is required}
+    entrypoint: ["python", "/fixtures/supervisor_container_entry.py"]
+    user: "${SUPERVISOR_HOST_UID:?UID is required}:${SUPERVISOR_HOST_GID:?GID is required}"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      AUTO_CODER_SUPERVISOR_INSTANCE_ID: release-worker
+      AUTO_CODER_CHANNEL: release
+      AUTO_CODER_REPOSITORY: fixture/release
+      AUTO_CODER_RUNTIME_ROOT: /runtime
+      AUTO_CODER_WORKSPACE_ROOT: /workspace
+      AUTO_CODER_SOURCE_REPOSITORY_ROOT: /workspace/source
+      AUTO_CODER_SUPERVISOR_AUTO_START: "1"
+      AUTO_CODER_BRIDGE_BIND_ADDRESS: ${SUPERVISOR_RELEASE_IP:?Private IP is required}
+      AUTO_CODER_BRIDGE_PORT: "8843"
+      AUTO_CODER_BRIDGE_SECRET_FILE: /run/secrets/release_bridge
+      HOME: /runtime/home
+    volumes:
+      - ${SUPERVISOR_FIXTURES_DIR:?Fixture path is required}:/fixtures:ro
+      - ${SUPERVISOR_RUN_ROOT:?Runtime path is required}/release:/runtime
+      - ${SUPERVISOR_RUN_ROOT}/release-workspace:/workspace
+    secrets: [release_bridge]
+    networks:
+      private:
+        ipv4_address: ${SUPERVISOR_RELEASE_IP}
+
+  beta:
+    image: ${AUTOCODER_SUPERVISOR_IMAGE}
+    entrypoint: ["python", "/fixtures/supervisor_container_entry.py"]
+    user: "${SUPERVISOR_HOST_UID}:${SUPERVISOR_HOST_GID}"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      AUTO_CODER_SUPERVISOR_INSTANCE_ID: beta-worker
+      AUTO_CODER_CHANNEL: beta
+      AUTO_CODER_REPOSITORY: fixture/beta
+      AUTO_CODER_RUNTIME_ROOT: /runtime
+      AUTO_CODER_WORKSPACE_ROOT: /workspace
+      AUTO_CODER_SOURCE_REPOSITORY_ROOT: /workspace/source
+      AUTO_CODER_SUPERVISOR_AUTO_START: "1"
+      AUTO_CODER_BRIDGE_BIND_ADDRESS: ${SUPERVISOR_BETA_IP:?Private IP is required}
+      AUTO_CODER_BRIDGE_PORT: "8843"
+      AUTO_CODER_BRIDGE_SECRET_FILE: /run/secrets/beta_bridge
+      HOME: /runtime/home
+    volumes:
+      - ${SUPERVISOR_FIXTURES_DIR}:/fixtures:ro
+      - ${SUPERVISOR_RUN_ROOT}/beta:/runtime
+      - ${SUPERVISOR_RUN_ROOT}/beta-workspace:/workspace
+    secrets: [beta_bridge]
+    networks:
+      private:
+        ipv4_address: ${SUPERVISOR_BETA_IP}
+
+  manager:
+    image: ${AUTOCODER_SUPERVISOR_IMAGE}
+    entrypoint: ["sleep", "infinity"]
+    user: "${SUPERVISOR_HOST_UID}:${SUPERVISOR_HOST_GID}"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      AUTO_CODER_RELEASE_SUPERVISOR_INSTANCE_ID: release-worker
+      AUTO_CODER_RELEASE_REPOSITORY: fixture/release
+      AUTO_CODER_RELEASE_BRIDGE_ADDRESS: ${SUPERVISOR_RELEASE_IP}
+      AUTO_CODER_RELEASE_BRIDGE_PORT: "8843"
+      AUTO_CODER_RELEASE_BRIDGE_SECRET_FILE: /run/secrets/release_bridge
+      AUTO_CODER_BETA_SUPERVISOR_INSTANCE_ID: beta-worker
+      AUTO_CODER_BETA_REPOSITORY: fixture/beta
+      AUTO_CODER_BETA_BRIDGE_ADDRESS: ${SUPERVISOR_BETA_IP}
+      AUTO_CODER_BETA_BRIDGE_PORT: "8843"
+      AUTO_CODER_BETA_BRIDGE_SECRET_FILE: /run/secrets/beta_bridge
+    volumes:
+      - ${SUPERVISOR_FIXTURES_DIR}:/fixtures:ro
+    secrets: [release_bridge, beta_bridge]
+    networks: [private]
+
+secrets:
+  release_bridge:
+    file: ${SUPERVISOR_RUN_ROOT}/release-secret
+  beta_bridge:
+    file: ${SUPERVISOR_RUN_ROOT}/beta-secret
+
+networks:
+  private:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: ${SUPERVISOR_BRIDGE_SUBNET:?Disposable subnet is required}
