@@ -61,10 +61,11 @@ def test_workflow_policy_rejects_setup_only_in_another_job(tmp_path: Path) -> No
     assert workflow_policy_errors(workflow, tmp_path) != []
 
 
-def test_workflow_policy_detects_node_use_inside_invoked_script(tmp_path: Path) -> None:
-    (tmp_path / "runner.py").write_text('subprocess.run(["npx", "example"])\n', encoding="utf-8")
+@pytest.mark.parametrize("script_name", ["runner.py", "runner"])
+def test_workflow_policy_detects_node_use_inside_invoked_script(tmp_path: Path, script_name: str) -> None:
+    (tmp_path / script_name).write_text('subprocess.run(["npx", "example"])\n', encoding="utf-8")
     workflow = tmp_path / "workflow.yml"
-    workflow.write_text("jobs:\n  consumer:\n    steps:\n      - run: python runner.py\n", encoding="utf-8")
+    workflow.write_text(f"jobs:\n  consumer:\n    steps:\n      - run: ./{script_name}\n", encoding="utf-8")
 
     assert workflow_policy_errors(workflow, tmp_path) != []
 

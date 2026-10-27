@@ -10,11 +10,14 @@ import yaml
 
 
 _NODE_COMMAND = re.compile(r"(?<![\w.-])(?:npm|npx)(?![\w.-])")
-_SCRIPT_SUFFIXES = {".py", ".sh", ".bash"}
 
 
 def _referenced_scripts(command: str, repository: Path) -> set[Path]:
-    """Return repository scripts named by a workflow command."""
+    """Return repository files named by a workflow command.
+
+    Checked-in executable scripts do not have to use a conventional suffix, so
+    file existence and repository confinement are the relevant boundaries.
+    """
     try:
         words = shlex.split(command, comments=True)
     except ValueError:
@@ -22,9 +25,9 @@ def _referenced_scripts(command: str, repository: Path) -> set[Path]:
 
     scripts: set[Path] = set()
     for word in words:
-        candidate = word.rstrip(";,)")
-        path = repository / candidate
-        if path.suffix in _SCRIPT_SUFFIXES and path.is_file():
+        candidate = word.strip("'\"").rstrip(";,)]")
+        path = (repository / candidate).resolve()
+        if path.is_relative_to(repository.resolve()) and path.is_file():
             scripts.add(path)
     return scripts
 

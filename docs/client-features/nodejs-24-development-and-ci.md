@@ -6,6 +6,7 @@ that run `npm` or `npx`, either directly or through a checked-in script, provisi
 Node.js 24 with `actions/setup-node` in that same job before the consuming step.
 
 `scripts/node24_policy.py` validates the development Dockerfile and all active
-workflow files. Its regression tests also exercise missing, misplaced, and
-incorrect Node.js setup declarations so a runner default cannot silently become
-the CI runtime authority.
+workflow files, including checked-in scripts with or without a filename suffix.
+Its regression tests also exercise missing, misplaced, and incorrect Node.js
+setup declarations so a runner default cannot silently become the CI runtime
+authority.
