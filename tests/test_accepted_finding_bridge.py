@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -52,7 +53,7 @@ from auto_coder.pr_review_execution import parse_review_result
 from auto_coder.review_thread_validation import ClaimedReviewThread
 from auto_coder.reviewer_session_registry import ReviewerSession, ReviewerSessionRegistry, TestOracleGap
 from auto_coder.two_tier_pr_gate import TwoTierPrGate
-from auto_coder.utils import CommandResult
+from auto_coder.utils import CommandExecutor, CommandResult
 
 REPO = "owner/repo"
 CONTRACT = ContractSnapshot(("#2401",), "Issue #2401 REQ-001: Preserve accepted findings.")
@@ -140,10 +141,22 @@ def accept_strong(env: Env, pr: int, findings: list[dict[str, Any]], *, head: Op
         }
         return parse_review_result(json.dumps(payload), review_input, "strong/codex/model")
 
+    # The Strong-acceptance helper may execute in a concurrent test thread.
+    # Its three deterministic Git results must not replace another thread's
+    # command observations while that thread is forwarding a review.
+    owner_thread = threading.get_ident()
+    original_run_command = CommandExecutor.run_command
+    responses = iter((CommandResult(True, "", "", 0), CommandResult(True, "-base\n+head\n", "", 0), CommandResult(True, "contract.txt\n", "", 0)))
+
+    def owner_scoped_run_command(*args: object, **kwargs: object) -> CommandResult:
+        if threading.get_ident() != owner_thread:
+            return original_run_command(*args, **kwargs)
+        return next(responses)
+
     with (
         patch("auto_coder.pr_processor.isolated_pr_head_worktree", worktree),
         patch("auto_coder.cli_helpers.resolve_adversarial_validation_availability", return_value=AdversarialValidationAvailability(backend_manager=manager)),
-        patch("auto_coder.pr_processor.CommandExecutor.run_command", side_effect=[CommandResult(True, "", "", 0), CommandResult(True, "-base\n+head\n", "", 0), CommandResult(True, "contract.txt\n", "", 0)]),
+        patch("auto_coder.pr_processor.CommandExecutor.run_command", side_effect=owner_scoped_run_command),
         patch("auto_coder.pr_processor.execute_review", side_effect=transport),
     ):
         accepted, reason = _execute_pending_strong_audit(REPO, pr, inputs)
