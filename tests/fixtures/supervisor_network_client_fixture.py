@@ -184,7 +184,7 @@ def _actual_runtime_observation(channel: str) -> dict[str, object]:
         oauth = OAuthSettings(root / "oauth.sqlite3", "http://127.0.0.1:17881", "fixture-project", (OAuthClient("fixture-client", ("http://127.0.0.1:17882/callback",)),))
         settings = ManagementSettings(root, oauth, local_development=True, operating_policy_path=policy)
         identity = FirebaseOperatorIdentity(IdentityConfig("fixture-project", root / "allowed_uids.json"))
-        clients = {name: WorkerNetworkClient(WorkerEndpointConfig.environment(name)) for name in ("release", "beta")}
+        clients = {channel: WorkerNetworkClient(WorkerEndpointConfig.environment(channel))}
         runtime = ManagementRuntime(settings, OAuthGrantService(oauth, identity), clients)
         target = runtime._resolve(channel + "-worker", ActionClass.INSPECT)
         assert isinstance(target, ResolvedWorker)
