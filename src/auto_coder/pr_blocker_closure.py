@@ -649,6 +649,34 @@ def _execute_durable_thread_closures(
     # later GitHub mutation.
     current_evaluations: list[ClosureEvaluationResult] = []
     validated_discussion_digests: dict[str, str] = {}
+    curr_rev = current_snapshot.ledger_revision if current_snapshot is not None else expected_ledger_revision or 0
+
+    def _revoke_prior_acceptance(evaluation: ClosureEvaluationResult) -> None:
+        nonlocal current_snapshot, curr_rev
+        blocker_id = evaluation.evaluated_blocker_id
+        if ledger is None or current_snapshot is None or not blocker_id:
+            return
+        existing = current_snapshot.get_blocker(blocker_id)
+        if existing is None or existing.disposition is not BlockerDisposition.VERIFIED_CORRECTION:
+            return
+        current_snapshot = ledger.record_transition(
+            api_origin=norm_origin,
+            repository=repo_name,
+            pr_number=pr_number,
+            operation_id=f"discussion_stale_{blocker_id}_{uuid.uuid4().hex}",
+            expected_ledger_revision=curr_rev,
+            blocker_id=blocker_id,
+            target_disposition=BlockerDisposition.OPEN,
+            evidence="Authoritative review-thread discussion is not the validated evidence",
+            transition_reason="Independent closure evidence requires reevaluation",
+            reviewed_head_sha=validated_head_sha,
+            reviewed_base_sha=evaluation.candidate.reviewed_base_sha,
+            review_attempt_id=evaluation.candidate.review_attempt_id,
+            requirement_manifest_revision=evaluation.candidate.requirement_manifest_revision,
+            review_observation_identity=f"discussion_stale_{evaluation.thread_id}",
+        )
+        curr_rev = current_snapshot.ledger_revision
+
     for evaluation in evaluations:
         if not evaluation.is_accepted:
             current_evaluations.append(evaluation)
@@ -656,6 +684,7 @@ def _execute_durable_thread_closures(
         claimed_thread = _find_claimed_thread(claimed_threads, evaluation.thread_id)
         if claimed_thread is None or claimed_thread.root_comment_database_id is None:
             errors.append(f"{evaluation.thread_id}|discussion-freshness|Validated discussion identity is unavailable")
+            _revoke_prior_acceptance(evaluation)
             continue
         try:
             observation = observe_closure_receipt(
@@ -668,17 +697,17 @@ def _execute_durable_thread_closures(
             )
         except Exception as exc:
             errors.append(f"{evaluation.thread_id}|discussion-freshness|Authoritative discussion is unavailable: {exc}")
+            _revoke_prior_acceptance(evaluation)
             continue
         current_digest = _validated_substantive_digest(claimed_thread, observation)
         if current_digest is None:
             errors.append(f"{evaluation.thread_id}|discussion-freshness|Discussion changed since independent validation")
+            _revoke_prior_acceptance(evaluation)
             continue
         validated_discussion_digests[evaluation.thread_id] = current_digest
         current_evaluations.append(evaluation)
 
     evaluations = tuple(current_evaluations)
-
-    curr_rev = current_snapshot.ledger_revision if current_snapshot is not None else expected_ledger_revision or 0
 
     for eval_res in evaluations:
         if not eval_res.is_accepted:

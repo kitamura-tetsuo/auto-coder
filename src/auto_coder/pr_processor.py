@@ -1284,6 +1284,33 @@ class _GitHubClosureThreadTransport:
         self.finding = finding
         self.authorize = authorize
 
+    def _invalidate_retained_discussion_authority(self) -> None:
+        try:
+            EffectiveDecisionStore(self.payload.repository).update(
+                self.payload.pr_number,
+                ordinary_correction=None,
+                pending_closure_source_identities=[],
+                pending_reconciliation_source_identities=[],
+                next_action=EffectiveNextAction.NONE.value,
+            )
+        except DecisionRetentionError:
+            # A missing or concurrently superseded record grants no reusable authority.
+            pass
+
+    def _discussion_is_current(self) -> bool:
+        expected = dict(self.payload.discussion_evidence).get(self.thread.id, "")
+        if not expected:
+            return False
+        threads = self.client.get_pr_review_threads_strict(self.payload.repository, self.payload.pr_number)
+        matches = [thread for thread in threads if thread.id == self.thread.id]
+        if len(matches) != 1:
+            return False
+        try:
+            login = self.client.get_authenticated_user_login()
+            return substantive_discussion_digest(matches[0], login) == expected
+        except Exception:
+            return False
+
     def reconcile(self, operation: EffectOperation) -> EffectAttempt:
         threads = self.client.get_pr_review_threads_strict(self.payload.repository, self.payload.pr_number)
         matches = [thread for thread in threads if thread.id == self.thread.id and thread.comments and thread.comments[0].database_id == self.thread.comments[0].database_id and thread.comments[0].body == self.thread.comments[0].body]
@@ -1299,6 +1326,12 @@ class _GitHubClosureThreadTransport:
             return observed
         if not self.authorize():
             return EffectAttempt(REJECTED, reason="Closure authority is no longer current")
+        if not self._discussion_is_current():
+            self._invalidate_retained_discussion_authority()
+            return EffectAttempt(
+                REJECTED,
+                reason="Validated review-thread discussion is no longer current",
+            )
         root_id = self.thread.comments[0].database_id
         if root_id is None:
             return EffectAttempt(REJECTED, reason="Finding root identity is unavailable")
@@ -1310,6 +1343,12 @@ class _GitHubClosureThreadTransport:
         )
         if not self.authorize():
             return EffectAttempt(REJECTED, reason="Closure authority changed before resolution")
+        if not self._discussion_is_current():
+            self._invalidate_retained_discussion_authority()
+            return EffectAttempt(
+                REJECTED,
+                reason="Validated review-thread discussion changed before resolution",
+            )
         self.client.resolve_review_thread(self.thread.id)
         if not self.authorize():
             registry = StaleReviewThreadRegistry()
@@ -1385,6 +1424,7 @@ def _consume_pending_two_tier_publication(repo_name: str, pr_number: int, inputs
         if closure is None:
             return False, "accepted closure payload is unavailable"
         ordinary_attempt_id, ordinary_attempt_sequence, ordinary_reviewer = "", 0, ""
+        discussion_evidence: tuple[tuple[str, str], ...] = ()
         if closure.source_identity:
             # The publication is derived from the retained ordinary source and
             # names its real attempt and reviewer; it never implies a model run.
@@ -1392,10 +1432,22 @@ def _consume_pending_two_tier_publication(repo_name: str, pr_number: int, inputs
             if view.record is None:
                 return False, "the retained ordinary source of the accepted closure is unavailable; publication was not started"
             ordinary_attempt_id, ordinary_attempt_sequence, ordinary_reviewer = view.record.attempt_id, view.record.attempt_sequence, view.record.reviewer_provenance
+            retained_result = restore_ordinary_result(view.record)
+            discussion_evidence = tuple((item.thread_id, item.discussion_evidence_digest) for item in retained_result.thread_dispositions if item.thread_id and item.discussion_evidence_digest)
             authorized, authority_reason = inputs.gate.closure_evidence().dependent_effects_allowed(closure.source_identity, observe or (lambda: ObservedTarget(inputs.head_sha, inputs.base_sha, inputs.contract, inputs.policy)))
             if not authorized:
                 return False, f"closure publication is deferred until its ordinary-attempt authority is current: {authority_reason}"
-        payload = AcceptedReviewPayload.closure(repo_name, pr_number, strong, closure, snapshot.findings, ordinary_attempt_id, ordinary_attempt_sequence, ordinary_reviewer)
+        payload = AcceptedReviewPayload.closure(
+            repo_name,
+            pr_number,
+            strong,
+            closure,
+            snapshot.findings,
+            ordinary_attempt_id,
+            ordinary_attempt_sequence,
+            ordinary_reviewer,
+            discussion_evidence,
+        )
     else:
         payload = AcceptedReviewPayload.strong(repo_name, pr_number, strong, snapshot.findings)
 
@@ -6424,6 +6476,17 @@ def _coordinate_pr_review(
                             if resolved_thread_ids:
                                 actions.append(f"Resolved {len(resolved_thread_ids)} claimed review thread(s) for PR #{pr_number} after independent validation")
                             if unfinished_closure_outcomes:
+                                if any(outcome.phase == "discussion-freshness" for outcome in unfinished_closure_outcomes):
+                                    # The retained ordinary payload produced the stale disposition.
+                                    # Remove its reuse authority so the next admitted lifecycle invokes
+                                    # independent validation with the freshly collected discussion.
+                                    EffectiveDecisionStore(repo_name).update(
+                                        pr_number,
+                                        ordinary_correction=None,
+                                        pending_closure_source_identities=[],
+                                        pending_reconciliation_source_identities=[],
+                                        next_action=EffectiveNextAction.NONE.value,
+                                    )
                                 details = "; ".join(f"{outcome.thread_id} [{outcome.phase}]: {outcome.reason}" for outcome in unfinished_closure_outcomes)
                                 actions.append(f"Review-thread closure incomplete for PR #{pr_number}: " f"{len(resolved_thread_ids)} confirmed, {len(unfinished_closure_outcomes)} unfinished; {details}")
                                 _record_pr_stage(
