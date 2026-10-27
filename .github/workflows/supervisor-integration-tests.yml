@@ -44,7 +44,7 @@ jobs:
             tests/test_worker_management_bridge.py::test_graceful_receipt_requires_stopped_closed_and_settled
           # Isolate the production daemon composition from long-lived process
           # fixture state while retaining its complete UDS/terminal oracle.
-          uv run pytest -q -vv \
+          uv run pytest -q -vv -s -o timeout=60 \
             tests/test_worker_management_bridge.py::test_actual_daemon_uds_observes_admitted_drain_and_persists_receipt
 
       - name: Build the checked-out production image

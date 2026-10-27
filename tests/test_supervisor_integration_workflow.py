@@ -23,6 +23,7 @@ def test_supervisor_integration_job_runs_independently_on_pull_requests() -> Non
     assert "uv sync --locked --dev --extra test" in steps["Install locked test dependencies"]["run"]
     build = steps["Build the checked-out production image"]["run"]
     assert "scripts/prepare_opencode_image.py" in build
+    assert "-o timeout=60" in steps["Test real worker processes and management bridge"]["run"]
     container = steps["Verify isolated Supervisor containers"]
     assert "-m supervisor_integration" in container["run"]
     assert "tests/test_supervisor_container_integration.py" in container["run"]
