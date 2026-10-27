@@ -97,10 +97,20 @@ class PolicyTarget:
 
 
 @dataclass(frozen=True)
+class ManagementSelfUpdateConfig:
+    """Separate operator opt-in; never a beta or release worker target."""
+
+    instance_id: str
+    repository: str
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
 class OperatingPolicy:
     profile: PolicyProfile
     targets: tuple[PolicyTarget, ...]
     revision: str
+    management_self_update: ManagementSelfUpdateConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -133,6 +143,7 @@ class PolicyDecision:
 
 
 _REPOSITORY_PATTERN = re.compile(r"^[^/\s]+/[^/\s]+$")
+_INSTANCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
 def _content_revision(data: object, prefix: str = "sha256") -> str:
@@ -157,17 +168,20 @@ def load_operating_policy(path: Path) -> PolicyLoadResult:
     except (yaml.YAMLError, ValueError, TypeError):
         return PolicyLoadResult(None, DecisionOutcome.UNAVAILABLE, ReasonCode.POLICY_MALFORMED, _invalid_revision(raw))
 
-    normalized = {
+    normalized: dict[str, object] = {
         "profile": policy.profile.value,
         "targets": {target.target_id: {"channel": target.channel.value, "repositories": list(target.repositories)} for target in sorted(policy.targets, key=lambda item: item.target_id)},
     }
-    snapshot = OperatingPolicy(policy.profile, policy.targets, _content_revision(normalized))
+    if policy.management_self_update is not None:
+        manager = policy.management_self_update
+        normalized["management_self_update"] = {"instance_id": manager.instance_id, "repository": manager.repository, "enabled": manager.enabled}
+    snapshot = OperatingPolicy(policy.profile, policy.targets, _content_revision(normalized), policy.management_self_update)
     return PolicyLoadResult(snapshot, DecisionOutcome.ALLOWED, ReasonCode.ALLOWED_INSPECTION, snapshot.revision)
 
 
 def _parse_policy(document: object) -> OperatingPolicy:
-    if not isinstance(document, dict) or set(document) - {"profile", "targets"}:
-        raise ValueError("policy must be a mapping with only profile and targets")
+    if not isinstance(document, dict) or set(document) - {"profile", "targets", "management_self_update"}:
+        raise ValueError("policy must be a mapping with only profile, targets and management_self_update")
     profile_value = document.get("profile", PolicyProfile.OBSERVE.value)
     if not isinstance(profile_value, str):
         raise ValueError("profile must be a string")
@@ -195,7 +209,18 @@ def _parse_policy(document: object) -> OperatingPolicy:
         if len(set(repositories)) != len(repositories):
             raise ValueError("repositories must be unique")
         targets.append(PolicyTarget(target_id, channel, tuple(sorted(repositories))))
-    return OperatingPolicy(profile, tuple(sorted(targets, key=lambda item: item.target_id)), "")
+    management = None
+    if "management_self_update" in document:
+        value = document["management_self_update"]
+        if not isinstance(value, dict) or set(value) - {"instance_id", "repository", "enabled"} or not {"instance_id", "repository"} <= set(value):
+            raise ValueError("invalid management self-update configuration")
+        instance_id, repository, enabled = value["instance_id"], value["repository"], value.get("enabled", False)
+        if not isinstance(instance_id, str) or not _INSTANCE_PATTERN.fullmatch(instance_id):
+            raise ValueError("invalid management instance ID")
+        if not isinstance(repository, str) or not _REPOSITORY_PATTERN.fullmatch(repository) or type(enabled) is not bool:
+            raise ValueError("invalid management self-update repository or opt-in")
+        management = ManagementSelfUpdateConfig(instance_id, repository, enabled)
+    return OperatingPolicy(profile, tuple(sorted(targets, key=lambda item: item.target_id)), "", management)
 
 
 def evaluate_operating_policy(path: Path, intent: PolicyIntent) -> PolicyDecision:

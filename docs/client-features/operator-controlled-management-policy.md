@@ -17,6 +17,15 @@ authoritative `channel` (`beta` or `release`) and a non-empty list of permitted
 `owner/name` repository identities. Unknown fields, profiles, channels, malformed
 documents, and unreadable explicitly selected files fail closed.
 
+The optional top-level `management_self_update` mapping is a separate, disabled
+by-default policy namespace for the exact management instance/repository. It
+cannot be declared under `targets`, uses neither worker channel, and does not
+change the beta/release worker action matrix. See
+`management-self-update-authorization.md` for its strictly limited opt-in and
+the independent OAuth consent requirement. The canonical revision includes
+this mapping when configured; omitting it retains the previous worker-policy
+revision for an otherwise unchanged document.
+
 Only a trusted local operator changes this file. There is intentionally no request,
 model-output, CI-result, acceptance, approval, or transition API that changes the
 profile or mapping, and there is no automatic escalation. A consumer calls

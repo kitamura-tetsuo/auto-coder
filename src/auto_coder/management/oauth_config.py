@@ -1,5 +1,6 @@
 """Configuration for the management OAuth credential authority."""
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -9,6 +10,7 @@ import yaml
 from .action_scopes import KNOWN_SCOPES, READ_SCOPE, validate_scope_set
 
 SUPPORTED_SCOPE = READ_SCOPE
+_MANAGEMENT_INSTANCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,7 @@ class ManagementSettings:
     port: int = 8081
     local_development: bool = False
     allowed_browser_origins: tuple[str, ...] = ()
+    management_instance_id: str | None = None
 
     def __post_init__(self) -> None:
         loopback = self.bind_host in {"127.0.0.1", "::1", "localhost"}
@@ -93,6 +96,8 @@ class ManagementSettings:
             raise ValueError("port must be between 1 and 65535")
         if self.oauth.database_path.parent != self.state_root:
             raise ValueError("OAuth state must be stored directly in state_root")
+        if self.management_instance_id is not None and (not isinstance(self.management_instance_id, str) or not _MANAGEMENT_INSTANCE_ID.fullmatch(self.management_instance_id)):
+            raise ValueError("management_instance_id must be a stable non-empty identifier")
 
 
 def load_management_settings(path: Path) -> ManagementSettings:
@@ -151,6 +156,9 @@ def load_management_settings(path: Path) -> ManagementSettings:
         firebase_web_config={str(k): str(v) for k, v in dict(raw.get("firebase_web_config", {})).items()},
         enabled_scopes=validate_scope_set(tuple(enabled)),
     )
+    management_instance_id = raw.get("management_instance_id")
+    if management_instance_id is not None and (not isinstance(management_instance_id, str) or not _MANAGEMENT_INSTANCE_ID.fullmatch(management_instance_id)):
+        raise ValueError("management_instance_id must be a stable non-empty identifier")
     return ManagementSettings(
         state_root,
         oauth,
@@ -158,4 +166,5 @@ def load_management_settings(path: Path) -> ManagementSettings:
         port,
         local_development,
         tuple(browser_origins),
+        management_instance_id,
     )
