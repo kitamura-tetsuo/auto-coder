@@ -365,9 +365,12 @@ def test_persisted_stale_pid_start_token_cannot_signal_live_replacement(tmp_path
 
 
 def test_crash_without_terminal_receipt_stays_unknown_and_blocks_start(tmp_path: Path) -> None:
-    supervisor = WorkerSupervisor(config(tmp_path, (sys.executable, "-c", "pass")))
+    supervisor = WorkerSupervisor(config(tmp_path, (sys.executable, "-c", "import time; time.sleep(30)")))
     assert supervisor.apply({"operation_id": "start", "operation": "START"})["status"] == "RUNNING"
     assert supervisor.child is not None
+    # End a demonstrably running child without a terminal receipt. A child
+    # executing `pass` can exit before the START acknowledgement is observed.
+    supervisor.child.kill()
     supervisor.child.wait(timeout=5)
     assert supervisor.apply({"operation_id": "stop", "operation": "REQUEST_GRACEFUL_STOP"})["status"] == "UNKNOWN"
     assert supervisor.apply({"operation_id": "new", "operation": "START"}) == {"status": "NEEDS_ATTENTION"}
