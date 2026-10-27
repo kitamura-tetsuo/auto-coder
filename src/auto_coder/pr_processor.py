@@ -188,6 +188,7 @@ from .review_thread_validation import (
     reopen_review_threads_after_publication_failure,
     resolve_addressed_review_threads,
     retry_pending_stale_review_thread_rollbacks,
+    substantive_discussion_digest,
 )
 from .reviewer_session_registry import ReviewerSessionRegistry
 from .runtime_locks import LockAcquisitionTimeout, ensure_lock_directory, file_lock, lock_path
@@ -2086,6 +2087,7 @@ class ClaimedReviewThreadGateState:
     blocking_unresolved: Tuple[ReviewThread, ...] = ()
     has_blocking_unresolved: bool = False
     lookup_error: Optional[str] = None
+    authenticated_controller_login: str = ""
 
 
 def _enforce_unresolved_provenance_gate(
@@ -2182,7 +2184,19 @@ def _get_claimed_review_thread_state(
         return ClaimedReviewThreadGateState(lookup_error=str(e))
 
     eligible_author_ids = _resolve_eligible_review_thread_ids(repo_name)
-    classification = classify_review_threads(threads, eligible_author_ids)
+    try:
+        classification = classify_review_threads(threads, eligible_author_ids)
+        authenticated_controller_login = ""
+        if classification.claimed:
+            authenticated_controller_login = client.get_authenticated_user_login()
+            classification = classify_review_threads(
+                threads,
+                eligible_author_ids,
+                authenticated_controller_login=authenticated_controller_login,
+            )
+    except Exception as e:
+        logger.error(f"Failed to bind complete review-thread discussion for PR #{pr_number}: {e}")
+        return ClaimedReviewThreadGateState(lookup_error=str(e))
     claimed_thread_ids = {thread.thread_id for thread in classification.claimed}
     state = ClaimedReviewThreadGateState(
         claimed=tuple(classification.claimed),
@@ -2192,6 +2206,7 @@ def _get_claimed_review_thread_state(
         # implementation agent to repair them again violates that protocol.
         blocking_unresolved=tuple(thread for thread in threads if not thread.is_resolved and thread.id not in claimed_thread_ids),
         has_blocking_unresolved=classification.blocking_unresolved_count > 0,
+        authenticated_controller_login=authenticated_controller_login,
     )
     if config is not None and not _is_pr_adversarial_validation_enabled(config, repo_name):
         return _filter_unresolved_review_threads_for_disabled_validator(state, repo_name)
@@ -2363,6 +2378,7 @@ def _filter_unresolved_review_threads_for_disabled_validator(
         blocking_unresolved=tuple(remaining_blocking),
         has_blocking_unresolved=bool(remaining_blocking),
         lookup_error=state.lookup_error,
+        authenticated_controller_login=state.authenticated_controller_login,
     )
 
 
@@ -2402,6 +2418,7 @@ def _allow_older_head_adversarial_threads(
                 root_author_login=root.author_login,
                 original_finding=root.body,
                 discussion="\n\n".join(f"{comment.author_login or '(unknown author)'}: {comment.body}" for comment in comments),
+                discussion_evidence_digest=(substantive_discussion_digest(thread, state.authenticated_controller_login) if state.authenticated_controller_login else ""),
                 revalidation_after_head_change=not forced and not after_pass,
                 revalidation_forced=forced and not after_pass,
                 revalidation_after_pass=after_pass,
@@ -2415,6 +2432,7 @@ def _allow_older_head_adversarial_threads(
         blocking_unresolved=tuple(remaining),
         has_blocking_unresolved=bool(remaining),
         lookup_error=state.lookup_error,
+        authenticated_controller_login=state.authenticated_controller_login,
     )
 
 
@@ -2438,6 +2456,7 @@ def _include_pending_local_repair_threads(
     settled = {item.blocker_id for item in generation.settlements}
     pending = set(generation.covered_blocker_ids) - settled
     threads = github_client.get_pr_review_threads_strict(repo_name, pr_number)
+    authenticated_controller_login = github_client.get_authenticated_user_login()
     existing = {thread.thread_id: thread for thread in claimed}
     selected_existing = []
     retained = []
@@ -2465,12 +2484,20 @@ def _include_pending_local_repair_threads(
                     root_author_login=root.author_login,
                     original_finding=root.body,
                     discussion="\n\n".join(f"{comment.author_login or '(unknown author)'}: {comment.body}" for comment in thread.comments),
+                    discussion_evidence_digest=substantive_discussion_digest(thread, authenticated_controller_login),
                 )
             )
             continue
         # Resolution is presentation state, never independent correctness evidence.
         retained.append(replace(thread, is_resolved=False))
-    promoted = _allow_older_head_adversarial_threads(ClaimedReviewThreadGateState(blocking_unresolved=tuple(retained)), reviewer_login, forced=True)
+    promoted = _allow_older_head_adversarial_threads(
+        ClaimedReviewThreadGateState(
+            blocking_unresolved=tuple(retained),
+            authenticated_controller_login=authenticated_controller_login,
+        ),
+        reviewer_login,
+        forced=True,
+    )
     if not allow_incomplete and (found != pending or promoted.blocking_unresolved):
         raise RuntimeError("pending local repair roots are missing, incomplete, or unauthenticated")
     return tuple(selected_existing) + tuple(promoted.claimed)

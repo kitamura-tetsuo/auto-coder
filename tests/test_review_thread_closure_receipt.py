@@ -221,7 +221,12 @@ class ReceiptScenario:
     def claimed(self, client=None):
         client = client or self.client()
         snapshot = self.ledger().get_snapshot(API_ORIGIN, REPOSITORY, PR_NUMBER, require_retained_state=True)
-        classification = classify_review_threads(client.get_pr_review_threads_strict(REPOSITORY, PR_NUMBER), {REVIEWER_ID}, snapshot=snapshot)
+        classification = classify_review_threads(
+            client.get_pr_review_threads_strict(REPOSITORY, PR_NUMBER),
+            {REVIEWER_ID},
+            snapshot=snapshot,
+            authenticated_controller_login=client.get_authenticated_user_login(),
+        )
         assert classification.blocking_unresolved_count == 0
         return classification.claimed
 

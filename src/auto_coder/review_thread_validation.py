@@ -651,6 +651,7 @@ class ClaimedReviewThread:
     root_author_login: str = ""
     original_finding: str = ""
     discussion: str = ""
+    discussion_evidence_digest: str = ""
     is_change_provenance: bool = False
     claim_evidence: str = ""
     revalidation_after_head_change: bool = False
@@ -675,6 +676,7 @@ def classify_review_threads(
     eligible_author_ids: Set[int],
     *,
     snapshot: Optional[Any] = None,
+    authenticated_controller_login: str = "",
 ) -> ReviewThreadClassification:
     """Split unresolved review threads into claimed-addressed and ordinary blockers.
 
@@ -749,6 +751,7 @@ def classify_review_threads(
                     root_author_login=root.author_login,
                     original_finding=root.body,
                     discussion=discussion,
+                    discussion_evidence_digest=(substantive_discussion_digest(thread, authenticated_controller_login) if authenticated_controller_login else ""),
                     is_change_provenance=CHANGE_PROVENANCE_CLARIFICATION_MARKER in root.body,
                     claim_evidence="\n\n".join(f"{comment.author_login or '(unknown author)'}: {comment.body}" for comment in claim_comments),
                     blocker_ids=tuple(blocker_ids),
@@ -761,6 +764,37 @@ def classify_review_threads(
             blocking_unresolved_count += 1
 
     return ReviewThreadClassification(claimed=tuple(claimed), blocking_unresolved_count=blocking_unresolved_count)
+
+
+def substantive_discussion_digest(thread: ReviewThread, authenticated_controller_login: str) -> str:
+    """Bind complete native discussion, excluding only the valid owned receipt.
+
+    The projection deliberately uses stable comment and author identities plus
+    exact content. Marker-looking text from any other author remains substantive.
+    Invalid or ambiguous owned receipt state raises through ``parse_owned_receipt``
+    so it can never be mistaken for unchanged evidence.
+    """
+    if not thread.comments or thread.comments_truncated:
+        raise ValueError("Review-thread discussion evidence is incomplete")
+    receipt = parse_owned_receipt(thread, authenticated_controller_login)
+    receipt_comment_id = receipt.comment_id if receipt is not None else None
+    comments = []
+    for comment in thread.comments:
+        if receipt_comment_id is not None and comment.database_id == receipt_comment_id:
+            continue
+        if comment.database_id is None or comment.author_id is None:
+            raise ValueError("Review-thread discussion identity is incomplete")
+        comments.append(
+            {
+                "comment_id": comment.database_id,
+                "author_id": comment.author_id,
+                "author_login": comment.author_login,
+                "body": comment.body,
+                "in_reply_to_id": comment.in_reply_to_id,
+            }
+        )
+    payload = {"version": 1, "thread_id": thread.id, "root_id": thread.comments[0].database_id, "comments": comments}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def is_change_provenance_thread(thread: ReviewThread) -> bool:

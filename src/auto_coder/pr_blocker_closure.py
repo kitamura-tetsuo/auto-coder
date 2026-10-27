@@ -589,6 +589,17 @@ def _execute_durable_thread_closures(
     norm_origin = normalize_api_origin(api_origin)
     rollback_registry = stale_registry or StaleReviewThreadRegistry()
 
+    def _discussion_is_still_current(claimed_thread: ClaimedReviewThread, observation: Any) -> bool:
+        from .review_thread_validation import substantive_discussion_digest
+
+        if not claimed_thread.discussion_evidence_digest:
+            return False
+        try:
+            return substantive_discussion_digest(observation.thread, observation.authenticated_login) == claimed_thread.discussion_evidence_digest
+        except Exception as exc:
+            logger.error(f"Could not verify discussion evidence for thread {claimed_thread.thread_id}: {exc}")
+            return False
+
     def _head_is_still_current() -> bool:
         try:
             current_head = github_client.get_pull_request_head_sha_strict(repo_name, pr_number)
@@ -625,6 +636,37 @@ def _execute_durable_thread_closures(
                 persisted_blocker_transitions=(),
                 errors=(f"Ledger unavailable: {exc}",),
             )
+
+    # Fence canonical acceptance itself against discussion advancement.  This
+    # read is intentionally before ledger persistence, not merely before the
+    # later GitHub mutation.
+    current_evaluations: list[ClosureEvaluationResult] = []
+    for evaluation in evaluations:
+        if not evaluation.is_accepted:
+            current_evaluations.append(evaluation)
+            continue
+        claimed_thread = _find_claimed_thread(claimed_threads, evaluation.thread_id)
+        if claimed_thread is None or claimed_thread.root_comment_database_id is None:
+            errors.append(f"{evaluation.thread_id}|discussion-freshness|Validated discussion identity is unavailable")
+            continue
+        try:
+            observation = observe_closure_receipt(
+                github_client,
+                repo_name,
+                pr_number,
+                evaluation.thread_id,
+                claimed_thread.root_comment_database_id,
+                api_origin=norm_origin,
+            )
+        except Exception as exc:
+            errors.append(f"{evaluation.thread_id}|discussion-freshness|Authoritative discussion is unavailable: {exc}")
+            continue
+        if not _discussion_is_still_current(claimed_thread, observation):
+            errors.append(f"{evaluation.thread_id}|discussion-freshness|Discussion changed since independent validation")
+            continue
+        current_evaluations.append(evaluation)
+
+    evaluations = tuple(current_evaluations)
 
     curr_rev = current_snapshot.ledger_revision if current_snapshot is not None else expected_ledger_revision or 0
 
@@ -808,6 +850,10 @@ def _execute_durable_thread_closures(
         except Exception as exc:
             logger.error(f"Could not durably record pending resolution for thread {thread_id}: {exc}")
             errors.append(f"{thread_id}|intent-publication|{exc}")
+            continue
+
+        if not _discussion_is_still_current(claimed_thread, observation):
+            errors.append(f"{thread_id}|discussion-freshness|Discussion changed immediately before resolve mutation")
             continue
 
         if not _head_is_still_current():

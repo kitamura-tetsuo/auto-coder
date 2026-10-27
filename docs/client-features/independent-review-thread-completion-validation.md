@@ -23,6 +23,15 @@ The production regression is
 
 ## Reusable closure status reply
 
+Each independent `ADDRESSED` decision carries a deterministic binding to the
+complete native-thread discussion supplied to validation. Auto-Coder performs
+an authoritative read before canonical acceptance and again immediately before
+resolution; an added, edited, removed, incomplete, or ambiguous substantive
+comment leaves the thread unresolved for a later independent evaluation. The
+one authenticated, schema-valid controller closure receipt is housekeeping and
+is excluded from this binding, while forged or marker-looking ordinary replies
+remain substantive evidence.
+
 Independently accepted closure maintains one controller-owned reply per exact
 API origin, repository, PR, thread and root comment. The reply begins with
 `<!-- auto-coder-review-thread-closure:v1 -->` and contains a versioned metadata
