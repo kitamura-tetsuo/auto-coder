@@ -186,7 +186,7 @@ def _drive(app, operation_id: str, count: int = 16) -> None:
         runtime.lifecycle.process(record)
 
 
-@pytest.mark.parametrize("intervention", ("none", "selection_changed", "source_unavailable", "policy_downgrade", "lost_stop_response", "crash_after_start"))
+@pytest.mark.parametrize("intervention", ("none", "selection_changed", "source_unavailable", "policy_downgrade", "lost_stop_response", "supervisor_changed_after_unknown", "crash_after_start"))
 def test_authenticated_beta_deploy_replays_exact_evidence_and_only_stops_after_ready(real_boundary, tmp_path: Path, monkeypatch, intervention: str) -> None:
     base, _base_grants, identity, signed, _uids, state = real_boundary
     origin = base.oauth.canonical_issuer
@@ -202,7 +202,7 @@ def test_authenticated_beta_deploy_replays_exact_evidence_and_only_stops_after_r
     reader = BetaEvidenceReader(remote, "owner/repo")  # type: ignore[arg-type]
     monkeypatch.setattr("auto_coder.management.worker_lifecycle.WorkerLifecycle._source", lambda _self: reader)
     bridge = LifecycleBridge()
-    bridge.lost_stop_response = intervention == "lost_stop_response"
+    bridge.lost_stop_response = intervention in {"lost_stop_response", "supervisor_changed_after_unknown"}
     bridge.crash_new = intervention == "crash_after_start"
     app = create_management_app(settings, grants, worker_clients={"beta": bridge})  # type: ignore[dict-item]
     with TestClient(app, base_url=origin) as client:
@@ -227,6 +227,20 @@ def test_authenticated_beta_deploy_replays_exact_evidence_and_only_stops_after_r
             remote.refs.pop("refs/tags/auto-coder-beta-selection-current")
         elif intervention == "policy_downgrade":
             policy.write_text(policy.read_text().replace("profile: beta", "profile: observe"), encoding="utf-8")
+        elif intervention == "supervisor_changed_after_unknown":
+            original_read = bridge.read_worker_operation
+
+            def unreadable_until_restart(operation_id: str) -> WorkerNetworkResult:
+                if bridge.supervisor_generation == "supervisor-a":
+                    return bridge._result("UNKNOWN", {})
+                return original_read(operation_id)
+
+            monkeypatch.setattr(bridge, "read_worker_operation", unreadable_until_restart)
+            outstanding = runtime.journal.get(operation_id).record
+            assert outstanding is not None
+            runtime.lifecycle.process(outstanding)
+            assert [name for name, _id in bridge.actions] == ["PREPARE", "REQUEST_GRACEFUL_STOP"]
+            bridge.supervisor_generation = "supervisor-restarted"
         _drive(app, operation_id)
         completed = _call(client, bearer, "auto_coder_operation_get", {"target_id": "beta-worker", "operation_id": operation_id})
         if intervention == "selection_changed":
@@ -242,6 +256,12 @@ def test_authenticated_beta_deploy_replays_exact_evidence_and_only_stops_after_r
         if intervention == "policy_downgrade":
             assert completed["status"] == "NEEDS_ATTENTION"
             assert [name for name, _id in bridge.actions] == ["PREPARE"]
+            return
+        if intervention == "supervisor_changed_after_unknown":
+            assert completed["status"] == "NEEDS_ATTENTION"
+            assert completed["reason"] == "original_supervisor_incarnation_changed"
+            assert [name for name, _id in bridge.actions] == ["PREPARE", "REQUEST_GRACEFUL_STOP"]
+            assert completed["steps"]["drain"]["state"] == "SENT_UNKNOWN"
             return
         if intervention == "crash_after_start":
             assert completed["status"] == "FAILED" and completed["reason"] == "new_beta_worker_failed_previous_runtime_restored"

@@ -70,7 +70,7 @@ def _argument(client: WorkerNetworkClient, sha: str, key: str) -> dict[str, obje
     }
 
 
-def test_authenticated_beta_source_installs_real_version_and_reconciles_after_lost_reply(real_boundary, tmp_path: Path, monkeypatch) -> None:
+def test_authenticated_beta_source_installs_real_version_and_reconciles_after_lost_reply(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None) -> None:
     """REQ-013: join original Git proof, OAuth, SQLite, Docker and producer beats."""
     image = _image()
     source = Path(os.environ.get("GITHUB_WORKSPACE", str(Path(__file__).parents[1]))).resolve()
@@ -208,8 +208,7 @@ def test_authenticated_beta_source_installs_real_version_and_reconciles_after_lo
         facts = _wait_for(lambda: result if (result := _container_facts(worker_name))["socket"] else None, timeout=30)
         assert facts["docker_socket"] is False and facts["docker_binary"] is None
         _wait_for(lambda: _inspect_worker(worker_name), timeout=90)
-        initial = _worker_observation(worker_name)
-        assert initial["lifecycle"]["daemon_serving"] is True
+        _wait_for(lambda: observed if (observed := _worker_observation(worker_name))["lifecycle"]["daemon_serving"] is True else None, timeout=90)
         config = WorkerEndpointConfig("beta-worker", "beta", "fixture/beta", worker_ip, 8843, secret_bytes)
         network_client = WorkerNetworkClient(config)
         arguments = _argument(network_client, sha, "real-deploy-lost-stop")
