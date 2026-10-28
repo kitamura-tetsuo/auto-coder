@@ -91,3 +91,26 @@ def management_recovery_status(config_path: Path, request_id: str) -> None:
         click.echo(json.dumps(asdict(record), sort_keys=True))
     except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
         raise click.ClickException(f"recovery status unavailable: {exc}") from exc
+
+
+@management_group.command("fresh-status")
+@click.option("--config", "config_path", required=True, type=click.Path(path_type=Path, exists=True, dir_okay=False))
+def management_fresh_status(config_path: Path) -> None:
+    """Read local fresh-initialization launch and authenticated readiness."""
+    import json
+    import sqlite3
+
+    from .management.bootstrap_supervisor import BootstrapConfig
+    from .management.fresh_initialization import read_fresh_status
+    from .management.oauth_config import load_management_settings
+
+    try:
+        settings = load_management_settings(config_path)
+        if settings.bootstrap_config_path is None or settings.config_path is None:
+            raise ValueError("management bootstrap is not configured")
+        bootstrap = BootstrapConfig.read(settings.bootstrap_config_path)
+        if bootstrap.oauth_root != settings.state_root or bootstrap.journal_root != settings.operation_state_root or (bootstrap.management_config is not None and bootstrap.management_config != settings.config_path):
+            raise ValueError("management and bootstrap configuration differ")
+        click.echo(json.dumps(read_fresh_status(bootstrap.state_root), sort_keys=True))
+    except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+        raise click.ClickException(f"fresh status unavailable: {exc}") from exc

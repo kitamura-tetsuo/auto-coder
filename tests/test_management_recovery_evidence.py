@@ -247,6 +247,32 @@ def test_claimed_recovery_fences_self_update_and_preserves_unknown_identity(tmp_
     owner.close()
 
 
+def test_fresh_initialization_gate_refuses_pending_recovery_without_launch(tmp_path: Path) -> None:
+    import fcntl
+    import os
+    import uuid
+
+    from auto_coder.management.recovery_mailbox import RecoveryIntent
+    from auto_coder.management.recovery_supervisor import RecoveryConsumer
+
+    runtime = _runtime(tmp_path)
+    supervisor = _supervisor(tmp_path, runtime)
+    supervisor.store.load()
+    supervisor.config.state_root.chmod(0o700)
+    supervisor.store.publish_supervisor(supervisor.incarnation, os.getpid(), ManagementBootstrapSupervisor._start_token(os.getpid()))
+    with (supervisor.config.state_root / ".supervisor-owner.lock").open("a+b") as owner:
+        fcntl.flock(owner.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        consumer = RecoveryConsumer(supervisor, tmp_path / "bootstrap.json")
+        intent = RecoveryIntent(str(uuid.uuid4()), supervisor.config.instance_id, supervisor.incarnation, 1, runtime.reference, runtime.receipt, runtime.source_receipt, str(tmp_path / "management.yml"), "a" * 64)
+        consumer.mailbox.submit(intent)
+        consumer.tick(allow_admission=False)
+        record = consumer.mailbox.get(intent.request_id)
+        assert record is not None and record.status == "refused"
+        assert not supervisor._children
+        with sqlite3.connect(supervisor.store.path) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM effects").fetchone() == (0,)
+
+
 def test_recovery_requires_current_supervisor_process(tmp_path: Path) -> None:
     import fcntl
     import os
