@@ -35,6 +35,8 @@ class RetainedClosureResumption:
     ordinary_pass_retained: bool = False
     retained_record: Optional[ClosureEvidenceRecord] = None
     revalidate: bool = False
+    discussion_changed: bool = False
+    discussion_unavailable: bool = False
     unavailable: bool = False
     reason: str = ""
 
@@ -117,7 +119,7 @@ class SavedReviewResumptionService:
             except Exception as exc:
                 resumption = RetainedClosureResumption(unavailable=True, reason=f"the owning review state could not be read: {exc}")
 
-        if resumption is not None and resumption.unavailable and not request.force:
+        if resumption is not None and resumption.unavailable and (not request.force or resumption.discussion_unavailable):
             request.actions.append(f"Retained closure evidence for PR #{pr_number} is pending: {resumption.reason}; " "no reviewer was admitted and the same evidence will be resumed when it is observable again")
             self._ports.record_closure_deferral(pr_number, request.head_sha, resumption.reason)
             deadline = self._clock() + 60.0
@@ -129,7 +131,7 @@ class SavedReviewResumptionService:
                 request.processing_status.retry_not_before = deadline
             return SavedReviewResumeResult(resumption, True)
 
-        if resumption is not None and resumption.ordinary_pass_retained:
+        if resumption is not None and (resumption.ordinary_pass_retained or resumption.discussion_changed):
             return SavedReviewResumeResult(resumption, False)
         if _resume_saved_ordinary_correction(
             self._ports,

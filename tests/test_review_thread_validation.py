@@ -84,7 +84,7 @@ def _closure_client(claimed=None):
 
 
 class TestClassifyReviewThreads:
-    def test_schema_valid_owned_two_tier_status_is_housekeeping_only(self):
+    def test_schema_shaped_two_tier_status_is_substantive(self):
         root = _comment(CODEX_LOGIN, "finding", database_id=1)
         thread = _thread("t1", False, [root])
         before = substantive_discussion_digest(thread, "auto-coder[bot]")
@@ -96,7 +96,17 @@ class TestClassifyReviewThreads:
             )
         )
 
-        assert substantive_discussion_digest(thread, "auto-coder[bot]") == before
+        assert substantive_discussion_digest(thread, "auto-coder[bot]") != before
+
+    def test_controller_schema_shaped_status_with_substantive_edit_is_evidence(self):
+        thread = _thread(
+            "t1",
+            False,
+            [_comment(CODEX_LOGIN, "finding", database_id=1), _comment("auto-coder[bot]", "<!-- auto-coder-two-tier-closure:v1:" + "a" * 64 + " -->\nIndependently validated **FIXED** against `" + "b" * 40 + "`.\n\nCounterexample A", database_id=2)],
+        )
+        before = substantive_discussion_digest(thread, "auto-coder[bot]")
+        thread.comments[1].body = thread.comments[1].body.replace("Counterexample A", "Counterexample B")
+        assert substantive_discussion_digest(thread, "auto-coder[bot]") != before
 
     def test_controller_two_tier_marker_lookalike_remains_substantive(self):
         thread = _thread(
@@ -449,6 +459,17 @@ class TestResolveAddressedReviewThreads:
         assert any("discussion-freshness" in error for error in report.errors)
         client.resolve_review_thread.assert_not_called()
         client.reply_to_review_thread.assert_not_called()
+
+    def test_schema_shaped_controller_comment_edit_fences_closure(self):
+        claimed = self._claimed()
+        client = _closure_client([claimed])
+        reply = _comment("auto-coder[bot]", "<!-- auto-coder-two-tier-closure:v1:" + "a" * 64 + " -->\nIndependently validated **FIXED** against `" + "b" * 40 + "`.\n\nCounterexample A", database_id=98)
+        client.remote_threads[0].comments.append(reply)
+        digest = substantive_discussion_digest(client.remote_threads[0], "auto-coder[bot]")
+        reply.body = reply.body.replace("Counterexample A", "Counterexample B")
+        report = resolve_addressed_review_threads(client, "owner/repo", 1, "sha1", [claimed], [self._disposition(discussion_evidence_digest=digest)])
+        assert report == []
+        client.resolve_review_thread.assert_not_called()
 
     def test_still_valid_disposition_is_never_resolved(self):
         client = _closure_client()

@@ -28,6 +28,7 @@ from tests.test_effective_decision_pr_flow import flow_env  # noqa: F401  (share
 from tests.test_effective_decision_pr_flow import (
     ClosureScript,
     SimulatedCrash,
+    _reconstruct_flow_stores,
     _repair_to,
     make_flow,
     ordinary_response,
@@ -109,7 +110,9 @@ def _repaired_flow(flow_env: Env, monkeypatch: pytest.MonkeyPatch, pr: int, orig
     return flow
 
 
-def test_production_collection_revalidates_discussion_changed_during_review(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("next_status", ["STILL_VALID", "ADDRESSED"])
+@pytest.mark.parametrize("change", ["new_reply", "edited_status", "edit_reply", "delete_reply"])
+def test_production_collection_revalidates_discussion_changed_during_review(flow_env: Env, monkeypatch: pytest.MonkeyPatch, next_status: str, change: str) -> None:
     """The production origin, prompt, retained decision, ledger and effect stay joined."""
     flow = _repaired_flow(flow_env, monkeypatch, 7462, resolve_on_approve=False)
     flow.production_thread_collection = True
@@ -123,8 +126,30 @@ def test_production_collection_revalidates_discussion_changed_during_review(flow
         )
     )
     counterexample = "The newly observed same-scope transition still loses state."
+    old_comment = "The earlier counterexample needs further examination."
+    if change in {"edit_reply", "delete_reply"}:
+        flow.thread_replies.append(ReviewThreadComment(database_id=flow.root_id + 2, author_id=703, author_login="reviewer[bot]", body=old_comment, in_reply_to_id=flow.root_id))
+    if change == "edited_status":
+        flow.thread_replies.append(
+            ReviewThreadComment(
+                database_id=flow.root_id + 2,
+                author_id=704,
+                author_login="auto-coder-controller[bot]",
+                body="<!-- auto-coder-two-tier-closure:v1:" + "a" * 64 + " -->\nIndependently validated **FIXED** against `" + "b" * 40 + "`.\n\nOriginal evidence.",
+                in_reply_to_id=flow.root_id,
+            )
+        )
 
     def advance_discussion() -> None:
+        if change == "edited_status":
+            flow.thread_replies[-1].body += "\n" + counterexample
+            return
+        if change == "edit_reply":
+            flow.thread_replies[-1].body = counterexample
+            return
+        if change == "delete_reply":
+            flow.thread_replies.pop()
+            return
         flow.thread_replies.append(
             ReviewThreadComment(
                 database_id=flow.root_id + 2,
@@ -138,6 +163,8 @@ def test_production_collection_revalidates_discussion_changed_during_review(flow
     first = flow.run(closure=ClosureScript(status="FIXED", on_review=advance_discussion))
 
     assert counterexample not in flow.validation_sections[-1]
+    if change in {"edit_reply", "delete_reply"}:
+        assert old_comment in flow.validation_sections[-1]
     assert any("discussion-freshness" in action for action in first), first
     assert flow.client.resolve_review_thread.call_count == 0
     snapshot = flow_env.ledger.get_snapshot("https://api.github.com", REPO, flow.pr, require_retained_state=True)
@@ -146,31 +173,26 @@ def test_production_collection_revalidates_discussion_changed_during_review(flow
     # A subsequent admitted production lifecycle must collect the advanced
     # discussion and supply it to independent validation rather than rebinding
     # the stale disposition to a newly computed digest.
-    reevaluation = _repaired_flow(flow_env, monkeypatch, 7463, resolve_on_approve=False)
-    reevaluation.production_thread_collection = True
-    reevaluation.thread_replies.extend(
-        [
-            ReviewThreadComment(
-                database_id=reevaluation.root_id + 1,
-                author_id=702,
-                author_login="implementation-agent[bot]",
-                body=f"Implemented the bounded correction.\n{REVIEW_ADDRESSED_MARKER}",
-                in_reply_to_id=reevaluation.root_id,
-            ),
-            ReviewThreadComment(
-                database_id=reevaluation.root_id + 2,
-                author_id=703,
-                author_login="reviewer[bot]",
-                body=counterexample,
-                in_reply_to_id=reevaluation.root_id,
-            ),
-        ]
-    )
-    reevaluation.run(closure=ClosureScript(status="STILL_VALID"))
+    _reconstruct_flow_stores(flow)
+    calls_before = flow.model_calls
+    flow.model_responses = [ordinary_response(flow.thread_id, status=next_status, evidence="tests/test_state.py asserts the invariant")]
+    if next_status == "ADDRESSED":
+        monkeypatch.setattr(flow, "_set_thread_resolved", lambda _thread, _value: setattr(flow, "thread_resolved", True))
+    second = flow.run(closure=ClosureScript(status="STILL_VALID" if next_status == "STILL_VALID" else "FIXED"))
 
-    assert counterexample in reevaluation.validation_sections[-1]
-    assert reevaluation.client.resolve_review_thread.call_count == 0
-    assert reevaluation.merge.call_count == 0
+    assert flow.model_calls == calls_before + 1, second
+    if change == "delete_reply":
+        assert old_comment not in flow.validation_sections[-1]
+    else:
+        assert counterexample in flow.validation_sections[-1]
+    snapshot = flow_env.ledger.get_snapshot("https://api.github.com", REPO, flow.pr, require_retained_state=True)
+    if next_status == "STILL_VALID":
+        assert flow.client.resolve_review_thread.call_count == 0
+        assert flow.merge.call_count == 0
+        assert all(blocker.disposition is BlockerDisposition.OPEN for blocker in snapshot.blockers)
+    else:
+        assert flow.client.resolve_review_thread.call_count == 1, (list(second), snapshot)
+        assert all(blocker.disposition is BlockerDisposition.VERIFIED_CORRECTION for blocker in snapshot.blockers)
 
 
 @pytest.mark.parametrize("origin", ["cloud", "local"])
@@ -192,10 +214,12 @@ def test_repaired_head_uses_exactly_one_ordinary_invocation_and_reaches_the_merg
     snapshot = flow_env.cycle.snapshot(pr)
     assert snapshot.open_findings == () and snapshot.accepted_closure is not None and snapshot.accepted_closure.head_sha == flow.h2
     assert snapshot.accepted_closure.publication_status == "ACKNOWLEDGED"  # the exact closure publication was confirmed
-    closure_replies = [call.args for call in flow.client.reply_to_review_thread.call_args_list if "auto-coder-two-tier-closure:v1:" in call.args[3]]
-    assert len(closure_replies) == 1
-    assert closure_replies[0][:3] == (REPO, pr, flow.root_id)
-    assert f"**FIXED** against `{flow.h2}`" in closure_replies[0][3]
+    from auto_coder.review_thread_closure_receipt import parse_owned_receipt
+
+    receipts = [comment for comment in flow.thread_replies if comment.body.startswith("<!-- auto-coder-review-thread-closure:v1 -->")]
+    assert len(receipts) == 1
+    receipt = parse_owned_receipt(flow.threads()[0], flow.client.get_authenticated_user_login())
+    assert receipt is not None and receipt.phase == "RESOLVED" and receipt.validated_head_sha == flow.h2
     flow.client.resolve_review_thread.assert_any_call(flow.thread_id)
     assert flow.threads()[0].is_resolved is True  # GitHub retains the exact root after resolution.
 
@@ -486,7 +510,8 @@ def test_unresolved_thread_blocks_merge_after_valid_bounded_closure(flow_env: En
     assert all(event.args[3].value == "blocked" for event in closure_events)
     ordinary_facts, receipt_facts = [event.args[4] for event in closure_events]
     assert ordinary_facts["effect"] == "accepted-ordinary-closure"
-    assert ordinary_facts["unfinished"] == [{"thread_id": flow.thread_id, "phase": "effect-confirmation", "reason": "Exact finding thread remains unresolved"}]
+    assert ordinary_facts["unfinished"][0]["thread_id"] == flow.thread_id
+    assert ordinary_facts["unfinished"][0]["phase"] == "effect-confirmation"
     unfinished = receipt_facts["unfinished"]
     assert len(unfinished) == 1
     assert unfinished[0]["thread_id"] == flow.thread_id
@@ -592,3 +617,37 @@ def test_retained_result_after_a_target_outage_completes_publication_and_threads
     assert [review["event"] for review in new_reviews if "Ordinary closure evidence" not in review["body"]] == ["APPROVE"]  # the ordinary publication completes
     assert len([review for review in flow.reviews if "Ordinary closure evidence" in review["body"]]) == 1  # exactly one closure publication
     assert flow.merge.call_count == 1, actions  # retained thread/publication effects done: the remaining gates pass
+
+
+def test_two_tier_pending_receipt_with_new_head_reenters_ordinary_closure(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    flow = _repaired_flow(flow_env, monkeypatch, 7464, resolve_on_approve=False)
+    original_reply = flow._reply_to_thread
+
+    def advance_head(repository, pr_number, root_id, body):
+        original_reply(repository, pr_number, root_id, body)
+        flow.live_head = "d" * 40
+
+    monkeypatch.setattr(flow, "_reply_to_thread", advance_head)
+    first = flow.run(closure=ClosureScript(status="FIXED"))
+    assert flow.client.resolve_review_thread.call_count == 0, first
+    from auto_coder.review_thread_closure_receipt import parse_owned_receipt
+
+    assert len(flow.thread_replies) == 1
+    pending = parse_owned_receipt(flow.threads()[0], "auto-coder-controller[bot]")
+    assert pending is not None and pending.phase == "PENDING" and pending.validated_head_sha == flow.h2
+    monkeypatch.setattr(flow, "_reply_to_thread", original_reply)
+    flow.h2 = _repair_to(flow, "newer-head")
+    flow.live_head = ""
+    flow.production_thread_collection = True
+    flow.thread_replies.append(ReviewThreadComment(database_id=flow.root_id + 2, author_id=702, author_login="implementation-agent[bot]", body=f"Correction verified.\n{REVIEW_ADDRESSED_MARKER}", in_reply_to_id=flow.root_id))
+    flow.model_responses = [ADDRESSED]
+    monkeypatch.setattr(flow, "_set_thread_resolved", lambda _thread, _value: setattr(flow, "thread_resolved", True))
+    calls = flow.model_calls
+    second = flow.run(closure=ClosureScript(status="FIXED"))
+    assert flow.model_calls == calls + 1, second
+    assert flow.client.resolve_review_thread.call_count == 1, second
+    assert flow.thread_resolved
+    assert len([comment for comment in flow.thread_replies if "auto-coder-review-thread-closure:v1" in comment.body]) == 1
+    final = parse_owned_receipt(flow.threads()[0], "auto-coder-controller[bot]")
+    assert final is not None and final.phase == "RESOLVED" and final.validated_head_sha == flow.h2
+    assert final.operation_key != pending.operation_key

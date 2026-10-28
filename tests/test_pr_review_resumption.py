@@ -62,6 +62,15 @@ def test_unavailable_closure_defers_for_sixty_seconds_without_admitting_work():
     assert ports.events == ["identity", "closure", "closure-deferral"]
 
 
+def test_unavailable_discussion_defers_even_when_forced():
+    ports = Ports(closure=RetainedClosureResumption(unavailable=True, discussion_unavailable=True, reason="discussion unavailable"))
+    actions = Actions()
+    result = SavedReviewResumptionService(ports, clock=lambda: 100.0).resume_before_admission(request(actions, force=True))
+    assert result.stop_processing
+    assert ports.events == ["identity", "closure", "closure-deferral"]
+    assert actions.retry_not_before == 160.0
+
+
 def test_saved_decision_policy_is_implemented_in_the_extracted_module():
     extracted = inspect.getsource(pr_review_resumption)
     processor = inspect.getsource(pr_processor)
