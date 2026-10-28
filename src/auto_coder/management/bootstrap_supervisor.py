@@ -18,6 +18,8 @@ from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from pathlib import Path
 
+from loguru import logger
+
 from .bootstrap_store import BootstrapStore, ChildPhase, ChildRecord, EffectRecord
 
 
@@ -512,7 +514,7 @@ class ManagementBootstrapSupervisor:
     def _run_owned(self) -> int:
         from .self_update_handoff import SelfUpdateHandoffConsumer
 
-        self.store.publish_supervisor(self.incarnation, os.getpid(), self._start_token(os.getpid()))
+        self.store.publish_supervisor(self.incarnation, os.getpid(), self._await_owner_start_token())
         consumer = SelfUpdateHandoffConsumer(self) if self.config.management_config is not None else None
         record = self.store.load()
         if record.pid == 0 and record.phase is ChildPhase.STOPPED and not record.intended_stop and record.child_generation == 0 and self.config.crash_budget > 0:
@@ -521,7 +523,7 @@ class ManagementBootstrapSupervisor:
             else:
                 self.start_selected(f"bootstrap-{uuid.uuid4()}", str(uuid.uuid4()), self.config.initial_runtime)
         while True:
-            self.store.publish_supervisor(self.incarnation, os.getpid(), self._start_token(os.getpid()))
+            self.store.publish_supervisor(self.incarnation, os.getpid(), self._await_owner_start_token())
             # inspect() owns exit classification and the one-time safety return.
             # A second poll/save here can lose an exit between observations and
             # bypass that durable recovery transition.
@@ -674,6 +676,18 @@ class ManagementBootstrapSupervisor:
             return "" if fields[0] == "Z" else fields[19]
         except (OSError, IndexError):
             return ""
+
+    def _await_owner_start_token(self) -> str:
+        """Hold the owner fence and suspend effects until its lifetime is observable."""
+        warned = False
+        while True:
+            token = self._start_token(os.getpid())
+            if token:
+                return token
+            if not warned:
+                logger.warning("Management supervisor lifetime unavailable; preserving process state")
+                warned = True
+            time.sleep(0.2)
 
     @staticmethod
     def _identity(record: ChildRecord) -> str:
