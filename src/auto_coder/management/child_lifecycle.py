@@ -22,7 +22,7 @@ def write_management_drain_receipt(settings: ManagementSettings) -> None:
     temporary: Path | None = None
     try:
         config = BootstrapConfig.read(settings.bootstrap_config_path)
-        record = BootstrapStore(config.state_root, config.instance_id).load()
+        record = BootstrapStore(config.state_root, config.instance_id, require_existing=True).load()
         path = Path(selected)
         configured = next((runtime.drain_ack for runtime in config.runtimes if runtime.reference == record.selected_runtime), None)
         if path != (configured or config.state_root / f"drain-{record.selected_runtime}.json"):

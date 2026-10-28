@@ -14,9 +14,12 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import closing
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from pathlib import Path
+
+from loguru import logger
 
 from .bootstrap_store import BootstrapStore, ChildPhase, ChildRecord, EffectRecord
 
@@ -239,7 +242,7 @@ class Observation:
 class ManagementBootstrapSupervisor:
     """Own one child; all executable data comes from immutable local config."""
 
-    def __init__(self, config: BootstrapConfig, incarnation: str | None = None) -> None:
+    def __init__(self, config: BootstrapConfig, incarnation: str | None = None, bootstrap_config_path: Path | None = None) -> None:
         config.validate()
         from .worker_network_client import configured_worker_bridge_environment
 
@@ -247,6 +250,7 @@ class ManagementBootstrapSupervisor:
         # an effect or launching a management child.
         self._worker_bridge_environment = configured_worker_bridge_environment()
         self.config = config
+        self.bootstrap_config_path = bootstrap_config_path
         self.store = BootstrapStore(config.state_root, config.instance_id)
         self.incarnation = incarnation or str(uuid.uuid4())
         self._lock = threading.RLock()
@@ -373,6 +377,11 @@ class ManagementBootstrapSupervisor:
                 return self._restore_once(operation_id, failed)
             token = self._start_token(child.pid)
             if not token:
+                if child.poll() is not None:
+                    failed = replace(prepared, phase=ChildPhase.NEEDS_ATTENTION, pid=0, start_token="", exit_cause=f"startup_exit_{child.returncode}")
+                    if not self.store.reserve(prepared, failed):
+                        return Observation(ResultStatus.UNKNOWN, self.store.load(), operation_id, detail="child owner changed during startup exit")
+                    return self._restore_once(operation_id, failed)
                 failed = replace(prepared, phase=ChildPhase.NEEDS_ATTENTION, exit_cause="unobservable_launch")
                 self.store.save(failed)
                 return self._finish(operation_id, ResultStatus.UNKNOWN, failed, "new child OS lifetime could not be observed")
@@ -502,6 +511,37 @@ class ManagementBootstrapSupervisor:
                 return Observation(ResultStatus.UNKNOWN, self.store.load(), detail="child owner changed during reconciliation")
         return observed
 
+    def _pristine_initial_state(self) -> bool:
+        """Never infer a first boot from an empty record over retained history."""
+        try:
+            with closing(sqlite3.connect(self.store.path.as_uri() + "?mode=ro", uri=True, timeout=2)) as connection:
+                metadata = dict(connection.execute("SELECT key,value FROM metadata"))
+                rows = connection.execute("SELECT instance_id,record_json FROM child_state").fetchall()
+                if metadata != {"schema_version": "1"} or connection.execute("PRAGMA quick_check").fetchone()[0] != "ok" or connection.execute("SELECT COUNT(*) FROM effects").fetchone()[0]:
+                    return False
+                if len(rows) > 1 or (rows and (rows[0][0] != self.config.instance_id or rows[0][1] != self.store._record_json(ChildRecord(self.config.instance_id)))):
+                    return False
+            recovery = self.config.state_root / "management-recovery.sqlite3"
+            oauth = self.config.oauth_root / "oauth.sqlite3"
+            if any(path.exists() or path.is_symlink() for path in (recovery, oauth)):
+                return False
+            stores = (
+                (self.config.state_root / "management-self-update.sqlite3", {"schema_version": "1", "instance_id": self.config.instance_id}, ("handoffs", "runtimes")),
+                (self.config.journal_root / "management-operations.sqlite3", {"schema_version": "2"}, ("operations", "operation_history")),
+            )
+            for path, expected_metadata, tables in stores:
+                if path.is_symlink():
+                    return False
+                if path.exists():
+                    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=2)) as connection:
+                        if dict(connection.execute("SELECT key,value FROM metadata")) != expected_metadata or connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                            return False
+                        if any(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in tables):
+                            return False
+            return True
+        except (OSError, ValueError, sqlite3.Error):
+            return False
+
     def run(self) -> int:
         """Remain alive as PID 1 and reap only the configured child."""
         self.config.state_root.mkdir(parents=True, exist_ok=True)
@@ -512,22 +552,71 @@ class ManagementBootstrapSupervisor:
     def _run_owned(self) -> int:
         from .self_update_handoff import SelfUpdateHandoffConsumer
 
+        recovery_path = self.config.state_root / "management-recovery.sqlite3"
+        if self.store.path.is_symlink():
+            logger.error("Management child ledger cannot be a symlink")
+            return 1
+        ledger_exists = self.store.path.is_file()
+        retained = (
+            recovery_path,
+            self.config.state_root / "management-self-update.sqlite3",
+            self.config.journal_root / "management-operations.sqlite3",
+            self.config.oauth_root / "oauth.sqlite3",
+        )
+        if not ledger_exists and any(path.exists() or path.is_symlink() for path in retained):
+            logger.error("Management child ledger is missing; refusing bootstrap reconstruction")
+            return 1
+        self.store.require_existing = ledger_exists
         self.store.publish_supervisor(self.incarnation, os.getpid(), self._start_token(os.getpid()))
+        self.store.require_existing = True
         consumer = SelfUpdateHandoffConsumer(self) if self.config.management_config is not None else None
         record = self.store.load()
+        initial_state_pristine = self._pristine_initial_state() if record.child_generation == 0 else False
+        if consumer is not None and record.child_generation == 0 and not consumer.store.path.exists() and not consumer.store.path.is_symlink():
+            try:
+                consumer.store.active()
+            except (OSError, ValueError, sqlite3.Error):
+                logger.warning("Management handoff mailbox unavailable")
+        recovery_consumer = None
+        recovery_mailbox_unavailable = False
+        if self.bootstrap_config_path is not None:
+            try:
+                from .recovery_supervisor import RecoveryConsumer
+
+                recovery_consumer = RecoveryConsumer(self, self.bootstrap_config_path)
+            except (OSError, ValueError, sqlite3.Error):
+                from .recovery_mailbox import RecoveryMailbox
+
+                try:
+                    mailbox = RecoveryMailbox(self.config.state_root, self.config.instance_id)
+                    recovery_mailbox_unavailable = mailbox._child_marker() is not None or mailbox.path.exists() or mailbox.path.is_symlink()
+                except (OSError, ValueError, sqlite3.Error):
+                    recovery_mailbox_unavailable = True
+                logger.warning("Management local recovery mailbox unavailable")
         if record.pid == 0 and record.phase is ChildPhase.STOPPED and not record.intended_stop and record.child_generation == 0 and self.config.crash_budget > 0:
-            if self.store.has_unresolved_effects():
+            if not initial_state_pristine or self.store.has_unresolved_effects():
                 self.store.reserve(record, replace(record, phase=ChildPhase.UNKNOWN, exit_cause="unresolved_effect"))
             else:
                 self.start_selected(f"bootstrap-{uuid.uuid4()}", str(uuid.uuid4()), self.config.initial_runtime)
         while True:
-            self.store.publish_supervisor(self.incarnation, os.getpid(), self._start_token(os.getpid()))
+            if not self.store.path.is_file() or self.store.path.is_symlink():
+                logger.error("Management child ledger is unavailable; preserving process state")
+                time.sleep(0.2)
+                continue
+            try:
+                self.store.publish_supervisor(self.incarnation, os.getpid(), self._start_token(os.getpid()))
+            except (OSError, sqlite3.Error):
+                logger.error("Management child ledger is unavailable; preserving process state")
+                time.sleep(0.2)
+                continue
             # inspect() owns exit classification and the one-time safety return.
             # A second poll/save here can lose an exit between observations and
             # bypass that durable recovery transition.
             self.inspect()
-            if consumer is not None:
+            if consumer is not None and not recovery_mailbox_unavailable and (recovery_consumer is None or not recovery_consumer.blocks_self_update()):
                 consumer.tick()
+            if recovery_consumer is not None:
+                recovery_consumer.tick()
             time.sleep(0.2)
 
     def restore_previous(self, operation_id: str, attempt_id: str, expected_identity: str, previous_runtime: str) -> Observation:
@@ -591,6 +680,11 @@ class ManagementBootstrapSupervisor:
             return self._finish(operation_id, ResultStatus.NEEDS_ATTENTION, recovery, "previous runtime launch failed")
         token = self._start_token(child.pid)
         if not token:
+            if child.poll() is not None:
+                failed_restore = replace(recovery, phase=ChildPhase.NEEDS_ATTENTION, pid=0, start_token="", exit_cause="previous_runtime_start_failed")
+                if self.store.reserve(recovery, failed_restore):
+                    return self._finish(operation_id, ResultStatus.NEEDS_ATTENTION, failed_restore, "the one previous-runtime process exited during startup")
+                return self._finish(operation_id, ResultStatus.UNKNOWN, self.store.load(), "restore lifetime changed during startup observation")
             return self._finish(operation_id, ResultStatus.UNKNOWN, recovery, "recovery OS lifetime is unknown")
         self._children[child.pid] = child
         restored = replace(
@@ -617,6 +711,14 @@ class ManagementBootstrapSupervisor:
             if self.store.reserve(restored, failed_restore):
                 return self._finish(operation_id, ResultStatus.NEEDS_ATTENTION, failed_restore, "the one previous-runtime process exited during startup")
             return Observation(ResultStatus.UNKNOWN, self.store.load(), operation_id, detail="restore lifetime changed during startup observation")
+        # The original start effect may already contain the candidate's
+        # immutable observation. Retain the distinct restored lifetime under a
+        # separate observation identity before declaring the safety return.
+        observation_id = operation_id + ":safety-observation"
+        evidence = self.store.begin_effect(observation_id, restored.effect_attempt_id, "OBSERVE_SAFETY_RESTORE", restored.selected_runtime, self._identity(restored))
+        if evidence.phase != "prepared":
+            return Observation(ResultStatus.UNKNOWN, restored, operation_id, detail="safety return observation already exists")
+        self._finish(observation_id, ResultStatus.PROCESS_RESTORED, restored)
         return self._finish(operation_id, ResultStatus.PROCESS_RESTORED, restored)
 
     def _replay(self, effect: EffectRecord) -> Observation | None:
@@ -688,7 +790,7 @@ def main() -> None:
     args = parser.parse_args()
     config = BootstrapConfig.read(args.config)
     setup_logger(stream=sys.stdout, log_file=str(config.state_root / "logs" / "management-bootstrap.log"))
-    raise SystemExit(ManagementBootstrapSupervisor(config).run())
+    raise SystemExit(ManagementBootstrapSupervisor(config, bootstrap_config_path=args.config).run())
 
 
 if __name__ == "__main__":

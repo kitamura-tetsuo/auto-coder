@@ -73,7 +73,7 @@ def create_mcp_resource(
     grants: OAuthGrantService,
     tools: tuple[ManagementTool, ...] = (),
     *,
-    identity_observer: Callable[[AuthenticatedGrant], Awaitable[None]] | None = None,
+    identity_observer: Callable[[AuthenticatedGrant, str], Awaitable[None]] | None = None,
 ) -> tuple[FastMCP, ASGIApp]:
     verifier = GrantTokenVerifier(settings, grants)
     public_authority = urlsplit(settings.oauth.canonical_issuer).netloc
@@ -104,13 +104,13 @@ def create_mcp_resource(
         annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False, openWorldHint=False),
         structured_output=True,
     )
-    async def whoami() -> dict[str, object]:
+    async def whoami(observation_id: str = "") -> dict[str, object]:
         grant = _grant.get()
         access = get_access_token()
         if grant is None or access is None or access.client_id != grant.client_id:
             raise PermissionError("authenticated request context is unavailable")
         if identity_observer is not None:
-            await identity_observer(grant)
+            await identity_observer(grant, observation_id)
         return asdict(WhoAmI(grant.principal.project_id, grant.principal.uid, grant.client_id, grant.scopes, grant.resource))
 
     required_by_name: dict[str, tuple[str, ...]] = {"auto_coder_whoami": (READ_SCOPE,)}

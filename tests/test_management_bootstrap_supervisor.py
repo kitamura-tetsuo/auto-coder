@@ -913,3 +913,34 @@ def test_delayed_candidate_failure_reconciles_one_previous_runtime(tmp_path: Pat
         assert replay.record.pid != restored_pid
     finally:
         _stop_process(restored.record.pid)
+
+
+def test_confirmed_candidate_exit_before_start_token_restores_once(tmp_path: Path, monkeypatch) -> None:
+    old, candidate = _runtime(tmp_path, "old"), _runtime(tmp_path, "candidate")
+    candidate.executable.write_bytes(b"#!/bin/sh\nexit 23\n")
+    candidate.executable.chmod(0o755)
+    candidate = _resign_runtime(candidate)
+    supervisor = _supervisor(tmp_path, old, candidate)
+    first = supervisor.start_selected("old-start", "a", "old")
+    _await_child_ready(old)
+    assert supervisor.request_graceful_stop("old-stop", "b", supervisor._identity(first.record)).status is ResultStatus.STOPPED
+    original = supervisor._start_token
+    called = False
+
+    def after_candidate_exit(pid: int) -> str:
+        nonlocal called
+        if not called:
+            called = True
+            os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+            return ""
+        return original(pid)
+
+    monkeypatch.setattr(supervisor, "_start_token", after_candidate_exit)
+    restored = supervisor.start_selected("candidate-start", "c", "candidate")
+    try:
+        assert called
+        assert restored.status is ResultStatus.PROCESS_RESTORED
+        assert restored.record.selected_runtime == old.reference
+        assert supervisor.start_selected("candidate-start", "c", "candidate").record == restored.record
+    finally:
+        _stop_process(restored.record.pid)

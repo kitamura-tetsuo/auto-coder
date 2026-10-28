@@ -11,6 +11,13 @@ scripts/test.sh tests/test_worker_management_bridge.py -k reevaluation`.
 
 Management journal operation IDs, phases, targets, and safe categories use the existing Loguru sinks without changing worker command/trace lifecycle events. Its separate contract is documented in [`client-features/management-operation-journal.md`](client-features/management-operation-journal.md).
 
+Local management recovery uses a private Supervisor mailbox rather than the
+management operation journal or worker Issue/PR trace lifecycle. The owning
+Supervisor logs the bounded request ID and transition status; the complete local
+status is read with `management recovery-status`. The real-CLI scenarios in
+`tests/test_management_recovery_integration.py` verify these outcomes and their
+process effects. This path does not introduce a dashboard-owned event schema.
+
 Management self-update adds a fixed authenticated MCP origin to that same journal
 and dispatcher. Admission and durable Supervisor handoff log the operation ID and
 exact source SHA; reconnect-proof failures log only a safe category. Its protected

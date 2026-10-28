@@ -67,7 +67,9 @@ ROOT = Path(__file__).resolve().parents[1]
 _CHILD_ENTRYPOINT = """from __future__ import annotations
 import asyncio
 import json
+import os
 import sys
+import time
 sys.dont_write_bytecode = True
 from pathlib import Path
 import uvicorn
@@ -96,6 +98,18 @@ def main():
     if len(args) != 4 or args[:3] != ["management", "serve", "--config"]:
         raise SystemExit(2)
     settings = load_management_settings(Path(args[3]))
+    with (settings.state_root / "fixture-launch-history").open("a") as history:
+        history.write(str(os.getpid()) + "\\n")
+    hold_bind = settings.state_root / "fixture-hold-bind"
+    if hold_bind.exists():
+        (settings.state_root / "fixture-entered-bind").write_text(str(os.getpid()))
+        while hold_bind.exists():
+            time.sleep(0.02)
+    failure = settings.state_root / "fixture-fail-start"
+    if failure.exists():
+        with (settings.state_root / "fixture-failed-launches").open("a") as counter:
+            counter.write("launch\\n")
+        raise SystemExit(78)
     external = json.loads((settings.state_root / "external-services.json").read_text())
     identity = FirebaseOperatorIdentity(IdentityConfig(settings.oauth.firebase_project_id, settings.state_root / "allowed_uids.json"))
     app = initialize_app(LocalCredential(), {"projectId": settings.oauth.firebase_project_id}, name="self-update-boundary")
@@ -114,7 +128,11 @@ def main():
         (settings.state_root / "request-exited").write_text("drained")
         return {"drained": True}
     held = ManagementTool("fixture_hold_request", hold_request, (READ_SCOPE,), ToolAnnotations(readOnlyHint=True))
-    application = create_management_app(settings, grants, (held,), self_update_source_authority=source)
+    async def set_startup_ready(ready: bool) -> dict[str, object]:
+        application.state.management_runtime.self_update.startup_reconciled = ready
+        return {"ready": ready}
+    startup = ManagementTool("fixture_set_startup_ready", set_startup_ready, (READ_SCOPE,), ToolAnnotations(readOnlyHint=True))
+    application = create_management_app(settings, grants, (held, startup), self_update_source_authority=source)
     setup_logger(stream=sys.stdout, log_file=str(settings.state_root / "logs" / "fixture-child.log"))
     uvicorn.run(application, host=settings.bind_host, port=settings.port, access_log=False)
 
@@ -402,7 +420,7 @@ class ManagementSystem:
 
 
 @pytest.fixture
-def management_system(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None):
+def management_system(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None, request):
     root = tmp_path / "management-system"
     root.mkdir()
     source = root / "repository"
@@ -472,10 +490,39 @@ def management_system(tmp_path: Path, _use_real_commands: None, _use_real_sleep:
 
     bootstrap = BootstrapConfig(INSTANCE, root / "supervisor", state, root / "operations", origin + "/mcp", current.management_runtime_id, (), graceful_timeout=0.4, management_version_root=root / "versions", management_config=config_path, verification_timeout=30)
     runtimes = [runtime_for_receipt(bootstrap, item) for item in (current, candidate)]
+    if getattr(request, "param", None) in {"bootstrap", "bootstrap_selected", "recovery", "recovery_plain"}:
+        from auto_coder.management.bootstrap_supervisor import RuntimeSpec
+
+        executable = root / "bootstrap-python"
+        shutil.copy2(Path(sys.executable).resolve(), executable)
+        package_path = Path(current.environment_path) / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+        initial = RuntimeSpec(
+            "bootstrap",
+            "sha256:" + hashlib.sha256(executable.read_bytes()).hexdigest(),
+            executable,
+            ("-m", "auto_coder.cli", "management", "serve", "--config", str(config_path)),
+            (("PATH", os.defpath), ("PYTHONPATH", str(package_path)), ("PYTHONHOME", sys.base_prefix), ("PYTHONDONTWRITEBYTECODE", "1")),
+            root / "drain-bootstrap.json",
+        )
+        if request.param in {"bootstrap", "recovery_plain"}:
+            bootstrap = replace(bootstrap, initial_runtime="bootstrap", management_config=None, management_version_root=None)
+            runtimes = [initial]
+        else:
+            bootstrap = replace(bootstrap, initial_runtime="bootstrap", graceful_timeout=10, verification_timeout=120)
+            runtimes = [initial, runtimes[1]]
+        (Path(current.environment_path).parent / "MANAGEMENT_READY.json").unlink()
+    if getattr(request, "param", None) == "recovery_installed":
+        bootstrap = replace(bootstrap, verification_timeout=120)
     value = asdict(bootstrap)
     value["runtimes"] = [{**asdict(item), "environment": dict(item.environment)} for item in runtimes]
     bootstrap_path.write_text(json.dumps(value, default=lambda value: str(value) if isinstance(value, Path) else value), encoding="utf-8")
     system = ManagementSystem(root, source, current_sha, candidate_sha, config_path, bootstrap_path, policy, origin, services, server, key, publisher, stager, current, candidate)
+    if getattr(request, "param", None) in {"recovery", "recovery_plain", "recovery_installed"}:
+        (root / "supervisor").mkdir(mode=0o700)
+        if request.param == "recovery_plain":
+            BootstrapStore(root / "supervisor", INSTANCE).load()
+            with HandoffStore(root / "supervisor", INSTANCE)._connect():
+                pass
     try:
         system.start()
         yield system
@@ -785,6 +832,14 @@ def test_real_candidate_without_matching_operator_proof_restores_previous_once(m
         assert _operation(system, fresh, operation_id)["status"] == "PROCESS_RESTORED"
     assert _effect_counts(system) == counts
     assert system.child.child_generation == generation
+    from auto_coder.management.readiness_observation import read_authenticated_readback
+
+    started = time.time()
+    observation_id = "c" * 32
+    system.call(fresh, "auto_coder_whoami", {"observation_id": observation_id})
+    proof = read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30)
+    assert proof is not None and proof.child_identity == ManagementBootstrapSupervisor._identity(system.child)
+    assert _effect_counts(system) == counts
 
 
 def test_original_grant_revoked_during_real_drain_restores_without_candidate_start(management_system: ManagementSystem) -> None:
@@ -867,3 +922,132 @@ def test_real_persistence_failure_retains_original_child_and_busy_lane(managemen
         assert system.journal.get(operation_id).record.authority == recorded.authority
         assert system.child == old
         assert _effect_counts(system) == effects
+
+
+@pytest.mark.parametrize("management_system", ["bootstrap"], indirect=True)
+def test_authenticated_readback_is_bound_to_current_observation(management_system: ManagementSystem) -> None:
+    from auto_coder.management.readiness_observation import read_authenticated_readback
+
+    system = management_system
+    token = system.issue()
+    before = _effect_counts(system)
+    started = time.time()
+    observation_id = "1234567890abcdef1234567890abcdef"
+    challenge = system.request(None, "auto_coder_whoami", {"observation_id": observation_id})
+    assert challenge.status_code == 401 and "Bearer" in challenge.headers["www-authenticate"]
+    assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None
+    system.call(token, "fixture_set_startup_ready", {"ready": False})
+    system.call(token, "auto_coder_whoami", {"observation_id": observation_id})
+    assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None
+    system.call(token, "fixture_set_startup_ready", {"ready": True})
+    system.call(token, "auto_coder_whoami", {"observation_id": observation_id})
+    proof = read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30)
+    assert proof is not None
+    assert proof.child_identity == ManagementBootstrapSupervisor._identity(system.child)
+    assert proof.client_id == "operator-client"
+    assert read_authenticated_readback(system.bootstrap, observation_id="0" * 32, observation_started_at=started, observation_ends_at=started + 30) is None
+    assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=proof.observed_at + 0.001, observation_ends_at=started + 30) is None
+    # Each corrupted binding is tested against independently observed live OS
+    # and Supervisor facts, not a copied success Boolean.
+    assert ManagementBootstrapSupervisor._start_token(system.child.pid) == system.child.start_token
+    configured = system.bootstrap
+    wrong_endpoint = replace(configured, listener_url="http://127.0.0.1:1/mcp")
+    assert read_authenticated_readback(wrong_endpoint, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None
+    initial = next(item for item in configured.runtimes if item.reference == configured.initial_runtime)
+    wrong_executable = system.root / "other-python"
+    shutil.copy2(initial.executable, wrong_executable)
+    assert initial.receipt == "sha256:" + hashlib.sha256(wrong_executable.read_bytes()).hexdigest()
+    assert not os.path.samefile(f"/proc/{system.child.pid}/exe", wrong_executable)
+    wrong_runtime = replace(initial, executable=wrong_executable)
+    wrong_config = replace(configured, runtimes=tuple(wrong_runtime if item == initial else item for item in configured.runtimes))
+    assert read_authenticated_readback(wrong_config, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None
+    database = system.root / "supervisor" / "management-readiness.sqlite3"
+    with sqlite3.connect(database) as connection:
+        original = connection.execute("SELECT payload FROM proof WHERE instance_id=?", (INSTANCE,)).fetchone()[0]
+    old_generation = ManagementBootstrapSupervisor._identity(replace(system.child, child_generation=system.child.child_generation - 1))
+    old_lifetime = ManagementBootstrapSupervisor._identity(replace(system.child, start_token="old-lifetime"))
+    for binding_name, bad in (("child_identity", old_generation), ("child_identity", old_lifetime), ("runtime_receipt", "sha256:wrong"), ("launch_nonce", "old-launch")):
+        changed = json.loads(original)
+        changed[binding_name] = bad
+        with sqlite3.connect(database) as connection:
+            connection.execute("UPDATE proof SET payload=? WHERE instance_id=?", (json.dumps(changed), INSTANCE))
+        assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE proof SET payload=? WHERE instance_id=?", ("not-json", INSTANCE))
+    assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE proof SET payload=? WHERE instance_id=?", (original, INSTANCE))
+    backup = database.with_suffix(".backup")
+    database.rename(backup)
+    database.mkdir()
+    try:
+        failed_id = "b" * 32
+        system.call(token, "auto_coder_whoami", {"observation_id": failed_id})
+        assert read_authenticated_readback(system.bootstrap, observation_id=failed_id, observation_started_at=started, observation_ends_at=started + 30) is None
+    finally:
+        database.rmdir()
+        backup.rename(database)
+    with system.connect() as client:
+        assert client.post("/revoke", data={"client_id": "operator-client", "token": token}).status_code == 200
+    revoked_id = "a" * 32
+    assert system.request(token, "auto_coder_whoami", {"observation_id": revoked_id}).status_code == 401
+    assert read_authenticated_readback(system.bootstrap, observation_id=revoked_id, observation_started_at=started, observation_ends_at=started + 30) is None
+    assert _effect_counts(system) == before
+
+
+@pytest.mark.parametrize("management_system", ["bootstrap_selected"], indirect=True)
+def test_real_prior_child_proof_rejected_and_selected_child_produces_readback_without_handoff(management_system: ManagementSystem) -> None:
+    from auto_coder.management.bootstrap_supervisor import ResultStatus
+    from auto_coder.management.readiness_observation import read_authenticated_readback
+
+    system = management_system
+    token = system.issue()
+    old_child = system.child
+    old_started = time.time()
+    old_id = "d" * 32
+    system.call(token, "auto_coder_whoami", {"observation_id": old_id})
+    old_proof = read_authenticated_readback(system.bootstrap, observation_id=old_id, observation_started_at=old_started, observation_ends_at=old_started + 120)
+    assert old_proof is not None
+    assert old_proof.child_identity == ManagementBootstrapSupervisor._identity(old_child)
+    database = system.root / "supervisor" / "management-readiness.sqlite3"
+    with sqlite3.connect(database) as connection:
+        old_payload = connection.execute("SELECT payload FROM proof WHERE instance_id=?", (INSTANCE,)).fetchone()[0]
+    assert system.supervisor is not None
+    system.supervisor.terminate()
+    system.supervisor.wait(timeout=10)
+    assert ManagementBootstrapSupervisor._start_token(old_child.pid) == old_child.start_token
+
+    # This fixture uses existing Supervisor primitives solely to select a new
+    # isolated child. It does not create a recovery endpoint or a handoff.
+    supervisor = ManagementBootstrapSupervisor(system.bootstrap, "selected-runtime-observer")
+    stopped = supervisor.request_graceful_stop("fixture-stop", "fixture-stop-attempt", supervisor._identity(old_child))
+    assert stopped.status is ResultStatus.STOPPED, stopped
+    assert not ManagementBootstrapSupervisor._start_token(old_child.pid)
+    supervisor.store.publish_supervisor(supervisor.incarnation, os.getpid(), supervisor._start_token(os.getpid()))
+    selected = supervisor.start_selected("fixture-select", "fixture-select-attempt", system.candidate.management_runtime_id)
+    assert selected.status is ResultStatus.OBSERVED_RUNNING, selected
+    supervisor.store.publish_supervisor(supervisor.incarnation, os.getpid(), supervisor._start_token(os.getpid()))
+    system.wait_serving(runtime=system.candidate.management_runtime_id)
+    new_child = system.child
+    assert new_child.child_generation == old_child.child_generation + 1
+    assert (new_child.pid, new_child.start_token) != (old_child.pid, old_child.start_token)
+    assert ManagementBootstrapSupervisor._start_token(new_child.pid) == new_child.start_token
+    assert new_child.selected_runtime != old_child.selected_runtime
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT payload FROM proof WHERE instance_id=?", (INSTANCE,)).fetchone()[0] == old_payload
+    assert time.time() < old_started + 120
+    assert read_authenticated_readback(system.bootstrap, observation_id=old_id, observation_started_at=old_started, observation_ends_at=old_started + 120) is None
+    with sqlite3.connect(system.root / "supervisor" / "management-self-update.sqlite3") as connection:
+        assert connection.execute("SELECT COUNT(*) FROM handoffs").fetchone()[0] == 0
+    effects = _effect_counts(system)
+    started = time.time()
+    current_id = "e" * 32
+    assert system.request(None, "auto_coder_whoami", {"observation_id": current_id}).status_code == 401
+    system.call(token, "auto_coder_whoami", {"observation_id": current_id})
+    current = read_authenticated_readback(system.bootstrap, observation_id=current_id, observation_started_at=started, observation_ends_at=started + 120)
+    assert current is not None
+    assert current.child_identity == supervisor._identity(new_child)
+    assert current.runtime_receipt == new_child.runtime_receipt
+    assert current.source_receipt == new_child.source_receipt
+    assert _effect_counts(system) == effects
+    assert not system.journal.list_operations().records
