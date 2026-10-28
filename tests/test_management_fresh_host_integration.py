@@ -147,6 +147,57 @@ def test_real_docker_listener_rejects_changed_container_inspection(tmp_path: Pat
         subprocess.run(["docker", "image", "rm", tag], capture_output=True, check=False, timeout=30)
 
 
+def test_real_listener_accepts_only_mount_order_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from auto_coder.management import fresh_host_observation as observation
+
+    if os.geteuid() != 0:
+        pytest.skip("host root is required to observe the disposable Docker proxy")
+    tag, image = _test_image(tmp_path)
+    name = "fresh-test-published-" + uuid.uuid4().hex[:12]
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    try:
+        container = subprocess.check_output(
+            ["docker", "run", "-d", "--publish", f"127.0.0.1:{_available_port()}:8080", "--mount", f"type=bind,src={first},dst=/first", "--mount", f"type=bind,src={second},dst=/second,readonly", "--entrypoint", "/bin/sleep", "--name", name, image, "120"], text=True
+        ).strip()
+        port = int(subprocess.check_output(["docker", "port", container, "8080/tcp"], text=True).strip().rsplit(":", 1)[1])
+        intent = SimpleNamespace(new_container_id=container, image_digest=image, host_listener_port=port)
+        inspect = observation._inspect
+        calls = 0
+        change = "order"
+
+        def reordered_inspection(container_id: str) -> list[object]:
+            nonlocal calls
+            values = inspect(container_id)
+            calls += 1
+            mounts = values[11]
+            assert isinstance(mounts, list) and len(mounts) == 2
+            if change == "nested":
+                mounts[0]["fixture_nested"] = {"key": "original"}
+            if calls % 2 == 0:
+                values[11] = list(reversed(mounts))
+                if change == "rw":
+                    values[11][0]["RW"] = not values[11][0]["RW"]
+                elif change == "duplicate":
+                    values[11].append(values[11][0])
+                elif change == "nested":
+                    values[11][1]["fixture_nested"]["key"] = "changed"
+            return values
+
+        monkeypatch.setattr(observation, "_inspect", reordered_inspection)
+        assert_replacement_published_listener(intent)
+        for change in ("rw", "duplicate", "nested"):
+            with pytest.raises(HostObservationUnavailable) as error:
+                assert_replacement_published_listener(intent)
+            assert str(error.value.__cause__) == "replacement container inspection changed at fields 11"
+    finally:
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False, timeout=30)
+        subprocess.run(["docker", "image", "rm", tag], capture_output=True, check=False, timeout=30)
+
+
 def test_real_prior_supervisor_binds_instance_and_published_port(tmp_path: Path) -> None:
     import hashlib
 

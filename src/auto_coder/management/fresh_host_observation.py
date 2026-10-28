@@ -568,8 +568,22 @@ def assert_replacement_published_listener(intent: FreshInitializationIntent) -> 
             if listener_inodes() != inodes:
                 raise ValueError("replacement listener inode changed")
             final_values = _inspect(intent.new_container_id)
-            if final_values != values:
-                changed = [str(index) for index, (before, after_value) in enumerate(zip(values, final_values)) if before != after_value]
+
+            # Docker reports mounts as an unordered collection. Compare every
+            # complete mount object, including duplicate entries, independent
+            # of the order returned by successive inspections.
+            def normalized(items: list[object]) -> list[object]:
+                result = list(items)
+                mounts = result[11]
+                if not isinstance(mounts, list) or not all(isinstance(mount, dict) for mount in mounts):
+                    raise ValueError("replacement mount inspection is malformed")
+                result[11] = sorted(json.dumps(mount, sort_keys=True, separators=(",", ":")) for mount in mounts)
+                return result
+
+            before_values = normalized(values)
+            after_values = normalized(final_values)
+            if after_values != before_values:
+                changed = [str(index) for index, (before, after_value) in enumerate(zip(before_values, after_values)) if before != after_value]
                 raise ValueError("replacement container inspection changed at fields " + ",".join(changed))
         finally:
             os.close(descriptor)

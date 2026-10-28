@@ -112,7 +112,7 @@ def test_mutable_base_tag_cannot_change_digest_or_derived_image(tmp_path: Path) 
 
 
 @pytest.mark.parametrize("owner_token_gap", [False, True])
-def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path, owner_token_gap: bool) -> None:
+def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path, owner_token_gap: bool, record_property) -> None:
     if os.geteuid() != 0:
         pytest.skip("host root is required to observe the disposable Docker proxy and namespace evidence")
     root = tmp_path
@@ -279,15 +279,38 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
         # Pause the real host guard immediately before its final socket check,
         # so a host-side syscall observer attaches before any child can launch.
         gate_ready, gate_open, trace = root / "trace-ready", root / "trace-go", root / "exec-trace"
-        gate_script = (
-            "import pathlib,sys,time; from auto_coder.management import fresh_host, fresh_host_observation as o; "
-            "original=o.assert_replacement_published_listener; ready,go=sys.argv[1:3]; "
-            "exec('def gated(intent):\\n pathlib.Path(ready).touch()\\n while not pathlib.Path(go).exists(): time.sleep(.01)\\n"
-            " try: original(intent)\\n except o.HostObservationUnavailable as e:\\n  cause=e.__cause__\\n"
-            '  if isinstance(cause, ValueError): print("listener observation: "+str(cause), file=sys.stderr, flush=True)\\n'
-            '  else: print("listener observation: "+type(cause).__name__+" errno="+str(getattr(cause, "errno", None)), file=sys.stderr, flush=True)\\n  raise\'); '
-            "o.assert_replacement_published_listener=gated; sys.argv=[sys.argv[0],*sys.argv[3:]]; fresh_host.main()"
-        )
+        gate_script = """
+import json, pathlib, sys, time
+from auto_coder.management import fresh_host, fresh_host_observation as o
+original, inspect = o.assert_replacement_published_listener, o._inspect
+ready, go = sys.argv[1:3]
+def gated(intent):
+    samples = []
+    def observed(container_id):
+        value = inspect(container_id)
+        samples.append(value[11])
+        return value
+    pathlib.Path(ready).touch()
+    while not pathlib.Path(go).exists(): time.sleep(.01)
+    o._inspect = observed
+    try:
+        original(intent)
+    except o.HostObservationUnavailable as e:
+        cause = e.__cause__
+        if isinstance(cause, ValueError): print('listener observation: '+str(cause), file=sys.stderr, flush=True)
+        else: print('listener observation: '+type(cause).__name__+' errno='+str(getattr(cause, 'errno', None)), file=sys.stderr, flush=True)
+        raise
+    finally:
+        o._inspect = inspect
+        category = 'unavailable'
+        if len(samples) == 2 and all(isinstance(x, list) for x in samples):
+            canonical = lambda x: sorted(json.dumps(m, sort_keys=True, separators=(',', ':')) for m in x)
+            category = 'identical' if samples[0] == samples[1] else ('order-only' if canonical(samples[0]) == canonical(samples[1]) else 'content-changed')
+        print('mount comparison: '+category, file=sys.stderr, flush=True)
+o.assert_replacement_published_listener = gated
+sys.argv = [sys.argv[0], *sys.argv[3:]]
+fresh_host.main()
+"""
         guard_process = subprocess.Popen(
             [sys.executable, "-c", gate_script, str(gate_ready), str(gate_open), "guard", "--state-root", str(state), "--evidence-file", str(guard / "prior-evidence.json"), "--prior-lock", str(old_lock), "--guard-dir", str(guard), "--prior-network-fd", str(network_fd)],
             stdout=subprocess.PIPE,
@@ -329,6 +352,9 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
         assert "attached" in tracer.stderr.readline()
         gate_open.touch()
         out, err = guard_process.communicate(timeout=60)
+        categories = [line.removeprefix("mount comparison: ") for line in err.splitlines() if line.startswith("mount comparison: ")]
+        if len(categories) == 1 and categories[0] in {"identical", "order-only", "content-changed", "unavailable"}:
+            record_property("mount_comparison", categories[0])
         assert guard_process.returncode == 0, (out, err)
 
         def status_inside_container():
