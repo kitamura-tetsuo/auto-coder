@@ -563,8 +563,14 @@ def assert_replacement_published_listener(intent: FreshInitializationIntent) -> 
             if "socket:[" + next(iter(inodes)) + "]" not in descriptors:
                 raise ValueError("Docker proxy does not own the listener")
             after = (proc / "stat").read_text(encoding="ascii").rsplit(")", 1)[1].split()
-            if len(after) < 20 or after[19] != token or listener_inodes() != inodes or _inspect(intent.new_container_id) != values:
-                raise ValueError("replacement listener identity changed")
+            if len(after) < 20 or after[19] != token:
+                raise ValueError("replacement proxy lifetime changed")
+            if listener_inodes() != inodes:
+                raise ValueError("replacement listener inode changed")
+            final_values = _inspect(intent.new_container_id)
+            if final_values != values:
+                changed = [str(index) for index, (before, after_value) in enumerate(zip(values, final_values)) if before != after_value]
+                raise ValueError("replacement container inspection changed at fields " + ",".join(changed))
         finally:
             os.close(descriptor)
     except (OSError, subprocess.SubprocessError, ValueError, TypeError, IndexError, UnicodeError) as exc:

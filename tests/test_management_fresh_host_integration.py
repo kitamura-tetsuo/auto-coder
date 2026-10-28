@@ -113,6 +113,40 @@ def test_real_docker_listener_rejects_mismatched_container_address(tmp_path: Pat
         subprocess.run(["docker", "image", "rm", tag], capture_output=True, check=False, timeout=30)
 
 
+def test_real_docker_listener_rejects_changed_container_inspection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from auto_coder.management import fresh_host_observation as observation
+
+    if os.geteuid() != 0:
+        pytest.skip("host root is required to observe the disposable Docker proxy")
+    tag, image = _test_image(tmp_path)
+    name = "fresh-test-published-" + uuid.uuid4().hex[:12]
+    try:
+        container = subprocess.check_output(["docker", "run", "-d", "--publish", f"127.0.0.1:{_available_port()}:8080", "--entrypoint", "/bin/sleep", "--name", name, image, "120"], text=True).strip()
+        port = int(subprocess.check_output(["docker", "port", container, "8080/tcp"], text=True).strip().rsplit(":", 1)[1])
+        intent = SimpleNamespace(new_container_id=container, image_digest=image, host_listener_port=port)
+        inspect = observation._inspect
+        calls = 0
+
+        def changed_inspection(container_id: str) -> list[object]:
+            nonlocal calls
+            values = inspect(container_id)
+            calls += 1
+            if calls == 2:
+                values[18] = {**values[18], "fixture": {"IPAddress": "198.51.100.1"}}
+            return values
+
+        monkeypatch.setattr(observation, "_inspect", changed_inspection)
+        with pytest.raises(HostObservationUnavailable) as error:
+            assert_replacement_published_listener(intent)
+        assert calls == 2
+        assert str(error.value.__cause__) == "replacement container inspection changed at fields 18"
+    finally:
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False, timeout=30)
+        subprocess.run(["docker", "image", "rm", tag], capture_output=True, check=False, timeout=30)
+
+
 def test_real_prior_supervisor_binds_instance_and_published_port(tmp_path: Path) -> None:
     import hashlib
 
