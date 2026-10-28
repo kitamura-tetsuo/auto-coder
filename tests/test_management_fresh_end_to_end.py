@@ -53,7 +53,6 @@ def _fixture_executable_digest(image: str) -> str:
 def _build_fixture_image(context: Path, image: str, tag: str, *, owner_token_gap: bool) -> None:
     if re.fullmatch(r"sha256:[0-9a-f]{64}", image) is None:
         raise ValueError("fixture base is not an immutable image ID")
-    dockerfile = f"FROM {image}\nCOPY auto_coder/ /opt/auto-coder/.venv/lib/python3.12/site-packages/auto_coder/\n"
     if owner_token_gap:
         (context / "sitecustomize.py").write_text(
             """import os, sys
@@ -68,11 +67,18 @@ def observation(pid):
 ManagementBootstrapSupervisor._start_token = staticmethod(observation)
 """
         )
-        dockerfile += "COPY sitecustomize.py /opt/auto-coder/.venv/lib/python3.12/site-packages/sitecustomize.py\n"
-    (context / "Dockerfile").write_text(dockerfile + 'ENTRYPOINT ["python", "-m", "auto_coder.management.bootstrap_supervisor"]\n')
-    # BuildKit treats bare sha256 image IDs as registry names. The local
-    # builder accepts the immutable image ID directly and needs no registry.
-    subprocess.run(["docker", "build", "--network", "none", "-t", tag, str(context)], env={**os.environ, "DOCKER_BUILDKIT": "0"}, check=True, capture_output=True, timeout=120)
+    container = subprocess.check_output(["docker", "create", "--network", "none", image], text=True, timeout=30).strip()
+    try:
+        actual = subprocess.check_output(["docker", "inspect", "--format", "{{.Image}}", container], text=True, timeout=30).strip()
+        if actual != image:
+            raise ValueError("fixture container did not use the resolved image")
+        target = container + ":/opt/auto-coder/.venv/lib/python3.12/site-packages"
+        subprocess.run(["docker", "cp", str(context / "auto_coder") + "/.", target + "/auto_coder/"], check=True, capture_output=True, timeout=120)
+        if owner_token_gap:
+            subprocess.run(["docker", "cp", str(context / "sitecustomize.py"), target + "/sitecustomize.py"], check=True, capture_output=True, timeout=30)
+        subprocess.run(["docker", "commit", "--change", 'ENTRYPOINT ["python", "-m", "auto_coder.management.bootstrap_supervisor"]', container, tag], check=True, capture_output=True, timeout=120)
+    finally:
+        subprocess.run(["docker", "rm", container], capture_output=True, check=False, timeout=30)
 
 
 def test_mutable_base_tag_cannot_change_digest_or_derived_image(tmp_path: Path) -> None:
