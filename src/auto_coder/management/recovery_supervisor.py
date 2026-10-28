@@ -99,7 +99,7 @@ class RecoveryConsumer:
         except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
             return True
 
-    def tick(self) -> None:
+    def tick(self, *, allow_admission: bool = True) -> None:
         try:
             connection = self.mailbox.connect()
             try:
@@ -110,8 +110,11 @@ class RecoveryConsumer:
             pending = next((record for record in records if record.status == "pending"), None)
             launched = next((record for record in records if record.status == "launched"), None)
             if pending is not None:
-                self._admit(pending, records)
-            elif launched is not None:
+                if allow_admission:
+                    self._admit(pending, records)
+                else:
+                    self._set(pending.intent.request_id, "pending", "refused", "fresh initialization is not authenticated-ready")
+            elif launched is not None and allow_admission:
                 self._observe(launched)
         except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
             logger.warning("Management recovery observation unavailable")

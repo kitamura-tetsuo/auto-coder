@@ -2923,6 +2923,13 @@ refused recovery never reaches a fresh offer or changes slot state.
 PR job kinds and every job state, foreign-repository isolation, and reclamation
 only after settlement or absence of retained responsibility.
 
+Explicit fresh management initialization reports its one-time request, launch,
+unknown outcome and authenticated readiness through the private local status
+command and bounded supervisor log messages. It does not create a dashboard job
+or change the dashboard event schema; a process launch alone is not reported as
+authenticated readiness. The isolated fresh-initialization and supervisor tests
+exercise refusal, claim and status boundaries.
+
 ## Local PR repair startup recovery
 
 The existing pending-work snapshot reports retained local PR repair
