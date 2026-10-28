@@ -282,7 +282,10 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
         gate_script = (
             "import pathlib,sys,time; from auto_coder.management import fresh_host, fresh_host_observation as o; "
             "original=o.assert_replacement_published_listener; ready,go=sys.argv[1:3]; "
-            "exec('def gated(intent):\\n pathlib.Path(ready).touch()\\n while not pathlib.Path(go).exists(): time.sleep(.01)\\n original(intent)'); "
+            "exec('def gated(intent):\\n pathlib.Path(ready).touch()\\n while not pathlib.Path(go).exists(): time.sleep(.01)\\n"
+            " try: original(intent)\\n except o.HostObservationUnavailable as e:\\n  cause=e.__cause__\\n"
+            '  if isinstance(cause, ValueError): print("listener observation: "+str(cause), file=sys.stderr, flush=True)\\n'
+            '  else: print("listener observation: "+type(cause).__name__+" errno="+str(getattr(cause, "errno", None)), file=sys.stderr, flush=True)\\n  raise\'); '
             "o.assert_replacement_published_listener=gated; sys.argv=[sys.argv[0],*sys.argv[3:]]; fresh_host.main()"
         )
         guard_process = subprocess.Popen(

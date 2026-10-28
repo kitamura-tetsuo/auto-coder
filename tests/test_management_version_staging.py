@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import concurrent.futures
 import errno
+import fcntl
 import hashlib
+import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -107,11 +110,17 @@ def test_existing_worker_root_is_not_adopted(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config.version_root.mkdir()
     (config.version_root / "revisions").mkdir()
+    stale = config.version_root / ".management-root-foreign"
+    stale.write_text("preserve")
+    before = {p.relative_to(config.version_root): (p.stat().st_mode, p.stat().st_mtime_ns, p.read_bytes() if p.is_file() else None) for p in [config.version_root, *config.version_root.rglob("*")]}
     stager = ManagementVersionStager(config)
-    stager._validate_boundaries()
     with pytest.raises(WorkerVersionError) as caught:
-        stager._reserve_root()
+        stager.prepare(ManagementPrepareIntent("a" * 40, "attempt"))
     assert caught.value.failure is PreparationFailure.CONFLICT
+    after = {p.relative_to(config.version_root): (p.stat().st_mode, p.stat().st_mtime_ns, p.read_bytes() if p.is_file() else None) for p in [config.version_root, *config.version_root.rglob("*")]}
+    assert after == before
+    assert stale.read_text() == "preserve"
+    assert not (config.version_root / ".management-root.json").exists()
 
 
 def test_concurrent_root_reservations_publish_one_complete_marker(tmp_path: Path) -> None:
@@ -126,6 +135,89 @@ def test_concurrent_root_reservations_publish_one_complete_marker(tmp_path: Path
         list(executor.map(reserve, range(32)))
 
     assert (config.version_root / ".management-root.json").read_text() == '{"instance_id":"manager-a","schema_version":1}\n'
+
+
+def test_reservation_waits_for_published_marker_and_staging_progress(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _config(tmp_path)
+    marker = config.version_root / ".management-root.json"
+    first = ManagementVersionStager(config)
+    second = ManagementVersionStager(config)
+    first._validate_boundaries()
+    second._validate_boundaries()
+    owner_at_publication = threading.Event()
+    contender_waiting = threading.Event()
+    original_replace = os.replace
+    original_flock = fcntl.flock
+
+    def replace(src: object, dst: object) -> None:
+        owner_at_publication.set()
+        assert contender_waiting.wait(5)
+        original_replace(src, dst)  # type: ignore[arg-type]
+        (config.version_root / "revisions").mkdir()
+
+    def flock(fd: int, operation: int) -> None:
+        if owner_at_publication.is_set():
+            contender_waiting.set()
+        original_flock(fd, operation)
+
+    monkeypatch.setattr("auto_coder.management.version_staging.os.replace", replace)
+    monkeypatch.setattr("auto_coder.management.version_staging.fcntl.flock", flock)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        owner = executor.submit(first._reserve_root)
+        assert owner_at_publication.wait(5)
+        assert not marker.exists()
+        contender = executor.submit(second._reserve_root)
+        owner.result(timeout=5)
+        contender.result(timeout=5)
+
+    assert marker.read_text() == '{"instance_id":"manager-a","schema_version":1}\n'
+    assert (config.version_root / "revisions").is_dir()
+
+
+@pytest.mark.parametrize("published_instance", ["manager-a", "manager-b"])
+def test_marker_and_progress_published_during_initial_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, published_instance: str) -> None:
+    config = _config(tmp_path)
+    root = config.version_root
+    stager = ManagementVersionStager(config)
+    stager._validate_boundaries()
+    original_iterdir = Path.iterdir
+    published = False
+
+    def iterdir(path: Path):
+        nonlocal published
+        if path == root and not published:
+            published = True
+            with (root / ".management-reservation.lock").open("a+b") as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                (root / ".management-root.json").write_text(f'{{"instance_id":"{published_instance}","schema_version":1}}\n')
+                (root / "revisions").mkdir()
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+    if published_instance == "manager-a":
+        stager._reserve_root()
+    else:
+        with pytest.raises(WorkerVersionError) as caught:
+            stager._reserve_root()
+        assert caught.value.failure is PreparationFailure.CONFLICT
+    assert published
+
+
+@pytest.mark.parametrize("contents", ['{"instance_id":"manager-b","schema_version":1}', "not json", "{}"])
+def test_reservation_rejects_foreign_or_invalid_marker(tmp_path: Path, contents: str) -> None:
+    config = _config(tmp_path)
+    config.version_root.mkdir()
+    marker = config.version_root / ".management-root.json"
+    marker.write_text(contents)
+    before = (config.version_root.stat().st_mtime_ns, marker.stat().st_mtime_ns, marker.stat().st_mode)
+    stager = ManagementVersionStager(config)
+    stager._validate_boundaries()
+    with pytest.raises(WorkerVersionError) as caught:
+        stager._reserve_root()
+    assert caught.value.failure is PreparationFailure.CONFLICT
+    assert marker.read_text() == contents
+    assert list(config.version_root.iterdir()) == [marker]
+    assert (config.version_root.stat().st_mtime_ns, marker.stat().st_mtime_ns, marker.stat().st_mode) == before
 
 
 def test_adapter_publication_space_error_is_typed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
