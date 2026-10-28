@@ -11,6 +11,11 @@ scripts/test.sh tests/test_worker_management_bridge.py -k reevaluation`.
 
 Management journal operation IDs, phases, targets, and safe categories use the existing Loguru sinks without changing worker command/trace lifecycle events. Its separate contract is documented in [`client-features/management-operation-journal.md`](client-features/management-operation-journal.md).
 
+When the management Supervisor cannot observe its own process-start token, it
+logs the unavailable lifetime and holds subsequent effects while retaining the
+owner lock and existing child. The real-process bootstrap test exercises this
+hold and the return to a valid observation; no dashboard event schema changes.
+
 Management self-update adds a fixed authenticated MCP origin to that same journal
 and dispatcher. Admission and durable Supervisor handoff log the operation ID and
 exact source SHA; reconnect-proof failures log only a safe category. Its protected
