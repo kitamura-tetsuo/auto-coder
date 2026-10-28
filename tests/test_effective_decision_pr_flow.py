@@ -48,6 +48,7 @@ from auto_coder.pr_processor import (
     ReviewRepairRouteDisposition,
     TwoTierGateInputs,
     _consume_pending_two_tier_publication,
+    _get_claimed_review_thread_state,
     _handle_pr_merge,
     _review_feedback_identity,
     process_pull_request,
@@ -173,6 +174,7 @@ class Flow:
     thread_resolved: bool = False
     live_head: str = ""  # the live PR head when it differs from the head being processed
     current_base: str = ""  # the live PR base; defaults to the environment base and may advance while a reviewer runs
+    production_thread_collection: bool = False
 
     def __post_init__(self) -> None:
         self.head = self.head or self.env.head
@@ -210,7 +212,15 @@ class Flow:
         if not self.root_body:
             return self.extra_threads + published
         resolved = self.thread_resolved or (self.resolve_on_approve and any(review["event"] == "APPROVE" for review in self.reviews))
-        comments = [ReviewThreadComment(database_id=self.root_id, author_login=REVIEWER_LOGIN, body=self.root_body), *(replace(reply) for reply in self.thread_replies)]
+        comments = [
+            ReviewThreadComment(
+                database_id=self.root_id,
+                author_id=4765828,
+                author_login=REVIEWER_LOGIN,
+                body=self.root_body,
+            ),
+            *(replace(reply) for reply in self.thread_replies),
+        ]
         return self.extra_threads + published + (ReviewThread(id=self.thread_id, is_resolved=resolved, comments=comments),)
 
     def pr_data(self) -> dict[str, Any]:
@@ -233,7 +243,15 @@ class Flow:
         env = self.env
         client = self.client
         client.get_authenticated_user_login.return_value = CONTROLLER_LOGIN
-        client.get_pr_review_threads_strict.side_effect = lambda *_a, **_k: list(self.threads())
+        if self.production_thread_collection:
+            client._production_threads = lambda: list(self.threads())
+            setattr(
+                type(client),
+                "get_pr_review_threads_strict",
+                lambda current, *_a, **_k: current._production_threads(),
+            )
+        else:
+            client.get_pr_review_threads_strict.side_effect = lambda *_a, **_k: list(self.threads())
         client.reply_to_review_thread.side_effect = self._reply_to_thread
         client.update_review_thread_comment.side_effect = self._update_thread_comment
         client.resolve_review_thread.side_effect = lambda thread: self._set_thread_resolved(thread, self.resolve_on_approve)
@@ -245,6 +263,8 @@ class Flow:
         client.get_pull_request_metadata_strict.side_effect = lambda *_a, **_k: {**self.pr_data(), "head": {"ref": "feature-branch", "sha": self.live_head or self.head}, "base": {"ref": "main", "sha": self.current_base}, "state": "open"}
 
         def current_state(*_a: object, **_k: object) -> ClaimedReviewThreadGateState:
+            if self.production_thread_collection:
+                return _get_claimed_review_thread_state(client, REPO, self.pr, config=AutomationConfig())
             if thread_state is not None:
                 return thread_state
             live = tuple(thread for thread in self.threads() if not thread.is_resolved)
@@ -350,6 +370,13 @@ class Flow:
             patch("auto_coder.pr_processor.get_linked_issues_context", side_effect=lambda *_a, **_k: current_validation_context(REPO, self.pr_data()).issue_context),
             patch("auto_coder.pr_correction_job.offer_pr_correction_job", side_effect=self._local_offer),
         ]
+        if self.production_thread_collection:
+            patches.append(
+                patch(
+                    "auto_coder.pr_processor._resolve_eligible_review_thread_ids",
+                    return_value={4765828},
+                )
+            )
         if public_origin:
             label = MagicMock()
             label.__enter__.return_value = True

@@ -21,6 +21,8 @@ from auto_coder.canonical_pr_blocker_ledger import BlockerAdmissionPayload, Bloc
 from auto_coder.ordinary_closure_evidence import EvidenceState, OrdinaryClosureEvidence, OrdinaryClosureEvidenceRepository
 from auto_coder.pr_processor import _record_pr_stage
 from auto_coder.pr_review_cycle import PrReviewCycleRepository
+from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER
+from auto_coder.util.gh_cache import ReviewThreadComment
 from tests.test_accepted_finding_bridge import REPO, Env, env  # noqa: F401  (env is a shared fixture)
 from tests.test_effective_decision_pr_flow import flow_env  # noqa: F401  (shared fixture)
 from tests.test_effective_decision_pr_flow import (
@@ -105,6 +107,70 @@ def _repaired_flow(flow_env: Env, monkeypatch: pytest.MonkeyPatch, pr: int, orig
     flow.saved_status = None
     flow.model_responses = [ADDRESSED]
     return flow
+
+
+def test_production_collection_revalidates_discussion_changed_during_review(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The production origin, prompt, retained decision, ledger and effect stay joined."""
+    flow = _repaired_flow(flow_env, monkeypatch, 7462, resolve_on_approve=False)
+    flow.production_thread_collection = True
+    flow.thread_replies.append(
+        ReviewThreadComment(
+            database_id=flow.root_id + 1,
+            author_id=702,
+            author_login="implementation-agent[bot]",
+            body=f"Implemented the bounded correction.\n{REVIEW_ADDRESSED_MARKER}",
+            in_reply_to_id=flow.root_id,
+        )
+    )
+    counterexample = "The newly observed same-scope transition still loses state."
+
+    def advance_discussion() -> None:
+        flow.thread_replies.append(
+            ReviewThreadComment(
+                database_id=flow.root_id + 2,
+                author_id=703,
+                author_login="reviewer[bot]",
+                body=counterexample,
+                in_reply_to_id=flow.root_id,
+            )
+        )
+
+    first = flow.run(closure=ClosureScript(status="FIXED", on_review=advance_discussion))
+
+    assert counterexample not in flow.validation_sections[-1]
+    assert any("discussion-freshness" in action for action in first), first
+    assert flow.client.resolve_review_thread.call_count == 0
+    snapshot = flow_env.ledger.get_snapshot("https://api.github.com", REPO, flow.pr, require_retained_state=True)
+    assert all(blocker.disposition is BlockerDisposition.OPEN for blocker in snapshot.blockers)
+
+    # A subsequent admitted production lifecycle must collect the advanced
+    # discussion and supply it to independent validation rather than rebinding
+    # the stale disposition to a newly computed digest.
+    reevaluation = _repaired_flow(flow_env, monkeypatch, 7463, resolve_on_approve=False)
+    reevaluation.production_thread_collection = True
+    reevaluation.thread_replies.extend(
+        [
+            ReviewThreadComment(
+                database_id=reevaluation.root_id + 1,
+                author_id=702,
+                author_login="implementation-agent[bot]",
+                body=f"Implemented the bounded correction.\n{REVIEW_ADDRESSED_MARKER}",
+                in_reply_to_id=reevaluation.root_id,
+            ),
+            ReviewThreadComment(
+                database_id=reevaluation.root_id + 2,
+                author_id=703,
+                author_login="reviewer[bot]",
+                body=counterexample,
+                in_reply_to_id=reevaluation.root_id,
+            ),
+        ]
+    )
+    reevaluation.run(closure=ClosureScript(status="STILL_VALID"))
+
+    assert counterexample in reevaluation.validation_sections[-1]
+    assert reevaluation.client.resolve_review_thread.call_count == 0
+    assert reevaluation.merge.call_count == 0
 
 
 @pytest.mark.parametrize("origin", ["cloud", "local"])

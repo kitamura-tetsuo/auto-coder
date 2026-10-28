@@ -67,6 +67,7 @@ class AcceptedReviewPayload:
     ordinary_attempt_id: str = ""
     ordinary_attempt_sequence: int = 0
     ordinary_reviewer: str = ""
+    discussion_evidence: tuple[tuple[str, str], ...] = ()
 
     def canonical_json(self) -> str:
         raw = asdict(self)
@@ -126,6 +127,7 @@ class AcceptedReviewPayload:
         ordinary_attempt_id: str = "",
         ordinary_attempt_sequence: int = 0,
         ordinary_reviewer: str = "",
+        discussion_evidence: tuple[tuple[str, str], ...] = (),
     ) -> "AcceptedReviewPayload":
         return cls(
             repository,
@@ -152,6 +154,7 @@ class AcceptedReviewPayload:
             ordinary_attempt_id,
             ordinary_attempt_sequence,
             ordinary_reviewer,
+            discussion_evidence,
         )
 
 
