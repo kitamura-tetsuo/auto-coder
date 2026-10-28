@@ -12,6 +12,7 @@ import gc
 import hashlib
 import json
 import os
+import re
 import select
 import shutil
 import signal
@@ -38,7 +39,74 @@ from auto_coder.management.oauth_grants import AuthorizationRequest, OAuthGrantS
 pytestmark = [pytest.mark.supervisor_integration, pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep")]
 
 
-def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path) -> None:
+def _resolve_fixture_base(configured: str) -> str:
+    image = subprocess.check_output(["docker", "image", "inspect", configured, "--format", "{{.Id}}"], text=True).strip()
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", image) is None:
+        raise ValueError("fixture base is not an immutable image ID")
+    return image
+
+
+def _fixture_executable_digest(image: str) -> str:
+    return subprocess.check_output(["docker", "run", "--rm", "--network", "none", "--entrypoint", "sha256sum", image, "/opt/auto-coder/.venv/bin/auto-coder"], text=True).split()[0]
+
+
+def _build_fixture_image(context: Path, image: str, tag: str, *, owner_token_gap: bool) -> None:
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", image) is None:
+        raise ValueError("fixture base is not an immutable image ID")
+    dockerfile = f"FROM {image}\nCOPY auto_coder/ /opt/auto-coder/.venv/lib/python3.12/site-packages/auto_coder/\n"
+    if owner_token_gap:
+        (context / "sitecustomize.py").write_text(
+            """import os, sys
+from pathlib import Path
+from auto_coder.management.bootstrap_supervisor import ManagementBootstrapSupervisor
+original = ManagementBootstrapSupervisor._start_token
+def observation(pid):
+    if pid == os.getpid() and sys._getframe(2).f_code.co_name == "_start_fresh_initialization" and Path("/management-initialization/token-gap").exists():
+        Path("/management-child-state/logs/token-gap-observed").touch()
+        return ""
+    return original(pid)
+ManagementBootstrapSupervisor._start_token = staticmethod(observation)
+"""
+        )
+        dockerfile += "COPY sitecustomize.py /opt/auto-coder/.venv/lib/python3.12/site-packages/sitecustomize.py\n"
+    (context / "Dockerfile").write_text(dockerfile + 'ENTRYPOINT ["python", "-m", "auto_coder.management.bootstrap_supervisor"]\n')
+    # BuildKit treats bare sha256 image IDs as registry names. The local
+    # builder accepts the immutable image ID directly and needs no registry.
+    subprocess.run(["docker", "build", "--network", "none", "-t", tag, str(context)], env={**os.environ, "DOCKER_BUILDKIT": "0"}, check=True, capture_output=True, timeout=120)
+
+
+def test_mutable_base_tag_cannot_change_digest_or_derived_image(tmp_path: Path) -> None:
+    if os.geteuid() != 0:
+        pytest.skip("dedicated Docker fixture image is prepared for the host integration run")
+    suffix = uuid.uuid4().hex
+    tag_a, tag_b, derived = (f"auto-coder:fixture-{kind}-{suffix}" for kind in ("a", "b", "derived"))
+    fixture_id = None
+    try:
+        for tag, extra in ((tag_a, f"LABEL fixture_identity={suffix}\n"), (tag_b, "USER root\nRUN printf '\\n# alternate fixture\\n' >> /opt/auto-coder/.venv/bin/auto-coder\n")):
+            subprocess.run(["docker", "build", "--network", "none", "-t", tag, "-"], input="FROM auto-coder:management-local-abc65544\n" + extra, text=True, capture_output=True, check=True, timeout=120)
+        selected = _resolve_fixture_base(tag_a)
+        fixture_id = selected
+        expected = _fixture_executable_digest(selected)
+        alternate = _resolve_fixture_base(tag_b)
+        assert selected != alternate and expected != _fixture_executable_digest(alternate)
+        subprocess.run(["docker", "tag", tag_b, tag_a], check=True, capture_output=True, timeout=30)
+        assert _resolve_fixture_base(tag_a) == alternate
+        assert _fixture_executable_digest(selected) == expected
+        context = tmp_path / "derived"
+        (context / "auto_coder").mkdir(parents=True)
+        (context / "auto_coder" / "fixture.txt").write_text("fixture")
+        _build_fixture_image(context, selected, derived, owner_token_gap=False)
+        actual_label = subprocess.check_output(["docker", "image", "inspect", derived, "--format", '{{index .Config.Labels "fixture_identity"}}'], text=True).strip()
+        assert actual_label == suffix
+        assert _fixture_executable_digest(_resolve_fixture_base(derived)) == expected
+    finally:
+        subprocess.run(["docker", "image", "rm", derived, tag_a, tag_b], capture_output=True, check=False, timeout=30)
+        if fixture_id is not None:
+            subprocess.run(["docker", "image", "rm", fixture_id], capture_output=True, check=False, timeout=30)
+
+
+@pytest.mark.parametrize("owner_token_gap", [False, True])
+def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path, owner_token_gap: bool) -> None:
     if os.geteuid() != 0:
         pytest.skip("host root is required to observe the disposable Docker proxy and namespace evidence")
     root = tmp_path
@@ -64,7 +132,8 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
         def check_operator_policy(self, _principal):
             return permitted
 
-    executable_digest = subprocess.check_output(["docker", "run", "--rm", "--network", "none", "--entrypoint", "sha256sum", "auto-coder:management-local-abc65544", "/opt/auto-coder/.venv/bin/auto-coder"], text=True).split()[0]
+    base_image = _resolve_fixture_base(os.environ.get("AUTOCODER_FRESH_TEST_BASE_IMAGE", "auto-coder:management-local-abc65544"))
+    executable_digest = _fixture_executable_digest(base_image)
     runtime = {"reference": "bootstrap", "receipt": "sha256:" + executable_digest, "executable": "/opt/auto-coder/.venv/bin/auto-coder", "arguments": ["management", "serve", "--config", "/bootstrap/management.yaml"], "environment": {"PYTHONDONTWRITEBYTECODE": "1"}}
     common = {"state_root": "/management-child-state", "oauth_root": "/management-oauth", "journal_root": "/management-operations", "listener_url": origin + "/mcp", "initial_runtime": "bootstrap", "runtimes": [runtime]}
     (old_bootstrap / "config.json").write_text(json.dumps({**common, "instance_id": "old-fixture", "crash_budget": 0}))
@@ -90,7 +159,6 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
     context.mkdir()
     source = Path(__file__).resolve().parents[1] / "src" / "auto_coder"
     shutil.copytree(source, context / "auto_coder", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    (context / "Dockerfile").write_text('FROM auto-coder:management-local-abc65544\nCOPY auto_coder/ /opt/auto-coder/.venv/lib/python3.12/site-packages/auto_coder/\nENTRYPOINT ["python", "-m", "auto_coder.management.bootstrap_supervisor"]\n')
     tag = "auto-coder-fresh-e2e:" + uuid.uuid4().hex
     names = ["fresh-e2e-" + uuid.uuid4().hex[:12] for _ in range(3)]
     guard_process = None
@@ -98,7 +166,7 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
     fence = None
     network_fd = None
     try:
-        subprocess.run(["docker", "build", "--network", "none", "-t", tag, str(context)], check=True, capture_output=True, timeout=120)
+        _build_fixture_image(context, base_image, tag, owner_token_gap=owner_token_gap)
         image = subprocess.check_output(["docker", "image", "inspect", tag, "--format", "{{.Id}}"], text=True).strip()
         old_mounts = [(old_state, "/management-child-state", True), (old_bootstrap, "/bootstrap", False), (oauth, "/management-oauth", True)]
         old_args = ["docker", "run", "-d", "--name", names[0], "--publish", f"127.0.0.1:{port}:8080"]
@@ -199,6 +267,9 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
         intent_file.chmod(0o600)
         base = [sys.executable, "-m", "auto_coder.management.fresh_host"]
         subprocess.run(base + ["claim", "--intent-file", str(intent_file), "--evidence-file", str(guard / "prior-evidence.json"), "--prior-lock", str(old_lock), "--prior-network-fd", str(network_fd)], pass_fds=(network_fd,), check=True, capture_output=True, timeout=30)
+        if owner_token_gap:
+            (state / "logs").mkdir()
+            (guard / "token-gap").touch()
         # Pause the real host guard immediately before its final socket check,
         # so a host-side syscall observer attaches before any child can launch.
         gate_ready, gate_open, trace = root / "trace-ready", root / "trace-go", root / "exec-trace"
@@ -219,6 +290,22 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
         assert select.select([guard_process.stdout], [], [], 30)[0], "host guard did not become ready"
         assert json.loads(guard_process.stdout.readline())["status"] == "awaiting-replacement"
         subprocess.run(["docker", "start", new_id], check=True, capture_output=True, timeout=30)
+        if owner_token_gap:
+            observed = state / "logs" / "token-gap-observed"
+            until = time.monotonic() + 30
+            while not observed.exists():
+                if time.monotonic() >= until:
+                    raise AssertionError("fresh owner-token gap was not reached")
+                time.sleep(0.05)
+            pid = int(subprocess.check_output(["docker", "inspect", "--format", "{{.State.Pid}}", new_id], text=True).strip())
+            group = Path("/sys/fs/cgroup/system.slice") / ("docker-" + new_id + ".scope")
+            for _ in range(4):
+                assert (group / "cgroup.procs").read_text().split() == [str(pid)]
+                assert not (state / "fresh-launch-claimed.json").exists()
+                assert not (state / "management-child.sqlite3").exists()
+                assert not list(journal.iterdir())
+                time.sleep(0.2)
+            (guard / "token-gap").unlink()
         until = time.monotonic() + 30
         while not gate_ready.exists():
             running = subprocess.check_output(["docker", "inspect", "--format", "{{.State.Running}}", new_id], text=True).strip()

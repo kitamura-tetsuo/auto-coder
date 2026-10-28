@@ -144,6 +144,8 @@ def test_real_thread_closure_reuses_reply_after_pr_publication_failure(receipt_s
         threads = current_client.get_pr_review_threads_strict(REPOSITORY, PR_NUMBER)
         snapshot = scenario.ledger().get_snapshot(API_ORIGIN, REPOSITORY, PR_NUMBER, require_retained_state=True)
         classification = classify_review_threads(threads, {REVIEWER_ID}, snapshot=snapshot)
+        if classification.claimed and not validation.thread_dispositions[0].discussion_evidence_digest:
+            validation.thread_dispositions[0].discussion_evidence_digest = classification.claimed[0].discussion_evidence_digest
         return ClaimedReviewThreadGateState(
             claimed=classification.claimed,
             unresolved=tuple(thread for thread in threads if not thread.is_resolved),

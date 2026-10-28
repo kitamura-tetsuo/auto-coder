@@ -651,6 +651,7 @@ class ClaimedReviewThread:
     root_author_login: str = ""
     original_finding: str = ""
     discussion: str = ""
+    discussion_evidence_digest: str = ""
     is_change_provenance: bool = False
     claim_evidence: str = ""
     revalidation_after_head_change: bool = False
@@ -675,6 +676,7 @@ def classify_review_threads(
     eligible_author_ids: Set[int],
     *,
     snapshot: Optional[Any] = None,
+    authenticated_controller_login: str = "",
 ) -> ReviewThreadClassification:
     """Split unresolved review threads into claimed-addressed and ordinary blockers.
 
@@ -749,6 +751,7 @@ def classify_review_threads(
                     root_author_login=root.author_login,
                     original_finding=root.body,
                     discussion=discussion,
+                    discussion_evidence_digest=substantive_discussion_digest(thread, authenticated_controller_login),
                     is_change_provenance=CHANGE_PROVENANCE_CLARIFICATION_MARKER in root.body,
                     claim_evidence="\n\n".join(f"{comment.author_login or '(unknown author)'}: {comment.body}" for comment in claim_comments),
                     blocker_ids=tuple(blocker_ids),
@@ -761,6 +764,45 @@ def classify_review_threads(
             blocking_unresolved_count += 1
 
     return ReviewThreadClassification(claimed=tuple(claimed), blocking_unresolved_count=blocking_unresolved_count)
+
+
+def substantive_discussion_digest(thread: ReviewThread, authenticated_controller_login: str) -> str:
+    """Bind complete native discussion, excluding only the valid owned receipt.
+
+    The projection deliberately uses stable comment and author identities plus
+    exact content. Marker-looking text from any other author remains substantive.
+    Invalid or ambiguous owned receipt state raises through ``parse_owned_receipt``
+    so it can never be mistaken for unchanged evidence.
+    """
+    if not thread.comments or thread.comments_truncated:
+        raise ValueError("Review-thread discussion evidence is incomplete")
+    # Without authenticated controller identity, retain every comment. If one
+    # was actually an owned receipt, the later authenticated authority check
+    # conservatively mismatches instead of excluding unproven housekeeping.
+    receipt = parse_owned_receipt(thread, authenticated_controller_login) if authenticated_controller_login else None
+    receipt_comment_id = receipt.comment_id if receipt is not None else None
+    two_tier_status_ids = []
+    if authenticated_controller_login:
+        status_pattern = re.compile(r"\A<!-- auto-coder-two-tier-closure:v1:[0-9a-f]{64} -->\n" r"Independently validated \*\*(?:FIXED|INVALID)\*\* against " r"`[0-9a-f]{40,64}`\.\n\n\S[\s\S]*\Z")
+        two_tier_status_ids = [comment.database_id for comment in thread.comments if is_same_github_login(comment.author_login, authenticated_controller_login) and status_pattern.fullmatch(comment.body)]
+        if len(two_tier_status_ids) > 1:
+            raise ValueError("Review thread has ambiguous owned two-tier closure status")
+    comments = []
+    for comment in thread.comments:
+        if (receipt_comment_id is not None and comment.database_id == receipt_comment_id) or comment.database_id in two_tier_status_ids:
+            continue
+        if comment.database_id is None or (comment.author_id is None and not comment.author_login.strip()):
+            raise ValueError("Review-thread discussion identity is incomplete")
+        comments.append(
+            {
+                "comment_id": comment.database_id,
+                "author": {"database_id": comment.author_id, "login": comment.author_login},
+                "body": comment.body,
+                "in_reply_to_id": comment.in_reply_to_id,
+            }
+        )
+    payload = {"version": 1, "thread_id": thread.id, "root_id": thread.comments[0].database_id, "comments": comments}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def is_change_provenance_thread(thread: ReviewThread) -> bool:
@@ -914,6 +956,14 @@ def resolve_addressed_review_threads(
 
     evaluations = adjudicate_claimed_thread_closures(candidates, dispositions, snapshot=snapshot)
 
+    disposition_digests = {disposition.thread_id: disposition.discussion_evidence_digest for disposition in dispositions}
+    closure_claims = tuple(
+        replace(
+            thread,
+            discussion_evidence_digest=disposition_digests.get(thread.thread_id, ""),
+        )
+        for thread in claimed
+    )
     addressed_thread_ids = {disposition.thread_id for disposition in dispositions if disposition.status == "ADDRESSED"}
     if addressed_thread_ids:
         exec_result = execute_durable_thread_closures(
@@ -926,7 +976,7 @@ def resolve_addressed_review_threads(
             api_origin=api_origin,
             stale_registry=stale_registry,
             expected_ledger_revision=expected_ledger_revision,
-            claimed_threads=claimed,
+            claimed_threads=closure_claims,
         )
     else:
         exec_result = ClosureExecutionResult(
@@ -939,7 +989,8 @@ def resolve_addressed_review_threads(
         owned = tuple(e for e in evaluations if e.thread_id == thread.thread_id)
         decisions = tuple(dict.fromkeys(e.effective_status for e in owned))
         decision = "MISSING" if thread.thread_id not in returned_disposition_ids else decisions[0] if len(decisions) == 1 else "INCONCLUSIVE"
-        accepted = bool(owned) and all(e.is_accepted for e in owned)
+        accepted_ids = {e.thread_id for e in exec_result.accepted_closures}
+        accepted = bool(owned) and all(e.is_accepted for e in owned) and thread.thread_id in accepted_ids
         completed = thread.thread_id in exec_result.resolved_thread_ids
         thread_errors = [error for error in exec_result.errors if error.startswith(f"{thread.thread_id}|")]
         phase = "complete" if completed else "disposition"

@@ -408,26 +408,67 @@ def assert_retained_oauth_mount(prior: PriorContainer, intent: FreshInitializati
         raise HostObservationUnavailable("retained OAuth provenance unavailable") from exc
 
 
-def assert_prior_network_unreferenced(namespace: str) -> None:
-    """Reject remaining visible members of the old network namespace.
+def _validate_host_proc_profile(pid_namespace: str, uid_map: str, mountinfo: str) -> None:
+    """Require the supported unrestricted initial Linux procfs profile."""
+    if pid_namespace != "pid:[4026531836]" or uid_map.split() != ["0", "0", "4294967295"]:
+        raise ValueError("observer is not in the initial Linux namespaces")
+    proc_mounts = []
+    for line in mountinfo.splitlines():
+        halves = line.split(" - ", 1)
+        if len(halves) != 2:
+            raise ValueError("procfs mount evidence is malformed")
+        left, right = halves[0].split(), halves[1].split()
+        if len(left) < 6 or len(right) < 3:
+            raise ValueError("procfs mount evidence is incomplete")
+        mountpoint = left[4]
+        if mountpoint == "/proc":
+            proc_mounts.append((left[3], left[5].split(","), right[0], right[2].split(",")))
+        elif re.match(r"^/proc/(?:[0-9]+|self|thread-self)(?:/|$)", mountpoint):
+            raise ValueError("procfs task paths are shadowed")
+    if len(proc_mounts) != 1:
+        raise ValueError("procfs mount is unavailable or ambiguous")
+    root, mount_options, fs_type, super_options = proc_mounts[0]
+    options = mount_options + super_options
+    if root != "/" or fs_type != "proc" or any(option.startswith("hidepid=") and option not in {"hidepid=0", "hidepid=off"} for option in options) or any(option.startswith("subset=") for option in options):
+        raise ValueError("procfs visibility is restricted")
 
-    The observer must run in the host PID namespace with permission to inspect
-    every remaining process; permission errors are unavailable, not absence.
-    """
+
+def _assert_all_task_networks_absent(proc_root: Path, namespace: str) -> None:
+    for process in proc_root.iterdir():
+        if not process.name.isdecimal():
+            continue
+        try:
+            tasks = list((process / "task").iterdir())
+        except FileNotFoundError:
+            if process.exists():
+                raise ValueError("process task list is unavailable")
+            continue
+        if not tasks:
+            if process.exists():
+                raise ValueError("process task list is empty")
+            continue
+        for task in tasks:
+            if not task.name.isdecimal():
+                raise ValueError("task identity is malformed")
+            try:
+                current = os.readlink(task / "ns/net")
+            except FileNotFoundError:
+                if task.exists():
+                    raise ValueError("task network namespace is unavailable")
+                continue
+            if current == namespace:
+                raise HostObservationUnavailable("prior network namespace still has a task")
+
+
+def assert_prior_network_unreferenced(namespace: str) -> None:
+    """Reject any task in the old network namespace on supported host procfs."""
     if not namespace.startswith("net:[") or not namespace.endswith("]") or not namespace[5:-1].isdecimal():
         raise HostObservationUnavailable("invalid prior network namespace")
     try:
-        if os.readlink("/proc/self/ns/pid") != os.readlink("/proc/1/ns/pid"):
+        if os.geteuid() != 0 or os.readlink("/proc/self/ns/pid") != os.readlink("/proc/1/ns/pid") or os.readlink("/proc/self/ns/user") != os.readlink("/proc/1/ns/user"):
             raise HostObservationUnavailable("observer is not in the host PID namespace")
-        for entry in Path("/proc").iterdir():
-            if not entry.name.isdecimal():
-                continue
-            try:
-                current = os.readlink(entry / "ns/net")
-            except FileNotFoundError:
-                continue
-            if current == namespace:
-                raise HostObservationUnavailable("prior network namespace still has a process")
+        _validate_host_proc_profile(os.readlink("/proc/self/ns/pid"), Path("/proc/self/uid_map").read_text(encoding="ascii"), Path("/proc/self/mountinfo").read_text(encoding="ascii"))
+        _assert_all_task_networks_absent(Path("/proc"), namespace)
     except (OSError, ValueError) as exc:
         raise HostObservationUnavailable("network namespace observation unavailable") from exc
 

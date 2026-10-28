@@ -188,6 +188,7 @@ from .review_thread_validation import (
     reopen_review_threads_after_publication_failure,
     resolve_addressed_review_threads,
     retry_pending_stale_review_thread_rollbacks,
+    substantive_discussion_digest,
 )
 from .reviewer_session_registry import ReviewerSessionRegistry
 from .runtime_locks import LockAcquisitionTimeout, ensure_lock_directory, file_lock, lock_path
@@ -1283,6 +1284,33 @@ class _GitHubClosureThreadTransport:
         self.finding = finding
         self.authorize = authorize
 
+    def _invalidate_retained_discussion_authority(self) -> None:
+        try:
+            EffectiveDecisionStore(self.payload.repository).update(
+                self.payload.pr_number,
+                ordinary_correction=None,
+                pending_closure_source_identities=[],
+                pending_reconciliation_source_identities=[],
+                next_action=EffectiveNextAction.NONE.value,
+            )
+        except DecisionRetentionError:
+            # A missing or concurrently superseded record grants no reusable authority.
+            pass
+
+    def _discussion_is_current(self) -> bool:
+        expected = dict(self.payload.discussion_evidence).get(self.thread.id, "")
+        if not expected:
+            return False
+        threads = self.client.get_pr_review_threads_strict(self.payload.repository, self.payload.pr_number)
+        matches = [thread for thread in threads if thread.id == self.thread.id]
+        if len(matches) != 1:
+            return False
+        try:
+            login = self.client.get_authenticated_user_login()
+            return substantive_discussion_digest(matches[0], login) == expected
+        except Exception:
+            return False
+
     def reconcile(self, operation: EffectOperation) -> EffectAttempt:
         threads = self.client.get_pr_review_threads_strict(self.payload.repository, self.payload.pr_number)
         matches = [thread for thread in threads if thread.id == self.thread.id and thread.comments and thread.comments[0].database_id == self.thread.comments[0].database_id and thread.comments[0].body == self.thread.comments[0].body]
@@ -1298,6 +1326,12 @@ class _GitHubClosureThreadTransport:
             return observed
         if not self.authorize():
             return EffectAttempt(REJECTED, reason="Closure authority is no longer current")
+        if not self._discussion_is_current():
+            self._invalidate_retained_discussion_authority()
+            return EffectAttempt(
+                REJECTED,
+                reason="Validated review-thread discussion is no longer current",
+            )
         root_id = self.thread.comments[0].database_id
         if root_id is None:
             return EffectAttempt(REJECTED, reason="Finding root identity is unavailable")
@@ -1309,6 +1343,12 @@ class _GitHubClosureThreadTransport:
         )
         if not self.authorize():
             return EffectAttempt(REJECTED, reason="Closure authority changed before resolution")
+        if not self._discussion_is_current():
+            self._invalidate_retained_discussion_authority()
+            return EffectAttempt(
+                REJECTED,
+                reason="Validated review-thread discussion changed before resolution",
+            )
         self.client.resolve_review_thread(self.thread.id)
         if not self.authorize():
             registry = StaleReviewThreadRegistry()
@@ -1384,6 +1424,7 @@ def _consume_pending_two_tier_publication(repo_name: str, pr_number: int, inputs
         if closure is None:
             return False, "accepted closure payload is unavailable"
         ordinary_attempt_id, ordinary_attempt_sequence, ordinary_reviewer = "", 0, ""
+        discussion_evidence: tuple[tuple[str, str], ...] = ()
         if closure.source_identity:
             # The publication is derived from the retained ordinary source and
             # names its real attempt and reviewer; it never implies a model run.
@@ -1391,10 +1432,22 @@ def _consume_pending_two_tier_publication(repo_name: str, pr_number: int, inputs
             if view.record is None:
                 return False, "the retained ordinary source of the accepted closure is unavailable; publication was not started"
             ordinary_attempt_id, ordinary_attempt_sequence, ordinary_reviewer = view.record.attempt_id, view.record.attempt_sequence, view.record.reviewer_provenance
+            retained_result = restore_ordinary_result(view.record)
+            discussion_evidence = tuple((item.thread_id, item.discussion_evidence_digest) for item in retained_result.thread_dispositions if item.thread_id and item.discussion_evidence_digest)
             authorized, authority_reason = inputs.gate.closure_evidence().dependent_effects_allowed(closure.source_identity, observe or (lambda: ObservedTarget(inputs.head_sha, inputs.base_sha, inputs.contract, inputs.policy)))
             if not authorized:
                 return False, f"closure publication is deferred until its ordinary-attempt authority is current: {authority_reason}"
-        payload = AcceptedReviewPayload.closure(repo_name, pr_number, strong, closure, snapshot.findings, ordinary_attempt_id, ordinary_attempt_sequence, ordinary_reviewer)
+        payload = AcceptedReviewPayload.closure(
+            repo_name,
+            pr_number,
+            strong,
+            closure,
+            snapshot.findings,
+            ordinary_attempt_id,
+            ordinary_attempt_sequence,
+            ordinary_reviewer,
+            discussion_evidence,
+        )
     else:
         payload = AcceptedReviewPayload.strong(repo_name, pr_number, strong, snapshot.findings)
 
@@ -2086,6 +2139,7 @@ class ClaimedReviewThreadGateState:
     blocking_unresolved: Tuple[ReviewThread, ...] = ()
     has_blocking_unresolved: bool = False
     lookup_error: Optional[str] = None
+    authenticated_controller_login: str = ""
 
 
 def _enforce_unresolved_provenance_gate(
@@ -2182,7 +2236,22 @@ def _get_claimed_review_thread_state(
         return ClaimedReviewThreadGateState(lookup_error=str(e))
 
     eligible_author_ids = _resolve_eligible_review_thread_ids(repo_name)
-    classification = classify_review_threads(threads, eligible_author_ids)
+    try:
+        try:
+            authenticated_controller_login = client.get_authenticated_user_login()
+            if not isinstance(authenticated_controller_login, str) or not authenticated_controller_login.strip():
+                authenticated_controller_login = ""
+        except Exception as exc:
+            logger.warning(f"Could not authenticate discussion-housekeeping ownership for PR #{pr_number}: {exc}")
+            authenticated_controller_login = ""
+        classification = classify_review_threads(
+            threads,
+            eligible_author_ids,
+            authenticated_controller_login=authenticated_controller_login,
+        )
+    except Exception as e:
+        logger.error(f"Failed to bind complete review-thread discussion for PR #{pr_number}: {e}")
+        return ClaimedReviewThreadGateState(lookup_error=str(e))
     claimed_thread_ids = {thread.thread_id for thread in classification.claimed}
     state = ClaimedReviewThreadGateState(
         claimed=tuple(classification.claimed),
@@ -2192,6 +2261,7 @@ def _get_claimed_review_thread_state(
         # implementation agent to repair them again violates that protocol.
         blocking_unresolved=tuple(thread for thread in threads if not thread.is_resolved and thread.id not in claimed_thread_ids),
         has_blocking_unresolved=classification.blocking_unresolved_count > 0,
+        authenticated_controller_login=authenticated_controller_login,
     )
     if config is not None and not _is_pr_adversarial_validation_enabled(config, repo_name):
         return _filter_unresolved_review_threads_for_disabled_validator(state, repo_name)
@@ -2363,6 +2433,7 @@ def _filter_unresolved_review_threads_for_disabled_validator(
         blocking_unresolved=tuple(remaining_blocking),
         has_blocking_unresolved=bool(remaining_blocking),
         lookup_error=state.lookup_error,
+        authenticated_controller_login=state.authenticated_controller_login,
     )
 
 
@@ -2402,6 +2473,7 @@ def _allow_older_head_adversarial_threads(
                 root_author_login=root.author_login,
                 original_finding=root.body,
                 discussion="\n\n".join(f"{comment.author_login or '(unknown author)'}: {comment.body}" for comment in comments),
+                discussion_evidence_digest=substantive_discussion_digest(thread, state.authenticated_controller_login),
                 revalidation_after_head_change=not forced and not after_pass,
                 revalidation_forced=forced and not after_pass,
                 revalidation_after_pass=after_pass,
@@ -2415,6 +2487,7 @@ def _allow_older_head_adversarial_threads(
         blocking_unresolved=tuple(remaining),
         has_blocking_unresolved=bool(remaining),
         lookup_error=state.lookup_error,
+        authenticated_controller_login=state.authenticated_controller_login,
     )
 
 
@@ -2438,6 +2511,13 @@ def _include_pending_local_repair_threads(
     settled = {item.blocker_id for item in generation.settlements}
     pending = set(generation.covered_blocker_ids) - settled
     threads = github_client.get_pr_review_threads_strict(repo_name, pr_number)
+    try:
+        authenticated_controller_login = github_client.get_authenticated_user_login()
+        if not isinstance(authenticated_controller_login, str) or not authenticated_controller_login.strip():
+            authenticated_controller_login = ""
+    except Exception as exc:
+        logger.warning(f"Could not authenticate local-repair housekeeping ownership for PR #{pr_number}: {exc}")
+        authenticated_controller_login = ""
     existing = {thread.thread_id: thread for thread in claimed}
     selected_existing = []
     retained = []
@@ -2465,12 +2545,20 @@ def _include_pending_local_repair_threads(
                     root_author_login=root.author_login,
                     original_finding=root.body,
                     discussion="\n\n".join(f"{comment.author_login or '(unknown author)'}: {comment.body}" for comment in thread.comments),
+                    discussion_evidence_digest=substantive_discussion_digest(thread, authenticated_controller_login),
                 )
             )
             continue
         # Resolution is presentation state, never independent correctness evidence.
         retained.append(replace(thread, is_resolved=False))
-    promoted = _allow_older_head_adversarial_threads(ClaimedReviewThreadGateState(blocking_unresolved=tuple(retained)), reviewer_login, forced=True)
+    promoted = _allow_older_head_adversarial_threads(
+        ClaimedReviewThreadGateState(
+            blocking_unresolved=tuple(retained),
+            authenticated_controller_login=authenticated_controller_login,
+        ),
+        reviewer_login,
+        forced=True,
+    )
     if not allow_incomplete and (found != pending or promoted.blocking_unresolved):
         raise RuntimeError("pending local repair roots are missing, incomplete, or unauthenticated")
     return tuple(selected_existing) + tuple(promoted.claimed)
@@ -6388,6 +6476,17 @@ def _coordinate_pr_review(
                             if resolved_thread_ids:
                                 actions.append(f"Resolved {len(resolved_thread_ids)} claimed review thread(s) for PR #{pr_number} after independent validation")
                             if unfinished_closure_outcomes:
+                                if any(outcome.phase == "discussion-freshness" for outcome in unfinished_closure_outcomes):
+                                    # The retained ordinary payload produced the stale disposition.
+                                    # Remove its reuse authority so the next admitted lifecycle invokes
+                                    # independent validation with the freshly collected discussion.
+                                    EffectiveDecisionStore(repo_name).update(
+                                        pr_number,
+                                        ordinary_correction=None,
+                                        pending_closure_source_identities=[],
+                                        pending_reconciliation_source_identities=[],
+                                        next_action=EffectiveNextAction.NONE.value,
+                                    )
                                 details = "; ".join(f"{outcome.thread_id} [{outcome.phase}]: {outcome.reason}" for outcome in unfinished_closure_outcomes)
                                 actions.append(f"Review-thread closure incomplete for PR #{pr_number}: " f"{len(resolved_thread_ids)} confirmed, {len(unfinished_closure_outcomes)} unfinished; {details}")
                                 _record_pr_stage(

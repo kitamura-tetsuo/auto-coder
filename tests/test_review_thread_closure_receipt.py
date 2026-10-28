@@ -17,7 +17,7 @@ import httpx
 import pytest
 
 from auto_coder.adversarial_validator import ReviewThreadDisposition
-from auto_coder.canonical_pr_blocker_ledger import BlockerAdmissionPayload, BlockerAlias, CanonicalPRBlockerLedger, CorrectionScope, QualifiedRequirement
+from auto_coder.canonical_pr_blocker_ledger import BlockerAdmissionPayload, BlockerAlias, BlockerDisposition, CanonicalPRBlockerLedger, CorrectionScope, QualifiedRequirement
 from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER
 from auto_coder.review_thread_closure_receipt import ClosureReceiptError, closure_receipt_lock, observe_closure_receipt, put_receipt
 from auto_coder.review_thread_validation import (
@@ -221,7 +221,12 @@ class ReceiptScenario:
     def claimed(self, client=None):
         client = client or self.client()
         snapshot = self.ledger().get_snapshot(API_ORIGIN, REPOSITORY, PR_NUMBER, require_retained_state=True)
-        classification = classify_review_threads(client.get_pr_review_threads_strict(REPOSITORY, PR_NUMBER), {REVIEWER_ID}, snapshot=snapshot)
+        classification = classify_review_threads(
+            client.get_pr_review_threads_strict(REPOSITORY, PR_NUMBER),
+            {REVIEWER_ID},
+            snapshot=snapshot,
+            authenticated_controller_login=client.get_authenticated_user_login(),
+        )
         assert classification.blocking_unresolved_count == 0
         return classification.claimed
 
@@ -235,7 +240,15 @@ class ReceiptScenario:
             PR_NUMBER,
             self.transport.head,
             selected,
-            [ReviewThreadDisposition(thread_id=THREAD_ID, status=status, rationale=rationale, evidence="src/retry.py resets the counter before entering the retry loop; tests/test_retry.py exercises this boundary.")],
+            [
+                ReviewThreadDisposition(
+                    thread_id=THREAD_ID,
+                    status=status,
+                    rationale=rationale,
+                    evidence="src/retry.py resets the counter before entering the retry loop; tests/test_retry.py exercises this boundary.",
+                    discussion_evidence_digest=selected[0].discussion_evidence_digest,
+                )
+            ],
             stale_registry=registry or self.registry(),
             ledger=self.ledger(),
             base_sha=BASE,
@@ -296,6 +309,33 @@ def test_same_head_reopen_and_reconstruction_reuse_one_reply(receipt_scenario):
     assert len(scenario.transport.posts) == 1
     assert scenario.transport.patches
     assert len({comment_id for comment_id, _body in scenario.transport.patches}) == 1
+
+
+def test_reply_during_receipt_publication_revokes_canonical_acceptance(receipt_scenario):
+    scenario = receipt_scenario
+    claimed = scenario.claimed()
+
+    def add_counterexample():
+        scenario.transport.before_create = None
+        scenario.transport.comments.append(
+            RemoteComment(
+                ROOT_ID + 20,
+                "The same-scope retry counterexample still fails.",
+                "reviewer[bot]",
+                999,
+            )
+        )
+
+    scenario.transport.before_create = add_counterexample
+    report = scenario.close(claimed=claimed)
+
+    blocker = scenario.ledger().get_snapshot(API_ORIGIN, REPOSITORY, PR_NUMBER, require_retained_state=True).get_blocker(scenario.blocker_id)
+    assert blocker is not None
+    assert blocker.disposition == BlockerDisposition.OPEN
+    assert report.accepted_closures == ()
+    assert report.resolved_thread_ids == ()
+    assert report.thread_outcomes[0].acceptance_state == "NOT_ACCEPTED"
+    assert "resolve" not in scenario.transport.effects
 
 
 def test_confirmed_replay_does_not_mutate_github_again(receipt_scenario):

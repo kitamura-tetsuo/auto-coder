@@ -83,7 +83,7 @@ jobs:
           import sys, xml.etree.ElementTree as ET
           root = ET.parse(sys.argv[1]).getroot()
           suites = list(root.iter('testsuite'))
-          assert sum(int(s.get('tests', 0)) for s in suites) == 2, 'expected both host tests'
+          assert sum(int(s.get('tests', 0)) for s in suites) == 4, 'expected all host tests'
           assert all(int(s.get('skipped', 0)) == 0 for s in suites), 'host tests must not skip'
           PY
 

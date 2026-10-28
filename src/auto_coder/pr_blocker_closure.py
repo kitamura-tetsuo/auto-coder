@@ -589,6 +589,24 @@ def _execute_durable_thread_closures(
     norm_origin = normalize_api_origin(api_origin)
     rollback_registry = stale_registry or StaleReviewThreadRegistry()
 
+    def _discussion_digest(observation: Any, authenticated_controller_login: str) -> str:
+        from .review_thread_validation import substantive_discussion_digest
+
+        return substantive_discussion_digest(observation.thread, authenticated_controller_login)
+
+    def _validated_substantive_digest(claimed_thread: ClaimedReviewThread, observation: Any) -> Optional[str]:
+        """Normalize an authenticated receipt only after proving raw freshness."""
+        if not claimed_thread.discussion_evidence_digest:
+            return None
+        try:
+            substantive = _discussion_digest(observation, observation.authenticated_login)
+            complete = _discussion_digest(observation, "")
+            if claimed_thread.discussion_evidence_digest in (substantive, complete):
+                return substantive
+        except Exception as exc:
+            logger.error(f"Could not verify discussion evidence for thread {claimed_thread.thread_id}: {exc}")
+        return None
+
     def _head_is_still_current() -> bool:
         try:
             current_head = github_client.get_pull_request_head_sha_strict(repo_name, pr_number)
@@ -626,7 +644,70 @@ def _execute_durable_thread_closures(
                 errors=(f"Ledger unavailable: {exc}",),
             )
 
+    # Fence canonical acceptance itself against discussion advancement.  This
+    # read is intentionally before ledger persistence, not merely before the
+    # later GitHub mutation.
+    current_evaluations: list[ClosureEvaluationResult] = []
+    validated_discussion_digests: dict[str, str] = {}
     curr_rev = current_snapshot.ledger_revision if current_snapshot is not None else expected_ledger_revision or 0
+
+    def _revoke_prior_acceptance(evaluation: ClosureEvaluationResult) -> None:
+        nonlocal current_snapshot, curr_rev
+        blocker_id = evaluation.evaluated_blocker_id
+        if ledger is None or current_snapshot is None or not blocker_id:
+            return
+        existing = current_snapshot.get_blocker(blocker_id)
+        if existing is None or existing.disposition is not BlockerDisposition.VERIFIED_CORRECTION:
+            return
+        current_snapshot = ledger.record_transition(
+            api_origin=norm_origin,
+            repository=repo_name,
+            pr_number=pr_number,
+            operation_id=f"discussion_stale_{blocker_id}_{uuid.uuid4().hex}",
+            expected_ledger_revision=curr_rev,
+            blocker_id=blocker_id,
+            target_disposition=BlockerDisposition.OPEN,
+            evidence="Authoritative review-thread discussion is not the validated evidence",
+            transition_reason="Independent closure evidence requires reevaluation",
+            reviewed_head_sha=validated_head_sha,
+            reviewed_base_sha=evaluation.candidate.reviewed_base_sha,
+            review_attempt_id=evaluation.candidate.review_attempt_id,
+            requirement_manifest_revision=evaluation.candidate.requirement_manifest_revision,
+            review_observation_identity=f"discussion_stale_{evaluation.thread_id}",
+        )
+        curr_rev = current_snapshot.ledger_revision
+
+    for evaluation in evaluations:
+        if not evaluation.is_accepted:
+            current_evaluations.append(evaluation)
+            continue
+        claimed_thread = _find_claimed_thread(claimed_threads, evaluation.thread_id)
+        if claimed_thread is None or claimed_thread.root_comment_database_id is None:
+            errors.append(f"{evaluation.thread_id}|discussion-freshness|Validated discussion identity is unavailable")
+            _revoke_prior_acceptance(evaluation)
+            continue
+        try:
+            observation = observe_closure_receipt(
+                github_client,
+                repo_name,
+                pr_number,
+                evaluation.thread_id,
+                claimed_thread.root_comment_database_id,
+                api_origin=norm_origin,
+            )
+        except Exception as exc:
+            errors.append(f"{evaluation.thread_id}|discussion-freshness|Authoritative discussion is unavailable: {exc}")
+            _revoke_prior_acceptance(evaluation)
+            continue
+        current_digest = _validated_substantive_digest(claimed_thread, observation)
+        if current_digest is None:
+            errors.append(f"{evaluation.thread_id}|discussion-freshness|Discussion changed since independent validation")
+            _revoke_prior_acceptance(evaluation)
+            continue
+        validated_discussion_digests[evaluation.thread_id] = current_digest
+        current_evaluations.append(evaluation)
+
+    evaluations = tuple(current_evaluations)
 
     for eval_res in evaluations:
         if not eval_res.is_accepted:
@@ -808,6 +889,54 @@ def _execute_durable_thread_closures(
         except Exception as exc:
             logger.error(f"Could not durably record pending resolution for thread {thread_id}: {exc}")
             errors.append(f"{thread_id}|intent-publication|{exc}")
+            continue
+
+        observed_discussion_digest: Optional[str] = None
+        expected_discussion_digest = validated_discussion_digests.get(thread_id)
+        try:
+            observed_discussion_digest = _discussion_digest(observation, observation.authenticated_login)
+            discussion_is_current = observed_discussion_digest == expected_discussion_digest
+        except Exception as exc:
+            logger.error(f"Could not verify discussion evidence for thread {thread_id}: {exc}")
+            discussion_is_current = False
+        if not discussion_is_current:
+            logger.warning(f"Discussion evidence changed before resolving {thread_id}: " f"expected {expected_discussion_digest}, observed {observed_discussion_digest}")
+            errors.append(f"{thread_id}|discussion-freshness|Discussion changed immediately before resolve mutation")
+            # The pre-effect acceptance is no longer current.  Compensate the
+            # canonical transition before returning so neither the ledger nor
+            # the typed outcome can advertise the stale evaluation as accepted.
+            if ledger is not None and current_snapshot is not None:
+                for stale_evaluation in owned_evaluations:
+                    stale_blocker_id = stale_evaluation.evaluated_blocker_id
+                    if not stale_blocker_id:
+                        continue
+                    try:
+                        current_snapshot = ledger.record_transition(
+                            api_origin=norm_origin,
+                            repository=repo_name,
+                            pr_number=pr_number,
+                            operation_id=f"discussion_stale_{stale_blocker_id}_{uuid.uuid4().hex}",
+                            expected_ledger_revision=curr_rev,
+                            blocker_id=stale_blocker_id,
+                            target_disposition=BlockerDisposition.OPEN,
+                            evidence="Authoritative review-thread discussion changed after validation",
+                            transition_reason="Independent closure evidence is stale and requires reevaluation",
+                            reviewed_head_sha=validated_head_sha,
+                            reviewed_base_sha=stale_evaluation.candidate.reviewed_base_sha,
+                            review_attempt_id=stale_evaluation.candidate.review_attempt_id,
+                            requirement_manifest_revision=stale_evaluation.candidate.requirement_manifest_revision,
+                            review_observation_identity=f"discussion_stale_{thread_id}",
+                        )
+                        curr_rev = current_snapshot.ledger_revision
+                        if stale_blocker_id in persisted_blockers:
+                            persisted_blockers.remove(stale_blocker_id)
+                    except Exception as exc:
+                        errors.append(f"{thread_id}|discussion-freshness|Could not revoke stale canonical acceptance: {exc}")
+                persisted_evaluations = [item for item in persisted_evaluations if item.thread_id != thread_id]
+            try:
+                put_receipt(github_client, observation, replace(pending_receipt, phase="ROLLED_BACK"))
+            except Exception as exc:
+                errors.append(f"{thread_id}|marker-cleanup|{exc}")
             continue
 
         if not _head_is_still_current():

@@ -246,6 +246,39 @@ def test_namespace_pin_rejects_missing_or_different_identity() -> None:
         assert_prior_network_pin(descriptor, namespace)
 
 
+def test_namespace_absence_checks_every_task_and_rejects_incomplete_evidence(tmp_path: Path) -> None:
+    from auto_coder.management.fresh_host_observation import _assert_all_task_networks_absent
+
+    leader = tmp_path / "42" / "task" / "42" / "ns"
+    worker = tmp_path / "42" / "task" / "43" / "ns"
+    leader.mkdir(parents=True)
+    worker.mkdir(parents=True)
+    (leader / "net").symlink_to("net:[101]")
+    (worker / "net").symlink_to("net:[202]")
+    with pytest.raises(HostObservationUnavailable):
+        _assert_all_task_networks_absent(tmp_path, "net:[202]")
+    _assert_all_task_networks_absent(tmp_path, "net:[303]")
+    (worker / "net").unlink()
+    with pytest.raises(ValueError):
+        _assert_all_task_networks_absent(tmp_path, "net:[303]")
+
+
+def test_host_proc_profile_rejects_hidden_or_nested_views() -> None:
+    from auto_coder.management.fresh_host_observation import _validate_host_proc_profile
+
+    mount = "53 44 0:25 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw"
+    uid_map = "0 0 4294967295"
+    _validate_host_proc_profile("pid:[4026531836]", uid_map, mount)
+    for pidns, mapping, mounts in (
+        ("pid:[1234]", uid_map, mount),
+        ("pid:[4026531836]", "0 1000 1", mount),
+        ("pid:[4026531836]", uid_map, mount + ",hidepid=2"),
+        ("pid:[4026531836]", uid_map, mount + "\n54 53 0:26 / /proc/42 rw - tmpfs tmpfs rw"),
+    ):
+        with pytest.raises(ValueError):
+            _validate_host_proc_profile(pidns, mapping, mounts)
+
+
 def test_actual_host_listener_and_live_namespace_refuse() -> None:
     namespace = os.readlink("/proc/self/ns/net")
     with pytest.raises(HostObservationUnavailable):

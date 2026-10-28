@@ -27,6 +27,7 @@ from auto_coder.pr_review_effects import (
     ReviewEffectExecutor,
     ReviewEffectRepository,
 )
+from auto_coder.review_thread_validation import substantive_discussion_digest
 from auto_coder.two_tier_pr_gate import TwoTierPrGate
 from auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
 
@@ -435,12 +436,15 @@ def test_accepted_closure_resolves_only_its_authenticated_finding_and_resumes(tm
         def get_pull_request_head_sha_strict(self, repo, number):
             return self.head
 
+        def get_authenticated_user_login(self):
+            return "controller[bot]"
+
         def get_pr_review_threads_strict(self, repo, number):
             if active_failure == "missing_root":
                 return []
             return [
-                ReviewThread(id="finding-thread", is_resolved=self.resolved, comments=[ReviewThreadComment(database_id=12, body=roots[0].body)], comments_truncated=active_failure == "truncated_thread"),
-                ReviewThread(id="human-thread", is_resolved=False, comments=[ReviewThreadComment(database_id=13, body="Unrelated human finding")]),
+                ReviewThread(id="finding-thread", is_resolved=self.resolved, comments=[ReviewThreadComment(database_id=12, author_id=4765828, author_login="reviewer[bot]", body=roots[0].body)], comments_truncated=active_failure == "truncated_thread"),
+                ReviewThread(id="human-thread", is_resolved=False, comments=[ReviewThreadComment(database_id=13, author_id=99, author_login="human", body="Unrelated human finding")]),
             ]
 
         def reply_to_review_thread(self, repo, number, root, body):
@@ -469,12 +473,20 @@ def test_accepted_closure_resolves_only_its_authenticated_finding_and_resumes(tm
             self.resolved = False
 
     client = Client()
+    original_closure_payload = AcceptedReviewPayload.closure
+
+    def closure_payload(*args, **kwargs):
+        payload = original_closure_payload(*args, **kwargs)
+        return replace(payload, discussion_evidence=(("finding-thread", validated_digest),))
+
+    monkeypatch.setattr(AcceptedReviewPayload, "closure", staticmethod(closure_payload))
     monkeypatch.setattr(pr_processor, "load_reviewer_app_config", lambda repo_name: object())
     monkeypatch.setattr(pr_processor, "GitHubAppReviewer", Reviewer)
     monkeypatch.setattr(pr_processor.GitHubClient, "get_instance", lambda: client)
     monkeypatch.setattr(pr_processor, "_record_pr_stage", lambda *args: stages.append(args))
     assert pr_processor._consume_pending_two_tier_publication("owner/repo", 42, inputs)[0] is True
     assert calls == []  # OPEN findings never authorize resolution.
+    validated_digest = substantive_discussion_digest(client.get_pr_review_threads_strict("owner/repo", 42)[0], "controller[bot]")
     snapshot = cycle.record_ordinary_pass(42, RoundProvenance("head-b", "base-a"), contract)
     cycle.certify_closure(42, RoundProvenance("head-b", "base-a"), contract, policy, strong.round_id, snapshot.finding_set_revision, [FindingDisposition(finding.finding_id, disposition, "Verified correction evidence", "head-b")], bounded=True, bounded_evidence="Only the finding was corrected")
     inputs = replace(inputs, head_sha="head-b")

@@ -72,6 +72,12 @@ missing, closed or mismatched descriptor refuses the transition.
 For example, in the same long-lived Bash process that runs those commands,
 `exec {OLD_NETWORK_FD}<"/proc/$OLD_PID/ns/net"` opens the pin. The exact
 `OLD_PID` must first be matched to the captured Docker container lifetime.
+The supported host observer runs as root in the initial Linux PID and user
+namespaces, with an unrestricted procfs mounted at `/proc`. Restricted or
+shadowed procfs views are refused. The old network namespace is checked against
+every visible task, including non-leader threads; an inaccessible task is not
+treated as absent. This is a bounded observation, not a reservation against
+future namespace or listener changes.
 
 For a supported staged Docker cutover, keep the old management and proxy
 container objects stopped and inspectable through admission. Do not use Compose

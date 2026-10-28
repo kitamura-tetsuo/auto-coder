@@ -18,6 +18,11 @@ status is read with `management recovery-status`. The real-CLI scenarios in
 `tests/test_management_recovery_integration.py` verify these outcomes and their
 process effects. This path does not introduce a dashboard-owned event schema.
 
+When the Supervisor cannot observe its own process start token, it logs that
+its lifetime is unavailable and holds physical effects until a valid observation
+returns. It retains its owner fence and existing child without reporting a new
+process identity. The real-process bootstrap test verifies this hold and resume.
+
 Management self-update adds a fixed authenticated MCP origin to that same journal
 and dispatcher. Admission and durable Supervisor handoff log the operation ID and
 exact source SHA; reconnect-proof failures log only a safe category. Its protected

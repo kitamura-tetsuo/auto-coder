@@ -594,6 +594,7 @@ class ManagementBootstrapSupervisor:
     def _run_owned(self) -> int:
         from .self_update_handoff import SelfUpdateHandoffConsumer
 
+        owner_start_token = self._await_owner_start_token()
         if self.fresh_initialization:
             if not self._start_fresh_initialization():
                 return 1
@@ -622,7 +623,7 @@ class ManagementBootstrapSupervisor:
             logger.error("Management child ledger is missing; refusing bootstrap reconstruction")
             return 1
         self.store.require_existing = ledger_exists
-        self.store.publish_supervisor(self.incarnation, os.getpid(), self._start_token(os.getpid()))
+        self.store.publish_supervisor(self.incarnation, os.getpid(), owner_start_token)
         self.store.require_existing = True
         consumer = SelfUpdateHandoffConsumer(self) if self.config.management_config is not None else None
         record = self.store.load()
@@ -659,7 +660,7 @@ class ManagementBootstrapSupervisor:
                 time.sleep(0.2)
                 continue
             try:
-                self.store.publish_supervisor(self.incarnation, os.getpid(), self._start_token(os.getpid()))
+                self.store.publish_supervisor(self.incarnation, os.getpid(), self._await_owner_start_token())
             except (OSError, sqlite3.Error):
                 logger.error("Management child ledger is unavailable; preserving process state")
                 time.sleep(0.2)
@@ -728,7 +729,7 @@ class ManagementBootstrapSupervisor:
             if any(item.name not in allowed or item.is_symlink() for item in self.config.state_root.iterdir()) or any(self.config.journal_root.iterdir()):
                 raise ValueError("fresh initialization state is not empty")
             self._prior_owner_fence = acquire_prior_owner_fence(self.config.fresh_prior_lock_path, expected_device=intent.owner_lock_device, expected_inode=intent.owner_lock_inode)
-            self.store.publish_supervisor(self.incarnation, os.getpid(), self._start_token(os.getpid()))
+            self.store.publish_supervisor(self.incarnation, os.getpid(), self._await_owner_start_token())
             self.store.require_existing = True
             request_and_claim_first_launch(self.config.state_root, self.config.fresh_guard_path, owner_incarnation=self.incarnation)
             with closing(ManagementOperationStore(self.config.journal_root)._connect()):
@@ -909,6 +910,18 @@ class ManagementBootstrapSupervisor:
             return "" if fields[0] == "Z" else fields[19]
         except (OSError, IndexError):
             return ""
+
+    def _await_owner_start_token(self) -> str:
+        """Hold the owner fence and suspend effects until its lifetime is observable."""
+        warned = False
+        while True:
+            token = self._start_token(os.getpid())
+            if token:
+                return token
+            if not warned:
+                logger.warning("Management supervisor lifetime unavailable; preserving process state")
+                warned = True
+            time.sleep(0.2)
 
     @staticmethod
     def _identity(record: ChildRecord) -> str:

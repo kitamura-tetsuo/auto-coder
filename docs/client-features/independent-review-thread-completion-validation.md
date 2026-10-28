@@ -23,6 +23,15 @@ The production regression is
 
 ## Reusable closure status reply
 
+Each independent `ADDRESSED` decision carries a deterministic binding to the
+complete native-thread discussion supplied to validation. Auto-Coder performs
+an authoritative read before canonical acceptance and again immediately before
+resolution; an added, edited, removed, incomplete, or ambiguous substantive
+comment leaves the thread unresolved for a later independent evaluation. The
+one authenticated, schema-valid controller closure receipt is housekeeping and
+is excluded from this binding, while forged or marker-looking ordinary replies
+remain substantive evidence.
+
 Independently accepted closure maintains one controller-owned reply per exact
 API origin, repository, PR, thread and root comment. The reply begins with
 `<!-- auto-coder-review-thread-closure:v1 -->` and contains a versioned metadata
@@ -150,6 +159,7 @@ failure/retry integration is
       - "Every PR-processing entry point uses the same claimed-aware merge transition workflow. A quick/single-PR pass cannot bypass independent validation or re-delegate claimed-addressed threads, and when claimed and ordinary unresolved threads coexist only the ordinary blockers are included in repair delegation."
       - "The validator returns one independent disposition per claimed thread in a `thread_dispositions` list: `ADDRESSED` (the original defect is demonstrably gone on the current head), `STILL_VALID` (it remains), or `INCONCLUSIVE` (the evidence cannot establish either safely). The prompt explicitly forbids deriving ADDRESSED merely from the implementation agent's claim, a GitHub `outdated` state, a moved/deleted diff line, a passing test alone, or a pushed commit alone; every disposition requires a concrete rationale and evidence grounded in the current implementation."
       - "Thread dispositions are parsed leniently and independently of the PR-level verdict: a malformed or incomplete entry is dropped (logged) without failing the PR-level PASS/NEEDS_FIX/INCONCLUSIVE/BLOCKED result, and a thread may be ADDRESSED while the PR itself is NEEDS_FIX for an unrelated defect, or vice versa."
+      - "The controller binds each produced disposition to the complete substantive discussion supplied to that validation and retains that binding with ordinary-result recovery. Closure re-observes the native thread before canonical acceptance and immediately before resolution; any added, edited, removed, incomplete, or ambiguous ordinary discussion revokes stale acceptance and requires independent reevaluation. Only a schema-valid authenticated owned closure receipt or strict two-tier closure-status envelope is excluded from the binding; marker-looking, malformed, duplicated, or unauthenticated comments remain substantive."
       - "Resolution is fail-closed end to end (`resolve_addressed_review_threads`): it acts only on independently accepted ADDRESSED dispositions for threads actually claimed in this run, persists canonical acceptance and enforces all owned obligations before effects, and refuses stale heads. Each actual resolve requires the authenticated reusable reply to be observably PENDING for its exact operation. Missing, ambiguous or failed receipt evidence and unconfirmed resolve effects produce unfinished outcomes without blocking successful sibling closures or fabricating resolution."
       - "Stale-resolution BLOCKER/CLEARED comments are authoritative only when their author matches the login proven by Auto-Coder's active GitHub credential; exact lookalike markers from humans or implementation agents are ignored. A resolved thread with a truncated comment list has incomplete latest-marker evidence regardless of which marker is visible, so merge processing fails closed without attempting an automatic unresolve from that partial page."
       - "Every resolution-time head comparison and stale-marker head comparison uses a strict direct REST lookup that bypasses the shared GitHub GET cache. A stale-marker scan that performs a head comparison repeats that authoritative lookup after scanning all threads and requires the same head SHA, so a push from H1 to H2 during the scan fails closed without mutation. A missing, malformed, failed, or changed authoritative lookup cannot validate a resolution or dismiss an H1 blocker."
