@@ -183,6 +183,26 @@ def authenticated_unsuccessful_disposition(store: LocalJobStore, record: LocalJo
     continuation = store.get_continuation(record.job_id)
     if continuation is None or continuation.execution_incarnation != record.execution_incarnation or not continuation.executor_token or not continuation.writer_owner or not writer_group_settled(continuation.writer_owner):
         return None
+    if store.unresolved_continuation_tasks(record.job_id):
+        return None
+    from .muse_background_observation import MuseContinuationReadiness, recover_muse_observation
+
+    observation = recover_muse_observation(store, record.job_id)
+    if (
+        observation is None
+        or observation.binding.backend_name != record.backend_name
+        or observation.binding.upstream_attempt != record.upstream_attempt
+        or observation.binding.execution_incarnation != record.execution_incarnation
+        or observation.binding.provider_session != continuation.provider_session
+        or observation.binding.workspace != Path(record.workspace_path)
+        or observation.foreground_state not in {"completed", "failed", "cancelled"}
+        or observation.active_turns
+        or observation.queued_turns
+        or observation.readiness in {MuseContinuationReadiness.UNSUPPORTED, MuseContinuationReadiness.RECONCILIATION_REQUIRED, MuseContinuationReadiness.NATIVE_ACTIVE}
+        or (observation.readiness is MuseContinuationReadiness.NOT_READY and not observation.final_assistant)
+        or any(task.state != "terminal" or task.contradictory or not task.result_delivered or (task.result_reference and task.result_reference not in observation.incorporated_results) for task in observation.tasks)
+    ):
+        return None
     artifact = store.get_execution_result_artifact(record.job_id, record.execution_incarnation)
     if record.invocation_outcome in {InvocationOutcome.FAILED, InvocationOutcome.INTERRUPTED}:
         if continuation.state.value != record.invocation_outcome.value or artifact is None or artifact.artifact_id != record.result_reference or artifact.outcome != record.invocation_outcome:

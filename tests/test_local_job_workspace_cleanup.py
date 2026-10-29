@@ -22,6 +22,7 @@ from auto_coder.local_job_workspace_cleanup import (
     reclaim_finalized_workspaces,
     workspace_retention_seconds,
 )
+from auto_coder.muse_background_observation import MuseBackgroundObservation, MuseContinuationReadiness, MuseObservationBinding, persist_muse_observation
 from auto_coder.pr_repair_finalizer import PRRepairJobFinalizer, PRRepairPublicationDisposition
 from auto_coder.runtime_locks import ensure_lock_directory, file_lock
 from auto_coder.workspace_ownership import MARKER, verify_ownership
@@ -38,6 +39,16 @@ def _published(tmp_path: Path, number: int = 2583):
     finalizer = IssueJobFinalizer(store, slots, lambda *_: existing, lambda *_: None)
     assert finalizer.finalize(checkpoint.job_id).disposition == "published"
     return store, checkpoint, finalizer
+
+
+def _record_settled_observation(store, record, workspace: Path, executor: str) -> None:
+    observation = MuseBackgroundObservation(
+        MuseObservationBinding(record.backend_name, "session", record.execution_incarnation, record.upstream_attempt, workspace),
+        "turn",
+        "completed",
+        readiness=MuseContinuationReadiness.CONTROLLER_READY,
+    )
+    assert persist_muse_observation(store, record.job_id, executor, observation)
 
 
 def test_issue_producer_binds_external_ownership_evidence(tmp_path: Path, _use_real_commands) -> None:
@@ -92,6 +103,7 @@ def test_terminated_producer_workspace_requires_source_and_reclaims(tmp_path: Pa
     process = subprocess.Popen(["sleep", "60"], start_new_session=True)
     owner = process_owner(process.pid)
     assert store.bind_continuation_writer(record.job_id, "executor", provider, owner)
+    _record_settled_observation(store, record, workspace, "executor")
     artifact = store.persist_result_artifact(acquired, outcome, "provider failed", executor_token="executor")
     assert artifact is not None and store.record_result(acquired, outcome, artifact.artifact_id, executor_token="executor")
     recorded = store.get(record.job_id)
@@ -206,6 +218,7 @@ def test_superseded_issue_reclaims_only_with_exact_retry_receipt(tmp_path: Path,
     owner = process_owner(process.pid)
     process.wait(timeout=5)
     assert store.bind_continuation_writer(acquired.record.job_id, "executor", provider, owner)
+    _record_settled_observation(store, acquired.record, workspace, "executor")
     job = store.get(acquired.record.job_id)
     continuation = store.get_continuation(acquired.record.job_id)
     assert job is not None and continuation is not None

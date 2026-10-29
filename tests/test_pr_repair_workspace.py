@@ -101,6 +101,8 @@ def admitted_conflict(store: LocalJobStore, tmp_path: Path, head: str, base: str
 @pytest.mark.parametrize("outcome", [InvocationOutcome.FAILED, InvocationOutcome.INTERRUPTED])
 @pytest.mark.parametrize("kind", ["ci", "conflict"])
 def test_terminated_pr_workspace_reclaims_only_with_retained_source(tmp_path: Path, outcome: InvocationOutcome, kind: str, _use_real_commands) -> None:
+    from auto_coder.muse_background_observation import MuseBackgroundObservation, MuseContinuationReadiness, MuseObservationBinding, persist_muse_observation
+
     repo, head, base = repository(tmp_path)
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
     acquired = admitted(store, tmp_path, head, base) if kind == "ci" else admitted_conflict(store, tmp_path, head, base)
@@ -113,6 +115,8 @@ def test_terminated_pr_workspace_reclaims_only_with_retained_source(tmp_path: Pa
     owner = process_owner(process.pid)
     process.wait(timeout=5)
     assert store.bind_continuation_writer(acquired.record.job_id, executor, provider, owner)
+    observation = MuseBackgroundObservation(MuseObservationBinding(acquired.record.backend_name, "session", acquired.record.execution_incarnation, acquired.record.upstream_attempt, prepared.workspace), "turn", "completed", readiness=MuseContinuationReadiness.CONTROLLER_READY)
+    assert persist_muse_observation(store, acquired.record.job_id, executor, observation)
     artifact = store.persist_result_artifact(acquired, outcome, "provider failed", executor_token=executor)
     assert artifact is not None and store.record_result(acquired, outcome, artifact.artifact_id, executor_token=executor)
     recorded = store.get(acquired.record.job_id)

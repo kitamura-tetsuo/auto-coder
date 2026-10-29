@@ -17,6 +17,7 @@ from .local_ci_repair_execution import (
 )
 from .local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobKind, LocalJobRecord, LocalJobStore
 from .local_job_runner import LocalJobExecutionResult, LocalJobProviderEntryRefused
+from .muse_background_observation import bind_muse_job_observation
 from .pr_processing_evidence import begin_invocation_observation, observed_invocations
 from .pr_repair_workspace import PreparedPRRepairWorkspace, PRRepairSource, PRRepairWorkspaceProducer
 
@@ -105,7 +106,10 @@ class LocalCIRepairJobAdapter:
                 raise LocalJobProviderEntryRefused("PR head, base, open state, or local repair route changed")
             if not checkpoint():
                 raise LocalJobProviderEntryRefused("provider-entry checkpoint failed")
-            with correction.execution_context():
+            observed_job = self._store.get(job.job_id)
+            if observed_job is None or observed_job.execution_incarnation != job.execution_incarnation or observed_job.runner_owner != job.runner_owner:
+                raise RuntimeError("CI repair job changed before execution")
+            with bind_muse_job_observation(self._store, observed_job, job.runner_owner), correction.execution_context():
                 result = execute_correction_without_publication(
                     correction.request,
                     correction.diagnostics,

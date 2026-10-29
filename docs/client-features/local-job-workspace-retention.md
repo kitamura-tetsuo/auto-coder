@@ -22,6 +22,11 @@ an explicitly superseded Issue execution is eligible with its exact durable retr
 receipt and settled writer. In either case,
 their source commits and invocation input remain independently available, and a
 producer-created ownership marker is still linked to its external anchor.
+Muse-backed CI and conflict repair adapters retain their provider workspaces
+under the job and bind the actual session and process lifetime to that job.
+Cleanup also requires a settled, correlated provider observation without pending
+tasks or turns. Multiple fresh provider sessions in one PR repair are marked
+ambiguous and retained rather than treating the last host as the only writer.
 Configured credential and runtime roots, including the OpenCode provider-runtime
 layout, are protected. Active, paused, cannot-fix, stopped,
 ambiguous, replaced, symlinked, unbound legacy, or incompletely evidenced
