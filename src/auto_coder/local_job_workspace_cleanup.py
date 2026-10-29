@@ -215,8 +215,17 @@ def authenticated_unsuccessful_disposition(store: LocalJobStore, record: LocalJo
         if not common_dir.is_absolute():
             common_dir = source_path / common_dir
         common_dir = common_dir.resolve()
-        if common_dir == target.resolve() or target.resolve() in common_dir.parents or (common_dir / "objects" / "info" / "alternates").exists():
+        objects = common_dir / "objects"
+        resolved_objects = objects.resolve()
+        if common_dir == target.resolve() or target.resolve() in common_dir.parents or resolved_objects == target.resolve() or target.resolve() in resolved_objects.parents or objects.is_symlink() or (objects / "info" / "alternates").exists():
             return None
+
+        def fail_walk(error: OSError) -> None:
+            raise error
+
+        for current, directories, files in os.walk(objects, followlinks=False, onerror=fail_walk):
+            if any((Path(current) / name).is_symlink() for name in (*directories, *files)):
+                return None
     except (OSError, subprocess.SubprocessError):
         return None
     commits = [record.source_commit]
