@@ -149,17 +149,34 @@ class PRRepairWorkspaceProducer:
         workspace = self._root / record.job_id / record.execution_incarnation / "repository"
         if workspace.exists():
             raise PRRepairWorkspaceError("job workspace already exists without a new binding")
-        workspace.parent.mkdir(parents=True, exist_ok=False)
+        from .workspace_ownership import MARKER, create_owned_workspace, verify_ownership
+
+        try:
+            ownership_anchor = create_owned_workspace(self._root, workspace.parent, record.job_id, record.execution_incarnation)
+        except OSError as exc:
+            if workspace.parent.exists() or workspace.parent.is_symlink():
+                raise PRRepairWorkspaceError("job workspace already exists without a new binding") from exc
+            logger.warning("Workspace ownership evidence unavailable for job {}: {}", record.job_id, exc)
+            workspace.parent.mkdir(parents=True, exist_ok=False)
+            ownership_anchor = ""
         identity = workspace.parent.stat(follow_symlinks=False)
         try:
-            return self._prepare_repository(claim, repository, workspace, authority)
+            return self._prepare_repository(claim, repository, workspace, authority, ownership_anchor)
         except BaseException:
             # No adapter can enter a provider until preparation returns. Remove
             # only the directory this call created, including failed fetches.
             try:
                 observed = workspace.parent.stat(follow_symlinks=False)
-                if not workspace.parent.is_symlink() and (observed.st_dev, observed.st_ino) == (identity.st_dev, identity.st_ino) and {path.name for path in workspace.parent.iterdir()} <= {"repository"}:
+                if (
+                    ownership_anchor
+                    and verify_ownership(workspace.parent, ownership_anchor, record.job_id, record.execution_incarnation)
+                    and not workspace.parent.is_symlink()
+                    and (observed.st_dev, observed.st_ino) == (identity.st_dev, identity.st_ino)
+                    and {path.name for path in workspace.parent.iterdir()} <= {"repository", MARKER}
+                ):
                     shutil.rmtree(workspace.parent)
+                    if ownership_anchor:
+                        Path(ownership_anchor).unlink(missing_ok=True)
                     logger.info("Removed failed PR workspace preparation job={} path={}", record.job_id, workspace.parent)
             except OSError as exc:
                 logger.warning("Failed PR workspace preparation cleanup job={} path={} reason={}", record.job_id, workspace.parent, exc)
@@ -170,7 +187,7 @@ class PRRepairWorkspaceProducer:
 
         reclaim_unentered_workspaces(self._store, pr_root=self._root)
 
-    def _prepare_repository(self, claim: LocalJobClaim, repository: Path, workspace: Path, authority: RetainedPRRepairClaim) -> PreparedPRRepairWorkspace:
+    def _prepare_repository(self, claim: LocalJobClaim, repository: Path, workspace: Path, authority: RetainedPRRepairClaim, ownership_anchor: str) -> PreparedPRRepairWorkspace:
         record = claim.record
         with checkout_lock(str(repository)):
             remote = self._git(repository, "remote", "get-url", "origin")
@@ -202,6 +219,8 @@ class PRRepairWorkspaceProducer:
             publication_remote=remote,
             owner_incarnation=authority.upstream_incarnation,
             owner_generation=None,
+            ownership_anchor=ownership_anchor,
+            reconstruction_source=str(repository),
         ):
             raise PRRepairWorkspaceError("job authority changed before workspace binding")
         source_files = self._commit_files(workspace, authority.head_sha)

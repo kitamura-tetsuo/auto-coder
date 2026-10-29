@@ -16,9 +16,16 @@ not reset retention and interrupted deletion can resume.
 
 Reclamation removes only the producer-owned execution-incarnation directory
 under `~/.auto-coder/issue-job-workspaces/` or
-`~/.auto-coder/pr-repair-job-workspaces/`. Active, paused, failed, interrupted,
-cannot-fix, stopped, superseded, ambiguous, replaced, symlinked, unbound legacy,
-or incompletely evidenced workspaces remain intentionally available. Filesystem
+`~/.auto-coder/pr-repair-job-workspaces/`. Failed and interrupted executions
+are eligible when the exact negative result and writer settlement are confirmed;
+an explicitly superseded Issue execution is eligible with its exact durable retry
+receipt and settled writer. In either case,
+their source commits and invocation input remain independently available, and a
+producer-created ownership marker is still linked to its external anchor.
+Configured credential and runtime roots, including the OpenCode provider-runtime
+layout, are protected. Active, paused, cannot-fix, stopped,
+ambiguous, replaced, symlinked, unbound legacy, or incompletely evidenced
+workspaces remain intentionally available. Filesystem
 failures retain a retryable durable state and do not stop independent candidates.
 
 Terminal replay uses durable artifacts and effect receipts and therefore remains
@@ -26,6 +33,14 @@ available after deletion without recreating a repository, invoking a provider,
 pushing, creating a PR, associating an Issue, or waking CI again. Local-job,
 artifact, continuation, ownership, execution, and effect records are retained;
 cleanup performs no GitHub mutation and terminates no process.
+
+New producer roots are published with an atomic no-replace rename after the
+ownership marker and its external hard-link anchor have been persisted. On
+filesystems without this identity mechanism, work may continue but the new
+negative-result cleanup cannot establish ownership. During negative-result
+deletion the marker remains until the other contents have been removed. If a
+crash leaves a directory after its marker is removed, its identity is unverified
+and it remains for manual inspection rather than being adopted on restart.
 
 PR CI/conflict incarnations positively released before provider entry are
 disposable immediately, without the successful-publication retention interval.
