@@ -11,6 +11,7 @@ from typing import Any, Callable
 from .conflict_resolver import ConflictInspection, inspect_conflicts
 from .local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobKind, LocalJobRecord, LocalJobResultArtifact, LocalJobStore
 from .local_job_runner import LocalJobExecutionResult, LocalJobProviderEntryRefused
+from .muse_background_observation import bind_muse_job_observation
 from .pr_repair_workspace import PRRepairSource, PRRepairWorkspaceError, PRRepairWorkspaceProducer
 from .prompt_loader import render_prompt
 
@@ -166,7 +167,11 @@ class LocalConflictRepairJobAdapter:
             editor = self._editor_factory(job.backend_name, job)
             if not checkpoint():
                 raise LocalJobProviderEntryRefused("provider-entry checkpoint failed")
-            response = editor(self._prompt(job, metadata, "\n".join(merge.inspection.marker_paths)), prepared.workspace)
+            observed_job = self._store.get(job.job_id)
+            if observed_job is None or observed_job.execution_incarnation != job.execution_incarnation or observed_job.runner_owner != job.runner_owner:
+                raise RuntimeError("conflict repair job changed before execution")
+            with bind_muse_job_observation(self._store, observed_job, job.runner_owner):
+                response = editor(self._prompt(job, metadata, "\n".join(merge.inspection.marker_paths)), prepared.workspace)
             outcome = _classify_editor_output(response or "")
             if outcome is not InvocationOutcome.COMPLETED:
                 manifest = self._workspaces.capture_result(claim, prepared, outcome, response or "missing model output", editing_invocations=observed_invocations())

@@ -952,7 +952,11 @@ class BackendManager(LLMBackendManagerBase):
                         from .muse_background_observation import current_muse_job_observation
 
                         durable_job = current_muse_job_observation()
-                        persistent_root = Path(durable_job.job.workspace_path).parent / "provider-workspaces" if durable_job is not None and durable_job.job.kind is LocalJobKind.ISSUE_IMPLEMENTATION and backend_type.lower() == "muse" and not is_noedit else None
+                        persistent_root = (
+                            Path(durable_job.job.workspace_path).parent / "provider-workspaces"
+                            if durable_job is not None and durable_job.job.kind in {LocalJobKind.ISSUE_IMPLEMENTATION, LocalJobKind.PR_CI_FAILURE, LocalJobKind.PR_MERGE_CONFLICT} and backend_type.lower() == "muse" and not is_noedit
+                            else None
+                        )
                         worktree_ctx = (
                             isolated_local_llm_worktree(
                                 is_noedit=is_noedit,
