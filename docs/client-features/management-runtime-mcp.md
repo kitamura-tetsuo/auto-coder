@@ -143,3 +143,23 @@ durable reevaluation receipts across restarts. Keep service logs in the
 configured rotating Loguru file **and** stdout sink. Runtime results contain
 only bounded identity, redacted diagnostic and safe-effect projections; they
 are not cacheable and never include access, Firebase or machine credentials.
+
+## Installed specification-consumer measurements
+
+`auto_coder_consumer_identity` is a read-scoped diagnostic for one configured
+worker target. The worker hashes a fixed set of package files: the requirements
+contract, specification analyzer, validation lifecycle, Issue review service,
+and package-default prompts. The response identifies the target, repository,
+worker process run, deployment and supervisor generations and separately reports
+worker artifact metadata and staged runtime binding. A bootstrap worker may
+return measured files while its runtime binding remains `UNAVAILABLE`.
+
+The origin is worker package disk bytes, not Docker inspection. Two measurements
+at bridge initialization and two at collection must agree, and each file must
+remain metadata-stable during its read. Missing or unreadable files are
+`UNAVAILABLE`; files must be regular, non-symlink files no larger than 16 MiB.
+Differing samples are `CONFLICT`. Agreement does not prove files
+were unchanged between samples, that already-imported Python code matches disk,
+or that a particular operation used the default prompts (which may be cached or
+explicitly selected). Declared artifact and source metadata are not hash proofs.
+The API accepts no file paths and does not expose file contents.
