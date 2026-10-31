@@ -344,6 +344,16 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
 import json, pathlib, sys, time
 from auto_coder.management import fresh_host, fresh_host_observation as o
 original, inspect = o.assert_replacement_published_listener, o._inspect
+observe_network = o.assert_prior_network_unreferenced
+def observed_network(namespace):
+    try:
+        return observe_network(namespace)
+    except o.HostObservationUnavailable as e:
+        cause = e.__cause__
+        detail = str(cause) if isinstance(cause, ValueError) else type(cause).__name__ + ' errno=' + str(getattr(cause, 'errno', None))
+        print('network namespace observation: ' + detail, file=sys.stderr, flush=True)
+        raise
+o.assert_prior_network_unreferenced = observed_network
 ready, go = sys.argv[1:3]
 def gated(intent):
     samples = []
