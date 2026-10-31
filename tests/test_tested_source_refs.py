@@ -27,6 +27,18 @@ OTHER_SHA = "b" * 40
 TAG_OID = "c" * 40
 
 
+def test_pull_request_full_source_selection_checks_out_head_without_publishing() -> None:
+    root = Path(__file__).resolve().parents[1]
+    workflow = yaml.safe_load((root / WORKFLOW_PATH).read_text())
+    assert "pull_request" in workflow["on"]
+    steps = workflow["jobs"]["complete-source-tests"]["steps"]
+    checkout = next(step for step in steps if str(step.get("uses", "")).startswith("actions/checkout@"))
+    assert checkout["with"]["ref"] == "${{ github.event.pull_request.head.sha || github.sha }}"
+    assert next(step for step in steps if step.get("name") == "Run complete required source selection")["run"] == "uv run pytest -m 'not opencode_live' -vv"
+    publisher = yaml.safe_load((root / ".github/workflows/publish-tested-source.yml").read_text())
+    assert publisher["jobs"]["publish-tested-source"]["if"] == "github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main'"
+
+
 def assert_required_workflow_profile(workflow: object) -> None:
     assert isinstance(workflow, dict)
     jobs = workflow["jobs"]
