@@ -5,7 +5,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
-import select
+import selectors
 import shlex
 import signal
 import stat
@@ -55,6 +55,20 @@ _MUSE_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high",
 # Auto-Coder policy (not a Muse timeout): how long one host-resolved approval may stay pending.
 _MUSE_APPROVAL_SETTLEMENT_SECONDS = 5.0
 _APPROVAL_POLICY_RESULTS = frozenset({"deny", "allow"})
+
+
+def _wait_msp_pipes(reads: list[int], writes: list[int], timeout: float) -> tuple[set[int], set[int]]:
+    """Wait for MSP pipes without the descriptor-number limit of select()."""
+    with selectors.DefaultSelector() as selector:
+        for fd in reads:
+            selector.register(fd, selectors.EVENT_READ)
+        for fd in writes:
+            selector.register(fd, selectors.EVENT_WRITE)
+        events = selector.select(timeout)
+    return (
+        {key.fd for key, mask in events if mask & selectors.EVENT_READ},
+        {key.fd for key, mask in events if mask & selectors.EVENT_WRITE},
+    )
 
 
 class _MspEndOfStream(Exception):
@@ -633,7 +647,7 @@ class MuseClient(LLMClientBase):
                 continue
             reads = [stderr_fd] if stderr_fd is not None else []
             wake = diag.select_timeout()
-            readable, writable, _ = select.select(reads, [stdin_fd], [], remaining if wake is None else min(remaining, wake))
+            readable, writable = _wait_msp_pipes(reads, [stdin_fd], remaining if wake is None else min(remaining, wake))
             if stderr_fd is not None and stderr_fd in readable:
                 self._drain_msp_stderr(stderr_fd)
             if stdin_fd not in writable:
@@ -748,7 +762,7 @@ class MuseClient(LLMClientBase):
             if stderr_fd is not None:
                 reads.append(stderr_fd)
             wake = diag.select_timeout()
-            readable, _, _ = select.select(reads, [], [], remaining if wake is None else min(remaining, wake))
+            readable, _ = _wait_msp_pipes(reads, [], remaining if wake is None else min(remaining, wake))
             if not readable:
                 if time.monotonic() >= deadline:
                     raise self._msp_timeout()
