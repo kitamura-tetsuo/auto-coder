@@ -592,34 +592,73 @@ def test_concurrent_status_cannot_rebind_client_during_lifecycle_effect(real_bou
     settings = ManagementSettings(tmp_path, oauth, port=base.port, operating_policy_path=policy, operation_state_root=tmp_path / "journal")
     bridge = LifecycleBridge()
     app = create_management_app(settings, OAuthGrantService(oauth, identity, clock=lambda: state["now"]), worker_clients={"beta": bridge})  # type: ignore[dict-item]
+
+    async def no_background_monitor() -> None:
+        # Admission is awaited below; this test drives its only later lifecycle step.
+        pass
+
+    runtime = app.state.management_runtime
+    monkeypatch.setattr(runtime, "start_monitor", no_background_monitor)
     with TestClient(app, base_url=origin) as client:
         bearer = _issue(client, settings, signed, "alice", "alice-client", READ_SCOPE + " " + DEPLOY_SCOPE)["access_token"]
         arguments = {"target_id": "beta-worker", "idempotency_key": "concurrent-fence", "expected_supervisor_generation": "supervisor-a", "expected_process_run_id": "run-old", "expected_deployment_generation": "generation-old", "expected_runtime_id": "runtime-old"}
         operation = _call(client, bearer, "auto_coder_restart_worker", arguments)
-        runtime = app.state.management_runtime
         record = runtime.journal.get(operation["operation_id"]).record
         assert record is not None
         resolved = runtime._resolve("beta-worker", ActionClass.INSPECT)
-        entered, release, status_entered = threading.Event(), threading.Event(), threading.Event()
+        entered, release, status_attempted, status_contended, status_entered = (threading.Event() for _ in range(5))
         original_inspect = bridge.inspect_supervisor
+        original_lock = runtime._worker_locks["beta"]
+        status_thread: threading.Thread | None = None
+
+        class ObservedLock:
+            def __enter__(self):
+                if threading.current_thread() is status_thread:
+                    acquired = original_lock.acquire(blocking=False)
+                    if not acquired:
+                        status_contended.set()
+                    status_attempted.set()
+                    if not acquired:
+                        original_lock.acquire()
+                else:
+                    original_lock.acquire()
+                return self
+
+            def __exit__(self, *_args):
+                original_lock.release()
 
         def held_process(_record):
             entered.set()
-            assert release.wait(timeout=5)
+            assert release.wait(timeout=10)
             return _record
 
         def observed_inspect():
-            status_entered.set()
+            if threading.current_thread() is status_thread:
+                status_entered.set()
             return original_inspect()
 
+        def observe_status():
+            nonlocal status_thread
+            status_thread = threading.current_thread()
+            return runtime._observe(resolved)
+
+        monkeypatch.setitem(runtime._worker_locks, "beta", ObservedLock())
         monkeypatch.setattr(runtime.lifecycle, "_process_locked", held_process)
         monkeypatch.setattr(bridge, "inspect_supervisor", observed_inspect)
+        # An unrelated client observation must not satisfy this oracle.
+        unrelated = threading.Thread(target=bridge.inspect_supervisor)
+        unrelated.start()
+        unrelated.join(timeout=5)
+        assert not unrelated.is_alive()
+        assert not status_entered.is_set()
         with ThreadPoolExecutor(max_workers=2) as executor:
             pending = executor.submit(runtime.lifecycle.process, record)
             try:
                 assert entered.wait(timeout=5)
-                status = executor.submit(runtime._observe, resolved)
-                assert not status_entered.wait(timeout=0.2)
+                status = executor.submit(observe_status)
+                assert status_attempted.wait(timeout=5)
+                assert status_contended.is_set()
+                assert not status_entered.is_set()
             finally:
                 release.set()
             assert pending.result(timeout=5) is record
