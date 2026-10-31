@@ -19,7 +19,7 @@ import pytest
 from auto_coder.adversarial_validator import ReviewThreadDisposition
 from auto_coder.canonical_pr_blocker_ledger import BlockerAdmissionPayload, BlockerAlias, BlockerDisposition, CanonicalPRBlockerLedger, CorrectionScope, QualifiedRequirement
 from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER
-from auto_coder.review_thread_closure_receipt import ClosureReceiptError, closure_receipt_lock, observe_closure_receipt, put_receipt
+from auto_coder.review_thread_closure_receipt import ClosureReceipt, ClosureReceiptError, closure_receipt_lock, observe_closure_receipt, put_receipt
 from auto_coder.review_thread_validation import (
     STALE_BLOCKER_CLEARED_MARKER,
     STALE_BLOCKER_MARKER,
@@ -696,6 +696,24 @@ def test_changed_head_rebinds_same_reply_after_independent_acceptance(receipt_sc
     assert result.resolved_thread_ids == (THREAD_ID,)
     assert len(scenario.transport.posts) == 1
     assert NEXT_HEAD in next(comment.body for comment in scenario.transport.comments if comment.login == CONTROLLER_LOGIN)
+
+
+def test_new_head_independent_closure_retires_unresolved_prior_two_tier_receipt(receipt_scenario):
+    scenario = receipt_scenario
+    client = scenario.client()
+    observation = observe_closure_receipt(client, REPOSITORY, PR_NUMBER, THREAD_ID, ROOT_ID)
+    old_receipt = ClosureReceipt(repository=REPOSITORY, pr_number=PR_NUMBER, thread_id=THREAD_ID, root_comment_database_id=ROOT_ID, operation_key="prior-two-tier-operation", validated_head_sha=HEAD, phase="PENDING", rationale="Previously validated", evidence="Prior evidence")
+    put_receipt(client, observation, old_receipt)
+    scenario.transport.head = NEXT_HEAD
+
+    result = scenario.close(rationale="The independently inspected correction is valid on the new head.")
+
+    assert result.resolved_thread_ids == (THREAD_ID,)
+    assert scenario.transport.resolved
+    assert len(scenario.transport.posts) == 1
+    current = observe_closure_receipt(client, REPOSITORY, PR_NUMBER, THREAD_ID, ROOT_ID).receipt
+    assert current is not None and current.phase == "RESOLVED" and current.validated_head_sha == NEXT_HEAD
+    assert current.operation_key != old_receipt.operation_key
 
 
 def test_wrong_author_receipt_cannot_be_adopted(receipt_scenario):
