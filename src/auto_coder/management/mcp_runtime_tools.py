@@ -359,8 +359,11 @@ class ManagementRuntime:
         queued = self.dispatcher.enqueue(admitted.operation_id)
         return {**await asyncio.to_thread(self.self_update.project, admitted), "dispatch_queued": queued}
 
-    async def observe_authenticated_identity(self, grant: AuthenticatedGrant) -> None:
+    async def observe_authenticated_identity(self, grant: AuthenticatedGrant, observation_id: str = "") -> None:
+        from .readiness_observation import publish_authenticated_readback
+
         await asyncio.to_thread(self.self_update.observe_authenticated_identity, grant)
+        await asyncio.to_thread(publish_authenticated_readback, self.settings, grant, startup_reconciled=self.self_update.startup_reconciled, observation_id=observation_id)
 
     async def deployment_status(self, target_id: str) -> dict[str, object]:
         self._grant((READ_SCOPE,))

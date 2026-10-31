@@ -53,6 +53,7 @@ jobs:
           uv run pytest -q -vv -m supervisor_integration \
             tests/test_management_self_update_integration.py \
             tests/test_management_self_update_failures.py \
+            tests/test_management_fresh_host_integration.py \
             --junitxml=supervisor-integration-logs/management-self-update.xml
 
       - name: Build the checked-out production image
@@ -61,6 +62,33 @@ jobs:
           uv run python scripts/prepare_opencode_image.py \
             --tag "auto-coder:supervisor-${{ github.sha }}" \
             --log-dir supervisor-integration-logs
+
+      - name: Verify fresh initialization with host evidence
+        timeout-minutes: 15
+        run: |
+          if ! command -v strace >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y strace
+          fi
+          docker tag "auto-coder:supervisor-${{ github.sha }}" auto-coder:management-local-abc65544
+          # Root is confined to these disposable-container tests on the
+          # ephemeral runner: it reads kernel namespace and proxy ownership
+          # evidence and traces execve; the child gets no added privileges.
+          sudo env "PATH=$PATH" "PYTHONPATH=$GITHUB_WORKSPACE/src" \
+            "$GITHUB_WORKSPACE/.venv/bin/python" -m pytest -q -vv -o timeout=240 \
+            tests/test_management_fresh_host_integration.py::test_real_docker_published_listener_is_owned_by_replacement \
+            tests/test_management_fresh_host_integration.py::test_real_docker_listener_rejects_mismatched_container_address \
+            tests/test_management_fresh_host_integration.py::test_real_docker_listener_rejects_changed_container_inspection \
+            tests/test_management_fresh_host_integration.py::test_real_listener_accepts_only_mount_order_changes \
+            tests/test_management_fresh_end_to_end.py \
+            --junitxml=supervisor-integration-logs/fresh-initialization.xml
+          python3 - supervisor-integration-logs/fresh-initialization.xml <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          suites = list(root.iter('testsuite'))
+          assert sum(int(s.get('tests', 0)) for s in suites) == 7, 'expected all host tests'
+          assert all(int(s.get('skipped', 0)) == 0 for s in suites), 'host tests must not skip'
+          PY
 
       - name: Verify isolated Supervisor containers
         timeout-minutes: 40
