@@ -22,6 +22,12 @@ from src.auto_coder.backend_manager import LLMBackendManager, get_llm_backend_ma
 from src.auto_coder.specification_analyzer import SpecificationAnalysisResult
 
 
+def pytest_runtest_logreport(report):
+    """Expose failed phases even if a later test prevents the summary."""
+    if report.failed and os.environ.get("AUTO_CODER_IMMEDIATE_TEST_FAILURES") == "1":
+        print(f"\nImmediate failure: {report.nodeid} ({report.when})\n{report.longreprtext}", file=sys.stderr, flush=True)
+
+
 @pytest.fixture(autouse=True)
 def default_semantic_specification_result(monkeypatch, tmp_path):
     """Prevent unrelated production-boundary tests from invoking an external LLM."""
