@@ -896,7 +896,8 @@ def test_start_receipt_recovers_persisted_child_after_supervisor_death(tmp_path:
 
 
 @pytest.mark.parametrize("damage", ("stale_token", "foreign_run", "foreign_operation", "runtime_manifest", "missing_socket", "foreign_socket", "dead_child"))
-def test_incomplete_start_recovery_refuses_unmatched_evidence(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None, damage: str) -> None:
+@pytest.mark.parametrize("restart_draining", (False, True))
+def test_incomplete_start_recovery_refuses_unmatched_evidence(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None, damage: str, restart_draining: bool) -> None:
     fixture = Path(__file__).parent / "fixtures" / "supervisor_bridge_worker.py"
     supervisor = WorkerSupervisor(config(tmp_path, (sys.executable, str(fixture))))
     with patch.object(supervisor, "_finish", side_effect=OSError("interrupted receipt write")):
@@ -913,6 +914,9 @@ def test_incomplete_start_recovery_refuses_unmatched_evidence(tmp_path: Path, _u
             time.sleep(0.02)
         assert worker.get("process_run_id")
         state = supervisor.store.read()
+        if restart_draining:
+            state["operations"]["original-start"]["request"]["operation"] = "RESTART_WORKER"
+            state["operations"]["original-start"]["result"] = {"status": "DRAINING"}
         if damage == "stale_token":
             state["worker"]["start_token"] = "0"
         elif damage == "foreign_run":
@@ -935,7 +939,7 @@ def test_incomplete_start_recovery_refuses_unmatched_evidence(tmp_path: Path, _u
         supervisor.store.write(state)
         recovered = WorkerSupervisor(supervisor.config)
         result = recovered.read_operation("original-start")
-        assert result["status"] in {"IN_PROGRESS", "NEEDS_ATTENTION"}
+        assert result["status"] in {"IN_PROGRESS", "DRAINING", "UNKNOWN", "NEEDS_ATTENTION"}
         assert recovered.apply({"operation_id": "another-start", "operation": "START"})["status"] == "NEEDS_ATTENTION"
         assert recovered.child is None
         assert recovered.store.read()["worker"]["pid"] == child.pid
@@ -946,3 +950,80 @@ def test_incomplete_start_recovery_refuses_unmatched_evidence(tmp_path: Path, _u
         if child.poll() is None:
             child.terminate()
             child.wait(timeout=10)
+
+
+def test_restart_receipt_recovers_successor_after_supervisor_death(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None) -> None:
+    fixture = Path(__file__).parent / "fixtures" / "supervisor_bridge_worker.py"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    setup = (
+        "import os,sys; from pathlib import Path; "
+        "from auto_coder.worker_supervisor import SupervisorConfig, WorkerSupervisor; "
+        f"config=SupervisorConfig('beta-worker','beta','owner/repo',Path({str(tmp_path)!r}),"
+        f"Path({str(workspace)!r}),Path(sys.executable),child_command=(sys.executable,{str(fixture)!r})); "
+    )
+    crash = setup + "s=WorkerSupervisor(config); original=s._finish; s._finish=lambda op,state,result: os._exit(91) if op=='restart-lost' and result.get('status')=='RUNNING' else original(op,state,result); s.run()"
+    normal = setup + "WorkerSupervisor(config).run()"
+    endpoint = tmp_path / "supervisor" / "control.sock"
+    first = subprocess.Popen([sys.executable, "-c", crash])
+    second = None
+    identities: list[tuple[int, str]] = []
+    try:
+        request(endpoint, {"operation_id": "start", "operation": "START"})
+        for _ in range(500):
+            old = request(endpoint, {"operation_id": "inspect", "operation": "INSPECT"}).get("worker")
+            if isinstance(old, dict) and old.get("process_run_id"):
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("original worker did not become observable")
+        identities.append((old["pid"], old["start_token"]))
+        restart = {"operation_id": "restart-lost", "operation": "RESTART_WORKER", "expected_generation": old["deployment_generation"], "expected_process_run_id": old["process_run_id"]}
+        assert request(endpoint, restart)["status"] == "DRAINING"
+        (tmp_path / "fixture-release").write_text("release")
+        for _ in range(500):
+            try:
+                request(endpoint, restart)
+            except (json.JSONDecodeError, ConnectionResetError):
+                break
+            time.sleep(0.02)
+        assert first.wait(timeout=10) == 91
+        state = json.loads((tmp_path / "supervisor" / "state.json").read_text())
+        successor = state["worker"]
+        identities.append((successor["pid"], successor["start_token"]))
+        assert state["operations"]["restart-lost"]["result"]["status"] == "DRAINING"
+        assert state["last_worker"]["pid"] == old["pid"]
+        assert successor["pid"] != old["pid"]
+        assert successor["launch_operation_id"] == "restart-lost"
+        assert WorkerSupervisor._start_token(successor["pid"]) == successor["start_token"]
+        second = subprocess.Popen([sys.executable, "-c", normal])
+        assert request(endpoint, {"operation_id": "other-start", "operation": "START"})["status"] == "NEEDS_ATTENTION"
+        for _ in range(500):
+            recovered = request(endpoint, restart)
+            if recovered["status"] == "RUNNING":
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError(f"successor receipt remained {recovered['status']}")
+        assert recovered["worker"]["pid"] == successor["pid"]
+        assert recovered["worker"]["start_token"] == successor["start_token"]
+        assert recovered["worker"]["deployment_generation"] == successor["deployment_generation"]
+        assert recovered["worker"]["process_run_id"]
+        assert request(endpoint, {**restart, "expected_generation": "changed"}) == {"status": "CONFLICT"}
+        assert request(endpoint, {"operation_id": "other-start", "operation": "START"})["status"] == "CONFLICT"
+    finally:
+        (tmp_path / "fixture-release").write_text("release")
+        for pid, token in identities:
+            try:
+                if WorkerSupervisor._start_token(pid) == token:
+                    os.kill(pid, signal.SIGTERM)
+            except (OSError, ValueError):
+                pass
+        for process in (first, second):
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)

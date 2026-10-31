@@ -592,8 +592,9 @@ class WorkerSupervisor:
         record, result = state["operations"][operation_id], state["operations"][operation_id]["result"]
         if result.get("status") not in {"IN_PROGRESS", "DRAINING", "UNKNOWN"}:
             return result
-        if result.get("status") == "IN_PROGRESS":
-            worker = state.get("worker")
+        worker = state.get("worker")
+        successor_launch = result.get("status") == "DRAINING" and record["request"]["operation"] == "RESTART_WORKER" and isinstance(worker, dict) and worker.get("launch_operation_id") == operation_id
+        if result.get("status") == "IN_PROGRESS" or successor_launch:
             if (
                 record["request"]["operation"] in {"START", "RESTART_WORKER", "RECOVER_PREVIOUS"}
                 and isinstance(worker, dict)
@@ -612,6 +613,8 @@ class WorkerSupervisor:
                 worker = state.get("worker")
                 if isinstance(worker, dict) and worker.get("process_run_id") == observation["process_run_id"] and self._is_alive(worker):
                     return self._finish(operation_id, state, {"status": "RUNNING", "worker": worker})
+                return result
+            if successor_launch:
                 return result
             return self._finish(operation_id, state, {"status": "NEEDS_ATTENTION"})
         self._reconcile_worker(state)
