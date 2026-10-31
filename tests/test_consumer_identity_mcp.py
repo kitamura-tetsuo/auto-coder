@@ -109,6 +109,67 @@ def test_file_samples_report_change_and_missing(monkeypatch, tmp_path):
     assert observed.observe()["status"] == "UNAVAILABLE"
 
 
+@pytest.fixture
+def sampled_package(monkeypatch, tmp_path):
+    source = Path(identity.__file__).resolve().parent
+    for name in identity._FILES:
+        shutil.copyfile(source / name, tmp_path / name)
+    monkeypatch.setattr(identity, "_PACKAGE", tmp_path)
+    observed = identity.ConsumerIdentity()
+    assert observed.observe()["status"] == "OK"
+    return observed, tmp_path
+
+
+def test_file_change_between_collection_scans_is_conflict(monkeypatch, sampled_package):
+    observed, package = sampled_package
+    original_measure = identity._measure
+    calls = []
+
+    def change_after_first_scan():
+        result = original_measure()
+        calls.append(result)
+        if len(calls) == 1:
+            (package / "prompts.yaml").write_bytes(b"changed between scans")
+        return result
+
+    monkeypatch.setattr(identity, "_measure", change_after_first_scan)
+    assert observed.observe() == {"status": "CONFLICT", "reason": "file_samples_differ"}
+    assert len(calls) == 2
+    assert calls[0]["prompts.yaml"] != calls[1]["prompts.yaml"]
+
+
+def test_metadata_change_during_open_file_read_is_unavailable(monkeypatch, sampled_package):
+    observed, package = sampled_package
+    target = package / "requirement_contract.py"
+    original_fdopen = os.fdopen
+    changed = []
+
+    class ChangingReader:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def fileno(self):
+            return self.stream.fileno()
+
+        def read(self, size):
+            data = self.stream.read(size)
+            if data and not changed:
+                before = target.stat()
+                os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+                changed.append((before.st_mtime_ns, target.stat().st_mtime_ns))
+            return data
+
+    monkeypatch.setattr(identity.os, "fdopen", lambda fd, mode: ChangingReader(original_fdopen(fd, mode)))
+    assert observed.observe() == {"status": "UNAVAILABLE", "reason": "file_measurement_unavailable"}
+    assert len(changed) == 1 and changed[0][0] != changed[0][1]
+
+
 def test_mcp_rejects_invalid_worker_evidence_and_conflicting_binding(runtime_boundary):
     settings, grants, signed, _policy, beta, release = runtime_boundary
     beta.diagnostics = lambda kind, params: WorkerNetworkResult(200, "OK", {"status": "OK", "sha256": {}}, beta.generation, "diagnostic")
