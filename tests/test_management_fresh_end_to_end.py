@@ -50,12 +50,12 @@ def _fixture_executable_digest(image: str) -> str:
     return subprocess.check_output(["docker", "run", "--rm", "--network", "none", "--entrypoint", "sha256sum", image, "/opt/auto-coder/.venv/bin/auto-coder"], text=True).split()[0]
 
 
-def _build_fixture_image(context: Path, image: str, tag: str, *, owner_token_gap: bool) -> None:
+def _build_fixture_image(context: Path, image: str, tag: str, *, owner_token_gap: bool, contention: bool = False, crash_at: str | None = None) -> None:
     if re.fullmatch(r"sha256:[0-9a-f]{64}", image) is None:
         raise ValueError("fixture base is not an immutable image ID")
+    hooks = ""
     if owner_token_gap:
-        (context / "sitecustomize.py").write_text(
-            """import os, sys
+        hooks += """import os, sys
 from pathlib import Path
 from auto_coder.management.bootstrap_supervisor import ManagementBootstrapSupervisor
 original = ManagementBootstrapSupervisor._start_token
@@ -66,7 +66,62 @@ def observation(pid):
     return original(pid)
 ManagementBootstrapSupervisor._start_token = staticmethod(observation)
 """
-        )
+    if contention:
+        hooks += """import fcntl, os, time
+from pathlib import Path
+from auto_coder.management import fresh_initialization
+claim = fresh_initialization.request_and_claim_first_launch
+def held_claim(*args, **kwargs):
+    result = claim(*args, **kwargs)
+    Path('/management-child-state/logs/claim-held').touch()
+    while not Path('/management-initialization/release-claim').exists(): time.sleep(.01)
+    return result
+fresh_initialization.request_and_claim_first_launch = held_claim
+flock = fcntl.flock
+def observed_flock(fd, operation):
+    label = os.environ.get('AUTOCODER_FRESH_COMPETITOR')
+    if label and os.readlink('/proc/self/fd/' + str(fd)).endswith('/.supervisor-owner.lock'):
+        Path('/management-child-state/logs/competitor-' + label + '-ready').write_text(str(os.getpid()))
+        while not Path('/management-initialization/release-competitor-' + label).exists(): time.sleep(.01)
+    return flock(fd, operation)
+fcntl.flock = observed_flock
+"""
+    if crash_at:
+        hooks += f"""import time
+from pathlib import Path
+from auto_coder.management import fresh_initialization
+from auto_coder.management.bootstrap_supervisor import ManagementBootstrapSupervisor
+phase = {crash_at!r}
+def hold():
+    Path('/management-child-state/logs/crash-ready').touch()
+    while not Path('/management-initialization/release-crash').exists(): time.sleep(.01)
+claim = fresh_initialization.request_and_claim_first_launch
+grant = fresh_initialization.request_fresh_host_grant
+def held_grant(*args, **kwargs):
+    result = grant(*args, **kwargs)
+    if phase == 'before-claim': hold()
+    return result
+fresh_initialization.request_fresh_host_grant = held_grant
+def held_claim(*args, **kwargs):
+    result = claim(*args, **kwargs)
+    if phase == 'after-claim': hold()
+    return result
+fresh_initialization.request_and_claim_first_launch = held_claim
+record = fresh_initialization.record_fresh_launch
+def held_record(*args, **kwargs):
+    if phase == 'after-launch': hold()
+    return record(*args, **kwargs)
+fresh_initialization.record_fresh_launch = held_record
+run = ManagementBootstrapSupervisor.run
+def held_reconstruction(self):
+    if Path('/management-initialization/hold-reconstruction').exists():
+        Path('/management-child-state/logs/reconstruction-ready').touch()
+        while not Path('/management-initialization/release-reconstruction').exists(): time.sleep(.01)
+    return run(self)
+ManagementBootstrapSupervisor.run = held_reconstruction
+"""
+    if hooks:
+        (context / "sitecustomize.py").write_text(hooks)
     container = subprocess.check_output(["docker", "create", "--network", "none", image], text=True, timeout=30).strip()
     try:
         actual = subprocess.check_output(["docker", "inspect", "--format", "{{.Image}}", container], text=True, timeout=30).strip()
@@ -74,7 +129,7 @@ ManagementBootstrapSupervisor._start_token = staticmethod(observation)
             raise ValueError("fixture container did not use the resolved image")
         target = container + ":/opt/auto-coder/.venv/lib/python3.12/site-packages"
         subprocess.run(["docker", "cp", str(context / "auto_coder") + "/.", target + "/auto_coder/"], check=True, capture_output=True, timeout=120)
-        if owner_token_gap:
+        if hooks:
             subprocess.run(["docker", "cp", str(context / "sitecustomize.py"), target + "/sitecustomize.py"], check=True, capture_output=True, timeout=30)
         subprocess.run(["docker", "commit", "--change", 'ENTRYPOINT ["python", "-m", "auto_coder.management.bootstrap_supervisor"]', container, tag], check=True, capture_output=True, timeout=120)
     finally:
@@ -111,8 +166,11 @@ def test_mutable_base_tag_cannot_change_digest_or_derived_image(tmp_path: Path) 
             subprocess.run(["docker", "image", "rm", fixture_id], capture_output=True, check=False, timeout=30)
 
 
-@pytest.mark.parametrize("owner_token_gap", [False, True])
-def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path, owner_token_gap: bool, record_property) -> None:
+@pytest.mark.parametrize(
+    "owner_token_gap, contention, crash_at",
+    [(False, False, None), (True, False, None), (False, True, None), (False, False, "before-claim"), (False, False, "after-claim"), (False, False, "after-launch")],
+)
+def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path, owner_token_gap: bool, contention: bool, crash_at: str | None, record_property) -> None:
     if os.geteuid() != 0:
         pytest.skip("host root is required to observe the disposable Docker proxy and namespace evidence")
     root = tmp_path
@@ -169,10 +227,12 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
     names = ["fresh-e2e-" + uuid.uuid4().hex[:12] for _ in range(3)]
     guard_process = None
     tracer = None
+    competitor = None
+    competitor_tracer = None
     fence = None
     network_fd = None
     try:
-        _build_fixture_image(context, base_image, tag, owner_token_gap=owner_token_gap)
+        _build_fixture_image(context, base_image, tag, owner_token_gap=owner_token_gap, contention=contention, crash_at=crash_at)
         image = subprocess.check_output(["docker", "image", "inspect", tag, "--format", "{{.Id}}"], text=True).strip()
         old_mounts = [(old_state, "/management-child-state", True), (old_bootstrap, "/bootstrap", False), (oauth, "/management-oauth", True)]
         old_args = ["docker", "run", "-d", "--name", names[0], "--publish", f"127.0.0.1:{port}:8080"]
@@ -273,8 +333,9 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
         intent_file.chmod(0o600)
         base = [sys.executable, "-m", "auto_coder.management.fresh_host"]
         subprocess.run(base + ["claim", "--intent-file", str(intent_file), "--evidence-file", str(guard / "prior-evidence.json"), "--prior-lock", str(old_lock), "--prior-network-fd", str(network_fd)], pass_fds=(network_fd,), check=True, capture_output=True, timeout=30)
-        if owner_token_gap:
+        if owner_token_gap or contention or crash_at:
             (state / "logs").mkdir()
+        if owner_token_gap:
             (guard / "token-gap").touch()
         # Pause the real host guard immediately before its final socket check,
         # so a host-side syscall observer attaches before any child can launch.
@@ -357,6 +418,105 @@ fresh_host.main()
             record_property("mount_comparison", categories[0])
         assert guard_process.returncode == 0, (out, err)
 
+        if crash_at:
+
+            def retained_status():
+                probe = "import json; from pathlib import Path; from auto_coder.management.fresh_initialization import read_fresh_status; print(json.dumps(read_fresh_status(Path('/management-child-state'))))"
+                output = subprocess.check_output(
+                    ["docker", "run", "--rm", "--network", "none", "--read-only", "--mount", f"type=bind,src={state},dst=/management-child-state,readonly", "--entrypoint", "python", image, "-c", probe],
+                    text=True,
+                    timeout=30,
+                )
+                return json.loads(output.splitlines()[-1])
+
+            crash_ready = state / "logs" / "crash-ready"
+            until = time.monotonic() + 60
+            while not crash_ready.exists():
+                assert time.monotonic() < until, "fresh owner did not reach the requested crash boundary"
+                time.sleep(0.02)
+            claim_path = state / "fresh-launch-claimed.json"
+            assert claim_path.exists() is (crash_at != "before-claim")
+            assert not (state / "fresh-launched.json").exists()
+            subprocess.run(["docker", "kill", new_id], check=True, capture_output=True, timeout=30)
+            tracer.wait(timeout=10)
+            tracer = None
+            starts = [line for line in trace.read_text().splitlines() if 'execve("/opt/auto-coder/.venv/bin/auto-coder"' in line]
+            assert len(starts) == (1 if crash_at == "after-launch" else 0), starts
+            assert retained_status()["status"] == "unknown"
+
+            (guard / "hold-reconstruction").touch()
+            subprocess.run(["docker", "start", new_id], check=True, capture_output=True, timeout=30)
+            restart_ready = state / "logs" / "reconstruction-ready"
+            until = time.monotonic() + 30
+            while not restart_ready.exists():
+                running = subprocess.check_output(["docker", "inspect", "--format", "{{.State.Running}}", new_id], text=True).strip()
+                assert running == "true" and time.monotonic() < until, "reconstruction did not reach its trace barrier"
+                time.sleep(0.02)
+            restart_pid = subprocess.check_output(["docker", "inspect", "--format", "{{.State.Pid}}", new_id], text=True).strip()
+            restart_trace = root / "reconstruction-exec-trace"
+            tracer = subprocess.Popen(["strace", "-f", "-e", "trace=execve", "-o", str(restart_trace), "-p", restart_pid], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+            assert tracer.stderr is not None and select.select([tracer.stderr], [], [], 10)[0]
+            assert "attached" in tracer.stderr.readline()
+            (guard / "release-reconstruction").touch()
+            exit_code = subprocess.check_output(["docker", "wait", new_id], text=True, timeout=60).strip()
+            assert exit_code != "0"
+            tracer.wait(timeout=10)
+            tracer = None
+            assert 'execve("/opt/auto-coder/.venv/bin/auto-coder"' not in restart_trace.read_text()
+            assert retained_status()["status"] == "unknown"
+            assert grant_history() == retained_grants
+            assert {str(path.relative_to(old_state)): hashlib.sha256(path.read_bytes()).hexdigest() for path in old_state.rglob("*") if path.is_file()} == old_history
+            return
+
+        def assert_refused_competitor(label: str) -> None:
+            nonlocal competitor, competitor_tracer
+            competitor = subprocess.Popen(
+                ["docker", "exec", "-e", f"AUTOCODER_FRESH_COMPETITOR={label}", new_id, "python", "-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json", "--fresh-initialization"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            competitor_ready = state / "logs" / f"competitor-{label}-ready"
+            until = time.monotonic() + 30
+            while not competitor_ready.exists():
+                assert competitor.poll() is None and time.monotonic() < until, "competing owner did not reach the lock"
+                time.sleep(0.02)
+            namespace_pid = competitor_ready.read_text().strip()
+            host_pids = subprocess.check_output(["docker", "top", new_id, "-eo", "pid"], text=True).splitlines()[1:]
+            matches = []
+            for candidate in host_pids:
+                candidate = candidate.strip()
+                status = Path("/proc", candidate, "status").read_text()
+                nspid = next(line for line in status.splitlines() if line.startswith("NSpid:"))
+                if nspid.split()[-1] == namespace_pid:
+                    matches.append(candidate)
+            assert len(matches) == 1
+            competitor_trace = root / f"competitor-{label}-exec-trace"
+            competitor_tracer = subprocess.Popen(["strace", "-f", "-e", "trace=execve", "-o", str(competitor_trace), "-p", matches[0]], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+            assert competitor_tracer.stderr is not None and select.select([competitor_tracer.stderr], [], [], 10)[0]
+            assert "attached" in competitor_tracer.stderr.readline()
+            (guard / f"release-competitor-{label}").touch()
+            competitor_out, competitor_err = competitor.communicate(timeout=30)
+            assert competitor.returncode != 0, (competitor_out, competitor_err)
+            assert "BlockingIOError" in competitor_err, (competitor_out, competitor_err)
+            competitor_tracer.wait(timeout=10)
+            competitor_tracer = None
+            assert 'execve("/opt/auto-coder/.venv/bin/auto-coder"' not in competitor_trace.read_text()
+
+        if contention:
+            claim_held = state / "logs" / "claim-held"
+            until = time.monotonic() + 30
+            while not claim_held.exists():
+                assert time.monotonic() < until, "first owner did not reach the durable claim barrier"
+                time.sleep(0.02)
+            claim = (state / "fresh-launch-claimed.json").read_bytes()
+            assert not (state / "fresh-launched.json").exists()
+            assert_refused_competitor("contended")
+            assert (state / "fresh-launch-claimed.json").read_bytes() == claim
+            assert not (state / "fresh-launched.json").exists()
+            assert grant_history() == retained_grants
+            (guard / "release-claim").touch()
+
         def status_inside_container():
             probe_status = "import json; from pathlib import Path; from auto_coder.management.fresh_initialization import read_fresh_status; print(json.dumps(read_fresh_status(Path('/management-child-state'))))"
             return json.loads(subprocess.check_output(["docker", "exec", new_id, "python", "-c", probe_status], text=True, timeout=10).splitlines()[-1])
@@ -389,6 +549,10 @@ fresh_host.main()
             if time.monotonic() >= deadline:
                 raise AssertionError("authenticated child proof was not durably observed")
             time.sleep(0.1)
+        if contention:
+            assert_refused_competitor("replay")
+            assert (state / "fresh-launch-claimed.json").read_bytes() == claim
+            assert status_inside_container()["status"] == "succeeded"
         tracer.send_signal(signal.SIGINT)
         tracer.wait(timeout=10)
         tracer = None
@@ -397,6 +561,12 @@ fresh_host.main()
         assert grant_history() == retained_grants
         assert {str(path.relative_to(old_state)): hashlib.sha256(path.read_bytes()).hexdigest() for path in old_state.rglob("*") if path.is_file()} == old_history
     finally:
+        if competitor is not None and competitor.poll() is None:
+            competitor.terminate()
+            competitor.wait(timeout=10)
+        if competitor_tracer is not None and competitor_tracer.poll() is None:
+            competitor_tracer.send_signal(signal.SIGINT)
+            competitor_tracer.wait(timeout=10)
         if tracer is not None and tracer.poll() is None:
             tracer.send_signal(signal.SIGINT)
             tracer.wait(timeout=10)
