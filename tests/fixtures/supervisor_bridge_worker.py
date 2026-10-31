@@ -6,6 +6,7 @@ This deliberately has no GitHub, provider, or issue scheduler side effects.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import signal
 import time
@@ -30,6 +31,11 @@ class _Engine:
 
 async def run() -> None:
     root = Path(os.environ["AUTO_CODER_RUNTIME_ROOT"])
+    if os.environ.get("AUTO_CODER_TEST_CONFIG_REPORT") == "1":
+        from auto_coder.automation_config import AutomationConfig
+
+        config = AutomationConfig(repo_name=os.environ["AUTO_CODER_REPOSITORY"])
+        (root / "fixture-config-observed.json").write_text(json.dumps({"issue": config.issue_allowlist, "pr": config.pr_allowlist}))
     identity = BridgeIdentity(
         os.environ["AUTO_CODER_REPOSITORY"],
         os.environ["AUTO_CODER_CHANNEL"],

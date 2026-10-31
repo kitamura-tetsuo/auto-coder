@@ -153,7 +153,12 @@ class WorkerLifecycle:
         mutation = self.runtime._resolve(target_id, ActionClass.DEPLOYMENT if action == "deploy_beta_source" else ActionClass.WORKER_CONTROL)
         if not isinstance(mutation, ResolvedWorker):
             return mutation
-        inspected = await asyncio.to_thread(self._inspection, mutation.client)
+
+        def inspect_locked() -> tuple[WorkerFence, dict[str, object]] | None:
+            with self.runtime._worker_locks[mutation.client.config.channel]:
+                return self._inspection(mutation.client)
+
+        inspected = await asyncio.to_thread(inspect_locked)
         if inspected is None or inspected[0] != WorkerFence(expected_supervisor_generation, expected_process_run_id, expected_deployment_generation, expected_runtime_id):
             return self._answer("CONFLICT", "incumbent_or_supervisor_generation_changed")
         evidence = ""
@@ -254,9 +259,49 @@ class WorkerLifecycle:
         data = inspected.data
         if inspected.result_code != "OK" or not isinstance(data, dict) or data.get("supervisor_incarnation") != inspected.supervisor_generation:
             return "UNAVAILABLE"
-        if inspected.supervisor_generation != incumbent["supervisor_generation"]:
+        expected = snapshot.get("current_supervisor_generation", incumbent["supervisor_generation"])
+        if inspected.supervisor_generation != expected:
             return "CHANGED"
         return "SAME"
+
+    def _rebind_bootstrap_supervisor(self, record: OperationRecord, version: int, snapshot: dict[str, object], client: WorkerNetworkClient) -> bool | None:
+        """Adopt a reconstructed owner only through an exact durable effect receipt."""
+        incumbent = snapshot.get("incumbent")
+        steps = snapshot.get("steps")
+        if record.intent.action not in {"start_worker", "stop_worker", "restart_worker"} or not isinstance(incumbent, dict) or incumbent.get("runtime_id") != "bootstrap" or not isinstance(steps, dict):
+            return False
+        name = "start" if "start" in steps else "drain"
+        step = steps.get(name)
+        if not isinstance(step, dict) or not isinstance(step.get("expected_digest"), str) or not isinstance(step.get("operation_id"), str):
+            return False
+        inspected = client.inspect_supervisor()
+        data = inspected.data
+        if inspected.result_code != "OK" or not isinstance(data, dict) or data.get("supervisor_incarnation") != inspected.supervisor_generation:
+            return False
+        receipt = client.read_worker_operation(step["operation_id"])
+        result = receipt.data
+        if receipt.supervisor_generation != inspected.supervisor_generation or not isinstance(result, dict) or result.get("operation_id") != step["operation_id"] or result.get("intent_digest") != step["expected_digest"]:
+            return False
+        if receipt.result_code in {"IN_PROGRESS", "DRAINING"}:
+            return None
+        inspected = client.inspect_supervisor()
+        data = inspected.data
+        if inspected.result_code != "OK" or not isinstance(data, dict) or data.get("supervisor_incarnation") != receipt.supervisor_generation or inspected.supervisor_generation != receipt.supervisor_generation:
+            return False
+        if name == "drain":
+            valid = receipt.result_code == "STOPPED" and data.get("status") == "STOPPED" and data.get("alive") is False and data.get("selected_runtime_id") == "bootstrap"
+        else:
+            actual, accepted = data.get("worker"), result.get("worker")
+            if not isinstance(actual, dict) or not isinstance(accepted, dict):
+                return False
+            valid = receipt.result_code == "RUNNING" and data.get("status") == "RUNNING" and data.get("alive") is True and actual.get("runtime_id") == accepted.get("runtime_id") == "bootstrap" and actual.get("deployment_generation") == accepted.get("deployment_generation")
+            if valid and actual.get("process_run_id") is None:
+                return None
+            valid = valid and isinstance(actual.get("process_run_id"), str) and accepted.get("process_run_id") in (None, actual.get("process_run_id"))
+        if not valid:
+            return False
+        snapshot["current_supervisor_generation"] = inspected.supervisor_generation
+        return self._save(record, version, snapshot)
 
     def _step(self, record: OperationRecord, version: int, snapshot: dict[str, object], name: str, client: WorkerNetworkClient, operation: str, runtime_id: str | None) -> OperationRecord:
         steps = snapshot["steps"]
@@ -286,6 +331,16 @@ class WorkerLifecycle:
                     return self._finish(record, version, snapshot, "SUPERSEDED", "original_beta_selection_or_proof_changed")
             effect_id = {"prepare": "p", "drain": "d", "start": "s", "recovery": "r"}[name] + "-" + record.operation_id
             steps[name] = {"operation_id": effect_id, "state": "SENT_UNKNOWN", "sent_at": time.time(), "observation": None}
+            if name != "prepare":
+                from auto_coder.worker_supervisor import WorkerSupervisor
+
+                failed = snapshot.get("new_worker")
+                expected_run = fence["process_run_id"] if name == "drain" else failed.get("process_run_id") if name == "recovery" and isinstance(failed, dict) else None
+                expected_generation = fence["deployment_generation"] if name == "drain" else failed.get("deployment_generation") if name == "recovery" and isinstance(failed, dict) else None
+                staged = snapshot.get("staged")
+                selected_runtime = fence["runtime_id"] if name in {"drain", "start"} else staged.get("installed_runtime_id") if isinstance(staged, dict) else None
+                request = {"operation": operation, "expected_supervisor_incarnation": client.supervisor_generation, "expected_process_run_id": expected_run, "expected_generation": expected_generation, "expected_runtime_id": selected_runtime, "runtime_id": runtime_id}
+                steps[name]["expected_digest"] = WorkerSupervisor._digest(request)
             if not self._save(record, version, snapshot):
                 return record
             if name == "prepare":
@@ -319,6 +374,16 @@ class WorkerLifecycle:
         return record
 
     def process(self, record: OperationRecord) -> OperationRecord | None:
+        lock = self.runtime._worker_locks.get(record.intent.target.channel)
+        if lock is None:
+            return record
+        # The network client caches the signed Supervisor incarnation. Keep an
+        # inspect/read/dispatch sequence bound to that same client generation
+        # while concurrent management reads and admissions use the client.
+        with lock:
+            return self._process_locked(record)
+
+    def _process_locked(self, record: OperationRecord) -> OperationRecord | None:
         client = self.runtime.clients.get(record.intent.target.channel)
         if client is None or (client.config.instance_id, client.config.channel, client.config.repository) != (record.intent.target.instance_id, record.intent.target.channel, record.intent.target.repository):
             return record
@@ -328,6 +393,15 @@ class WorkerLifecycle:
                 return self.runtime._hold(record, "missing_original_lifecycle_evidence") or record
             version, snapshot = persisted
             stage = snapshot.get("stage")
+            identity = self._original_supervisor(client, snapshot)
+            if identity == "CHANGED" and stage not in TERMINAL_STAGES and stage != "NEEDS_ATTENTION":
+                rebound = self._rebind_bootstrap_supervisor(record, version, snapshot, client)
+                if rebound:
+                    return record
+                deadline = snapshot.get("deadline")
+                if rebound is None and isinstance(deadline, (int, float)) and time.time() <= deadline:
+                    return record
+                return self._finish(record, version, snapshot, "NEEDS_ATTENTION", "original_supervisor_incarnation_changed")
             if stage in TERMINAL_STAGES or stage == "NEEDS_ATTENTION":
                 # The lifecycle snapshot and the operation row use separate
                 # transactions. Reconstruct an interrupted terminal write.

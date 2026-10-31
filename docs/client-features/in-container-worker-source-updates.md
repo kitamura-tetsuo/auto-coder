@@ -76,6 +76,14 @@ read-only queries for exactly that ID. Stages include `PREPARING`, `DRAINING`,
 `RECONCILING_PRIOR`, and `NEEDS_ATTENTION`. Unknown results and finite
 deadlines hold their lane and do not claim success.
 
+For bootstrap process control, a reconstructed Supervisor can be adopted for
+the same management operation only after its authenticated readback returns
+the exact original effect ID and request digest, and its current process state
+matches the durable stop or start receipt. A still-draining or starting effect
+continues to wait; missing or mismatched evidence holds the lane. Any subsequent
+effect still rechecks the original grant and current operating policy. This does
+not give bootstrap a staged `VERIFIED` runtime binding.
+
 The worker-container preparer performs a separate pinned locked-`uv` install
 for the exact source and independently verifies its immutable `READY.json`;
 failure leaves the incumbent and selected pointer alone. Real graceful stop

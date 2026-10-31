@@ -542,14 +542,14 @@ class WorkerSupervisor:
             if not self._fences_match(request, state):
                 return self._finish(operation_id, state, {"status": "CONFLICT"})
             if operation == "RECOVER_PREVIOUS":
-                result = self._recover_previous(state, runtime)
+                result = self._recover_previous(state, runtime, operation_id)
             else:
-                result = self._start(state, runtime) if operation == "START" else self._stop(state)
+                result = self._start(state, runtime, operation_id) if operation == "START" else self._stop(state)
             if operation == "RESTART_WORKER" and result["status"] == "STOPPED":
-                result = self._start(state, runtime)
+                result = self._start(state, runtime, operation_id)
             return self._finish(operation_id, state, result)
 
-    def _recover_previous(self, state: dict[str, Any], runtime: dict[str, Any] | None) -> dict[str, Any]:
+    def _recover_previous(self, state: dict[str, Any], runtime: dict[str, Any] | None, operation_id: str) -> dict[str, Any]:
         """One separately journaled prior-READY recovery after actual child exit."""
         failed, previous = state.get("worker"), state.get("last_worker")
         if (
@@ -570,7 +570,7 @@ class WorkerSupervisor:
         # lifetime may be replaced; the attempt is durable before Popen.
         state.update(prior_recovery_attempted=True, prior_recovery_generation=failed["deployment_generation"], failed_worker=failed, worker=None, stopped=True, stop_verified=False)
         self.store.write(state)
-        return self._start(state, runtime)
+        return self._start(state, runtime, operation_id)
 
     def _finish(self, operation_id: str, state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
         record = state["operations"][operation_id]
@@ -592,7 +592,30 @@ class WorkerSupervisor:
         record, result = state["operations"][operation_id], state["operations"][operation_id]["result"]
         if result.get("status") not in {"IN_PROGRESS", "DRAINING", "UNKNOWN"}:
             return result
-        if result.get("status") == "IN_PROGRESS":
+        worker = state.get("worker")
+        successor_launch = result.get("status") == "DRAINING" and record["request"]["operation"] == "RESTART_WORKER" and isinstance(worker, dict) and worker.get("launch_operation_id") == operation_id
+        if result.get("status") == "IN_PROGRESS" or successor_launch:
+            if (
+                record["request"]["operation"] in {"START", "RESTART_WORKER", "RECOVER_PREVIOUS"}
+                and isinstance(worker, dict)
+                and worker.get("launch_operation_id") == operation_id
+                and isinstance(record.get("runtime"), dict)
+                and record["runtime"].get("runtime_id") == worker.get("runtime_id")
+                and record["runtime"].get("ready") == worker.get("ready")
+                and record["runtime"].get("ready_path") == worker.get("ready_path")
+                and state.get("selected_runtime_id") == worker.get("runtime_id")
+                and self._is_alive(worker)
+            ):
+                observation = self._observation(worker)
+                if observation is None or worker.get("process_run_id") not in (None, observation["process_run_id"]):
+                    return result
+                self._reconcile_worker(state)
+                worker = state.get("worker")
+                if isinstance(worker, dict) and worker.get("process_run_id") == observation["process_run_id"] and self._is_alive(worker):
+                    return self._finish(operation_id, state, {"status": "RUNNING", "worker": worker})
+                return result
+            if successor_launch:
+                return result
             return self._finish(operation_id, state, {"status": "NEEDS_ATTENTION"})
         self._reconcile_worker(state)
         if state.get("worker") is not None:
@@ -600,7 +623,7 @@ class WorkerSupervisor:
         if not state.get("stop_verified"):
             return self._finish(operation_id, state, {"status": "UNKNOWN"})
         if record["request"]["operation"] == "RESTART_WORKER":
-            return self._finish(operation_id, state, self._start(state, record.get("runtime")))
+            return self._finish(operation_id, state, self._start(state, record.get("runtime"), operation_id))
         return self._finish(operation_id, state, {"status": "STOPPED"})
 
     def _resolve_runtime(self, runtime_id: object) -> dict[str, Any] | None:
@@ -645,7 +668,7 @@ class WorkerSupervisor:
         selected = self._resolve_runtime(runtime.get("runtime_id"))
         return selected if selected == runtime else None
 
-    def _start(self, state: dict[str, Any], runtime: dict[str, Any] | None) -> dict[str, Any]:
+    def _start(self, state: dict[str, Any], runtime: dict[str, Any] | None, operation_id: str) -> dict[str, Any]:
         if runtime is None or state.get("worker") is not None:
             return {"status": "CONFLICT"}
         if self._verify_runtime(runtime) is None:
@@ -693,8 +716,9 @@ class WorkerSupervisor:
                 "status": "UNKNOWN",
                 "reason": "child lifetime unavailable during startup",
             }
-        worker = {"pid": self.child.pid, "start_token": start_token, "process_run_id": None, "deployment_generation": generation, "runtime_id": runtime["runtime_id"], "ready": runtime["ready"], "ready_path": runtime.get("ready_path"), "started_at": time.time()}
+        worker = {"pid": self.child.pid, "start_token": start_token, "process_run_id": None, "deployment_generation": generation, "runtime_id": runtime["runtime_id"], "ready": runtime["ready"], "ready_path": runtime.get("ready_path"), "started_at": time.time(), "launch_operation_id": operation_id}
         state.update(worker=worker, stopped=False, launch_intent=None)
+        self.store.write(state)
         return {"status": "RUNNING", "worker": worker}
 
     def _stop(self, state: dict[str, Any]) -> dict[str, Any]:
