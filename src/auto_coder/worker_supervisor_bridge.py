@@ -44,6 +44,7 @@ _HEX_SIGNATURE = re.compile(r"[0-9a-f]{64}\Z")
 _NONCE = re.compile(r"[\x20-\x7e]{1,128}\Z")
 _SHA = re.compile(r"(?:[a-f0-9]{40}|[a-f0-9]{64})\Z")
 _DIAGNOSTIC_PARAMS = {
+    "consumer-identity": set(),
     "status": {"limit"},
     "logs": {"limit", "item_type", "item_number", "execution_id", "process_run_id", "after_sequence", "cursor"},
     "validation-attempts": {"pr_number", "attempt_id", "attempt_sequence"},
@@ -301,7 +302,10 @@ class _BridgeHandler(BaseHTTPRequestHandler):
             kind = path.removeprefix("/v1/diagnostics/")
             if kind not in _DIAGNOSTIC_PARAMS or not all(key in _DIAGNOSTIC_PARAMS[kind] for key, _ in pairs):
                 return 422, "UNSUPPORTED", None
-            upstream = self._worker_request("GET", "/api/" + kind + ("?" + parsed.query if parsed.query else ""))
+            upstream_path = "/v1/consumer-identity" if kind == "consumer-identity" else "/api/" + kind
+            upstream = self._worker_request("GET", upstream_path + ("?" + parsed.query if parsed.query else ""))
+            if kind == "consumer-identity" and not self._current_worker_matches(self._expected_worker_run, self._expected_worker_generation):
+                return 409, "CONFLICT", None
             return self._translate_upstream(upstream)
 
         if method == "POST" and path == "/v1/reevaluations" and not pairs:
