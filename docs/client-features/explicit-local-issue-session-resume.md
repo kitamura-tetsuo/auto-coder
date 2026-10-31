@@ -55,6 +55,8 @@ durably. Automatic crash reconciliation still consumes its original deadline.
 Muse must confirm the same session, workspace, model, and unattended approval
 policy. The original implementation prompt accompanies the continuation, with
 instructions to inspect retained edits and complete the task and relevant tests.
+MSP pipe readiness supports high-numbered open file descriptors without changing
+the invocation deadline, stderr draining, or identity and failure checks.
 Only a confirmed final response after writer settlement can hand files back to
 the retained publication workspace and enter the ordinary result/finalizer path.
 Failure preserves the retained workspace and a reconciliation reason.

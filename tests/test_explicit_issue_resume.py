@@ -1,8 +1,10 @@
 """Explicit retained Issue continuation through the production Muse transport."""
 
 import json
+import os
 import re
 import time
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -24,6 +26,7 @@ from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 from auto_coder.local_job_handoff import ContinuationState, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore
 from auto_coder.local_job_runner import LocalJobRunner, current_runner_owner
 from auto_coder.muse_background_observation import MuseBackgroundObservation, MuseObservationBinding, persist_muse_observation
+from auto_coder.muse_client import MuseClient
 
 from .test_dashboard_observability import _assert_required_stage_visible, _mounted_detail
 from .test_issue_job_workspace import git, repository
@@ -205,6 +208,10 @@ def test_resume_claim_fences_competing_controller_and_old_executor(tmp_path, _us
     ],
 )
 def test_only_resume_uses_retained_muse_session_and_publishes(mock_ui, tmp_path, monkeypatch, _use_real_commands, _use_real_sleep, refusal, reason, backend):
+    _exercise_retained_resume(mock_ui, tmp_path, monkeypatch, refusal, reason, backend)
+
+
+def _exercise_retained_resume(mock_ui, tmp_path, monkeypatch, refusal, reason, backend):
     source, store, slots, job, provider = retained_job(tmp_path, backend)
     observation = MuseBackgroundObservation(MuseObservationBinding(backend, "retained/session", job.execution_incarnation, job.upstream_attempt, Path(job.workspace_path)), "retained-predecessor", foreground_state="running")
     assert persist_muse_observation(store, job.job_id, job.runner_owner, observation)
@@ -289,3 +296,37 @@ def test_only_resume_uses_retained_muse_session_and_publishes(mock_ui, tmp_path,
     published.assert_called_once_with("owner/repo", slots, job_id=job.job_id, origin="explicit-single-target")
     diagram = _mounted_detail(mock_ui, "issue", 41)
     _assert_required_stage_visible(diagram, "session resume")
+
+
+@patch("auto_coder.dashboard.ui")
+@pytest.mark.parametrize(
+    "refusal, reason, backend",
+    [
+        (None, None, "muse"),
+        ("MSP_STORED_WORKSPACE", "Muse MSP session belongs to an incompatible workspace", "muse-retained"),
+        ("MSP_RESUME_MODEL", "Muse MSP session omitted or uses an incompatible model", "muse-retained"),
+    ],
+)
+def test_explicit_resume_with_high_msp_pipe_descriptors(mock_ui, tmp_path, monkeypatch, _use_real_commands, _use_real_sleep, refusal, reason, backend):
+    processes = []
+    original_write = MuseClient._msp_write
+
+    def observe_write(client, process, payload, total_bytes, deadline):
+        assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+        assert min(process.stdin.fileno(), process.stdout.fileno(), process.stderr.fileno()) >= 1024
+        processes.append(process)
+        return original_write(client, process, payload, total_bytes, deadline)
+
+    monkeypatch.setattr(MuseClient, "_msp_write", observe_write)
+    with ExitStack() as stack:
+        while True:
+            fd = os.open(os.devnull, os.O_RDONLY)
+            stack.callback(os.close, fd)
+            if fd >= 1023:
+                break
+        _exercise_retained_resume(mock_ui, tmp_path, monkeypatch, refusal, reason, backend)
+    assert processes
+    assert all(process.poll() is not None for process in processes)
+    for process in {process.pid: process for process in processes}.values():
+        with pytest.raises(ProcessLookupError):
+            os.killpg(process.pid, 0)
