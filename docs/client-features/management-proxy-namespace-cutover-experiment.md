@@ -12,8 +12,10 @@ verifies the initial namespace and HTTP response, restarts the manager while
 the proxy remains alive, and tests whether their actual `/proc` network
 namespace identities diverge. A separate persistent `proxy_watch_cli` process
 detects the difference and reattaches the retained proxy; the fixture checks
-both namespace identity and HTTP response. It then injects failure after a
-confirmed proxy stop and checks that no automatic retry occurs. It starts a
+both namespace identity and HTTP response. It then lets a real Docker stop
+complete, injects loss of that acknowledgement, reconstructs the controller,
+and checks that the unknown stop is not retried. It also loses a successful
+start acknowledgement and verifies that it remains unknown without replay. It starts a
 successor and restarts the retained proxy against the same manager, performs a cutover to a distinct
 manager and successor proxy, and rolls back to the retained pair. It removes
 only its randomly named disposable containers.

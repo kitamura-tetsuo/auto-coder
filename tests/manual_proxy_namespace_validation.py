@@ -12,6 +12,8 @@ import time
 import uuid
 from pathlib import Path
 
+from auto_coder.management.proxy_reconnect import DockerProxyObservation, ProxyBinding, ProxyReconnect
+
 
 def docker(*args: str, check: bool = True) -> str:
     result = subprocess.run(["docker", *args], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=check)
@@ -34,26 +36,6 @@ def wait_http(name: str, expected: bool) -> None:
             return
         time.sleep(0.25)
     raise RuntimeError("proxy readback did not reach expected state")
-
-
-def reconnect_once(manager: str, proxy: str, *, fail_after_stop: bool = False) -> None:
-    """Experiment only: stop and reattach one exact retained proxy once."""
-    before = json.loads(docker("inspect", manager))[0]
-    observed_namespace = netns(manager)
-    if before["State"]["Running"] is not True or netns(proxy) == observed_namespace:
-        raise RuntimeError("replacement manager or stale namespace not established")
-    docker("stop", "-t", "3", proxy)
-    if json.loads(docker("inspect", proxy))[0]["State"]["Running"] is not False:
-        raise RuntimeError("proxy stop is not confirmed")
-    after = json.loads(docker("inspect", manager))[0]
-    if after["Id"] != before["Id"] or after["State"]["Pid"] != before["State"]["Pid"] or netns(manager) != observed_namespace:
-        raise RuntimeError("manager changed during proxy stop")
-    if fail_after_stop:
-        raise RuntimeError("injected interruption after confirmed stop")
-    docker("start", proxy)
-    if netns(proxy) != observed_namespace or netns(manager) != observed_namespace:
-        raise RuntimeError("new proxy namespace differs")
-    wait_http(manager, True)
 
 
 def main() -> None:
@@ -103,14 +85,29 @@ def main() -> None:
                 watcher_process = None
                 docker("restart", "-t", "3", manager)
                 wait_http(manager, False)
+
+                class LostStopReply(DockerProxyObservation):
+                    def effect(self, action: str, proxy_id: str) -> None:
+                        super().effect(action, proxy_id)
+                        if action == "stop":
+                            raise TimeoutError("injected lost stop acknowledgement")
+
+                unknown_root = root / "unknown-controller"
+                unknown_root.mkdir(mode=0o700)
+                binding = ProxyBinding(manager_id, image, proxy_id, caddy)
+                unknown = ProxyReconnect(unknown_root, binding, LostStopReply())
                 try:
-                    reconnect_once(manager, proxy, fail_after_stop=True)
-                except RuntimeError as error:
-                    assert "injected interruption" in str(error)
+                    unknown.tick()
+                except TimeoutError:
+                    pass
                 else:
-                    raise AssertionError("injected failure was not observed")
+                    raise AssertionError("lost acknowledgement was not observed")
                 assert json.loads(docker("inspect", proxy))[0]["State"]["Running"] is False
-                print("interruption after proxy stop remains stopped without retry: confirmed")
+                reconstructed = ProxyReconnect(unknown_root, binding, DockerProxyObservation())
+                assert reconstructed.tick() == "NEEDS_ATTENTION"
+                assert json.loads((unknown_root / "proxy-reconnect.json").read_text())["phase"] == "stop_unknown"
+                assert json.loads(docker("inspect", proxy))[0]["State"]["Running"] is False
+                print("lost stop reply survives watcher reconstruction without replay: confirmed")
                 docker("run", "-d", "--name", successor, "--network", f"container:{manager}", "--entrypoint", "caddy", "-v", f"{root}/Caddyfile:/fixture/Caddyfile:ro", caddy, "run", "--config", "/fixture/Caddyfile", "--adapter", "caddyfile")
                 wait_http(manager, True)
                 assert netns(successor) == netns(manager)
@@ -120,6 +117,29 @@ def main() -> None:
                 wait_http(manager, True)
                 assert netns(proxy) == netns(manager)
                 print("retained proxy restarted on current manager namespace and marker readback: confirmed")
+                docker("restart", "-t", "3", manager)
+                wait_http(manager, False)
+
+                class LostStartReply(DockerProxyObservation):
+                    def effect(self, action: str, proxy_id: str) -> None:
+                        super().effect(action, proxy_id)
+                        if action == "start":
+                            raise TimeoutError("injected lost start acknowledgement")
+
+                start_unknown_root = root / "unknown-start-controller"
+                start_unknown_root.mkdir(mode=0o700)
+                unknown_start = ProxyReconnect(start_unknown_root, binding, LostStartReply())
+                try:
+                    unknown_start.tick()
+                except TimeoutError:
+                    pass
+                else:
+                    raise AssertionError("lost start acknowledgement was not observed")
+                wait_http(manager, True)
+                again = ProxyReconnect(start_unknown_root, binding, DockerProxyObservation())
+                assert again.tick() == "NEEDS_ATTENTION"
+                assert json.loads((start_unknown_root / "proxy-reconnect.json").read_text())["phase"] == "start_unknown"
+                print("lost start reply survives watcher reconstruction without replay: confirmed")
                 docker("stop", "-t", "3", proxy)
                 docker("stop", "-t", "3", manager)
                 docker("run", "-d", "--name", replacement, "--entrypoint", "python", "-v", f"{root}:/fixture:ro", "-w", "/fixture", image, "-m", "http.server", "18081", "--bind", "127.0.0.1")
