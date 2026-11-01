@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from auto_coder.management.action_scopes import READ_SCOPE
+from auto_coder.management.action_scopes import DEPLOY_SCOPE, READ_SCOPE
 from auto_coder.management.fresh_host import _write_evidence
 from auto_coder.management.fresh_host_observation import capture_prior_container
 from auto_coder.management.fresh_initialization import FreshInitializationIntent
@@ -197,8 +197,9 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
     origin = "http://127.0.0.1:8081"
-    client = OAuthClient("fixture-client", (origin + "/callback",))
-    settings = OAuthSettings(oauth / "oauth.sqlite3", origin, "fresh-fixture", (client,))
+    scopes = (READ_SCOPE, DEPLOY_SCOPE) if retained_history else (READ_SCOPE,)
+    client = OAuthClient("fixture-client", (origin + "/callback",), allowed_scopes=scopes)
+    settings = OAuthSettings(oauth / "oauth.sqlite3", origin, "fresh-fixture", (client,), enabled_scopes=scopes)
     principal = VerifiedPrincipal("fresh-fixture", "operator", time.time() - 10)
     permitted = AdmissionResult(AdmissionStatus.PERMITTED, ReasonCode.PERMITTED, principal)
 
@@ -215,6 +216,17 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
     base_image = _resolve_fixture_base(os.environ.get("AUTOCODER_FRESH_TEST_BASE_IMAGE", "auto-coder:management-local-abc65544"))
     executable_digest = _fixture_executable_digest(base_image)
     runtime = {"reference": "bootstrap", "receipt": "sha256:" + executable_digest, "executable": "/opt/auto-coder/.venv/bin/auto-coder", "arguments": ["management", "serve", "--config", "/bootstrap/management.yaml"], "environment": {"PYTHONDONTWRITEBYTECODE": "1"}}
+    if retained_history:
+        for channel, address in (("BETA", "10.254.253.2"), ("RELEASE", "10.254.253.3")):
+            runtime["environment"].update(
+                {
+                    f"AUTO_CODER_{channel}_SUPERVISOR_INSTANCE_ID": channel.lower() + "-worker",
+                    f"AUTO_CODER_{channel}_REPOSITORY": "fixture/" + channel.lower(),
+                    f"AUTO_CODER_{channel}_BRIDGE_ADDRESS": address,
+                    f"AUTO_CODER_{channel}_BRIDGE_PORT": "17890",
+                    f"AUTO_CODER_{channel}_BRIDGE_SECRET_FILE": "/run/secrets/" + channel.lower() + "_worker_bridge",
+                }
+            )
     if restart_after:
         runtime["drain_ack"] = "/management-child-state/drain-bootstrap.json"
     common = {"state_root": "/management-child-state", "oauth_root": "/management-oauth", "journal_root": "/management-operations", "listener_url": origin + "/mcp", "initial_runtime": "bootstrap", "runtimes": [runtime]}
@@ -230,7 +242,9 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
                 "bootstrap_config_path": "/bootstrap/config.json",
                 "public_origin": origin,
                 "firebase_project_id": "fresh-fixture",
-                "clients": [{"client_id": client.client_id, "redirect_uris": list(client.redirect_uris)}],
+                "clients": [{"client_id": client.client_id, "redirect_uris": list(client.redirect_uris), "allowed_scopes": list(scopes)}],
+                "enabled_scopes": list(scopes),
+                **({"operating_policy_path": "/management-policy/policy.yaml"} if retained_history else {}),
                 "bind_host": "127.0.0.1",
                 "port": 8081,
                 "local_development": True,
@@ -267,7 +281,7 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
         grants = OAuthGrantService(settings, LocalIdentity())
         verifier = "v" * 48
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
-        pending = grants.begin_authorization(AuthorizationRequest(client.client_id, origin + "/callback", settings.resource, challenge, (READ_SCOPE,)), "browser", "csrf")
+        pending = grants.begin_authorization(AuthorizationRequest(client.client_id, origin + "/callback", settings.resource, challenge, scopes), "browser", "csrf")
         code = grants.approve_authorization(pending.request_id, "browser", "csrf", "fixture-login").code
         assert code is not None
         token = grants.exchange_code(client.client_id, code, origin + "/callback", settings.resource, verifier).access_token
@@ -295,6 +309,7 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
         subprocess.run(["docker", "stop", "--time", "1", proxy_id, old_id], check=True, capture_output=True, timeout=30)
         old_history = {str(path.relative_to(old_state)): hashlib.sha256(path.read_bytes()).hexdigest() for path in old_state.rglob("*") if path.is_file()}
         old_operation_id = ""
+        old_worker_operation_id = ""
         if retained_history:
             grant = grants.authenticate_access(token, settings.resource, (READ_SCOPE,))
             accepted = grants.accepted_authority(grant)
@@ -305,6 +320,14 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
             assert old_record is not None
             old_operation_id = old_record.operation_id
             assert old_store.transition(old_operation_id, 0, OperationPhase.NEEDS_ATTENTION, safe_error_category="UNKNOWN:old-effect").record is not None
+            worker_intent = OperationIntent(
+                ManagedTarget("beta-worker", "beta", "fixture/beta"), "start_worker", (ActionParameter("target_id", "beta-worker"), ActionParameter("supervisor_generation", "original-supervisor"), ActionParameter("runtime_id", "bootstrap"), ActionParameter("source_sha", "-")), "old-start", "-", "-"
+            )
+            worker_snapshot = {"schema_version": 1, "stage": "NEEDS_ATTENTION", "incumbent": {"supervisor_generation": "original-supervisor", "runtime_id": "bootstrap"}, "steps": {"start": {"state": "SENT_UNKNOWN", "operation_id": "original-worker-effect"}}}
+            worker_record = old_store.admit(worker_intent, authority, lifecycle_snapshot=worker_snapshot).record
+            assert worker_record is not None
+            old_worker_operation_id = worker_record.operation_id
+            assert old_store.transition(old_worker_operation_id, 0, OperationPhase.NEEDS_ATTENTION, safe_error_category="lifecycle_deadline_exceeded").record is not None
             with sqlite3.connect(old_journal / "management-operations.sqlite3") as db:
                 assert db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
 
@@ -328,6 +351,15 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
             new_args += ["--mount", f"type=bind,src={source_path},dst={destination}" + (",readonly" if readonly else "")]
         if retained_history:
             new_args += ["--mount", f"type=bind,src={old_journal},dst=/management-prior-operations,readonly"]
+            policy = root / "policy"
+            policy.mkdir(mode=0o700)
+            (policy / "policy.yaml").write_text("profile: beta\ntargets:\n  beta-worker:\n    channel: beta\n    repositories: [fixture/beta]\n  release-worker:\n    channel: release\n    repositories: [fixture/release]\n", encoding="utf-8")
+            new_args += ["--mount", f"type=bind,src={policy},dst=/management-policy,readonly"]
+            for channel in ("beta", "release"):
+                secret = root / (channel + "-bridge-key")
+                secret.write_bytes(base64.b64encode(os.urandom(48)))
+                secret.chmod(0o600)
+                new_args += ["--mount", f"type=bind,src={secret},dst=/run/secrets/{channel}_worker_bridge,readonly"]
         new_id = subprocess.check_output(new_args + [image, "--config", "/bootstrap/config.json", "--fresh-initialization"], text=True).strip()
         probe = "from pathlib import Path; from auto_coder.management.fresh_initialization import application_tree_sha256; print(application_tree_sha256(Path('/opt/auto-coder/.venv/lib/python3.12/site-packages/auto_coder')))"
         app_digest = subprocess.check_output(["docker", "run", "--rm", "--network", "none", "--read-only", "-e", "PYTHONDONTWRITEBYTECODE=1", "--entrypoint", "python", image, "-c", probe], text=True).strip().splitlines()[-1]
@@ -619,6 +651,13 @@ fresh_host.main()
             previous = subprocess.run(["docker", "exec", "--interactive", new_id, "python", "-c", script], input=json.dumps({"request": old_query, "token": token}), text=True, capture_output=True, check=True, timeout=30)
             old_result = json.loads(previous.stdout)["result"]["structuredContent"]
             assert old_result["status"] == "UNKNOWN" and old_result["history_origin"] == "retained_prior_instance" and old_result["operation_id"] == old_operation_id
+            worker_query = {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "auto_coder_operation_get", "arguments": {"operation_id": old_worker_operation_id, "target_id": "beta-worker"}}}
+            prior_worker = subprocess.run(["docker", "exec", "--interactive", new_id, "python", "-c", script], input=json.dumps({"request": worker_query, "token": token}), text=True, capture_output=True, check=True, timeout=30)
+            worker_result = json.loads(prior_worker.stdout)["result"]["structuredContent"]
+            assert worker_result["status"] == "NEEDS_ATTENTION" and worker_result["steps"]["start"]["operation_id"] == "original-worker-effect"
+            competing = {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "auto_coder_start_worker", "arguments": {"target_id": "beta-worker", "idempotency_key": "new-start", "expected_supervisor_generation": "original-supervisor", "expected_runtime_id": "bootstrap"}}}
+            blocked = subprocess.run(["docker", "exec", "--interactive", new_id, "python", "-c", script], input=json.dumps({"request": competing, "token": token}), text=True, capture_output=True, check=True, timeout=30)
+            assert json.loads(blocked.stdout)["result"]["structuredContent"]["status"] == "BUSY"
         while status_inside_container()["status"] != "succeeded":
             if time.monotonic() >= deadline:
                 raise AssertionError("authenticated child proof was not durably observed")
@@ -678,6 +717,10 @@ fresh_host.main()
                 reread = subprocess.run(["docker", "exec", "--interactive", new_id, "python", "-c", script], input=json.dumps({"request": old_query, "token": token}), text=True, capture_output=True, check=True, timeout=30)
                 historical = json.loads(reread.stdout)["result"]["structuredContent"]
                 assert historical["status"] == "UNKNOWN" and historical["operation_id"] == old_operation_id
+                worker_reread = subprocess.run(["docker", "exec", "--interactive", new_id, "python", "-c", script], input=json.dumps({"request": worker_query, "token": token}), text=True, capture_output=True, check=True, timeout=30)
+                assert json.loads(worker_reread.stdout)["result"]["structuredContent"]["operation_id"] == old_worker_operation_id
+                still_blocked = subprocess.run(["docker", "exec", "--interactive", new_id, "python", "-c", script], input=json.dumps({"request": competing, "token": token}), text=True, capture_output=True, check=True, timeout=30)
+                assert json.loads(still_blocked.stdout)["result"]["structuredContent"]["status"] == "BUSY"
             # Fresh request and independent local verifier must join the new
             # child, not merely echo the initial authenticated HTTP response.
             observation_id = uuid.uuid4().hex
