@@ -257,6 +257,40 @@ def test_supervisor_cancellation_waits_for_owned_work_then_stops_caller(monkeypa
     asyncio.run(scenario())
 
 
+@pytest.mark.usefixtures("_use_real_sleep")
+def test_forced_cancel_reaps_orphan_only_after_owned_thread_finishes(monkeypatch, tmp_path):
+    """A completed orphan must not spin forever or be released while running."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    entered = threading.Event()
+    release = threading.Event()
+
+    def operation():
+        entered.set()
+        assert release.wait(5)
+
+    async def scenario():
+        assert engine.request_graceful_shutdown("test")
+        engine.request_force_stop("test")
+        caller = asyncio.create_task(engine._run_local_critical("forced orphan", operation))
+        assert await asyncio.to_thread(entered.wait, 2)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert len(engine._critical_operations) == 1
+        waiter = asyncio.create_task(engine._wait_for_interrupted_local_work())
+        await asyncio.sleep(0.05)
+        assert not waiter.done() and len(engine._critical_operations) == 1
+        release.set()
+        await asyncio.wait_for(waiter, 2)
+        assert engine._critical_operations == {}
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        release.set()
+
+
 def test_stale_parent_authorization_joins_child_validation_during_drain(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     config = AutomationConfig()

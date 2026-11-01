@@ -1219,6 +1219,15 @@ class AutomationEngine:
         already covers that.
         """
         while self._critical_operations:
+            # A forced cancellation can leave the shielded thread task in the
+            # map after its caller has exited. Remove it only after the real
+            # task is done; otherwise waiting on an already-complete task spins
+            # forever and never lets forced shutdown finish.
+            for task in tuple(self._critical_operations):
+                if task.done():
+                    self._critical_operations.pop(task, None)
+            if not self._critical_operations:
+                return
             pending = set(self._critical_operations)
             logger.info(f"Waiting for {len(pending)} interrupted local operation(s) to finish returning: {list(self._critical_operations.values())}")
             force_wait = asyncio.create_task(self._force_stop_event.wait()) if self._force_stop_event is not None else None
