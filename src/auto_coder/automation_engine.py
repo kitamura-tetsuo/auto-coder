@@ -1054,6 +1054,7 @@ class AutomationEngine:
         self._shutdown_event: Optional[asyncio.Event] = None
         self._force_stop_event: Optional[asyncio.Event] = None
         self._critical_operations: Dict[asyncio.Task[Any], str] = {}
+        self._critical_thread_finished: Dict[asyncio.Task[Any], threading.Event] = {}
         # One invocation-admission gate per daemon lifetime (Issue #2009):
         # finer-grained, per-LLM-call shutdown protection that runs alongside
         # the coarser worker/maintenance-level `_run_local_critical` wait
@@ -1128,6 +1129,13 @@ class AutomationEngine:
 
     async def _run_local_critical(self, description: str, function: Any, *args: Any) -> Any:
         """Own synchronous work until its thread really returns, despite cancellation."""
+        thread_finished = threading.Event()
+
+        def run_owned() -> Any:
+            try:
+                return function(*args)
+            finally:
+                thread_finished.set()
 
         async def run_in_thread() -> tuple[bool, Any]:
             # Keep BaseException on the awaiting coroutine.  Letting a shielded
@@ -1138,7 +1146,7 @@ class AutomationEngine:
             gate_token = install_invocation_gate(self.invocation_gate)
             try:
                 try:
-                    return True, await asyncio.to_thread(function, *args)
+                    return True, await asyncio.to_thread(run_owned)
                 except BaseException as exc:
                     return False, exc
             finally:
@@ -1147,6 +1155,7 @@ class AutomationEngine:
 
         task = asyncio.create_task(run_in_thread(), name=f"local-critical:{description}")
         self._critical_operations[task] = description
+        self._critical_thread_finished[task] = thread_finished
         try:
             try:
                 completed, value = await asyncio.shield(task)
@@ -1167,8 +1176,9 @@ class AutomationEngine:
                 return value
             raise value
         finally:
-            if task.done():
+            if task.done() and thread_finished.is_set():
                 self._critical_operations.pop(task, None)
+                self._critical_thread_finished.pop(task, None)
 
     async def _wait_for_protected_invocations(self) -> None:
         """Wait only for admitted LLM invocations to reach a durable checkpoint.
@@ -1220,19 +1230,26 @@ class AutomationEngine:
         """
         while self._critical_operations:
             # A forced cancellation can leave the shielded thread task in the
-            # map after its caller has exited. Remove it only after the real
-            # task is done; otherwise waiting on an already-complete task spins
-            # forever and never lets forced shutdown finish.
+            # map after its caller exits. Task completion alone is insufficient:
+            # cancellation of the asyncio wrapper does not stop its thread.
             for task in tuple(self._critical_operations):
-                if task.done():
+                finished = self._critical_thread_finished.get(task)
+                if task.done() and finished is not None and finished.is_set():
                     self._critical_operations.pop(task, None)
+                    self._critical_thread_finished.pop(task, None)
             if not self._critical_operations:
                 return
-            pending = set(self._critical_operations)
-            logger.info(f"Waiting for {len(pending)} interrupted local operation(s) to finish returning: {list(self._critical_operations.values())}")
+            pending = {task for task in self._critical_operations if not task.done()}
+            logger.info(f"Waiting for {len(self._critical_operations)} interrupted local operation(s) to finish returning: {list(self._critical_operations.values())}")
             force_wait = asyncio.create_task(self._force_stop_event.wait()) if self._force_stop_event is not None else None
-            waiters = pending | ({force_wait} if force_wait is not None else set())
+            # A cancelled wrapper may already be done while its thread remains
+            # live; poll the real completion signal without spinning on it.
+            poll = asyncio.create_task(asyncio.sleep(0.05)) if len(pending) != len(self._critical_operations) else None
+            waiters = pending | ({force_wait} if force_wait is not None else set()) | ({poll} if poll is not None else set())
             done, _ = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+            if poll is not None and poll not in done:
+                poll.cancel()
+                await asyncio.gather(poll, return_exceptions=True)
             if force_wait is not None:
                 if force_wait in done:
                     return
