@@ -28,3 +28,8 @@ must retain the old owner-lock mount and state, arrange Docker and proxy startup
 ordering, preserve both old and new journals through migration, and verify actual
 endpoint readiness after restart. A failed or ambiguous launch requires explicit
 investigation, not a new operation key or a state reset.
+
+Automatic clean-container restart disables the self-update safety return: a
+failed launch or early exit retains NEEDS_ATTENTION without launching the same
+or another runtime again. The deterministic claim remains retained across
+Supervisor reconstruction. Explicit self-update safety-return behavior is unchanged.

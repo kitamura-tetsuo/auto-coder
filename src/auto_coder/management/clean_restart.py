@@ -52,6 +52,6 @@ def restart_verified_stop(supervisor: ManagementBootstrapSupervisor) -> ResultSt
             assert_kernel_absence(config, previous)
             assert_current_owner(config, supervisor.incarnation)
             operation = "container-autostart-" + str(child.child_generation) + "-" + child.supervisor_incarnation
-            return supervisor.start_selected(operation, operation, child.selected_runtime, supervisor._identity(child)).status
+            return supervisor.start_selected(operation, operation, child.selected_runtime, supervisor._identity(child), allow_safety_return=False).status
     except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
         return ResultStatus.UNKNOWN
