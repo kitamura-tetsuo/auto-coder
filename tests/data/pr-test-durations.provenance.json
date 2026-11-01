@@ -1,0 +1,15 @@
+{
+  "attempt": 1,
+  "job_id": 124670670900,
+  "nodes": 9371,
+  "normalization": "Difference between consecutive completed test result timestamps; exclude negative and >=300s intervals, floor at 0.001 seconds; first result omitted; unknown nodes use matched-current mean.",
+  "phase": "inter-result wall time, including intervening setup/teardown and reporting, not native per-test duration",
+  "pytest": "9.1.1",
+  "pytest_split": "0.11.0",
+  "python": "3.12.15",
+  "selector": "not opencode_live",
+  "snapshot_sha256": "ab8d5bb9994f8809aca59b7295421578790236d8db97e6fe2cc39ab9f4f00528",
+  "source_revision": "1f28e2cacfaa016e8513402cf82ed8b61a9ff250",
+  "source_run": "https://github.com/kitamura-tetsuo/auto-coder/actions/runs/41246415733",
+  "unit": "seconds"
+}
