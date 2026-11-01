@@ -22,7 +22,8 @@ def test_supervisor_integration_job_runs_independently_on_pull_requests() -> Non
     assert steps["Install uv"]["with"]["version"] == "0.7.22"
     assert "uv sync --locked --dev --extra test" in steps["Install locked test dependencies"]["run"]
     management = steps["Verify authenticated management self-update"]
-    assert management["timeout-minutes"] == 25
+    assert management["timeout-minutes"] == 55
+    assert job["timeout-minutes"] >= management["timeout-minutes"]
     assert "-m supervisor_integration" in management["run"]
     assert "tests/test_management_self_update_integration.py" in management["run"]
     assert "tests/test_management_self_update_failures.py" in management["run"]
