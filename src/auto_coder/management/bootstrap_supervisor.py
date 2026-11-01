@@ -14,13 +14,18 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import closing
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
 from .bootstrap_store import BootstrapStore, ChildPhase, ChildRecord, EffectRecord
+
+if TYPE_CHECKING:
+    from .fresh_readiness import FreshReadinessObserver
 
 
 class Action(str, Enum):
@@ -40,6 +45,29 @@ class ResultStatus(str, Enum):
     CONFLICT = "conflict"
     PROCESS_RESTORED = "process_restored"
     NEEDS_ATTENTION = "needs_attention"
+
+
+def _verify_fresh_console_entrypoint(runtime: RuntimeSpec) -> None:
+    """Accept only the known installed console wrapper, with no code hooks."""
+    import ast
+
+    source = runtime.executable.read_text(encoding="utf-8")
+    if not source.startswith("#!/opt/auto-coder/.venv/bin/python\n"):
+        raise ValueError("fresh launcher interpreter differs")
+    expected = """import sys
+from auto_coder.cli import main
+if __name__ == "__main__":
+    if sys.argv[0].endswith("-script.pyw"):
+        sys.argv[0] = sys.argv[0][:-11]
+    elif sys.argv[0].endswith(".exe"):
+        sys.argv[0] = sys.argv[0][:-4]
+    sys.exit(main())
+"""
+    if ast.dump(ast.parse(source), include_attributes=False) != ast.dump(ast.parse(expected), include_attributes=False):
+        raise ValueError("fresh launcher entrypoint differs")
+    safe_python = {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1"}
+    if any((key.startswith("PYTHON") and safe_python.get(key) != value) or key.startswith("LD_") for key, value in runtime.environment):
+        raise ValueError("fresh launcher environment contains code hooks")
 
 
 @dataclass(frozen=True)
@@ -153,13 +181,15 @@ class BootstrapConfig:
     management_version_root: Path | None = None
     management_config: Path | None = None
     verification_timeout: float = 120.0
+    fresh_guard_path: Path | None = None
+    fresh_prior_lock_path: Path | None = None
 
     @classmethod
     def read(cls, path: Path) -> "BootstrapConfig":
         if not path.is_absolute() or path.is_symlink():
             raise ValueError("bootstrap configuration must be an absolute regular file")
         raw = json.loads(path.read_text(encoding="utf-8"))
-        allowed = {"instance_id", "state_root", "oauth_root", "journal_root", "listener_url", "initial_runtime", "runtimes", "graceful_timeout", "crash_budget", "management_version_root", "management_config", "verification_timeout"}
+        allowed = {"instance_id", "state_root", "oauth_root", "journal_root", "listener_url", "initial_runtime", "runtimes", "graceful_timeout", "crash_budget", "management_version_root", "management_config", "verification_timeout", "fresh_guard_path", "fresh_prior_lock_path"}
         if set(raw) - allowed:
             raise ValueError("unknown bootstrap configuration field")
         runtimes = tuple(
@@ -190,6 +220,8 @@ class BootstrapConfig:
             Path(raw["management_version_root"]) if raw.get("management_version_root") else None,
             Path(raw["management_config"]) if raw.get("management_config") else None,
             float(raw.get("verification_timeout", 120)),
+            Path(raw["fresh_guard_path"]) if raw.get("fresh_guard_path") else None,
+            Path(raw["fresh_prior_lock_path"]) if raw.get("fresh_prior_lock_path") else None,
         )
         config.validate()
         return config
@@ -204,6 +236,8 @@ class BootstrapConfig:
             raise ValueError("invalid runtime profile")
         if (self.management_version_root is None) != (self.management_config is None) or not 0 < self.verification_timeout <= 3600:
             raise ValueError("invalid management self-update bootstrap profile")
+        if (self.fresh_guard_path is None) != (self.fresh_prior_lock_path is None) or any(path is not None and not path.is_absolute() for path in (self.fresh_guard_path, self.fresh_prior_lock_path)):
+            raise ValueError("fresh initialization paths must be paired and absolute")
         if self.management_version_root is not None:
             assert self.management_config is not None
             if not self.management_version_root.is_absolute() or not self.management_config.is_absolute():
@@ -241,7 +275,7 @@ class Observation:
 class ManagementBootstrapSupervisor:
     """Own one child; all executable data comes from immutable local config."""
 
-    def __init__(self, config: BootstrapConfig, incarnation: str | None = None) -> None:
+    def __init__(self, config: BootstrapConfig, incarnation: str | None = None, bootstrap_config_path: Path | None = None, *, fresh_initialization: bool = False) -> None:
         config.validate()
         from .worker_network_client import configured_worker_bridge_environment
 
@@ -249,6 +283,10 @@ class ManagementBootstrapSupervisor:
         # an effect or launching a management child.
         self._worker_bridge_environment = configured_worker_bridge_environment()
         self.config = config
+        self.bootstrap_config_path = bootstrap_config_path
+        self.fresh_initialization = fresh_initialization
+        self._prior_owner_fence: int | None = None
+        self._fresh_observer: FreshReadinessObserver | None = None
         self.store = BootstrapStore(config.state_root, config.instance_id)
         self.incarnation = incarnation or str(uuid.uuid4())
         self._lock = threading.RLock()
@@ -375,6 +413,11 @@ class ManagementBootstrapSupervisor:
                 return self._restore_once(operation_id, failed)
             token = self._start_token(child.pid)
             if not token:
+                if child.poll() is not None:
+                    failed = replace(prepared, phase=ChildPhase.NEEDS_ATTENTION, pid=0, start_token="", exit_cause=f"startup_exit_{child.returncode}")
+                    if not self.store.reserve(prepared, failed):
+                        return Observation(ResultStatus.UNKNOWN, self.store.load(), operation_id, detail="child owner changed during startup exit")
+                    return self._restore_once(operation_id, failed)
                 failed = replace(prepared, phase=ChildPhase.NEEDS_ATTENTION, exit_cause="unobservable_launch")
                 self.store.save(failed)
                 return self._finish(operation_id, ResultStatus.UNKNOWN, failed, "new child OS lifetime could not be observed")
@@ -504,9 +547,46 @@ class ManagementBootstrapSupervisor:
                 return Observation(ResultStatus.UNKNOWN, self.store.load(), detail="child owner changed during reconciliation")
         return observed
 
+    def _pristine_initial_state(self) -> bool:
+        """Never infer a first boot from an empty record over retained history."""
+        try:
+            with closing(sqlite3.connect(self.store.path.as_uri() + "?mode=ro", uri=True, timeout=2)) as connection:
+                metadata = dict(connection.execute("SELECT key,value FROM metadata"))
+                rows = connection.execute("SELECT instance_id,record_json FROM child_state").fetchall()
+                if metadata != {"schema_version": "1"} or connection.execute("PRAGMA quick_check").fetchone()[0] != "ok" or connection.execute("SELECT COUNT(*) FROM effects").fetchone()[0]:
+                    return False
+                if len(rows) > 1 or (rows and (rows[0][0] != self.config.instance_id or rows[0][1] != self.store._record_json(ChildRecord(self.config.instance_id)))):
+                    return False
+            recovery = self.config.state_root / "management-recovery.sqlite3"
+            oauth = self.config.oauth_root / "oauth.sqlite3"
+            if any(path.exists() or path.is_symlink() for path in (recovery, oauth)):
+                return False
+            stores = (
+                (self.config.state_root / "management-self-update.sqlite3", {"schema_version": "1", "instance_id": self.config.instance_id}, ("handoffs", "runtimes")),
+                (self.config.journal_root / "management-operations.sqlite3", {"schema_version": "2"}, ("operations", "operation_history")),
+            )
+            for path, expected_metadata, tables in stores:
+                if path.is_symlink():
+                    return False
+                if path.exists():
+                    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=2)) as connection:
+                        if dict(connection.execute("SELECT key,value FROM metadata")) != expected_metadata or connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                            return False
+                        if any(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in tables):
+                            return False
+            return True
+        except (OSError, ValueError, sqlite3.Error):
+            return False
+
     def run(self) -> int:
         """Remain alive as PID 1 and reap only the configured child."""
+        if self.fresh_initialization and (not self.config.state_root.is_dir() or self.config.state_root.is_symlink()):
+            logger.error("Fresh initialization state root is unavailable")
+            return 1
         self.config.state_root.mkdir(parents=True, exist_ok=True)
+        if self.fresh_initialization and (self.config.state_root / ".supervisor-owner.lock").is_symlink():
+            logger.error("Fresh initialization owner lock is invalid")
+            return 1
         with (self.config.state_root / ".supervisor-owner.lock").open("a+b") as ownership:
             fcntl.flock(ownership.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             return self._run_owned()
@@ -514,23 +594,164 @@ class ManagementBootstrapSupervisor:
     def _run_owned(self) -> int:
         from .self_update_handoff import SelfUpdateHandoffConsumer
 
-        self.store.publish_supervisor(self.incarnation, os.getpid(), self._await_owner_start_token())
+        owner_start_token = self._await_owner_start_token()
+        if self.fresh_initialization:
+            if not self._start_fresh_initialization():
+                return 1
+            self.fresh_initialization = False
+        elif any((self.config.state_root / name).exists() or (self.config.state_root / name).is_symlink() for name in ("fresh-initialization.json", "fresh-launch-claimed.json", "fresh-launched.json", "fresh-outcome.json")):
+            from .fresh_initialization import read_fresh_status
+
+            try:
+                if read_fresh_status(self.config.state_root)["status"] != "succeeded":
+                    raise ValueError("fresh initialization has not succeeded")
+            except (OSError, ValueError, TypeError, KeyError):
+                logger.error("Fresh initialization is unresolved; refusing supervisor reconstruction")
+                return 1
+        recovery_path = self.config.state_root / "management-recovery.sqlite3"
+        if self.store.path.is_symlink():
+            logger.error("Management child ledger cannot be a symlink")
+            return 1
+        ledger_exists = self.store.path.is_file()
+        retained = (
+            recovery_path,
+            self.config.state_root / "management-self-update.sqlite3",
+            self.config.journal_root / "management-operations.sqlite3",
+            self.config.oauth_root / "oauth.sqlite3",
+        )
+        if not ledger_exists and any(path.exists() or path.is_symlink() for path in retained):
+            logger.error("Management child ledger is missing; refusing bootstrap reconstruction")
+            return 1
+        self.store.require_existing = ledger_exists
+        self.store.publish_supervisor(self.incarnation, os.getpid(), owner_start_token)
+        self.store.require_existing = True
         consumer = SelfUpdateHandoffConsumer(self) if self.config.management_config is not None else None
         record = self.store.load()
+        initial_state_pristine = self._pristine_initial_state() if record.child_generation == 0 else False
+        if consumer is not None and record.child_generation == 0 and not consumer.store.path.exists() and not consumer.store.path.is_symlink():
+            try:
+                consumer.store.active()
+            except (OSError, ValueError, sqlite3.Error):
+                logger.warning("Management handoff mailbox unavailable")
+        recovery_consumer = None
+        recovery_mailbox_unavailable = False
+        if self.bootstrap_config_path is not None:
+            try:
+                from .recovery_supervisor import RecoveryConsumer
+
+                recovery_consumer = RecoveryConsumer(self, self.bootstrap_config_path)
+            except (OSError, ValueError, sqlite3.Error):
+                from .recovery_mailbox import RecoveryMailbox
+
+                try:
+                    mailbox = RecoveryMailbox(self.config.state_root, self.config.instance_id)
+                    recovery_mailbox_unavailable = mailbox._child_marker() is not None or mailbox.path.exists() or mailbox.path.is_symlink()
+                except (OSError, ValueError, sqlite3.Error):
+                    recovery_mailbox_unavailable = True
+                logger.warning("Management local recovery mailbox unavailable")
         if record.pid == 0 and record.phase is ChildPhase.STOPPED and not record.intended_stop and record.child_generation == 0 and self.config.crash_budget > 0:
-            if self.store.has_unresolved_effects():
+            if not initial_state_pristine or self.store.has_unresolved_effects():
                 self.store.reserve(record, replace(record, phase=ChildPhase.UNKNOWN, exit_cause="unresolved_effect"))
             else:
                 self.start_selected(f"bootstrap-{uuid.uuid4()}", str(uuid.uuid4()), self.config.initial_runtime)
         while True:
-            self.store.publish_supervisor(self.incarnation, os.getpid(), self._await_owner_start_token())
+            if not self.store.path.is_file() or self.store.path.is_symlink():
+                logger.error("Management child ledger is unavailable; preserving process state")
+                time.sleep(0.2)
+                continue
+            try:
+                self.store.publish_supervisor(self.incarnation, os.getpid(), self._await_owner_start_token())
+            except (OSError, sqlite3.Error):
+                logger.error("Management child ledger is unavailable; preserving process state")
+                time.sleep(0.2)
+                continue
             # inspect() owns exit classification and the one-time safety return.
             # A second poll/save here can lose an exit between observations and
             # bypass that durable recovery transition.
             self.inspect()
-            if consumer is not None:
+            if self._fresh_observer is not None:
+                self._fresh_observer.tick()
+            if consumer is not None and not recovery_mailbox_unavailable and (recovery_consumer is None or not recovery_consumer.blocks_self_update()) and (self._fresh_observer is None or self._fresh_observer.succeeded):
                 consumer.tick()
+            if recovery_consumer is not None:
+                recovery_consumer.tick(allow_admission=self._fresh_observer is None or self._fresh_observer.succeeded)
             time.sleep(0.2)
+
+    def _start_fresh_initialization(self) -> bool:
+        """One explicit fresh first launch; any partial transition is refused."""
+        from urllib.parse import urlsplit
+
+        import auto_coder
+
+        from .fresh_host_observation import assert_host_listener_absent
+        from .fresh_initialization import acquire_prior_owner_fence, load_fresh_initialization, record_fresh_launch, request_and_claim_first_launch, verify_initialization_inputs
+        from .fresh_oauth import validate_retained_oauth
+        from .fresh_readiness import FreshReadinessObserver
+        from .oauth_config import load_management_settings
+        from .operation_store import ManagementOperationStore
+        from .recovery_mailbox import RecoveryMailbox
+        from .self_update_handoff import HandoffStore
+
+        try:
+            intent, _ = load_fresh_initialization(self.config.state_root)
+            if self.bootstrap_config_path is None or self.config.fresh_guard_path is None or self.config.fresh_prior_lock_path is None:
+                raise ValueError("fresh initialization configuration is incomplete")
+            if self.config.fresh_guard_path != Path("/management-initialization/fresh-guard.sock") or self.config.fresh_prior_lock_path != Path("/management-prior-owner.lock"):
+                raise ValueError("fresh initialization paths are not fixed")
+            guard_info = self.config.fresh_guard_path.parent.stat()
+            if self.config.fresh_guard_path.parent.is_symlink() or guard_info.st_uid != os.geteuid() or (guard_info.st_mode & 0o777) != 0o700 or (guard_info.st_dev, guard_info.st_ino) != (intent.guard_device, intent.guard_inode):
+                raise ValueError("fresh guard directory differs")
+            if (intent.new_instance, intent.state_root, intent.journal_root, intent.oauth_root, intent.runtime_reference) != (self.config.instance_id, str(self.config.state_root), str(self.config.journal_root), str(self.config.oauth_root), self.config.initial_runtime):
+                raise ValueError("fresh initialization config identity differs")
+            for path, device, inode in ((self.config.journal_root, intent.journal_device, intent.journal_inode), (self.config.oauth_root, intent.oauth_device, intent.oauth_inode)):
+                info = path.stat()
+                if path.is_symlink() or not path.is_dir() or (info.st_dev, info.st_ino) != (device, inode):
+                    raise ValueError("fresh mounted state root differs")
+            runtime = next((item for item in self.config.runtimes if item.reference == intent.runtime_reference), None)
+            if runtime is None or runtime.receipt != "sha256:" + intent.executable_sha256 or not runtime.verify(initial=True):
+                raise ValueError("fresh initialization runtime differs")
+            if runtime.execution_kind != "source-script" or runtime.executable != Path("/opt/auto-coder/.venv/bin/auto-coder") or len(runtime.arguments) != 4 or runtime.arguments[:3] != ("management", "serve", "--config"):
+                raise ValueError("fresh management configuration is not fixed")
+            management_config = Path(runtime.arguments[3])
+            _verify_fresh_console_entrypoint(runtime)
+            settings = load_management_settings(management_config)
+            if settings.bootstrap_config_path != self.bootstrap_config_path or settings.state_root != self.config.oauth_root or settings.operation_state_root != self.config.journal_root:
+                raise ValueError("fresh management configuration differs")
+            if self.config.management_config is not None and self.config.management_config != management_config:
+                raise ValueError("fresh management configuration is not selected")
+            validate_retained_oauth(settings.oauth)
+            endpoint = urlsplit(self.config.listener_url)
+            if endpoint.hostname != settings.bind_host or endpoint.port != settings.port or endpoint.path != "/mcp" or endpoint.query or endpoint.fragment:
+                raise ValueError("fresh management endpoint differs")
+            application_root = Path(auto_coder.__file__).resolve(strict=True).parent
+            verify_initialization_inputs(intent, bootstrap_config=self.bootstrap_config_path, management_config=management_config, executable=runtime.executable, application_root=application_root)
+            allowed = {"fresh-initialization.json", ".supervisor-owner.lock", "logs"}
+            if any(item.name not in allowed or item.is_symlink() for item in self.config.state_root.iterdir()) or any(self.config.journal_root.iterdir()):
+                raise ValueError("fresh initialization state is not empty")
+            self._prior_owner_fence = acquire_prior_owner_fence(self.config.fresh_prior_lock_path, expected_device=intent.owner_lock_device, expected_inode=intent.owner_lock_inode)
+            self.store.publish_supervisor(self.incarnation, os.getpid(), self._await_owner_start_token())
+            self.store.require_existing = True
+            request_and_claim_first_launch(self.config.state_root, self.config.fresh_guard_path, owner_incarnation=self.incarnation)
+            with closing(ManagementOperationStore(self.config.journal_root)._connect()):
+                pass
+            with closing(HandoffStore(self.config.state_root, self.config.instance_id)._connect()):
+                pass
+            RecoveryMailbox(self.config.state_root, self.config.instance_id).initialize()
+            verify_initialization_inputs(intent, bootstrap_config=self.bootstrap_config_path, management_config=management_config, executable=runtime.executable, application_root=application_root)
+            validate_retained_oauth(settings.oauth)
+            if not runtime.verify(initial=True) or endpoint.port is None:
+                raise ValueError("fresh runtime verification failed")
+            assert_host_listener_absent(endpoint.port)
+            result = self.start_selected("fresh-" + intent.request_id, str(uuid.uuid4()), intent.runtime_reference)
+            if result.status is not ResultStatus.OBSERVED_RUNNING:
+                raise ValueError("fresh first launch is not confirmed")
+            observation = record_fresh_launch(self.config.state_root, intent, incarnation=self.incarnation, child_identity=self._identity(result.record), verification_timeout=self.config.verification_timeout)
+            self._fresh_observer = FreshReadinessObserver(self, intent, observation, settings.oauth.canonical_issuer, application_root)
+            logger.info("Fresh management child launched request={} identity={}", intent.request_id, self._identity(result.record))
+            return True
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+            logger.error("Fresh initialization unavailable or unresolved; no retry is permitted")
+            return False
 
     def restore_previous(self, operation_id: str, attempt_id: str, expected_identity: str, previous_runtime: str) -> Observation:
         """Make the single pre-authorized safety return after proven child exit."""
@@ -593,6 +814,11 @@ class ManagementBootstrapSupervisor:
             return self._finish(operation_id, ResultStatus.NEEDS_ATTENTION, recovery, "previous runtime launch failed")
         token = self._start_token(child.pid)
         if not token:
+            if child.poll() is not None:
+                failed_restore = replace(recovery, phase=ChildPhase.NEEDS_ATTENTION, pid=0, start_token="", exit_cause="previous_runtime_start_failed")
+                if self.store.reserve(recovery, failed_restore):
+                    return self._finish(operation_id, ResultStatus.NEEDS_ATTENTION, failed_restore, "the one previous-runtime process exited during startup")
+                return self._finish(operation_id, ResultStatus.UNKNOWN, self.store.load(), "restore lifetime changed during startup observation")
             return self._finish(operation_id, ResultStatus.UNKNOWN, recovery, "recovery OS lifetime is unknown")
         self._children[child.pid] = child
         restored = replace(
@@ -619,6 +845,14 @@ class ManagementBootstrapSupervisor:
             if self.store.reserve(restored, failed_restore):
                 return self._finish(operation_id, ResultStatus.NEEDS_ATTENTION, failed_restore, "the one previous-runtime process exited during startup")
             return Observation(ResultStatus.UNKNOWN, self.store.load(), operation_id, detail="restore lifetime changed during startup observation")
+        # The original start effect may already contain the candidate's
+        # immutable observation. Retain the distinct restored lifetime under a
+        # separate observation identity before declaring the safety return.
+        observation_id = operation_id + ":safety-observation"
+        evidence = self.store.begin_effect(observation_id, restored.effect_attempt_id, "OBSERVE_SAFETY_RESTORE", restored.selected_runtime, self._identity(restored))
+        if evidence.phase != "prepared":
+            return Observation(ResultStatus.UNKNOWN, restored, operation_id, detail="safety return observation already exists")
+        self._finish(observation_id, ResultStatus.PROCESS_RESTORED, restored)
         return self._finish(operation_id, ResultStatus.PROCESS_RESTORED, restored)
 
     def _replay(self, effect: EffectRecord) -> Observation | None:
@@ -699,10 +933,11 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Auto-Coder immutable management child supervisor")
     parser.add_argument("--config", required=True, type=Path)
+    parser.add_argument("--fresh-initialization", action="store_true")
     args = parser.parse_args()
     config = BootstrapConfig.read(args.config)
     setup_logger(stream=sys.stdout, log_file=str(config.state_root / "logs" / "management-bootstrap.log"))
-    raise SystemExit(ManagementBootstrapSupervisor(config).run())
+    raise SystemExit(ManagementBootstrapSupervisor(config, bootstrap_config_path=args.config, fresh_initialization=args.fresh_initialization).run())
 
 
 if __name__ == "__main__":

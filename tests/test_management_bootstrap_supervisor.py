@@ -144,6 +144,94 @@ def test_linux_start_token_handles_process_name_with_spaces() -> None:
         _stop_process(child.pid)
 
 
+def test_real_supervisor_holds_effects_during_missing_owner_lifetime(tmp_path: Path) -> None:
+    import fcntl
+
+    runtime = _runtime(tmp_path)
+    launches = tmp_path / "launches"
+    runtime.executable.write_bytes(CHILD.replace(b"import json, os, signal, sys, time\n", f"import json, os, signal, sys, time\nopen({str(launches)!r}, 'a').write('launch\\n')\n".encode()))
+    runtime = _resign_runtime(runtime)
+    blocked = tmp_path / "unobservable"
+    observed = tmp_path / "unobservable-observed"
+    blocked.touch()
+    harness = tmp_path / "owner_observation_harness.py"
+    harness.write_text(
+        f"""import os
+from pathlib import Path
+from auto_coder.management.bootstrap_supervisor import BootstrapConfig, ManagementBootstrapSupervisor, RuntimeSpec
+runtime = RuntimeSpec({runtime.reference!r}, {runtime.receipt!r}, Path({str(runtime.executable)!r}), {runtime.arguments!r}, (), Path({str(runtime.drain_ack)!r}), Path({str(runtime.source_root)!r}), {runtime.source_receipt!r}, Path({str(runtime.ready_receipt)!r}))
+config = BootstrapConfig('manager', Path({str(tmp_path / "state")!r}), Path({str(tmp_path / "oauth")!r}), Path({str(tmp_path / "journal")!r}), 'http://127.0.0.1:8090', 'one', (runtime,), 1)
+class ObserverUnavailable(ManagementBootstrapSupervisor):
+    def _start_token(self, pid):
+        if pid == os.getpid() and Path({str(blocked)!r}).exists():
+            Path({str(observed)!r}).touch()
+            return ''
+        return super()._start_token(pid)
+ObserverUnavailable(config).run()
+"""
+    )
+    process = subprocess.Popen([sys.executable, str(harness)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    child_pid = 0
+
+    def wait_for(predicate, timeout: float = 10) -> None:
+        deadline = time.monotonic() + timeout
+        while not predicate():
+            assert process.poll() is None, "the supervisor exited"
+            assert time.monotonic() < deadline, "condition was not observed"
+            time.sleep(0.02)
+
+    try:
+        wait_for(observed.exists)
+        time.sleep(0.7)
+        assert process.poll() is None
+        assert not (tmp_path / "state" / "management-child.sqlite3").exists()
+        assert not launches.exists()
+        with (tmp_path / "state" / ".supervisor-owner.lock").open("rb") as lock:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        blocked.unlink()
+        wait_for(lambda: launches.exists() and Path(str(runtime.drain_ack) + ".ready").exists())
+        ledger = tmp_path / "state" / "management-child.sqlite3"
+
+        def read_state():
+            with sqlite3.connect(ledger.as_uri() + "?mode=ro", uri=True) as connection:
+                return connection.execute("SELECT pid,start_token,updated_at FROM supervisor_presence").fetchone(), connection.execute("SELECT operation_id,phase FROM effects ORDER BY operation_id").fetchall(), connection.execute("SELECT record_json FROM child_state").fetchone()
+
+        wait_for(lambda: read_state()[2] is not None and json.loads(read_state()[2][0])["pid"] > 0)
+        before_presence, before_effects, before_child = read_state()
+        child_pid = json.loads(before_child[0])["pid"]
+        assert child_pid > 0 and ManagementBootstrapSupervisor._start_token(child_pid)
+        observed.unlink()
+        blocked.touch()
+        wait_for(observed.exists)
+        before_presence, before_effects, before_child = read_state()
+        time.sleep(0.8)
+        assert process.poll() is None and ManagementBootstrapSupervisor._start_token(child_pid)
+        assert read_state() == (before_presence, before_effects, before_child)
+        assert launches.read_text().splitlines() == ["launch"]
+
+        blocked.unlink()
+        wait_for(lambda: read_state()[0][2] > before_presence[2])
+        assert launches.read_text().splitlines() == ["launch"]
+        assert read_state()[1:] == (before_effects, before_child)
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
+        _stop_process(child_pid)
+
+
+def test_owner_observation_does_not_hide_unexpected_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    supervisor = _supervisor(tmp_path, _runtime(tmp_path))
+
+    def unexpected(_pid: int) -> str:
+        raise ValueError("unexpected programming failure")
+
+    monkeypatch.setattr(supervisor, "_start_token", unexpected)
+    with pytest.raises(ValueError, match="unexpected programming failure"):
+        supervisor._await_owner_start_token()
+
+
 def test_real_child_start_replay_graceful_drain_and_reconstruction(tmp_path: Path) -> None:
     supervisor = _supervisor(tmp_path, _runtime(tmp_path))
     started = supervisor.start_selected("start-1", "attempt-1", "one")
@@ -915,89 +1003,32 @@ def test_delayed_candidate_failure_reconciles_one_previous_runtime(tmp_path: Pat
         _stop_process(restored.record.pid)
 
 
-def test_real_supervisor_holds_effects_during_missing_owner_lifetime(tmp_path: Path) -> None:
-    import fcntl
+def test_confirmed_candidate_exit_before_start_token_restores_once(tmp_path: Path, monkeypatch) -> None:
+    old, candidate = _runtime(tmp_path, "old"), _runtime(tmp_path, "candidate")
+    candidate.executable.write_bytes(b"#!/bin/sh\nexit 23\n")
+    candidate.executable.chmod(0o755)
+    candidate = _resign_runtime(candidate)
+    supervisor = _supervisor(tmp_path, old, candidate)
+    first = supervisor.start_selected("old-start", "a", "old")
+    _await_child_ready(old)
+    assert supervisor.request_graceful_stop("old-stop", "b", supervisor._identity(first.record)).status is ResultStatus.STOPPED
+    original = supervisor._start_token
+    called = False
 
-    runtime = _runtime(tmp_path)
-    launches = tmp_path / "launches"
-    runtime.executable.write_bytes(CHILD.replace(b"import json, os, signal, sys, time\n", f"import json, os, signal, sys, time\nopen({str(launches)!r}, 'a').write('launch\\n')\n".encode()))
-    runtime = _resign_runtime(runtime)
-    blocked = tmp_path / "unobservable"
-    observed = tmp_path / "unobservable-observed"
-    blocked.touch()
-    harness = tmp_path / "owner_observation_harness.py"
-    harness.write_text(
-        f"""import os
-from pathlib import Path
-from auto_coder.management.bootstrap_supervisor import BootstrapConfig, ManagementBootstrapSupervisor, RuntimeSpec
-runtime = RuntimeSpec({runtime.reference!r}, {runtime.receipt!r}, Path({str(runtime.executable)!r}), {runtime.arguments!r}, (), Path({str(runtime.drain_ack)!r}), Path({str(runtime.source_root)!r}), {runtime.source_receipt!r}, Path({str(runtime.ready_receipt)!r}))
-config = BootstrapConfig('manager', Path({str(tmp_path / "state")!r}), Path({str(tmp_path / "oauth")!r}), Path({str(tmp_path / "journal")!r}), 'http://127.0.0.1:8090', 'one', (runtime,), 1)
-class ObserverUnavailable(ManagementBootstrapSupervisor):
-    def _start_token(self, pid):
-        if pid == os.getpid() and Path({str(blocked)!r}).exists():
-            Path({str(observed)!r}).touch()
-            return ''
-        return super()._start_token(pid)
-ObserverUnavailable(config).run()
-"""
-    )
-    process = subprocess.Popen([sys.executable, str(harness)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    child_pid = 0
+    def after_candidate_exit(pid: int) -> str:
+        nonlocal called
+        if not called:
+            called = True
+            os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+            return ""
+        return original(pid)
 
-    def wait_for(predicate, timeout: float = 10) -> None:
-        deadline = time.monotonic() + timeout
-        while not predicate():
-            assert process.poll() is None, "the supervisor exited"
-            assert time.monotonic() < deadline, "condition was not observed"
-            time.sleep(0.02)
-
+    monkeypatch.setattr(supervisor, "_start_token", after_candidate_exit)
+    restored = supervisor.start_selected("candidate-start", "c", "candidate")
     try:
-        wait_for(observed.exists)
-        time.sleep(0.7)
-        assert process.poll() is None
-        assert not (tmp_path / "state" / "management-child.sqlite3").exists()
-        assert not launches.exists()
-        with (tmp_path / "state" / ".supervisor-owner.lock").open("rb") as lock:
-            with pytest.raises(BlockingIOError):
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-        blocked.unlink()
-        wait_for(lambda: launches.exists() and Path(str(runtime.drain_ack) + ".ready").exists())
-        ledger = tmp_path / "state" / "management-child.sqlite3"
-
-        def read_state():
-            with sqlite3.connect(ledger.as_uri() + "?mode=ro", uri=True) as connection:
-                return connection.execute("SELECT pid,start_token,updated_at FROM supervisor_presence").fetchone(), connection.execute("SELECT operation_id,phase FROM effects ORDER BY operation_id").fetchall(), connection.execute("SELECT record_json FROM child_state").fetchone()
-
-        wait_for(lambda: read_state()[2] is not None and json.loads(read_state()[2][0])["pid"] > 0)
-        before_presence, before_effects, before_child = read_state()
-        child_pid = json.loads(before_child[0])["pid"]
-        assert child_pid > 0 and ManagementBootstrapSupervisor._start_token(child_pid)
-        observed.unlink()
-        blocked.touch()
-        wait_for(observed.exists)
-        before_presence, before_effects, before_child = read_state()
-        time.sleep(0.8)
-        assert process.poll() is None and ManagementBootstrapSupervisor._start_token(child_pid)
-        assert read_state() == (before_presence, before_effects, before_child)
-        assert launches.read_text().splitlines() == ["launch"]
-
-        blocked.unlink()
-        wait_for(lambda: read_state()[0][2] > before_presence[2])
-        assert launches.read_text().splitlines() == ["launch"]
-        assert read_state()[1:] == (before_effects, before_child)
+        assert called
+        assert restored.status is ResultStatus.PROCESS_RESTORED
+        assert restored.record.selected_runtime == old.reference
+        assert supervisor.start_selected("candidate-start", "c", "candidate").record == restored.record
     finally:
-        process.terminate()
-        process.wait(timeout=5)
-        _stop_process(child_pid)
-
-
-def test_owner_observation_does_not_hide_unexpected_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    supervisor = _supervisor(tmp_path, _runtime(tmp_path))
-
-    def unexpected(_pid: int) -> str:
-        raise ValueError("unexpected programming failure")
-
-    monkeypatch.setattr(supervisor, "_start_token", unexpected)
-    with pytest.raises(ValueError, match="unexpected programming failure"):
-        supervisor._await_owner_start_token()
+        _stop_process(restored.record.pid)

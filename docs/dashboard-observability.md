@@ -11,10 +11,17 @@ scripts/test.sh tests/test_worker_management_bridge.py -k reevaluation`.
 
 Management journal operation IDs, phases, targets, and safe categories use the existing Loguru sinks without changing worker command/trace lifecycle events. Its separate contract is documented in [`client-features/management-operation-journal.md`](client-features/management-operation-journal.md).
 
-When the management Supervisor cannot observe its own process-start token, it
-logs the unavailable lifetime and holds subsequent effects while retaining the
-owner lock and existing child. The real-process bootstrap test exercises this
-hold and the return to a valid observation; no dashboard event schema changes.
+Local management recovery uses a private Supervisor mailbox rather than the
+management operation journal or worker Issue/PR trace lifecycle. The owning
+Supervisor logs the bounded request ID and transition status; the complete local
+status is read with `management recovery-status`. The real-CLI scenarios in
+`tests/test_management_recovery_integration.py` verify these outcomes and their
+process effects. This path does not introduce a dashboard-owned event schema.
+
+When the Supervisor cannot observe its own process start token, it logs that
+its lifetime is unavailable and holds physical effects until a valid observation
+returns. It retains its owner fence and existing child without reporting a new
+process identity. The real-process bootstrap test verifies this hold and resume.
 
 Management self-update adds a fixed authenticated MCP origin to that same journal
 and dispatcher. Admission and durable Supervisor handoff log the operation ID and
@@ -2926,6 +2933,13 @@ refused recovery never reaches a fresh offer or changes slot state.
 `test_dead_pr_controller_retains_every_unsettled_job_execution` checks all three
 PR job kinds and every job state, foreign-repository isolation, and reclamation
 only after settlement or absence of retained responsibility.
+
+Explicit fresh management initialization reports its one-time request, launch,
+unknown outcome and authenticated readiness through the private local status
+command and bounded supervisor log messages. It does not create a dashboard job
+or change the dashboard event schema; a process launch alone is not reported as
+authenticated readiness. The isolated fresh-initialization and supervisor tests
+exercise refusal, claim and status boundaries.
 
 ## Local PR repair startup recovery
 
