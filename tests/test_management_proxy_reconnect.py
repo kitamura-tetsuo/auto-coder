@@ -162,8 +162,10 @@ def test_resolution_record_survives_crash_before_transition(tmp_path: Path, monk
     prior = controller._read()
     driver.proxy.update(running=False, pid=0)
     original = controller._write
+
     def crash(_manager: dict[str, object], _phase: str) -> None:
         raise RuntimeError("simulated crash")
+
     monkeypatch.setattr(controller, "_write", crash)
     with pytest.raises(RuntimeError):
         controller.reconcile()
