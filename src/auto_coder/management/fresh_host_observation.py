@@ -138,6 +138,13 @@ def _inspect(container_id: str) -> list[object]:
     return values
 
 
+def _supported_prior_command(entrypoint: object, command: object) -> bool:
+    return (entrypoint, command) in (
+        (["python", "-m", "auto_coder.management.bootstrap_supervisor"], ["--config", "/bootstrap/config.json"]),
+        (["python"], ["-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json"]),
+    )
+
+
 def capture_prior_container(container_id: str, image_id: str, *, expected_mounts: tuple[tuple[str, str, bool], ...] = (), require_owner_lock: bool = False, require_deployment_identity: bool = False) -> PriorContainer:
     """Observe the actual live container and its supported containment profile."""
     engine = _engine_id()
@@ -218,7 +225,7 @@ def capture_prior_container(container_id: str, image_id: str, *, expected_mounts
         instance_id, bootstrap_source, bootstrap_sha256, published_port = "", "", "", 0
         oauth_source, oauth_device, oauth_inode = "", 0, 0
         if require_deployment_identity:
-            if values[15:17] != [["python", "-m", "auto_coder.management.bootstrap_supervisor"], ["--config", "/bootstrap/config.json"]]:
+            if not _supported_prior_command(values[15], values[16]):
                 raise ValueError("prior supervisor entrypoint differs")
             sources = [source for source, destination, rw in observed_mounts if destination == "/bootstrap" and not rw]
             if len(sources) != 1:
@@ -313,7 +320,7 @@ def assert_prior_container_stopped(prior: PriorContainer) -> None:
         mounts = values[11]
         expected_source = str(Path(prior.bootstrap_source).parent)
         if (
-            values[15:17] != [["python", "-m", "auto_coder.management.bootstrap_supervisor"], ["--config", "/bootstrap/config.json"]]
+            not _supported_prior_command(values[15], values[16])
             or values[17] != {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(prior.published_port)}]}
             or Path(prior.bootstrap_source).name != "config.json"
             or not isinstance(mounts, list)
