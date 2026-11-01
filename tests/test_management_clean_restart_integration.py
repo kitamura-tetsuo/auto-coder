@@ -142,3 +142,39 @@ main()
         attempts = db.execute("SELECT phase FROM effects WHERE operation_id LIKE 'container-autostart-%'").fetchall()
         assert len(attempts) == 1
         assert attempts[0][0] == ("observed" if boundary == "before_claim" else "prepared")
+
+
+@pytest.mark.parametrize("management_system", ["restart_clean"], indirect=True)
+def test_shutdown_waits_for_real_inflight_management_request(management_system: ManagementSystem) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from auto_coder.management.bootstrap_supervisor import ManagementBootstrapSupervisor
+
+    system = management_system
+    bearer = system.issue()
+    prior = system.child
+    assert system.supervisor is not None
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        held = pool.submit(system.call, bearer, "fixture_hold_request")
+        _wait(lambda: (system.root / "oauth" / "request-entered").exists(), timeout=10, description="actual in-flight request")
+        system.supervisor.terminate()
+        _wait(lambda: system.child.phase is ChildPhase.DRAINING, timeout=10, description="drain intent")
+        time.sleep(0.5)
+        assert system.supervisor.poll() is None
+        assert ManagementBootstrapSupervisor._start_token(prior.pid) == prior.start_token
+        assert not held.done()
+        (system.root / "oauth" / "release-request").touch()
+        assert held.result(timeout=15)["drained"] is True
+    assert system.supervisor.wait(timeout=20) == 0
+    assert system.child.phase is ChildPhase.STOPPED
+
+
+def test_clean_restart_configuration_requires_a_fixed_drain_receipt(tmp_path) -> None:
+    from dataclasses import replace
+
+    from tests.test_management_bootstrap_supervisor import _runtime, _supervisor
+
+    runtime = _runtime(tmp_path)
+    config = _supervisor(tmp_path, runtime).config
+    with pytest.raises(ValueError, match="fixed drain receipt"):
+        replace(config, runtimes=(replace(runtime, drain_ack=None),), restart_after_clean_shutdown=True).validate()
