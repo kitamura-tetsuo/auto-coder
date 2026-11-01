@@ -6,7 +6,7 @@ The installed proxy uses Docker `network_mode: container:<manager-id>`. A
 running proxy can retain the old network namespace after a manager restart;
 container status and Docker restart policy do not demonstrate connectivity.
 
-`sudo python3 tests/manual_proxy_namespace_validation.py` creates disposable
+`sudo env PYTHONPATH="$PWD/src" "$PWD/.venv/bin/python" tests/manual_proxy_namespace_validation.py` creates disposable
 manager and Caddy containers with unique names and a nonsecret HTTP marker. It
 verifies the initial namespace and HTTP response, restarts the manager while
 the proxy remains alive, and tests whether their actual `/proc` network
