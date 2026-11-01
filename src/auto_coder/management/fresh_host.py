@@ -14,7 +14,19 @@ import stat
 from dataclasses import asdict
 from pathlib import Path
 
-from .fresh_host_observation import HostObservationUnavailable, PriorContainer, PriorTask, assert_host_listener_absent, assert_known_prior_stack_stopped, assert_prior_network_pin, assert_prior_network_unreferenced, assert_retained_oauth_mount, capture_prior_container, serve_one_fresh_grant
+from .fresh_host_observation import (
+    HostObservationUnavailable,
+    PriorContainer,
+    PriorTask,
+    assert_host_listener_absent,
+    assert_known_prior_stack_stopped,
+    assert_prior_network_pin,
+    assert_prior_network_unreferenced,
+    assert_retained_journal_source,
+    assert_retained_oauth_mount,
+    capture_prior_container,
+    serve_one_fresh_grant,
+)
 from .fresh_initialization import FreshInitializationIntent, acquire_prior_owner_fence, claim_fresh_initialization, load_fresh_initialization
 
 
@@ -110,7 +122,9 @@ def main() -> None:
             print(_write_evidence(Path(args.guard_dir), {"management": asdict(management), "proxy": asdict(proxy)}))
         elif args.command == "claim":
             raw = json.loads(_protected_file(args.intent_file))
-            if not isinstance(raw, dict) or set(raw) != set(FreshInitializationIntent.__dataclass_fields__):
+            optional = {"host_prior_journal_root", "prior_journal_root", "prior_journal_device", "prior_journal_inode"}
+            fields = set(FreshInitializationIntent.__dataclass_fields__)
+            if not isinstance(raw, dict) or set(raw) not in (fields, fields - optional):
                 raise ValueError("fresh initialization intent is malformed")
             intent = FreshInitializationIntent(**raw)
             management, proxy, digest = _evidence(args.evidence_file)
@@ -127,6 +141,7 @@ def main() -> None:
             fence = acquire_prior_owner_fence(args.prior_lock, expected_device=intent.owner_lock_device, expected_inode=intent.owner_lock_inode)
             try:
                 assert_known_prior_stack_stopped(management, proxy)
+                assert_retained_journal_source(management, intent)
                 assert_prior_network_unreferenced(management.net_namespace)
                 assert_host_listener_absent(intent.host_listener_port)
                 print(claim_fresh_initialization(Path(intent.host_state_root), intent))

@@ -10,8 +10,8 @@ container status and Docker restart policy do not demonstrate connectivity.
 manager and Caddy containers with unique names and a nonsecret HTTP marker. It
 verifies the initial namespace and HTTP response, restarts the manager while
 the proxy remains alive, and tests whether their actual `/proc` network
-namespace identities diverge. When they do, it checks failed HTTP access,
-invokes a one-shot automated reattachment of the retained proxy and checks
+namespace identities diverge. A separate persistent `proxy_watch_cli` process
+detects the difference and reattaches the retained proxy; the fixture checks
 both namespace identity and HTTP response. It then injects failure after a
 confirmed proxy stop and checks that no automatic retry occurs. It starts a
 successor and restarts the retained proxy against the same manager, performs a cutover to a distinct
@@ -19,9 +19,8 @@ manager and successor proxy, and rolls back to the retained pair. It removes
 only its randomly named disposable containers.
 
 On the tested host the namespace diverged after manager restart; all HTTP and
-namespace checks for replacement and rollback passed. The automated action is
-invoked by this test after divergence is detected; no persistent Docker event
-watcher or production startup integration is implemented. This test does not use
+namespace checks for replacement and rollback passed. The polling watcher is
+not installed as a production service. This test does not use
 the production proxy config, TLS, external listener, OAuth, existing state,
 operation histories, or the real management readiness endpoint. It does not
 test interrupted manager cutover, host reboot or an unknown
@@ -33,3 +32,22 @@ and independently read back an authenticated identity. An uncertain effect
 must be inspected and reconciled before another action. The old manager and
 proxy definitions and all state must remain available until rollback has been
 proved safe.
+
+For a disposable environment, create an owner-only `0700` state directory and
+an owner-only `0600` JSON configuration containing `state_root`, exact full
+`manager_id` and `proxy_id`, and their full `manager_image` and `proxy_image`
+digests. Start `python -m auto_coder.management.proxy_watch_cli --config
+/absolute/path/to/config.json` as the trusted host owner after Docker is
+available. One locked process polls; it does not start the manager or report
+authenticated readiness. A new manager container ID requires a separately
+reviewed proxy definition and config, not substitution of a name.
+
+Before each Docker effect the watcher durably records the exact manager
+lifetime and `stop_unknown` or `start_unknown`. If a call times out, the
+watcher remains `NEEDS_ATTENTION` and never retries that effect. The operator
+must preserve this journal, inspect the exact Docker container/lifetime and
+actual namespace and listener, and explicitly reconcile the unknown outcome
+before planning a new effect. A durable `stopped` record can resume its single
+start only while the pinned manager lifetime is unchanged and the pinned proxy
+is independently observed stopped. `done` proves only matching namespaces;
+it is not an HTTP, OAuth, management-child or worker readiness assertion.

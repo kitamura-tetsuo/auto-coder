@@ -11,7 +11,7 @@ jobs:
   supervisor-integration:
     name: Supervisor Integration Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 150
     env:
       UV_LOCKED: "1"
     steps:
@@ -48,7 +48,9 @@ jobs:
             tests/test_worker_management_bridge.py::test_actual_daemon_uds_observes_admitted_drain_and_persists_receipt
 
       - name: Verify authenticated management self-update
-        timeout-minutes: 25
+        # Real process tests take about 50-150s each on hosted runners. The
+        # 31 selected cases exceed 25 minutes without an individual failure.
+        timeout-minutes: 55
         run: |
           uv run pytest -q -vv -m supervisor_integration \
             tests/test_management_self_update_integration.py \
@@ -83,12 +85,13 @@ jobs:
             tests/test_management_fresh_host_integration.py::test_real_listener_accepts_only_mount_order_changes \
             tests/test_management_fresh_host_integration.py::test_real_prior_supervisor_binds_instance_and_published_port \
             tests/test_management_fresh_end_to_end.py \
+            tests/test_management_retained_startup_container.py \
             --junitxml=supervisor-integration-logs/fresh-initialization.xml
           python3 - supervisor-integration-logs/fresh-initialization.xml <<'PY'
           import sys, xml.etree.ElementTree as ET
           root = ET.parse(sys.argv[1]).getroot()
           suites = list(root.iter('testsuite'))
-          assert sum(int(s.get('tests', 0)) for s in suites) == 15, 'expected all host tests'
+          assert sum(int(s.get('tests', 0)) for s in suites) == 17, 'expected all host tests'
           assert all(int(s.get('skipped', 0)) == 0 for s in suites), 'host tests must not skip'
           PY
 

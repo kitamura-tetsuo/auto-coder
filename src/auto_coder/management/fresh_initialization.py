@@ -51,6 +51,10 @@ class FreshInitializationIntent:
     oauth_inode: int
     guard_device: int
     guard_inode: int
+    host_prior_journal_root: str = ""
+    prior_journal_root: str = ""
+    prior_journal_device: int = 0
+    prior_journal_inode: int = 0
 
     def validate(self) -> None:
         if str(uuid.UUID(self.request_id)) != self.request_id:
@@ -84,6 +88,15 @@ class FreshInitializationIntent:
         for device, inode in ((self.state_device, self.state_inode), (self.journal_device, self.journal_inode), (self.oauth_device, self.oauth_inode), (self.guard_device, self.guard_inode)):
             if type(device) is not int or device < 0 or type(inode) is not int or inode <= 0:
                 raise ValueError("invalid mounted root identity")
+        prior = (self.host_prior_journal_root, self.prior_journal_root, self.prior_journal_device, self.prior_journal_inode)
+        if prior != ("", "", 0, 0):
+            host = Path(self.host_prior_journal_root)
+            if not host.is_absolute() or host != host.resolve() or self.prior_journal_root != "/management-prior-operations":
+                raise ValueError("invalid prior journal mount")
+            if type(self.prior_journal_device) is not int or self.prior_journal_device < 0 or type(self.prior_journal_inode) is not int or self.prior_journal_inode <= 0:
+                raise ValueError("invalid prior journal identity")
+            if any(host == other or host in other.parents or other in host.parents for other in host_roots):
+                raise ValueError("prior journal overlaps new roots or OAuth")
 
 
 def claim_fresh_initialization(root: Path, intent: FreshInitializationIntent) -> str:
@@ -235,13 +248,15 @@ def load_fresh_initialization(state_root: Path, *, host: bool = False) -> tuple[
         if len(encoded) > 65536:
             raise ValueError("fresh intent is too large")
         raw = json.loads(encoded)
-        if not isinstance(raw, dict) or set(raw) != set(FreshInitializationIntent.__dataclass_fields__):
+        optional = {"host_prior_journal_root", "prior_journal_root", "prior_journal_device", "prior_journal_inode"}
+        fields = set(FreshInitializationIntent.__dataclass_fields__)
+        if not isinstance(raw, dict) or set(raw) not in (fields, fields - optional):
             raise ValueError("fresh intent fields differ")
         intent = FreshInitializationIntent(**raw)
         intent.validate()
         root_info = os.fstat(directory)
         expected_root = intent.host_state_root if host else intent.state_root
-        if state_root != Path(expected_root) or (root_info.st_dev, root_info.st_ino) != (intent.state_device, intent.state_inode) or encoded != json.dumps(asdict(intent), sort_keys=True, separators=(",", ":")).encode():
+        if state_root != Path(expected_root) or (root_info.st_dev, root_info.st_ino) != (intent.state_device, intent.state_inode) or encoded != json.dumps(raw, sort_keys=True, separators=(",", ":")).encode():
             raise ValueError("fresh intent or mounted root differs")
         return intent, hashlib.sha256(encoded).hexdigest()
     finally:

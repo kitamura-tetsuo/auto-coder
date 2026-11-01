@@ -22,7 +22,7 @@ import subprocess
 import sys
 import time
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
@@ -35,6 +35,9 @@ from auto_coder.management.fresh_initialization import FreshInitializationIntent
 from auto_coder.management.identity import AdmissionResult, AdmissionStatus, ReasonCode, VerifiedPrincipal
 from auto_coder.management.oauth_config import OAuthClient, OAuthSettings
 from auto_coder.management.oauth_grants import AuthorizationRequest, OAuthGrantService
+from auto_coder.management.operation_store import ManagementOperationStore
+from auto_coder.management.operations import AcceptedAuthority, ActionParameter, ManagedTarget, OperationIntent, OperationPhase
+from auto_coder.operating_policy import MANAGEMENT_REPOSITORY
 
 pytestmark = [pytest.mark.supervisor_integration, pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep")]
 
@@ -167,25 +170,29 @@ def test_mutable_base_tag_cannot_change_digest_or_derived_image(tmp_path: Path) 
 
 
 @pytest.mark.parametrize(
-    "owner_token_gap, contention, crash_at, restart_after, prior_owner_locked",
+    "owner_token_gap, contention, crash_at, restart_after, prior_owner_locked, retained_history",
     [
-        (False, False, None, False, False),
-        (True, False, None, False, False),
-        (False, True, None, False, False),
-        (False, False, "before-claim", False, False),
-        (False, False, "after-claim", False, False),
-        (False, False, "after-launch", False, False),
-        (False, False, None, True, False),
-        (False, False, None, True, True),
+        (False, False, None, False, False, False),
+        (True, False, None, False, False, False),
+        (False, True, None, False, False, False),
+        (False, False, "before-claim", False, False, False),
+        (False, False, "after-claim", False, False, False),
+        (False, False, "after-launch", False, False, False),
+        (False, False, None, True, False, False),
+        (False, False, None, True, True, False),
+        (False, False, None, True, False, True),
     ],
 )
-def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path, owner_token_gap: bool, contention: bool, crash_at: str | None, restart_after: bool, prior_owner_locked: bool, record_property) -> None:
+def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path, owner_token_gap: bool, contention: bool, crash_at: str | None, restart_after: bool, prior_owner_locked: bool, retained_history: bool, record_property) -> None:
     if os.geteuid() != 0:
         pytest.skip("host root is required to observe the disposable Docker proxy and namespace evidence")
     root = tmp_path
     old_state, state, journal, oauth, guard, bootstrap, old_bootstrap = (root / name for name in ("old-state", "state", "journal", "oauth", "guard", "bootstrap", "old-bootstrap"))
     for directory in (old_state, state, journal, oauth, guard, bootstrap, old_bootstrap):
         directory.mkdir(mode=0o700)
+    old_journal = root / "old-operations"
+    if retained_history:
+        old_journal.mkdir(mode=0o700)
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
@@ -246,6 +253,8 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
         _build_fixture_image(context, base_image, tag, owner_token_gap=owner_token_gap, contention=contention, crash_at=crash_at)
         image = subprocess.check_output(["docker", "image", "inspect", tag, "--format", "{{.Id}}"], text=True).strip()
         old_mounts = [(old_state, "/management-child-state", True), (old_bootstrap, "/bootstrap", False), (oauth, "/management-oauth", True)]
+        if retained_history:
+            old_mounts.append((old_journal, "/management-operations", True))
         old_args = ["docker", "run", "-d", "--name", names[0], "--publish", f"127.0.0.1:{port}:8080"]
         for source_path, destination, writable in old_mounts:
             old_args += ["--mount", f"type=bind,src={source_path},dst={destination}" + ("" if writable else ",readonly")]
@@ -285,6 +294,19 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
         evidence_digest = _write_evidence(guard, {"management": asdict(old), "proxy": asdict(proxy)})
         subprocess.run(["docker", "stop", "--time", "1", proxy_id, old_id], check=True, capture_output=True, timeout=30)
         old_history = {str(path.relative_to(old_state)): hashlib.sha256(path.read_bytes()).hexdigest() for path in old_state.rglob("*") if path.is_file()}
+        old_operation_id = ""
+        if retained_history:
+            grant = grants.authenticate_access(token, settings.resource, (READ_SCOPE,))
+            accepted = grants.accepted_authority(grant)
+            authority = AcceptedAuthority(accepted.issuer, accepted.resource, accepted.project_id, accepted.uid, accepted.client_id, accepted.grant_id, accepted.accepted_scopes, accepted.auth_time, accepted.accepted_at)
+            old_store = ManagementOperationStore(old_journal)
+            old_intent = OperationIntent(ManagedTarget("old-fixture", "management", MANAGEMENT_REPOSITORY), "management-service-self-update", (ActionParameter("source_sha", "a" * 40),), "old-uncertain")
+            old_record = old_store.admit(old_intent, authority).record
+            assert old_record is not None
+            old_operation_id = old_record.operation_id
+            assert old_store.transition(old_operation_id, 0, OperationPhase.NEEDS_ATTENTION, safe_error_category="UNKNOWN:old-effect").record is not None
+            with sqlite3.connect(old_journal / "management-operations.sqlite3") as db:
+                assert db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
 
         def grant_history():
             with sqlite3.connect((oauth / "oauth.sqlite3").as_uri() + "?mode=ro", uri=True) as db:
@@ -304,6 +326,8 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
             (old_lock, "/management-prior-owner.lock", True),
         ):
             new_args += ["--mount", f"type=bind,src={source_path},dst={destination}" + (",readonly" if readonly else "")]
+        if retained_history:
+            new_args += ["--mount", f"type=bind,src={old_journal},dst=/management-prior-operations,readonly"]
         new_id = subprocess.check_output(new_args + [image, "--config", "/bootstrap/config.json", "--fresh-initialization"], text=True).strip()
         probe = "from pathlib import Path; from auto_coder.management.fresh_initialization import application_tree_sha256; print(application_tree_sha256(Path('/opt/auto-coder/.venv/lib/python3.12/site-packages/auto_coder')))"
         app_digest = subprocess.check_output(["docker", "run", "--rm", "--network", "none", "--read-only", "-e", "PYTHONDONTWRITEBYTECODE=1", "--entrypoint", "python", image, "-c", probe], text=True).strip().splitlines()[-1]
@@ -339,11 +363,35 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
             g.st_dev,
             g.st_ino,
         )
+        if retained_history:
+            old_db = (old_journal / "management-operations.sqlite3").stat()
+            intent = replace(intent, host_prior_journal_root=str(old_journal), prior_journal_root="/management-prior-operations", prior_journal_device=old_db.st_dev, prior_journal_inode=old_db.st_ino)
         intent_file = root / "intent.json"
         intent_file.write_text(json.dumps(asdict(intent)))
         intent_file.chmod(0o600)
         base = [sys.executable, "-m", "auto_coder.management.fresh_host"]
-        subprocess.run(base + ["claim", "--intent-file", str(intent_file), "--evidence-file", str(guard / "prior-evidence.json"), "--prior-lock", str(old_lock), "--prior-network-fd", str(network_fd)], pass_fds=(network_fd,), check=True, capture_output=True, timeout=30)
+        claim_script = """
+import sys
+from auto_coder.management import fresh_host
+original=fresh_host.assert_prior_network_unreferenced
+def inspect(namespace):
+ try: return original(namespace)
+ except Exception as e:
+  print('network cause: '+str(e.__cause__), file=sys.stderr, flush=True)
+  raise
+fresh_host.assert_prior_network_unreferenced=inspect
+sys.argv=['fresh_host']+sys.argv[1:]
+fresh_host.main()
+"""
+        claim_result = subprocess.run(
+            [sys.executable, "-c", claim_script] + ["claim", "--intent-file", str(intent_file), "--evidence-file", str(guard / "prior-evidence.json"), "--prior-lock", str(old_lock), "--prior-network-fd", str(network_fd)],
+            pass_fds=(network_fd,),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert claim_result.returncode == 0, claim_result.stderr
         if owner_token_gap or contention or crash_at:
             (state / "logs").mkdir()
         if owner_token_gap:
@@ -566,6 +614,11 @@ fresh_host.main()
             time.sleep(0.2)
         result = reply.stdout
         assert json.loads(result)["result"]["structuredContent"]["uid"] == "operator"
+        if retained_history:
+            old_query = {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "auto_coder_operation_get", "arguments": {"operation_id": old_operation_id}}}
+            previous = subprocess.run(["docker", "exec", "--interactive", new_id, "python", "-c", script], input=json.dumps({"request": old_query, "token": token}), text=True, capture_output=True, check=True, timeout=30)
+            old_result = json.loads(previous.stdout)["result"]["structuredContent"]
+            assert old_result["status"] == "UNKNOWN" and old_result["history_origin"] == "retained_prior_instance" and old_result["operation_id"] == old_operation_id
         while status_inside_container()["status"] != "succeeded":
             if time.monotonic() >= deadline:
                 raise AssertionError("authenticated child proof was not durably observed")
@@ -621,6 +674,10 @@ fresh_host.main()
             finally:
                 os.close(probe_lock)
             assert json.loads(reply.stdout)["result"]["structuredContent"]["uid"] == "operator"
+            if retained_history:
+                reread = subprocess.run(["docker", "exec", "--interactive", new_id, "python", "-c", script], input=json.dumps({"request": old_query, "token": token}), text=True, capture_output=True, check=True, timeout=30)
+                historical = json.loads(reread.stdout)["result"]["structuredContent"]
+                assert historical["status"] == "UNKNOWN" and historical["operation_id"] == old_operation_id
             # Fresh request and independent local verifier must join the new
             # child, not merely echo the initial authenticated HTTP response.
             observation_id = uuid.uuid4().hex

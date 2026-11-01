@@ -4,9 +4,10 @@ Run explicitly: python tests/manual_proxy_namespace_validation.py
 """
 
 import json
+import select
 import subprocess
+import sys
 import tempfile
-import threading
 import time
 import uuid
 from pathlib import Path
@@ -28,7 +29,7 @@ def http(name: str) -> bool:
 
 
 def wait_http(name: str, expected: bool) -> None:
-    for _ in range(30):
+    for _ in range(140):
         if http(name) is expected:
             return
         time.sleep(0.25)
@@ -63,6 +64,7 @@ def main() -> None:
     successor = "ac-proxy-proof-successor-" + suffix
     image = "sha256:5460b5773b335b60e11c259eca633a44ef7f76fe3579a24183703dca76523c32"
     caddy = "sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489"
+    watcher_process: subprocess.Popen[str] | None = None
     try:
         with tempfile.TemporaryDirectory(prefix="ac-proxy-proof-") as directory:
             root = Path(directory)
@@ -72,6 +74,16 @@ def main() -> None:
             docker("run", "-d", "--name", manager, "--entrypoint", "python", "-v", f"{root}:/fixture:ro", "-w", "/fixture", image, "-m", "http.server", "18081", "--bind", "127.0.0.1")
             docker("run", "-d", "--name", proxy, "--network", f"container:{manager}", "--entrypoint", "caddy", "-v", f"{root}/Caddyfile:/fixture/Caddyfile:ro", caddy, "run", "--config", "/fixture/Caddyfile", "--adapter", "caddyfile")
             wait_http(manager, True)
+            manager_id = json.loads(docker("inspect", manager))[0]["Id"]
+            proxy_id = json.loads(docker("inspect", proxy))[0]["Id"]
+            controller_root = root / "controller"
+            controller_root.mkdir(mode=0o700)
+            config = controller_root / "watcher.json"
+            config.write_text(json.dumps({"state_root": str(controller_root), "manager_id": manager_id, "manager_image": image, "proxy_id": proxy_id, "proxy_image": caddy}), encoding="utf-8")
+            config.chmod(0o600)
+            watcher_process = subprocess.Popen([sys.executable, "-m", "auto_coder.management.proxy_watch_cli", "--config", str(config)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            assert watcher_process.stdout is not None and select.select([watcher_process.stdout], [], [], 20)[0]
+            assert watcher_process.stdout.readline().strip() == "ATTACHED"
             before = netns(manager)
             assert before == netns(proxy)
             docker("restart", "-t", "3", manager)
@@ -82,21 +94,13 @@ def main() -> None:
             if after != stale:
                 wait_http(manager, False)
                 print("new manager cannot reach stale proxy: confirmed")
-                outcome: list[BaseException] = []
-
-                def auto_reconnect() -> None:
-                    try:
-                        reconnect_once(manager, proxy)
-                    except BaseException as error:
-                        outcome.append(error)
-
-                controller = threading.Thread(target=auto_reconnect)
-                controller.start()
-                controller.join(timeout=30)
-                if controller.is_alive() or outcome:
-                    raise RuntimeError("automatic proxy reconnect failed") from (outcome[0] if outcome else None)
+                wait_http(manager, True)
                 assert netns(proxy) == netns(manager)
+                assert json.loads((controller_root / "proxy-reconnect.json").read_text())["phase"] == "done"
                 print("automatic retained proxy reattachment and marker readback: confirmed")
+                watcher_process.terminate()
+                watcher_process.wait(timeout=10)
+                watcher_process = None
                 docker("restart", "-t", "3", manager)
                 wait_http(manager, False)
                 try:
@@ -135,6 +139,9 @@ def main() -> None:
                 wait_http(manager, True)
                 print("namespace survived this restart; proxy readback remains available")
     finally:
+        if watcher_process is not None:
+            watcher_process.terminate()
+            watcher_process.wait(timeout=10)
         for name in (successor, proxy, replacement, manager):
             docker("rm", "-f", name, check=False)
 

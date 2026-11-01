@@ -13,6 +13,7 @@ from auto_coder.management.oauth_grants import OAuthGrantService
 from auto_coder.management.operation_store import ManagementOperationStore
 from auto_coder.management.operations import ActionParameter, ManagedTarget, OperationIntent, OperationPhase
 from auto_coder.management.retained_journal import RetainedJournal
+from auto_coder.operating_policy import MANAGEMENT_REPOSITORY
 from tests.test_management_mcp import _issue, real_boundary  # noqa: F401
 from tests.test_management_retained_journal import retained
 from tests.test_management_runtime_mcp import _application, _call, _request, runtime_boundary  # noqa: F401
@@ -103,10 +104,14 @@ def test_authenticated_old_worker_lifecycle_snapshot_and_no_retransmit(real_boun
     operation = old.admit(intent, authority, lifecycle_snapshot=snapshot).record
     assert operation is not None
     assert old.transition(operation.operation_id, 0, OperationPhase.NEEDS_ATTENTION, safe_error_category="lifecycle_deadline_exceeded").record is not None
+    management_intent = OperationIntent(ManagedTarget("old-management", "management", MANAGEMENT_REPOSITORY), "management-service-self-update", (ActionParameter("source_sha", "a" * 40),), "old-update")
+    management_operation = old.admit(management_intent, authority).record
+    assert management_operation is not None
+    assert old.transition(management_operation.operation_id, 0, OperationPhase.NEEDS_ATTENTION, safe_error_category="UNKNOWN:old-handoff").record is not None
     database = tmp_path / "old" / "management-operations.sqlite3"
     fence = tmp_path / "owner.lock"
     fence.touch()
-    with RetainedJournal(database, fence, database_identity=identity(database), fence_identity=identity(fence)) as reader:
+    with RetainedJournal(database, fence, database_identity=identity(database), fence_identity=identity(fence), prior_management_instance="old-management") as reader:
         app = create_management_app(settings, grants, worker_clients={"beta": bridge}, retained_journal=reader)  # type: ignore[dict-item]
         with TestClient(app, base_url=origin) as client:
             query = {"target_id": "beta-worker", "operation_id": operation.operation_id}
@@ -117,6 +122,13 @@ def test_authenticated_old_worker_lifecycle_snapshot_and_no_retransmit(real_boun
             args = {"target_id": "beta-worker", "idempotency_key": "old-start", "expected_supervisor_generation": "old-supervisor", "expected_runtime_id": "bootstrap"}
             assert _call(client, token, "auto_coder_start_worker", args)["operation_id"] == operation.operation_id
             assert _call(client, token, "auto_coder_start_worker", {**args, "idempotency_key": "different"})["status"] == "BUSY"
+            old_update = _call(client, token, "auto_coder_operation_get", {"operation_id": management_operation.operation_id})
+            assert old_update["status"] == "UNKNOWN" and old_update["history_origin"] == "retained_prior_instance"
+            assert old_update["verification"]["handoff_phase"] == "unavailable"
+            replay = _call(client, token, "auto_coder_update_management_service", {"source_sha": "a" * 40, "idempotency_key": "old-update"})
+            assert replay["operation_id"] == management_operation.operation_id and replay["status"] == "UNKNOWN"
+            assert _call(client, token, "auto_coder_update_management_service", {"source_sha": "b" * 40, "idempotency_key": "old-update"})["status"] == "CONFLICT"
+            assert _call(client, token, "auto_coder_update_management_service", {"source_sha": "a" * 40, "idempotency_key": "new-update"})["status"] == "BUSY"
             assert bridge.actions == []
 
 
