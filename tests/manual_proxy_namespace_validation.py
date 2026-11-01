@@ -54,7 +54,7 @@ def main() -> None:
             (root / "marker").write_text("fresh-proxy-test", encoding="utf-8")
             (root / "Caddyfile").write_text(":18082 {\n reverse_proxy 127.0.0.1:18081\n}\n", encoding="utf-8")
             docker("run", "-d", "--name", manager, "--entrypoint", "python", "-v", f"{root}:/fixture:ro", "-w", "/fixture", image, "-m", "http.server", "18081", "--bind", "127.0.0.1")
-            docker("run", "-d", "--name", proxy, "--network", f"container:{manager}", "--entrypoint", "caddy", "-v", f"{root}/Caddyfile:/fixture/Caddyfile:ro", caddy, "run", "--config", "/fixture/Caddyfile", "--adapter", "caddyfile")
+            docker("run", "-d", "--name", proxy, "--network", f"container:{manager}", "--entrypoint", "caddy", "-v", f"{root}/Caddyfile:/etc/caddy/Caddyfile:ro", caddy, "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile")
             wait_http(manager, True)
             manager_id = json.loads(docker("inspect", manager))[0]["Id"]
             proxy_id = json.loads(docker("inspect", proxy))[0]["Id"]
@@ -108,7 +108,7 @@ def main() -> None:
                 assert json.loads((unknown_root / "proxy-reconnect.json").read_text())["phase"] == "stop_unknown"
                 assert json.loads(docker("inspect", proxy))[0]["State"]["Running"] is False
                 print("lost stop reply survives watcher reconstruction without replay: confirmed")
-                docker("run", "-d", "--name", successor, "--network", f"container:{manager}", "--entrypoint", "caddy", "-v", f"{root}/Caddyfile:/fixture/Caddyfile:ro", caddy, "run", "--config", "/fixture/Caddyfile", "--adapter", "caddyfile")
+                docker("run", "-d", "--name", successor, "--network", f"container:{manager}", "--entrypoint", "caddy", "-v", f"{root}/Caddyfile:/etc/caddy/Caddyfile:ro", caddy, "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile")
                 wait_http(manager, True)
                 assert netns(successor) == netns(manager)
                 print("successor proxy attached to new namespace and marker readback: confirmed")
@@ -144,7 +144,7 @@ def main() -> None:
                 docker("stop", "-t", "3", manager)
                 docker("run", "-d", "--name", replacement, "--entrypoint", "python", "-v", f"{root}:/fixture:ro", "-w", "/fixture", image, "-m", "http.server", "18081", "--bind", "127.0.0.1")
                 docker("rm", successor)
-                docker("run", "-d", "--name", successor, "--network", f"container:{replacement}", "--entrypoint", "caddy", "-v", f"{root}/Caddyfile:/fixture/Caddyfile:ro", caddy, "run", "--config", "/fixture/Caddyfile", "--adapter", "caddyfile")
+                docker("run", "-d", "--name", successor, "--network", f"container:{replacement}", "--entrypoint", "caddy", "-v", f"{root}/Caddyfile:/etc/caddy/Caddyfile:ro", caddy, "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile")
                 wait_http(replacement, True)
                 assert netns(successor) == netns(replacement)
                 print("replacement manager and replacement proxy HTTP readback: confirmed")

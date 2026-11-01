@@ -43,6 +43,10 @@ digests. Start `python -m auto_coder.management.proxy_watch_cli --config
 available. One locked process polls; it does not start the manager or report
 authenticated readiness. A new manager container ID requires a separately
 reviewed proxy definition and config, not substitution of a name.
+The watcher accepts only the exact direct Caddy entrypoint `caddy run --config
+/etc/caddy/Caddyfile --adapter caddyfile`. The retained production proxy's
+signal-gated shell is intentionally refused: restarting it does not launch
+Caddy. A replacement must use the direct definition and retain the old proxy.
 
 Before each Docker effect the watcher durably records the exact manager
 lifetime and `stop_unknown` or `start_unknown`. If a call times out, the

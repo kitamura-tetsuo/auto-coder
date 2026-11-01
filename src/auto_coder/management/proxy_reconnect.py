@@ -37,12 +37,12 @@ class DockerProxyObservation:
 
     @staticmethod
     def inspect(container: str) -> dict[str, object]:
-        template = "{{json .Id}}\n{{json .Image}}\n{{json .State.Running}}\n{{json .State.Pid}}\n{{json .State.StartedAt}}\n{{json .HostConfig.NetworkMode}}"
+        template = "{{json .Id}}\n{{json .Image}}\n{{json .State.Running}}\n{{json .State.Pid}}\n{{json .State.StartedAt}}\n{{json .HostConfig.NetworkMode}}\n{{json .Config.Entrypoint}}\n{{json .Config.Cmd}}"
         result = subprocess.run(["docker", "inspect", "--type", "container", "--format", template, container], check=True, capture_output=True, text=True, timeout=10)
         fields = [json.loads(line) for line in result.stdout.splitlines()]
-        if len(fields) != 6 or fields[0] != container or type(fields[2]) is not bool or type(fields[3]) is not int or not isinstance(fields[4], str):
+        if len(fields) != 8 or fields[0] != container or type(fields[2]) is not bool or type(fields[3]) is not int or not isinstance(fields[4], str):
             raise ValueError("container observation unavailable")
-        return dict(zip(("id", "image", "running", "pid", "started", "network"), fields))
+        return dict(zip(("id", "image", "running", "pid", "started", "network", "entrypoint", "command"), fields))
 
     @staticmethod
     def namespace(pid: int) -> str:
@@ -122,7 +122,7 @@ class ProxyReconnect:
 
     def _proxy(self) -> dict[str, object]:
         value = self.driver.inspect(self.binding.proxy_id)
-        if value["image"] != self.binding.proxy_image or value["network"] != "container:" + self.binding.manager_id:
+        if value["image"] != self.binding.proxy_image or value["network"] != "container:" + self.binding.manager_id or value["entrypoint"] != ["caddy"] or value["command"] != ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]:
             raise ValueError("proxy binding differs")
         return value
 
