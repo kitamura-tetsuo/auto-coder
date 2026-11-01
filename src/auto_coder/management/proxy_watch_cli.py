@@ -26,10 +26,10 @@ def main() -> int:
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600 or len(content) > 8192:
         raise PermissionError("proxy watcher config is not private")
     raw = json.loads(content)
-    if not isinstance(raw, dict) or set(raw) != {"state_root", "manager_id", "manager_image", "proxy_id", "proxy_image"} or any(not isinstance(value, str) for value in raw.values()):
+    if not isinstance(raw, dict) or set(raw) != {"state_root", "manager_id", "manager_image", "proxy_id", "proxy_image", "config_sha256"} or any(not isinstance(value, str) for value in raw.values()):
         raise ValueError("proxy watcher config differs")
     root = Path(raw["state_root"])
-    binding = ProxyBinding(raw["manager_id"], raw["manager_image"], raw["proxy_id"], raw["proxy_image"])
+    binding = ProxyBinding(raw["manager_id"], raw["manager_image"], raw["proxy_id"], raw["proxy_image"], raw["config_sha256"])
     controller = ProxyReconnect(root, binding, DockerProxyObservation())
     lock = os.open(root / "proxy-watch.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:

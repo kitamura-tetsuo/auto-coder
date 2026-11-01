@@ -3,6 +3,7 @@
 Run explicitly: python tests/manual_proxy_namespace_validation.py
 """
 
+import hashlib
 import json
 import select
 import subprocess
@@ -53,6 +54,7 @@ def main() -> None:
             root.chmod(0o755)
             (root / "marker").write_text("fresh-proxy-test", encoding="utf-8")
             (root / "Caddyfile").write_text(":18082 {\n reverse_proxy 127.0.0.1:18081\n}\n", encoding="utf-8")
+            config_digest = hashlib.sha256((root / "Caddyfile").read_bytes()).hexdigest()
             docker("run", "-d", "--name", manager, "--entrypoint", "python", "-v", f"{root}:/fixture:ro", "-w", "/fixture", image, "-m", "http.server", "18081", "--bind", "127.0.0.1")
             docker("run", "-d", "--name", proxy, "--network", f"container:{manager}", "--entrypoint", "caddy", "-v", f"{root}/Caddyfile:/etc/caddy/Caddyfile:ro", caddy, "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile")
             wait_http(manager, True)
@@ -61,7 +63,7 @@ def main() -> None:
             controller_root = root / "controller"
             controller_root.mkdir(mode=0o700)
             config = controller_root / "watcher.json"
-            config.write_text(json.dumps({"state_root": str(controller_root), "manager_id": manager_id, "manager_image": image, "proxy_id": proxy_id, "proxy_image": caddy}), encoding="utf-8")
+            config.write_text(json.dumps({"state_root": str(controller_root), "manager_id": manager_id, "manager_image": image, "proxy_id": proxy_id, "proxy_image": caddy, "config_sha256": config_digest}), encoding="utf-8")
             config.chmod(0o600)
             watcher_process = subprocess.Popen([sys.executable, "-m", "auto_coder.management.proxy_watch_cli", "--config", str(config)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             assert watcher_process.stdout is not None and select.select([watcher_process.stdout], [], [], 20)[0]
@@ -83,6 +85,20 @@ def main() -> None:
                 watcher_process.terminate()
                 watcher_process.wait(timeout=10)
                 watcher_process = None
+                config_file = root / "Caddyfile"
+                original_config = config_file.read_bytes()
+                started_before = json.loads(docker("inspect", proxy))[0]["State"]["StartedAt"]
+                config_file.write_bytes(original_config + b"\n# changed fixture\n")
+                guard = ProxyReconnect(controller_root, ProxyBinding(manager_id, image, proxy_id, caddy, config_digest), DockerProxyObservation())
+                try:
+                    guard.tick()
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("changed proxy configuration was not refused")
+                assert json.loads(docker("inspect", proxy))[0]["State"]["StartedAt"] == started_before
+                config_file.write_bytes(original_config)
+                print("changed proxy configuration refused without effect: confirmed")
                 docker("restart", "-t", "3", manager)
                 wait_http(manager, False)
 
@@ -94,7 +110,7 @@ def main() -> None:
 
                 unknown_root = root / "unknown-controller"
                 unknown_root.mkdir(mode=0o700)
-                binding = ProxyBinding(manager_id, image, proxy_id, caddy)
+                binding = ProxyBinding(manager_id, image, proxy_id, caddy, config_digest)
                 unknown = ProxyReconnect(unknown_root, binding, LostStopReply())
                 try:
                     unknown.tick()

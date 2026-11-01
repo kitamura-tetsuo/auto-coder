@@ -691,7 +691,7 @@ except urllib.error.HTTPError as e: print(json.dumps({'status':e.code,'body':''}
             watcher_state = root / "proxy-watcher"
             watcher_state.mkdir(mode=0o700)
             watcher_config = watcher_state / "config.json"
-            watcher_config.write_text(json.dumps({"state_root": str(watcher_state), "manager_id": new_id, "manager_image": image, "proxy_id": proxy_id, "proxy_image": proxy_image}), encoding="utf-8")
+            watcher_config.write_text(json.dumps({"state_root": str(watcher_state), "manager_id": new_id, "manager_image": image, "proxy_id": proxy_id, "proxy_image": proxy_image, "config_sha256": hashlib.sha256(Path(proxy_config).read_bytes()).hexdigest()}), encoding="utf-8")
             watcher_config.chmod(0o600)
             proxy_watcher = subprocess.Popen([sys.executable, "-m", "auto_coder.management.proxy_watch_cli", "--config", str(watcher_config)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if retained_history:

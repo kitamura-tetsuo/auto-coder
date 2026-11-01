@@ -38,7 +38,9 @@ proved safe.
 For a disposable environment, create an owner-only `0700` state directory and
 an owner-only `0600` JSON configuration containing `state_root`, exact full
 `manager_id` and `proxy_id`, and their full `manager_image` and `proxy_image`
-digests. Start `python -m auto_coder.management.proxy_watch_cli --config
+digests, plus `config_sha256` of the protected read-only Caddyfile. The watcher
+refuses missing, changed, writable, shadowed or unprotected config mounts.
+Start `python -m auto_coder.management.proxy_watch_cli --config
 /absolute/path/to/config.json` as the trusted host owner after Docker is
 available. One locked process polls; it does not start the manager or report
 authenticated readiness. A new manager container ID requires a separately

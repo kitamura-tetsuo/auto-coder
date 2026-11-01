@@ -17,6 +17,7 @@ class Driver:
         self.proxy = {"id": binding.proxy_id, "image": binding.proxy_image, "running": True, "pid": 20, "started": "one", "network": "container:" + binding.manager_id, "entrypoint": ["caddy"], "command": ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]}
         self.namespaces = {10: "net:[2]", 20: "net:[1]"}
         self.effects: list[str] = []
+        self.config = binding.config_sha256
         self.fail = ""
         self.change_after_stop = False
 
@@ -25,6 +26,9 @@ class Driver:
 
     def namespace(self, pid: int) -> str:
         return self.namespaces[pid]
+
+    def config_digest(self, _proxy: str) -> str:
+        return self.config
 
     def effect(self, action: str, _proxy: str) -> None:
         self.effects.append(action)
@@ -41,7 +45,7 @@ class Driver:
 
 
 def fixture(tmp_path: Path) -> tuple[ProxyReconnect, Driver]:
-    binding = ProxyBinding("a" * 64, "sha256:" + "b" * 64, "c" * 64, "sha256:" + "d" * 64)
+    binding = ProxyBinding("a" * 64, "sha256:" + "b" * 64, "c" * 64, "sha256:" + "d" * 64, "e" * 64)
     driver = Driver(binding)
     return ProxyReconnect(tmp_path, binding, driver), driver  # type: ignore[arg-type]
 
@@ -102,6 +106,14 @@ def test_unexpected_stopped_proxy_and_wrong_image_never_issue_effects(tmp_path: 
 def test_signal_gated_proxy_is_never_treated_as_reconnected(tmp_path: Path) -> None:
     controller, driver = fixture(tmp_path)
     driver.proxy.update(entrypoint=["/bin/sh"], command=["-c", "wait for signal"])
+    with pytest.raises(ValueError):
+        controller.tick()
+    assert driver.effects == []
+
+
+def test_changed_proxy_configuration_refuses_without_effect(tmp_path: Path) -> None:
+    controller, driver = fixture(tmp_path)
+    driver.config = "f" * 64
     with pytest.raises(ValueError):
         controller.tick()
     assert driver.effects == []

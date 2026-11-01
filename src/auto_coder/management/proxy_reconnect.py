@@ -7,6 +7,7 @@ authorize application startup, issue OAuth credentials, or assert MCP readiness.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -24,12 +25,15 @@ class ProxyBinding:
     manager_image: str
     proxy_id: str
     proxy_image: str
+    config_sha256: str
 
     def validate(self) -> None:
         if not _ID.fullmatch(self.manager_id) or not _ID.fullmatch(self.proxy_id) or self.manager_id == self.proxy_id:
             raise ValueError("exact distinct container identities required")
         if not self.manager_image.startswith("sha256:") or not _ID.fullmatch(self.manager_image[7:]) or not self.proxy_image.startswith("sha256:") or not _ID.fullmatch(self.proxy_image[7:]):
             raise ValueError("exact image identities required")
+        if not _ID.fullmatch(self.config_sha256):
+            raise ValueError("exact proxy configuration digest required")
 
 
 class DockerProxyObservation:
@@ -52,6 +56,41 @@ class DockerProxyObservation:
         if not re.fullmatch(r"net:\[[0-9]+\]", namespace):
             raise ValueError("network namespace unavailable")
         return namespace
+
+    @staticmethod
+    def config_digest(container: str) -> str:
+        result = subprocess.run(["docker", "inspect", "--type", "container", "--format", "{{json .Mounts}}", container], check=True, capture_output=True, text=True, timeout=10)
+        mounts = json.loads(result.stdout)
+        if not isinstance(mounts, list):
+            raise ValueError("proxy mount evidence unavailable")
+        target = Path("/etc/caddy/Caddyfile")
+        matches = [m for m in mounts if isinstance(m, dict) and m.get("Destination") == str(target)]
+        if len(matches) != 1 or matches[0].get("Type") != "bind" or matches[0].get("RW") is not False or not isinstance(matches[0].get("Source"), str):
+            raise ValueError("proxy configuration bind differs")
+        for mount in mounts:
+            if not isinstance(mount, dict) or not isinstance(mount.get("Destination"), str):
+                raise ValueError("proxy mount evidence unavailable")
+            other = Path(mount["Destination"])
+            if other != target and (other in target.parents or target in other.parents):
+                raise ValueError("proxy configuration bind is shadowed")
+        source = Path(matches[0]["Source"])
+        if not source.is_absolute() or source.is_symlink() or source != source.resolve():
+            raise ValueError("proxy configuration source differs")
+        descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid() or stat.S_IMODE(before.st_mode) & 0o022:
+                raise ValueError("proxy configuration source is not protected")
+            content = stream.read(1024 * 1024 + 1)
+            after = os.fstat(stream.fileno())
+        before_identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+        after_identity = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+        if len(content) > 1024 * 1024 or before_identity != after_identity:
+            raise ValueError("proxy configuration changed while observed")
+        current = source.lstat()
+        if (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns, current.st_ctime_ns) != after_identity:
+            raise ValueError("proxy configuration source changed")
+        return hashlib.sha256(content).hexdigest()
 
     @staticmethod
     def effect(action: str, proxy_id: str) -> None:
@@ -122,7 +161,13 @@ class ProxyReconnect:
 
     def _proxy(self) -> dict[str, object]:
         value = self.driver.inspect(self.binding.proxy_id)
-        if value["image"] != self.binding.proxy_image or value["network"] != "container:" + self.binding.manager_id or value["entrypoint"] != ["caddy"] or value["command"] != ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]:
+        if (
+            value["image"] != self.binding.proxy_image
+            or value["network"] != "container:" + self.binding.manager_id
+            or value["entrypoint"] != ["caddy"]
+            or value["command"] != ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+            or self.driver.config_digest(self.binding.proxy_id) != self.binding.config_sha256
+        ):
             raise ValueError("proxy binding differs")
         return value
 
