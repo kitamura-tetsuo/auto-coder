@@ -167,10 +167,19 @@ def test_mutable_base_tag_cannot_change_digest_or_derived_image(tmp_path: Path) 
 
 
 @pytest.mark.parametrize(
-    "owner_token_gap, contention, crash_at",
-    [(False, False, None), (True, False, None), (False, True, None), (False, False, "before-claim"), (False, False, "after-claim"), (False, False, "after-launch")],
+    "owner_token_gap, contention, crash_at, restart_after, prior_owner_locked",
+    [
+        (False, False, None, False, False),
+        (True, False, None, False, False),
+        (False, True, None, False, False),
+        (False, False, "before-claim", False, False),
+        (False, False, "after-claim", False, False),
+        (False, False, "after-launch", False, False),
+        (False, False, None, True, False),
+        (False, False, None, True, True),
+    ],
 )
-def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path, owner_token_gap: bool, contention: bool, crash_at: str | None, record_property) -> None:
+def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path, owner_token_gap: bool, contention: bool, crash_at: str | None, restart_after: bool, prior_owner_locked: bool, record_property) -> None:
     if os.geteuid() != 0:
         pytest.skip("host root is required to observe the disposable Docker proxy and namespace evidence")
     root = tmp_path
@@ -199,10 +208,12 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
     base_image = _resolve_fixture_base(os.environ.get("AUTOCODER_FRESH_TEST_BASE_IMAGE", "auto-coder:management-local-abc65544"))
     executable_digest = _fixture_executable_digest(base_image)
     runtime = {"reference": "bootstrap", "receipt": "sha256:" + executable_digest, "executable": "/opt/auto-coder/.venv/bin/auto-coder", "arguments": ["management", "serve", "--config", "/bootstrap/management.yaml"], "environment": {"PYTHONDONTWRITEBYTECODE": "1"}}
+    if restart_after:
+        runtime["drain_ack"] = "/management-child-state/drain-bootstrap.json"
     common = {"state_root": "/management-child-state", "oauth_root": "/management-oauth", "journal_root": "/management-operations", "listener_url": origin + "/mcp", "initial_runtime": "bootstrap", "runtimes": [runtime]}
     (old_bootstrap / "config.json").write_text(json.dumps({**common, "instance_id": "old-fixture", "crash_budget": 0}))
     config = bootstrap / "config.json"
-    config.write_text(json.dumps({**common, "instance_id": "fresh-fixture", "fresh_guard_path": "/management-initialization/fresh-guard.sock", "fresh_prior_lock_path": "/management-prior-owner.lock"}))
+    config.write_text(json.dumps({**common, "instance_id": "fresh-fixture", "fresh_guard_path": "/management-initialization/fresh-guard.sock", "fresh_prior_lock_path": "/management-prior-owner.lock", "restart_after_clean_shutdown": restart_after}))
     management = bootstrap / "management.yaml"
     management.write_text(
         yaml.safe_dump(
@@ -568,6 +579,67 @@ fresh_host.main()
         tracer = None
         starts = [line for line in trace.read_text().splitlines() if 'execve("/opt/auto-coder/.venv/bin/auto-coder"' in line]
         assert len(starts) == 1, starts
+        if restart_after:
+            with sqlite3.connect(state / "management-child.sqlite3") as db:
+                previous = json.loads(db.execute("SELECT record_json FROM child_state").fetchone()[0])
+            # Drop the host test fence so only the successor can hold the old
+            # owner out; the kernel lock is checked again after reconstruction.
+            assert fence is not None
+            os.close(fence)
+            fence = None
+            subprocess.run(["docker", "stop", "--timeout", "40", new_id], check=True, capture_output=True, timeout=50)
+            probe_lock = os.open(old_lock, os.O_RDONLY)
+            fcntl.flock(probe_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with sqlite3.connect(state / "management-child.sqlite3") as db:
+                stopped = json.loads(db.execute("SELECT record_json FROM child_state").fetchone()[0])
+            assert stopped["phase"] == "stopped" and stopped["intended_stop"] is True
+            if prior_owner_locked:
+                subprocess.run(["docker", "start", new_id], check=True, capture_output=True, timeout=30)
+                assert subprocess.check_output(["docker", "wait", new_id], text=True, timeout=30).strip() != "0"
+                with sqlite3.connect(state / "management-child.sqlite3") as db:
+                    assert db.execute("SELECT count(*) FROM effects WHERE action='START_SELECTED'").fetchone()[0] == 1
+            fcntl.flock(probe_lock, fcntl.LOCK_UN)
+            os.close(probe_lock)
+            subprocess.run(["docker", "start", new_id], check=True, capture_output=True, timeout=30)
+            end = time.monotonic() + 60
+            while True:
+                with sqlite3.connect(state / "management-child.sqlite3") as db:
+                    new = json.loads(db.execute("SELECT record_json FROM child_state").fetchone()[0])
+                    starts_after = db.execute("SELECT count(*) FROM effects WHERE action='START_SELECTED'").fetchone()[0]
+                reply = subprocess.run(["docker", "exec", "--interactive", new_id, "python", "-c", script], input=json.dumps({"request": request, "token": token}), text=True, capture_output=True, check=False, timeout=30)
+                if reply.returncode == 0 and new["phase"] == "running":
+                    break
+                assert time.monotonic() < end, "restarted management child never became authenticated"
+                time.sleep(0.2)
+            assert new["child_generation"] == previous["child_generation"] + 1
+            assert new["supervisor_incarnation"] != previous["supervisor_incarnation"]
+            assert starts_after == 2
+            probe_lock = os.open(old_lock, os.O_RDONLY)
+            try:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(probe_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                os.close(probe_lock)
+            assert json.loads(reply.stdout)["result"]["structuredContent"]["uid"] == "operator"
+            # Fresh request and independent local verifier must join the new
+            # child, not merely echo the initial authenticated HTTP response.
+            observation_id = uuid.uuid4().hex
+            observation_start = time.time()
+            request["params"]["arguments"] = {"observation_id": observation_id}
+            reply = subprocess.run(["docker", "exec", "--interactive", new_id, "python", "-c", script], input=json.dumps({"request": request, "token": token}), text=True, capture_output=True, check=True, timeout=30)
+            assert json.loads(reply.stdout)["result"]["structuredContent"]["uid"] == "operator"
+            proof_probe = (
+                "from pathlib import Path; import sys; "
+                "from auto_coder.management.bootstrap_supervisor import BootstrapConfig; "
+                "from auto_coder.management.readiness_observation import read_authenticated_readback; "
+                "c=BootstrapConfig.read(Path('/bootstrap/config.json')); "
+                "p=read_authenticated_readback(c,observation_id=sys.argv[1],"
+                "observation_started_at=float(sys.argv[2]),observation_ends_at=float(sys.argv[2])+60); "
+                "print(p.child_identity if p else 'UNAVAILABLE')"
+            )
+            proof = subprocess.check_output(["docker", "exec", new_id, "python", "-c", proof_probe, observation_id, str(observation_start)], text=True, timeout=15).strip()
+            assert proof != "UNAVAILABLE" and proof.startswith(str(new["pid"]) + ":" + new["start_token"] + ":")
+            assert status_inside_container()["status"] == "succeeded"
         assert grant_history() == retained_grants
         assert {str(path.relative_to(old_state)): hashlib.sha256(path.read_bytes()).hexdigest() for path in old_state.rglob("*") if path.is_file()} == old_history
     finally:
