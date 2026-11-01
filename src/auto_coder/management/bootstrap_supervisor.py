@@ -254,6 +254,12 @@ class BootstrapConfig:
         refs = {runtime.reference for runtime in self.runtimes}
         if len(refs) != len(self.runtimes) or self.initial_runtime not in refs or self.crash_budget < 0 or not 0 < self.graceful_timeout <= 3600:
             raise ValueError("invalid runtime profile")
+        if type(self.restart_after_clean_shutdown) is not bool:
+            raise ValueError("restart-after-clean-shutdown must be a boolean")
+        if self.restart_after_clean_shutdown:
+            initial = next(item for item in self.runtimes if item.reference == self.initial_runtime)
+            if initial.drain_ack is None or not initial.drain_ack.is_absolute():
+                raise ValueError("clean restart requires a fixed drain receipt path")
         if (self.management_version_root is None) != (self.management_config is None) or not 0 < self.verification_timeout <= 3600:
             raise ValueError("invalid management self-update bootstrap profile")
         if (self.fresh_guard_path is None) != (self.fresh_prior_lock_path is None) or any(path is not None and not path.is_absolute() for path in (self.fresh_guard_path, self.fresh_prior_lock_path)):
