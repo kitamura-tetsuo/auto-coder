@@ -22,14 +22,23 @@ def test_supervisor_integration_job_runs_independently_on_pull_requests() -> Non
     assert steps["Install uv"]["with"]["version"] == "0.7.22"
     assert "uv sync --locked --dev --extra test" in steps["Install locked test dependencies"]["run"]
     management = steps["Verify authenticated management self-update"]
-    assert management["timeout-minutes"] == 25
+    assert management["timeout-minutes"] == 55
+    assert job["timeout-minutes"] >= management["timeout-minutes"]
     assert "-m supervisor_integration" in management["run"]
     assert "tests/test_management_self_update_integration.py" in management["run"]
     assert "tests/test_management_self_update_failures.py" in management["run"]
     assert "--junitxml=supervisor-integration-logs/management-self-update.xml" in management["run"]
     build = steps["Build the checked-out production image"]["run"]
     assert "scripts/prepare_opencode_image.py" in build
+    host = steps["Verify fresh initialization with host evidence"]["run"]
+    assert "tests/test_management_retained_startup_container.py" in host
+    assert "tests/test_management_proxy_watcher_process_integration.py" in host
+    assert "== 19" in host and "skipped" in host
     assert "-o timeout=60" in steps["Test real worker processes and management bridge"]["run"]
+    assert "test_forced_cancel_reaps_orphan_only_after_owned_thread_finishes" in steps["Test real worker processes and management bridge"]["run"]
+    assert "test_cancelled_async_wrapper_does_not_release_running_thread" in steps["Test real worker processes and management bridge"]["run"]
+    assert "set -o pipefail" in steps["Test real worker processes and management bridge"]["run"]
+    assert steps["Test real worker processes and management bridge"]["run"].count("tail -n 400") == 2
     container = steps["Verify isolated Supervisor containers"]
     assert "-m supervisor_integration" in container["run"]
     assert "tests/test_supervisor_container_integration.py" in container["run"]

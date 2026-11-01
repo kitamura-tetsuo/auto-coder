@@ -142,6 +142,9 @@ class WorkerLifecycle:
         )
         intent = OperationIntent(resolved.target, action, params, idempotency_key, expected_process_run_id or "-", expected_deployment_generation or "-")
         original = self.runtime._journal_authority(grant, self.runtime.grants.accepted_authority(grant))
+        retained = await asyncio.to_thread(self.runtime.retained_admission, intent, original, target_id)
+        if retained is not None:
+            return retained
         old = await asyncio.to_thread(self.runtime.journal.find_by_key, intent, original)
         if old.status is ReadStatus.UNAVAILABLE:
             return self._answer("UNAVAILABLE", "journal_unavailable")
@@ -207,7 +210,11 @@ class WorkerLifecycle:
             persisted = None
         if persisted is None:
             return self._answer("NEEDS_ATTENTION", "lifecycle_journal_unavailable", operation_id=record.operation_id)
-        snapshot = persisted[1]
+        return self.project_snapshot(record, persisted[1])
+
+    def project_snapshot(self, record: OperationRecord, snapshot: dict[str, object]) -> dict[str, object]:
+        if not isinstance(snapshot.get("stage"), str):
+            return self._answer("NEEDS_ATTENTION", "lifecycle_journal_unavailable", operation_id=record.operation_id)
         return self._answer(
             str(snapshot["stage"]),
             record.safe_error_category or "worker_lifecycle",
@@ -312,6 +319,8 @@ class WorkerLifecycle:
         if identity != "SAME":
             return record
         if name not in steps:
+            if not self.runtime.retained_effect_permitted(record):
+                return record
             fence = snapshot["incumbent"]
             assert isinstance(fence, dict)
             refusal = self._authority_refusal(record)
@@ -342,6 +351,8 @@ class WorkerLifecycle:
                 request = {"operation": operation, "expected_supervisor_incarnation": client.supervisor_generation, "expected_process_run_id": expected_run, "expected_generation": expected_generation, "expected_runtime_id": selected_runtime, "runtime_id": runtime_id}
                 steps[name]["expected_digest"] = WorkerSupervisor._digest(request)
             if not self._save(record, version, snapshot):
+                return record
+            if not self.runtime.retained_effect_permitted(record):
                 return record
             if name == "prepare":
                 response = client.prepare_version(effect_id, str(snapshot["source_sha"]))

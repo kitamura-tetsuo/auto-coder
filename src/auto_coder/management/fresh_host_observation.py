@@ -138,6 +138,13 @@ def _inspect(container_id: str) -> list[object]:
     return values
 
 
+def _supported_prior_command(entrypoint: object, command: object) -> bool:
+    return (entrypoint, command) in (
+        (["python", "-m", "auto_coder.management.bootstrap_supervisor"], ["--config", "/bootstrap/config.json"]),
+        (["python"], ["-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json"]),
+    )
+
+
 def capture_prior_container(container_id: str, image_id: str, *, expected_mounts: tuple[tuple[str, str, bool], ...] = (), require_owner_lock: bool = False, require_deployment_identity: bool = False) -> PriorContainer:
     """Observe the actual live container and its supported containment profile."""
     engine = _engine_id()
@@ -218,7 +225,7 @@ def capture_prior_container(container_id: str, image_id: str, *, expected_mounts
         instance_id, bootstrap_source, bootstrap_sha256, published_port = "", "", "", 0
         oauth_source, oauth_device, oauth_inode = "", 0, 0
         if require_deployment_identity:
-            if values[15:17] != [["python", "-m", "auto_coder.management.bootstrap_supervisor"], ["--config", "/bootstrap/config.json"]]:
+            if not _supported_prior_command(values[15], values[16]):
                 raise ValueError("prior supervisor entrypoint differs")
             sources = [source for source, destination, rw in observed_mounts if destination == "/bootstrap" and not rw]
             if len(sources) != 1:
@@ -313,7 +320,7 @@ def assert_prior_container_stopped(prior: PriorContainer) -> None:
         mounts = values[11]
         expected_source = str(Path(prior.bootstrap_source).parent)
         if (
-            values[15:17] != [["python", "-m", "auto_coder.management.bootstrap_supervisor"], ["--config", "/bootstrap/config.json"]]
+            not _supported_prior_command(values[15], values[16])
             or values[17] != {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(prior.published_port)}]}
             or Path(prior.bootstrap_source).name != "config.json"
             or not isinstance(mounts, list)
@@ -406,6 +413,43 @@ def assert_retained_oauth_mount(prior: PriorContainer, intent: FreshInitializati
             os.close(descriptor)
     except (OSError, ValueError) as exc:
         raise HostObservationUnavailable("retained OAuth provenance unavailable") from exc
+
+
+def assert_retained_journal_source(prior: PriorContainer, intent: FreshInitializationIntent) -> None:
+    """Bind the optional prior journal to the captured old deployment."""
+    if not intent.host_prior_journal_root:
+        return
+    try:
+        descriptor = os.open(prior.bootstrap_source, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as stream:
+            config_bytes = stream.read(65537)
+        if len(config_bytes) > 65536 or hashlib.sha256(config_bytes).hexdigest() != prior.bootstrap_sha256:
+            raise ValueError("prior bootstrap bytes differ")
+        config = json.loads(config_bytes)
+        if config.get("instance_id") != prior.instance_id or config.get("journal_root") != "/management-operations":
+            raise ValueError("prior journal configuration differs")
+        mounts = _inspect(prior.container_id)[11]
+        if not isinstance(mounts, list):
+            raise ValueError("prior mounts unavailable")
+        observed = tuple(sorted((str(mount["Source"]), str(mount["Destination"]), mount["RW"]) for mount in mounts if isinstance(mount, dict) and mount.get("Type") == "bind" and type(mount.get("RW")) is bool))
+        if len(observed) != len(mounts) or hashlib.sha256(json.dumps(observed, separators=(",", ":")).encode()).hexdigest() != prior.mounts_sha256:
+            raise ValueError("prior mount profile differs")
+        matches = [item for item in observed if item[1] == "/management-operations"]
+        if matches != [(intent.host_prior_journal_root, "/management-operations", True)]:
+            raise ValueError("prior journal source differs")
+        root = os.open(intent.host_prior_journal_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            database = os.open("management-operations.sqlite3", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root)
+            try:
+                info = os.fstat(database)
+                if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != (intent.prior_journal_device, intent.prior_journal_inode):
+                    raise ValueError("prior journal database identity differs")
+            finally:
+                os.close(database)
+        finally:
+            os.close(root)
+    except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        raise HostObservationUnavailable("retained journal source unavailable") from exc
 
 
 def _validate_host_proc_profile(pid_namespace: str, uid_map: str, mountinfo: str) -> None:
@@ -631,6 +675,8 @@ def assert_replacement_owner(intent: FreshInitializationIntent, incarnation: str
             raise ValueError("replacement containment is unsupported")
         expected = {intent.state_root: intent.host_state_root, intent.journal_root: intent.host_journal_root, intent.oauth_root: intent.host_oauth_root}
         allowed_destinations = set(expected) | {"/bootstrap", "/management-policy", "/management-versions", "/management-initialization", "/management-prior-owner.lock", "/run/firebase-admin", "/run/secrets/release_worker_bridge", "/run/secrets/beta_worker_bridge"}
+        if intent.host_prior_journal_root:
+            allowed_destinations.add(intent.prior_journal_root)
         for mount in mounts:
             if isinstance(mount, dict) and mount.get("Type") == "tmpfs" and mount.get("Destination") == "/tmp":
                 continue
@@ -653,6 +699,17 @@ def assert_replacement_owner(intent: FreshInitializationIntent, incarnation: str
         lock_info = Path(str(lock_mount[0].get("Source"))).stat()
         if (lock_info.st_dev, lock_info.st_ino) != (intent.owner_lock_device, intent.owner_lock_inode):
             raise ValueError("replacement prior fence source differs")
+        if intent.host_prior_journal_root:
+            prior_mounts = [mount for mount in mounts if isinstance(mount, dict) and mount.get("Destination") == intent.prior_journal_root]
+            if len(prior_mounts) != 1 or prior_mounts[0].get("Source") != intent.host_prior_journal_root or prior_mounts[0].get("RW") is not False:
+                raise ValueError("replacement prior journal mount differs")
+            target = Path(intent.prior_journal_root)
+            for mount in mounts:
+                if not isinstance(mount, dict) or not isinstance(mount.get("Destination"), str):
+                    raise ValueError("replacement mount evidence unavailable")
+                other = Path(mount["Destination"])
+                if other != target and (other in target.parents or target in other.parents):
+                    raise ValueError("prior journal mount is shadowed")
         for destination, source in expected.items():
             matching = [mount for mount in mounts if isinstance(mount, dict) and mount.get("Destination") == destination]
             if len(matching) != 1 or matching[0].get("Type") != "bind" or matching[0].get("Source") != source or matching[0].get("RW") is not True:
@@ -715,6 +772,7 @@ def serve_one_fresh_grant(socket_path: Path, intent: FreshInitializationIntent, 
         raise HostObservationUnavailable("host guard fence differs")
     assert_peer_holds_shared_fence(os.getpid(), fence_descriptor)
     assert_known_prior_stack_stopped(management, proxy)
+    assert_retained_journal_source(management, intent)
     assert_prior_network_unreferenced(management.net_namespace)
     assert_host_listener_absent(intent.host_listener_port)
     record = Path(intent.host_state_root) / "fresh-initialization.json"
@@ -722,7 +780,12 @@ def serve_one_fresh_grant(socket_path: Path, intent: FreshInitializationIntent, 
         raise HostObservationUnavailable("initialization intent is unavailable")
     encoded = record.read_bytes()
     expected = json.dumps(asdict(intent), sort_keys=True, separators=(",", ":")).encode()
-    if encoded != expected:
+    legacy = asdict(intent)
+    if not intent.host_prior_journal_root:
+        for key in ("host_prior_journal_root", "prior_journal_root", "prior_journal_device", "prior_journal_inode"):
+            legacy.pop(key)
+    legacy_encoded = json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode()
+    if encoded not in (expected, legacy_encoded):
         raise HostObservationUnavailable("initialization intent differs")
     intent_digest = hashlib.sha256(encoded).hexdigest()
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
@@ -762,11 +825,13 @@ def serve_one_fresh_grant(socket_path: Path, intent: FreshInitializationIntent, 
             ):
                 raise HostObservationUnavailable("fresh grant request identity differs")
             assert_known_prior_stack_stopped(management, proxy)
+            assert_retained_journal_source(management, intent)
             assert_prior_network_pin(network_descriptor, management.net_namespace)
             assert_prior_network_unreferenced(management.net_namespace)
             assert_replacement_owner(intent, incarnation, peer_pid, fence_descriptor, socket_path.parent)
             assert_peer_holds_shared_fence(os.getpid(), fence_descriptor)
             assert_known_prior_stack_stopped(management, proxy)
+            assert_retained_journal_source(management, intent)
             assert_prior_network_pin(network_descriptor, management.net_namespace)
             assert_prior_network_unreferenced(management.net_namespace)
             assert_replacement_owner(intent, incarnation, peer_pid, fence_descriptor, socket_path.parent)

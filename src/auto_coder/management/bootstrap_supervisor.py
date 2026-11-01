@@ -183,13 +183,30 @@ class BootstrapConfig:
     verification_timeout: float = 120.0
     fresh_guard_path: Path | None = None
     fresh_prior_lock_path: Path | None = None
+    restart_after_clean_shutdown: bool = False
 
     @classmethod
     def read(cls, path: Path) -> "BootstrapConfig":
         if not path.is_absolute() or path.is_symlink():
             raise ValueError("bootstrap configuration must be an absolute regular file")
         raw = json.loads(path.read_text(encoding="utf-8"))
-        allowed = {"instance_id", "state_root", "oauth_root", "journal_root", "listener_url", "initial_runtime", "runtimes", "graceful_timeout", "crash_budget", "management_version_root", "management_config", "verification_timeout", "fresh_guard_path", "fresh_prior_lock_path"}
+        allowed = {
+            "instance_id",
+            "state_root",
+            "oauth_root",
+            "journal_root",
+            "listener_url",
+            "initial_runtime",
+            "runtimes",
+            "graceful_timeout",
+            "crash_budget",
+            "management_version_root",
+            "management_config",
+            "verification_timeout",
+            "fresh_guard_path",
+            "fresh_prior_lock_path",
+            "restart_after_clean_shutdown",
+        }
         if set(raw) - allowed:
             raise ValueError("unknown bootstrap configuration field")
         runtimes = tuple(
@@ -207,6 +224,8 @@ class BootstrapConfig:
             )
             for item in raw["runtimes"]
         )
+        if type(raw.get("restart_after_clean_shutdown", False)) is not bool:
+            raise ValueError("restart-after-clean-shutdown must be a boolean")
         config = cls(
             raw["instance_id"],
             Path(raw["state_root"]),
@@ -222,6 +241,7 @@ class BootstrapConfig:
             float(raw.get("verification_timeout", 120)),
             Path(raw["fresh_guard_path"]) if raw.get("fresh_guard_path") else None,
             Path(raw["fresh_prior_lock_path"]) if raw.get("fresh_prior_lock_path") else None,
+            raw.get("restart_after_clean_shutdown", False),
         )
         config.validate()
         return config
@@ -234,6 +254,12 @@ class BootstrapConfig:
         refs = {runtime.reference for runtime in self.runtimes}
         if len(refs) != len(self.runtimes) or self.initial_runtime not in refs or self.crash_budget < 0 or not 0 < self.graceful_timeout <= 3600:
             raise ValueError("invalid runtime profile")
+        if type(self.restart_after_clean_shutdown) is not bool:
+            raise ValueError("restart-after-clean-shutdown must be a boolean")
+        if self.restart_after_clean_shutdown:
+            initial = next(item for item in self.runtimes if item.reference == self.initial_runtime)
+            if initial.drain_ack is None or not initial.drain_ack.is_absolute():
+                raise ValueError("clean restart requires a fixed drain receipt path")
         if (self.management_version_root is None) != (self.management_config is None) or not 0 < self.verification_timeout <= 3600:
             raise ValueError("invalid management self-update bootstrap profile")
         if (self.fresh_guard_path is None) != (self.fresh_prior_lock_path is None) or any(path is not None and not path.is_absolute() for path in (self.fresh_guard_path, self.fresh_prior_lock_path)):
@@ -285,6 +311,7 @@ class ManagementBootstrapSupervisor:
         self.config = config
         self.bootstrap_config_path = bootstrap_config_path
         self.fresh_initialization = fresh_initialization
+        self._container_shutdown_requested = False
         self._prior_owner_fence: int | None = None
         self._fresh_observer: FreshReadinessObserver | None = None
         self.store = BootstrapStore(config.state_root, config.instance_id)
@@ -330,7 +357,7 @@ class ManagementBootstrapSupervisor:
             return self._restore_once(failed.effect_operation_id, failed)
         return Observation(ResultStatus.NEEDS_ATTENTION, failed, detail="owned child exited before application readiness")
 
-    def start_selected(self, operation_id: str, attempt_id: str, runtime_ref: str, expected_identity: str = "") -> Observation:
+    def start_selected(self, operation_id: str, attempt_id: str, runtime_ref: str, expected_identity: str = "", *, allow_safety_return: bool = True) -> Observation:
         with self._lock:
             effect = self.store.begin_effect(operation_id, attempt_id, Action.START_SELECTED.value, runtime_ref, expected_identity)
             replay = self._replay(effect)
@@ -349,7 +376,7 @@ class ManagementBootstrapSupervisor:
             runtime = self._runtime(runtime_ref)
             if runtime is None or not runtime.verify(initial=runtime_ref == self.config.initial_runtime):
                 rejected = replace(current.record, phase=ChildPhase.NEEDS_ATTENTION)
-                returning = current.record.phase is ChildPhase.STOPPED and bool(current.record.selected_runtime) and current.record.intended_stop
+                returning = allow_safety_return and current.record.phase is ChildPhase.STOPPED and bool(current.record.selected_runtime) and current.record.intended_stop
                 if returning:
                     rejected = replace(
                         rejected,
@@ -375,7 +402,7 @@ class ManagementBootstrapSupervisor:
             prepared = replace(
                 current.record,
                 phase=ChildPhase.STARTING,
-                previous_runtime=current.record.selected_runtime,
+                previous_runtime=current.record.selected_runtime if allow_safety_return else "",
                 selected_runtime=runtime_ref,
                 child_generation=current.record.child_generation + 1,
                 supervisor_incarnation=self.incarnation,
@@ -587,24 +614,62 @@ class ManagementBootstrapSupervisor:
         if self.fresh_initialization and (self.config.state_root / ".supervisor-owner.lock").is_symlink():
             logger.error("Fresh initialization owner lock is invalid")
             return 1
-        with (self.config.state_root / ".supervisor-owner.lock").open("a+b") as ownership:
-            fcntl.flock(ownership.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return self._run_owned()
+        previous_handler = None
+        if self.config.restart_after_clean_shutdown and threading.current_thread() is threading.main_thread():
+            previous_handler = signal.getsignal(signal.SIGTERM)
+            signal.signal(signal.SIGTERM, lambda _signum, _frame: setattr(self, "_container_shutdown_requested", True))
+        try:
+            with (self.config.state_root / ".supervisor-owner.lock").open("a+b") as ownership:
+                fcntl.flock(ownership.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self._run_owned()
+        finally:
+            if previous_handler is not None:
+                signal.signal(signal.SIGTERM, previous_handler)
 
     def _run_owned(self) -> int:
         from .self_update_handoff import SelfUpdateHandoffConsumer
 
         owner_start_token = self._await_owner_start_token()
         if self.fresh_initialization:
-            if not self._start_fresh_initialization():
+            # The explicit one-shot command is safe to reconstruct only after
+            # its own authenticated initial outcome was durably confirmed.
+            if (self.config.state_root / "fresh-initialization.json").exists():
+                from .fresh_initialization import read_fresh_status
+
+                try:
+                    completed = read_fresh_status(self.config.state_root)["status"] == "succeeded"
+                except (OSError, ValueError, TypeError, KeyError):
+                    completed = False
+            else:
+                completed = False
+            if not completed and not self._start_fresh_initialization():
                 return 1
             self.fresh_initialization = False
-        elif any((self.config.state_root / name).exists() or (self.config.state_root / name).is_symlink() for name in ("fresh-initialization.json", "fresh-launch-claimed.json", "fresh-launched.json", "fresh-outcome.json")):
+        if self._fresh_observer is None and any((self.config.state_root / name).exists() or (self.config.state_root / name).is_symlink() for name in ("fresh-initialization.json", "fresh-launch-claimed.json", "fresh-launched.json", "fresh-outcome.json")):
             from .fresh_initialization import read_fresh_status
 
             try:
                 if read_fresh_status(self.config.state_root)["status"] != "succeeded":
                     raise ValueError("fresh initialization has not succeeded")
+                if self.config.restart_after_clean_shutdown:
+                    # The retained prior owner must remain fenced across every
+                    # successor lifetime, not just the one-shot first launch.
+                    import auto_coder
+
+                    from .fresh_initialization import acquire_prior_owner_fence, load_fresh_initialization, verify_initialization_inputs
+
+                    intent, _ = load_fresh_initialization(self.config.state_root)
+                    if self.config.fresh_prior_lock_path != Path("/management-prior-owner.lock") or intent.new_instance != self.config.instance_id:
+                        raise ValueError("fresh prior owner fence differs")
+                    for path, device, inode in ((self.config.journal_root, intent.journal_device, intent.journal_inode), (self.config.oauth_root, intent.oauth_device, intent.oauth_inode)):
+                        info = path.stat()
+                        if path.is_symlink() or not path.is_dir() or (info.st_dev, info.st_ino) != (device, inode):
+                            raise ValueError("fresh retained roots differ")
+                    runtime = next((item for item in self.config.runtimes if item.reference == intent.runtime_reference), None)
+                    if self.bootstrap_config_path is None or auto_coder.__file__ is None or runtime is None or len(runtime.arguments) != 4 or runtime.arguments[:3] != ("management", "serve", "--config"):
+                        raise ValueError("fresh reconstruction runtime differs")
+                    verify_initialization_inputs(intent, bootstrap_config=self.bootstrap_config_path, management_config=Path(runtime.arguments[3]), executable=runtime.executable, application_root=Path(auto_coder.__file__).resolve(strict=True).parent)
+                    self._prior_owner_fence = acquire_prior_owner_fence(self.config.fresh_prior_lock_path, expected_device=intent.owner_lock_device, expected_inode=intent.owner_lock_inode)
             except (OSError, ValueError, TypeError, KeyError):
                 logger.error("Fresh initialization is unresolved; refusing supervisor reconstruction")
                 return 1
@@ -654,7 +719,29 @@ class ManagementBootstrapSupervisor:
                 self.store.reserve(record, replace(record, phase=ChildPhase.UNKNOWN, exit_cause="unresolved_effect"))
             else:
                 self.start_selected(f"bootstrap-{uuid.uuid4()}", str(uuid.uuid4()), self.config.initial_runtime)
+        if self.config.restart_after_clean_shutdown and record.child_generation > 0 and not self._container_shutdown_requested:
+            from .clean_restart import restart_verified_stop
+
+            outcome = restart_verified_stop(self)
+            logger.info("Management clean-restart admission: {}", outcome.value)
         while True:
+            if self._container_shutdown_requested:
+                current = self.inspect()
+                if current.status is ResultStatus.STOPPED:
+                    return 0
+                if current.status is not ResultStatus.OBSERVED_RUNNING:
+                    logger.error("Management shutdown is not safely observable")
+                    return 1
+                operation = "container-stop-" + self.incarnation
+                stopped = self.request_graceful_stop(operation, operation, self._identity(current.record))
+                if stopped.status is ResultStatus.STOPPED:
+                    return 0
+                # Never end PID 1 while the exact child is still draining.
+                # A timed-out durable effect stays unresolved; no retry or
+                # invented terminal receipt is issued.
+                while self._start_token(current.record.pid) == current.record.start_token:
+                    time.sleep(0.2)
+                return 1
             if not self.store.path.is_file() or self.store.path.is_symlink():
                 logger.error("Management child ledger is unavailable; preserving process state")
                 time.sleep(0.2)

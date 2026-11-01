@@ -198,7 +198,8 @@ def test_real_listener_accepts_only_mount_order_changes(tmp_path: Path, monkeypa
         subprocess.run(["docker", "image", "rm", tag], capture_output=True, check=False, timeout=30)
 
 
-def test_real_prior_supervisor_binds_instance_and_published_port(tmp_path: Path) -> None:
+@pytest.mark.parametrize("split_entrypoint", [False, True])
+def test_real_prior_supervisor_binds_instance_and_published_port(tmp_path: Path, split_entrypoint: bool, monkeypatch: pytest.MonkeyPatch) -> None:
     import hashlib
 
     tag = "auto-coder:management-local-abc65544"
@@ -207,7 +208,7 @@ def test_real_prior_supervisor_binds_instance_and_published_port(tmp_path: Path)
     except subprocess.CalledProcessError:
         pytest.skip("production-profile image is not available locally")
     fixture_tag = "auto-coder-fresh-owner:" + uuid.uuid4().hex
-    subprocess.run(["docker", "build", "--network", "none", "--tag", fixture_tag, "-"], input=f'FROM {tag}\nENTRYPOINT ["python", "-m", "auto_coder.management.bootstrap_supervisor"]\n', text=True, capture_output=True, check=True, timeout=90)
+    subprocess.run(["docker", "build", "--network", "none", "--tag", fixture_tag, "-"], input=f'FROM {tag}\nENTRYPOINT {json.dumps(["python"] if split_entrypoint else ["python", "-m", "auto_coder.management.bootstrap_supervisor"])}\n', text=True, capture_output=True, check=True, timeout=90)
     image = subprocess.check_output(["docker", "image", "inspect", fixture_tag, "--format", "{{.Id}}"], text=True).strip()
     state = tmp_path / "state"
     config_dir = tmp_path / "bootstrap"
@@ -250,6 +251,7 @@ def test_real_prior_supervisor_binds_instance_and_published_port(tmp_path: Path)
                 "--name",
                 name,
                 image,
+                *(["-m", "auto_coder.management.bootstrap_supervisor"] if split_entrypoint else []),
                 "--config",
                 "/bootstrap/config.json",
             ],
@@ -268,6 +270,21 @@ def test_real_prior_supervisor_binds_instance_and_published_port(tmp_path: Path)
         assert observed.instance_id == "actual-old-owner"
         assert observed.published_port == port
         assert observed.bootstrap_sha256 == hashlib.sha256(config.read_bytes()).hexdigest()
+        # Changing the actual fixed command must still refuse, including when
+        # the original image uses the shorter entrypoint form.
+        from auto_coder.management import fresh_host_observation as observation
+
+        original_inspect = observation._inspect
+
+        def changed_command(container_id: str) -> list[object]:
+            values = original_inspect(container_id)
+            values[16] = [*values[16], "--unexpected"]
+            return values
+
+        with monkeypatch.context() as patched:
+            patched.setattr(observation, "_inspect", changed_command)
+            with pytest.raises(HostObservationUnavailable):
+                capture_prior_container(container, image, expected_mounts=((str(state), "/management-child-state", True), (str(config_dir), "/bootstrap", False), (str(oauth), "/management-oauth", True)), require_owner_lock=True, require_deployment_identity=True)
         original = config.read_text()
         config.write_text(original.replace("actual-old-owner", "forged-old-owner"))
         with pytest.raises(HostObservationUnavailable):

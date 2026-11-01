@@ -163,3 +163,11 @@ were unchanged between samples, that already-imported Python code matches disk,
 or that a particular operation used the default prompts (which may be cached or
 explicitly selected). Declared artifact and source metadata are not hash proofs.
 The API accepts no file paths and does not expose file contents.
+
+## Retained prior-instance evidence
+
+Reads and original-key replays from a protected prior journal carry
+`history_origin: retained_prior_instance`, including worker lifecycle and
+reevaluation responses and missing or unsettled lifecycle snapshots. Current
+journal projections do not acquire this marker. Historical outcome, identities
+and uncertainty remain unchanged; replay does not dispatch an effect.

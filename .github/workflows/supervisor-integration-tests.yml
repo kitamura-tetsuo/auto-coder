@@ -11,7 +11,7 @@ jobs:
   supervisor-integration:
     name: Supervisor Integration Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 150
     env:
       UV_LOCKED: "1"
     steps:
@@ -36,23 +36,33 @@ jobs:
       - name: Test real worker processes and management bridge
         timeout-minutes: 10
         run: |
+          # Bound console output without hiding a failing pytest exit status.
+          set -o pipefail
           uv run pytest -q -vv \
             tests/test_worker_supervisor.py \
             tests/test_worker_supervisor_bridge.py \
             tests/test_worker_versions.py \
+            tests/test_graceful_shutdown.py::test_forced_cancel_reaps_orphan_only_after_owned_thread_finishes \
+            tests/test_graceful_shutdown.py::test_cancelled_async_wrapper_does_not_release_running_thread \
+            tests/test_graceful_shutdown.py::test_cancelled_wrapper_before_submission_does_not_retain_unstarted_work \
+            tests/test_graceful_shutdown.py::test_cancelled_wrapper_keeps_queued_executor_work_owned \
+            tests/test_graceful_shutdown.py::test_rejected_executor_submission_does_not_retain_unstarted_work \
             tests/test_worker_management_bridge.py::test_real_unix_socket_observes_same_engine_and_read_does_not_heartbeat \
-            tests/test_worker_management_bridge.py::test_graceful_receipt_requires_stopped_closed_and_settled
+            tests/test_worker_management_bridge.py::test_graceful_receipt_requires_stopped_closed_and_settled 2>&1 | tail -n 400
           # Isolate the production daemon composition from long-lived process
           # fixture state while retaining its complete UDS/terminal oracle.
           uv run pytest -q -vv -s -o timeout=60 \
-            tests/test_worker_management_bridge.py::test_actual_daemon_uds_observes_admitted_drain_and_persists_receipt
+            tests/test_worker_management_bridge.py::test_actual_daemon_uds_observes_admitted_drain_and_persists_receipt 2>&1 | tail -n 400
 
       - name: Verify authenticated management self-update
-        timeout-minutes: 25
+        # Real process tests take about 50-150s each on hosted runners. The
+        # 31 selected cases exceed 25 minutes without an individual failure.
+        timeout-minutes: 55
         run: |
           uv run pytest -q -vv -m supervisor_integration \
             tests/test_management_self_update_integration.py \
             tests/test_management_self_update_failures.py \
+            tests/test_management_clean_restart_integration.py \
             tests/test_management_fresh_host_integration.py \
             --junitxml=supervisor-integration-logs/management-self-update.xml
 
@@ -71,6 +81,7 @@ jobs:
             sudo apt-get install -y strace
           fi
           docker tag "auto-coder:supervisor-${{ github.sha }}" auto-coder:management-local-abc65544
+          docker pull caddy@sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489
           # Root is confined to these disposable-container tests on the
           # ephemeral runner: it reads kernel namespace and proxy ownership
           # evidence and traces execve; the child gets no added privileges.
@@ -80,13 +91,16 @@ jobs:
             tests/test_management_fresh_host_integration.py::test_real_docker_listener_rejects_mismatched_container_address \
             tests/test_management_fresh_host_integration.py::test_real_docker_listener_rejects_changed_container_inspection \
             tests/test_management_fresh_host_integration.py::test_real_listener_accepts_only_mount_order_changes \
+            tests/test_management_fresh_host_integration.py::test_real_prior_supervisor_binds_instance_and_published_port \
             tests/test_management_fresh_end_to_end.py \
+            tests/test_management_retained_startup_container.py \
+            tests/test_management_proxy_watcher_process_integration.py \
             --junitxml=supervisor-integration-logs/fresh-initialization.xml
           python3 - supervisor-integration-logs/fresh-initialization.xml <<'PY'
           import sys, xml.etree.ElementTree as ET
           root = ET.parse(sys.argv[1]).getroot()
           suites = list(root.iter('testsuite'))
-          assert sum(int(s.get('tests', 0)) for s in suites) == 11, 'expected all host tests'
+          assert sum(int(s.get('tests', 0)) for s in suites) == 19, 'expected all host tests'
           assert all(int(s.get('skipped', 0)) == 0 for s in suites), 'host tests must not skip'
           PY
 

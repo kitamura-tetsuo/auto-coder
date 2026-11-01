@@ -39,6 +39,7 @@ from .operations import (
     OperationRecord,
     ReadStatus,
 )
+from .retained_journal import RetainedGuardedOperationStore, RetainedJournal
 from .self_update_operation import ManagementSelfUpdateHandler
 from .self_update_policy import ManagementUpdateAction
 from .worker_lifecycle import LIFECYCLE_ACTIONS, WorkerLifecycle
@@ -69,12 +70,13 @@ class ResolvedWorker:
 class ManagementRuntime:
     """One service-lifetime adapter, with no Docker or worker scheduling powers."""
 
-    def __init__(self, settings: ManagementSettings, grants: OAuthGrantService, clients: dict[str, WorkerNetworkClient], *, self_update_source_authority: TestedSourcePublisher | None = None) -> None:
+    def __init__(self, settings: ManagementSettings, grants: OAuthGrantService, clients: dict[str, WorkerNetworkClient], *, self_update_source_authority: TestedSourcePublisher | None = None, retained_journal: RetainedJournal | None = None) -> None:
         self.settings = settings
         self.grants = grants
         self.clients = clients
-        self.journal = ManagementOperationStore(settings.operation_state_root or settings.state_root)
-        self.dispatcher = ManagementOperationDispatcher(self.journal)
+        self.retained_journal = retained_journal
+        self.journal = RetainedGuardedOperationStore(settings.operation_state_root or settings.state_root, retained_journal) if retained_journal is not None else ManagementOperationStore(settings.operation_state_root or settings.state_root)
+        self.dispatcher = ManagementOperationDispatcher(self.journal, effect_guard=self.retained_effect_permitted)
         self.dispatcher.register(REEVALUATE_ACTION, OperationHandler(self._forward_reevaluation, self._reconcile_reevaluation))
         self.self_update = ManagementSelfUpdateHandler(settings, grants, self.journal, self_update_source_authority)
         self.dispatcher.register(ManagementUpdateAction.SELF_UPDATE.value, OperationHandler(self.self_update.forward, self.self_update.reconcile))
@@ -83,6 +85,59 @@ class ManagementRuntime:
         for action in sorted(LIFECYCLE_ACTIONS):
             self.dispatcher.register(action, OperationHandler(self.lifecycle.process, self.lifecycle.process))
         self._lifecycle_monitor: asyncio.Task[None] | None = None
+
+    def retained_effect_permitted(self, record: OperationRecord) -> bool:
+        return not isinstance(self.journal, RetainedGuardedOperationStore) or self.journal.effect_permitted(record)
+
+    def retained_admission(self, intent: OperationIntent, authority: AcceptedAuthority, target_id: str) -> dict[str, object] | None:
+        if self.retained_journal is None:
+            return None
+        try:
+            decision = self.retained_journal.admission(intent, authority)
+            if decision is None:
+                return None
+            if decision.status is not AdmissionStatus.REPLAY or decision.record is None:
+                return self._response(decision.status.value.upper(), "retained_journal_" + decision.status.value, operation_id=decision.record.operation_id if decision.record else None)
+            evidence = self.retained_journal.owned_evidence(decision.record.operation_id, intent.target, target_id, authority)
+            if evidence is None:
+                return self._response("UNAVAILABLE", "retained_operation_evidence_unavailable")
+            return self._project_retained(*evidence)
+        except Exception:
+            return self._response("UNAVAILABLE", "retained_journal_unavailable")
+
+    def _project_retained(self, record: OperationRecord, snapshot: dict[str, object] | None) -> dict[str, object]:
+        if record.intent.action in LIFECYCLE_ACTIONS:
+            if snapshot is None:
+                projected = self._response("NEEDS_ATTENTION", "lifecycle_journal_unavailable", operation_id=record.operation_id)
+            else:
+                projected = self.lifecycle.project_snapshot(record, snapshot)
+                stage = projected.get("status")
+                if (stage == "SUCCEEDED" and record.phase is not OperationPhase.SUCCEEDED) or (stage in {"FAILED", "SUPERSEDED"} and record.phase is not OperationPhase.FAILED):
+                    projected = {**projected, "status": "NEEDS_ATTENTION", "reason": "retained_lifecycle_outcome_not_settled"}
+        else:
+            projected = self._project_operation(record)
+        return {**projected, "history_origin": "retained_prior_instance"}
+
+    def _project_retained_management(self, record: OperationRecord) -> dict[str, object]:
+        """Project only old journal evidence; never consult a new handoff."""
+        status = record.phase.value.upper()
+        if record.phase is OperationPhase.NEEDS_ATTENTION and record.safe_error_category.startswith("UNKNOWN:"):
+            status = "UNKNOWN"
+        receipt = record.effect.receipt
+        return {
+            "status": status,
+            "operation_id": record.operation_id,
+            "action": record.intent.action,
+            "target": asdict(record.intent.target),
+            "phase": record.phase.value,
+            "effect_state": record.effect.state.value,
+            "revision": record.revision,
+            "safe_reason": record.safe_error_category or None,
+            "candidate_source_sha": self._params(record).get("source_sha"),
+            "receipt": None if receipt is None else {"source": receipt.observation_source, "result": receipt.safe_result, "observed_at": receipt.observed_at},
+            "verification": {"handoff_phase": "unavailable"},
+            "history_origin": "retained_prior_instance",
+        }
 
     async def start_monitor(self) -> None:
         self._lifecycle_monitor = asyncio.create_task(self._monitor_lifecycle(), name="management-worker-lifecycle-monitor")
@@ -359,6 +414,37 @@ class ManagementRuntime:
 
     async def operation_get(self, operation_id: str, target_id: str | None = None) -> dict[str, object]:
         grant = self._grant((READ_SCOPE,))
+        if self.retained_journal is not None and target_id is None:
+            if not isinstance(operation_id, str) or not _IDENTITY.fullmatch(operation_id):
+                return self._response("INVALID_REQUEST", "invalid_operation_id")
+            lookup = await asyncio.to_thread(self.journal.get, operation_id)
+            if lookup.status is ReadStatus.UNAVAILABLE:
+                return self._response("UNAVAILABLE", "journal_unavailable")
+            if lookup.status is ReadStatus.NOT_FOUND:
+                authority = self._journal_authority(grant, self.grants.accepted_authority(grant))
+                try:
+                    previous = await asyncio.to_thread(self.retained_journal.owned_management, operation_id, authority)
+                except Exception:
+                    return self._response("UNAVAILABLE", "retained_management_history_unavailable")
+                return self._project_retained_management(previous) if previous is not None else self._response("NOT_FOUND", "operation_not_found")
+        if self.retained_journal is not None and target_id is not None:
+            if not isinstance(operation_id, str) or not _IDENTITY.fullmatch(operation_id):
+                return self._response("INVALID_REQUEST", "invalid_operation_id")
+            lookup = await asyncio.to_thread(self.journal.get, operation_id)
+            if lookup.status is ReadStatus.UNAVAILABLE:
+                return self._response("UNAVAILABLE", "journal_unavailable")
+            if lookup.status is ReadStatus.NOT_FOUND:
+                resolved = self._resolve(target_id, ActionClass.INSPECT)
+                if not isinstance(resolved, ResolvedWorker):
+                    return resolved
+                authority = self._journal_authority(grant, self.grants.accepted_authority(grant))
+                try:
+                    evidence = await asyncio.to_thread(self.retained_journal.owned_evidence, operation_id, resolved.target, target_id, authority)
+                except Exception:
+                    return self._response("UNAVAILABLE", "retained_journal_unavailable")
+                if evidence is None:
+                    return self._response("NOT_FOUND", "operation_not_found")
+                return self._project_retained(*evidence)
         management = await asyncio.to_thread(self.self_update.owned_operation, operation_id, grant)
         if management is not None:
             if isinstance(management, dict):
@@ -385,6 +471,18 @@ class ManagementRuntime:
 
     async def update_management_service(self, source_sha: str, idempotency_key: str) -> dict[str, object]:
         grant = self._grant((READ_SCOPE, DEPLOY_SCOPE))
+        if self.retained_journal is not None:
+            if not isinstance(source_sha, str) or not re.fullmatch(r"[a-f0-9]{40}", source_sha) or not isinstance(idempotency_key, str) or not _KEY.fullmatch(idempotency_key):
+                return self._response("INVALID_REQUEST", "exact_source_sha_and_bounded_idempotency_key_required")
+            authority = self._journal_authority(grant, self.grants.accepted_authority(grant))
+            try:
+                prior = await asyncio.to_thread(self.retained_journal.management_request, idempotency_key, source_sha, authority)
+            except Exception:
+                return self._response("UNAVAILABLE", "retained_management_history_unavailable")
+            if prior is not None:
+                if prior.status is AdmissionStatus.REPLAY and prior.record is not None:
+                    return self._project_retained_management(prior.record)
+                return self._response(prior.status.value.upper(), "retained_journal_" + prior.status.value, operation_id=prior.record.operation_id if prior.record else None)
         admitted = await asyncio.to_thread(self.self_update.admit, source_sha, idempotency_key, grant)
         if isinstance(admitted, dict):
             return admitted
@@ -483,6 +581,9 @@ class ManagementRuntime:
             expected_deployment_generation,
         )
         original = self._journal_authority(grant, self.grants.accepted_authority(grant))
+        retained = await asyncio.to_thread(self.retained_admission, intent, original, target_id)
+        if retained is not None:
+            return retained
         old = await asyncio.to_thread(self.journal.find_by_key, intent, original)
         if old.status is ReadStatus.UNAVAILABLE:
             return self._response("UNAVAILABLE", "journal_unavailable")
@@ -571,6 +672,8 @@ class ManagementRuntime:
             attempt = uuid.uuid4().hex
             begun = self.journal.begin_effect(record.operation_id, record.revision, owner_attempt_id=attempt, attempt_id=attempt, correlation_identity=correlation)
             if begun.status is not MutationStatus.UPDATED or begun.record is None:
+                return begun.record
+            if not self.retained_effect_permitted(begun.record):
                 return begun.record
             params = self._params(record)
             response = resolved.client.accept_reevaluation(record.operation_id, process_run_id=record.intent.expected_incarnation, deployment_generation=record.intent.expected_artifact, target_type=str(params["target_type"]), number=int(params["number"]))
