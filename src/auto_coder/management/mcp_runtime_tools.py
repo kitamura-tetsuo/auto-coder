@@ -109,7 +109,11 @@ class ManagementRuntime:
         if record.intent.action in LIFECYCLE_ACTIONS:
             if snapshot is None:
                 return self._response("NEEDS_ATTENTION", "lifecycle_journal_unavailable", operation_id=record.operation_id)
-            return self.lifecycle.project_snapshot(record, snapshot)
+            projected = self.lifecycle.project_snapshot(record, snapshot)
+            stage = projected.get("status")
+            if (stage == "SUCCEEDED" and record.phase is not OperationPhase.SUCCEEDED) or (stage in {"FAILED", "SUPERSEDED"} and record.phase is not OperationPhase.FAILED):
+                return {**projected, "status": "NEEDS_ATTENTION", "reason": "retained_lifecycle_outcome_not_settled"}
+            return projected
         return self._project_operation(record)
 
     async def start_monitor(self) -> None:

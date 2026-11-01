@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from starlette.testclient import TestClient
 
 from auto_coder.management.action_scopes import DEPLOY_SCOPE, OPERATE_SCOPE, READ_SCOPE
@@ -74,7 +75,8 @@ def test_authenticated_retained_read_replay_and_exclusion(runtime_boundary, tmp_
             assert beta.send_calls == 0
 
 
-def test_authenticated_old_worker_lifecycle_snapshot_and_no_retransmit(real_boundary, tmp_path: Path) -> None:
+@pytest.mark.parametrize("stage", ("NEEDS_ATTENTION", "SUCCEEDED"))
+def test_authenticated_old_worker_lifecycle_snapshot_and_no_retransmit(real_boundary, tmp_path: Path, stage: str) -> None:
     base, _base_grants, identity_service, signed, _uids, state = real_boundary
     origin = base.oauth.canonical_issuer
     scopes = (READ_SCOPE, DEPLOY_SCOPE)
@@ -97,7 +99,7 @@ def test_authenticated_old_worker_lifecycle_snapshot_and_no_retransmit(real_boun
         "-",
     )
     old = ManagementOperationStore(tmp_path / "old")
-    snapshot = {"schema_version": 1, "stage": "NEEDS_ATTENTION", "incumbent": {"supervisor_generation": "old-supervisor", "runtime_id": "bootstrap"}, "steps": {"start": {"state": "SENT_UNKNOWN", "operation_id": "original-effect"}}}
+    snapshot = {"schema_version": 1, "stage": stage, "incumbent": {"supervisor_generation": "old-supervisor", "runtime_id": "bootstrap"}, "steps": {"start": {"state": "SENT_UNKNOWN", "operation_id": "original-effect"}}}
     operation = old.admit(intent, authority, lifecycle_snapshot=snapshot).record
     assert operation is not None
     assert old.transition(operation.operation_id, 0, OperationPhase.NEEDS_ATTENTION, safe_error_category="lifecycle_deadline_exceeded").record is not None
@@ -110,6 +112,8 @@ def test_authenticated_old_worker_lifecycle_snapshot_and_no_retransmit(real_boun
             query = {"target_id": "beta-worker", "operation_id": operation.operation_id}
             result = _call(client, token, "auto_coder_operation_get", query)
             assert result["status"] == "NEEDS_ATTENTION" and result["steps"] == snapshot["steps"]
+            if stage == "SUCCEEDED":
+                assert result["reason"] == "retained_lifecycle_outcome_not_settled"
             args = {"target_id": "beta-worker", "idempotency_key": "old-start", "expected_supervisor_generation": "old-supervisor", "expected_runtime_id": "bootstrap"}
             assert _call(client, token, "auto_coder_start_worker", args)["operation_id"] == operation.operation_id
             assert _call(client, token, "auto_coder_start_worker", {**args, "idempotency_key": "different"})["status"] == "BUSY"
