@@ -44,6 +44,9 @@ jobs:
             tests/test_worker_versions.py \
             tests/test_graceful_shutdown.py::test_forced_cancel_reaps_orphan_only_after_owned_thread_finishes \
             tests/test_graceful_shutdown.py::test_cancelled_async_wrapper_does_not_release_running_thread \
+            tests/test_graceful_shutdown.py::test_cancelled_wrapper_before_submission_does_not_retain_unstarted_work \
+            tests/test_graceful_shutdown.py::test_cancelled_wrapper_keeps_queued_executor_work_owned \
+            tests/test_graceful_shutdown.py::test_rejected_executor_submission_does_not_retain_unstarted_work \
             tests/test_worker_management_bridge.py::test_real_unix_socket_observes_same_engine_and_read_does_not_heartbeat \
             tests/test_worker_management_bridge.py::test_graceful_receipt_requires_stopped_closed_and_settled 2>&1 | tail -n 400
           # Isolate the production daemon composition from long-lived process

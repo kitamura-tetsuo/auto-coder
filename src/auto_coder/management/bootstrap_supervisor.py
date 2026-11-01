@@ -357,7 +357,7 @@ class ManagementBootstrapSupervisor:
             return self._restore_once(failed.effect_operation_id, failed)
         return Observation(ResultStatus.NEEDS_ATTENTION, failed, detail="owned child exited before application readiness")
 
-    def start_selected(self, operation_id: str, attempt_id: str, runtime_ref: str, expected_identity: str = "") -> Observation:
+    def start_selected(self, operation_id: str, attempt_id: str, runtime_ref: str, expected_identity: str = "", *, allow_safety_return: bool = True) -> Observation:
         with self._lock:
             effect = self.store.begin_effect(operation_id, attempt_id, Action.START_SELECTED.value, runtime_ref, expected_identity)
             replay = self._replay(effect)
@@ -376,7 +376,7 @@ class ManagementBootstrapSupervisor:
             runtime = self._runtime(runtime_ref)
             if runtime is None or not runtime.verify(initial=runtime_ref == self.config.initial_runtime):
                 rejected = replace(current.record, phase=ChildPhase.NEEDS_ATTENTION)
-                returning = current.record.phase is ChildPhase.STOPPED and bool(current.record.selected_runtime) and current.record.intended_stop
+                returning = allow_safety_return and current.record.phase is ChildPhase.STOPPED and bool(current.record.selected_runtime) and current.record.intended_stop
                 if returning:
                     rejected = replace(
                         rejected,
@@ -402,7 +402,7 @@ class ManagementBootstrapSupervisor:
             prepared = replace(
                 current.record,
                 phase=ChildPhase.STARTING,
-                previous_runtime=current.record.selected_runtime,
+                previous_runtime=current.record.selected_runtime if allow_safety_return else "",
                 selected_runtime=runtime_ref,
                 child_generation=current.record.child_generation + 1,
                 supervisor_incarnation=self.incarnation,

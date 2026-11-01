@@ -1130,14 +1130,30 @@ class AutomationEngine:
     async def _run_local_critical(self, description: str, function: Any, *args: Any) -> Any:
         """Own synchronous work until its thread really returns, despite cancellation."""
         thread_finished = threading.Event()
+        thread_submitted = False
 
-        def run_owned() -> Any:
+        def run_owned() -> tuple[bool, Any]:
             try:
-                return function(*args)
+                try:
+                    return True, function(*args)
+                except BaseException as exc:
+                    return False, exc
             finally:
                 thread_finished.set()
 
+        async def submit_owned() -> tuple[bool, Any]:
+            try:
+                return await asyncio.to_thread(run_owned)
+            except asyncio.CancelledError:
+                raise
+            except BaseException:
+                # Function exceptions are returned by run_owned, so an error
+                # here means the executor could not enter the owned call.
+                thread_finished.set()
+                raise
+
         async def run_in_thread() -> tuple[bool, Any]:
+            nonlocal thread_submitted
             # Keep BaseException on the awaiting coroutine.  Letting a shielded
             # child task finish with KeyboardInterrupt/SystemExit makes asyncio
             # treat it as a loop-level termination before the caller can observe
@@ -1146,7 +1162,10 @@ class AutomationEngine:
             gate_token = install_invocation_gate(self.invocation_gate)
             try:
                 try:
-                    return True, await asyncio.to_thread(run_owned)
+                    # Shield the submitted work so cancellation cannot remove a
+                    # queued executor call without its completion observation.
+                    thread_submitted = True
+                    return await asyncio.shield(submit_owned())
                 except BaseException as exc:
                     return False, exc
             finally:
@@ -1154,6 +1173,12 @@ class AutomationEngine:
                 reset_admission_check(token)
 
         task = asyncio.create_task(run_in_thread(), name=f"local-critical:{description}")
+
+        def observe_unsubmitted(done: asyncio.Task[Any]) -> None:
+            if not thread_submitted:
+                thread_finished.set()
+
+        task.add_done_callback(observe_unsubmitted)
         self._critical_operations[task] = description
         self._critical_thread_finished[task] = thread_finished
         try:

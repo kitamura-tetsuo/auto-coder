@@ -1209,3 +1209,84 @@ def test_container_entrypoint_and_compose_grace_preserve_sigterm_delivery():
         assert service["environment"]["AUTO_CODER_SUPERVISOR_INSTANCE_ID"]
         assert service["entrypoint"] == ["python", "-m", "auto_coder.worker_supervisor"]
         assert "command" not in service
+
+
+def test_cancelled_wrapper_before_submission_does_not_retain_unstarted_work(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    entered = threading.Event()
+
+    async def scenario():
+        caller = asyncio.create_task(engine._run_local_critical("unsubmitted", entered.set))
+        await asyncio.sleep(0)
+        wrapper = next(iter(engine._critical_operations))
+        wrapper.cancel()
+        await asyncio.gather(caller, return_exceptions=True)
+        await asyncio.wait_for(engine._wait_for_interrupted_local_work(), timeout=1)
+        assert not entered.is_set()
+        assert not engine._critical_operations
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_wrapper_keeps_queued_executor_work_owned(monkeypatch, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    blocked = threading.Event()
+    release = threading.Event()
+    entered = threading.Event()
+
+    def occupy_executor():
+        blocked.set()
+        release.wait(5)
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        occupant = loop.run_in_executor(None, occupy_executor)
+        while not blocked.is_set():
+            await asyncio.sleep(0)
+        caller = asyncio.create_task(engine._run_local_critical("queued", entered.set))
+        # FIFO ready callbacks let the wrapper submit its guarded executor work.
+        for _ in range(5):
+            await asyncio.sleep(0)
+        wrapper = next(iter(engine._critical_operations))
+        wrapper.cancel()
+        await asyncio.gather(caller, return_exceptions=True)
+        assert not entered.is_set()
+        assert engine._critical_operations
+        reaper = asyncio.create_task(engine._wait_for_interrupted_local_work())
+        await asyncio.sleep(0)
+        assert not reaper.done()
+        release.set()
+        await occupant
+        await asyncio.wait_for(reaper, timeout=2)
+        assert entered.is_set()
+        assert not engine._critical_operations
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        release.set()
+
+
+def test_rejected_executor_submission_does_not_retain_unstarted_work(monkeypatch, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    entered = threading.Event()
+
+    async def scenario():
+        executor = ThreadPoolExecutor(max_workers=1)
+        asyncio.get_running_loop().set_default_executor(executor)
+        executor.shutdown(wait=True)
+        with pytest.raises(RuntimeError, match="cannot schedule new futures"):
+            await engine._run_local_critical("rejected", entered.set)
+        await asyncio.wait_for(engine._wait_for_interrupted_local_work(), timeout=1)
+        assert not entered.is_set()
+        assert not engine._critical_operations
+
+    asyncio.run(scenario())

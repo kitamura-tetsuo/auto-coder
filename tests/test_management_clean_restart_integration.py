@@ -51,6 +51,30 @@ def test_clean_container_shutdown_restarts_exactly_once_with_retained_oauth(mana
 
 
 @pytest.mark.parametrize("management_system", ["restart_clean"], indirect=True)
+def test_failed_clean_restart_never_returns_or_retries(management_system: ManagementSystem) -> None:
+    system = management_system
+    assert system.supervisor is not None
+    system.supervisor.terminate()
+    assert system.supervisor.wait(timeout=30) == 0
+    assert system.child.phase is ChildPhase.STOPPED
+    (system.settings.state_root / "fixture-fail-start").touch()
+    system.start(wait=False)
+    failed = system.settings.state_root / "fixture-failed-launches"
+    _wait(lambda: failed.exists() and system.child.phase is ChildPhase.NEEDS_ATTENTION, timeout=30, description="failed automatic child")
+    assert failed.read_text().splitlines() == ["launch"]
+    assert not system.child.previous_runtime
+    assert system.supervisor is not None
+    system.supervisor.terminate()
+    assert system.supervisor.wait(timeout=30) == 1
+    system.start(wait=False)
+    time.sleep(1)
+    assert failed.read_text().splitlines() == ["launch"]
+    assert system.child.phase is ChildPhase.NEEDS_ATTENTION
+    with sqlite3.connect(system.root / "supervisor" / "management-child.sqlite3") as db:
+        assert db.execute("SELECT count(*) FROM effects WHERE action='START_SELECTED'").fetchone()[0] == 2
+
+
+@pytest.mark.parametrize("management_system", ["restart_clean"], indirect=True)
 @pytest.mark.parametrize("damage", ["drain_receipt", "handoff_store", "unsettled_operation"])
 def test_clean_restart_refuses_missing_or_conflicting_evidence(management_system: ManagementSystem, damage: str) -> None:
     system = management_system
