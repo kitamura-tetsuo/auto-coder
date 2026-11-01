@@ -32,7 +32,8 @@ def test_supervisor_integration_job_runs_independently_on_pull_requests() -> Non
     assert "scripts/prepare_opencode_image.py" in build
     host = steps["Verify fresh initialization with host evidence"]["run"]
     assert "tests/test_management_retained_startup_container.py" in host
-    assert "== 17" in host and "skipped" in host
+    assert "tests/test_management_proxy_watcher_process_integration.py" in host
+    assert "== 19" in host and "skipped" in host
     assert "-o timeout=60" in steps["Test real worker processes and management bridge"]["run"]
     assert "test_forced_cancel_reaps_orphan_only_after_owned_thread_finishes" in steps["Test real worker processes and management bridge"]["run"]
     assert "test_cancelled_async_wrapper_does_not_release_running_thread" in steps["Test real worker processes and management bridge"]["run"]

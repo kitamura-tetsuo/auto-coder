@@ -35,6 +35,14 @@ must be inspected and reconciled before another action. The old manager and
 proxy definitions and all state must remain available until rollback has been
 proved safe.
 
+`tests/test_management_proxy_watcher_process_integration.py` is an additional
+host-root Docker test for two actual crash boundaries: it holds the Docker
+command wrapper after a real stop or start succeeds, kills the watcher before
+the wrapper can acknowledge, and reconstructs the watcher against the same
+private journal. Both cases must retain the original unknown phase and issue
+no repeated effect. The mandatory CI host selection uses the checked-out
+manager image and a digest-pinned Caddy image, and refuses any skipped case.
+
 For a disposable environment, create an owner-only `0700` state directory and
 an owner-only `0600` JSON configuration containing `state_root`, exact full
 `manager_id` and `proxy_id`, and their full `manager_image` and `proxy_image`

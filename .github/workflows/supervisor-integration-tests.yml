@@ -78,6 +78,7 @@ jobs:
             sudo apt-get install -y strace
           fi
           docker tag "auto-coder:supervisor-${{ github.sha }}" auto-coder:management-local-abc65544
+          docker pull caddy@sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489
           # Root is confined to these disposable-container tests on the
           # ephemeral runner: it reads kernel namespace and proxy ownership
           # evidence and traces execve; the child gets no added privileges.
@@ -90,12 +91,13 @@ jobs:
             tests/test_management_fresh_host_integration.py::test_real_prior_supervisor_binds_instance_and_published_port \
             tests/test_management_fresh_end_to_end.py \
             tests/test_management_retained_startup_container.py \
+            tests/test_management_proxy_watcher_process_integration.py \
             --junitxml=supervisor-integration-logs/fresh-initialization.xml
           python3 - supervisor-integration-logs/fresh-initialization.xml <<'PY'
           import sys, xml.etree.ElementTree as ET
           root = ET.parse(sys.argv[1]).getroot()
           suites = list(root.iter('testsuite'))
-          assert sum(int(s.get('tests', 0)) for s in suites) == 17, 'expected all host tests'
+          assert sum(int(s.get('tests', 0)) for s in suites) == 19, 'expected all host tests'
           assert all(int(s.get('skipped', 0)) == 0 for s in suites), 'host tests must not skip'
           PY
 
