@@ -62,21 +62,26 @@ def test_authenticated_retained_read_replay_and_exclusion(runtime_boundary, tmp_
             query = {"target_id": "beta-worker", "operation_id": old_id}
             result = _call(client, token, "auto_coder_operation_get", query)
             assert result["status"] == "NEEDS_ATTENTION" and result["safe_reason"] == "unknown_prior_effect"
+            assert result["history_origin"] == "retained_prior_instance"
             assert _call(client, other, "auto_coder_operation_get", query)["status"] == "NOT_FOUND"
             replay = _call(client, token, "auto_coder_reevaluate_target", _request(beta))
             assert replay["operation_id"] == old_id and replay["status"] == "NEEDS_ATTENTION"
+            assert replay["history_origin"] == "retained_prior_instance"
             changed = {**_request(beta), "number": 2604}
             assert _call(client, token, "auto_coder_reevaluate_target", changed)["status"] == "CONFLICT"
             assert _call(client, token, "auto_coder_reevaluate_target", _request(beta, key="different"))["status"] == "BUSY"
             assert beta.send_calls == 0
             assert current.get(current_record.operation_id).record == current_record
+            current_result = _call(client, token, "auto_coder_operation_get", {"target_id": "beta-worker", "operation_id": current_record.operation_id})
+            assert current_result["operation_id"] == current_record.operation_id
+            assert "history_origin" not in current_result
             reader.close()
             assert _call(client, token, "auto_coder_operation_get", query)["status"] == "UNAVAILABLE"
             assert _call(client, token, "auto_coder_reevaluate_target", _request(beta, key="different"))["status"] == "UNAVAILABLE"
             assert beta.send_calls == 0
 
 
-@pytest.mark.parametrize("stage", ("NEEDS_ATTENTION", "SUCCEEDED"))
+@pytest.mark.parametrize("stage", ("NEEDS_ATTENTION", "SUCCEEDED", "MISSING"))
 def test_authenticated_old_worker_lifecycle_snapshot_and_no_retransmit(real_boundary, tmp_path: Path, stage: str) -> None:
     base, _base_grants, identity_service, signed, _uids, state = real_boundary
     origin = base.oauth.canonical_issuer
@@ -101,7 +106,7 @@ def test_authenticated_old_worker_lifecycle_snapshot_and_no_retransmit(real_boun
     )
     old = ManagementOperationStore(tmp_path / "old")
     snapshot = {"schema_version": 1, "stage": stage, "incumbent": {"supervisor_generation": "old-supervisor", "runtime_id": "bootstrap"}, "steps": {"start": {"state": "SENT_UNKNOWN", "operation_id": "original-effect"}}}
-    operation = old.admit(intent, authority, lifecycle_snapshot=snapshot).record
+    operation = old.admit(intent, authority, lifecycle_snapshot=None if stage == "MISSING" else snapshot).record
     assert operation is not None
     assert old.transition(operation.operation_id, 0, OperationPhase.NEEDS_ATTENTION, safe_error_category="lifecycle_deadline_exceeded").record is not None
     management_intent = OperationIntent(ManagedTarget("old-management", "management", MANAGEMENT_REPOSITORY), "management-service-self-update", (ActionParameter("source_sha", "a" * 40),), "old-update")
@@ -116,11 +121,24 @@ def test_authenticated_old_worker_lifecycle_snapshot_and_no_retransmit(real_boun
         with TestClient(app, base_url=origin) as client:
             query = {"target_id": "beta-worker", "operation_id": operation.operation_id}
             result = _call(client, token, "auto_coder_operation_get", query)
-            assert result["status"] == "NEEDS_ATTENTION" and result["steps"] == snapshot["steps"]
+            if stage == "MISSING":
+                assert result["status"] == "UNAVAILABLE"
+                assert _call(client, token, "auto_coder_start_worker", {"target_id": "beta-worker", "idempotency_key": "old-start", "expected_supervisor_generation": "old-supervisor", "expected_runtime_id": "bootstrap"})["status"] == "UNAVAILABLE"
+                assert bridge.actions == []
+                return
+            assert result["status"] == "NEEDS_ATTENTION"
+            assert result["history_origin"] == "retained_prior_instance"
+            if stage != "MISSING":
+                assert result["steps"] == snapshot["steps"]
+            else:
+                assert result["reason"] == "lifecycle_journal_unavailable"
             if stage == "SUCCEEDED":
                 assert result["reason"] == "retained_lifecycle_outcome_not_settled"
             args = {"target_id": "beta-worker", "idempotency_key": "old-start", "expected_supervisor_generation": "old-supervisor", "expected_runtime_id": "bootstrap"}
-            assert _call(client, token, "auto_coder_start_worker", args)["operation_id"] == operation.operation_id
+            worker_replay = _call(client, token, "auto_coder_start_worker", args)
+            assert worker_replay["operation_id"] == operation.operation_id
+            assert worker_replay["history_origin"] == "retained_prior_instance"
+            assert worker_replay["status"] == result["status"]
             assert _call(client, token, "auto_coder_start_worker", {**args, "idempotency_key": "different"})["status"] == "BUSY"
             old_update = _call(client, token, "auto_coder_operation_get", {"operation_id": management_operation.operation_id})
             assert old_update["status"] == "UNKNOWN" and old_update["history_origin"] == "retained_prior_instance"

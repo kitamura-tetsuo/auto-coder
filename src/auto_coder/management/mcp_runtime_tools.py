@@ -108,13 +108,15 @@ class ManagementRuntime:
     def _project_retained(self, record: OperationRecord, snapshot: dict[str, object] | None) -> dict[str, object]:
         if record.intent.action in LIFECYCLE_ACTIONS:
             if snapshot is None:
-                return self._response("NEEDS_ATTENTION", "lifecycle_journal_unavailable", operation_id=record.operation_id)
-            projected = self.lifecycle.project_snapshot(record, snapshot)
-            stage = projected.get("status")
-            if (stage == "SUCCEEDED" and record.phase is not OperationPhase.SUCCEEDED) or (stage in {"FAILED", "SUPERSEDED"} and record.phase is not OperationPhase.FAILED):
-                return {**projected, "status": "NEEDS_ATTENTION", "reason": "retained_lifecycle_outcome_not_settled"}
-            return projected
-        return self._project_operation(record)
+                projected = self._response("NEEDS_ATTENTION", "lifecycle_journal_unavailable", operation_id=record.operation_id)
+            else:
+                projected = self.lifecycle.project_snapshot(record, snapshot)
+                stage = projected.get("status")
+                if (stage == "SUCCEEDED" and record.phase is not OperationPhase.SUCCEEDED) or (stage in {"FAILED", "SUPERSEDED"} and record.phase is not OperationPhase.FAILED):
+                    projected = {**projected, "status": "NEEDS_ATTENTION", "reason": "retained_lifecycle_outcome_not_settled"}
+        else:
+            projected = self._project_operation(record)
+        return {**projected, "history_origin": "retained_prior_instance"}
 
     def _project_retained_management(self, record: OperationRecord) -> dict[str, object]:
         """Project only old journal evidence; never consult a new handoff."""

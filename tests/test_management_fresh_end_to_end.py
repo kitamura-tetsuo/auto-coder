@@ -29,7 +29,7 @@ from urllib.parse import urlsplit
 import pytest
 import yaml
 
-from auto_coder.management.action_scopes import DEPLOY_SCOPE, READ_SCOPE
+from auto_coder.management.action_scopes import DEPLOY_SCOPE, OPERATE_SCOPE, READ_SCOPE
 from auto_coder.management.fresh_host import _write_evidence
 from auto_coder.management.fresh_host_observation import capture_prior_container
 from auto_coder.management.fresh_initialization import FreshInitializationIntent
@@ -198,7 +198,7 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
     origin = "http://127.0.0.1:8081"
-    scopes = (READ_SCOPE, DEPLOY_SCOPE) if retained_history else (READ_SCOPE,)
+    scopes = (READ_SCOPE, DEPLOY_SCOPE, OPERATE_SCOPE) if retained_history else (READ_SCOPE,)
     client = OAuthClient("fixture-client", (origin + "/callback",), allowed_scopes=scopes)
     settings = OAuthSettings(oauth / "oauth.sqlite3", origin, "fresh-fixture", (client,), enabled_scopes=scopes)
     principal = VerifiedPrincipal("fresh-fixture", "operator", time.time() - 10)
@@ -330,6 +330,12 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
             assert worker_record is not None
             old_worker_operation_id = worker_record.operation_id
             assert old_store.transition(old_worker_operation_id, 0, OperationPhase.NEEDS_ATTENTION, safe_error_category="lifecycle_deadline_exceeded").record is not None
+            reevaluation_intent = OperationIntent(
+                ManagedTarget("release-worker", "release", "fixture/release"), "reevaluate_target", (ActionParameter("target_id", "release-worker"), ActionParameter("target_type", "issue"), ActionParameter("number", 2603)), "old-reevaluation", "old-process", "old-deployment"
+            )
+            reevaluation_record = old_store.admit(reevaluation_intent, authority).record
+            assert reevaluation_record is not None
+            assert old_store.transition(reevaluation_record.operation_id, 0, OperationPhase.NEEDS_ATTENTION, safe_error_category="unknown_prior_effect").record is not None
             with sqlite3.connect(old_journal / "management-operations.sqlite3") as db:
                 assert db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
 
@@ -703,6 +709,27 @@ except urllib.error.HTTPError as e: print(json.dumps({'status':e.code,'body':''}
             prior_worker = subprocess.run(["docker", "exec", "--interactive", new_id, "python", "-c", script], input=json.dumps({"request": worker_query, "token": token}), text=True, capture_output=True, check=True, timeout=30)
             worker_result = json.loads(prior_worker.stdout)["result"]["structuredContent"]
             assert worker_result["status"] == "NEEDS_ATTENTION" and worker_result["steps"]["start"]["operation_id"] == "original-worker-effect"
+            assert worker_result["history_origin"] == "retained_prior_instance"
+            worker_replay = {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "auto_coder_start_worker", "arguments": {"target_id": "beta-worker", "idempotency_key": "old-start", "expected_supervisor_generation": "original-supervisor", "expected_runtime_id": "bootstrap"}}}
+            reevaluation_query = {"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "auto_coder_operation_get", "arguments": {"operation_id": reevaluation_record.operation_id, "target_id": "release-worker"}}}
+            reevaluation_replay = {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "tools/call",
+                "params": {"name": "auto_coder_reevaluate_target", "arguments": {"target_id": "release-worker", "target_type": "issue", "number": 2603, "idempotency_key": "old-reevaluation", "expected_process_run_id": "old-process", "expected_deployment_generation": "old-deployment"}},
+            }
+
+            def assert_retained_replays():
+                for historical_request, expected_id in ((worker_replay, old_worker_operation_id), (reevaluation_query, reevaluation_record.operation_id), (reevaluation_replay, reevaluation_record.operation_id)):
+                    response = subprocess.run(["docker", "exec", "--interactive", new_id, "python", "-c", script], input=json.dumps({"request": historical_request, "token": token}), text=True, capture_output=True, check=True, timeout=30)
+                    projected = json.loads(response.stdout)["result"]["structuredContent"]
+                    assert projected["operation_id"] == expected_id
+                    assert projected["status"] == "NEEDS_ATTENTION"
+                    assert projected["history_origin"] == "retained_prior_instance"
+                with sqlite3.connect(journal / "management-operations.sqlite3") as replay_db:
+                    assert replay_db.execute("SELECT count(*) FROM operations").fetchone()[0] == 0
+
+            assert_retained_replays()
             competing = {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "auto_coder_start_worker", "arguments": {"target_id": "beta-worker", "idempotency_key": "new-start", "expected_supervisor_generation": "original-supervisor", "expected_runtime_id": "bootstrap"}}}
             blocked = subprocess.run(["docker", "exec", "--interactive", new_id, "python", "-c", script], input=json.dumps({"request": competing, "token": token}), text=True, capture_output=True, check=True, timeout=30)
             assert json.loads(blocked.stdout)["result"]["structuredContent"]["status"] == "BUSY"
@@ -783,8 +810,13 @@ except urllib.error.HTTPError as e: print(json.dumps({'status':e.code,'body':''}
                 reread = subprocess.run(["docker", "exec", "--interactive", new_id, "python", "-c", script], input=json.dumps({"request": old_query, "token": token}), text=True, capture_output=True, check=True, timeout=30)
                 historical = json.loads(reread.stdout)["result"]["structuredContent"]
                 assert historical["status"] == "UNKNOWN" and historical["operation_id"] == old_operation_id
+                assert historical["history_origin"] == "retained_prior_instance"
                 worker_reread = subprocess.run(["docker", "exec", "--interactive", new_id, "python", "-c", script], input=json.dumps({"request": worker_query, "token": token}), text=True, capture_output=True, check=True, timeout=30)
-                assert json.loads(worker_reread.stdout)["result"]["structuredContent"]["operation_id"] == old_worker_operation_id
+                worker_historical = json.loads(worker_reread.stdout)["result"]["structuredContent"]
+                assert worker_historical["operation_id"] == old_worker_operation_id
+                assert worker_historical["history_origin"] == "retained_prior_instance"
+                assert worker_historical["steps"] == worker_result["steps"]
+                assert_retained_replays()
                 still_blocked = subprocess.run(["docker", "exec", "--interactive", new_id, "python", "-c", script], input=json.dumps({"request": competing, "token": token}), text=True, capture_output=True, check=True, timeout=30)
                 assert json.loads(still_blocked.stdout)["result"]["structuredContent"]["status"] == "BUSY"
             # Fresh request and independent local verifier must join the new
