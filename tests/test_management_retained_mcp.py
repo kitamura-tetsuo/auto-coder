@@ -7,14 +7,14 @@ from starlette.testclient import TestClient
 from auto_coder.management.action_scopes import DEPLOY_SCOPE, OPERATE_SCOPE, READ_SCOPE
 from auto_coder.management.app import create_management_app
 from auto_coder.management.mcp_runtime_tools import ManagementRuntime
-from auto_coder.management.operation_store import ManagementOperationStore
 from auto_coder.management.oauth_config import ManagementSettings, OAuthClient, OAuthSettings
 from auto_coder.management.oauth_grants import OAuthGrantService
+from auto_coder.management.operation_store import ManagementOperationStore
 from auto_coder.management.operations import ActionParameter, ManagedTarget, OperationIntent, OperationPhase
 from auto_coder.management.retained_journal import RetainedJournal
 from tests.test_management_mcp import _issue, real_boundary  # noqa: F401
-from tests.test_management_runtime_mcp import _application, _call, _request, runtime_boundary  # noqa: F401
 from tests.test_management_retained_journal import retained
+from tests.test_management_runtime_mcp import _application, _call, _request, runtime_boundary  # noqa: F401
 from tests.test_management_worker_lifecycle import LifecycleBridge
 
 

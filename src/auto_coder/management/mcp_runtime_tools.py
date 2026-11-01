@@ -26,7 +26,6 @@ from .oauth_config import ManagementSettings
 from .oauth_grants import AuthenticatedGrant, OAuthGrantService
 from .operation_executor import ManagementOperationDispatcher, OperationHandler
 from .operation_store import ManagementOperationStore
-from .retained_journal import RetainedGuardedOperationStore, RetainedJournal
 from .operations import (
     AcceptedAuthority,
     ActionParameter,
@@ -40,6 +39,7 @@ from .operations import (
     OperationRecord,
     ReadStatus,
 )
+from .retained_journal import RetainedGuardedOperationStore, RetainedJournal
 from .self_update_operation import ManagementSelfUpdateHandler
 from .self_update_policy import ManagementUpdateAction
 from .worker_lifecycle import LIFECYCLE_ACTIONS, WorkerLifecycle
