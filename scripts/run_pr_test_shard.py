@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import math
 import os
 import selectors
 import shutil
@@ -20,6 +23,41 @@ REPORT_PATHS = (Path("htmlcov"), Path(".coverage"), Path("coverage.xml"), Path("
 POLL_INTERVAL_SECONDS = 0.05
 KILL_CONFIRM_SECONDS = 2.0
 cancel_signal: int | None = None
+DURATION_SNAPSHOT = Path("tests/data/pr-test-durations.json")
+MIN_DURATION_SECONDS = 0.001
+
+
+def _duration_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate duration node: {key}")
+        result[key] = value
+    return result
+
+
+def _normalized_durations(snapshot: Path) -> dict[str, float]:
+    """Validate and floor input before pytest-split computes shard boundaries."""
+    raw = json.loads(snapshot.read_text(encoding="utf-8"), object_pairs_hook=_duration_pairs)
+    if not isinstance(raw, dict):
+        raise ValueError("duration snapshot must be an object")
+    result: dict[str, float] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not key or isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("invalid duration entry")
+        try:
+            duration = float(value)
+        except (OverflowError, ValueError) as exc:
+            raise ValueError("invalid duration value") from exc
+        if not math.isfinite(duration) or duration < 0:
+            raise ValueError("duration must be finite and nonnegative")
+        result[key] = max(duration, MIN_DURATION_SECONDS)
+    try:
+        if not math.isfinite(math.fsum(result.values())):
+            raise ValueError("duration total must be finite")
+    except OverflowError as exc:
+        raise ValueError("duration total must be finite") from exc
+    return result
 
 
 def _handle_cancel(signum: int, _frame: FrameType | None) -> None:
@@ -130,10 +168,10 @@ def _stop_group(process: subprocess.Popen[bytes], pgid: int, grace: float) -> bo
     return not _group_members(pgid)
 
 
-def _run_attempt(group: int, attempt: int, timeout: float, grace: float, log_dir: Path) -> str:
+def _run_attempt(group: int, attempt: int, timeout: float, grace: float, log_dir: Path, durations: Path) -> str:
     # Emit a complete line per test so the line-oriented collector does not hide
     # progress within a file. Dump blocked threads before the outer deadline.
-    command = ["bash", "scripts/test.sh", "--splits", "4", "--group", str(group), "-m", "not browser and not opencode_live and not muse_live and not supervisor_integration", "-vv", "-o", "faulthandler_timeout=30"]
+    command = ["bash", "scripts/test.sh", "--splits", "4", "--group", str(group), "--splitting-algorithm", "duration_based_chunks", "--durations-path", str(durations), "-m", "not browser and not opencode_live and not muse_live and not supervisor_integration", "-vv", "-o", "faulthandler_timeout=30"]
     supervisor_log = log_dir / f"attempt-{attempt}.supervisor.log"
     sink = logger.add(
         supervisor_log,
@@ -239,6 +277,14 @@ def main() -> int:
     parser.add_argument("--log-dir", type=Path, required=True)
     args = parser.parse_args()
     args.log_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        weights = _normalized_durations(DURATION_SNAPSHOT)
+        durations = args.log_dir / "normalized-durations.json"
+        durations.write_text(json.dumps(weights, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        duration_digest = hashlib.sha256(durations.read_bytes()).digest()
+    except (OSError, ValueError) as exc:
+        print(f"PR test duration snapshot unavailable or invalid: {exc}", file=sys.stderr)
+        return 1
     logger.remove()
     logger.add(
         sys.stderr,
@@ -254,8 +300,22 @@ def main() -> int:
         signal.signal(sig, _handle_cancel)
 
     for attempt in range(1, args.max_attempts + 1):
+        try:
+            if hashlib.sha256(durations.read_bytes()).digest() != duration_digest:
+                logger.error("Duration input changed before attempt {}", attempt)
+                return 1
+        except OSError as exc:
+            logger.error("Duration input unavailable before attempt {}: {}", attempt, exc)
+            return 1
         _remove_reports()
-        outcome = _run_attempt(args.group, attempt, args.attempt_timeout, args.termination_grace, args.log_dir)
+        outcome = _run_attempt(args.group, attempt, args.attempt_timeout, args.termination_grace, args.log_dir, durations)
+        try:
+            if hashlib.sha256(durations.read_bytes()).digest() != duration_digest:
+                logger.error("Duration input changed during attempt {}", attempt)
+                return 1
+        except OSError as exc:
+            logger.error("Duration input unavailable after attempt {}: {}", attempt, exc)
+            return 1
         if outcome == "success":
             return 0
         if outcome != "timeout" or attempt == args.max_attempts or cancel_signal is not None:

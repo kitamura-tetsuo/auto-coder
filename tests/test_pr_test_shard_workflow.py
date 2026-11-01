@@ -19,6 +19,9 @@ def _run_step(tmp_path, group, test_script, timeout="0.25", grace="0.1"):
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     shutil.copy(ROOT / "scripts/run_pr_test_shard.py", scripts)
+    data = tmp_path / "tests/data"
+    data.mkdir(parents=True)
+    (data / "pr-test-durations.json").write_text('{"fixture": 1.0}', encoding="utf-8")
     (scripts / "test.sh").write_text(test_script, encoding="utf-8")
     run = next(step["run"] for step in _workflow()["jobs"]["tests-shard"]["steps"] if step["name"].startswith("Run tests with coverage"))
     run = re.sub(r"--attempt-timeout\s+\S+", f"--attempt-timeout {timeout}", run)
@@ -43,7 +46,9 @@ def test_production_step_passes_correct_shard_once(tmp_path, group):
     )
 
     assert result.returncode == 0
-    assert (tmp_path / "invocations").read_text().splitlines() == [f"--splits 4 --group {group} -m not browser and not opencode_live and not muse_live and not supervisor_integration -vv -o faulthandler_timeout=30"]
+    assert (tmp_path / "invocations").read_text().splitlines() == [
+        f"--splits 4 --group {group} --splitting-algorithm duration_based_chunks --durations-path pr-test-logs/shard-{group}/normalized-durations.json -m not browser and not opencode_live and not muse_live and not supervisor_integration -vv -o faulthandler_timeout=30"
+    ]
     assert "shard-output" in result.stdout
     assert (tmp_path / f"pr-test-logs/shard-{group}/attempt-1.stdout.log").exists()
     assert not (tmp_path / f"pr-test-logs/shard-{group}/attempt-2.stdout.log").exists()
@@ -60,6 +65,13 @@ def test_completed_nonzero_status_is_not_retried(tmp_path, status):
     assert result.returncode != 0
     assert (tmp_path / "invocations").read_text().splitlines() == ["invoked"]
     assert "ordinary failure" in result.stderr
+    assert "starting retry" not in result.stderr
+
+
+def test_changed_duration_input_cannot_be_accepted_or_retried(tmp_path):
+    result = _run_step(tmp_path, 1, '#!/bin/bash\nprintf "{}" > "$8"\nexit 0\n')
+    assert result.returncode != 0
+    assert "Duration input changed during attempt 1" in result.stderr
     assert "starting retry" not in result.stderr
 
 
