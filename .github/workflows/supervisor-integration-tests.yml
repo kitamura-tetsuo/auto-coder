@@ -36,16 +36,18 @@ jobs:
       - name: Test real worker processes and management bridge
         timeout-minutes: 10
         run: |
+          # Bound console output without hiding a failing pytest exit status.
+          set -o pipefail
           uv run pytest -q -vv \
             tests/test_worker_supervisor.py \
             tests/test_worker_supervisor_bridge.py \
             tests/test_worker_versions.py \
             tests/test_worker_management_bridge.py::test_real_unix_socket_observes_same_engine_and_read_does_not_heartbeat \
-            tests/test_worker_management_bridge.py::test_graceful_receipt_requires_stopped_closed_and_settled
+            tests/test_worker_management_bridge.py::test_graceful_receipt_requires_stopped_closed_and_settled 2>&1 | tail -n 400
           # Isolate the production daemon composition from long-lived process
           # fixture state while retaining its complete UDS/terminal oracle.
           uv run pytest -q -vv -s -o timeout=60 \
-            tests/test_worker_management_bridge.py::test_actual_daemon_uds_observes_admitted_drain_and_persists_receipt
+            tests/test_worker_management_bridge.py::test_actual_daemon_uds_observes_admitted_drain_and_persists_receipt 2>&1 | tail -n 400
 
       - name: Verify authenticated management self-update
         # Real process tests take about 50-150s each on hosted runners. The
