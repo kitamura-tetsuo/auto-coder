@@ -24,6 +24,7 @@ import time
 import uuid
 from dataclasses import asdict, replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 import yaml
@@ -261,6 +262,7 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
     tracer = None
     competitor = None
     competitor_tracer = None
+    proxy_watcher = None
     fence = None
     network_fd = None
     try:
@@ -646,6 +648,52 @@ fresh_host.main()
             time.sleep(0.2)
         result = reply.stdout
         assert json.loads(result)["result"]["structuredContent"]["uid"] == "operator"
+        if retained_history and os.environ.get("AUTOCODER_TEST_REAL_PROXY") == "1":
+            # Reuse only the existing proxy image/config, mounted read-only;
+            # the disposable manager uses its own OAuth and fixture token.
+            proxy_description = json.loads(subprocess.check_output(["docker", "inspect", "auto-coder-clean-5460-proxy"], text=True))[0]
+            proxy_image = proxy_description["Image"]
+            proxy_config = next(item["Source"] for item in proxy_description["Mounts"] if item["Destination"] == "/etc/caddy/Caddyfile")
+            first_line = Path(proxy_config).read_text().strip().splitlines()[0].strip().split()[0]
+            site = urlsplit(first_line)
+            assert site.scheme == "http" and site.port == 8080
+            route_host = site.netloc if site.hostname else "127.0.0.1:8081"
+            test_proxy = "fresh-auth-proxy-" + uuid.uuid4().hex[:12]
+            names.append(test_proxy)
+            proxy_id = subprocess.check_output(
+                ["docker", "run", "-d", "--name", test_proxy, "--network", "container:" + new_id, "--entrypoint", "caddy", "--mount", f"type=bind,src={proxy_config},dst=/etc/caddy/Caddyfile,readonly", proxy_image, "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"], text=True
+            ).strip()
+            proxy_before = json.loads(subprocess.check_output(["docker", "inspect", proxy_id], text=True))[0]
+            proxy_started_at = proxy_before["State"]["StartedAt"]
+            proxy_script = """
+import json,sys,urllib.request,urllib.error
+p=json.load(sys.stdin)
+h={'Content-Type':'application/json','Accept':'application/json, text/event-stream','Host':p['host']}
+if p.get('token'): h['Authorization']='Bearer '+p['token']
+r=urllib.request.Request('http://127.0.0.1:8080/mcp',data=json.dumps(p['request']).encode(),headers=h)
+try:
+ with urllib.request.urlopen(r,timeout=5) as reply: print(json.dumps({'status':reply.status,'body':reply.read().decode()}))
+except urllib.error.HTTPError as e: print(json.dumps({'status':e.code,'body':''}))
+"""
+
+            def proxy_request(bearer: str | None) -> dict[str, object]:
+                data = {"host": route_host, "request": request, "token": bearer}
+                reply = subprocess.run(["docker", "exec", "--interactive", new_id, "python", "-c", proxy_script], input=json.dumps(data), text=True, capture_output=True, check=False, timeout=15)
+                return json.loads(reply.stdout) if reply.returncode == 0 else {"status": 0}
+
+            deadline_proxy = time.monotonic() + 30
+            while proxy_request(None)["status"] != 401:
+                assert time.monotonic() < deadline_proxy, "proxy did not reject unauthenticated request"
+                time.sleep(0.2)
+            authorized = proxy_request(token)
+            assert authorized["status"] == 200
+            assert json.loads(str(authorized["body"]))["result"]["structuredContent"]["uid"] == "operator"
+            watcher_state = root / "proxy-watcher"
+            watcher_state.mkdir(mode=0o700)
+            watcher_config = watcher_state / "config.json"
+            watcher_config.write_text(json.dumps({"state_root": str(watcher_state), "manager_id": new_id, "manager_image": image, "proxy_id": proxy_id, "proxy_image": proxy_image}), encoding="utf-8")
+            watcher_config.chmod(0o600)
+            proxy_watcher = subprocess.Popen([sys.executable, "-m", "auto_coder.management.proxy_watch_cli", "--config", str(watcher_config)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if retained_history:
             old_query = {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "auto_coder_operation_get", "arguments": {"operation_id": old_operation_id}}}
             previous = subprocess.run(["docker", "exec", "--interactive", new_id, "python", "-c", script], input=json.dumps({"request": old_query, "token": token}), text=True, capture_output=True, check=True, timeout=30)
@@ -713,6 +761,24 @@ fresh_host.main()
             finally:
                 os.close(probe_lock)
             assert json.loads(reply.stdout)["result"]["structuredContent"]["uid"] == "operator"
+            if proxy_watcher is not None:
+                deadline_proxy = time.monotonic() + 45
+                while True:
+                    proxy_response = proxy_request(token)
+                    if proxy_response["status"] == 200:
+                        break
+                    assert proxy_watcher.poll() is None and time.monotonic() < deadline_proxy, "proxy was not reattached"
+                    time.sleep(0.2)
+                assert json.loads(str(proxy_response["body"]))["result"]["structuredContent"]["uid"] == "operator"
+                assert proxy_request(None)["status"] == 401
+                journal_path = watcher_state / "proxy-reconnect.json"
+                while not journal_path.exists() or json.loads(journal_path.read_text())["phase"] != "done":
+                    assert proxy_watcher.poll() is None and time.monotonic() < deadline_proxy, "proxy reattachment was not recorded"
+                    time.sleep(0.2)
+                proxy_after = json.loads(subprocess.check_output(["docker", "inspect", proxy_id], text=True))[0]
+                manager_after = json.loads(subprocess.check_output(["docker", "inspect", new_id], text=True))[0]
+                assert proxy_after["State"]["StartedAt"] != proxy_started_at
+                assert os.readlink(f"/proc/{proxy_after['State']['Pid']}/ns/net") == os.readlink(f"/proc/{manager_after['State']['Pid']}/ns/net")
             if retained_history:
                 reread = subprocess.run(["docker", "exec", "--interactive", new_id, "python", "-c", script], input=json.dumps({"request": old_query, "token": token}), text=True, capture_output=True, check=True, timeout=30)
                 historical = json.loads(reread.stdout)["result"]["structuredContent"]
@@ -743,6 +809,9 @@ fresh_host.main()
         assert grant_history() == retained_grants
         assert {str(path.relative_to(old_state)): hashlib.sha256(path.read_bytes()).hexdigest() for path in old_state.rglob("*") if path.is_file()} == old_history
     finally:
+        if proxy_watcher is not None and proxy_watcher.poll() is None:
+            proxy_watcher.terminate()
+            proxy_watcher.wait(timeout=10)
         if competitor is not None and competitor.poll() is None:
             competitor.terminate()
             competitor.wait(timeout=10)

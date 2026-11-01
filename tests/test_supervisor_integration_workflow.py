@@ -35,6 +35,7 @@ def test_supervisor_integration_job_runs_independently_on_pull_requests() -> Non
     assert "== 17" in host and "skipped" in host
     assert "-o timeout=60" in steps["Test real worker processes and management bridge"]["run"]
     assert "test_forced_cancel_reaps_orphan_only_after_owned_thread_finishes" in steps["Test real worker processes and management bridge"]["run"]
+    assert "test_cancelled_async_wrapper_does_not_release_running_thread" in steps["Test real worker processes and management bridge"]["run"]
     assert "set -o pipefail" in steps["Test real worker processes and management bridge"]["run"]
     assert steps["Test real worker processes and management bridge"]["run"].count("tail -n 400") == 2
     container = steps["Verify isolated Supervisor containers"]
