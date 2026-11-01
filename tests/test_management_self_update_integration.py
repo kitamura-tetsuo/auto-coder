@@ -490,7 +490,7 @@ def management_system(tmp_path: Path, _use_real_commands: None, _use_real_sleep:
 
     bootstrap = BootstrapConfig(INSTANCE, root / "supervisor", state, root / "operations", origin + "/mcp", current.management_runtime_id, (), graceful_timeout=0.4, management_version_root=root / "versions", management_config=config_path, verification_timeout=30)
     runtimes = [runtime_for_receipt(bootstrap, item) for item in (current, candidate)]
-    if getattr(request, "param", None) in {"bootstrap", "bootstrap_selected", "recovery", "recovery_plain"}:
+    if getattr(request, "param", None) in {"bootstrap", "bootstrap_selected", "recovery", "recovery_plain", "restart_clean"}:
         from auto_coder.management.bootstrap_supervisor import RuntimeSpec
 
         executable = root / "bootstrap-python"
@@ -504,22 +504,24 @@ def management_system(tmp_path: Path, _use_real_commands: None, _use_real_sleep:
             (("PATH", os.defpath), ("PYTHONPATH", str(package_path)), ("PYTHONHOME", sys.base_prefix), ("PYTHONDONTWRITEBYTECODE", "1")),
             root / "drain-bootstrap.json",
         )
-        if request.param in {"bootstrap", "recovery_plain"}:
+        if request.param in {"bootstrap", "recovery_plain", "restart_clean"}:
             bootstrap = replace(bootstrap, initial_runtime="bootstrap", management_config=None, management_version_root=None)
             runtimes = [initial]
         else:
             bootstrap = replace(bootstrap, initial_runtime="bootstrap", graceful_timeout=10, verification_timeout=120)
             runtimes = [initial, runtimes[1]]
         (Path(current.environment_path).parent / "MANAGEMENT_READY.json").unlink()
+    if getattr(request, "param", None) == "restart_clean":
+        bootstrap = replace(bootstrap, restart_after_clean_shutdown=True, graceful_timeout=10)
     if getattr(request, "param", None) == "recovery_installed":
         bootstrap = replace(bootstrap, verification_timeout=120)
     value = asdict(bootstrap)
     value["runtimes"] = [{**asdict(item), "environment": dict(item.environment)} for item in runtimes]
     bootstrap_path.write_text(json.dumps(value, default=lambda value: str(value) if isinstance(value, Path) else value), encoding="utf-8")
     system = ManagementSystem(root, source, current_sha, candidate_sha, config_path, bootstrap_path, policy, origin, services, server, key, publisher, stager, current, candidate)
-    if getattr(request, "param", None) in {"recovery", "recovery_plain", "recovery_installed"}:
+    if getattr(request, "param", None) in {"recovery", "recovery_plain", "recovery_installed", "restart_clean"}:
         (root / "supervisor").mkdir(mode=0o700)
-        if request.param == "recovery_plain":
+        if request.param in {"recovery_plain", "restart_clean"}:
             BootstrapStore(root / "supervisor", INSTANCE).load()
             with HandoffStore(root / "supervisor", INSTANCE)._connect():
                 pass
