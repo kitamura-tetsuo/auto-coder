@@ -233,6 +233,33 @@ class ManagementRuntime:
                 return self._response("CONFLICT", "supervisor_changed_during_diagnostic")
             if result.result_code not in {"OK", "ACCEPTED"}:
                 return self._response(result.result_code, "worker_diagnostic_" + result.result_code.lower(), projection=result.data)
+            if kind == "consumer-identity":
+                if observed["binding_status"] == "CONFLICT":
+                    return self._response("CONFLICT", "runtime_binding_conflict")
+                projection = result.data
+                if not isinstance(projection, dict) or projection.get("status") not in {"OK", "CONFLICT", "UNAVAILABLE"}:
+                    return self._response("UNAVAILABLE", "invalid_consumer_identity")
+                status = str(projection["status"])
+                if status == "OK":
+                    hashes = projection.get("sha256")
+                    names = {"requirement_contract.py", "specification_analyzer.py", "specification_validation_lifecycle.py", "issue_review_service.py", "prompts.yaml"}
+                    if projection.get("origin") != "worker_package_disk_sha256" or not isinstance(projection.get("semantics"), str) or not isinstance(hashes, dict) or set(hashes) != names or any(not isinstance(value, str) or not _SHA.fullmatch(value) for value in hashes.values()):
+                        return self._response("UNAVAILABLE", "invalid_consumer_identity")
+                return self._response(
+                    status,
+                    "worker_consumer_identity",
+                    target_id=target_id,
+                    instance_id=resolved.target.instance_id,
+                    channel=resolved.target.channel,
+                    repository=resolved.target.repository,
+                    process_run_id=observation["process_run_id"],
+                    deployment_generation=observation["deployment_generation"],
+                    supervisor_generation=observed["supervisor_generation"],
+                    artifact=observation.get("artifact"),
+                    runtime_binding=observed["runtime_binding"],
+                    binding_status=observed["binding_status"],
+                    projection=projection,
+                )
             return self._response(
                 str(observed["status"]),
                 "worker_diagnostic" if observed["status"] == "OK" else str(observed["reason"]),
@@ -240,12 +267,17 @@ class ManagementRuntime:
                 channel=resolved.target.channel,
                 repository=resolved.target.repository,
                 process_run_id=observation["process_run_id"],
+                deployment_generation=observation["deployment_generation"],
                 supervisor_generation=observed["supervisor_generation"],
                 worker_observation=observation if kind == "status" else None,
                 runtime_binding=observed["runtime_binding"],
                 binding_status=observed["binding_status"],
                 projection=result.data,
             )
+
+    async def consumer_identity(self, target_id: str) -> dict[str, object]:
+        """Measure the fixed installed specification-consumer files on the target worker."""
+        return await asyncio.to_thread(self._diagnostic, target_id, "consumer-identity", {})
 
     async def status(self, target_id: str, limit: StrictInt = 50) -> dict[str, object]:
         if type(limit) is not int or not 1 <= limit <= 500:
@@ -619,6 +651,7 @@ class ManagementRuntime:
         read = ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False, openWorldHint=False)
         mutation = ToolAnnotations(readOnlyHint=False, idempotentHint=True, destructiveHint=False, openWorldHint=False)
         return (
+            ManagementTool("auto_coder_consumer_identity", self.consumer_identity, (READ_SCOPE,), read),
             ManagementTool("auto_coder_status", self.status, (READ_SCOPE,), read),
             ManagementTool("auto_coder_logs", self.logs, (READ_SCOPE,), read),
             ManagementTool("auto_coder_validation_attempt", self.validation_attempt, (READ_SCOPE,), read),

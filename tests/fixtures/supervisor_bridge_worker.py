@@ -6,6 +6,7 @@ This deliberately has no GitHub, provider, or issue scheduler side effects.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import signal
 import time
@@ -30,6 +31,11 @@ class _Engine:
 
 async def run() -> None:
     root = Path(os.environ["AUTO_CODER_RUNTIME_ROOT"])
+    if os.environ.get("AUTO_CODER_TEST_CONFIG_REPORT") == "1":
+        from auto_coder.automation_config import AutomationConfig
+
+        config = AutomationConfig(repo_name=os.environ["AUTO_CODER_REPOSITORY"])
+        (root / "fixture-config-observed.json").write_text(json.dumps({"issue": config.issue_allowlist, "pr": config.pr_allowlist}))
     identity = BridgeIdentity(
         os.environ["AUTO_CODER_REPOSITORY"],
         os.environ["AUTO_CODER_CHANNEL"],
@@ -39,6 +45,11 @@ async def run() -> None:
         "fixture-digest",
     )
     engine = _Engine()
+    test_package = os.environ.get("AUTO_CODER_TEST_CONSUMER_PACKAGE")
+    if test_package:
+        import auto_coder.consumer_identity as consumer_identity
+
+        consumer_identity._PACKAGE = Path(test_package)
     bridge = WorkerManagementBridge(identity, engine)
     # Hold an actual worker-produced UDS response, not a fabricated network
     # response, so the private Supervisor transport's timeout is exercised.
@@ -52,6 +63,16 @@ async def run() -> None:
         return original_observation(nonce)
 
     bridge._observation = optionally_slow_observation  # type: ignore[method-assign]
+    original_consumer_observe = bridge.consumer_identity.observe
+
+    def optionally_slow_consumer_observe():
+        if (root / "fixture-hold-consumer").exists():
+            (root / "fixture-consumer-entered").write_text("entered")
+            while (root / "fixture-hold-consumer").exists():
+                time.sleep(0.03)
+        return original_consumer_observe()
+
+    bridge.consumer_identity.observe = optionally_slow_consumer_observe  # type: ignore[method-assign]
     loop = asyncio.get_running_loop()
     stop_requested = asyncio.Event()
     loop.add_signal_handler(signal.SIGTERM, stop_requested.set)

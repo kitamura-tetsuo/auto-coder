@@ -95,6 +95,14 @@ repeat an ambiguous effect. An unresolved acceptance/launch or a crashed child
 without terminal evidence remains `UNKNOWN`/`NEEDS_ATTENTION` and prevents
 another start until deliberate operator reconciliation.
 
+After a child PID and Linux start token have been durably associated with the
+accepted start operation, a Supervisor interrupted before writing its result
+can reconcile that same operation. It requires the exact live OS lifetime and
+a fresh peer-verified worker observation with the accepted deployment
+generation. An absent observation stays in progress; a missing or mismatched
+lifetime never authorizes another launch. This records a process start, not a
+verified staged runtime or healthy worker.
+
 The narrow `RECOVER_PREVIOUS` exception can replace the exact confirmed-exited
 failed child without a graceful receipt; ordinary `START` remains blocked.
 

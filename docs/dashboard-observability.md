@@ -2813,6 +2813,12 @@ both successful completion and late-activity suppression.
 `test_pr_correction_adapter_runner_delivers_gate_controlled_muse_background_result`
 crosses the corresponding admitted correction, exact-head workspace, production
 adapter, runner, and validation wake while retaining the same trace schema.
+CI-failure and merge-conflict adapters also bind their existing Muse interaction
+to the durable PR job. `tests/test_muse_msp.py::test_pr_repair_runner_records_real_muse_failure_for_cleanup`
+crosses the real fixture transport, adapter, runner, finalizer and cleanup;
+unresolved tasks and multiple sessions retain the workspace. This binding adds
+durable settlement evidence to the existing local backend interaction, without
+adding an origin, outcome, structured event or dashboard renderer.
 
 The Issue #2506 scheduler adoption is observability-neutral. Candidate
 collection now consumes the typed PR progress-policy route from the same single

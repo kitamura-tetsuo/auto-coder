@@ -15,11 +15,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from loguru import logger
+
 from .checkout_lock import checkout_lock
 from .cli_event_stream import extract_cli_response
 from .implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from .local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobKind, LocalJobStore
 from .security_utils import redact_string
+from .workspace_ownership import create_owned_workspace
 from .worktree_utils import DISPOSABLE_DIRECTORY_NAMES
 
 
@@ -113,7 +116,14 @@ class IssueJobWorkspaceProducer:
         workspace = self._root / record.job_id / record.execution_incarnation / "repository"
         if workspace.exists():
             raise IssueJobWorkspaceError("job workspace already exists without a durable binding")
-        workspace.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            ownership_anchor = create_owned_workspace(self._root, workspace.parent, record.job_id, record.execution_incarnation)
+        except OSError as exc:
+            if workspace.parent.exists() or workspace.parent.is_symlink():
+                raise IssueJobWorkspaceError("job workspace already exists without a durable binding") from exc
+            logger.warning("Workspace ownership evidence unavailable for job {}: {}", record.job_id, exc)
+            workspace.parent.mkdir(parents=True, exist_ok=False)
+            ownership_anchor = ""
         try:
             # Read only the publication remote from the controller checkout.
             # Fetch into the private repository so its HEAD, index, working files,
@@ -141,6 +151,8 @@ class IssueJobWorkspaceProducer:
                 publication_remote=publication_remote,
                 owner_incarnation=owner_incarnation or "",
                 owner_generation=owner_generation,
+                ownership_anchor=ownership_anchor,
+                reconstruction_source=str(repository),
             ):
                 raise IssueJobWorkspaceError("job authority changed before workspace binding")
         except Exception:
