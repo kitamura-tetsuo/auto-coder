@@ -1,3 +1,8 @@
+import json
+import select
+import subprocess
+import sys
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -92,3 +97,20 @@ def test_unexpected_stopped_proxy_and_wrong_image_never_issue_effects(tmp_path: 
     with pytest.raises(ValueError):
         controller.tick()
     assert driver.effects == []
+
+
+def test_persistent_watchers_contend_on_one_host_lock(tmp_path: Path) -> None:
+    _, driver = fixture(tmp_path)
+    path = tmp_path / "watch.json"
+    path.write_text(json.dumps({"state_root": str(tmp_path), **asdict(driver.binding)}), encoding="utf-8")
+    path.chmod(0o600)
+    command = [sys.executable, "-m", "auto_coder.management.proxy_watch_cli", "--config", str(path)]
+    first = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert first.stdout is not None and select.select([first.stdout], [], [], 15)[0]
+        assert first.stdout.readline().startswith("UNAVAILABLE:")
+        second = subprocess.run(command, check=False, capture_output=True, text=True, timeout=15)
+        assert second.returncode != 0 and "BlockingIOError" in second.stderr
+    finally:
+        first.terminate()
+        first.wait(timeout=10)
