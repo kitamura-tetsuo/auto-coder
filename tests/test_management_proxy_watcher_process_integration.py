@@ -79,6 +79,20 @@ def test_actual_proxy_effect_then_watcher_crash_never_replays(tmp_path: Path, in
         after = json.loads(docker("inspect", proxy_id))[0]["State"]
         assert after["Running"] == observed["Running"] and after["StartedAt"] == observed["StartedAt"]
         assert json.loads((state / "proxy-reconnect.json").read_text())["phase"] == expected_phase
+        resumed.terminate()
+        resumed.wait(timeout=10)
+        resumed = None
+        resolved = subprocess.run(command + ["--reconcile"], capture_output=True, text=True, timeout=30, check=True)
+        assert resolved.stdout.strip() == ("STOP_OBSERVED" if interrupted == "stop" else "ATTACHMENT_OBSERVED")
+        records = list(state.glob("proxy-resolution-*.json"))
+        assert len(records) == 1 and json.loads(records[0].read_text())["prior"]["phase"] == expected_phase
+        resumed = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        assert resumed.stdout is not None and select.select([resumed.stdout], [], [], 30)[0]
+        assert resumed.stdout.readline().strip() == "ATTACHED"
+        after_resolution = json.loads(docker("inspect", proxy_id))[0]["State"]
+        assert after_resolution["Running"] is True
+        if interrupted == "start":
+            assert after_resolution["StartedAt"] == observed["StartedAt"]
     finally:
         release.touch()
         for process in (watcher, resumed):

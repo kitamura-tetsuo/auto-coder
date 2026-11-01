@@ -159,6 +159,59 @@ class ProxyReconnect:
             raise ValueError("manager changed during observation")
         return {"id": value["id"], "pid": value["pid"], "started": value["started"], "namespace": namespace}
 
+    def _record_resolution(self, prior: dict[str, object], manager: dict[str, object], proxy: dict[str, object], namespace: str | None) -> None:
+        """Append immutable original uncertainty and independent observation."""
+        prior_bytes = json.dumps(prior, sort_keys=True, separators=(",", ":")).encode()
+        name = "proxy-resolution-" + hashlib.sha256(prior_bytes).hexdigest() + ".json"
+        content = json.dumps({"prior": prior, "manager": manager, "proxy": proxy, "proxy_namespace": namespace}, sort_keys=True, separators=(",", ":")).encode()
+        directory = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            try:
+                descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+            except FileExistsError:
+                descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
+                with os.fdopen(descriptor, "rb") as stream:
+                    info = os.fstat(stream.fileno())
+                    stored = stream.read(16385)
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600 or stored != content:
+                    raise ValueError("existing proxy resolution differs")
+            else:
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(content)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.fsync(directory)
+        finally:
+            os.close(directory)
+
+    def reconcile(self) -> str:
+        """Trusted-local operator observes an uncertain effect; never replay it."""
+        prior = self._read()
+        if prior is None or prior["phase"] not in {"stop_unknown", "start_unknown"}:
+            return "NEEDS_ATTENTION"
+        manager, proxy = self._manager(), self._proxy()
+        if prior["manager"] != manager:
+            return "NEEDS_ATTENTION"
+        namespace: str | None = None
+        if prior["phase"] == "stop_unknown":
+            if proxy["running"] is not False or proxy["pid"] != 0:
+                return "NEEDS_ATTENTION"
+            next_phase, outcome = "stopped", "STOP_OBSERVED"
+        else:
+            if proxy["running"] is not True:
+                return "NEEDS_ATTENTION"
+            namespace = self.driver.namespace(self._pid(proxy))
+            if namespace != manager["namespace"]:
+                return "NEEDS_ATTENTION"
+            next_phase, outcome = "done", "ATTACHMENT_OBSERVED"
+        if self._manager() != manager or self._proxy() != proxy or (namespace is not None and self.driver.namespace(self._pid(proxy)) != namespace):
+            return "NEEDS_ATTENTION"
+        self._record_resolution(prior, manager, proxy, namespace)
+        if self._read() != prior or self._manager() != manager or self._proxy() != proxy or (namespace is not None and self.driver.namespace(self._pid(proxy)) != namespace):
+            return "NEEDS_ATTENTION"
+        self._write(manager, next_phase)
+        return outcome
+
     def _proxy(self) -> dict[str, object]:
         value = self.driver.inspect(self.binding.proxy_id)
         if (

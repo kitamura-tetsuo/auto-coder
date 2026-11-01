@@ -63,7 +63,18 @@ lifetime and `stop_unknown` or `start_unknown`. If a call times out, the
 watcher remains `NEEDS_ATTENTION` and never retries that effect. The operator
 must preserve this journal, inspect the exact Docker container/lifetime and
 actual namespace and listener, and explicitly reconcile the unknown outcome
-before planning a new effect. A durable `stopped` record can resume its single
+before planning a new effect. Stop the watcher, then, with the same protected
+config and trusted host owner, run the watcher command with `--reconcile`.
+It acquires the same exclusive lock and never issues Docker effects. It checks
+the exact recorded manager lifetime, proxy identity and protected config
+twice; it accepts a stopped proxy for `stop_unknown` or a running proxy in the
+manager's namespace for `start_unknown`. It saves the original unknown record
+and observations in an exclusive owner-only `proxy-resolution-*.json`, fsyncs
+them, then advances the controller state. An unavailable, changed or ambiguous
+observation remains `NEEDS_ATTENTION`; do not edit the journal or retry the
+Docker effect. Restart the watcher only after an accepted observation. These
+observations do not prove who caused the effect or authenticated readiness.
+A durable `stopped` record can resume its single
 start only while the pinned manager lifetime is unchanged and the pinned proxy
 is independently observed stopped. `done` proves only matching namespaces;
 it is not an HTTP, OAuth, management-child or worker readiness assertion.

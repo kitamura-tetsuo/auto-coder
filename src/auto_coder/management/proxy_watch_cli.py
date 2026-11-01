@@ -16,6 +16,7 @@ from .proxy_reconnect import DockerProxyObservation, ProxyBinding, ProxyReconnec
 def main() -> int:
     parser = argparse.ArgumentParser(description="Watch one pinned management proxy namespace")
     parser.add_argument("--config", required=True, type=Path)
+    parser.add_argument("--reconcile", action="store_true", help="observe and preserve one uncertain effect under the exclusive watcher lock")
     args = parser.parse_args()
     if not args.config.is_absolute() or args.config.is_symlink():
         raise ValueError("absolute protected config required")
@@ -37,6 +38,10 @@ def main() -> int:
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
             raise PermissionError("proxy watcher lock is not private")
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if args.reconcile:
+            status = controller.reconcile()
+            print(status, flush=True)
+            return 0 if status in {"STOP_OBSERVED", "ATTACHMENT_OBSERVED"} else 2
         previous = ""
         while True:
             try:

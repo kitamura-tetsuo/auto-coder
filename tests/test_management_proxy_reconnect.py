@@ -119,6 +119,60 @@ def test_changed_proxy_configuration_refuses_without_effect(tmp_path: Path) -> N
     assert driver.effects == []
 
 
+@pytest.mark.parametrize("effect", ["stop", "start"])
+def test_operator_observation_preserves_unknown_and_never_replays_it(tmp_path: Path, effect: str) -> None:
+    controller, driver = fixture(tmp_path)
+    driver.fail = effect
+    with pytest.raises(TimeoutError):
+        controller.tick()
+    prior = controller._read()
+    calls = list(driver.effects)
+    if effect == "stop":
+        driver.proxy.update(running=False, pid=0)
+    else:
+        driver.proxy.update(running=True, pid=21, started="two")
+        driver.namespaces[21] = driver.namespaces[10]
+    assert controller.reconcile() == ("STOP_OBSERVED" if effect == "stop" else "ATTACHMENT_OBSERVED")
+    records = list(tmp_path.glob("proxy-resolution-*.json"))
+    assert len(records) == 1 and json.loads(records[0].read_text())["prior"] == prior
+    assert driver.effects == calls
+    driver.fail = ""
+    assert controller.tick() == "ATTACHED"
+    assert driver.effects == (calls + ["start"] if effect == "stop" else calls)
+
+
+def test_operator_refuses_changed_incarnation(tmp_path: Path) -> None:
+    controller, driver = fixture(tmp_path)
+    driver.fail = "stop"
+    with pytest.raises(TimeoutError):
+        controller.tick()
+    prior = controller._read()
+    driver.proxy.update(running=False, pid=0)
+    driver.manager.update(pid=11, started="two")
+    driver.namespaces[11] = "net:[3]"
+    assert controller.reconcile() == "NEEDS_ATTENTION"
+    assert controller._read() == prior and not list(tmp_path.glob("proxy-resolution-*.json"))
+
+
+def test_resolution_record_survives_crash_before_transition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    controller, driver = fixture(tmp_path)
+    driver.fail = "stop"
+    with pytest.raises(TimeoutError):
+        controller.tick()
+    prior = controller._read()
+    driver.proxy.update(running=False, pid=0)
+    original = controller._write
+    def crash(_manager: dict[str, object], _phase: str) -> None:
+        raise RuntimeError("simulated crash")
+    monkeypatch.setattr(controller, "_write", crash)
+    with pytest.raises(RuntimeError):
+        controller.reconcile()
+    assert controller._read() == prior and len(list(tmp_path.glob("proxy-resolution-*.json"))) == 1
+    monkeypatch.setattr(controller, "_write", original)
+    assert controller.reconcile() == "STOP_OBSERVED"
+    assert len(list(tmp_path.glob("proxy-resolution-*.json"))) == 1 and driver.effects == ["stop"]
+
+
 def test_persistent_watchers_contend_on_one_host_lock(tmp_path: Path) -> None:
     _, driver = fixture(tmp_path)
     path = tmp_path / "watch.json"
