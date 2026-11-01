@@ -8,7 +8,7 @@ import pytest
 
 from auto_coder.management.operation_store import ManagementOperationStore
 from auto_coder.management.operations import AcceptedAuthority, ActionParameter, AdmissionStatus, ManagedTarget, OperationIntent, OperationPhase
-from auto_coder.management.retained_journal import RetainedJournal
+from auto_coder.management.retained_journal import RetainedGuardedOperationStore, RetainedJournal
 
 
 def identity(path: Path) -> tuple[int, int]:
@@ -128,3 +128,22 @@ def test_prior_operation_requires_matching_current_actor_and_target(tmp_path: Pa
         assert reader.owned(original.operation_id, original.intent.target, "beta", replace(original.authority, **{field: "different"})) is None
         assert reader.owned(original.operation_id, original.intent.target, "release", original.authority) is None
         assert reader.owned(original.operation_id, ManagedTarget("other", "beta", "org/repo"), "beta", original.authority) is None
+
+
+def test_guarded_current_journal_refuses_prior_lane_and_closed_fence(tmp_path: Path) -> None:
+    prior_root = tmp_path / "prior"
+    prior_root.mkdir()
+    reader, _, _ = retained(prior_root)
+    old = reader.read()[0]
+    current = RetainedGuardedOperationStore(tmp_path / "new", reader)
+    assert current.admit(old.intent, old.authority).status is AdmissionStatus.BUSY
+    competing = OperationIntent(old.intent.target, old.intent.action, old.intent.parameters, "new-key")
+    assert current.admit(competing, old.authority).status is AdmissionStatus.BUSY
+    independent = OperationIntent(ManagedTarget("other", "release", "org/repo"), old.intent.action, old.intent.parameters, "new-key")
+    admitted = current.admit(independent, old.authority)
+    assert admitted.status is AdmissionStatus.CREATED and admitted.record is not None
+    assert current.effect_permitted(admitted.record)
+    reader.close()
+    assert not current.effect_permitted(admitted.record)
+    another = OperationIntent(ManagedTarget("third", "beta", "org/repo"), old.intent.action, old.intent.parameters, "new-key")
+    assert current.admit(another, old.authority).status is AdmissionStatus.UNAVAILABLE

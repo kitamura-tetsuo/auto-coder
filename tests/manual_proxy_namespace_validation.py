@@ -6,6 +6,7 @@ Run explicitly: python tests/manual_proxy_namespace_validation.py
 import json
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -32,6 +33,26 @@ def wait_http(name: str, expected: bool) -> None:
             return
         time.sleep(0.25)
     raise RuntimeError("proxy readback did not reach expected state")
+
+
+def reconnect_once(manager: str, proxy: str, *, fail_after_stop: bool = False) -> None:
+    """Experiment only: stop and reattach one exact retained proxy once."""
+    before = json.loads(docker("inspect", manager))[0]
+    observed_namespace = netns(manager)
+    if before["State"]["Running"] is not True or netns(proxy) == observed_namespace:
+        raise RuntimeError("replacement manager or stale namespace not established")
+    docker("stop", "-t", "3", proxy)
+    if json.loads(docker("inspect", proxy))[0]["State"]["Running"] is not False:
+        raise RuntimeError("proxy stop is not confirmed")
+    after = json.loads(docker("inspect", manager))[0]
+    if after["Id"] != before["Id"] or after["State"]["Pid"] != before["State"]["Pid"] or netns(manager) != observed_namespace:
+        raise RuntimeError("manager changed during proxy stop")
+    if fail_after_stop:
+        raise RuntimeError("injected interruption after confirmed stop")
+    docker("start", proxy)
+    if netns(proxy) != observed_namespace or netns(manager) != observed_namespace:
+        raise RuntimeError("new proxy namespace differs")
+    wait_http(manager, True)
 
 
 def main() -> None:
@@ -61,7 +82,31 @@ def main() -> None:
             if after != stale:
                 wait_http(manager, False)
                 print("new manager cannot reach stale proxy: confirmed")
-                docker("stop", "-t", "3", proxy)
+                outcome: list[BaseException] = []
+
+                def auto_reconnect() -> None:
+                    try:
+                        reconnect_once(manager, proxy)
+                    except BaseException as error:
+                        outcome.append(error)
+
+                controller = threading.Thread(target=auto_reconnect)
+                controller.start()
+                controller.join(timeout=30)
+                if controller.is_alive() or outcome:
+                    raise RuntimeError("automatic proxy reconnect failed") from (outcome[0] if outcome else None)
+                assert netns(proxy) == netns(manager)
+                print("automatic retained proxy reattachment and marker readback: confirmed")
+                docker("restart", "-t", "3", manager)
+                wait_http(manager, False)
+                try:
+                    reconnect_once(manager, proxy, fail_after_stop=True)
+                except RuntimeError as error:
+                    assert "injected interruption" in str(error)
+                else:
+                    raise AssertionError("injected failure was not observed")
+                assert json.loads(docker("inspect", proxy))[0]["State"]["Running"] is False
+                print("interruption after proxy stop remains stopped without retry: confirmed")
                 docker("run", "-d", "--name", successor, "--network", f"container:{manager}", "--entrypoint", "caddy", "-v", f"{root}/Caddyfile:/fixture/Caddyfile:ro", caddy, "run", "--config", "/fixture/Caddyfile", "--adapter", "caddyfile")
                 wait_http(manager, True)
                 assert netns(successor) == netns(manager)

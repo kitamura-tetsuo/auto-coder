@@ -60,6 +60,9 @@ class RetainedJournal:
         self.close()
 
     def read(self) -> tuple[OperationRecord, ...]:
+        return tuple(record for record, _ in self.read_evidence())
+
+    def read_evidence(self) -> tuple[tuple[OperationRecord, dict[str, object] | None], ...]:
         """Validate all records and their last history; errors never mean empty."""
         if self._fd < 0:
             raise ValueError("prior owner fence is closed")
@@ -75,7 +78,7 @@ class RetainedJournal:
             version = connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
             if version is None or version[0] != SCHEMA_VERSION or connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
                 raise ValueError("retained journal schema or references differ")
-            records: list[OperationRecord] = []
+            records: list[tuple[OperationRecord, dict[str, object] | None]] = []
             active: set[str] = set()
             for row in connection.execute("SELECT * FROM operations ORDER BY sequence"):
                 record = ManagementOperationStore._record(row)
@@ -105,12 +108,13 @@ class RetainedJournal:
                 snapshot = connection.execute("SELECT revision,snapshot_json FROM worker_lifecycle WHERE operation_id=?", (record.operation_id,)).fetchone()
                 if record.intent.action in {"start_worker", "stop_worker", "restart_worker", "deploy_beta_source"} and snapshot is None:
                     raise ValueError("retained lifecycle evidence missing")
+                value: dict[str, object] | None = None
                 if snapshot is not None:
                     value = json.loads(snapshot["snapshot_json"])
                     if type(snapshot["revision"]) is not int or snapshot["revision"] < 0 or not isinstance(value, dict):
                         raise ValueError("retained lifecycle evidence invalid")
                     ManagementOperationStore._encode_lifecycle(value)
-                records.append(record)
+                records.append((record, value))
             self._check_file(self.fence, self.fence_identity, self._fd)
             self._check_file(self.database, self.database_identity)
             connection.rollback()
@@ -141,8 +145,12 @@ class RetainedJournal:
         The public endpoint must separately authenticate the current grant,
         check its read scope and resolve the target under current policy.
         """
+        evidence = self.owned_evidence(operation_id, target, target_id, authority)
+        return None if evidence is None else evidence[0]
+
+    def owned_evidence(self, operation_id: str, target: ManagedTarget, target_id: str, authority: AcceptedAuthority) -> tuple[OperationRecord, dict[str, object] | None] | None:
         validate_authority(authority)
-        for record in self.read():
+        for record, snapshot in self.read_evidence():
             original = record.authority
             parameters = {item.name: item.value for item in record.intent.parameters}
             if (
@@ -151,5 +159,37 @@ class RetainedJournal:
                 and parameters.get("target_id") == target_id
                 and (original.issuer, original.resource, original.project_id, original.uid, original.oauth_client_id) == (authority.issuer, authority.resource, authority.project_id, authority.uid, authority.oauth_client_id)
             ):
-                return record
+                return record, snapshot
         return None
+
+
+class RetainedGuardedOperationStore(ManagementOperationStore):
+    """Gate current-journal admissions and effect claims on frozen old lanes.
+
+    The caller owns the retained reader for at least this store's entire
+    lifetime. Startup must establish its provenance and continuously held
+    owner fence before constructing this store.
+    """
+
+    def __init__(self, state_root: Path, retained: RetainedJournal) -> None:
+        super().__init__(state_root)
+        self.retained = retained
+
+    def admit(self, intent: OperationIntent, authority: AcceptedAuthority, *, lifecycle_snapshot: dict[str, object] | None = None) -> AdmissionResult:
+        try:
+            previous = self.retained.admission(intent, authority)
+            if previous is not None:
+                # Never return a retained replay as an admitted current row:
+                # the normal dispatcher would try to execute that old ID.
+                status = AdmissionStatus.CONFLICT if previous.status is AdmissionStatus.CONFLICT else AdmissionStatus.BUSY
+                return AdmissionResult(status, previous.record, "retained operation")
+        except Exception:
+            return AdmissionResult(AdmissionStatus.UNAVAILABLE, detail="retained journal unavailable")
+        return super().admit(intent, authority, lifecycle_snapshot=lifecycle_snapshot)
+
+    def effect_permitted(self, record: OperationRecord) -> bool:
+        """Revalidate at dispatch; no prior row may be executed by this store."""
+        try:
+            return self.retained.admission(record.intent, record.authority) is None
+        except Exception:
+            return False
