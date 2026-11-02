@@ -2971,3 +2971,20 @@ invalidations, strict-target boundaries, the engine status projection and the
 production presentation function. They cover nonempty/empty startup, failed
 enumeration, open/closed/404, non-admitted authors, transport failures and a newer
 target observation racing enumeration.
+
+
+### Fresh-host exited-task namespace evidence
+
+The trusted host observer can prove a missing task network link belongs to an
+exited zombie, using the same held task directory and stable positive start
+token around the ENOENT read. It still scans live sibling tasks and refuses
+unknown state. This changes a host evidence predicate, not an Issue/PR origin,
+trace schema, dashboard projection, deadline or launch authority. Existing
+bounded host-observation failures remain the diagnostic surface.
+
+Run `bash scripts/test.sh tests/test_management_fresh_initialization.py` for the
+real held/unreaped-child and damaged-proof controls. The unchanged root host CI
+selection also drives the actual guard/Supervisor/authenticated-readback path
+in `tests/test_management_fresh_end_to_end.py` with a positively observed zombie
+held through the retained-history case. That whole-host test remains distinct
+from the single-real-task projection used by the focused kernel regression.

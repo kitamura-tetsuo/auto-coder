@@ -505,3 +505,105 @@ def test_retained_oauth_preflight_never_creates_or_migrates(tmp_path: Path) -> N
     assert path.read_bytes() == before
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT scope FROM access_tokens WHERE hash='fixture'").fetchone() == (None,)
+
+
+@pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep")
+def test_real_unreaped_zombie_does_not_hide_namespace_absence(tmp_path: Path) -> None:
+    import select
+    import time
+
+    from auto_coder.management.fresh_host_observation import _assert_all_task_networks_absent
+
+    child = subprocess.Popen([sys.executable, "-c", "import sys,os;print('ready',flush=True);sys.stdin.read(1);os._exit(0)"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    try:
+        assert child.stdout is not None and child.stdin is not None
+        assert select.select([child.stdout], [], [], 5)[0]
+        assert child.stdout.readline() == b"ready\n"
+        actual = Path("/proc") / str(child.pid)
+        namespace = os.readlink(actual / "ns/net")
+        # Only this real task is projected into the helper's injectable view;
+        # this is not a claim about absence in the complete host namespace.
+        (tmp_path / str(child.pid)).symlink_to(actual, target_is_directory=True)
+        with pytest.raises(HostObservationUnavailable, match="still has a task"):
+            _assert_all_task_networks_absent(tmp_path, namespace)
+        child.stdin.close()
+        deadline = time.monotonic() + 5
+        while os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is None:
+            assert time.monotonic() < deadline, "real child did not exit"
+            time.sleep(0.01)
+        fields = (actual / "stat").read_text().rsplit(")", 1)[1].split()
+        assert fields[0] == "Z" and int(fields[19]) > 0
+        assert (actual / "task" / str(child.pid)).is_dir()
+        with pytest.raises(FileNotFoundError):
+            os.readlink(actual / "ns/net")
+        _assert_all_task_networks_absent(tmp_path, namespace)
+    finally:
+        if child.stdin is not None and not child.stdin.closed:
+            child.stdin.close()
+        child.wait(timeout=5)
+        if child.stdout is not None:
+            child.stdout.close()
+
+
+def _task_stat(pid: int, state: str = "Z", token: str = "42") -> str:
+    return f"{pid} (test child) " + " ".join([state] + ["0"] * 18 + [token])
+
+
+@pytest.mark.parametrize("fault", ["live", "truncated", "missing", "unreadable", "bad_pid", "bad_task_id", "zero_token", "bad_token", "changed_token", "state_changes", "namespace_reappears"])
+def test_unknown_task_is_never_waived_as_a_zombie(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str) -> None:
+    from auto_coder.management.fresh_host_observation import _assert_all_task_networks_absent
+
+    task = tmp_path / "42" / "task" / ("0" if fault == "bad_task_id" else "42")
+    (task / "ns").mkdir(parents=True)
+    state = task / "stat"
+    state.write_text(_task_stat(42))
+    if fault == "live":
+        state.write_text(_task_stat(42, "S"))
+    elif fault == "truncated":
+        state.write_text("42 (test child) Z")
+    elif fault == "missing":
+        state.unlink()
+    elif fault == "bad_pid":
+        state.write_text(_task_stat(43))
+    elif fault in {"zero_token", "bad_token"}:
+        state.write_text(_task_stat(42, token="0" if fault == "zero_token" else "unknown"))
+    if fault == "bad_task_id":
+        state.write_text(_task_stat(0))
+    if fault == "unreadable":
+        original_open = os.open
+
+        def unavailable(path, flags, *args, **kwargs):
+            if path == "stat":
+                raise PermissionError("controlled unreadable task state")
+            return original_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", unavailable)
+    original = os.readlink
+
+    def observe(path, *, dir_fd=None):
+        # Faults occur after the first state read, at the held-directory read.
+        if dir_fd is not None:
+            if fault == "changed_token":
+                state.write_text(_task_stat(42, token="43"))
+            elif fault == "state_changes":
+                state.write_text(_task_stat(42, "S"))
+            elif fault == "namespace_reappears":
+                (task / "ns/net").symlink_to("net:[202]")
+        return original(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "readlink", observe)
+    with pytest.raises(ValueError, match="network namespace is unavailable"):
+        _assert_all_task_networks_absent(tmp_path, "net:[202]")
+
+
+def test_zombie_leader_does_not_hide_a_live_nonleader_namespace(tmp_path: Path) -> None:
+    from auto_coder.management.fresh_host_observation import _assert_all_task_networks_absent
+
+    leader = tmp_path / "42/task/42"
+    worker = tmp_path / "42/task/43"
+    (leader / "ns").mkdir(parents=True)
+    (worker / "ns").mkdir(parents=True)
+    (leader / "stat").write_text(_task_stat(42))
+    (worker / "ns/net").symlink_to("net:[202]")
+    with pytest.raises(HostObservationUnavailable, match="still has a task"):
+        _assert_all_task_networks_absent(tmp_path, "net:[202]")

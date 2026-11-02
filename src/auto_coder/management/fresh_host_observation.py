@@ -477,6 +477,39 @@ def _validate_host_proc_profile(pid_namespace: str, uid_map: str, mountinfo: str
         raise ValueError("procfs visibility is restricted")
 
 
+def _task_is_unreferenced_zombie(task: Path) -> bool:
+    """Prove the same exited task has no nsproxy; never waive unknown evidence."""
+    if not task.name.isdecimal() or int(task.name) <= 0 or str(int(task.name)) != task.name:
+        return False
+    descriptor = None
+    try:
+        descriptor = os.open(task, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+
+        def identity() -> tuple[str, str]:
+            source = os.open("stat", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=descriptor)
+            with os.fdopen(source, "r", encoding="ascii") as handle:
+                text = handle.read(4097)
+            prefix, separator, tail = text.rpartition(")")
+            fields = tail.split()
+            if len(text) > 4096 or not separator or prefix.partition(" (")[0] != task.name or len(fields) < 20 or not fields[19].isdecimal() or int(fields[19]) <= 0:
+                raise ValueError("task lifetime evidence is incomplete")
+            return fields[0], fields[19]
+
+        before = identity()
+        if before[0] != "Z":
+            return False
+        try:
+            os.readlink("ns/net", dir_fd=descriptor)
+        except FileNotFoundError:
+            return identity() == before
+        return False
+    except (OSError, ValueError):
+        return False
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 def _assert_all_task_networks_absent(proc_root: Path, namespace: str) -> None:
     for process in proc_root.iterdir():
         if not process.name.isdecimal():
@@ -497,7 +530,7 @@ def _assert_all_task_networks_absent(proc_root: Path, namespace: str) -> None:
             try:
                 current = os.readlink(task / "ns/net")
             except FileNotFoundError:
-                if task.exists():
+                if task.exists() and not _task_is_unreferenced_zombie(task):
                     raise ValueError("task network namespace is unavailable")
                 continue
             if current == namespace:
