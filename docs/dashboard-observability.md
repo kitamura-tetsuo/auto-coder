@@ -9,6 +9,9 @@ diagnostic execution binds failures that occur before ordinary PR/Issue executio
 scope exists; it is not a provider invocation or implementation result. The
 generic detail renderer projects these recorded outcomes and facts without a new
 dashboard control-flow claim. Diagnostic failure cannot change retry ownership.
+The same failed outcome applies when an error-free pending PR-review result
+cannot persist its wake: no successful deferral or completion is observed, and
+the processing claim (including newer generation responsibility) remains owned.
 Run `bash scripts/test.sh tests/test_invalidation_failure_backoff.py
 tests/test_entity_invalidation.py` for worker/scheduler/SQLite, reconstructed
 deadline, concurrent notification, failed transaction, and production evidence-row

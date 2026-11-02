@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from src.auto_coder.automation_config import AutomationConfig, CandidateProcessingResult
+from src.auto_coder.automation_config import AutomationConfig, CandidateProcessingResult, PRProcessingOutcome
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.dashboard_detail import evidence_rows
 from src.auto_coder.entity_invalidation import DurableInvalidationQueue, EntityIdentity
@@ -172,3 +172,85 @@ def test_diagnostic_failure_cannot_release_committed_retry(tmp_path: Path, monke
             await asyncio.gather(worker, return_exceptions=True)
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("newer_notification", [False, True])
+@pytest.mark.parametrize("reject_transaction", [False, True])
+def test_pending_review_retry_transaction_preserves_responsibility(tmp_path: Path, monkeypatch, newer_notification: bool, reject_transaction: bool) -> None:
+    monkeypatch.setattr(TraceCollector, "_instance", None)
+    database = tmp_path / "invalidations.sqlite3"
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(database))
+    github = GitHubClient("test-token")
+    engine = AutomationEngine(github, AutomationConfig())
+    identity = EntityIdentity("owner/repo", "pr", 100)
+    deadline = time.time() + 90
+    stabilization = deadline + 30
+    attempts = []
+    completions = []
+    original_complete = engine.invalidations.complete_with_outcome
+
+    def complete(claim):
+        completions.append(claim)
+        return original_complete(claim)
+
+    def refresh(*_args):
+        attempts.append(100)
+        return {"number": 100, "title": "Pending review", "body": "", "state": "open", "user": {"login": "contributor", "id": 1}, "head": {"ref": "topic"}}
+
+    def pending_review(*_args, **_kwargs):
+        if newer_notification:
+            engine.invalidations.invalidate(identity, delivery_id="during-pending-review", not_before=stabilization)
+        return CandidateProcessingResult(type="pr", number=100, outcome=PRProcessingOutcome.DEFERRED, retry_not_before=deadline)
+
+    monkeypatch.setattr(github, "get_pull_request_metadata_strict", refresh)
+    monkeypatch.setattr(engine, "_is_pr_author_allowed", lambda _data: True)
+    monkeypatch.setattr(engine, "_process_single_candidate", pending_review)
+    monkeypatch.setattr(engine.invalidations, "complete_with_outcome", complete)
+    if reject_transaction:
+        engine.invalidations._connection.execute("CREATE TRIGGER reject_retry BEFORE UPDATE OF retry_not_before ON entity_invalidations WHEN NEW.retry_not_before IS NOT NULL BEGIN SELECT RAISE(ABORT, 'disk unavailable'); END")
+
+    async def scenario():
+        await engine.invalidate_entity("owner/repo", "pr", 100)
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+        try:
+            for _ in range(200):
+                if worker.done() or engine.invalidations.get_deferred(identity) is not None:
+                    break
+                await asyncio.sleep(0.005)
+            if reject_transaction:
+                assert worker.done(), "failed retry persistence must stop the affected worker"
+                await worker
+            else:
+                assert not worker.done()
+                retained = engine.invalidations.get_deferred(identity)
+                assert retained is not None
+                assert retained.retry_not_before >= (stabilization if newer_notification else deadline)
+                assert retained.generation == (2 if newer_notification else 1)
+            assert attempts == [100]
+            assert completions == [], "pending review must never acknowledge unfinished responsibility"
+            assert engine.invalidations.pending_count("owner/repo") == 1
+            assert engine.invalidations.claim("owner/repo") is None
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
+    asyncio.run(scenario())
+    events = [event for event in get_trace_collector().get_snapshot(repository="owner/repo", item_type="pr", item_number=100).events if event.stage_id == "worker.failure-backoff" and event.kind == "stage-result"]
+    recovered = DurableInvalidationQueue(database)
+    row = recovered._connection.execute("SELECT state, generation, claimed_generation FROM entity_invalidations WHERE repository='owner/repo' AND entity_type='pr' AND entity_number=100").fetchone()
+    assert row is not None and row[1] == (2 if newer_notification else 1)
+    if reject_transaction:
+        assert tuple(row) == ("processing", 2 if newer_notification else 1, 1)
+        assert len(events) == 1 and events[0].outcome == "failed"
+        assert events[0].facts["reason"] == "retry_state_persistence_failed"
+        assert evidence_rows(events)[0]["outcome"] == "failed"
+        recovered.recover("owner/repo")
+        monkeypatch.setattr("src.auto_coder.entity_invalidation.time.time", lambda: stabilization + 1)
+        claim = recovered.claim("owner/repo")
+        assert claim is not None and claim.generation == (2 if newer_notification else 1)
+    else:
+        assert row[0] == "dirty" and row[2] is None
+        assert events == []
+        recovered.recover("owner/repo")
+        monkeypatch.setattr("src.auto_coder.entity_invalidation.time.time", lambda: deadline - 1)
+        assert recovered.claim("owner/repo") is None

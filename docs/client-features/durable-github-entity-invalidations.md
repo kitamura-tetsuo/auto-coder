@@ -26,6 +26,11 @@ If the retry transaction fails, the affected worker exits with its processing
 claim retained; it neither acknowledges the entity nor immediately releases it
 for another read. A repository-scoped `worker.failure-backoff` diagnostic reports
 `deferred` only after persistence succeeds, or `failed` when persistence failed.
+An error-free pending PR-review result also remains unfinished: completion is
+revoked before its retry transaction. If that transaction fails, the worker
+stops with the same processing claim and emits only failed persistence evidence;
+it cannot acknowledge the claim or clear a newer generation. A successful
+transaction preserves the pending-review deadline and any later existing bound.
 The dashboard detail evidence displays the recorded reason, retry time and
 generation. This diagnostic is retry scheduling evidence, not implementation,
 provider delivery or business completion. Diagnostic failures cannot change the

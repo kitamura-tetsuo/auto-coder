@@ -4949,15 +4949,23 @@ class AutomationEngine:
                     retry_failed_processing = bool(result.error) and not decision_completed
 
                     if invalidation_claim is not None and candidate.type == "pr" and result.outcome is PRProcessingOutcome.DEFERRED and result.retry_not_before is not None:
-                        retained = await asyncio.to_thread(
-                            self.invalidations.defer,
-                            invalidation_claim,
-                            "two-tier review work remains pending",
-                            result.retry_not_before,
-                            "pr-review-cycle",
-                        )
-                        deferral_committed = True
+                        # Pending review is never completion, even if persisting
+                        # its wake fails. Retain this claim rather than allowing
+                        # the generic finalizer to acknowledge or release it.
                         decision_completed = False
+                        try:
+                            retained = await asyncio.to_thread(
+                                self.invalidations.defer,
+                                invalidation_claim,
+                                "two-tier review work remains pending",
+                                result.retry_not_before,
+                                "pr-review-cycle",
+                            )
+                        except Exception as persistence_error:
+                            stop_after_persistence_failure = True
+                            self._record_worker_failure_backoff(invalidation_claim, Outcome.FAILED, None)
+                            raise RuntimeError("Pending PR review retry persistence failed") from persistence_error
+                        deferral_committed = True
                         logger.info(
                             "Retained two-tier PR review wake repository={} pr={} retry_at={}",
                             repo_name,
