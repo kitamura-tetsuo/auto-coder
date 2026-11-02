@@ -22,7 +22,11 @@ observation time; independently available installed distribution/source fields;
 declared artifact configuration; actual lifecycle, startup reconciliation and
 daemon-serving facts; the invocation gate's state, graceful readiness, exact
 unsettled count and at most 500 redacted identities; and the existing production
-heartbeat's sequence, stage, and age. A read never advances the heartbeat.
+producer-loop heartbeat's sequence, stage, and age. Worker-loop or synchronous
+run-loop heartbeats cannot overwrite this retained producer observation or refresh
+its age. It is unavailable until this process actually records a `producer:`
+heartbeat; reads never advance it. The general health snapshots still describe
+the latest heartbeat from any loop.
 
 `lifecycle.daemon_serving` is narrower than `running`: it becomes true only after
 startup reconciliation and subsequent setup have created the required supervised

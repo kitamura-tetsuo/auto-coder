@@ -108,6 +108,59 @@ def test_real_unix_socket_observes_same_engine_and_read_does_not_heartbeat(monke
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("worker_first", [False, True])
+def test_real_socket_keeps_producer_progress_when_worker_beats_interleave(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, worker_first: bool) -> None:
+    endpoint = configure(monkeypatch, tmp_path)
+    HealthMonitor.reset_instance()
+    monitor = get_health_monitor()
+
+    async def scenario() -> None:
+        identity = configured_identity("owner/repo")
+        assert identity is not None
+        bridge = WorkerManagementBridge(identity, ObservedEngine())
+        await bridge.start()
+        try:
+            transport = httpx.AsyncHTTPTransport(uds=str(endpoint))
+            async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+
+                async def observed(nonce: str):
+                    response = await client.get("/v1/observation", params={"nonce": nonce})
+                    assert response.status_code == 200
+                    assert response.json()["nonce"] == nonce
+                    return response.json()["heartbeat"]
+
+                if worker_first:
+                    monitor.heartbeat("worker-0:processing")
+                    assert await observed("worker-only") == {"available": False, "sequence": None, "stage": None, "age_seconds": None}
+                monitor.heartbeat("producer:maintenance-sleep")
+                producer_sequence = monitor.heartbeat_observation()["sequence"]
+                monitor.heartbeat("worker-1:processing")
+                first = await observed("first-producer")
+                assert first["stage"] == "producer:maintenance-sleep"
+                assert first["sequence"] == producer_sequence
+                assert first["available"] is True
+                for index in range(3):
+                    monitor.heartbeat("worker-0:idle")
+                    same = await observed(f"no-producer-{index}")
+                    assert same["sequence"] == first["sequence"]
+                    assert same["stage"] == first["stage"]
+                    assert same["age_seconds"] >= first["age_seconds"]
+                monitor.heartbeat("producer:check-updates")
+                next_sequence = monitor.heartbeat_observation()["sequence"]
+                monitor.heartbeat("worker-1:processing")
+                advanced = await observed("next-producer")
+                assert advanced["sequence"] == next_sequence > first["sequence"]
+                assert advanced["stage"] == "producer:check-updates"
+                assert monitor.heartbeat_observation()["stage"] == "worker-1:processing"
+        finally:
+            await bridge.close()
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        HealthMonitor.reset_instance()
+
+
 def test_real_socket_reevaluation_accepts_replays_conflicts_and_survives_replacement(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     endpoint = configure(monkeypatch, tmp_path)
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))

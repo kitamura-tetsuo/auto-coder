@@ -293,7 +293,7 @@ class WorkerManagementBridge:
                 "startup_reconciliation_error": _safe_text(self.engine.startup_reconciliation_error) if self.engine.startup_reconciliation_error else None,
                 "daemon_serving": bool(self.engine.daemon_serving),
             },
-            "heartbeat": get_health_monitor().heartbeat_observation(),
+            "heartbeat": get_health_monitor().heartbeat_observation(producer_only=True),
             "invocations": {
                 "state": gate.state.value,
                 "is_graceful_ready": gate.is_graceful_ready,

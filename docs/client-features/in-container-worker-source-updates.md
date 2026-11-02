@@ -93,7 +93,9 @@ draining; no deadline sends SIGKILL, forced second SIGINT, or a container
 restart. A subsequent start is generation-fenced and success additionally
 requires the live new worker's matching installed source/version/lock identity,
 completed startup reconciliation, daemon-serving, open invocation gate and
-at least two increasing genuine `producer:` heartbeat observations. Neither
+at least two increasing genuine `producer:` heartbeat observations. The worker
+retains the last actual producer sample separately from interleaved worker
+heartbeats; generic activity and diagnostic reads cannot supply or refresh it. Neither
 CI PASS, READY, PID existence nor Supervisor liveness is sufficient.
 
 On verified new-beta-child crash after actual incumbent exit, at most one

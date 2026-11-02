@@ -484,6 +484,9 @@ class HealthMonitor:
         self._stage_detail = ""
         self._last_heartbeat = time.monotonic()
         self._heartbeat_sequence = 0
+        self._producer_heartbeat_sequence = 0
+        self._producer_stage = ""
+        self._last_producer_heartbeat = self._last_heartbeat
         self._stall_reported = False
         self._peak_reported_rss_mb = 0.0
         self._state_lock = threading.Lock()
@@ -574,22 +577,29 @@ class HealthMonitor:
             self._stage = stage
             self._stage_detail = detail
             self._last_heartbeat = time.monotonic()
+            if stage.startswith("producer:"):
+                self._producer_heartbeat_sequence = self._heartbeat_sequence
+                self._producer_stage = stage
+                self._last_producer_heartbeat = self._last_heartbeat
             was_stalled = self._stall_reported
             self._stall_reported = False
         if was_stalled:
             logger.info(f"Heartbeat resumed at stage '{stage}' {detail}".strip())
             self.record_event("stall_recovered", stage, detail)
 
-    def heartbeat_observation(self) -> dict[str, object]:
-        """Return progress evidence without recording a new heartbeat."""
+    def heartbeat_observation(self, *, producer_only: bool = False) -> dict[str, object]:
+        """Read actual progress; producer samples survive interleaved worker beats."""
         with self._state_lock:
-            if self._heartbeat_sequence == 0:
+            sequence = self._producer_heartbeat_sequence if producer_only else self._heartbeat_sequence
+            stage = self._producer_stage if producer_only else self._stage
+            observed = self._last_producer_heartbeat if producer_only else self._last_heartbeat
+            if sequence == 0:
                 return {"available": False, "sequence": None, "stage": None, "age_seconds": None}
             return {
                 "available": True,
-                "sequence": self._heartbeat_sequence,
-                "stage": self._stage[:2000],
-                "age_seconds": max(0.0, time.monotonic() - self._last_heartbeat),
+                "sequence": sequence,
+                "stage": stage[:2000],
+                "age_seconds": max(0.0, time.monotonic() - observed),
             }
 
     def snapshot(self, reason: str = "periodic") -> ResourceSnapshot:
