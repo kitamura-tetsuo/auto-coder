@@ -2945,3 +2945,25 @@ use the same production-to-dashboard contract as other pending-work stages.
 Rediscovery intentionally preserves those fields; publication receipts remain
 in the local-job effect journal rather than being inferred from the presence
 of a pending-work row.
+
+
+### Accepted closure discussion after a newer ordinary PASS
+
+The production recovery path continues to emit the existing
+`pr.review-thread-closure` unfinished phase/reason when retained discussion is
+changed or cannot be confirmed, including when a newer plain PASS supersedes
+the ordinary verdict. The accepted closure remains the dependent source until
+an actual scope-bound independent correction supplies current discussion
+evidence. That correction is retained in the ordinary effective-decision
+record; the original closure publication and effect operation identities stay
+unchanged, so uncertain writes are reconciled rather than silently retried.
+There is no new event schema or dashboard projection: the existing unfinished
+reason and retained ordinary attempt identify the block and its reevaluation.
+
+Run `bash scripts/test.sh tests/test_single_review_ordinary_closure_flow.py`.
+`test_newer_plain_pass_does_not_replace_accepted_discussion_binding` drives the
+production forced ordinary review, reconstruction, publication and merge paths
+with add/edit/delete, unchanged and authenticated receipt-only controls. It
+checks both retained resolved closures and pending publication, fresh
+STILL_VALID/ADDRESSED outcomes, and refusal of replacement records with changed
+scope, missing source coverage or missing/mismatched thread evidence.

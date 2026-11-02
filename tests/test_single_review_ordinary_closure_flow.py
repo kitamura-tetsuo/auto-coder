@@ -746,3 +746,124 @@ def test_incomplete_discussion_cannot_certify_the_producing_ordinary_result(flow
     assert not [review for review in flow.reviews if "Ordinary closure evidence" in review["body"]]
     assert flow.client.resolve_review_thread.call_count == 0
     assert flow.merge.call_count == 0
+
+
+@pytest.mark.parametrize("pending_publication", [False, True])
+@pytest.mark.parametrize("next_status", ["STILL_VALID", "ADDRESSED"])
+@pytest.mark.parametrize("change", ["add", "edit", "delete", "unchanged", "receipt_only"])
+def test_newer_plain_pass_does_not_replace_accepted_discussion_binding(flow_env: Env, monkeypatch: pytest.MonkeyPatch, pending_publication: bool, next_status: str, change: str) -> None:
+    import auto_coder.pr_processor as processor
+    from auto_coder.util.github_action import GitHubActionsStatusResult
+
+    flow = _repaired_flow(flow_env, monkeypatch, 7467, resolve_on_approve=True)
+    flow.production_thread_collection = True
+    flow.auto_status = True
+    flow.thread_replies.append(ReviewThreadComment(database_id=flow.root_id + 1, author_id=702, author_login="implementation-agent[bot]", body=f"Bounded correction.\n{REVIEW_ADDRESSED_MARKER}", in_reply_to_id=flow.root_id))
+    previous = "The producing input contained this earlier discussion."
+    flow.thread_replies.append(ReviewThreadComment(database_id=flow.root_id + 2, author_id=703, author_login="reviewer[bot]", body=previous, in_reply_to_id=flow.root_id))
+    flow.post_ci = GitHubActionsStatusResult(success=False, in_progress=True, ids=[2])
+    consume = processor._consume_pending_two_tier_publication
+    if pending_publication:
+        monkeypatch.setattr(processor, "_consume_pending_two_tier_publication", lambda *_a, **_k: (False, "publication lookup unavailable"))
+    flow.run(closure=ClosureScript(status="FIXED"))
+    accepted = flow_env.cycle.snapshot(flow.pr).accepted_closure
+    assert accepted is not None
+    assert flow.threads()[0].is_resolved
+    # A real supported forced ordinary invocation B returns a clean PASS, but
+    # no thread was supplied and B has no producing discussion binding.
+    before_b = flow.model_calls
+    flow.model_responses = [json.dumps({**json.loads(ADDRESSED), "thread_dispositions": []})]
+    flow.run(force=True)
+    assert flow.model_calls == before_b + 1
+    assert flow_env.cycle.snapshot(flow.pr).accepted_closure.source_identity == accepted.source_identity
+    latest = AdversarialValidationAttemptRepository(REPO).latest_sequence(flow.pr, flow.h2)
+    source = OrdinaryClosureEvidenceRepository(REPO).inspect(accepted.source_identity).record
+    assert source is not None and latest > source.attempt_sequence
+    if change in {"unchanged", "receipt_only"}:
+        if change == "receipt_only":
+            from dataclasses import replace
+
+            from auto_coder.review_thread_closure_receipt import format_receipt, parse_owned_receipt
+
+            owned = parse_owned_receipt(flow.threads()[0], flow.client.get_authenticated_user_login())
+            assert owned is not None
+            next(comment for comment in flow.thread_replies if comment.database_id == owned.comment_id).body = format_receipt(replace(owned, rationale="Authenticated receipt-only maintenance"))
+        if pending_publication:
+            monkeypatch.setattr(processor, "_consume_pending_two_tier_publication", consume)
+        _reconstruct_flow_stores(flow)
+        flow.post_ci = GitHubActionsStatusResult(success=True, in_progress=False, ids=[2])
+        flow.merge.reset_mock()
+        calls_before = flow.model_calls
+        resumed = flow.run(closure=ClosureScript(status="FIXED"))
+        assert flow.model_calls == calls_before, resumed
+        assert flow.merge.call_count == 1, resumed
+        return
+    counterexample = "A changed same-scope counterexample after the newer plain PASS."
+    if change == "add":
+        flow.thread_replies.append(ReviewThreadComment(database_id=flow.root_id + 100, author_id=704, author_login="reviewer[bot]", body=counterexample, in_reply_to_id=flow.root_id))
+    elif change == "edit":
+        next(comment for comment in flow.thread_replies if comment.body == previous).body = counterexample
+    else:
+        flow.thread_replies[:] = [comment for comment in flow.thread_replies if comment.body != previous]
+    if pending_publication:
+        monkeypatch.setattr(processor, "_consume_pending_two_tier_publication", consume)
+        assert not [review for review in flow.reviews if "Ordinary closure evidence" in review["body"]]
+    _reconstruct_flow_stores(flow)
+    flow.post_ci = GitHubActionsStatusResult(success=True, in_progress=False, ids=[2])
+    flow.merge.reset_mock()
+    before_c = flow.model_calls
+    flow.model_responses = [ordinary_response(flow.thread_id, status=next_status, evidence="tests/test_state.py demonstrates the independently evaluated exact concern")]
+
+    def before_current_review():
+        if pending_publication:
+            assert not [review for review in flow.reviews if "Ordinary closure evidence" in review["body"]]
+
+    actions = flow.run(closure=ClosureScript(status="STILL_VALID" if next_status == "STILL_VALID" else "FIXED", on_review=before_current_review))
+    assert flow.model_calls == before_c + 1, actions
+    if change == "delete":
+        assert previous not in flow.validation_sections[-1]
+    else:
+        assert counterexample in flow.validation_sections[-1]
+    if next_status == "STILL_VALID":
+        assert flow.merge.call_count == 0
+        if pending_publication:
+            assert not [review for review in flow.reviews if "Ordinary closure evidence" in review["body"]]
+    else:
+        # The complete actual C binding, not B's bare PASS, must be retained
+        # before A's dependent completion/publication can resume.
+        current = flow.retained()
+        assert current is not None and current.ordinary_correction is not None
+        assert current.ordinary_correction.attempt_sequence > latest
+        assert current.ordinary_correction.restore().thread_dispositions[0].discussion_evidence_digest
+        if change == "add" and not pending_publication:
+            from dataclasses import replace
+
+            from auto_coder.effective_decision_application import EffectiveDecisionStore
+            from auto_coder.ordinary_closure_evidence import serialize_ordinary_result
+
+            inputs = replace(flow.gate_inputs, head_sha=flow.h2)
+            original = current.ordinary_correction
+            assert processor._closure_discussion_binding(REPO, flow.pr, inputs, source).attempt_id == original.attempt_id
+            restored = original.restore()
+            missing_binding = replace(restored, thread_dispositions=[])
+            wrong_thread_scope = replace(restored, thread_dispositions=[replace(restored.thread_dispositions[0], concern_ids=("unrelated-concern",))])
+            invalid = [
+                replace(original, base_sha="different-base"),
+                replace(original, policy_identity="different-policy"),
+                replace(original, finding_set_revision=original.finding_set_revision + 1),
+                replace(original, accepted_sources=()),
+                replace(original, payload=serialize_ordinary_result(missing_binding)),
+                replace(original, payload=serialize_ordinary_result(wrong_thread_scope)),
+            ]
+            store = EffectiveDecisionStore(REPO)
+            try:
+                for damaged in invalid:
+                    store.update(flow.pr, ordinary_correction=damaged)
+                    assert processor._closure_discussion_binding(REPO, flow.pr, inputs, source).attempt_sequence == source.attempt_sequence
+            finally:
+                store.update(flow.pr, ordinary_correction=original)
+        _reconstruct_flow_stores(flow)
+        calls_after_c = flow.model_calls
+        resumed = flow.run(closure=ClosureScript(status="FIXED"))
+        assert flow.model_calls == calls_after_c, resumed
+        assert flow.merge.call_count == 1, (actions, resumed)

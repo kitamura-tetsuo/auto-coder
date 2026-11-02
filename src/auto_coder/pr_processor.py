@@ -32,7 +32,7 @@ from auto_coder.github_ci_observer import ci_observation_merge_authority, ci_rea
 from auto_coder.util.gh_cache import GitHubClient, PullRequestRoutingMetadata, ReviewThread, ReviewThreadComment, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history, is_ci_observation_recovered
 
-from .accepted_finding_bridge import AMBIGUOUS, BINDING_CURRENT, AcceptedFindingBridge, AcceptedFindingProjection, AcceptedFindingRecord, OrdinaryDisposition, ProjectionTarget
+from .accepted_finding_bridge import AMBIGUOUS, BINDING_CURRENT, AcceptedFindingBridge, AcceptedFindingProjection, AcceptedFindingRecord, OrdinaryDisposition, ProjectionTarget, source_identity_for
 from .adversarial_validation_attempts import AdversarialValidationAttempt, AdversarialValidationAttemptRepository
 from .adversarial_validation_scheduler import AdversarialValidationScheduler
 from .adversarial_validator import (
@@ -594,6 +594,48 @@ def _assert_ordinary_discussion_current(github_client: Any, repo_name: str, pr_n
             raise _OrdinaryDiscussionChanged("discussion-freshness: retained closure discussion changed")
 
 
+def _closure_discussion_binding(repo_name: str, pr_number: int, inputs: TwoTierGateInputs, source: ClosureEvidenceRecord) -> AdversarialValidationResult:
+    """Use a newer result only with its real retained target and exact-scope proof."""
+    original = replace(restore_ordinary_result(source), attempt_sequence=source.attempt_sequence)
+    latest = inputs.gate.closure_evidence().attempts.latest_sequence(pr_number, source.head_sha)
+    if latest <= source.attempt_sequence:
+        return original
+    retained = EffectiveDecisionStore(repo_name).load(pr_number)
+    newer = retained.ordinary_correction if retained is not None else None
+    if retained is None or retained.status != "PASS" or retained.publication != PUBLICATION_CONFIRMED or newer is None or newer.attempt_sequence != latest:
+        return original
+    if (newer.repository, newer.pr_number, newer.head_sha, newer.base_sha, newer.contract_identity, newer.policy_identity, newer.open_epoch, newer.strong_round_id, newer.audited_head_sha, newer.finding_set_revision) != (
+        source.repository,
+        source.pr_number,
+        source.head_sha,
+        source.base_sha,
+        source.contract_identity,
+        source.policy_identity,
+        source.open_epoch,
+        source.round_id,
+        source.audited_head_sha,
+        source.finding_set_revision,
+    ):
+        return original
+    registered = inputs.gate.closure_evidence().attempts.get(newer.attempt_id)
+    if registered is None or (registered.sequence, registered.pr_number, registered.head_sha, registered.status) != (newer.attempt_sequence, pr_number, source.head_sha, "PASS"):
+        return original
+    expected_sources = {source_identity_for(source.round_id, item.finding_id) for item in source.dispositions}
+    if not expected_sources <= set(newer.accepted_sources):
+        return original
+    result = newer.restore()
+    by_id = {item.thread_id: item for item in result.thread_dispositions}
+    if len(by_id) != len(result.thread_dispositions) or not result.allows_auto_merge:
+        return original
+    for old in original.thread_dispositions:
+        if old.status != "ADDRESSED":
+            continue
+        current = by_id.get(old.thread_id)
+        if current is None or current.status != "ADDRESSED" or not current.evidence.strip() or not current.discussion_evidence_digest or (current.blocker_id, set(current.concern_ids)) != (old.blocker_id, set(old.concern_ids)):
+            return original
+    return result
+
+
 class _ClosureTargetObserver:
     """Authoritative current H/B/M/P observed at the moment of use.
 
@@ -602,8 +644,8 @@ class _ClosureTargetObserver:
     ``pr_data`` captured when processing began.
     """
 
-    def __init__(self, github_client: Any, repo_name: str, pr_number: int, ordinary_result: Optional[AdversarialValidationResult] = None) -> None:
-        self._ordinary_result = ordinary_result
+    def __init__(self, github_client: Any, repo_name: str, pr_number: int, source: Optional[ClosureEvidenceRecord] = None) -> None:
+        self._source = source
         self.discussion_changed = False
         self.discussion_unavailable = False
         self._github_client = github_client
@@ -617,20 +659,22 @@ class _ClosureTargetObserver:
         if inputs is None:
             raise RuntimeError("the strong tier is not configured")
         self.inputs = inputs
-        ordinary = self._ordinary_result
-        if ordinary is None:
+        source = self._source
+        if source is None:
             closure = inputs.gate.state.snapshot(self._pr_number).accepted_closure
             if closure is not None and closure.source_identity:
                 view = inputs.gate.closure_evidence().inspect(closure.source_identity)
                 if view.record is None:
                     raise RuntimeError("accepted closure source is unavailable")
-                ordinary = replace(restore_ordinary_result(view.record), attempt_sequence=view.record.attempt_sequence)
-        if ordinary is not None:
+                source = view.record
+        if source is not None:
             # Superseded pending sources must reach the owning attempt rejection,
             # rather than permanently preventing a later fresh source's recovery.
             latest = inputs.gate.closure_evidence().attempts.latest_sequence(self._pr_number, metadata["head"]["sha"])
-            if latest <= ordinary.attempt_sequence:
+            committed = any(item.source_identity == source.source_id for item in inputs.gate.state.snapshot(self._pr_number).closures)
+            if committed or latest <= source.attempt_sequence:
                 try:
+                    ordinary = _closure_discussion_binding(self._repo_name, self._pr_number, inputs, source)
                     _assert_ordinary_discussion_current(self._github_client, self._repo_name, self._pr_number, ordinary)
                 except _OrdinaryDiscussionChanged:
                     self.discussion_changed = True
@@ -728,7 +772,7 @@ def _apply_ordinary_closure_evidence(
         if view.record is None:
             return OrdinaryClosureOutcome(reason=f"closure evidence is {view.state.value}: {view.reason}", attempt_id=closure_input.attempt_id, attempt_sequence=closure_input.attempt_sequence)
         record = view.record
-        observer = _ClosureTargetObserver(github_client, repo_name, pr_number, replace(restore_ordinary_result(record), attempt_sequence=record.attempt_sequence))
+        observer = _ClosureTargetObserver(github_client, repo_name, pr_number, record)
         applied = evidence.apply(record.source_id, observer)
         committed = applied.status is ApplicationStatus.ACCEPTED or applied.cycle_committed
         upheld = applied.status is ApplicationStatus.NON_AUTHORIZING and not record.diagnostic and any(item.status == "OPEN" for item in record.dispositions)
@@ -800,7 +844,7 @@ def _resume_retained_closure(repo_name: str, pr_number: int, head_sha: str, inpu
     try:
         pending = evidence.evidence.pending_for_pr(pr_number)
         for record in pending:
-            observer = _ClosureTargetObserver(github_client, repo_name, pr_number, replace(restore_ordinary_result(record), attempt_sequence=record.attempt_sequence))
+            observer = _ClosureTargetObserver(github_client, repo_name, pr_number, record)
             outcome = evidence.apply(record.source_id, observer)
             if observer.discussion_changed:
                 return RetainedClosureResumption(revalidate=True, discussion_changed=True, retained_record=record, reason=outcome.reason)
@@ -828,11 +872,14 @@ def _resume_retained_closure(repo_name: str, pr_number: int, head_sha: str, inpu
             # a later attempt's own verdict (even a failing one) supersedes it as the ordinary result.
             retained_pass = view.record.head_sha == head_sha and view.record.ordinary.is_semantic_pass and evidence.attempts.latest_sequence(pr_number, head_sha) == view.record.attempt_sequence
             retained_record = view.record if retained_pass else None
-            if retained_record is not None:
+            # Accepted A still supplies dependent authority after a newer bare
+            # PASS; only an actual scope-bound independent result can replace it.
+            if view.record.head_sha == head_sha:
                 try:
-                    _assert_ordinary_discussion_current(github_client, repo_name, pr_number, restore_ordinary_result(retained_record))
+                    bound = _closure_discussion_binding(repo_name, pr_number, inputs, view.record)
+                    _assert_ordinary_discussion_current(github_client, repo_name, pr_number, bound)
                 except _OrdinaryDiscussionChanged as exc:
-                    return RetainedClosureResumption(revalidate=True, discussion_changed=True, retained_record=retained_record, reason=str(exc))
+                    return RetainedClosureResumption(revalidate=True, discussion_changed=True, retained_record=view.record, reason=str(exc))
                 except Exception as exc:
                     return RetainedClosureResumption(unavailable=True, discussion_unavailable=True, reason=f"retained closure discussion could not be confirmed: {exc}")
     if unavailable:
@@ -1380,7 +1427,27 @@ class _GitHubClosureThreadTransport:
             return False
         try:
             login = self.client.get_authenticated_user_login()
-            return substantive_discussion_digest(matches[0], login) == expected
+            actual = substantive_discussion_digest(matches[0], login)
+            if actual == expected:
+                return True
+            # Keep the immutable publication/effect identity. A later, actually
+            # retained independent decision may refresh the dependency binding,
+            # but a bare PASS or a newly computed digest cannot do so.
+            metadata = _strict_pull_request_target(self.client, self.payload.repository, self.payload.pr_number)
+            inputs = _two_tier_gate_inputs(self.client, self.payload.repository, metadata)
+            if inputs is None or (inputs.head_sha, inputs.base_sha, inputs.contract.identity, inputs.policy.identity) != (self.payload.target_head, self.payload.base_sha, self.payload.contract_identity, self.payload.policy_identity):
+                return False
+            closure = inputs.gate.state.snapshot(self.payload.pr_number).accepted_closure
+            if closure is None or closure.closure_id != self.payload.round_id or not closure.source_identity:
+                return False
+            view = inputs.gate.closure_evidence().inspect(closure.source_identity)
+            if view.record is None or view.state is not EvidenceState.ACCEPTED:
+                return False
+            bound = _closure_discussion_binding(self.payload.repository, self.payload.pr_number, inputs, view.record)
+            if bound.attempt_sequence <= view.record.attempt_sequence:
+                return False
+            _assert_ordinary_discussion_current(self.client, self.payload.repository, self.payload.pr_number, bound)
+            return any(item.thread_id == self.thread.id and item.discussion_evidence_digest == actual for item in bound.thread_dispositions)
         except Exception:
             return False
 
