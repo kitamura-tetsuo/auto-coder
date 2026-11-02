@@ -11,6 +11,27 @@ operational block for targeted `pending-work retry` or a fresh startup attempt.
 A successful recovery repeats discovery before enumeration and preserves open
 implementation PR membership.
 
+Caught operational failures during durable entity reevaluation retain a SQLite
+retry deadline at least 60 seconds after handling, in addition to later existing
+stabilization or retry bounds. Transport errors and malformed authoritative
+responses do not mean absence or completion. Generic scheduler wakes, newer or
+duplicate notifications, and reconstruction cannot clear this deadline; the
+ordinary invalidation scheduler automatically refreshes current authority when
+it becomes due. Newer notifications received during the failed evaluation remain
+part of its unfinished generation. Definitely-not-sent governor deferrals retain
+their existing independent deadlines, and cancellation still releases interrupted
+work for recovery.
+
+If the retry transaction fails, the affected worker exits with its processing
+claim retained; it neither acknowledges the entity nor immediately releases it
+for another read. A repository-scoped `worker.failure-backoff` diagnostic reports
+`deferred` only after persistence succeeds, or `failed` when persistence failed.
+The dashboard detail evidence displays the recorded reason, retry time and
+generation. This diagnostic is retry scheduling evidence, not implementation,
+provider delivery or business completion. Diagnostic failures cannot change the
+durable transition. See `tests/test_invalidation_failure_backoff.py` for the real
+worker/scheduler/SQLite and dashboard-row regressions.
+
   durable_github_entity_invalidations:
     description: "Coalesces webhook notifications into durable authoritative reevaluations keyed by GitHub entity identity."
     implementation: |

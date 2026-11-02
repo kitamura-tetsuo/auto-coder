@@ -5047,6 +5047,23 @@ class AutomationEngine:
                     else:
                         logger.opt(exception=True).error(f"Worker {worker_id} error processing candidate: {e}")
                         get_health_monitor().record_event("worker_error", f"worker {worker_id}: {type(e).__name__}: {e}", f"{candidate.type} #{item_number}")
+                        if invalidation_claim is not None:
+                            try:
+                                retained = await asyncio.to_thread(
+                                    self.invalidations.defer,
+                                    invalidation_claim,
+                                    "operational_processing_failure",
+                                    time.time() + 60,
+                                )
+                            except Exception as persistence_error:
+                                stop_after_persistence_failure = True
+                                logger.opt(exception=True).error("Failed to persist worker failure backoff repository={} entity={}#{}: {}", repo_name, candidate.type, item_number, persistence_error)
+                                self._record_worker_failure_backoff(invalidation_claim, Outcome.FAILED, None)
+                            else:
+                                deferral_committed = True
+                                self._record_worker_failure_backoff(invalidation_claim, Outcome.DEFERRED, retained.retry_not_before)
+                                if self._invalidation_wake_event is not None:
+                                    self._invalidation_wake_event.set()
                 finally:
                     completion_transition = None
                     if invalidation_claim is not None:
@@ -5057,9 +5074,9 @@ class AutomationEngine:
                                 completion_transition = self.invalidations.complete_with_outcome(invalidation_claim)
                         elif not deferral_committed and not stop_after_persistence_failure:
                             self.invalidations.release(invalidation_claim)
-                            # Retry transient authoritative-fetch/processing
-                            # failures independently of the maintenance loop,
-                            # but retain the former backoff against hot loops.
+                            # Uncommitted/cancelled work remains recoverable;
+                            # caught operational failures retain their own
+                            # durable deadline before reaching this branch.
                             if self._invalidation_wake_event is not None:
                                 asyncio.get_running_loop().call_later(60, self._invalidation_wake_event.set)
                     if repo_job_scope is not None:
@@ -5098,6 +5115,26 @@ class AutomationEngine:
                 if stop_after_persistence_failure:
                     logger.error(f"Worker {worker_id} stopped after deferral persistence failure")
                     return
+
+    @staticmethod
+    def _record_worker_failure_backoff(claim: ClaimedInvalidation, outcome: Outcome, retry_at: Optional[float]) -> None:
+        """Observe the committed retry transition without governing its outcome."""
+        try:
+            identity = claim.identity
+            collector = get_trace_collector()
+            facts = {"reason": "retry_state_persistence_failed" if outcome is Outcome.FAILED else "operational_processing_failure", "retry_at": retry_at, "generation": claim.generation}
+            with collector.start_execution(
+                repository=identity.repository,
+                item_type=identity.entity_type,
+                item_number=identity.number,
+                origin="durable-invalidation-worker",
+                stage_id="worker.failure-backoff",
+                label=f"{identity.entity_type}#{identity.number} failed reevaluation retry",
+            ) as handle:
+                collector.record_event(EventKind.STAGE_RESULT, stage_id="worker.failure-backoff", origin="durable-invalidation-worker", outcome=outcome, facts=facts)
+                handle.set_outcome(outcome)
+        except Exception:
+            logger.opt(exception=True).debug("Worker failure-backoff diagnostic recording failed; preserving durable outcome")
 
     def _record_recovered_dependency_work(self, repo_name: str, recovered_identities: list[EntityIdentity]) -> None:
         """Record startup-recovered dependency-rescan work (REQ-001, REQ-004).
