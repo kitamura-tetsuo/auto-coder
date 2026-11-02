@@ -34,6 +34,7 @@ from .dashboard_reviews import list_row, record_signature, selection_error
 from .execution_trace import get_trace_collector
 from .implementation_slots import ImplementationSlotSnapshot, ImplementationSlotSnapshotUnavailable
 from .logger_config import get_logger
+from .open_target_observations import open_targets_notice
 from .repo_job_trace import (
     RepoJobKind,
     RepoJobSnapshot,
@@ -402,9 +403,8 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
             open_items_container.clear()
             with open_items_container:
                 open_items = status.get("open_items", [])
-                if not open_items:
-                    ui.label("No open issues or PRs found")
-                else:
+                ui.label(open_targets_notice(status.get("open_target_observation", {}), empty=not open_items))
+                if open_items:
                     # Header for table
                     with ui.row().classes("w-full font-bold border-b"):
                         ui.label("Type").classes("w-20")

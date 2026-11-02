@@ -7,6 +7,11 @@ independent of Docker image publication. It uses Python 3.12 and the locked
 package-wide mypy, launches a real headless Chromium, and executes the complete
 pytest selection excluding only `opencode_live`.
 
+Pull requests also run that same complete selection against the exact PR head;
+the source-quality job checks GitHub's merge commit. PR runs provide validation
+evidence only and cannot publish a tested-source reference. Publication remains
+restricted to successful push runs on `main`.
+
 The tag annotation is bounded canonical JSON with schema version, repository,
 full source SHA, distribution version, lock hash, Python version, originating
 workflow ID/run/attempt/path, the fixed `source-required-v1` profile, and the
@@ -27,5 +32,10 @@ To investigate a conflict or unavailable result, inspect the recorded Actions
 run and attempt, both required job conclusions, `git/ref/tags/<name>`, and its
 `git/tags/<object-id>` object through the GitHub API. Do not delete or force-move
 the ref. Credentials and API response bodies are not placed in annotations or
-logs. The legacy `Publish Beta` image workflow and historical registry tags are
-unchanged and remain available for bootstrap and operator use.
+logs. The legacy `Publish Beta` image publication path and historical registry tags
+remain available for bootstrap and operator use. Both complete source-test paths
+prepare the locked Python-only management fixture before their unchanged test
+selection; this is not an OpenCode live-runtime preparation or image publication.
+The fixture is exported only after immutable Docker ID and installed source/version
+readback match the clean checkout. Missing Docker, failed build or mismatched
+provenance blocks the gate rather than skipping its readonly-bind test.

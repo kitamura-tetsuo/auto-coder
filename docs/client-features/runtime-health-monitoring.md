@@ -19,6 +19,7 @@
     heartbeats:
       - "The producer loop, worker loops and the synchronous run() loop report their stage (e.g. 'worker-0:processing pr #42')."
       - "When no heartbeat arrives for AUTO_CODER_HEALTH_STALL_SECONDS (default 3600) a stall is logged once with a stack dump of every thread; the next heartbeat records 'stall_recovered'."
+      - "The private lifecycle bridge retains the most recent actual producer-loop heartbeat independently of later worker-loop beats; its sequence and age advance only from producer heartbeat calls. General resource snapshots retain the latest-any-loop stage. Neither projection implies completed PR work."
     termination_causes:
       - "SIGTERM/SIGHUP/SIGINT/SIGQUIT are logged with the interrupted stack and a final snapshot before the default behaviour is restored (SIGINT still raises KeyboardInterrupt)."
       - "faulthandler writes native crashes to ~/.auto-coder/logs/diagnostics-<pid>.log; 'kill -USR1 <pid>' dumps all thread stacks on demand."

@@ -2966,3 +2966,59 @@ use the same production-to-dashboard contract as other pending-work stages.
 Rediscovery intentionally preserves those fields; publication receipts remain
 in the local-job effect journal rather than being inferred from the presence
 of a pending-work row.
+
+
+### Recorded open-target enumeration
+
+`AutomationEngine._reconcile_open_github_entities` supplies the dashboard's
+advisory open identities from its existing complete strict enumeration. Successful
+strict per-target reads update open/closed/404 observations before admission
+filtering; they never confer execution authority. `get_status()` projects those
+rows and `open_target_observation` (availability, complete observation time, source
+and diagnostic reason). `dashboard.py` renders the tested `open_targets_notice`
+projection, distinguishing unavailable, stale and observed empty from known rows.
+Transport failures retain prior targets. This changes no trace event schema or
+public diagnostic allowlist, and it adds no GitHub polling.
+
+Verification: `pytest -q tests/test_open_target_observations.py
+tests/test_entity_invalidation.py`. These tests use real reconciliation, durable
+invalidations, strict-target boundaries, the engine status projection and the
+production presentation function. They cover nonempty/empty startup, failed
+enumeration, open/closed/404, non-admitted authors, transport failures and a newer
+target observation racing enumeration.
+
+
+### Producer-only lifecycle progress
+
+The private worker observation keeps its existing bounded heartbeat schema but
+selects the actual retained producer-loop sample. Worker beats no longer hide
+that sample or refresh its age; a new process without a producer beat reports
+unavailable. General health snapshots still report the latest-any-loop stage.
+This is management readiness evidence, not an Issue/PR progress or completion
+event. No worker trace emission, dashboard projection, public API schema,
+readiness predicate or deadline changes.
+
+Run `bash scripts/test.sh tests/test_health_monitor.py
+tests/test_worker_management_bridge.py tests/test_management_worker_lifecycle.py`.
+`test_real_socket_keeps_producer_progress_when_worker_beats_interleave` reaches
+the actual UDS listener, records real monitor calls between reads and checks
+worker-only unavailable, unchanged repeated samples, genuine producer advances
+and preserved general health state. The age regression proves unrelated worker
+activity cannot freshen a stopped producer. Existing lifecycle tests retain
+same-incarnation, installed-source, serving, gate and two-sample checks.
+
+### Fresh-host exited-task namespace evidence
+
+The trusted host observer can prove a missing task network link belongs to an
+exited zombie, using the same held task directory and stable positive start
+token around the ENOENT read. It still scans live sibling tasks and refuses
+unknown state. This changes a host evidence predicate, not an Issue/PR origin,
+trace schema, dashboard projection, deadline or launch authority. Existing
+bounded host-observation failures remain the diagnostic surface.
+
+Run `bash scripts/test.sh tests/test_management_fresh_initialization.py` for the
+real held/unreaped-child and damaged-proof controls. The unchanged root host CI
+selection also drives the actual guard/Supervisor/authenticated-readback path
+in `tests/test_management_fresh_end_to_end.py` with a positively observed zombie
+held through the retained-history case. That whole-host test remains distinct
+from the single-real-task projection used by the focused kernel regression.
