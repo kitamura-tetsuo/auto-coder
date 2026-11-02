@@ -338,6 +338,53 @@ def test_reply_during_receipt_publication_revokes_canonical_acceptance(receipt_s
     assert "resolve" not in scenario.transport.effects
 
 
+@pytest.mark.parametrize("phase", ["PENDING", "RESOLVED"])
+def test_resolved_receipt_reconciliation_rejects_intervening_discussion_edit(receipt_scenario, monkeypatch, phase):
+    import auto_coder.pr_blocker_closure as closure
+
+    scenario = receipt_scenario
+    claimed = scenario.claimed()
+    if phase == "PENDING":
+        scenario.transport.lose_resolves = 1
+    scenario.close(claimed=claimed)
+    assert scenario.transport.resolved
+    receipt = observe_closure_receipt(scenario.client(), REPOSITORY, PR_NUMBER, THREAD_ID, ROOT_ID).receipt
+    assert receipt is not None and receipt.phase == phase
+    effects_before = list(scenario.transport.effects)
+    original_observe = closure.observe_closure_receipt
+    reads = 0
+    counterexample = "The retry counter still fails after a subsequent attempt."
+
+    def edit_before_reconciliation(*args, **kwargs):
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            scenario.transport.comments[1].body += "\n" + counterexample
+        return original_observe(*args, **kwargs)
+
+    monkeypatch.setattr(closure, "observe_closure_receipt", edit_before_reconciliation)
+    replay = scenario.close(claimed=claimed)
+    assert reads == 2
+    assert replay.accepted_closures == ()
+    assert replay.resolved_thread_ids == ()
+    assert scenario.transport.effects == effects_before
+    blocker = scenario.ledger().get_snapshot(API_ORIGIN, REPOSITORY, PR_NUMBER, require_retained_state=True).get_blocker(scenario.blocker_id)
+    assert blocker is not None and blocker.disposition == BlockerDisposition.OPEN
+    monkeypatch.setattr(closure, "observe_closure_receipt", original_observe)
+    # The ordinary classifier intentionally excludes resolved threads. Use the
+    # production retained-source revalidation entry point without reopening it.
+    import auto_coder.pr_processor as processor
+
+    monkeypatch.setattr(processor, "_resolve_eligible_review_thread_ids", lambda _repo: {REVIEWER_ID})
+    current = processor._get_claimed_review_thread_state(scenario.client(), REPOSITORY, PR_NUMBER, revalidate_resolved_thread_ids=(THREAD_ID,)).claimed
+    assert scenario.transport.resolved
+    assert len(current) == 1
+    assert counterexample in current[0].discussion
+    next_result = scenario.close(status="STILL_VALID", claimed=current)
+    assert next_result.accepted_closures == ()
+    assert next_result.resolved_thread_ids == ()
+
+
 def test_confirmed_replay_does_not_mutate_github_again(receipt_scenario):
     scenario = receipt_scenario
     claimed = scenario.claimed()
