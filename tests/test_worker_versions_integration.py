@@ -7,6 +7,7 @@ import http.server
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -274,23 +275,44 @@ def test_actual_uv_locked_download_network_failure_is_typed_and_never_ready(tmp_
 def test_actual_preparer_crash_retains_partial_attempt_and_reconstruction_uses_disjoint_path(tmp_path: Path, _use_real_commands: None) -> None:
     repo, sha, uv, uv_version = _create_production_fixture(tmp_path)
     root = tmp_path / "crash-versions"
+    barrier = tmp_path / "real-venv-created"
     script = """
-import sys
+import sys, time
 from pathlib import Path
 from auto_coder.worker_versions import PrepareIntent, WorkerVersionConfig, WorkerVersionPreparer
 config = WorkerVersionConfig(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.executable), Path(sys.argv[3]), sys.argv[4])
-WorkerVersionPreparer(config).prepare(PrepareIntent(sys.argv[5], "crashed-process"))
+class HeldPreparer(WorkerVersionPreparer):
+    def _run(self, arguments, **kwargs):
+        result = super()._run(arguments, **kwargs)
+        if arguments[1:2] == ['venv']:
+            # The real uv process has returned; hold this actual preparer
+            # before installation/READY instead of racing its completion.
+            barrier = Path(sys.argv[6])
+            pending = barrier.with_suffix('.pending')
+            pending.write_text(str(Path(arguments[-1]) / 'pyvenv.cfg'))
+            pending.replace(barrier)
+            while True:
+                time.sleep(0.01)
+        return result
+HeldPreparer(config).prepare(PrepareIntent(sys.argv[5], "crashed-process"))
 """
-    process = subprocess.Popen([sys.executable, "-c", script, str(repo), str(root), str(uv), uv_version, sha])
+    process = subprocess.Popen([sys.executable, "-c", script, str(repo), str(root), str(uv), uv_version, sha, str(barrier)], start_new_session=True)
     deadline = time.monotonic() + 30
     partial_venv: Path | None = None
-    while time.monotonic() < deadline and process.poll() is None:
-        partial_venv = next(iter(root.glob("revisions/*/crashed-process/venv/pyvenv.cfg")), None)
-        if partial_venv is not None:
-            process.kill()
-            break
-        time.sleep(0.005)
-    process.wait(timeout=10)
+    try:
+        while time.monotonic() < deadline and process.poll() is None:
+            if barrier.exists():
+                partial_venv = Path(barrier.read_text())
+                assert partial_venv.is_file()
+                process.kill()
+                break
+            time.sleep(0.005)
+        process.wait(timeout=10)
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=10)
+    assert process.returncode == -signal.SIGKILL
     assert partial_venv is not None
     assert not list(root.glob("revisions/*/crashed-process/READY.json"))
 
