@@ -2,7 +2,7 @@
 
 `Publish Beta` and `Test Source for Runtime` prepare the required management test
 image before running their existing complete test selection. The preparation
-script builds only Dockerfile's locked `python-environment` stage, never the
+script extends only Dockerfile's locked `python-environment` stage with the existing source-provenance embed command, never the
 OpenCode/Codex production runtime stage. It requires a clean complete checkout,
 passes its authenticated build identity to the existing build backend, resolves
 a strict immutable Docker image ID, and verifies the installed source/version

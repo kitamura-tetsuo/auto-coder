@@ -35,6 +35,7 @@ def test_dirty_fixture_does_not_build_or_publish_identity(tmp_path, monkeypatch)
 def test_failed_fixture_never_exports_a_publishable_image(tmp_path, monkeypatch, failure):
     monkeypatch.setattr(preparation, "resolve_build_identity", lambda _: SimpleNamespace(state="clean", source_revision="a" * 40, version="1.0"))
     monkeypatch.setattr(preparation, "serialize_build_identity", lambda _: '{"source_revision":"' + "a" * 40 + '"}')
+    (tmp_path / "Dockerfile").write_text("FROM python:3.12-slim AS python-environment\n")
     build = Mock(side_effect=subprocess.CalledProcessError(1, ["docker", "build"]) if failure == "build" else None)
     inspect = Mock(side_effect=["sha256:" + "a" * 64, json.dumps({"source_revision": {"value": "b" * 40}, "distribution_version": {"value": "1.0"}})]) if failure == "provenance_mismatch" else Mock(return_value="sha256:incomplete")
     monkeypatch.setattr(preparation.subprocess, "run", build)
@@ -44,6 +45,11 @@ def test_failed_fixture_never_exports_a_publishable_image(tmp_path, monkeypatch,
         preparation.prepare_image(tmp_path, output)
     assert not output.exists()
     arguments = build.call_args.args[0]
-    assert arguments[arguments.index("--target") + 1] == "python-environment"
+    assert arguments[arguments.index("--target") + 1] == "management-test-fixture"
     if failure == "build":
         inspect.assert_not_called()
+
+    dockerfile = build.call_args.kwargs["input"]
+    assert "FROM python-environment AS management-test-fixture" in dockerfile
+    assert "build_provenance embed" in dockerfile
+    assert build.call_args.kwargs["text"] is True

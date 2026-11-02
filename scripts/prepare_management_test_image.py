@@ -23,8 +23,11 @@ def prepare_image(repository: Path, github_env: Path | None = None) -> str:
         raise RuntimeError("Management test fixtures require a complete clean source identity")
     encoded = base64.b64encode(serialize_build_identity(identity).encode()).decode()
     tag = f"auto-coder:management-fixture-{identity.source_revision[:12]}"
+    dockerfile = (repository / "Dockerfile").read_text() + ("\nFROM python-environment AS management-test-fixture\n" "ARG AUTO_CODER_SOURCE_REVISION\n" "RUN AUTO_CODER_SOURCE_REVISION=$AUTO_CODER_SOURCE_REVISION /opt/auto-coder/.venv/bin/python -m auto_coder.build_provenance embed\n")
     subprocess.run(
-        ["docker", "build", "--target", "python-environment", "--build-arg", f"AUTO_CODER_BUILD_IDENTITY_B64={encoded}", "--tag", tag, str(repository)],
+        ["docker", "build", "--file", "-", "--target", "management-test-fixture", "--build-arg", f"AUTO_CODER_BUILD_IDENTITY_B64={encoded}", "--build-arg", f"AUTO_CODER_SOURCE_REVISION={identity.source_revision}", "--tag", tag, str(repository)],
+        input=dockerfile,
+        text=True,
         check=True,
     )
     image_id = subprocess.check_output(["docker", "image", "inspect", "--format", "{{.Id}}", tag], text=True).strip()
