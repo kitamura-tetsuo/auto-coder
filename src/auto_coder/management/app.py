@@ -13,6 +13,8 @@ from .mcp_runtime_tools import ManagementRuntime
 from .oauth_config import ManagementSettings
 from .oauth_grants import OAuthGrantService
 from .oauth_http import create_management_auth_app
+from .retained_journal import RetainedJournal
+from .retained_startup import retained_from_fresh_intent
 from .worker_network_client import WorkerEndpointConfig, WorkerNetworkClient, configured_worker_bridge_environment
 
 
@@ -23,6 +25,7 @@ def create_management_app(
     *,
     worker_clients: dict[str, WorkerNetworkClient] | None = None,
     self_update_source_authority: TestedSourcePublisher | None = None,
+    retained_journal: RetainedJournal | None = None,
 ) -> FastAPI:
     if grants is None:
         identity = FirebaseOperatorIdentity(IdentityConfig(settings.oauth.firebase_project_id, settings.state_root / "allowed_uids.json"))
@@ -30,22 +33,28 @@ def create_management_app(
     clients: dict[str, WorkerNetworkClient] = worker_clients if worker_clients is not None else {}
     if worker_clients is None and configured_worker_bridge_environment():
         clients = {channel: WorkerNetworkClient(WorkerEndpointConfig.environment(channel)) for channel in ("beta", "release")}
-    runtime = ManagementRuntime(settings, grants, clients, self_update_source_authority=self_update_source_authority)
+    owned_retained = retained_from_fresh_intent(settings) if retained_journal is None else None
+    selected_retained = retained_journal if retained_journal is not None else owned_retained
+    runtime = ManagementRuntime(settings, grants, clients, self_update_source_authority=self_update_source_authority, retained_journal=selected_retained)
     mcp, resource = create_mcp_resource(settings, grants, (*tools, *runtime.tool_registrations()), identity_observer=runtime.observe_authenticated_identity)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        async with mcp.session_manager.run():
-            await runtime.dispatcher.start()
-            await runtime.start_monitor()
-            try:
-                await runtime.dispatcher.drain()
-                runtime.self_update.startup_reconciled = True
-                yield
-            finally:
-                runtime.self_update.startup_reconciled = False
-                await runtime.stop_monitor()
-                await runtime.dispatcher.stop()
+        try:
+            async with mcp.session_manager.run():
+                await runtime.dispatcher.start()
+                await runtime.start_monitor()
+                try:
+                    await runtime.dispatcher.drain()
+                    runtime.self_update.startup_reconciled = True
+                    yield
+                finally:
+                    runtime.self_update.startup_reconciled = False
+                    await runtime.stop_monitor()
+                    await runtime.dispatcher.stop()
+        finally:
+            if owned_retained is not None:
+                owned_retained.close()
         # Uvicorn drains active requests before lifespan shutdown. Complete
         # dispatcher and MCP cleanup before acknowledging the exact child;
         # Uvicorn may re-raise SIGTERM instead of returning from uvicorn.run.

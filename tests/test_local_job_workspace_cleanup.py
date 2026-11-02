@@ -9,6 +9,7 @@ from threading import Event as ThreadEvent
 from threading import Thread
 from unittest.mock import patch
 
+import pytest
 from loguru import logger
 
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
@@ -21,8 +22,10 @@ from auto_coder.local_job_workspace_cleanup import (
     reclaim_finalized_workspaces,
     workspace_retention_seconds,
 )
+from auto_coder.muse_background_observation import MuseBackgroundObservation, MuseContinuationReadiness, MuseObservationBinding, persist_muse_observation
 from auto_coder.pr_repair_finalizer import PRRepairJobFinalizer, PRRepairPublicationDisposition
 from auto_coder.runtime_locks import ensure_lock_directory, file_lock
+from auto_coder.workspace_ownership import MARKER, verify_ownership
 
 from .test_issue_job_finalizer import _completed_job, claim, repository
 from .test_pr_repair_finalizer import completed_job as completed_pr_job
@@ -36,6 +39,194 @@ def _published(tmp_path: Path, number: int = 2583):
     finalizer = IssueJobFinalizer(store, slots, lambda *_: existing, lambda *_: None)
     assert finalizer.finalize(checkpoint.job_id).disposition == "published"
     return store, checkpoint, finalizer
+
+
+def _record_settled_observation(store, record, workspace: Path, executor: str) -> None:
+    observation = MuseBackgroundObservation(
+        MuseObservationBinding(record.backend_name, "session", record.execution_incarnation, record.upstream_attempt, workspace),
+        "turn",
+        "completed",
+        readiness=MuseContinuationReadiness.CONTROLLER_READY,
+    )
+    assert persist_muse_observation(store, record.job_id, executor, observation)
+
+
+def test_issue_producer_binds_external_ownership_evidence(tmp_path: Path, _use_real_commands) -> None:
+    store, checkpoint, _ = _published(tmp_path)
+    record = store.get(checkpoint.job_id)
+    assert record is not None
+    anchor = LocalJobStore(store.path).workspace_ownership_anchor(record)
+    target = checkpoint.workspace.parent
+    assert anchor and Path(anchor).is_file()
+    assert verify_ownership(target, anchor, record.job_id, record.execution_incarnation)
+    old = target.with_name("old-incarnation")
+    target.rename(old)
+    target.mkdir()
+    shutil.copy2(old / MARKER, target / MARKER)
+    (target / "unrelated").write_text("retain", encoding="utf-8")
+    result = reclaim_finalized_workspaces(store, now=10, retention_seconds=0, issue_root=tmp_path / "workspaces")
+    assert result[0].decision == "retained"
+    assert (target / "unrelated").read_text(encoding="utf-8") == "retain"
+
+
+def test_cleanup_refuses_provider_runtime_and_configured_credential_root(tmp_path: Path, monkeypatch, _use_real_commands) -> None:
+    store, checkpoint, _ = _published(tmp_path)
+    target = checkpoint.workspace.parent
+    credential = target / "provider-runtime" / "home" / "auth.json"
+    credential.parent.mkdir(parents=True)
+    credential.write_text("preserve", encoding="utf-8")
+    result = reclaim_finalized_workspaces(store, now=1, retention_seconds=0, issue_root=tmp_path / "workspaces")
+    assert result[0].decision == "retained"
+    assert credential.read_text(encoding="utf-8") == "preserve"
+    shutil.rmtree(target / "provider-runtime")
+    monkeypatch.setenv("CODEX_HOME", str(checkpoint.workspace / "credentials"))
+    result = reclaim_finalized_workspaces(store, now=2, retention_seconds=0, issue_root=tmp_path / "workspaces")
+    assert result[0].decision == "retained"
+    assert checkpoint.workspace.is_dir()
+
+
+@pytest.mark.parametrize("outcome", [InvocationOutcome.FAILED, InvocationOutcome.INTERRUPTED])
+def test_terminated_producer_workspace_requires_source_and_reclaims(tmp_path: Path, outcome: InvocationOutcome, _use_real_commands) -> None:
+    source, _ = repository(tmp_path)
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    acquired = claim(store, 871)
+    with store._connect() as connection:
+        connection.execute("UPDATE local_jobs SET runner_owner='executor' WHERE job_id=?", (acquired.record.job_id,))
+    record = store.get(acquired.record.job_id)
+    assert record is not None
+    acquired = LocalJobClaim(record, True)
+    producer = IssueJobWorkspaceProducer(store, tmp_path / "workspaces")
+    workspace, _, _ = producer._prepare(acquired, IssueJobSource("owner/repo", source, "main", "issue-871"))
+    assert store.bind_continuation(acquired, "session", "executor") is not None
+    provider = workspace.parent / "provider"
+    provider.mkdir()
+    process = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    owner = process_owner(process.pid)
+    assert store.bind_continuation_writer(record.job_id, "executor", provider, owner)
+    _record_settled_observation(store, record, workspace, "executor")
+    artifact = store.persist_result_artifact(acquired, outcome, "provider failed", executor_token="executor")
+    assert artifact is not None and store.record_result(acquired, outcome, artifact.artifact_id, executor_token="executor")
+    recorded = store.get(record.job_id)
+    continuation = store.get_continuation(record.job_id)
+    assert recorded is not None and continuation is not None
+    assert store.confirm_unsuccessful_continuation(recorded, continuation)
+    assert store.recover_downstream_pending(recorded, executor_token="executor")
+    assert store.settle(acquired)
+    try:
+        live = reclaim_finalized_workspaces(store, now=0, retention_seconds=0, issue_root=tmp_path / "workspaces")
+        assert live[0].decision == "retained" and workspace.is_dir()
+    finally:
+        process.kill()
+        process.wait(timeout=5)
+    original_target = workspace.parent
+    old_target = original_target.with_name("moved-original")
+    original_inode = original_target.stat().st_ino
+    original_target.rename(old_target)
+    workspace.mkdir(parents=True)
+    shutil.copy2(old_target / MARKER, original_target / MARKER)
+    (workspace / "foreign").write_text("keep", encoding="utf-8")
+    with store._connect() as connection:
+        connection.execute("UPDATE local_jobs SET workspace_inode=? WHERE job_id=?", (original_target.stat().st_ino, record.job_id))
+    refused = reclaim_finalized_workspaces(store, now=0, retention_seconds=0, issue_root=tmp_path / "workspaces")
+    assert refused[0].decision == "retained"
+    assert (workspace / "foreign").read_text(encoding="utf-8") == "keep"
+    shutil.rmtree(original_target)
+    old_target.rename(original_target)
+    with store._connect() as connection:
+        connection.execute("UPDATE local_jobs SET workspace_inode=? WHERE job_id=?", (original_inode, record.job_id))
+    entered, release_lock = Event(), Event()
+    holder = Process(target=_hold_workspace_lock, args=(str(store.path), record.job_id, entered, release_lock))
+    holder.start()
+    assert entered.wait(5)
+    decisions = []
+    cleaner = Thread(target=lambda: decisions.extend(reclaim_finalized_workspaces(store, now=0, retention_seconds=100, issue_root=tmp_path / "workspaces")))
+    cleaner.start()
+    time.sleep(0.1)
+    assert cleaner.is_alive() and workspace.is_dir()
+    release_lock.set()
+    cleaner.join(5)
+    holder.join(5)
+    assert not cleaner.is_alive() and holder.exitcode == 0
+    assert decisions[0].decision == "retained"
+    alternates = source / ".git" / "objects" / "info" / "alternates"
+    alternates.write_text(str(workspace / ".git" / "objects") + "\n", encoding="utf-8")
+    refused = reclaim_finalized_workspaces(store, now=1, retention_seconds=0, issue_root=tmp_path / "workspaces")
+    assert refused[0].decision == "retained" and workspace.is_dir()
+    alternates.unlink()
+    source_objects = source / ".git" / "objects"
+    retained_objects = source_objects.with_name("objects-retained")
+    source_objects.rename(retained_objects)
+    source_objects.symlink_to(workspace / ".git" / "objects", target_is_directory=True)
+    refused = reclaim_finalized_workspaces(store, now=1, retention_seconds=0, issue_root=tmp_path / "workspaces")
+    assert refused[0].decision == "retained" and workspace.is_dir()
+    source_objects.unlink()
+    retained_objects.rename(source_objects)
+    object_link = source_objects / "info" / "foreign-link"
+    object_link.symlink_to(workspace / ".git" / "objects", target_is_directory=True)
+    refused = reclaim_finalized_workspaces(store, now=1, retention_seconds=0, issue_root=tmp_path / "workspaces")
+    assert refused[0].decision == "retained" and workspace.is_dir()
+    object_link.unlink()
+    renamed = source.with_name("source-away")
+    source.rename(renamed)
+    result = reclaim_finalized_workspaces(store, now=1, retention_seconds=0, issue_root=tmp_path / "workspaces")
+    assert result[0].decision == "retained" and workspace.is_dir()
+    renamed.rename(source)
+    if outcome is InvocationOutcome.FAILED:
+        original_rmtree = shutil.rmtree
+
+        def interrupted_removal(path, *args, **kwargs):
+            original_rmtree(path, *args, **kwargs)
+            raise OSError("simulated crash after removing a child")
+
+        with patch("auto_coder.local_job_workspace_cleanup.shutil.rmtree", side_effect=interrupted_removal):
+            interrupted = reclaim_finalized_workspaces(store, now=2, retention_seconds=0, issue_root=tmp_path / "workspaces")
+        assert interrupted[0].decision == "failed"
+        assert (workspace.parent / MARKER).is_file()
+        release = store.get_workspace_reclamation(record.job_id, record.execution_incarnation)
+        assert release is not None and release.phase is WorkspaceReclamationPhase.DELETING
+    else:
+
+        def interrupted_after_marker(target: Path, *_args) -> None:
+            (target / MARKER).unlink()
+            raise OSError("simulated crash after marker removal")
+
+        with patch("auto_coder.local_job_workspace_cleanup._remove_owned_workspace", side_effect=interrupted_after_marker):
+            interrupted = reclaim_finalized_workspaces(store, now=2, retention_seconds=0, issue_root=tmp_path / "workspaces")
+        assert interrupted[0].decision == "failed"
+        (workspace / "foreign-after-crash").write_text("keep", encoding="utf-8")
+        refused = reclaim_finalized_workspaces(LocalJobStore(store.path), now=2, retention_seconds=0, issue_root=tmp_path / "workspaces")
+        assert refused[0].decision == "retained"
+        assert (workspace / "foreign-after-crash").read_text(encoding="utf-8") == "keep"
+        return
+    result = reclaim_finalized_workspaces(LocalJobStore(store.path), now=2, retention_seconds=0, issue_root=tmp_path / "workspaces")
+    assert result[0].decision == "reclaimed"
+    assert not workspace.parent.exists()
+    assert store.get_result_artifact(artifact.artifact_id) is not None
+
+
+def test_superseded_issue_reclaims_only_with_exact_retry_receipt(tmp_path: Path, _use_real_commands) -> None:
+    source, _ = repository(tmp_path)
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    acquired = claim(store, 872)
+    producer = IssueJobWorkspaceProducer(store, tmp_path / "workspaces")
+    workspace, _, _ = producer._prepare(acquired, IssueJobSource("owner/repo", source, "main", "issue-872"))
+    assert store.mark_provider_entered(acquired)
+    assert store.bind_continuation(acquired, "session", "executor") is not None
+    provider = workspace.parent / "provider"
+    provider.mkdir()
+    process = subprocess.Popen(["sleep", "0.01"], start_new_session=True)
+    owner = process_owner(process.pid)
+    process.wait(timeout=5)
+    assert store.bind_continuation_writer(acquired.record.job_id, "executor", provider, owner)
+    _record_settled_observation(store, acquired.record, workspace, "executor")
+    job = store.get(acquired.record.job_id)
+    continuation = store.get_continuation(acquired.record.job_id)
+    assert job is not None and continuation is not None
+    assert store.supersede_stopped_issue_for_retry(job, continuation, "request-872")
+    result = reclaim_finalized_workspaces(LocalJobStore(store.path), now=1, retention_seconds=0, issue_root=tmp_path / "workspaces")
+    assert result[0].decision == "reclaimed"
+    assert not workspace.parent.exists()
+    assert store.get_effect(job.job_id, job.execution_incarnation, "explicit-retry-supersession").evidence == "request-872"
 
 
 def _hold_workspace_lock(store_path: str, job_id: str, entered: Event, release: Event) -> None:

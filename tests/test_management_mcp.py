@@ -419,6 +419,7 @@ def test_real_discovery_firebase_exchange_and_whoami(real_boundary) -> None:
         listed = list_response.json()["result"]["tools"]
         assert [tool["name"] for tool in listed] == [
             "auto_coder_whoami",
+            "auto_coder_consumer_identity",
             "auto_coder_status",
             "auto_coder_logs",
             "auto_coder_validation_attempt",
@@ -432,11 +433,11 @@ def test_real_discovery_firebase_exchange_and_whoami(real_boundary) -> None:
             "auto_coder_deploy_beta_source",
         ]
         assert listed[0]["annotations"]["readOnlyHint"] and listed[0]["annotations"]["idempotentHint"]
-        assert all(tool["annotations"]["readOnlyHint"] for tool in listed[1:5])
-        assert listed[5]["annotations"]["readOnlyHint"] is False
-        assert listed[6]["annotations"]["readOnlyHint"] is False and listed[6]["annotations"]["destructiveHint"] is True
-        assert listed[7]["annotations"]["readOnlyHint"] is True
-        assert all(tool["annotations"]["readOnlyHint"] is False for tool in listed[8:])
+        assert all(tool["annotations"]["readOnlyHint"] for tool in listed[1:6])
+        assert listed[6]["annotations"]["readOnlyHint"] is False
+        assert listed[7]["annotations"]["readOnlyHint"] is False and listed[7]["annotations"]["destructiveHint"] is True
+        assert listed[8]["annotations"]["readOnlyHint"] is True
+        assert all(tool["annotations"]["readOnlyHint"] is False for tool in listed[9:])
         identity = _mcp(client, token, "tools/call", 3, {"name": "auto_coder_whoami", "arguments": {}}).json()["result"]["structuredContent"]
         assert identity == {"project_id": "mcp-test-project", "uid": "alice", "client_id": "alice-client", "scopes": ["auto-coder.read"], "resource": settings.oauth.resource}
 

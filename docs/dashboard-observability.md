@@ -11,10 +11,17 @@ scripts/test.sh tests/test_worker_management_bridge.py -k reevaluation`.
 
 Management journal operation IDs, phases, targets, and safe categories use the existing Loguru sinks without changing worker command/trace lifecycle events. Its separate contract is documented in [`client-features/management-operation-journal.md`](client-features/management-operation-journal.md).
 
-When the management Supervisor cannot observe its own process-start token, it
-logs the unavailable lifetime and holds subsequent effects while retaining the
-owner lock and existing child. The real-process bootstrap test exercises this
-hold and the return to a valid observation; no dashboard event schema changes.
+Local management recovery uses a private Supervisor mailbox rather than the
+management operation journal or worker Issue/PR trace lifecycle. The owning
+Supervisor logs the bounded request ID and transition status; the complete local
+status is read with `management recovery-status`. The real-CLI scenarios in
+`tests/test_management_recovery_integration.py` verify these outcomes and their
+process effects. This path does not introduce a dashboard-owned event schema.
+
+When the Supervisor cannot observe its own process start token, it logs that
+its lifetime is unavailable and holds physical effects until a valid observation
+returns. It retains its owner fence and existing child without reporting a new
+process identity. The real-process bootstrap test verifies this hold and resume.
 
 Management self-update adds a fixed authenticated MCP origin to that same journal
 and dispatcher. Admission and durable Supervisor handoff log the operation ID and
@@ -2820,6 +2827,12 @@ both successful completion and late-activity suppression.
 `test_pr_correction_adapter_runner_delivers_gate_controlled_muse_background_result`
 crosses the corresponding admitted correction, exact-head workspace, production
 adapter, runner, and validation wake while retaining the same trace schema.
+CI-failure and merge-conflict adapters also bind their existing Muse interaction
+to the durable PR job. `tests/test_muse_msp.py::test_pr_repair_runner_records_real_muse_failure_for_cleanup`
+crosses the real fixture transport, adapter, runner, finalizer and cleanup;
+unresolved tasks and multiple sessions retain the workspace. This binding adds
+durable settlement evidence to the existing local backend interaction, without
+adding an origin, outcome, structured event or dashboard renderer.
 
 The Issue #2506 scheduler adoption is observability-neutral. Candidate
 collection now consumes the typed PR progress-policy route from the same single
@@ -2935,6 +2948,13 @@ refused recovery never reaches a fresh offer or changes slot state.
 PR job kinds and every job state, foreign-repository isolation, and reclamation
 only after settlement or absence of retained responsibility.
 
+Explicit fresh management initialization reports its one-time request, launch,
+unknown outcome and authenticated readiness through the private local status
+command and bounded supervisor log messages. It does not create a dashboard job
+or change the dashboard event schema; a process launch alone is not reported as
+authenticated readiness. The isolated fresh-initialization and supervisor tests
+exercise refusal, claim and status boundaries.
+
 ## Local PR repair startup recovery
 
 The existing pending-work snapshot reports retained local PR repair
@@ -2967,3 +2987,22 @@ with add/edit/delete, unchanged and authenticated receipt-only controls. It
 checks both retained resolved closures and pending publication, fresh
 STILL_VALID/ADDRESSED outcomes, and refusal of replacement records with changed
 scope, missing source coverage or missing/mismatched thread evidence.
+
+### Recorded open-target enumeration
+
+`AutomationEngine._reconcile_open_github_entities` supplies the dashboard's
+advisory open identities from its existing complete strict enumeration. Successful
+strict per-target reads update open/closed/404 observations before admission
+filtering; they never confer execution authority. `get_status()` projects those
+rows and `open_target_observation` (availability, complete observation time, source
+and diagnostic reason). `dashboard.py` renders the tested `open_targets_notice`
+projection, distinguishing unavailable, stale and observed empty from known rows.
+Transport failures retain prior targets. This changes no trace event schema or
+public diagnostic allowlist, and it adds no GitHub polling.
+
+Verification: `pytest -q tests/test_open_target_observations.py
+tests/test_entity_invalidation.py`. These tests use real reconciliation, durable
+invalidations, strict-target boundaries, the engine status projection and the
+production presentation function. They cover nonempty/empty startup, failed
+enumeration, open/closed/404, non-admitted authors, transport failures and a newer
+target observation racing enumeration.

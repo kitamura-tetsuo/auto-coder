@@ -44,6 +44,107 @@ def _repository(path: Path) -> Path:
     return repo
 
 
+@pytest.mark.parametrize("kind", ["ci", "conflict"])
+@pytest.mark.parametrize("interrupted", [False, True])
+@pytest.mark.parametrize("unresolved", [False, True])
+@pytest.mark.parametrize("multiple", [False, True])
+def test_pr_repair_runner_records_real_muse_failure_for_cleanup(tmp_path, monkeypatch, _use_real_commands, _use_real_sleep, kind, interrupted, unresolved, multiple):
+    """Exercise the adapter, real fixture host, runner, finalizer, and cleanup."""
+    from contextlib import contextmanager
+
+    from src.auto_coder.automation_config import AutomationConfig
+    from src.auto_coder.local_ci_repair_execution import CorrectionPorts, LocalCIRepairRequest
+    from src.auto_coder.local_ci_repair_job import DurableCICorrection, LocalCIRepairJobPorts, build_local_ci_repair_job_adapter
+    from src.auto_coder.local_conflict_repair_job import LocalConflictRepairJobAdapter
+    from src.auto_coder.local_job_handoff import PRRepairAdmission
+    from src.auto_coder.local_job_workspace_cleanup import reclaim_finalized_workspaces
+    from src.auto_coder.pr_repair_finalizer import PRRepairJobFinalizer
+    from src.auto_coder.pr_repair_workspace import PRRepairSource, PRRepairWorkspaceProducer
+    from tests.test_local_conflict_repair_job import history
+
+    source, head, base = history(tmp_path)
+    host = _host(tmp_path)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "pr-cleanup-msp.jsonl"))
+    monkeypatch.setenv("MSP_SERVER_VERSION", "1.4.6")
+    monkeypatch.setenv("MSP_BACKGROUND_ITEM", "1")
+    if not multiple:
+        monkeypatch.setenv("MSP_EXIT_NONZERO", "1")
+    if unresolved and not multiple:
+        monkeypatch.setenv("MSP_LATE_BACKGROUND_ACTIVITY", "1")
+    monkeypatch.setenv("AUTO_CODER_DEFER_LOCAL_TESTS", "1")
+    monkeypatch.chdir(source)
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3", timeout=10)})
+    manager = _manager(config, automatic_session_resume=False)
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    job_kind = LocalJobKind.PR_CI_FAILURE if kind == "ci" else LocalJobKind.PR_MERGE_CONFLICT
+    offer = LocalJobOffer(job_kind, "owner/repo", 7, "attempt", "muse", "repair")
+    admission = PRRepairAdmission("owner/repo", "feature", head, "owner/repo", "main", base, "ci_failure" if kind == "ci" else "merge_conflict", "evidence", "upstream", ("checks / tests",) if kind == "ci" else (), True, True, True, True, kind == "conflict", kind == "ci")
+    assert store.offer_pr_repair(offer, admission, LocalReviewRepairStore(tmp_path / "reviews.sqlite3")) is not None
+    metadata = {"state": "open", "head": {"repo": {"full_name": "owner/repo"}, "ref": "feature", "sha": head}, "base": {"repo": {"full_name": "owner/repo"}, "ref": "main", "sha": base}}
+
+    def edit(_prompt, workspace):
+        token = bind_command_execution_cwd(str(workspace))
+        try:
+            try:
+                if multiple:
+                    assert manager._run_llm_cli("first")
+                    monkeypatch.setenv("MSP_EXIT_NONZERO", "1")
+                    if unresolved:
+                        monkeypatch.setenv("MSP_LATE_BACKGROUND_ACTIVITY", "1")
+                return manager._run_llm_cli("repair")
+            except Exception:
+                if interrupted:
+                    raise KeyboardInterrupt("synthetic interruption after host failure")
+                raise
+        finally:
+            reset_command_execution_cwd(token)
+
+    if kind == "conflict":
+        adapter = LocalConflictRepairJobAdapter(store, PRRepairSource(source), lambda *_: metadata, lambda *_: True, lambda *_: True, lambda *_: edit, workspace_producer=PRRepairWorkspaceProducer(store, tmp_path / "workspaces"))
+    else:
+
+        @contextmanager
+        def authority(*_args):
+            yield SimpleNamespace(allowed=True, failure_identities=("checks / tests",), reason="")
+
+        def correction(_job, prepared):
+            request = LocalCIRepairRequest("owner/repo", 7, head, "feature", True, (), AutomationConfig(), SimpleNamespace())
+            ports = CorrectionPorts(lambda: True, lambda: manager, lambda: manager, lambda _d, _b, _t, started: (started(), edit("repair", prepared.workspace)), lambda _: None, lambda *_: ((), ""), lambda: True, lambda: False, lambda: None, lambda: True, lambda: None)
+            return DurableCICorrection(request, "failure", [], ports, lambda _: [])
+
+        ports = LocalCIRepairJobPorts(lambda _: PRRepairSource(source), lambda _: SimpleNamespace(get_pull_request_metadata_strict=lambda *_: metadata), authority, lambda *_: True, correction)
+        adapter = build_local_ci_repair_job_adapter(store, ports, workspace_root=tmp_path / "workspaces")
+    runner = LocalJobRunner(store, InvocationAdmissionGate(), repository="owner/repo", capacity=1, adapters={job_kind: adapter})
+    try:
+        assert runner.poll() == 1
+        deadline = time.monotonic() + 20
+        while runner.active_count():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        record = store.get(offer.job_id)
+        assert record is not None and record.invocation_outcome is (InvocationOutcome.INTERRUPTED if interrupted else InvocationOutcome.FAILED)
+        continuation = store.get_continuation(record.job_id)
+        assert continuation is not None
+        if multiple:
+            assert continuation.writer_owner == "ambiguous:multiple-provider-sessions"
+        else:
+            assert continuation.state.value == record.invocation_outcome.value
+        assert Path(continuation.provider_workspace).is_relative_to(Path(record.workspace_path).parent)
+        PRRepairJobFinalizer(store, lambda *_: None, lambda *_: False).finalize(record.job_id)
+        assert store.get(record.job_id).state.value == "settled"
+        result = reclaim_finalized_workspaces(LocalJobStore(store.path), retention_seconds=0, pr_root=tmp_path / "workspaces")
+        if unresolved or multiple:
+            assert result[0].decision == "retained"
+            assert Path(record.workspace_path).is_dir()
+            assert store.get_result_artifact(record.result_reference) is not None
+        else:
+            assert result[0].decision == "reclaimed"
+            assert not Path(record.workspace_path).parent.exists()
+    finally:
+        runner.close(wait=True)
+
+
 def _host(path: Path) -> Path:
     host = path / "muse"
     host.write_text(

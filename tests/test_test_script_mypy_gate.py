@@ -543,6 +543,7 @@ def test_docker_launch_failure_propagates_as_outer_nonzero(tmp_path: Path) -> No
 def test_shard_supervisor_does_not_retry_a_real_mypy_failure(fixture_repo: Path) -> None:
     _provision_uv_venv(fixture_repo)
     shutil.copy2(RUN_PR_TEST_SHARD, fixture_repo / "scripts/run_pr_test_shard.py")
+    _write(fixture_repo, "tests/data/pr-test-durations.json", '{"fixture": 1.0}')
     _write(fixture_repo, "src/auto_coder/_as006_leaf.py", 'value: int = "wrong"\n')
     log_dir = fixture_repo / "pr-test-logs/shard-2"
 

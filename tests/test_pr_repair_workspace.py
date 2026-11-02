@@ -15,7 +15,7 @@ from auto_coder.implementation_slots import ImplementationOwner, ImplementationS
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
 from auto_coder.local_job_handoff import InvocationOutcome, LocalJobKind, LocalJobOffer, LocalJobState, LocalJobStore, PRRepairAdmission
-from auto_coder.local_job_runner import LocalJobRunner
+from auto_coder.local_job_runner import LocalJobRunner, process_owner
 from auto_coder.local_job_workspace_cleanup import reclaim_finalized_workspaces, reclaim_unentered_workspaces
 from auto_coder.local_review_repair import LocalReviewRepairStore
 from auto_coder.pr_processing_evidence import EditingInvocationEvidence
@@ -96,6 +96,39 @@ def admitted_conflict(store: LocalJobStore, tmp_path: Path, head: str, base: str
     claim = store.claim(offer.job_id, "process:999999:gone")
     assert claim is not None and claim.acquired
     return claim
+
+
+@pytest.mark.parametrize("outcome", [InvocationOutcome.FAILED, InvocationOutcome.INTERRUPTED])
+@pytest.mark.parametrize("kind", ["ci", "conflict"])
+def test_terminated_pr_workspace_reclaims_only_with_retained_source(tmp_path: Path, outcome: InvocationOutcome, kind: str, _use_real_commands) -> None:
+    from auto_coder.muse_background_observation import MuseBackgroundObservation, MuseContinuationReadiness, MuseObservationBinding, persist_muse_observation
+
+    repo, head, base = repository(tmp_path)
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    acquired = admitted(store, tmp_path, head, base) if kind == "ci" else admitted_conflict(store, tmp_path, head, base)
+    executor = acquired.record.runner_owner
+    prepared = PRRepairWorkspaceProducer(store, tmp_path / "workspaces").prepare(acquired, PRRepairSource(repo))
+    assert store.bind_continuation(acquired, "session", executor) is not None
+    provider = prepared.workspace.parent / "provider"
+    provider.mkdir()
+    process = subprocess.Popen(["sleep", "0.01"], start_new_session=True)
+    owner = process_owner(process.pid)
+    process.wait(timeout=5)
+    assert store.bind_continuation_writer(acquired.record.job_id, executor, provider, owner)
+    observation = MuseBackgroundObservation(MuseObservationBinding(acquired.record.backend_name, "session", acquired.record.execution_incarnation, acquired.record.upstream_attempt, prepared.workspace), "turn", "completed", readiness=MuseContinuationReadiness.CONTROLLER_READY)
+    assert persist_muse_observation(store, acquired.record.job_id, executor, observation)
+    artifact = store.persist_result_artifact(acquired, outcome, "provider failed", executor_token=executor)
+    assert artifact is not None and store.record_result(acquired, outcome, artifact.artifact_id, executor_token=executor)
+    recorded = store.get(acquired.record.job_id)
+    continuation = store.get_continuation(acquired.record.job_id)
+    assert recorded is not None and continuation is not None
+    assert store.confirm_unsuccessful_continuation(recorded, continuation)
+    assert store.recover_downstream_pending(recorded, executor_token=executor)
+    assert store.settle(acquired)
+    result = reclaim_finalized_workspaces(LocalJobStore(store.path), retention_seconds=0, pr_root=tmp_path / "workspaces")
+    assert result[0].decision == "reclaimed"
+    assert not prepared.workspace.parent.exists()
+    assert store.get_result_artifact(artifact.artifact_id) is not None
 
 
 @pytest.mark.parametrize("kind", ["ci", "conflict"])

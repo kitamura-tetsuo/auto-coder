@@ -18,6 +18,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
 from .build_provenance import observe_controller_artifact
+from .consumer_identity import ConsumerIdentity
 from .deployment_channel import validate_repository_ownership
 from .entity_invalidation import ReevaluationOperationConflict, ReevaluationReceipt
 from .health_monitor import get_health_monitor
@@ -93,6 +94,7 @@ class WorkerManagementBridge:
         # response/header is correlatable and middleware never performs
         # metadata/filesystem I/O on the event loop.
         self.artifact = observe_controller_artifact()
+        self.consumer_identity = ConsumerIdentity()
         self.app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
         self.server: Any = None
         self.task: Optional[asyncio.Task[Any]] = None
@@ -132,6 +134,12 @@ class WorkerManagementBridge:
             except Exception as exc:
                 logger.error(f"Private worker observation unavailable: {type(exc).__name__}")
                 return JSONResponse({"error": {"code": "observation_unavailable", "message": "Worker observation is unavailable."}}, status_code=503)
+
+        @self.app.get("/v1/consumer-identity", include_in_schema=False)
+        async def consumer_identity(request: Request) -> Response:
+            if request.query_params:
+                return self._error("invalid_request", "Request is invalid.", 422)
+            return JSONResponse(await asyncio.to_thread(self.consumer_identity.observe))
 
         @self.app.post("/v1/reevaluations", include_in_schema=False)
         async def reevaluate(request: Request) -> Response:

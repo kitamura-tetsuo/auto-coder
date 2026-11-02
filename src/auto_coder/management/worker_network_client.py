@@ -132,6 +132,7 @@ class WorkerNetworkClient:
 
     def diagnostics(self, kind: str, params: dict[str, str] | None = None) -> WorkerNetworkResult:
         allowed = {
+            "consumer-identity": set(),
             "status": {"limit"},
             "logs": {"limit", "item_type", "item_number", "execution_id", "process_run_id", "after_sequence", "cursor"},
             "validation-attempts": {"pr_number", "attempt_id", "attempt_sequence"},

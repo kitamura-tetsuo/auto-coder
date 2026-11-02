@@ -25,8 +25,9 @@ class OperationHandler:
 class ManagementOperationDispatcher:
     """One service-owned worker; no provider/issue scheduler or retry timer."""
 
-    def __init__(self, journal: ManagementOperationStore, *, capacity: int = 128) -> None:
+    def __init__(self, journal: ManagementOperationStore, *, capacity: int = 128, effect_guard: Callable[[OperationRecord], bool] | None = None) -> None:
         self.journal = journal
+        self.effect_guard = effect_guard
         self._handlers: dict[str, OperationHandler] = {}
         self._queue: asyncio.Queue[tuple[str, asyncio.Future[OperationRecord | None] | None] | None] = asyncio.Queue(maxsize=capacity)
         self._task: asyncio.Task[None] | None = None
@@ -121,6 +122,8 @@ class ManagementOperationDispatcher:
             return None
         record = lookup.record
         if record.phase in {OperationPhase.SUCCEEDED, OperationPhase.FAILED, OperationPhase.ROLLED_BACK}:
+            return record
+        if self.effect_guard is not None and not self.effect_guard(record):
             return record
         handler = self._handlers.get(record.intent.action)
         if handler is None:

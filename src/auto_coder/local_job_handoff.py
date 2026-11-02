@@ -373,6 +373,15 @@ class LocalJobStore:
                 PRIMARY KEY(job_id, execution_incarnation))"""
             )
             connection.execute(
+                """CREATE TABLE IF NOT EXISTS local_job_workspace_ownership (
+                job_id TEXT NOT NULL, execution_incarnation TEXT NOT NULL,
+                workspace_root TEXT NOT NULL, anchor TEXT NOT NULL, version INTEGER NOT NULL,
+                PRIMARY KEY(job_id, execution_incarnation))"""
+            )
+            ownership_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(local_job_workspace_ownership)")}
+            if "source_repository" not in ownership_columns:
+                connection.execute("ALTER TABLE local_job_workspace_ownership ADD COLUMN source_repository TEXT NOT NULL DEFAULT ''")
+            connection.execute(
                 """CREATE TABLE IF NOT EXISTS local_start_notifications (
                 job_id TEXT PRIMARY KEY, repository TEXT NOT NULL,
                 issue_number INTEGER NOT NULL, backend_name TEXT NOT NULL,
@@ -1185,6 +1194,8 @@ class LocalJobStore:
         publication_remote: str,
         owner_incarnation: str,
         owner_generation: Optional[str],
+        ownership_anchor: str = "",
+        reconstruction_source: str = "",
     ) -> bool:
         """Fence a prepared full-job workspace to its exact running incarnation."""
         if not claim.acquired or not workspace_path.is_absolute() or not source_commit or not source_ref or not work_branch or not publication_remote:
@@ -1194,6 +1205,7 @@ class LocalJobStore:
             if workspace_path.is_symlink() or workspace_path.parent.is_symlink() or not workspace_path.is_dir():
                 return False
             with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
                 cursor = connection.execute(
                     "UPDATE local_jobs SET workspace_path=?, source_commit=?, source_ref=?, work_branch=?, "
                     "publication_remote=?, owner_incarnation=?, owner_generation=?, workspace_device=?, workspace_inode=?, updated_at=? "
@@ -1214,9 +1226,42 @@ class LocalJobStore:
                         claim.record.execution_incarnation,
                     ),
                 )
+                if cursor.rowcount == 1 and ownership_anchor:
+                    connection.execute(
+                        "INSERT INTO local_job_workspace_ownership (job_id, execution_incarnation, workspace_root, anchor, version, source_repository) VALUES (?, ?, ?, ?, 1, ?)",
+                        (claim.record.job_id, claim.record.execution_incarnation, str(workspace_path.parent), ownership_anchor, reconstruction_source),
+                    )
+                connection.commit()
             return cursor.rowcount == 1
         except (OSError, sqlite3.Error):
             return False
+
+    def workspace_ownership_anchor(self, record: LocalJobRecord) -> str:
+        return self.get_workspace_ownership_anchor(record.job_id, record.execution_incarnation, str(Path(record.workspace_path).parent))
+
+    def workspace_reconstruction_source(self, record: LocalJobRecord) -> str:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT source_repository FROM local_job_workspace_ownership WHERE job_id=? AND execution_incarnation=? AND workspace_root=? AND version=1",
+                (record.job_id, record.execution_incarnation, str(Path(record.workspace_path).parent)),
+            ).fetchone()
+        return str(row[0]) if row else ""
+
+    def workspace_has_pending_effects(self, record: LocalJobRecord) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM local_job_effects WHERE job_id=? AND execution_incarnation=? AND state IN ('pending', 'indeterminate') LIMIT 1",
+                (record.job_id, record.execution_incarnation),
+            ).fetchone()
+        return row is not None
+
+    def get_workspace_ownership_anchor(self, job_id: str, incarnation: str, root: str) -> str:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT anchor FROM local_job_workspace_ownership WHERE job_id=? AND execution_incarnation=? AND workspace_root=? AND version=1",
+                (job_id, incarnation, root),
+            ).fetchone()
+        return str(row[0]) if row else ""
 
     def get_result_artifact(self, artifact_id: str) -> Optional[LocalJobResultArtifact]:
         """Reconstruct one durable output artifact for downstream processing."""
@@ -1615,8 +1660,13 @@ class LocalJobStore:
         """Retain the actual provider root and process lifetime for explicit resumption."""
         with self._connect() as connection:
             cursor = connection.execute(
-                "UPDATE local_job_continuations SET provider_workspace=?, writer_owner=?, deadline_at=COALESCE(?, deadline_at) WHERE job_id=? AND executor_token=?",
-                (str(workspace.resolve()), writer_owner, deadline_at, job_id, executor_token),
+                "UPDATE local_job_continuations SET provider_workspace=?, writer_owner=?, deadline_at=COALESCE(?, deadline_at) WHERE job_id=? AND executor_token=? "
+                "AND NOT EXISTS (SELECT 1 FROM local_jobs j WHERE j.job_id=local_job_continuations.job_id "
+                "AND j.execution_incarnation=local_job_continuations.execution_incarnation AND j.state=? "
+                "AND (j.invocation_outcome IN (?, ?) OR EXISTS (SELECT 1 FROM local_job_effects e "
+                "WHERE e.job_id=j.job_id AND e.execution_incarnation=j.execution_incarnation "
+                "AND e.name='explicit-retry-supersession' AND e.state='completed'))) ",
+                (str(workspace.resolve()), writer_owner, deadline_at, job_id, executor_token, LocalJobState.SETTLED.value, InvocationOutcome.FAILED.value, InvocationOutcome.INTERRUPTED.value),
             )
         return cursor.rowcount == 1
 

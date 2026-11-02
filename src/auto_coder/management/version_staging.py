@@ -263,21 +263,31 @@ class ManagementVersionStager:
 
     def _reserve_root(self) -> None:
         self._root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        directory = os.open(self._root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            fcntl.flock(directory, fcntl.LOCK_EX)
+            self._reserve_locked_root()
+        finally:
+            os.close(directory)
+
+    def _reserve_locked_root(self) -> None:
         marker = self._root / ".management-root.json"
         reservation_lock = self._root / ".management-reservation.lock"
         expected = {"schema_version": 1, "instance_id": self.config.instance_id}
-        if not marker.exists() and any(entry.name != reservation_lock.name and not entry.name.startswith(".management-root-") for entry in self._root.iterdir()):
+        if marker.exists():
+            self._verify_root_reservation()
+        elif any(entry.name != reservation_lock.name and not entry.name.startswith(".management-root-") for entry in self._root.iterdir()) and not marker.exists():
             raise WorkerVersionError(PreparationFailure.CONFLICT, "version root contains unreserved foreign state")
         with reservation_lock.open("a+b") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
             if marker.exists():
                 self._verify_root_reservation()
                 return
+            allowed = {marker.name, reservation_lock.name}
+            if any(entry.name not in allowed and not entry.name.startswith(".management-root-") for entry in self._root.iterdir()):
+                raise WorkerVersionError(PreparationFailure.CONFLICT, "version root contains unreserved foreign state")
             for stale in self._root.glob(".management-root-*"):
                 stale.unlink()
-            allowed = {marker.name, reservation_lock.name}
-            if any(entry.name not in allowed for entry in self._root.iterdir()):
-                raise WorkerVersionError(PreparationFailure.CONFLICT, "version root contains unreserved foreign state")
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=self._root, prefix=".management-root-", delete=False) as stream:
                 json.dump(expected, stream, sort_keys=True, separators=(",", ":"))
                 stream.write("\n")

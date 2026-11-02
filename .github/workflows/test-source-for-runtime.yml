@@ -53,5 +53,7 @@ jobs:
         run: uv run playwright install --with-deps chromium
       - name: Verify real headless Chromium
         run: uv run python scripts/browser_preflight.py
+      - name: Prepare Python-only management test fixture
+        run: uv run python scripts/prepare_management_test_image.py
       - name: Run complete required source selection
         run: uv run pytest -m 'not opencode_live' -vv

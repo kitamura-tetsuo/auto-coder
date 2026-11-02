@@ -213,13 +213,29 @@ class HandoffStore:
             row = connection.execute("SELECT intent_json,record_json FROM handoffs WHERE operation_id=?", (operation_id,)).fetchone()
         return _record_row(row) if row else None
 
-    def active(self) -> tuple[HandoffRecord, ...]:
-        with self._connect() as connection:
+    def active(self, *, readonly: bool = False) -> tuple[HandoffRecord, ...]:
+        if readonly:
+            connection = sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True, timeout=2)
+            connection.row_factory = sqlite3.Row
+        else:
+            connection = self._connect()
+        try:
+            if readonly and dict(connection.execute("SELECT key,value FROM metadata").fetchall()) != {"schema_version": "1", "instance_id": self.instance_id}:
+                raise sqlite3.DatabaseError("management handoff schema or instance mismatch")
             rows = connection.execute("SELECT intent_json,record_json FROM handoffs ORDER BY rowid").fetchall()
-        return tuple(record for row in rows if (record := _record_row(row)).phase not in _TERMINAL)
+            return tuple(record for row in rows if (record := _record_row(row)).phase not in _TERMINAL)
+        finally:
+            connection.close()
 
-    def runtime(self, reference: str) -> ManagementReadyReceipt | None:
-        with self._connect() as connection:
+    def runtime(self, reference: str, *, readonly: bool = False) -> ManagementReadyReceipt | None:
+        if readonly:
+            connection = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, timeout=2)
+            connection.row_factory = sqlite3.Row
+        else:
+            connection = self._connect()
+        with connection:
+            if readonly and dict(connection.execute("SELECT key,value FROM metadata").fetchall()) != {"schema_version": "1", "instance_id": self.instance_id}:
+                raise sqlite3.DatabaseError("management handoff schema or instance mismatch")
             row = connection.execute("SELECT receipt_json FROM runtimes WHERE reference=?", (reference,)).fetchone()
             handoffs = connection.execute("SELECT intent_json,record_json FROM handoffs").fetchall()
         if row is None:
@@ -373,7 +389,7 @@ class SelfUpdateHandoffConsumer:
 
     def tick(self) -> None:
         try:
-            records = self.store.active()
+            records = self.store.active(readonly=True)
         except (OSError, ValueError, sqlite3.Error):
             logger.error("Management self-update handoff evidence is unavailable; preserving the current child")
             return
