@@ -28,3 +28,9 @@ Observability is neutral to the application: this changes only CI prerequisites
 and a deterministic fault-injection boundary. Existing Actions exits and test
 reports remain authoritative; no runtime event schema, dashboard projection,
 tested-source annotation, source selector or adoption assertion changes.
+
+The fixture identity check runs before Chromium downloads into the checkout's
+`.playwright-browsers` directory. Browser artifacts are runtime test inputs, not
+clean Git source. The workflow still installs and verifies real Chromium before
+running the unchanged complete test selection. It does not ignore dirty source,
+relax identity validation, or treat fixture preparation as browser verification.

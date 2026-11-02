@@ -53,3 +53,9 @@ def test_failed_fixture_never_exports_a_publishable_image(tmp_path, monkeypatch,
     assert "FROM python-environment AS management-test-fixture" in dockerfile
     assert "build_provenance embed" in dockerfile
     assert build.call_args.kwargs["text"] is True
+
+
+def test_source_fixture_precedes_checkout_local_chromium_download():
+    workflow = yaml.safe_load((Path(__file__).parents[1] / ".github/workflows/test-source-for-runtime.yml").read_text())
+    commands = [step.get("run") for step in workflow["jobs"]["complete-source-tests"]["steps"]]
+    assert commands.index("uv run python scripts/prepare_management_test_image.py") < commands.index("uv run playwright install --with-deps chromium")

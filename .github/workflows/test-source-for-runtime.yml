@@ -49,11 +49,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --locked --dev --extra test
+      - name: Prepare Python-only management test fixture
+        run: uv run python scripts/prepare_management_test_image.py
       - name: Install Chromium
         run: uv run playwright install --with-deps chromium
       - name: Verify real headless Chromium
         run: uv run python scripts/browser_preflight.py
-      - name: Prepare Python-only management test fixture
-        run: uv run python scripts/prepare_management_test_image.py
       - name: Run complete required source selection
         run: uv run pytest -m 'not opencode_live' -vv
