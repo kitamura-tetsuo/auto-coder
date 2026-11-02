@@ -15,7 +15,7 @@ import json
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any, Iterator, Optional, Sequence
+from typing import Any, Callable, Iterator, Optional, Sequence
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -238,6 +238,7 @@ class Flow:
         closure: Optional[ClosureScript] = None,
         public_origin: bool = False,
         thread_gate_enabled: Optional[bool] = None,
+        settle_concurrent_work: Optional[Callable[[], None]] = None,
     ) -> Sequence[str]:
         mp = self.monkeypatch
         env = self.env
@@ -415,12 +416,18 @@ class Flow:
         with contextlib.ExitStack() as stack:
             for item in patches:
                 stack.enter_context(item)
-            if public_origin:
-                self.status = process_pull_request(client, config, REPO, self.pr_data(), force_adversarial_validation=force)
-                return self.status.actions_taken
-            actions = _handle_pr_merge(client, REPO, self.pr_data(), config, {}, self.status, force_adversarial_validation=force)
-            assert isinstance(actions, PRReviewCoordinationResult)
-            return actions
+            try:
+                if public_origin:
+                    self.status = process_pull_request(client, config, REPO, self.pr_data(), force_adversarial_validation=force)
+                    return self.status.actions_taken
+                actions = _handle_pr_merge(client, REPO, self.pr_data(), config, {}, self.status, force_adversarial_validation=force)
+                assert isinstance(actions, PRReviewCoordinationResult)
+                return actions
+            finally:
+                # Child boundary patches must unwind before the enclosing flow
+                # patches; crossing their lifetimes restores stale test doubles.
+                if settle_concurrent_work is not None:
+                    settle_concurrent_work()
 
     def _ci_results(self):
         """Pre-validation CI is green; later reads (the post-validation refresh) may differ."""
@@ -1877,6 +1884,12 @@ def test_genuinely_ambiguous_association_spends_one_focused_attempt_per_evidence
 def test_acceptance_after_the_authority_check_is_ordered_after_the_authorized_transmission(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
     import threading
 
+    import auto_coder.pr_processor as processor
+
+    original_worktree = processor.isolated_pr_head_worktree
+    child_at_teardown = threading.Event()
+    release_child = threading.Event()
+
     pr = 9300
     flow = make_flow(flow_env, monkeypatch, pr, "cloud", saved_status=None)
     save_empty_session(flow_env, pr, flow.head)
@@ -1885,7 +1898,11 @@ def test_acceptance_after_the_authority_check_is_ordered_after_the_authorized_tr
     outcome: dict[str, bool] = {}
 
     def concurrent_acceptance() -> None:
-        accept_strong(flow_env, pr, [finding_json("finding-late")], head=flow.head)
+        def before_boundary_teardown() -> None:
+            child_at_teardown.set()
+            assert release_child.wait(timeout=30)
+
+        accept_strong(flow_env, pr, [finding_json("finding-late")], head=flow.head, before_boundary_teardown=before_boundary_teardown)
         outcome["accepted"] = True
 
     worker = threading.Thread(target=concurrent_acceptance)
@@ -1896,11 +1913,23 @@ def test_acceptance_after_the_authority_check_is_ordered_after_the_authorized_tr
         outcome["blocked_until_send"] = worker.is_alive()
 
     flow.router.before_review = pause_before_transport
-    flow.run(public_origin=True)
-    worker.join(timeout=30)
+
+    def settle_concurrent_work() -> None:
+        assert child_at_teardown.wait(timeout=30)
+        release_child.set()
+        worker.join(timeout=30)
+        assert not worker.is_alive()
+
+    try:
+        flow.run(public_origin=True, settle_concurrent_work=settle_concurrent_work)
+    finally:
+        release_child.set()
+        if worker.ident is not None:
+            worker.join(timeout=30)
 
     assert outcome == {"blocked_until_send": True, "accepted": True}  # acceptance could not interleave between the check and the send
     assert [review["event"] for review in flow.reviews] == ["APPROVE"]  # it followed the authorized transmission
+    assert processor.isolated_pr_head_worktree is original_worktree
 
 
 def test_failed_checkpoint_write_is_not_overwritten_by_the_precomputed_decision(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:

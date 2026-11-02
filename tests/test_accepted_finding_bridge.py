@@ -114,7 +114,7 @@ def finding_json(finding_id: str, *, gap: bool = True, boundary: str = "src/stat
     return payload
 
 
-def accept_strong(env: Env, pr: int, findings: list[dict[str, Any]], *, head: Optional[str] = None):
+def accept_strong(env: Env, pr: int, findings: list[dict[str, Any]], *, head: Optional[str] = None, before_boundary_teardown: Optional[Callable[[], None]] = None):
     """Run the production Strong acceptance path with a controlled backend payload."""
     head = head or env.head
     gate = TwoTierPrGate(REPO, env.cycle)
@@ -160,6 +160,8 @@ def accept_strong(env: Env, pr: int, findings: list[dict[str, Any]], *, head: Op
         patch("auto_coder.pr_processor.execute_review", side_effect=transport),
     ):
         accepted, reason = _execute_pending_strong_audit(REPO, pr, inputs)
+        if before_boundary_teardown is not None:
+            before_boundary_teardown()
     assert accepted, reason
     return inputs
 
