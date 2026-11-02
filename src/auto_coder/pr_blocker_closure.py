@@ -870,7 +870,17 @@ def _execute_durable_thread_closures(
 
         # A fresh independent decision and an exact remote observation, not the
         # receipt alone, allow an accepted-but-unacknowledged effect to settle.
-        if same_operation and observation.thread.is_resolved and receipt is not None and receipt.phase in ("PENDING", "RESOLVED"):
+        # The two-tier and canonical consumers can independently accept the
+        # same exact root/head. Reuse its confirmed effect only after this new
+        # canonical decision has supplied the same complete current discussion;
+        # the receipt alone never substitutes for adjudication or freshness.
+        same_head_confirmed = False
+        if receipt is not None and receipt.phase == "RESOLVED" and receipt.validated_head_sha == validated_head_sha:
+            try:
+                same_head_confirmed = _discussion_digest(observation, observation.authenticated_login) == validated_discussion_digests.get(thread_id)
+            except Exception:
+                same_head_confirmed = False
+        if (same_operation or same_head_confirmed) and observation.thread.is_resolved and receipt is not None and receipt.phase in ("PENDING", "RESOLVED"):
             if not _head_is_still_current():
                 errors.append(f"{thread_id}|head-verification|PR head changed while reconciling the confirmed resolution")
                 continue

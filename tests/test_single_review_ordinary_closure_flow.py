@@ -166,6 +166,10 @@ def test_production_collection_revalidates_discussion_changed_during_review(flow
     if change in {"edit_reply", "delete_reply"}:
         assert old_comment in flow.validation_sections[-1]
     assert any("discussion-freshness" in action for action in first), first
+    cycle = flow_env.cycle.snapshot(flow.pr)
+    assert cycle.accepted_closure is None
+    assert [item.finding_id for item in cycle.open_findings] == ["finding-a"]
+    assert not [review for review in flow.reviews if "Ordinary closure evidence" in review["body"]]
     assert flow.client.resolve_review_thread.call_count == 0
     snapshot = flow_env.ledger.get_snapshot("https://api.github.com", REPO, flow.pr, require_retained_state=True)
     assert all(blocker.disposition is BlockerDisposition.OPEN for blocker in snapshot.blockers)
@@ -239,6 +243,8 @@ def test_repaired_head_uses_exactly_one_ordinary_invocation_and_reaches_the_merg
 def test_finding_absent_from_the_claimed_thread_view_is_still_supplied(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
     flow = _repaired_flow(flow_env, monkeypatch, 7301)
     flow.root_body = ""  # the accepted finding's thread is not visible to the reviewer-session view
+    # No native-thread disposition is claimed when no thread was supplied.
+    flow.model_responses = [json.dumps({**json.loads(ADDRESSED), "thread_dispositions": []})]
     script = ClosureScript(status="FIXED")
 
     flow.run(closure=script)
@@ -651,3 +657,92 @@ def test_two_tier_pending_receipt_with_new_head_reenters_ordinary_closure(flow_e
     final = parse_owned_receipt(flow.threads()[0], "auto-coder-controller[bot]")
     assert final is not None and final.phase == "RESOLVED" and final.validated_head_sha == flow.h2
     assert final.operation_key != pending.operation_key
+
+
+@pytest.mark.parametrize("resolved", [False, True])
+def test_changed_discussion_after_retention_never_certifies_during_recovery(flow_env: Env, monkeypatch: pytest.MonkeyPatch, resolved: bool) -> None:
+    """A real retained source must pass discussion freshness before cycle acceptance."""
+    flow = _repaired_flow(flow_env, monkeypatch, 7463, resolve_on_approve=False)
+    flow.production_thread_collection = True
+    flow.thread_replies.append(ReviewThreadComment(database_id=flow.root_id + 1, author_id=702, author_login="implementation-agent[bot]", body=f"Bounded correction.\n{REVIEW_ADDRESSED_MARKER}", in_reply_to_id=flow.root_id))
+    real_apply = OrdinaryClosureEvidence.apply
+
+    def crash(self, *_args, **_kwargs):
+        raise SimulatedCrash()
+
+    monkeypatch.setattr(OrdinaryClosureEvidence, "apply", crash)
+    with pytest.raises(SimulatedCrash):
+        flow.run(closure=ClosureScript(status="FIXED"))
+    monkeypatch.setattr(OrdinaryClosureEvidence, "apply", real_apply)
+    before = flow_env.cycle.snapshot(flow.pr)
+    assert before.accepted_closure is None
+    counterexample = "Retained-source recovery must observe this new same-scope counterexample."
+    flow.thread_replies.append(ReviewThreadComment(database_id=flow.root_id + 2, author_id=703, author_login="reviewer[bot]", body=counterexample, in_reply_to_id=flow.root_id))
+    flow.thread_resolved = resolved
+    _reconstruct_flow_stores(flow)
+    calls_before = flow.model_calls
+    flow.model_responses = [ordinary_response(flow.thread_id, status="STILL_VALID", evidence="Current discussion still demonstrates the original invariant violation")]
+    actions = flow.run(closure=ClosureScript(status="STILL_VALID"))
+    after = flow_env.cycle.snapshot(flow.pr)
+    assert after.accepted_closure is None, actions
+    assert [item.finding_id for item in after.open_findings] == ["finding-a"]
+    assert not [review for review in flow.reviews if "Ordinary closure evidence" in review["body"]]
+    assert flow.client.resolve_review_thread.call_count == 0
+    assert flow.merge.call_count == 0
+    assert flow.model_calls == calls_before + 1, actions
+    assert counterexample in flow.validation_sections[-1]
+
+
+@pytest.mark.parametrize("change", ["substantive", "receipt_only"])
+def test_resolved_accepted_source_rechecks_discussion_before_reuse(flow_env: Env, monkeypatch: pytest.MonkeyPatch, change: str) -> None:
+    flow = _repaired_flow(flow_env, monkeypatch, 7465, resolve_on_approve=True)
+    flow.production_thread_collection = True
+    flow.thread_replies.append(ReviewThreadComment(database_id=flow.root_id + 1, author_id=702, author_login="implementation-agent[bot]", body=f"Bounded correction.\n{REVIEW_ADDRESSED_MARKER}", in_reply_to_id=flow.root_id))
+    flow.run(closure=ClosureScript(status="FIXED"))
+    assert flow.threads()[0].is_resolved
+    assert flow_env.cycle.snapshot(flow.pr).accepted_closure is not None
+    calls_before, resolves_before = flow.model_calls, flow.client.resolve_review_thread.call_count
+    flow.merge.reset_mock()
+    counterexample = "A substantive counterexample added after native resolution."
+    if change == "substantive":
+        flow.thread_replies.append(ReviewThreadComment(database_id=flow.root_id + 100, author_id=703, author_login="reviewer[bot]", body=counterexample, in_reply_to_id=flow.root_id))
+    else:
+        receipt = next(comment for comment in flow.thread_replies if comment.body.startswith("<!-- auto-coder-review-thread-closure:v1 -->"))
+        from dataclasses import replace
+
+        from auto_coder.review_thread_closure_receipt import format_receipt, parse_owned_receipt
+
+        owned = parse_owned_receipt(flow.threads()[0], flow.client.get_authenticated_user_login())
+        assert owned is not None
+        receipt.body = format_receipt(replace(owned, rationale="Owned receipt bookkeeping only."))
+    _reconstruct_flow_stores(flow)
+    flow.model_responses = [ordinary_response(flow.thread_id, status="STILL_VALID", evidence="The current discussion still demonstrates the original invariant violation")]
+    actions = flow.run(closure=ClosureScript(status="STILL_VALID"))
+    assert flow.client.resolve_review_thread.call_count == resolves_before
+    if change == "substantive":
+        assert flow.model_calls == calls_before + 1, actions
+        assert counterexample in flow.validation_sections[-1]
+        assert flow.merge.call_count == 0
+    else:
+        assert flow.model_calls == calls_before, actions
+        assert flow.merge.call_count == 1
+
+
+def test_incomplete_discussion_cannot_certify_the_producing_ordinary_result(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dataclasses import replace
+
+    flow = _repaired_flow(flow_env, monkeypatch, 7466, resolve_on_approve=False)
+    flow.production_thread_collection = True
+    flow.thread_replies.append(ReviewThreadComment(database_id=flow.root_id + 1, author_id=702, author_login="implementation-agent[bot]", body=f"Bounded correction.\n{REVIEW_ADDRESSED_MARKER}", in_reply_to_id=flow.root_id))
+
+    def truncate_after_input():
+        observed = tuple(replace(thread, comments_truncated=True) for thread in flow.threads())
+        monkeypatch.setattr(flow, "threads", lambda: observed)
+
+    actions = flow.run(closure=ClosureScript(status="FIXED", on_review=truncate_after_input))
+    snapshot = flow_env.cycle.snapshot(flow.pr)
+    assert snapshot.accepted_closure is None, actions
+    assert [finding.finding_id for finding in snapshot.open_findings] == ["finding-a"]
+    assert not [review for review in flow.reviews if "Ordinary closure evidence" in review["body"]]
+    assert flow.client.resolve_review_thread.call_count == 0
+    assert flow.merge.call_count == 0

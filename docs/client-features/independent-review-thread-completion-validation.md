@@ -36,6 +36,24 @@ independent review, while an unavailable authoritative read defers processing.
 Two-tier closure effects use the same authenticated receipt protocol; historical
 two-tier status replies remain part of the substantive discussion.
 
+The discussion binding is checked before the producing ordinary assessment can
+certify the review cycle or publish its closure, including recovery of an
+unapplied retained source. Complete changed evidence remains retained but
+non-authorizing and admits a fresh independent input; incomplete evidence defers.
+Already resolved native threads do not bypass this check. Only the exact retained
+ADDRESSED thread identities may be included in the new validation's local
+classification view after resolution; this never unresolves a native thread or
+adds unrelated findings to the correction scope. Superseded pending sources
+still reach the owning attempt's ordinary rejection instead of blocking a newer
+source forever. A genuinely unchanged, valid owned receipt does not cause review
+churn.
+
+When two-tier and canonical consumers independently accept the same root/head,
+a current, complete discussion binding plus the new canonical acceptance can
+reuse the confirmed same-head resolution. A receipt by itself, a pending foreign
+operation, a changed head or a rollback obligation cannot authorize that reuse.
+The controller does not issue a second resolve for the already confirmed effect.
+
 Independently accepted closure maintains one controller-owned reply per exact
 API origin, repository, PR, thread and root comment. The reply begins with
 `<!-- auto-coder-review-thread-closure:v1 -->` and contains a versioned metadata

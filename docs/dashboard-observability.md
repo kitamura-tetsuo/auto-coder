@@ -443,6 +443,20 @@ admission gate or dashboard projection is added; production-to-view coverage is
 `tests/test_single_review_ordinary_closure_flow.py` and
 `tests/test_effective_decision_pr_flow.py`.
 
+Issue #2678 also checks the producing discussion at the ordinary closure target
+observer before cycle acceptance and during retained-source recovery. Its
+`pr.ordinary-closure` DEFERRED reason includes `discussion-freshness` for a
+complete mismatch; unavailable discussion remains non-authorizing. The existing
+review-thread gate and later ordinary validation retain their normal identities.
+No new event schema or dashboard projection is introduced. Runnable production
+regressions in `tests/test_single_review_ordinary_closure_flow.py` include
+`test_production_collection_revalidates_discussion_changed_during_review`,
+`test_changed_discussion_after_retention_never_certifies_during_recovery`,
+`test_resolved_accepted_source_rechecks_discussion_before_reuse`, and
+`test_incomplete_discussion_cannot_certify_the_producing_ordinary_result`.
+These inspect cycle acceptance/publication, actual next validator discussion and
+resolve/merge effects, including valid receipt-only updates and incomplete reads.
+
 Stale base/contract/policy recovery after ordinary convergence emits
 `pr.strong-audit` with the current `head`, `base`, `reason`,
 `publication_reason`, and `renewed_strong_required=true`. COMPLETED means only

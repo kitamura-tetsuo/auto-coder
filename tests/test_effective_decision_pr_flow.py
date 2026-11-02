@@ -264,7 +264,7 @@ class Flow:
 
         def current_state(*_a: object, **_k: object) -> ClaimedReviewThreadGateState:
             if self.production_thread_collection:
-                return _get_claimed_review_thread_state(client, REPO, self.pr, config=AutomationConfig())
+                return _get_claimed_review_thread_state(client, REPO, self.pr, config=AutomationConfig(), revalidate_resolved_thread_ids=_k.get("revalidate_resolved_thread_ids", ()))
             if thread_state is not None:
                 return thread_state
             live = tuple(thread for thread in self.threads() if not thread.is_resolved)
@@ -1131,7 +1131,8 @@ def test_ledger_ahead_reconciliation_resumes_independent_closure_without_approva
             publication="CONFIRMED",
         )
     )
-    flow.model_responses = [ordinary_response(flow.thread_id, status="ADDRESSED")]
+    # This already-resolved root is not a newly claimed native-thread decision.
+    flow.model_responses = [json.dumps({**json.loads(ordinary_response(flow.thread_id, status="ADDRESSED")), "thread_dispositions": []})]
     # Expanded scope requires renewed Strong completion after closure; the
     # fixture deliberately leaves that independent reviewer unavailable.
     script = ClosureScript(status="FIXED", scope="EXPANDED")
