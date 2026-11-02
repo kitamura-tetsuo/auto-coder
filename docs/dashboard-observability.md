@@ -2951,3 +2951,23 @@ use the same production-to-dashboard contract as other pending-work stages.
 Rediscovery intentionally preserves those fields; publication receipts remain
 in the local-job effect journal rather than being inferred from the presence
 of a pending-work row.
+
+
+### Recorded open-target enumeration
+
+`AutomationEngine._reconcile_open_github_entities` supplies the dashboard's
+advisory open identities from its existing complete strict enumeration. Successful
+strict per-target reads update open/closed/404 observations before admission
+filtering; they never confer execution authority. `get_status()` projects those
+rows and `open_target_observation` (availability, complete observation time, source
+and diagnostic reason). `dashboard.py` renders the tested `open_targets_notice`
+projection, distinguishing unavailable, stale and observed empty from known rows.
+Transport failures retain prior targets. This changes no trace event schema or
+public diagnostic allowlist, and it adds no GitHub polling.
+
+Verification: `pytest -q tests/test_open_target_observations.py
+tests/test_entity_invalidation.py`. These tests use real reconciliation, durable
+invalidations, strict-target boundaries, the engine status projection and the
+production presentation function. They cover nonempty/empty startup, failed
+enumeration, open/closed/404, non-admitted authors, transport failures and a newer
+target observation racing enumeration.

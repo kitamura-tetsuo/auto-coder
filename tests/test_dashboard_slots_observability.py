@@ -361,6 +361,10 @@ def test_empty_store_is_known_zero_not_unavailable(mock_ui, tmp_path):
 
     _mount_main(mock_ui, engine, REPO)
     refresh_slots = _slots_refresh_callback(mock_ui)
+    # Open-target enumeration is a separate, still-unobserved source. Scope
+    # this zero-slot oracle to the actual independent slot refresh callback.
+    assert any("Open-target enumeration is unavailable" in text for text in _label_texts(mock_ui))
+    mock_ui.label.reset_mock()
     asyncio.run(refresh_slots())
 
     labels = _label_texts(mock_ui)
