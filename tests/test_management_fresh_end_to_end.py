@@ -263,9 +263,20 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
     competitor = None
     competitor_tracer = None
     proxy_watcher = None
+    unreaped_child = None
     fence = None
     network_fd = None
     try:
+        if retained_history:
+            unreaped_child = subprocess.Popen([sys.executable, "-c", "import os;os._exit(0)"])
+            deadline = time.monotonic() + 5
+            while os.waitid(os.P_PID, unreaped_child.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is None:
+                assert time.monotonic() < deadline, "host zombie barrier was not reached"
+                time.sleep(0.01)
+            zombie_task = Path("/proc") / str(unreaped_child.pid)
+            assert (zombie_task / "stat").read_text().rsplit(")", 1)[1].split()[0] == "Z"
+            with pytest.raises(FileNotFoundError):
+                os.readlink(zombie_task / "ns/net")
         _build_fixture_image(context, base_image, tag, owner_token_gap=owner_token_gap, contention=contention, crash_at=crash_at)
         image = subprocess.check_output(["docker", "image", "inspect", tag, "--format", "{{.Id}}"], text=True).strip()
         old_mounts = [(old_state, "/management-child-state", True), (old_bootstrap, "/bootstrap", False), (oauth, "/management-oauth", True)]
@@ -838,9 +849,13 @@ except urllib.error.HTTPError as e: print(json.dumps({'status':e.code,'body':''}
             proof = subprocess.check_output(["docker", "exec", new_id, "python", "-c", proof_probe, observation_id, str(observation_start)], text=True, timeout=15).strip()
             assert proof != "UNAVAILABLE" and proof.startswith(str(new["pid"]) + ":" + new["start_token"] + ":")
             assert status_inside_container()["status"] == "succeeded"
+        if unreaped_child is not None:
+            assert (Path("/proc") / str(unreaped_child.pid) / "stat").read_text().rsplit(")", 1)[1].split()[0] == "Z"
         assert grant_history() == retained_grants
         assert {str(path.relative_to(old_state)): hashlib.sha256(path.read_bytes()).hexdigest() for path in old_state.rglob("*") if path.is_file()} == old_history
     finally:
+        if unreaped_child is not None:
+            unreaped_child.wait(timeout=5)
         if proxy_watcher is not None and proxy_watcher.poll() is None:
             proxy_watcher.terminate()
             proxy_watcher.wait(timeout=10)

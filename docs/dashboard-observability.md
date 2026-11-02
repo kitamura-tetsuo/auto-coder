@@ -2991,3 +2991,19 @@ worker-only unavailable, unchanged repeated samples, genuine producer advances
 and preserved general health state. The age regression proves unrelated worker
 activity cannot freshen a stopped producer. Existing lifecycle tests retain
 same-incarnation, installed-source, serving, gate and two-sample checks.
+
+### Fresh-host exited-task namespace evidence
+
+The trusted host observer can prove a missing task network link belongs to an
+exited zombie, using the same held task directory and stable positive start
+token around the ENOENT read. It still scans live sibling tasks and refuses
+unknown state. This changes a host evidence predicate, not an Issue/PR origin,
+trace schema, dashboard projection, deadline or launch authority. Existing
+bounded host-observation failures remain the diagnostic surface.
+
+Run `bash scripts/test.sh tests/test_management_fresh_initialization.py` for the
+real held/unreaped-child and damaged-proof controls. The unchanged root host CI
+selection also drives the actual guard/Supervisor/authenticated-readback path
+in `tests/test_management_fresh_end_to_end.py` with a positively observed zombie
+held through the retained-history case. That whole-host test remains distinct
+from the single-real-task projection used by the focused kernel regression.
