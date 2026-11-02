@@ -176,7 +176,7 @@ class LandlockFilesystemPolicy:
                     raise FilesystemConfinementUnavailable("writable roots must be directories")
                 rules.append((fd, _write_rights(abi)))
             self._rules = rules
-            if context.backend_type.lower() == "codex" and not editable:
+            if context.backend_type.lower() == "codex":
                 # Git opens the kernel null sink O_RDWR during repository reads.
                 # Pin that exact device, without granting any writable /dev root
                 # or permission to create/remove devices or change metadata.

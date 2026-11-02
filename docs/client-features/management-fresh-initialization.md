@@ -76,7 +76,13 @@ The supported host observer runs as root in the initial Linux PID and user
 namespaces, with an unrestricted procfs mounted at `/proc`. Restricted or
 shadowed procfs views are refused. The old network namespace is checked against
 every visible task, including non-leader threads; an inaccessible task is not
-treated as absent. This is a bounded observation, not a reservation against
+treated as absent. A missing network link is excluded only when two bounded
+state reads through the same held task directory prove the same positive-start-token
+zombie lifetime, with a confirming ENOENT namespace read between them. Linux
+releases a task's namespace proxy before publishing zombie state; this is proof
+of an exited task, not permission to ignore an unreadable live task. A zombie
+leader never exempts its non-leader siblings. Missing, malformed, changed or
+contradictory proof remains unavailable. This is a bounded observation, not a reservation against
 future namespace or listener changes.
 
 For a supported staged Docker cutover, keep the old management and proxy

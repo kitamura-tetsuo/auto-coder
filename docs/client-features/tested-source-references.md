@@ -7,6 +7,11 @@ independent of Docker image publication. It uses Python 3.12 and the locked
 package-wide mypy, launches a real headless Chromium, and executes the complete
 pytest selection excluding only `opencode_live`.
 
+Pull requests also run that same complete selection against the exact PR head;
+the source-quality job checks GitHub's merge commit. PR runs provide validation
+evidence only and cannot publish a tested-source reference. Publication remains
+restricted to successful push runs on `main`.
+
 The tag annotation is bounded canonical JSON with schema version, repository,
 full source SHA, distribution version, lock hash, Python version, originating
 workflow ID/run/attempt/path, the fixed `source-required-v1` profile, and the

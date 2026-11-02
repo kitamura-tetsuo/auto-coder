@@ -462,3 +462,78 @@ def test_codex_noedit_cannot_remove_caller_symlink_pointing_into_runtime(tmp_pat
     assert protected_alias.is_symlink()
     assert owned_file.read_text() == "owned content"
     assert boundary.evidence().policy_violation
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-specific")
+@pytest.mark.parametrize("mode", ["editable", "no-edit"])
+def test_codex_null_sink_and_real_git_read_preserve_outside_write_denials(tmp_path: Path, mode: str, _use_real_commands) -> None:
+    """REQ-001/002: sink I/O is independent of editable repository authority."""
+    import subprocess
+    from dataclasses import replace
+
+    private = tmp_path / "private"
+    private.mkdir()
+    subprocess.run(["git", "init", "-q", str(private)], check=True)
+    caller = tmp_path / "caller"
+    peer = tmp_path / "peer"
+    caller.mkdir()
+    peer.mkdir()
+    protected = [caller / "state", peer / "state", tmp_path / "outside"]
+    for path in protected:
+        path.write_text("unchanged")
+    code = f"""import os, subprocess
+from pathlib import Path
+with open('/dev/null', 'wb') as sink:
+    sink.write(b'discarded diagnostics')
+with open('/dev/null', 'r+b') as sink:
+    assert sink.read() == b''
+actual = subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], text=True).strip()
+assert actual == {str(private)!r}
+for name in {list(map(str, protected))!r}:
+    try:
+        Path(name).write_text('escape')
+        raise AssertionError('outside write was accepted')
+    except PermissionError:
+        pass
+try:
+    Path('result.txt').write_text('private edit')
+    assert {mode!r} == 'editable'
+except PermissionError:
+    assert {mode!r} == 'no-edit'
+print('null sink and Git read succeeded; outside writes denied')
+"""
+    request = replace(_launch(tmp_path, code, mode=mode), backend_type="codex")
+    supervisor = InvocationProcessSupervisor(owner=ProcessOwner(tmp_path / "owners"))  # type: ignore[arg-type]
+    result = supervisor.run(request, policies=(LandlockFilesystemPolicy(),))
+    if result.outcome is InvocationOutcome.PRESTART_UNAVAILABLE:
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            pytest.fail(f"supported CI confinement profile unavailable: {result.detail}")
+        pytest.skip(result.detail)
+    assert result.outcome is InvocationOutcome.SUCCEEDED, result.stderr + result.detail
+    assert result.stdout == "null sink and Git read succeeded; outside writes denied\n"
+    assert all(path.read_text() == "unchanged" for path in protected)
+    assert (private / "result.txt").exists() is (mode == "editable")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-specific")
+@pytest.mark.parametrize("mode", ["editable", "no-edit"])
+def test_codex_wrong_null_device_identity_refuses_before_child_entry(tmp_path: Path, mode: str, monkeypatch) -> None:
+    import stat
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    original = os.fstat
+
+    def wrong_null(fd):
+        value = original(fd)
+        if os.readlink(f"/proc/self/fd/{fd}") == "/dev/null":
+            return SimpleNamespace(st_mode=stat.S_IFCHR, st_rdev=os.makedev(1, 5))
+        return value
+
+    monkeypatch.setattr(filesystem_confinement.os, "fstat", wrong_null)
+    request = replace(_launch(tmp_path, "from pathlib import Path;Path('entered').touch()", mode=mode), backend_type="codex")
+    supervisor = InvocationProcessSupervisor(owner=ProcessOwner(tmp_path / "owners"))  # type: ignore[arg-type]
+    result = supervisor.run(request, policies=(LandlockFilesystemPolicy(),))
+    assert result.outcome is InvocationOutcome.PRESTART_UNAVAILABLE
+    assert "kernel null device" in result.detail
+    assert not (tmp_path / "private/entered").exists()
