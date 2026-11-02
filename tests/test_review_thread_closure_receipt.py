@@ -339,7 +339,8 @@ def test_reply_during_receipt_publication_revokes_canonical_acceptance(receipt_s
 
 
 @pytest.mark.parametrize("phase", ["PENDING", "RESOLVED"])
-def test_resolved_receipt_reconciliation_rejects_intervening_discussion_edit(receipt_scenario, monkeypatch, phase):
+@pytest.mark.parametrize("next_status", ["STILL_VALID", "ADDRESSED"])
+def test_resolved_receipt_reconciliation_rejects_intervening_discussion_edit(receipt_scenario, monkeypatch, phase, next_status):
     import auto_coder.pr_blocker_closure as closure
 
     scenario = receipt_scenario
@@ -380,9 +381,15 @@ def test_resolved_receipt_reconciliation_rejects_intervening_discussion_edit(rec
     assert scenario.transport.resolved
     assert len(current) == 1
     assert counterexample in current[0].discussion
-    next_result = scenario.close(status="STILL_VALID", claimed=current)
-    assert next_result.accepted_closures == ()
-    assert next_result.resolved_thread_ids == ()
+    next_result = scenario.close(status=next_status, claimed=current)
+    if next_status == "STILL_VALID":
+        assert next_result.accepted_closures == ()
+        assert next_result.resolved_thread_ids == ()
+    else:
+        assert len(next_result.accepted_closures) == 1
+        assert next_result.resolved_thread_ids == (THREAD_ID,)
+        assert scenario.transport.effects.count("resolve") == effects_before.count("resolve")
+        assert len(scenario.transport.posts) == 1
 
 
 def test_confirmed_replay_does_not_mutate_github_again(receipt_scenario):
