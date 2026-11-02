@@ -131,6 +131,7 @@ from .local_job_runner import LocalJobRunner
 from .logger_config import get_logger
 from .merge_operation_scheduler import get_merge_operation_scheduler
 from .merge_operation_state import MergeOperation
+from .open_target_observations import OpenTarget, OpenTargetObservations
 from .parent_issue_reconciliation import ParentDeclarationStatus, ParentOperationalError, ParentSpecificationError, parse_parent_declaration
 from .pr_processor import PR_PROCESSING_STAGE, LocalPRRepairContext
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
@@ -1017,6 +1018,7 @@ class AutomationEngine:
         self.startup_reconciliation_error: Optional[str] = None
         self._startup_reconciliation_event: Optional[asyncio.Event] = None
         self.active_workers: Dict[int, Optional[Candidate]] = {}
+        self.open_target_observations = OpenTargetObservations()
         self.open_prs_snapshot: List[Dict[str, Any]] = []
         self.open_issues_snapshot: List[Dict[str, Any]] = []
         self._wake_up_event: Optional[asyncio.Event] = None
@@ -3520,6 +3522,7 @@ class AutomationEngine:
         self.startup_reconciled = False
         self.startup_reconciliation_error = None
         try:
+            observation_revision = self.open_target_observations.revision()
             entities = await asyncio.to_thread(self.github.get_open_entities_strict, repo_name)
             open_issue_numbers = {issue.number for issue in entities.issues}
             for issue in entities.issues:
@@ -3542,8 +3545,13 @@ class AutomationEngine:
                     await self.invalidate_entity(repo_name, "pr", number)
         except BaseException as exc:
             self.startup_reconciliation_error = f"{type(exc).__name__}: {exc}"
+            self.open_target_observations.fail(self.startup_reconciliation_error)
             logger.opt(exception=True).error(f"Startup GitHub reconciliation failed for {repo_name}: {exc}")
             raise
+        self.open_target_observations.complete(
+            [OpenTarget("issue", issue.number, created_at=issue.created_at or "") for issue in entities.issues] + [OpenTarget("pr", number) for number in entities.pull_requests],
+            observation_revision,
+        )
         self.startup_reconciled = True
         logger.info(f"Startup GitHub reconciliation completed for {repo_name}: " f"{len(entities.issues)} Issues and {len(entities.pull_requests)} PRs invalidated")
 
@@ -5689,9 +5697,18 @@ class AutomationEngine:
             queued_map[(c.type, c.data.get("number"))] = c.priority
 
         open_items_status = []
+        observed_targets, open_target_observation = self.open_target_observations.snapshot()
+        observed_prs = [{"number": item.number, "title": item.title, "created_at": item.created_at} for item in observed_targets if item.kind == "pr"]
+        observed_issues = [{"number": item.number, "title": item.title, "created_at": item.created_at} for item in observed_targets if item.kind == "issue"]
+
+        # Legacy callers may still supply advisory polling snapshots. They do
+        # not turn an unobserved event-driven enumeration into a known empty.
+        if open_target_observation["availability"] == "unavailable" and not observed_targets:
+            observed_prs = self.open_prs_snapshot
+            observed_issues = self.open_issues_snapshot
 
         # Process PRs
-        for pr in self.open_prs_snapshot:
+        for pr in observed_prs:
             number = pr.get("number")
             status_str = "Open"
             worker_id = processing_map.get(("pr", number))
@@ -5711,7 +5728,7 @@ class AutomationEngine:
             )
 
         # Process Issues
-        for issue in self.open_issues_snapshot:
+        for issue in observed_issues:
             number = issue.get("number")
             status_str = "Open"
             worker_id = processing_map.get(("issue", number))
@@ -5774,6 +5791,7 @@ class AutomationEngine:
                 for wid, c in self.active_workers.items()
             },
             "open_items": open_items_status,
+            "open_target_observation": open_target_observation,
             "pending_work": self.pending_work_scheduler.snapshot() if self.pending_work_scheduler is not None else [],
             "merge_operations": self.merge_operation_scheduler.snapshot(),
             "refill_faults": [dataclasses.asdict(fault) for fault in self._refill_fault_snapshot()],
@@ -9819,6 +9837,7 @@ class AutomationEngine:
                     except httpx.HTTPStatusError as error:
                         if error.response.status_code == 404:
                             logger.info(f"PR #{number} no longer exists in {repo_name}")
+                            self.open_target_observations.observe(OpenTarget("pr", number), "absent")
                             # This strict 404 is authoritative terminal evidence.
                             # Commit retirement before returning absence to the
                             # durable worker, which may then complete generation.
@@ -9837,6 +9856,7 @@ class AutomationEngine:
                     logger.error(f"PR #{number} not found in {repo_name}")
                     return None
                 if propagate_errors:
+                    self.open_target_observations.observe(OpenTarget("pr", number, str(pr_data.get("title") or ""), str(pr_data.get("created_at") or "")), str(pr_data.get("state") or ""))
                     if pr_data.get("state") == "closed":
                         self.invalidations.retire_ci_watches(repo_name, number)
                         self._schedule_pr_owner_reclamation(repo_name, pr_data)
@@ -9876,6 +9896,7 @@ class AutomationEngine:
                     except httpx.HTTPStatusError as error:
                         if error.response.status_code == 404:
                             logger.info(f"Issue #{number} no longer exists in {repo_name}")
+                            self.open_target_observations.observe(OpenTarget("issue", number), "absent")
                             return None
                         raise
                     if "pull_request" in issue:
@@ -9894,6 +9915,8 @@ class AutomationEngine:
                 issue_data = self.github.get_issue_details(issue)
                 if not issue_data or not issue_data.get("number"):
                     return None
+                if propagate_errors:
+                    self.open_target_observations.observe(OpenTarget("issue", number, str(issue_data.get("title") or ""), str(issue_data.get("created_at") or "")), str(issue_data.get("state") or ""))
                 if propagate_errors and issue_data.get("state") == "closed":
                     # This data came from the matching strict snapshot above.
                     # Commit closure effects before allowlist/admission filters
