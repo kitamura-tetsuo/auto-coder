@@ -30,7 +30,7 @@ existing supervisor supplies filesystem and writer evidence and
 existing failures. Denied operations alone now preserve the successful backend
 outcome, while provider selection and dashboard trace schema remain unchanged.
 
-Codex no-edit policy also pins the kernel `/dev/null` character device for sink
+Both editable and no-edit Codex policies pin the kernel `/dev/null` character device for sink
 I/O, which Git requires for `git rev-parse HEAD` under Codex's shell runtime.
 This grants no writable `/dev` directory or persistent file-state allowance.
 The private `CODEX_HOME` directory is created even with API-key authentication.

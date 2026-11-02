@@ -408,3 +408,25 @@ class TestCrashDiagnosticsInstallation:
         dump_files = list(tmp_path.glob("diagnostics-*.log"))
         assert len(dump_files) == 1
         assert (os.stat(dump_files[0]).st_mode & 0o777) == 0o600
+
+
+def test_producer_observation_does_not_refresh_from_workers_or_reads(monitor):
+    assert monitor.heartbeat_observation(producer_only=True) == {"available": False, "sequence": None, "stage": None, "age_seconds": None}
+    monitor.heartbeat("producer:check-updates")
+    monitor._last_producer_heartbeat -= 20.0
+    first = monitor.heartbeat_observation(producer_only=True)
+    monitor.heartbeat("worker-0:processing")
+    worker = monitor.heartbeat_observation()
+    retained = monitor.heartbeat_observation(producer_only=True)
+    assert first["sequence"] == retained["sequence"] == 1
+    assert retained["stage"] == "producer:check-updates"
+    assert retained["age_seconds"] >= first["age_seconds"] >= 20.0
+    assert worker["sequence"] == 2 and worker["stage"] == "worker-0:processing"
+    assert worker["age_seconds"] < 20.0
+    monitor.heartbeat("producer:maintenance-sleep")
+    next_sample = monitor.heartbeat_observation(producer_only=True)
+    assert next_sample["sequence"] == 3
+    assert next_sample["stage"] == "producer:maintenance-sleep"
+    assert next_sample["age_seconds"] < 20.0
+    replacement = HealthMonitor(enabled=False)
+    assert replacement.heartbeat_observation(producer_only=True)["available"] is False

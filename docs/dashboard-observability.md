@@ -2973,6 +2973,25 @@ enumeration, open/closed/404, non-admitted authors, transport failures and a new
 target observation racing enumeration.
 
 
+### Producer-only lifecycle progress
+
+The private worker observation keeps its existing bounded heartbeat schema but
+selects the actual retained producer-loop sample. Worker beats no longer hide
+that sample or refresh its age; a new process without a producer beat reports
+unavailable. General health snapshots still report the latest-any-loop stage.
+This is management readiness evidence, not an Issue/PR progress or completion
+event. No worker trace emission, dashboard projection, public API schema,
+readiness predicate or deadline changes.
+
+Run `bash scripts/test.sh tests/test_health_monitor.py
+tests/test_worker_management_bridge.py tests/test_management_worker_lifecycle.py`.
+`test_real_socket_keeps_producer_progress_when_worker_beats_interleave` reaches
+the actual UDS listener, records real monitor calls between reads and checks
+worker-only unavailable, unchanged repeated samples, genuine producer advances
+and preserved general health state. The age regression proves unrelated worker
+activity cannot freshen a stopped producer. Existing lifecycle tests retain
+same-incarnation, installed-source, serving, gate and two-sample checks.
+
 ### Fresh-host exited-task namespace evidence
 
 The trusted host observer can prove a missing task network link belongs to an
