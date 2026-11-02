@@ -70,6 +70,8 @@ def test_strong_audit_fetches_missing_exact_base_in_real_worktree(tmp_path: Path
 
     def result(review_input, backend_manager, execution_cwd):
         assert backend_manager is manager
+        assert Path(execution_cwd).resolve() != checkout.resolve()
+        assert (Path(execution_cwd) / ".git").is_file()
         assert _git(Path(execution_cwd), "rev-parse", "HEAD") == head
         assert review_input.base_sha == base
         assert "-advanced base" in review_input.diff_evidence
@@ -107,6 +109,42 @@ def test_strong_audit_fetches_missing_exact_base_in_real_worktree(tmp_path: Path
     assert (checkout / "untracked.txt").read_text() == "preserve\n"
     assert len(_git(checkout, "worktree", "list", "--porcelain").split("worktree ")) == 2
     assert inputs.gate.state.snapshot(18).accepted_strong_round is not None
+
+
+def test_unavailable_exact_base_in_real_worktree_refuses_without_reviewer(tmp_path: Path, monkeypatch, _use_real_commands: None) -> None:
+    remote, _base, head = _repository(tmp_path)
+    _git(remote, "update-ref", "refs/pull/18/head", head)
+    checkout = tmp_path / "checkout"
+    _git(tmp_path, "clone", "--depth", "1", remote.as_uri(), str(checkout))
+    (checkout / "contract.txt").write_text("preserved staged content\n")
+    _git(checkout, "add", "contract.txt")
+    (checkout / "untracked.txt").write_text("preserve\n")
+    status = _git(checkout, "status", "--porcelain")
+    branch = _git(checkout, "symbolic-ref", "HEAD")
+    monkeypatch.chdir(checkout)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    missing = "f" * 40
+    assert subprocess.run(["git", "cat-file", "-e", missing], cwd=checkout, capture_output=True).returncode != 0
+    inputs = _inputs(tmp_path, missing, head)
+    inputs.gate.ordinary_pass(18, head, missing, inputs.contract)
+    with (
+        patch("auto_coder.cli_helpers.resolve_adversarial_validation_availability", return_value=AdversarialValidationAvailability(backend_manager=MagicMock())),
+        patch("auto_coder.pr_processor.execute_review") as transport,
+    ):
+        accepted, reason = _execute_pending_strong_audit("owner/repo", 18, inputs)
+    assert accepted is False
+    assert f"reviewed base {missing} fetch failed (exit=128)" in reason
+    transport.assert_not_called()
+    snapshot = inputs.gate.state.snapshot(18)
+    assert snapshot.phase == "STRONG_PENDING"
+    assert snapshot.accepted_strong_round is None
+    assert snapshot.active_claim is None
+    assert _git(checkout, "symbolic-ref", "HEAD") == branch
+    assert _git(checkout, "rev-parse", "HEAD") == head
+    assert _git(checkout, "rev-parse", "FETCH_HEAD") == head
+    assert _git(checkout, "status", "--porcelain") == status
+    assert (checkout / "contract.txt").read_text() == "preserved staged content\n"
+    assert (checkout / "untracked.txt").read_text() == "preserve\n"
 
 
 @pytest.mark.parametrize(
