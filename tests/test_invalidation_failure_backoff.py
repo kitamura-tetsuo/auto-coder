@@ -15,7 +15,7 @@ from src.auto_coder.execution_trace import TraceCollector, get_trace_collector
 from src.auto_coder.util.gh_cache import GitHubClient
 
 
-@pytest.mark.parametrize("failure_kind", ["transport", "malformed"])
+@pytest.mark.parametrize("failure_kind", ["transport", "malformed", "returned-error"])
 @pytest.mark.parametrize("later_stabilization", [False, True])
 def test_failed_refresh_cannot_spin_on_generic_wakes_or_restart(tmp_path: Path, monkeypatch, failure_kind: str, later_stabilization: bool) -> None:
     monkeypatch.setattr(TraceCollector, "_instance", None)
@@ -32,9 +32,13 @@ def test_failed_refresh_cannot_spin_on_generic_wakes_or_restart(tmp_path: Path, 
         engine.invalidations.invalidate(identity, delivery_id="during-refresh", not_before=stabilization)
         if failure_kind == "transport":
             raise httpx.ConnectError("connection refused", request=httpx.Request("GET", "https://api.github.com/repos/owner/repo/pulls/100"))
+        if failure_kind == "returned-error":
+            return {"number": 100, "title": "Current authority", "body": "", "state": "open", "user": {"login": "contributor", "id": 1}, "head": {"ref": "topic"}}
         raise ValueError("authoritative PR metadata is malformed")
 
     monkeypatch.setattr(github, "get_pull_request_metadata_strict", fail_refresh)
+    monkeypatch.setattr(engine, "_is_pr_author_allowed", lambda _data: True)
+    monkeypatch.setattr(engine, "_process_single_candidate", lambda *_args, **_kwargs: CandidateProcessingResult(type="pr", number=100, error="processing responsibility is unfinished"))
 
     async def scenario():
         consumer = asyncio.create_task(engine._invalidation_loop("owner/repo"))

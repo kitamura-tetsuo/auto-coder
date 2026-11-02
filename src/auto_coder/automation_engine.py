@@ -4722,6 +4722,7 @@ class AutomationEngine:
                 decision_completed = False
                 deferral_committed = False
                 stop_after_persistence_failure = False
+                retry_failed_processing = False
                 definitive_refusal_reason: Optional[str] = None
                 unfinished_processing_disposition = False
                 invalidation_claim: Optional[ClaimedInvalidation] = None
@@ -4937,6 +4938,7 @@ class AutomationEngine:
                         )
                         definitive_refusal_reason = result.error
                     decision_completed = (not bool(result.error) or result.blocked_cacheable or result.definitive_parent_refusal) and not (candidate.urgent_admission and result.capacity_deferred)
+                    retry_failed_processing = bool(result.error) and not decision_completed
 
                     if invalidation_claim is not None and candidate.type == "pr" and result.outcome is PRProcessingOutcome.DEFERRED and result.retry_not_before is not None:
                         retained = await asyncio.to_thread(
@@ -5035,6 +5037,7 @@ class AutomationEngine:
                                 int(item_number),
                             )
                         except Exception:
+                            retry_failed_processing = True
                             logger.opt(exception=True).error(
                                 "Failed to retire refused Issue work repository={} issue={} generation={}",
                                 repo_name,
@@ -5047,7 +5050,13 @@ class AutomationEngine:
                     else:
                         logger.opt(exception=True).error(f"Worker {worker_id} error processing candidate: {e}")
                         get_health_monitor().record_event("worker_error", f"worker {worker_id}: {type(e).__name__}: {e}", f"{candidate.type} #{item_number}")
-                        if invalidation_claim is not None:
+                        retry_failed_processing = True
+                finally:
+                    completion_transition = None
+                    if invalidation_claim is not None:
+                        if decision_completed:
+                            completion_transition = self.invalidations.complete_with_outcome(invalidation_claim)
+                        elif not deferral_committed and not stop_after_persistence_failure and retry_failed_processing:
                             try:
                                 retained = await asyncio.to_thread(
                                     self.invalidations.defer,
@@ -5064,14 +5073,6 @@ class AutomationEngine:
                                 self._record_worker_failure_backoff(invalidation_claim, Outcome.DEFERRED, retained.retry_not_before)
                                 if self._invalidation_wake_event is not None:
                                     self._invalidation_wake_event.set()
-                finally:
-                    completion_transition = None
-                    if invalidation_claim is not None:
-                        if decision_completed:
-                            if candidate.type == "dependency":
-                                completion_transition = self.invalidations.complete_with_outcome(invalidation_claim)
-                            else:
-                                completion_transition = self.invalidations.complete_with_outcome(invalidation_claim)
                         elif not deferral_committed and not stop_after_persistence_failure:
                             self.invalidations.release(invalidation_claim)
                             # Uncommitted/cancelled work remains recoverable;
