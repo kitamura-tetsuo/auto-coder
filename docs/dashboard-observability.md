@@ -3155,3 +3155,16 @@ whole scan, persistent ESRCH retains its original cause after three scans, and
 mismatched/unknown error numbers cannot be erased by a later task exit. These
 unit controls reproduce the recorded CI error class, not a claim of a native
 ESRCH reproduction.
+
+
+The final namespace refusal includes the last observation's diagnostic in the
+outer `HostObservationUnavailable` text, retaining its original chained cause.
+The actual host command prints that text, so the final PID/TID and missing-link
+or ESRCH reason remain visible even when all three scans encounter different
+tasks. Earlier retry warnings do not substitute for the final failure. The
+command-boundary regression
+`test_fresh_host_command_reports_the_final_incomplete_scan` drives the actual
+CLI/refusal handler and bounded observer with three distinct controlled tasks;
+no claim or listener grant is created. Retry, evidence and launch authority
+are unchanged. Run `bash scripts/test.sh
+tests/test_management_fresh_initialization.py`.

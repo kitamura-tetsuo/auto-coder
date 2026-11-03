@@ -571,7 +571,7 @@ def assert_prior_network_unreferenced(namespace: str) -> None:
                 logger.warning("Host network absence scan {}/3 incomplete: {}; reobserving the complete host context and task set", attempt + 1, exc)
                 time.sleep(0.01)
     except (OSError, ValueError) as exc:
-        raise HostObservationUnavailable("network namespace observation unavailable") from exc
+        raise HostObservationUnavailable(f"network namespace observation unavailable: {exc}") from exc
 
 
 def assert_host_listener_absent(port: int) -> None:
