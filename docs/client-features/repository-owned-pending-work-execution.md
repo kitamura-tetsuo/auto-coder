@@ -113,3 +113,10 @@ retry it; the existing selected manual retry preserves identity and effects.
 Typed GitHub request failures retain their existing classification and deadlines.
 The initial-refresh regression also injects failures at both actual candidate
 boundaries through the production handler and scheduler/store.
+
+The bounded cadence regression observes completion of the actual second
+production handler evaluation before asserting its strict-reader timestamp.
+Thread entry alone is insufficient evidence that the strict read has run.
+Epoch-based arm/deadline comparisons use zero relative tolerance and one
+microsecond absolute tolerance, so large wall-clock values cannot hide drift.
+This strengthens the test oracle without changing scheduler timing or traces.

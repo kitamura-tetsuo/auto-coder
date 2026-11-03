@@ -116,8 +116,8 @@ async def test_real_protected_owner_deferred_preserves_armed_wait(tmp_path, monk
         scheduler.wake()
         await reached(lambda: len(outcomes) == 1)
         expiry = next(arm + 30 for arm, delay in reversed(arms) if delay > 0)
-        assert expiry == pytest.approx(entered[0] + 23)
-        assert scheduler._regular_wait_deadline == pytest.approx(expiry)
+        assert expiry == pytest.approx(entered[0] + 23, rel=0, abs=1e-6)
+        assert scheduler._regular_wait_deadline == pytest.approx(expiry, rel=0, abs=1e-6)
         assert outcomes == [StageOutcome()]
         assert dispositions[-1].target_outcome is ExplicitTargetOutcome.DEFERRED
         assert "ownership already exists" in dispositions[-1].actions[0]
@@ -141,7 +141,7 @@ async def test_real_protected_owner_deferred_preserves_armed_wait(tmp_path, monk
         await reached(lambda: not scheduler._in_flight)
 
         if timing in {"after-expiry", "external-inflight"}:
-            await reached(lambda: len(entered) >= 2)
+            await reached(lambda: len(outcomes) >= 2)
         else:
             await asyncio.sleep(0.03)
             assert len(entered) == 1
@@ -176,7 +176,9 @@ async def test_real_protected_owner_deferred_preserves_armed_wait(tmp_path, monk
             else:
                 now[0] = expiry
                 scheduler._wake_event.set()
-            await reached(lambda: len(entered) >= 2)
+            await reached(lambda: len(outcomes) >= 2)
+        # Entry precedes the real strict reader; observe returned outcomes
+        # before inspecting reader timestamps, even under a thread switch.
         assert entered[1] == (expiry + 1 if timing == "after-expiry" else expiry if timing in {"before-expiry", "unrelated-completion"} else entered[0] + 5)
         assert reader_times[0] == entered[0]
         assert reader_times[-1] == entered[1]
