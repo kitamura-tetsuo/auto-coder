@@ -19,8 +19,11 @@ does not start another polling interval: if that wait expired during evaluation,
 the retained work can be scanned immediately after settlement. This changes
 scheduling only; the production Issue handler still strictly refreshes the same
 Issue, rejects stale retained revisions and uses ordinary common admission.
-Each later unchanged deferral uses its own newly armed regular wait. An expired
-reference or a row already claimed in memory cannot rearm a zero-delay spin.
+Each later unchanged deferral uses the controller wait immediately preceding
+its own dispatch scan. If that wait has elapsed, evaluation is immediately
+eligible after settlement, including when it elapsed before handler entry.
+The next evaluation retains its own preceding wait; its future expiry and the
+in-flight guard prevent an unbounded zero-delay self-redispatch loop.
 Another handler's internal settlement is also a scan notification, never an
 independently requested public wake.
 An unrelated future deadline changes the next eligibility scan, not the armed
@@ -121,12 +124,12 @@ Epoch-based arm/deadline comparisons use zero relative tolerance and one
 microsecond absolute tolerance, so large wall-clock values cannot hide drift.
 This strengthens the test oracle without changing scheduler timing or traces.
 
-The controller arms each dispatch turn's regular wait before its asynchronous
-interrupted/due scans. Scheduling a handler captures that expiry together with
-the wake generation; starting its coroutine cannot borrow the following turn's
-mutable deadline. Scan or scheduling latency therefore cannot add a new interval
-after the original expiry. Each later dispatch still receives its own armed
-wait, preserving recurring no-progress cadence rather than reusing an expired
-previous turn. The real protected-owner regression advances the clock by seven
-or thirty-one seconds, both before and after task scheduling, and verifies the
-original deadline, immediate eligibility after expiry, and no third-entry spin.
+Scheduling a handler captures the regular wait immediately preceding its scan,
+together with the wake generation. Starting its coroutine cannot borrow the
+following loop's mutable deadline. Time spent in that actual preceding wait,
+the scan or task scheduling cannot add a new interval after its expiry. The
+real protected-owner regression advances the clock by seven or thirty-one
+seconds before/after task scheduling; recurring waves independently record the
+preceding controller arms and verify immediate eligibility for elapsed waits,
+future-wait enforcement, and no unbounded self-redispatch. This is the timing
+origin explicitly confirmed by the user for #2746/REQ-001 on 2026-11-04 JST.

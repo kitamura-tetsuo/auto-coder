@@ -1141,6 +1141,9 @@ class PendingWorkScheduler:
             await self._recover_interrupted()
             while not shutdown_event.is_set():
                 delay = self._next_delay()
+                # A nearer unrelated deadline may advance the eligibility scan,
+                # but cannot change this wait's configured no-progress cadence.
+                self._regular_wait_deadline = self._clock() + self._poll_interval
                 wake_wait = asyncio.ensure_future(self._wake_event.wait())
                 shutdown_wait = asyncio.ensure_future(shutdown_event.wait())
                 try:
@@ -1153,12 +1156,6 @@ class PendingWorkScheduler:
                 self._wake_event.clear()
                 if shutdown_event.is_set():
                     return
-                # Arm this dispatch turn before its asynchronous scans. A
-                # queued handler keeps this expiry even if scanning consumes
-                # the interval or the next controller turn starts first.
-                # Each later dispatch gets a new regular wait; an expired
-                # previous turn must not make recurring deferrals spin.
-                self._regular_wait_deadline = self._clock() + self._poll_interval
                 # A failed outcome-store write can leave a durable RUNNING row
                 # after its in-memory dispatch has exited. Re-scan interrupted
                 # claims on every controller turn so repaired storage can
@@ -1262,6 +1259,7 @@ class PendingWorkScheduler:
             self._spawn(obligation, handler.dispatch)
 
     def _spawn(self, obligation: PendingObligation, entry: Callable[[PendingObligation], StageOutcome]) -> None:
+        # Bind the wait that preceded this scan, not the following loop's wait.
         task = asyncio.ensure_future(self._run_claimed(obligation, entry, wake_generation=self._wake_generation, regular_expiry=self._regular_wait_deadline))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)

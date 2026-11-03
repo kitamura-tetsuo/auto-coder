@@ -3281,8 +3281,8 @@ for the real model-boundary/retention/reconstruction/resumption control. These
 fixture-driven production tests are not evidence that a historical provider
 message was delivered or that an external GitHub mutation succeeded.
 
-Dispatch-turn wait expiry is captured before queued handler execution, including
-when asynchronous scans or task scheduling consume the interval. This corrects
+The preceding controller wait's expiry is captured before queued handler execution,
+including when waiting, asynchronous scans or scheduling consume the interval. This corrects
 the timing of existing `issue-processing` resumptions, without adding a trace
 origin, event, outcome, permission or dashboard schema. Existing retained
 identity/effect and Deferred observations remain authoritative; an elapsed

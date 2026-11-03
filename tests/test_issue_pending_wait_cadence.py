@@ -90,12 +90,20 @@ async def test_real_protected_owner_deferred_preserves_armed_wait(tmp_path, monk
             return result
 
     arms = []
+    dispatch_expiries = []
 
     class ObservedScheduler(PendingWorkScheduler):
         def _next_delay(self):
             delay = super()._next_delay()
             arms.append((now[0], delay))
             return delay
+
+        def _spawn(self, obligation, entry):
+            if obligation.identity == identity:
+                # Observe the preceding controller wait independently of the
+                # expiry passed into the production handler coroutine.
+                dispatch_expiries.append(arms[-1][0] + 30)
+            return super()._spawn(obligation, entry)
 
     scheduler = ObservedScheduler(store, repository="owner/repo", poll_interval=30, clock=lambda: now[0])
     engine.pending_work_scheduler = scheduler
@@ -187,16 +195,26 @@ async def test_real_protected_owner_deferred_preserves_armed_wait(tmp_path, monk
         assert all(result.target_outcome is ExplicitTargetOutcome.DEFERRED for result in dispositions)
         assert all(result == StageOutcome() for result in outcomes)
         await reached(lambda: not scheduler._in_flight)
-        # A second and third unchanged deferral must each retain the newly
-        # armed regular wait; checking only the first retry misses a spin.
-        await asyncio.sleep(0.03)
-        assert len(entered) == 2
-        second_expiry = next(arm + 30 for arm, delay in reversed(arms) if delay > 0)
-        now[0] = second_expiry
-        scheduler._wake_event.set()
-        await reached(lambda: len(entered) == 3 and not scheduler._in_flight)
-        await asyncio.sleep(0.03)
-        assert len(entered) == 3
+        # REQ-001's user-confirmed origin is the preceding controller wait.
+        # An expired preceding wait permits one immediate next evaluation;
+        # that evaluation's own future wait must then stop self-redispatch.
+        # Exercise repeated waves without replacing expiry with entry+poll.
+        for _ in range(2):
+            await asyncio.sleep(0.03)
+            before = len(outcomes)
+            assert before == len(entered) == len(dispatch_expiries)
+            assert dispatch_expiries[-1] > now[0]
+            now[0] = dispatch_expiries[-1]
+            scheduler._wake_event.set()  # Timer observation, not wake authority.
+            await reached(lambda: len(outcomes) >= before + 1 and not scheduler._in_flight)
+            expected = before + 1
+            if dispatch_expiries[before] <= now[0]:
+                expected += 1
+                await reached(lambda: len(outcomes) >= expected and not scheduler._in_flight)
+            assert dispatch_expiries[-1] > now[0]
+            assert entered[before:] == [now[0]] * (expected - before)
+            await asyncio.sleep(0.03)
+            assert len(entered) == len(outcomes) == expected
     finally:
         barrier.set()
         shutdown.set()
@@ -349,6 +367,53 @@ async def test_scan_delay_preserves_the_wait_expiry_of_the_dispatched_issue(tmp_
         assert retained.unfinished_effects == ("refresh", "implementation")
         await asyncio.sleep(0.03)
         assert len(outcomes) == 2
+    finally:
+        shutdown.set()
+        await asyncio.wait_for(task, 3)
+
+
+@pytest.mark.parametrize("elapsed_wait", [30, 37])
+@pytest.mark.asyncio
+async def test_elapsed_preceding_wait_does_not_start_another_dispatch_interval(tmp_path, monkeypatch, elapsed_wait):
+    engine, store, identity, slots, owner = existing_owner(monkeypatch, tmp_path)
+    started = time.time()
+    now = [started]
+    outcomes = []
+    arms = []
+
+    class ObservedHandler(_IssueProcessingStageHandler):
+        def dispatch(self, obligation):
+            result = super().dispatch(obligation)
+            outcomes.append((now[0], result))
+            return result
+
+    class ObservedScheduler(PendingWorkScheduler):
+        def _next_delay(self):
+            delay = super()._next_delay()
+            arms.append((now[0], delay))
+            return delay
+
+    scheduler = ObservedScheduler(store, repository="owner/repo", poll_interval=30, clock=lambda: now[0])
+    scheduler.register_handler(ISSUE_PROCESSING_STAGE, ObservedHandler(engine, "owner/repo"))
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(scheduler.run(shutdown))
+    try:
+        await reached(lambda: bool(arms) and scheduler._wake_event is not None)
+        assert arms[0] == (started, 30)
+        assert outcomes == []
+        # Expire the actual preceding controller wait before any handler has
+        # entered. This is timer observation, not scheduler.wake() authority.
+        now[0] = started + elapsed_wait
+        scheduler._wake_event.set()
+        await reached(lambda: len(outcomes) >= 2 and not scheduler._in_flight)
+        assert outcomes == [(now[0], StageOutcome()), (now[0], StageOutcome())]
+        assert scheduler._unchanged_waits[identity.key()][0] > now[0]
+        await asyncio.sleep(0.03)
+        assert len(outcomes) == 2
+        retained = store.get(identity)
+        assert retained is not None and retained.unfinished_effects == ("refresh", "implementation")
+        assert slots.active_owners() == (owner,)
+        assert slots.snapshot().owners[0].provider_sessions == ("existing-provider",)
     finally:
         shutdown.set()
         await asyncio.wait_for(task, 3)
