@@ -49,6 +49,7 @@ from auto_coder.pr_processor import (
 )
 from auto_coder.pr_repair_dispatch import PRRepairResult, RepairDisposition, RepairFactState, RepairOrigin
 from auto_coder.pr_review_cycle import VERDICT_FINDINGS, ContractSnapshot, Finding, PrReviewCycleRepository, RoundProvenance, StrongPolicyIdentity
+from auto_coder.pr_review_resumption import RetainedClosureResumption
 from auto_coder.two_tier_pr_gate import TwoTierPrGate
 from auto_coder.util.gh_cache import PullRequestRepairMetadata, ReviewThread, ReviewThreadComment
 from auto_coder.util.github_action import GitHubActionsStatusResult, _check_github_actions_status
@@ -863,12 +864,7 @@ def test_green_ci_retains_durable_strong_review_gate(tmp_path, monkeypatch, stro
         patch("auto_coder.pr_processor._two_tier_gate_inputs", return_value=inputs),
         patch(
             "auto_coder.pr_processor._resume_retained_closure",
-            return_value=SimpleNamespace(
-                unavailable=False,
-                revalidate=False,
-                ordinary_pass_retained=False,
-                reason="accepted finding remains open",
-            ),
+            return_value=RetainedClosureResumption(reason="accepted finding remains open"),
         ),
         patch("auto_coder.pr_processor._execute_pending_strong_audit", return_value=(False, "strong audit remains pending")) as strong_audit,
         patch("auto_coder.pr_processor._consume_pending_two_tier_publication", return_value=(False, "no effect is ready")),

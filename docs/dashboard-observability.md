@@ -489,6 +489,32 @@ admission gate or dashboard projection is added; production-to-view coverage is
 `tests/test_single_review_ordinary_closure_flow.py` and
 `tests/test_effective_decision_pr_flow.py`.
 
+Issue #2678 also checks the producing discussion at the ordinary closure target
+observer before cycle acceptance and during retained-source recovery. Its
+`pr.ordinary-closure` DEFERRED reason includes `discussion-freshness` for a
+complete mismatch; unavailable discussion remains non-authorizing. The existing
+review-thread gate and later ordinary validation retain their normal identities.
+No new event schema or dashboard projection is introduced. Runnable production
+regressions in `tests/test_single_review_ordinary_closure_flow.py` include
+`test_production_collection_revalidates_discussion_changed_during_review`,
+`test_changed_discussion_after_retention_never_certifies_during_recovery`,
+`test_resolved_accepted_source_rechecks_discussion_before_reuse`, and
+`test_incomplete_discussion_cannot_certify_the_producing_ordinary_result`.
+These inspect cycle acceptance/publication, actual next validator discussion and
+resolve/merge effects, including valid receipt-only updates and incomplete reads.
+
+The ordinary-only path uses the same existing saved-review wait and independent
+validation events after reconstructing its non-authorizing discussion checkpoint.
+It adds no event schema or projection: the next ordinary attempt is visible in
+the existing review history, while an incomplete read admits no attempt. Runnable
+`tests/test_ordinary_discussion_revalidation.py` covers same/changed heads, external
+resolution, reconstruction, incomplete reads and receipt-only deduplication.
+`test_two_accepted_ordinary_sources_survive_selected_invalidation` additionally
+passes two independently accepted roots through actual production revalidation,
+including simultaneous and successive edits and both conclusive dispositions.
+Canonical revocation uses the existing ledger history and the next attempt uses
+existing ordinary validation events; no new event schema or projection is added.
+
 Stale base/contract/policy recovery after ordinary convergence emits
 `pr.strong-audit` with the current `head`, `base`, `reason`,
 `publication_reason`, and `renewed_strong_required=true`. COMPLETED means only
@@ -1954,6 +1980,36 @@ dashboard coverage remain unchanged. The production-boundary tests in
 `tests/test_jules_candidate_submission.py` establish that the inactive
 adapter preserves its durable claims and exact reconciliation state without
 substituting dashboard diagnostics for provider/session ownership.
+# Individual evidence transport and retained authority
+
+Individual specification-review evidence interning changes only the reversible
+prompt representation. Existing Review-lane origins, durable decision/audit fields,
+coverage/dispositions, currentness fences and dashboard projections remain the
+same schema. The semantic policy identity now binds the receiving instruction
+templates as well: an older-policy decision is not reused, and the existing
+review history records a fresh FULL assessment. Invalid required transport evidence follows the existing fail-closed ERROR
+path; a smaller payload is not a readiness or progress event. Run
+`bash scripts/test.sh tests/test_individual_evidence_envelope.py
+tests/test_specification_analyzer.py tests/test_specification_validation_lifecycle.py
+tests/test_specification_regression_fixtures.py tests/test_specification_drift_sequence.py
+tests/test_issue_review_service.py`
+for complete reconstruction, production-boundary coverage and retained authority
+behavior. Semantic replay is separately advisory; see the individual rereview
+client-feature fragment for commands and evidence limits.
+
+The real Review lane is also exercised for standalone and reconciled-child
+FULL/INCREMENTAL sequences with persisted accepted predecessors, retained
+resolved findings and changed closed-sibling evidence. Its actual outgoing
+model request is independently reconstructed; these are transport/authority
+assertions, not fixed semantic verdicts or deployment evidence.
+
+The bound-input profile changes the existing policy identity and produces an
+ordinary fresh FULL assessment for unproven older records. It adds no processing
+origin or dashboard event schema. Unreadable required history yields the existing
+local ERROR with no semantic call, while exact current reuse retains its original
+producing mode beneath the REUSED view. Coverage in the same lifecycle and real
+Review-lane tests checks those outcomes and preservation of accepted record bytes.
+
 # Explicit Issue-review rerun authority
 
 Explicit review reruns add durable authorization state but do not add a new
@@ -2294,6 +2350,23 @@ Recovery-linked PR candidates, first-check settlement from durable handoff
 evidence, final guarded token revalidation, and provider-selective startup
 reconstruction remain internal safety decisions on that same reclamation path;
 they do not introduce a dashboard origin, outcome, route, or event schema.
+
+Journaled follow-up completion now uses the actual prepared message, native
+baseline/user/assistant graph, complete history, and the same reservation's
+verified PR handoff. Ordinary due checks refresh reconstruction before consuming
+these facts. A committed retirement retains the native witness in historical
+accounting and changes the existing slot projection from occupied to available;
+read-only evidence collection and ambiguous delivery leave it occupied. This is
+capacity evidence, not evidence of implementation progress or delivery success.
+No new structured origin or renderer field is introduced. Production sender,
+HTTP normalization, due-check, restart and public slot-projection assertions are
+covered by `tests/test_codex_followup_reclamation.py`; its read-only collection
+case also asserts unchanged file journals, logical SQLite contents and accounting
+(SQLite WAL/shared-memory lifecycle is not a logical source mutation). The
+existing-PR producer binding is retained before sending. A historical unbound
+record requires the exact supported producer contract in its fingerprint-bound
+native input; duplicate/missing messages, conflicting journal bindings or graph
+edges remain unknown. No binding is backfilled from the initial task handoff.
 
 ## Definitive Parent-Issue refusal settlement
 
@@ -2979,6 +3052,14 @@ command and bounded supervisor log messages. It does not create a dashboard job
 or change the dashboard event schema; a process launch alone is not reported as
 authenticated readiness. The isolated fresh-initialization and supervisor tests
 exercise refusal, claim and status boundaries.
+An incomplete host namespace scan records its attempt and PID/TID in the host
+observer's warning sink. Up to two further complete observations revalidate host
+authority and procfs visibility; they never reuse partial absence evidence or
+repeat a launch claim. These host-only observations do not create worker
+dashboard events or change the existing availability/readiness interpretation.
+Run `bash scripts/test.sh tests/test_management_fresh_initialization.py` for
+bounded rescan/refusal regressions; the dedicated root host selection in
+`supervisor-integration-tests.yml` retains its 19 real cases and no-skip check.
 
 ## Local PR repair startup recovery
 
@@ -2991,6 +3072,27 @@ Rediscovery intentionally preserves those fields; publication receipts remain
 in the local-job effect journal rather than being inferred from the presence
 of a pending-work row.
 
+
+### Accepted closure discussion after a newer ordinary PASS
+
+The production recovery path continues to emit the existing
+`pr.review-thread-closure` unfinished phase/reason when retained discussion is
+changed or cannot be confirmed, including when a newer plain PASS supersedes
+the ordinary verdict. The accepted closure remains the dependent source until
+an actual scope-bound independent correction supplies current discussion
+evidence. That correction is retained in the ordinary effective-decision
+record; the original closure publication and effect operation identities stay
+unchanged, so uncertain writes are reconciled rather than silently retried.
+There is no new event schema or dashboard projection: the existing unfinished
+reason and retained ordinary attempt identify the block and its reevaluation.
+
+Run `bash scripts/test.sh tests/test_single_review_ordinary_closure_flow.py`.
+`test_newer_plain_pass_does_not_replace_accepted_discussion_binding` drives the
+production forced ordinary review, reconstruction, publication and merge paths
+with add/edit/delete, unchanged and authenticated receipt-only controls. It
+checks both retained resolved closures and pending publication, fresh
+STILL_VALID/ADDRESSED outcomes, and refusal of replacement records with changed
+scope, missing source coverage or missing/mismatched thread evidence.
 
 ### Recorded open-target enumeration
 

@@ -27,7 +27,8 @@ class WhamReader:
         assert task_id == TASK
         return self.task
 
-    def get_task_turns(self, task_id: str) -> list[WhamTurn]:
+    def get_task_turns(self, task_id: str, *, require_complete: bool = False) -> list[WhamTurn]:
+        assert require_complete
         assert task_id == TASK
         return self.turns
 
@@ -40,7 +41,8 @@ class MultiWhamReader:
     def get_task(self, task_id: str) -> WhamTask:
         return self.tasks[task_id]
 
-    def get_task_turns(self, task_id: str) -> list[WhamTurn]:
+    def get_task_turns(self, task_id: str, *, require_complete: bool = False) -> list[WhamTurn]:
+        assert require_complete
         return self.turns[task_id]
 
 

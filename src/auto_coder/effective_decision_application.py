@@ -196,7 +196,11 @@ class RetainedDecision:
     source_identities: list[str] = field(default_factory=list)
     pending_closure_source_identities: list[str] = field(default_factory=list)
     pending_reconciliation_source_identities: list[str] = field(default_factory=list)
+    # Input selection only: these identities never retain an ADDRESSED verdict
+    # or permit closure. They survive external resolution and target changes.
+    discussion_revalidation_thread_ids: list[str] = field(default_factory=list)
     ordinary_correction: Optional[OrdinaryCorrectionEvidence] = None
+    prior_discussion_bindings: list[OrdinaryCorrectionEvidence] = field(default_factory=list)
     attempt_id: str = ""
     attempt_sequence: int = 0
     source_revision: int = -1
@@ -267,6 +271,9 @@ class EffectiveDecisionStore:
     def _decode(raw: dict[str, object]) -> RetainedDecision:
         known = {name for name in RetainedDecision.__dataclass_fields__}
         values = {key: value for key, value in raw.items() if key in known}
+        discussion = values.get("discussion_revalidation_thread_ids", [])
+        if not isinstance(discussion, list) or any(not isinstance(item, str) or not item for item in discussion) or len(set(discussion)) != len(discussion):
+            raise DecisionRetentionError("Retained discussion identities are invalid")
         ordinary = values.get("ordinary_correction")
         if ordinary is not None:
             if not isinstance(ordinary, dict):
@@ -277,6 +284,16 @@ class EffectiveDecisionStore:
                 values["ordinary_correction"] = OrdinaryCorrectionEvidence(**evidence)
             except (TypeError, ValueError) as exc:
                 raise DecisionRetentionError(f"Retained ordinary correction is invalid: {exc}") from exc
+        bindings = values.get("prior_discussion_bindings", [])
+        if not isinstance(bindings, list):
+            raise DecisionRetentionError("Retained discussion bindings are invalid")
+        try:
+            decoded_bindings = [OrdinaryCorrectionEvidence(**{**item, "accepted_sources": tuple(item.get("accepted_sources", ()))}) for item in bindings if isinstance(item, dict)]
+            if len(decoded_bindings) != len(bindings):
+                raise ValueError("invalid binding")
+            values["prior_discussion_bindings"] = decoded_bindings
+        except (TypeError, ValueError) as exc:
+            raise DecisionRetentionError(f"Retained discussion bindings are invalid: {exc}") from exc
         return RetainedDecision(**values)  # type: ignore[arg-type]
 
     def load(self, pr_number: int) -> Optional[RetainedDecision]:
@@ -320,7 +337,24 @@ class EffectiveDecisionStore:
                 attempts.append(key)
         if record.next_action in waiting_actions and record.evidence_revision not in attempts:
             attempts.append(record.evidence_revision)
-        carried = replace(record, reconciliation_attempts=attempts)
+        bindings = list(previous.prior_discussion_bindings) if previous is not None else []
+        if previous is not None and previous.ordinary_correction is not None and not previous.ordinary_correction.requires_strong_policy:
+            old = previous.ordinary_correction
+            old_result = old.restore()
+            for item in old_result.thread_dispositions:
+                if item.status == "ADDRESSED":
+                    binding = replace(old, payload=serialize_ordinary_result(replace(old_result, thread_dispositions=[item]), include_closure=True))
+                    if binding not in bindings:
+                        bindings.append(binding)
+        # A new result supersedes only the thread bindings it actually evaluated.
+        new_ids = {item.thread_id for item in record.ordinary_correction.restore().thread_dispositions if item.status == "ADDRESSED" and item.discussion_evidence_digest} if record.ordinary_correction is not None else set()
+        bindings = [binding for binding in bindings if not any(item.thread_id in new_ids for item in binding.restore().thread_dispositions)]
+        carried = replace(
+            record,
+            prior_discussion_bindings=bindings,
+            reconciliation_attempts=attempts,
+            discussion_revalidation_thread_ids=sorted(set(record.discussion_revalidation_thread_ids + (previous.discussion_revalidation_thread_ids if previous is not None else []))),
+        )
         if previous is not None and (previous.head_sha, previous.base_sha) == (record.head_sha, record.base_sha):
             same_producer = previous.ordinary_correction == record.ordinary_correction and (previous.attempt_id, previous.attempt_sequence) == (record.attempt_id, record.attempt_sequence)
             same_ordinary = record.ordinary_correction is not None and same_producer and previous.next_action == record.next_action and previous.status == record.status and previous.source_identities == record.source_identities and set(record.blocker_ids).issubset(previous.blocker_ids)

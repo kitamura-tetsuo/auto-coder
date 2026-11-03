@@ -549,6 +549,128 @@ def _task_stat(pid: int, state: str = "Z", token: str = "42") -> str:
     return f"{pid} (test child) " + " ".join([state] + ["0"] * 18 + [token])
 
 
+@pytest.mark.parametrize("persistent", [False, True])
+def test_network_observation_retries_complete_scan_but_refuses_persistent_uncertainty(monkeypatch: pytest.MonkeyPatch, persistent: bool) -> None:
+    from auto_coder.management import fresh_host_observation as observation
+
+    monkeypatch.setattr(observation.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(observation.os, "readlink", lambda path: "namespace")
+    monkeypatch.setattr(observation, "_validate_host_proc_profile", lambda *args: None)
+    monkeypatch.setattr(observation.time, "sleep", lambda _: None)
+    calls = []
+
+    def scan(root, namespace):
+        calls.append((root, namespace))
+        if persistent or len(calls) == 1:
+            raise observation._TaskNamespaceUnavailable("task network namespace is unavailable")
+
+    monkeypatch.setattr(observation, "_assert_all_task_networks_absent", scan)
+    if persistent:
+        with pytest.raises(HostObservationUnavailable, match="network namespace observation unavailable"):
+            observation.assert_prior_network_unreferenced("net:[202]")
+    else:
+        observation.assert_prior_network_unreferenced("net:[202]")
+    assert calls == [(Path("/proc"), "net:[202]")] * (3 if persistent else 2)
+
+
+@pytest.mark.parametrize("prior_holder_appears", [False, True])
+def test_network_observation_rechecks_all_tasks_after_transient_link_loss(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prior_holder_appears: bool) -> None:
+    from auto_coder.management import fresh_host_observation as observation
+
+    task = tmp_path / "42" / "task" / "42"
+    (task / "ns").mkdir(parents=True)
+    (task / "stat").write_text(_task_stat(42, "R"))
+    readlink = os.readlink
+    monkeypatch.setattr(observation.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(observation.os, "readlink", lambda path, *args, **kwargs: "host" if str(path).startswith("/proc/") else readlink(path, *args, **kwargs))
+    profiles = []
+    monkeypatch.setattr(observation, "_validate_host_proc_profile", lambda *args: profiles.append(args))
+    scans = []
+    scan = observation._assert_all_task_networks_absent
+
+    def complete_scan(root, namespace):
+        scans.append((root, namespace))
+        return scan(tmp_path, namespace)
+
+    delays = []
+
+    def settle_exit(delay):
+        delays.append(delay)
+        (task / "ns/net").symlink_to("net:[301]")
+        if prior_holder_appears:
+            sibling = tmp_path / "43" / "task" / "44" / "ns"
+            sibling.mkdir(parents=True)
+            (sibling / "net").symlink_to("net:[202]")
+
+    monkeypatch.setattr(observation, "_assert_all_task_networks_absent", complete_scan)
+    monkeypatch.setattr("time.sleep", settle_exit)
+    if prior_holder_appears:
+        with pytest.raises(HostObservationUnavailable) as caught:
+            observation.assert_prior_network_unreferenced("net:[202]")
+        assert "prior network namespace still has a task" in str(caught.value.__cause__)
+    else:
+        observation.assert_prior_network_unreferenced("net:[202]")
+    assert scans == [(Path("/proc"), "net:[202]")] * 2
+    assert len(profiles) == 2
+    assert delays == [0.01]
+
+
+@pytest.mark.parametrize("fault", ["uid", "pid_namespace", "user_namespace", "profile"])
+def test_network_observation_revalidates_authority_before_rescan(monkeypatch: pytest.MonkeyPatch, fault: str) -> None:
+    from auto_coder.management import fresh_host_observation as observation
+
+    scans = []
+    delays = []
+    profiles = []
+    monkeypatch.setattr(observation.os, "geteuid", lambda: 1 if scans and fault == "uid" else 0)
+
+    def namespace(path):
+        changed = (fault == "pid_namespace" and str(path) == "/proc/self/ns/pid") or (fault == "user_namespace" and str(path) == "/proc/self/ns/user")
+        return "changed" if scans and changed else "host"
+
+    def profile(*args):
+        profiles.append(args)
+        if scans and fault == "profile":
+            raise ValueError("procfs visibility is restricted")
+
+    def missing(root, target):
+        scans.append((root, target))
+        raise observation._TaskNamespaceUnavailable("task network namespace is unavailable (pid=42, tid=44)")
+
+    monkeypatch.setattr(observation.os, "readlink", namespace)
+    monkeypatch.setattr(observation, "_validate_host_proc_profile", profile)
+    monkeypatch.setattr(observation, "_assert_all_task_networks_absent", missing)
+    monkeypatch.setattr(observation.time, "sleep", delays.append)
+    with pytest.raises(HostObservationUnavailable):
+        observation.assert_prior_network_unreferenced("net:[202]")
+    assert len(scans) == 1
+    assert len(profiles) == (2 if fault == "profile" else 1)
+    assert delays == [0.01]
+
+
+@pytest.mark.parametrize("failure", [PermissionError("denied"), ValueError("task identity is malformed"), OSError("listing failed"), HostObservationUnavailable("prior network namespace still has a task")])
+def test_network_observation_does_not_retry_other_refusals(monkeypatch: pytest.MonkeyPatch, failure: Exception) -> None:
+    from auto_coder.management import fresh_host_observation as observation
+
+    monkeypatch.setattr(observation.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(observation.os, "readlink", lambda path: "host")
+    monkeypatch.setattr(observation, "_validate_host_proc_profile", lambda *args: None)
+    calls = []
+
+    def refuse(*args):
+        calls.append(args)
+        raise failure
+
+    delays = []
+    monkeypatch.setattr(observation, "_assert_all_task_networks_absent", refuse)
+    monkeypatch.setattr(observation.time, "sleep", delays.append)
+    with pytest.raises(HostObservationUnavailable) as caught:
+        observation.assert_prior_network_unreferenced("net:[202]")
+    assert caught.value.__cause__ is failure
+    assert len(calls) == 1
+    assert delays == []
+
+
 @pytest.mark.parametrize("fault", ["live", "truncated", "missing", "unreadable", "bad_pid", "bad_task_id", "zero_token", "bad_token", "changed_token", "state_changes", "namespace_reappears"])
 def test_unknown_task_is_never_waived_as_a_zombie(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str) -> None:
     from auto_coder.management.fresh_host_observation import _assert_all_task_networks_absent

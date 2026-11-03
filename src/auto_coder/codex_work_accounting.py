@@ -9,6 +9,7 @@ committed atomically with the slot's existing cross-process fencing token.
 from __future__ import annotations
 
 import copy
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -86,6 +87,8 @@ class CodexWorkOperation:
     settlement_evidence_id: Optional[str]
     accepted: bool = False
     definite_non_delivery: bool = False
+    request_fingerprint: Optional[str] = None
+    handoff_pr_number: Optional[int] = None
 
     @property
     def settled(self) -> bool:
@@ -189,6 +192,13 @@ class CodexWorkAccounting:
                         for field in ("publication_complete", "tracking_complete"):
                             if encoded[field] is True:
                                 existing[field] = True
+                        for field in ("request_fingerprint", "handoff_pr_number"):
+                            previous = existing.get(field)
+                            incoming = encoded[field]
+                            if previous is not None and previous != incoming:
+                                raise ImplementationSlotUnavailable("Reconstruction conflicts with the bound Codex follow-up evidence")
+                            if incoming is not None:
+                                existing[field] = incoming
                 accounting["reconstruction_receipt_id"] = receipt.receipt_id
                 accounting["reconstruction_sources"] = list(receipt.sources)
                 accounting["reconstruction_consistency_ids"] = dict(receipt.source_consistency_ids)
@@ -409,6 +419,12 @@ class CodexWorkAccounting:
         )
         if any(not isinstance(raw.get(field), bool) for field in boolean_fields):
             raise ValueError("Malformed Codex operation completion evidence")
+        fingerprint = raw.get("request_fingerprint")
+        handoff_pr = raw.get("handoff_pr_number")
+        if fingerprint is not None and (not isinstance(fingerprint, str) or re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None):
+            raise ValueError("Malformed Codex prepared-message fingerprint")
+        if handoff_pr is not None and (type(handoff_pr) is not int or handoff_pr <= 0):
+            raise ValueError("Malformed Codex follow-up handoff PR")
         phase = CodexWorkPhase(raw["phase"])
         accepted = raw["accepted"]
         definite_non_delivery = raw["definite_non_delivery"]
@@ -431,6 +447,8 @@ class CodexWorkAccounting:
             settlement_evidence_id,
             accepted,
             definite_non_delivery,
+            fingerprint,
+            handoff_pr,
         )
 
     @staticmethod
@@ -447,6 +465,8 @@ class CodexWorkAccounting:
             "settlement_evidence_id": operation.settlement_evidence_id,
             "accepted": operation.accepted,
             "definite_non_delivery": operation.definite_non_delivery,
+            "request_fingerprint": operation.request_fingerprint,
+            "handoff_pr_number": operation.handoff_pr_number,
         }
 
     @staticmethod

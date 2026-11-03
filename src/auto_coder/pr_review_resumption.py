@@ -9,6 +9,7 @@ authoritative producer.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Sequence, Tuple
@@ -35,6 +36,9 @@ class RetainedClosureResumption:
     ordinary_pass_retained: bool = False
     retained_record: Optional[ClosureEvidenceRecord] = None
     revalidate: bool = False
+    discussion_changed: bool = False
+    discussion_unavailable: bool = False
+    revalidate_thread_ids: tuple[str, ...] = ()
     unavailable: bool = False
     reason: str = ""
 
@@ -117,7 +121,7 @@ class SavedReviewResumptionService:
             except Exception as exc:
                 resumption = RetainedClosureResumption(unavailable=True, reason=f"the owning review state could not be read: {exc}")
 
-        if resumption is not None and resumption.unavailable and not request.force:
+        if resumption is not None and resumption.unavailable and (not request.force or resumption.discussion_unavailable):
             request.actions.append(f"Retained closure evidence for PR #{pr_number} is pending: {resumption.reason}; " "no reviewer was admitted and the same evidence will be resumed when it is observable again")
             self._ports.record_closure_deferral(pr_number, request.head_sha, resumption.reason)
             deadline = self._clock() + 60.0
@@ -129,7 +133,7 @@ class SavedReviewResumptionService:
                 request.processing_status.retry_not_before = deadline
             return SavedReviewResumeResult(resumption, True)
 
-        if resumption is not None and resumption.ordinary_pass_retained:
+        if resumption is not None and (resumption.ordinary_pass_retained or resumption.discussion_changed):
             return SavedReviewResumeResult(resumption, False)
         if _resume_saved_ordinary_correction(
             self._ports,
@@ -389,6 +393,16 @@ def assess_saved_review_state(ports, repo_name: str, pr_data: Dict[str, Any], he
     except (ports.DecisionRetentionError, RuntimeError, ValueError, OSError) as exc:
         return SavedReviewAssessment(ports.SAVED_REVIEW_WAIT, f"retained effective-decision state is unreadable: {exc}")
     revision = ports.evidence_revision(projection)
+    if retained is not None and retained.discussion_revalidation_thread_ids and retained.ordinary_correction is None:
+        if not ports.closure_projection_readable(projection):
+            return SavedReviewAssessment(ports.SAVED_REVIEW_WAIT, "changed discussion cannot be reassessed while accepted authority is unreadable", projection)
+        discussion = sorted((thread.thread_id, thread.discussion_evidence_digest) for thread in claimed_review_threads if thread.thread_id in retained.discussion_revalidation_thread_ids)
+        if {item[0] for item in discussion} != set(retained.discussion_revalidation_thread_ids):
+            return SavedReviewAssessment(ports.SAVED_REVIEW_WAIT, "changed discussion identities are not completely observable", projection)
+        recovery_key = "discussion-revalidation-v1:" + ports.hashlib.sha256(json.dumps([head_sha, target.base_sha, revision, discussion], sort_keys=True).encode()).hexdigest()
+        if not force and recovery_key in retained.reconciliation_attempts:
+            return SavedReviewAssessment(ports.SAVED_REVIEW_WAIT, "independent review was already admitted for this changed discussion", projection)
+        return SavedReviewAssessment(ports.SAVED_REVIEW_REVALIDATE, "retained discussion changed and requires an independent current-input decision", projection, "" if force else recovery_key)
     if changed_ordinary_inputs:
         if not ports.closure_projection_readable(projection):
             return SavedReviewAssessment(ports.SAVED_REVIEW_WAIT, "changed ordinary inputs cannot be reassessed while accepted authority is unreadable or ambiguous", projection)
