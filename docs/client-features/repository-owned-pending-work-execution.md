@@ -26,6 +26,8 @@ independently requested public wake.
 An unrelated future deadline changes the next eligibility scan, not the armed
 no-progress polling cadence for an unchanged Issue. Nearer and later unrelated
 deadlines therefore neither accelerate its repeated deferrals nor starve it.
+An already-due row without a registered handler also cannot restart another
+Issue's remaining armed wait; its next scan respects the earlier future expiry.
 
 An independently requested scheduler wake (including existing registration and
 selected manual-retry notifications) can request an earlier due-work scan. A wake

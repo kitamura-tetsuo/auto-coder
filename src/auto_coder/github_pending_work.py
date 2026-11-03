@@ -1205,12 +1205,15 @@ class PendingWorkScheduler:
         upcoming = min(deadlines, default=None)
         if settled_due:
             return 0.0
-        if upcoming is None or upcoming <= now:
+        if upcoming is None:
+            return self._poll_interval
+        if upcoming <= now:
             # A due-now obligation that cannot make progress (missing handler,
             # or a handler that just re-deferred it) must not spin the loop at
             # zero delay; wait at least one poll interval unless an explicit
             # wake (e.g. admission became available) cuts the wait short.
-            return self._poll_interval
+            future = min((deadline for deadline in deadlines if deadline > now), default=now + self._poll_interval)
+            return min(self._poll_interval, future - now)
         return min(upcoming - now, max(self._poll_interval, 3600.0))
 
     async def _recover_interrupted(self) -> None:

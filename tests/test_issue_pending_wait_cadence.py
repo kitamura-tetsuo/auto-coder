@@ -45,7 +45,7 @@ def existing_owner(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("timing", ["before-expiry", "after-expiry", "external-idle", "external-thread", "external-inflight", "unrelated-completion"])
-@pytest.mark.parametrize("unrelated_deadline", [None, 1, 3600])
+@pytest.mark.parametrize("unrelated_deadline", [None, 1, 3600, "due-missing-handler"])
 @pytest.mark.asyncio
 async def test_real_protected_owner_deferred_preserves_armed_wait(tmp_path, monkeypatch, timing, unrelated_deadline):
     engine, store, identity, slots, owner = existing_owner(monkeypatch, tmp_path)
@@ -53,7 +53,8 @@ async def test_real_protected_owner_deferred_preserves_armed_wait(tmp_path, monk
     if unrelated_deadline is not None:
         unrelated = WorkIdentity("owner/repo", "issue:8", "future-other-stage", "future-other-revision")
         store.defer(unrelated, _admission_deferral(), ("other",))
-        assert store.manual_retry(unrelated, now=now[0] + unrelated_deadline) is not None
+        deadline = now[0] - 1 if unrelated_deadline == "due-missing-handler" else now[0] + unrelated_deadline
+        assert store.manual_retry(unrelated, now=deadline) is not None
     entered = []
     outcomes = []
     reader_times = []
@@ -106,7 +107,8 @@ async def test_real_protected_owner_deferred_preserves_armed_wait(tmp_path, monk
 
         recover = dispatch
 
-    scheduler.register_handler("future-other-stage", FutureOtherHandler())
+    if unrelated_deadline != "due-missing-handler":
+        scheduler.register_handler("future-other-stage", FutureOtherHandler())
     shutdown = asyncio.Event()
     task = asyncio.create_task(scheduler.run(shutdown))
     try:
@@ -148,6 +150,7 @@ async def test_real_protected_owner_deferred_preserves_armed_wait(tmp_path, monk
             assert retained.identity == identity
             assert retained.unfinished_effects == ("refresh", "implementation")
             assert retained.throttle_attempts == retained_attempts
+            assert scheduler._next_delay() == pytest.approx(expiry - now[0])
             if timing == "unrelated-completion":
                 unrelated = WorkIdentity("owner/repo", "issue:8", "unrelated-stage", "other-revision")
 
