@@ -448,6 +448,7 @@ def test_interrupted_issue_recovery_does_not_block_other_work_or_shutdown(tmp_pa
                 store.mark_running(interrupted)
                 scheduler.wake()
             assert await asyncio.to_thread(github.entered.wait, 2)
+
             # The unrelated row uses a separate handler so only the recovered
             # production Issue strict read is held at the barrier.
             class OtherHandler:
