@@ -106,8 +106,9 @@ def production_codex_reconstructor(repository: str, issue_number: int) -> CodexW
     from .cloud_manager import CloudManager
     from .cloud_run import CloudRunRepository
     from .codex_cloud_client import PendingCodexFollowUp, _codex_followup_state_path, _load_pending_followups
-    from .codex_pr_recovery import CodexPRRecoveryStore
+    from .codex_pr_recovery import CodexPRRecoveryStore, RecoveryOutcome
     from .codex_work_fence import stable_codex_operation_id
+    from .implementation_slots import ImplementationOwner, ImplementationSlotRepository, ImplementationSlotSnapshot
     from .provider_repair_correlation import default_correlation_db_path
     from .retry_dispatch import RetryDispatchRepository
 
@@ -129,6 +130,8 @@ def production_codex_reconstructor(repository: str, issue_number: int) -> CodexW
         *,
         publication_complete: bool = False,
         tracking_complete: bool = False,
+        request_fingerprint: str | None = None,
+        handoff_pr_number: int | None = None,
     ) -> CodexWorkOperation:
         return CodexWorkOperation(
             operation_id,
@@ -142,6 +145,8 @@ def production_codex_reconstructor(repository: str, issue_number: int) -> CodexW
             tracking_complete,
             None,
             phase is CodexWorkPhase.ACCEPTED,
+            request_fingerprint=request_fingerprint,
+            handoff_pr_number=handoff_pr_number,
         )
 
     def cloud_runs() -> CodexSourceSnapshot:
@@ -192,19 +197,29 @@ def production_codex_reconstructor(repository: str, issue_number: int) -> CodexW
     def followups() -> CodexSourceSnapshot:
         task_ids = {run.task_id for run in runs.list_all() if run.issue_number == issue_number and run.provider == "codex-cloud" and run.task_id}
         records = _load_pending_followups(followup_path)
+        slot_snapshot = ImplementationSlotRepository(repository, 1).snapshot()
+        if not isinstance(slot_snapshot, ImplementationSlotSnapshot):
+            raise RuntimeError("Codex follow-up handoff membership is unavailable")
+        bound_owner = next((item for item in slot_snapshot.owners if item.owner == ImplementationOwner("issue", issue_number)), None)
         grouped: dict[tuple[str, str, str], list[tuple[str, PendingCodexFollowUp]]] = {}
         for key, record in records.items():
             if record.task_id not in task_ids:
                 continue
             grouped.setdefault((record.task_id, record.message_fingerprint, record.pre_send_turn_id), []).append((key, record))
         operations = []
-        for (task, _fingerprint, baseline), members in grouped.items():
+        handoff_sources = []
+        for (task, fingerprint, baseline), members in grouped.items():
             identities = sorted(record.logical_identity or key for key, record in members)
             statuses = {record.status for _key, record in members}
             phase = CodexWorkPhase.ACCEPTED if statuses == {"delivered"} else CodexWorkPhase.DELIVERY_UNKNOWN
             request = ",".join(identities)
-            operations.append(operation(stable_codex_operation_id("follow-up", request), "follow-up", request, phase, task, baseline))
-        return CodexSourceSnapshot("follow-ups", _path_identity(followup_path), tuple(operations))
+            handoff = recovery.get(repository, task)
+            completed_handoff = bool(handoff and handoff.repository == repository and handoff.task_id == task and handoff.state is RecoveryOutcome.PR_OBSERVED and handoff.handoff_complete and bound_owner is not None and handoff.pr_number in bound_owner.implementation_prs)
+            handoff_pr = handoff.pr_number if completed_handoff and handoff is not None else None
+            handoff_sources.append((task, handoff))
+            operations.append(operation(stable_codex_operation_id("follow-up", request), "follow-up", request, phase, task, baseline, request_fingerprint=fingerprint or None, handoff_pr_number=handoff_pr, publication_complete=completed_handoff, tracking_complete=completed_handoff))
+        owner_binding = None if bound_owner is None else (bound_owner.incarnation, bound_owner.implementation_prs)
+        return CodexSourceSnapshot("follow-ups", _value_identity((_path_identity(followup_path), handoff_sources, owner_binding)), tuple(operations))
 
     def repairs() -> CodexSourceSnapshot:
         operations = []

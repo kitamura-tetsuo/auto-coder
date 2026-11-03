@@ -282,7 +282,7 @@ class CodexWhamClient:
             logger.warning(f"Failed to fetch WHAM task '{task_id}': {type(e).__name__}")
             return None
 
-    def get_task_turns(self, task_id: str) -> list[WhamTurn]:
+    def get_task_turns(self, task_id: str, *, require_complete: bool = False) -> list[WhamTurn]:
         """Fetch task turns for a given task ID.
 
         Executes:
@@ -314,6 +314,8 @@ class CodexWhamClient:
             response.raise_for_status()
 
             data = response.json()
+            if require_complete and isinstance(data, dict) and any(data.get(key) for key in ("has_more", "has_next_page", "next_cursor", "next", "next_page", "page_info")):
+                raise ValueError("WHAM turn history exposes incomplete or unsupported pagination")
             raw_list: list[object] = []
             if isinstance(data, list):
                 raw_list = data
@@ -332,10 +334,15 @@ class CodexWhamClient:
                 turn = self._parse_turn_dict(item)
                 if turn:
                     turns.append(turn)
+                elif require_complete:
+                    raise ValueError("WHAM turn history contains an unreadable entry")
+            if require_complete and (len({turn.id for turn in turns}) != len(turns) or any(not turn.id.startswith(task_id + "~") or not turn.role for turn in turns)):
+                raise ValueError("WHAM turn history has conflicting or foreign identities")
 
             return turns
         except (httpx.HTTPError, json.JSONDecodeError, ValueError, TypeError) as e:
-
+            if require_complete:
+                raise ValueError("Complete WHAM turn history is unavailable") from e
             logger.warning(f"Failed to fetch WHAM task turns for '{task_id}': {type(e).__name__}")
             return []
 

@@ -70,3 +70,13 @@ be replaced or removed, and settled or definitely unsent operations cannot gain
 a task binding. Binding records acceptance without settling execution or handoff
 obligations, so subsequent CI continuations can pass the normal fence without
 making the Issue reservation releasable.
+
+Ordinary due reclamation refreshes a complete reconstruction under the existing
+owner guard before reading accounting. It can bind the original prepared
+follow-up message fingerprint and a verified PR-recovery handoff to that same
+logical operation. A fingerprint or PR binding cannot subsequently change or
+disappear. Publication and tracking are complete only when the retained
+`pr_observed` recovery record has a completed handoff and the same PR is a member
+of the current Issue reservation. An unrelated handoff supplies no authority.
+The source token includes recovery records and PR membership, and is rechecked
+at commit. Reconstruction never treats an unavailable source as an empty one.

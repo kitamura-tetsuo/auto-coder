@@ -15,6 +15,7 @@ from typing import Optional
 
 from .cloud_run import CloudRun, CloudRunRepository
 from .cloud_task_client_base import CloudTaskState
+from .codex_followup_causality import followup_completion
 from .codex_observation import ObservationBinding, execution_evidence
 from .codex_pr_attribution import AttributionDisposition, CodexPrAttributionRepository, closes_issue, task_ids_from_text
 from .codex_pr_recovery import CodexPRRecoveryStore, RecoveryRecord
@@ -119,6 +120,14 @@ def _settlement(operation: CodexWorkOperation, task: Optional[WhamTask], turns: 
     current = task.current_assistant_turn
     if current is None or not current.id or current.status.lower() not in {"completed", "failed", "error", "cancelled", "canceled"}:
         return None
+    if operation.request_fingerprint is not None:
+        if operation.kind != "follow-up" or operation.causal_baseline is None or operation.handoff_pr_number is None or not (operation.publication_complete and operation.tracking_complete):
+            return None
+        completed = followup_completion(operation.task_id, operation.causal_baseline, operation.request_fingerprint, turns)
+        if completed is None:
+            return None
+        user_id, assistant_id = completed
+        return OperationSettlementCertificate(operation.logical_operation_id, operation.task_id, assistant_id, user_id)
     # Initial creation is bound by the accepted task identity. Follow-ups must
     # have a matching user request after their captured assistant baseline and
     # before the terminal assistant turn.
@@ -214,7 +223,7 @@ def collect_codex_retirement_observation(
         if evidence.state is CodexEvidenceState.UNKNOWN:
             reasons.append(f"task {run.task_id}: {evidence.reason}")
         try:
-            task_turns[run.task_id] = client.get_task_turns(run.task_id)
+            task_turns[run.task_id] = client.get_task_turns(run.task_id, require_complete=True)
         except Exception as exc:
             task_turns[run.task_id] = []
             reasons.append(f"task history {run.task_id} unavailable: {type(exc).__name__}")

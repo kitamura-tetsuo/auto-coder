@@ -2274,6 +2274,18 @@ evidence, final guarded token revalidation, and provider-selective startup
 reconstruction remain internal safety decisions on that same reclamation path;
 they do not introduce a dashboard origin, outcome, route, or event schema.
 
+Journaled follow-up completion now uses the actual prepared message, native
+baseline/user/assistant graph, complete history, and the same reservation's
+verified PR handoff. Ordinary due checks refresh reconstruction before consuming
+these facts. A committed retirement retains the native witness in historical
+accounting and changes the existing slot projection from occupied to available;
+read-only evidence collection and ambiguous delivery leave it occupied. This is
+capacity evidence, not evidence of implementation progress or delivery success.
+No new structured origin or renderer field is introduced. Production sender,
+HTTP normalization, due-check, restart and public slot-projection assertions are
+covered by `tests/test_codex_followup_reclamation.py`; its read-only collection
+case also asserts that source files and accounting remain unchanged.
+
 ## Definitive Parent-Issue refusal settlement
 
 The durable invalidation worker emits a `Worker` BLOCKED diagnostic when an

@@ -12,7 +12,7 @@ from auto_coder.codex_retirement_observer import (
     OperationSettlementCertificate,
 )
 from auto_coder.codex_wham_client import WhamTask, WhamTurn
-from auto_coder.codex_work_accounting import CodexWorkAccounting
+from auto_coder.codex_work_accounting import CodexWorkAccounting, ReconstructionReceipt
 from auto_coder.implementation_reclamation_scheduler import (
     RECLAMATION_RECHECK_SECONDS,
     ReclamationObligationStore,
@@ -42,10 +42,16 @@ def test_terminal_codex_work_is_settled_and_retired_under_one_owner_guard(tmp_pa
         task_id="task_e_terminal",
     )
 
+    captured = accounting.snapshot(owner, incarnation).operations
+
     class Reconstructor:
         @staticmethod
+        def reconstruct():
+            return ReconstructionReceipt("unit-reconstruction", ("unit",), ("unit",), (("unit", tuple(item.logical_operation_id for item in captured)),), captured, (("unit", "stable"),))
+
+        @staticmethod
         def consistency_ids(_sources: tuple[str, ...]) -> dict[str, str]:
-            return {}
+            return {"unit": "stable"}
 
     monkeypatch.setattr(
         "auto_coder.codex_work_reconstruction.production_codex_reconstructor",
@@ -193,7 +199,8 @@ def test_production_reconstruction_and_observation_retire_on_first_due_check(tmp
                 environment_id="env",
             )
 
-        def get_task_turns(self, _task_id):
+        def get_task_turns(self, _task_id, *, require_complete=False):
+            assert require_complete
             return turns
 
     class GitHub:
@@ -236,10 +243,16 @@ def test_guarded_codex_commit_rejects_changed_final_source_evidence(tmp_path: Pa
     assert slots.record_implementation_pr(owner, 91)
     accounting.register(owner, incarnation, logical_operation_id="initial", kind="submission", source_request_id="request-1", task_id="task_e_terminal")
 
+    captured = accounting.snapshot(owner, incarnation).operations
+
     class Reconstructor:
         @staticmethod
+        def reconstruct():
+            return ReconstructionReceipt("unit-reconstruction", ("unit",), ("unit",), (("unit", tuple(item.logical_operation_id for item in captured)),), captured, (("unit", "stable"),))
+
+        @staticmethod
         def consistency_ids(_sources: tuple[str, ...]) -> dict[str, str]:
-            return {}
+            return {"unit": "stable"}
 
     monkeypatch.setattr("auto_coder.codex_work_reconstruction.production_codex_reconstructor", lambda *_args: Reconstructor())
     calls = 0

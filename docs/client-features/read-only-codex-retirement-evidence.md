@@ -14,6 +14,17 @@ request to occur after the durable pre-send assistant baseline and before the
 terminal assistant turn. A returned operation settlement certificate is only
 evidence: collection never records settlement.
 
+For journaled follow-ups whose provider response does not echo the internal
+request ID, the collector uses the retained prepared-message SHA-256 and native
+turn graph. Complete history must contain the retained assistant baseline,
+exactly one user child with that exact message, and its terminal assistant child.
+Wrapper and nested identities and parent links must agree; missing ancestors,
+cycles, competing requests, duplicate identities, incomplete pagination or an
+unrelated terminal response remain unknown. Mapping order and task-level
+completion alone do not establish request completion. The resulting certificate
+retains both native user and assistant identities; it never rewrites the original
+delivery journal or sends another request.
+
 The PR candidate set is the union of durable slot membership, all PRs retained
 by every bound CloudRun, the complete verified-attribution registry, native
 Issue associations, retained publication heads, and strict open-PR discovery.
