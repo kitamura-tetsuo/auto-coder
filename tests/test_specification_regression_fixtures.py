@@ -8,6 +8,7 @@ from src.auto_coder.objective_evidence import ObjectiveAnchor, extract_objective
 from src.auto_coder.requirement_contract import build_normative_issue_manifest
 from src.auto_coder.specification_analyzer import IndividualRelationshipContext, IndividualReviewEvidence
 from src.auto_coder.specification_analyzer import analyze_issue_specification as _analyze_issue_specification
+from tests.support.individual_review_evidence import prompt_evidence
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "specification_regressions"
 
@@ -81,7 +82,7 @@ def test_outliner_5290_complete_fixture_reaches_strengthened_review_policy() -> 
     def review_at_provider_boundary(prompt: str) -> str:
         # The supported analyzer boundary must preserve the complete historical
         # evidence and explicitly instruct every provider about this defect class.
-        assert body in prompt
+        assert prompt_evidence(prompt)["current"]["body"] == body
         assert "existing authorization rules" in prompt
         assert "readable-but-non-writable principal" in prompt
         assert "none can convert the contract to READY" in prompt
@@ -170,9 +171,9 @@ def test_auto_coder_1774_child_review_reports_both_defects_in_one_production_pat
 
     def deterministic_prompt_provider(prompt: str) -> str:
         invocations.append(prompt)
-        assert body in prompt
+        assert prompt_evidence(prompt)["current"]["body"] == body
         assert "Authoritative relationship role selected by the caller after reconciliation: child" in prompt
-        assert relationship["related_contracts"] in prompt
+        assert prompt_evidence(prompt)["current"]["relationship"]["related_contracts"] == relationship["related_contracts"]
         assert "perform an ambiguity-closure pass" in prompt
         assert "perform a next-review-prediction pass" in prompt
         assert "child specification mutation can materially change whether parent/set evidence remains valid" in prompt

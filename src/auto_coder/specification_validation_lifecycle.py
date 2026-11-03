@@ -17,10 +17,10 @@ from .github_pending_work import WorkIdentity, get_pending_work_store
 from .invocation_admission import bind_invocation_target, take_pending_invocation_handle
 from .issue_review_publication import find_confirmed_publication
 from .issue_review_rerun import IssueReviewRerunStore, RerunAuthorityUnavailable, ReviewSubject
-from .objective_evidence import ObjectiveAnchorStore
+from .objective_evidence import ObjectiveAnchorStore, extract_objective
 from .prompt_loader import load_prompts
 from .reissue_required_store import ReissueRequiredStore
-from .requirement_contract import NormativeIssueManifest, build_normative_issue_manifest
+from .requirement_contract import NormativeIssueManifest, NormativeRequirement, build_normative_issue_manifest
 from .runtime_locks import ensure_lock_directory, lock_path
 from .specification_analyzer import (
     SPECIFICATION_FINDING_CATEGORIES,
@@ -35,6 +35,7 @@ from .specification_analyzer import (
     individual_relationship_context,
     individual_review_evidence,
     objective_integrity_result,
+    parse_specification_analysis_response,
 )
 from .specification_repair_rounds import (
     AuthoritativeRepairState,
@@ -45,7 +46,7 @@ from .specification_repair_rounds import (
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 from .util.github_request_outcome import GitHubRequestError
 
-VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v8-retained-findings"
+VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v9-bound-review-inputs"
 FINDINGS_MARKER_PREFIX = "auto-coder-specification-validation"
 
 # Pending-work stage for the two independently-trackable BLOCKED publication
@@ -373,11 +374,15 @@ def validation_policy_identity() -> str:
     (REQ-002). ``VALIDATION_SCHEMA_VERSION`` is bumped whenever this contract
     changes in a decision-affecting way, including this migration itself.
     """
-    issue_prompts = load_prompts().get("issue")
+    prompts = load_prompts()
+    issue_prompts = prompts.get("issue")
     prompt = issue_prompts.get("adversarial_specification_analysis") if isinstance(issue_prompts, dict) else None
     contract = {
         "version": VALIDATION_SCHEMA_VERSION,
         "prompt": prompt,
+        "header": prompts.get("header"),
+        "evidence_field_reference_prompt": issue_prompts.get("individual_evidence_field_reference") if isinstance(issue_prompts, dict) else None,
+        "evidence_envelope_prompt": issue_prompts.get("individual_evidence_envelope") if isinstance(issue_prompts, dict) else None,
         "categories": sorted(SPECIFICATION_FINDING_CATEGORIES),
         "result_fields": ["verdict", "remediation", "findings"],
     }
@@ -386,6 +391,23 @@ def validation_policy_identity() -> str:
 
 _IDENTITY_LOCKS: dict[str, threading.Lock] = {}
 _IDENTITY_LOCKS_GUARD = threading.Lock()
+
+
+def _stored_finding_is_complete(value: object) -> bool:
+    """Check the full retained payload before it becomes predecessor evidence."""
+    if not isinstance(value, dict) or set(value) != set(SpecificationFinding.__dataclass_fields__):
+        return False
+    return bool(
+        isinstance(value["category"], str)
+        and value["category"] in SPECIFICATION_FINDING_CATEGORIES
+        and isinstance(value["requirement_ids"], list)
+        and all(isinstance(item, str) and item for item in value["requirement_ids"])
+        and len(set(value["requirement_ids"])) == len(value["requirement_ids"])
+        and all(isinstance(value[field], str) for field in ("explanation", "clarification", "counterexample", "missing_normative_boundary"))
+        and value["explanation"].strip()
+        and value["clarification"].strip()
+        and (value["category"] != "false_success_gap" or (value["counterexample"].strip() and value["missing_normative_boundary"].strip()))
+    )
 
 
 class SpecificationValidationStore:
@@ -429,21 +451,88 @@ class SpecificationValidationStore:
         if raw.get("identity") != asdict(identity):
             return None
         authority, _request_id, _state = self.reruns.authority(ReviewSubject(self.repository, "individual", identity.issue_number))
-        if int(raw.get("rerun_authority") or 0) != authority:
-            return None
         if not self._raw_has_complete_evidence(raw, identity):
+            return None
+        if raw["rerun_authority"] != authority:
             return None
         return self._decision_from_raw(identity, raw, evaluation_source="stored-decision-reuse")
 
-    @staticmethod
-    def _raw_has_complete_evidence(raw: dict[str, object], identity: ValidationIdentity) -> bool:
+    def _raw_has_complete_evidence(self, raw: dict[str, object], identity: ValidationIdentity) -> bool:
         """Require the complete evidence envelope before a record can authorize reuse."""
         try:
             inputs = json.loads(raw["review_inputs"] if isinstance(raw["review_inputs"], str) else "")
             binding = json.loads(identity.manifest_binding)
-            expected = {str(item["requirement_id"]) for item in binding["requirements"]} | {"contract-wide"}
         except (KeyError, TypeError, json.JSONDecodeError):
             return False
+        if (
+            not isinstance(binding, dict)
+            or set(binding) != {"issue_number", "title", "explicit_contract_present", "explicit_contract_valid", "requirements"}
+            or type(binding["issue_number"]) is not int
+            or binding["issue_number"] != identity.issue_number
+            or not isinstance(binding["title"], str)
+            or binding["explicit_contract_present"] is not True
+            or binding["explicit_contract_valid"] is not True
+            or not isinstance(binding["requirements"], list)
+            or any(not isinstance(item, dict) or set(item) != {"requirement_id", "text"} or not isinstance(item["requirement_id"], str) or not item["requirement_id"] or not isinstance(item["text"], str) for item in binding["requirements"])
+        ):
+            return False
+        expected = {item["requirement_id"] for item in binding["requirements"]} | {"contract-wide"}
+        sequence = raw.get("accepted_sequence")
+        authority = raw.get("rerun_authority")
+        if type(sequence) is not int or sequence <= 0 or type(authority) is not int or authority < 0:
+            return False
+        if not isinstance(raw.get("verdict"), str) or raw["verdict"] not in {"READY", "BLOCKED"}:
+            return False
+        required_inputs = {"manifest", "title", "body", "role", "parent_number", "related_contracts", "objective", "baseline", "prior_applied_outcomes"}
+        if not isinstance(inputs, dict) or set(inputs) != required_inputs:
+            return False
+        if raw.get("review_inputs_digest") != hashlib.sha256(str(raw["review_inputs"]).encode("utf-8")).hexdigest():
+            return False
+        if (
+            inputs["manifest"] != binding
+            or any(not isinstance(inputs[field], str) for field in ("title", "body", "role", "related_contracts", "baseline"))
+            or (inputs["parent_number"] is not None and (type(inputs["parent_number"]) is not int or inputs["parent_number"] <= 0))
+            or not isinstance(inputs["prior_applied_outcomes"], list)
+            or any(not isinstance(item, str) for item in inputs["prior_applied_outcomes"])
+        ):
+            return False
+        if specification_digest(inputs["title"], inputs["body"]) != identity.specification_digest:
+            return False
+        try:
+            history = IndividualReviewHistoryStore(self.repository, self.path.with_name("individual_review_history.json"))._read().get(str(identity.issue_number))
+        except (OSError, ValueError, TypeError):
+            return False
+        if not isinstance(history, dict) or inputs["baseline"] != history.get("baseline"):
+            return False
+        relationship = {field: inputs[field] for field in ("role", "related_contracts", "parent_number")}
+        if hashlib.sha256(json.dumps(relationship, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest() != identity.relationship_digest:
+            return False
+        objective = inputs["objective"]
+        if objective is None:
+            return False
+        else:
+            if not isinstance(objective, dict) or set(objective) != {"issue_number", "state", "original_text", "source_identity", "current"}:
+                return False
+            current = objective["current"]
+            if (
+                type(objective["issue_number"]) is not int
+                or objective["issue_number"] != identity.issue_number
+                or not isinstance(objective["state"], str)
+                or objective["state"] not in {"ANCHORED", "UNANCHORED"}
+                or not isinstance(objective["source_identity"], str)
+                or not objective["source_identity"]
+                or (objective["state"] == "ANCHORED" and not isinstance(objective["original_text"], str))
+                or (objective["state"] == "UNANCHORED" and objective["original_text"] is not None)
+                or not isinstance(current, dict)
+                or set(current) != {"status", "text"}
+                or not isinstance(current["status"], str)
+                or current["status"] not in {"PRESENT", "ABSENT", "INVALID"}
+                or (current["text"] is not None and not isinstance(current["text"], str))
+            ):
+                return False
+            anchor = history.get("objective_anchor")
+            if not isinstance(anchor, dict) or any(objective[field] != anchor.get(field) for field in ("state", "original_text", "source_identity")) or current != asdict(extract_objective(inputs["body"])):
+                return False
         coverage = raw.get("coverage")
         dispositions = raw.get("finding_dispositions")
         retained = raw.get("retained_findings")
@@ -457,13 +546,15 @@ class SpecificationValidationStore:
             or not isinstance(finding_ids, list)
             or not isinstance(findings, list)
             or len(finding_ids) != len(findings)
-            or any(not isinstance(item, str) for item in finding_ids)
+            or any(not isinstance(item, str) or not item for item in finding_ids)
             or len(set(finding_ids)) != len(finding_ids)
+            or any(not _stored_finding_is_complete(item) for item in findings)
             or any(
                 not isinstance(item, dict)
                 or set(item) != {"finding_id", "disposition", "reasoning"}
                 or not isinstance(item.get("finding_id"), str)
-                or item.get("disposition") not in {"RESOLVED", "STILL_VALID", "REGRESSED", "UNVERIFIED"}
+                or not isinstance(item.get("disposition"), str)
+                or item.get("disposition") not in {"RESOLVED", "STILL_VALID", "REGRESSED"}
                 or not isinstance(item.get("reasoning"), str)
                 or not str(item.get("reasoning")).strip()
                 for item in dispositions
@@ -472,15 +563,53 @@ class SpecificationValidationStore:
                 not isinstance(item, dict)
                 or set(item) != {"finding_id", "finding", "disposition", "reasoning"}
                 or not isinstance(item.get("finding_id"), str)
-                or not isinstance(item.get("finding"), dict)
-                or item.get("disposition") not in {"RESOLVED", "STILL_VALID", "REGRESSED", "UNVERIFIED"}
+                or not item.get("finding_id")
+                or not _stored_finding_is_complete(item.get("finding"))
+                or not isinstance(item.get("disposition"), str)
+                or item.get("disposition") not in {"RESOLVED", "STILL_VALID", "REGRESSED"}
                 or not isinstance(item.get("reasoning"), str)
+                or not str(item.get("reasoning")).strip()
                 for item in retained
             )
         ):
             return False
-        boundaries = [item.get("boundary") for item in coverage if isinstance(item, dict) and set(item) == {"boundary", "status", "no_impact_reason"} and item.get("status") in {"FRESH", "CARRIED"}]
-        return len(boundaries) == len(set(boundaries)) and set(boundaries) == expected
+        retained_by_id = {item["finding_id"]: item for item in retained}
+        if len(retained_by_id) != len(retained) or len({item["finding_id"] for item in dispositions}) != len(dispositions):
+            return False
+        if any(finding_id not in retained_by_id or retained_by_id[finding_id]["finding"] != finding for finding_id, finding in zip(finding_ids, findings)):
+            return False
+        if any(item["finding_id"] not in retained_by_id or any(retained_by_id[item["finding_id"]][field] != item[field] for field in ("disposition", "reasoning")) for item in dispositions):
+            return False
+        manifest = NormativeIssueManifest(
+            issue_number=binding["issue_number"],
+            title=binding["title"],
+            explicit_contract_present=binding["explicit_contract_present"],
+            explicit_contract_valid=binding["explicit_contract_valid"],
+            requirements=tuple(NormativeRequirement(item["requirement_id"], item["text"]) for item in binding["requirements"]),
+        )
+        # Remediation is subsequently updated by the authoritative repair state;
+        # it is not an immutable copy of the model response's remediation field.
+        if not isinstance(raw.get("remediation"), str) or raw["remediation"] not in {"NONE", "EDIT_IN_PLACE", "REISSUE_REQUIRED"}:
+            return False
+        core = json.dumps({"verdict": raw["verdict"], "findings": raw["findings"], "remediation": "EDIT_IN_PLACE" if raw["verdict"] == "BLOCKED" else "NONE"})
+        if parse_specification_analysis_response(core, manifest).verdict == "ERROR":
+            return False
+        if raw["verdict"] == "READY" and any(item["disposition"] in {"STILL_VALID", "REGRESSED"} for item in dispositions):
+            return False
+        boundaries = [
+            item["boundary"]
+            for item in coverage
+            if isinstance(item, dict)
+            and set(item) == {"boundary", "status", "no_impact_reason"}
+            and isinstance(item["boundary"], str)
+            and item["boundary"] in expected
+            and isinstance(item["status"], str)
+            and item["status"] in {"FRESH", "CARRIED"}
+            and isinstance(item["no_impact_reason"], str)
+            and (bool(item["no_impact_reason"].strip()) if item["status"] == "CARRIED" else not item["no_impact_reason"])
+            and (item["status"] != "CARRIED" or raw.get("review_mode") == "INCREMENTAL")
+        ]
+        return len(boundaries) == len(coverage) == len(set(boundaries)) and set(boundaries) == expected
 
     def _decision_from_raw(self, identity: ValidationIdentity, raw: dict[str, object], evaluation_source: str = "model") -> ValidationDecision:
         raw_findings = raw.get("findings")
@@ -569,15 +698,21 @@ class SpecificationValidationStore:
             identity_raw = raw.get("identity")
             if not isinstance(identity_raw, dict):
                 continue
+            if identity_raw.get("repository") != identity.repository or identity_raw.get("issue_number") != identity.issue_number:
+                continue
             try:
                 candidate_identity = ValidationIdentity(**identity_raw)
             except (TypeError, ValueError):
-                continue
-            if candidate_identity.repository == identity.repository and candidate_identity.issue_number == identity.issue_number and candidate_identity.policy_identity == identity.policy_identity and int(raw.get("rerun_authority") or 0) == authority:
-                candidates.append((int(raw.get("accepted_sequence") or 0), candidate_identity, raw))
+                return None
+            sequence = raw.get("accepted_sequence")
+            if type(sequence) is not int or sequence <= 0:
+                return None
+            candidates.append((sequence, candidate_identity, raw))
         if not candidates:
             return None
         _sequence, candidate_identity, raw = max(candidates, key=lambda item: item[0])
+        if sum(sequence == _sequence for sequence, _identity, _raw in candidates) != 1 or candidate_identity.policy_identity != identity.policy_identity or raw.get("rerun_authority") != authority:
+            return None
         if not self._raw_has_complete_evidence(raw, candidate_identity):
             return None
         try:
@@ -620,6 +755,10 @@ class SpecificationValidationStore:
             raise ValueError("ERROR decisions must not be persisted")
         with self.locked("repository-state"):
             state = self._read()
+            previous = state.get(decision.identity.key)
+            review_mode = decision.review_mode
+            if review_mode == "REUSED" and isinstance(previous, dict):
+                review_mode = previous.get("review_mode", "REUSED")
             state[decision.identity.key] = {
                 "identity": asdict(decision.identity),
                 "verdict": decision.verdict,
@@ -633,13 +772,14 @@ class SpecificationValidationStore:
                 "execution_provenance": decision.execution_provenance,
                 "rerun_authority": decision.rerun_authority,
                 "rerun_request_id": decision.rerun_request_id,
-                "review_mode": decision.review_mode,
+                "review_mode": review_mode,
                 "predecessor_decision_key": decision.predecessor_decision_key,
                 "assessed_delta": decision.assessed_delta,
                 "finding_ids": list(decision.finding_ids),
                 "finding_dispositions": [asdict(item) for item in decision.finding_dispositions],
                 "coverage": [asdict(item) for item in decision.coverage],
                 "review_inputs": decision.review_inputs,
+                "review_inputs_digest": hashlib.sha256(decision.review_inputs.encode("utf-8")).hexdigest(),
                 "accepted_sequence": decision.accepted_sequence
                 or 1
                 + max(

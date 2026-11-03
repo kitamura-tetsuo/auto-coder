@@ -1933,6 +1933,36 @@ dashboard coverage remain unchanged. The production-boundary tests in
 `tests/test_jules_candidate_submission.py` establish that the inactive
 adapter preserves its durable claims and exact reconciliation state without
 substituting dashboard diagnostics for provider/session ownership.
+# Individual evidence transport and retained authority
+
+Individual specification-review evidence interning changes only the reversible
+prompt representation. Existing Review-lane origins, durable decision/audit fields,
+coverage/dispositions, currentness fences and dashboard projections remain the
+same schema. The semantic policy identity now binds the receiving instruction
+templates as well: an older-policy decision is not reused, and the existing
+review history records a fresh FULL assessment. Invalid required transport evidence follows the existing fail-closed ERROR
+path; a smaller payload is not a readiness or progress event. Run
+`bash scripts/test.sh tests/test_individual_evidence_envelope.py
+tests/test_specification_analyzer.py tests/test_specification_validation_lifecycle.py
+tests/test_specification_regression_fixtures.py tests/test_specification_drift_sequence.py
+tests/test_issue_review_service.py`
+for complete reconstruction, production-boundary coverage and retained authority
+behavior. Semantic replay is separately advisory; see the individual rereview
+client-feature fragment for commands and evidence limits.
+
+The real Review lane is also exercised for standalone and reconciled-child
+FULL/INCREMENTAL sequences with persisted accepted predecessors, retained
+resolved findings and changed closed-sibling evidence. Its actual outgoing
+model request is independently reconstructed; these are transport/authority
+assertions, not fixed semantic verdicts or deployment evidence.
+
+The bound-input profile changes the existing policy identity and produces an
+ordinary fresh FULL assessment for unproven older records. It adds no processing
+origin or dashboard event schema. Unreadable required history yields the existing
+local ERROR with no semantic call, while exact current reuse retains its original
+producing mode beneath the REUSED view. Coverage in the same lifecycle and real
+Review-lane tests checks those outcomes and preservation of accepted record bytes.
+
 # Explicit Issue-review rerun authority
 
 Explicit review reruns add durable authorization state but do not add a new
