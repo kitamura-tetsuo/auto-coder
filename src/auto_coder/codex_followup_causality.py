@@ -80,8 +80,8 @@ def followup_completion(task_id: str, baseline_id: str, fingerprint: str, turns:
     text = _input_text(user)
     if text is None or hashlib.sha256(text.encode("utf-8")).hexdigest() != fingerprint:
         return None
-    matches = [turn for turn in turns if turn.role.lower() in {"user", "human"} and (value := _input_text(turn)) is not None and hashlib.sha256(value.encode("utf-8")).hexdigest() == fingerprint]
-    if len(matches) != 1:
+    user_inputs = [_input_text(turn) for turn in turns if turn.role.lower() in {"user", "human"}]
+    if any(value is None for value in user_inputs) or sum(hashlib.sha256(value.encode("utf-8")).hexdigest() == fingerprint for value in user_inputs if value is not None) != 1:
         return None
     responses = [turn for turn in turns if turn.role.lower() in {"assistant", "agent", "bot", "asst"} and parents[turn.id] == user.id]
     if len(responses) != 1 or responses[0].status.lower() not in {"completed", "failed", "error", "cancelled", "canceled"}:

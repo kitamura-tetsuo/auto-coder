@@ -158,7 +158,26 @@ def test_real_followup_reconstructs_and_reclaims_on_first_due_check(tmp_path, mo
 
 
 @pytest.mark.parametrize(
-    "gap", ["unmatched", "duplicate", "later-duplicate", "interleaved", "missing-baseline", "missing-history", "wrong-parent", "unrelated-response", "publication", "unbound-publication", "open-pr", "competing-ambiguous", "cycle", "missing-ancestor", "wrong-turn-identity", "source-race"]
+    "gap",
+    [
+        "unmatched",
+        "duplicate",
+        "later-duplicate",
+        "later-missing-text",
+        "interleaved",
+        "missing-baseline",
+        "missing-history",
+        "wrong-parent",
+        "unrelated-response",
+        "publication",
+        "unbound-publication",
+        "open-pr",
+        "competing-ambiguous",
+        "cycle",
+        "missing-ancestor",
+        "wrong-turn-identity",
+        "source-race",
+    ],
 )
 def test_real_followup_uncertainty_retains_capacity_without_replay(tmp_path, monkeypatch, gap):
     slots, owner, incarnation, runs, _recovery, run, provider, wham = actual_followup(tmp_path, monkeypatch, handoff=gap != "publication", bounded_repair=gap != "unbound-publication")
@@ -167,8 +186,10 @@ def test_real_followup_uncertainty_retains_capacity_without_replay(tmp_path, mon
     elif gap in {"duplicate", "interleaved"}:
         text = provider.turns[-2]["turn"]["input_items"][0]["content"][0]["text"] if gap == "duplicate" else "An unrelated manual request"
         provider.turns.insert(-1, native_turn(TASK + "~usertrn_competing", "user", BASELINE, text=text))
-    elif gap == "later-duplicate":
+    elif gap in {"later-duplicate", "later-missing-text"}:
         provider.turns.extend([native_turn(TASK + "~usertrn_later", "user", RESPONSE, text=provider.turns[-2]["turn"]["input_items"][0]["content"][0]["text"]), native_turn(TASK + "~assttrn_later", "assistant", TASK + "~usertrn_later")])
+        if gap == "later-missing-text":
+            del provider.turns[-2]["turn"]["input_items"]
     elif gap == "missing-baseline":
         provider.turns = [turn for turn in provider.turns if turn["id"] != BASELINE]
     elif gap == "missing-history":
