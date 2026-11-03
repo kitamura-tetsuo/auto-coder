@@ -3171,3 +3171,18 @@ assert original failures, single sends, consumed receipts, durable occupancy
 and later independently requested communication/cache-hit isolation. Existing
 `tests/test_github_request_outcomes.py`, `tests/test_gh_cache_timeouts.py` and
 `tests/test_github_request_governor.py` retain the wider boundary/pacing gates.
+
+
+Missing namespace links do not make unrelated proof errors retryable. The real
+held-directory lifetime reader propagates permission and malformed-evidence
+errors; the scanner retains their cause with PID/TID and error class and refuses
+immediately, even if that task would disappear before another scan. Only an
+actual disappearing entry or a readable non-zombie/unstable proof remains an
+unknown missing-link observation eligible for the existing bounded full rescan.
+The positive stable-zombie proof is unchanged. The outer-helper regression
+`test_missing_namespace_does_not_erase_hard_lifetime_proof_error` traverses real
+temporary task directories and the real scanner/held-directory reader, with a
+controlled OS stat-open PermissionError and malformed/zero-token files; a
+hypothetical sleep removes the task, so a forbidden retry cannot hide the error.
+This is a unit boundary control, not a claim of a real-kernel EACCES reproduction.
+Run `bash scripts/test.sh tests/test_management_fresh_initialization.py`.
