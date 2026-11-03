@@ -381,6 +381,7 @@ def _collect_settle_and_retire_codex(
         return RetirementResult(RetirementStatus.STALE_OBSERVATION, diagnostic="Owner is no longer active")
     reconstructor = production_codex_reconstructor(slots.repo_name, owner.number)
     accounting = CodexWorkAccounting(slots, reconstructor.consistency_ids)
+    accounting.reconcile_from_receipt(owner, incarnation, reconstructor.reconstruct())
     snapshot = accounting.snapshot(owner, incarnation)
     runs = cloud_run_store if cloud_run_store is not None else CloudRunRepository(slots.repo_name)
     observed = collect_codex_retirement_observation(
@@ -408,7 +409,7 @@ def _collect_settle_and_retire_codex(
             incarnation,
             operation.logical_operation_id,
             CodexWorkPhase.SETTLED,
-            evidence_id=f"codex-retirement:{certificate.assistant_turn_id}",
+            evidence_id=f"codex-retirement:{certificate.assistant_turn_id}" + (f"|user:{certificate.matched_request_id}" if operation.request_fingerprint is not None else ""),
             evidence_causal_baseline=operation.causal_baseline,
             evidence_source_request_id=operation.source_request_id,
             task_id=certificate.task_id,

@@ -10,6 +10,7 @@ replacement task/session. This module centralizes that invariant so callers
 cannot recreate weaker, provider-specific wording that omits it.
 """
 
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -25,6 +26,26 @@ class ExistingPrRepairTarget:
     head_branch: str
     base_branch: str
     head_sha: str
+
+
+def observed_existing_pr_repair_target(message: str, repository: str, pr_number: int) -> Optional[ExistingPrRepairTarget]:
+    """Recognize only the exact supported producer contract in preserved input.
+
+    This does not classify arbitrary instructions. An older journal may lack
+    structured producer metadata while its fingerprint-bound native user input
+    still preserves the complete existing-PR invariant emitted by our builder.
+    """
+    seed = ExistingPrRepairTarget(repository, pr_number, "__AC_HEAD_BRANCH__", "__AC_BASE_BRANCH__", "__AC_HEAD_SHA__")
+    pattern = re.escape(build_existing_pr_repair_prompt(seed, "").rstrip())
+    for sentinel, name, expression in (("__AC_HEAD_BRANCH__", "head", r"[^`\r\n]+"), ("__AC_BASE_BRANCH__", "base", r"[^`\r\n]+"), ("__AC_HEAD_SHA__", "sha", r"[0-9a-f]{40}")):
+        pieces = pattern.split(re.escape(sentinel))
+        if len(pieces) < 2:
+            return None
+        pattern = pieces[0] + f"(?P<{name}>{expression})" + f"(?P={name})".join(pieces[1:])
+    match = re.match(pattern + r"(?=\n|$)", message)
+    if match is None:
+        return None
+    return ExistingPrRepairTarget(repository, pr_number, match["head"], match["base"], match["sha"])
 
 
 def resolve_existing_pr_repair_target(repo_name: str, pr_data: Dict[str, Any]) -> Optional[ExistingPrRepairTarget]:

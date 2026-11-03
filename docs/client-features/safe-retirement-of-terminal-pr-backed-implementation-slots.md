@@ -96,6 +96,16 @@ A `ReclamationObligationStore` persists one JSON object (`implementation_slots_r
 
 ### Due-Check Consumer and 60-Second Cadence (REQ-003)
 
+The ordinary Codex check first reconstructs current source journals while holding
+the owner guard. For retained follow-ups it may combine an exact prepared-message
+fingerprint and coherent native provider request/response graph with an existing
+verified PR-recovery handoff to the same reservation's PR. Only a conclusive
+certificate settles that logical operation; the retired history retains the
+original source identity and native user/assistant witnesses. Unknown delivery,
+incomplete history, competing requests, source races or open PRs keep capacity
+reserved and use the same 60-second reevaluation. No request is replayed, no
+allowance is reset, and neither task completion nor handoff alone releases a slot.
+
 `run_due_reclamation_checks` services every currently due obligation once. Local/Jules owners use `collect_retirement_observation`; an owner carrying the Codex accounting fence uses the complete Codex collector and its source-bound reconstruction identities. Terminal Codex execution certificates are persisted under the same owner guard, all evidence is recollected after that valid settlement mutation, and only then is the shared retirement transaction allowed to remove capacity. On `RELEASED`, the obligation is cleared. On `RETAINED_ACTIVE`/`RETAINED_UNKNOWN`/`STALE_OBSERVATION`, or an evidence-collection failure, the obligation is rescheduled 60 seconds out (`RECLAMATION_RECHECK_SECONDS`).
 
 The Codex inventory includes slot membership, CloudManager and CloudRun bindings,

@@ -15,6 +15,7 @@ from typing import Optional
 
 from .cloud_run import CloudRun, CloudRunRepository
 from .cloud_task_client_base import CloudTaskState
+from .codex_followup_causality import followup_completion, native_user_text
 from .codex_observation import ObservationBinding, execution_evidence
 from .codex_pr_attribution import AttributionDisposition, CodexPrAttributionRepository, closes_issue, task_ids_from_text
 from .codex_pr_recovery import CodexPRRecoveryStore, RecoveryRecord
@@ -113,12 +114,27 @@ def _request_matches(turn: WhamTurn, request_id: str) -> bool:
     return values.get("request_id") == request_id or values.get("source_request_id") == request_id
 
 
-def _settlement(operation: CodexWorkOperation, task: Optional[WhamTask], turns: list[WhamTurn]) -> Optional[OperationSettlementCertificate]:
+def _settlement(operation: CodexWorkOperation, task: Optional[WhamTask], turns: list[WhamTurn], *, repository: Optional[str] = None) -> Optional[OperationSettlementCertificate]:
     if operation.task_id is None or task is None or not operation.accepted or task.id != operation.task_id:
         return None
     current = task.current_assistant_turn
     if current is None or not current.id or current.status.lower() not in {"completed", "failed", "error", "cancelled", "canceled"}:
         return None
+    if operation.request_fingerprint is not None:
+        if operation.kind != "follow-up" or operation.causal_baseline is None or operation.handoff_pr_number is None:
+            return None
+        completed = followup_completion(operation.task_id, operation.causal_baseline, operation.request_fingerprint, turns)
+        if completed is None:
+            return None
+        user_id, assistant_id = completed
+        if not (operation.publication_complete and operation.tracking_complete):
+            from .pr_repair import observed_existing_pr_repair_target
+
+            user = next(turn for turn in turns if turn.id == user_id)
+            message = native_user_text(user)
+            if repository is None or message is None or observed_existing_pr_repair_target(message, repository, operation.handoff_pr_number) is None:
+                return None
+        return OperationSettlementCertificate(operation.logical_operation_id, operation.task_id, assistant_id, user_id)
     # Initial creation is bound by the accepted task identity. Follow-ups must
     # have a matching user request after their captured assistant baseline and
     # before the terminal assistant turn.
@@ -214,14 +230,14 @@ def collect_codex_retirement_observation(
         if evidence.state is CodexEvidenceState.UNKNOWN:
             reasons.append(f"task {run.task_id}: {evidence.reason}")
         try:
-            task_turns[run.task_id] = client.get_task_turns(run.task_id)
+            task_turns[run.task_id] = client.get_task_turns(run.task_id, require_complete=True)
         except Exception as exc:
             task_turns[run.task_id] = []
             reasons.append(f"task history {run.task_id} unavailable: {type(exc).__name__}")
 
     certificates: list[OperationSettlementCertificate] = []
     for operation in accounting_snapshot.operations:
-        certificate = _settlement(operation, task_payloads.get(operation.task_id or ""), task_turns.get(operation.task_id or "", []))
+        certificate = _settlement(operation, task_payloads.get(operation.task_id or ""), task_turns.get(operation.task_id or "", []), repository=repository)
         if certificate is None:
             cancelled_before_delivery = operation.settled and operation.definite_non_delivery and not operation.accepted
             if not cancelled_before_delivery:

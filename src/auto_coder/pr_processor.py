@@ -125,7 +125,7 @@ from .ordinary_closure_evidence import ApplicationStatus, ClosureEvidenceRecord,
 from .pr_blocker_closure import _BLOCKER_ID_RE, _GAP_ID_RE
 from .pr_processing_evidence import FinalGateEvidence
 from .pr_progress_policy import CIEvidenceState, ProgressPhase, ProgressRoute, PRProgressInputs, PRProgressScope, select_pr_progress
-from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repair_target
+from .pr_repair import ExistingPrRepairTarget, build_existing_pr_repair_prompt, resolve_existing_pr_repair_target
 from .pr_repair_dispatch import (
     PRRepairRequest,
     PRRepairResult,
@@ -2087,10 +2087,13 @@ def _retain_claude_quota_deferral(
     return wait.retry_not_before
 
 
-def _send_followup_with_quota_admission(client: Any, repository: str, task_id: str, message: str, identities: tuple[str, ...] = ()) -> bool:
+def _send_followup_with_quota_admission(client: Any, repository: str, task_id: str, message: str, identities: tuple[str, ...] = (), *, repair_target: Optional[ExistingPrRepairTarget] = None) -> bool:
     """Serialize Claude usage rechecks and fence final provider assignment."""
     context = getattr(type(client), "followup_quota_context", None)
     if not callable(context):
+        bounded_sender = getattr(type(client), "send_existing_pr_followup", None)
+        if repair_target is not None and callable(bounded_sender):
+            return bounded_sender(client, task_id, message, repair_target, identities)
         return client.send_followup(task_id, message, identities) if identities else client.send_followup(task_id, message)
     backend_name, credential_context = context(client)
     store = get_claude_followup_wait_store()
@@ -9895,7 +9898,7 @@ def _delegate_cloud_review_thread_repair(
                 _record_review_feedback_state(state_path, delivered, indeterminate)
             return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: {attribution_error}"])
         if provider == "codex-cloud":
-            accepted = _send_followup_with_quota_admission(client, repo_name, task_id, prompt, tuple(sorted(pending_identities)))
+            accepted = _send_followup_with_quota_admission(client, repo_name, task_id, prompt, tuple(sorted(pending_identities)), repair_target=target)
         else:
             accepted = _send_followup_with_quota_admission(client, repo_name, task_id, prompt)
     except ClaudeFollowupHoldActive as exc:
@@ -10200,7 +10203,7 @@ def _apply_review_adjudication_effects(repo_name: str, pr_number: int, pr_data: 
                             actions.append(f"Adjudicated repair for PR #{pr_number} was not delivered: {attribution_error}")
                             status = "pending"
                             continue
-                        accepted = client.send_followup(task_id, prompt, (upheld.decision_id,)) if provider == "codex-cloud" else client.send_followup(task_id, prompt)
+                        accepted = _send_followup_with_quota_admission(client, repo_name, task_id, prompt, (upheld.decision_id,), repair_target=target) if provider == "codex-cloud" else client.send_followup(task_id, prompt)
                         if accepted:
                             actions.append(f"Requested {provider} task '{task_id}' to apply an authorized bounded correction for PR #{pr_number}")
                             status = "delivered"
@@ -10409,7 +10412,7 @@ def _delegate_cloud_merge_conflict_repair_locked(
                 delivered.pop(fingerprint, None)
                 _record_cloud_conflict_deliveries(state_path, delivered)
             return CloudConflictDelegationResult(reason=final_origin.reason)
-        accepted = _send_followup_with_quota_admission(client, repo_name, task_id, message, (logical_identity,) if logical_identity else ())
+        accepted = _send_followup_with_quota_admission(client, repo_name, task_id, message, (logical_identity,) if logical_identity else (), repair_target=target)
     except ClaudeFollowupHoldActive as exc:
         return CloudConflictDelegationResult(reason=str(exc), deferred=True, retry_not_before=exc.retry_not_before)
     except ClaudeFollowupUsageLimitError as exc:
@@ -10553,6 +10556,8 @@ def _send_codex_cloud_error_feedback(
             kwargs: dict[str, Any] = {}
             if prompt is not None:
                 kwargs["prompt"] = prompt
+                if callable(getattr(type(client), "send_existing_pr_followup", None)):
+                    kwargs["repair_target"] = target
             if force:
                 kwargs["force"] = True
             resumed = client.continue_if_paused(task_id, **kwargs)
@@ -10903,7 +10908,7 @@ def _send_adversarial_validation_feedback_to_cloud_task(
         attribution_error = _revalidate_cloud_origin(repo_name, pr_number, selected_origin)
         if attribution_error:
             return [f"Adversarial feedback was not delivered for PR #{pr_number}: {attribution_error}"]
-        accepted = _send_followup_with_quota_admission(client, repo_name, task_id, prompt, identities)
+        accepted = _send_followup_with_quota_admission(client, repo_name, task_id, prompt, identities, repair_target=target)
     except ClaudeFollowupHoldActive as exc:
         deferred_actions = PRActionList([f"DEFERRED Claude adversarial feedback for PR #{pr_number} until {exc.retry_not_before}"])
         deferred_actions.quota_deferred = True
