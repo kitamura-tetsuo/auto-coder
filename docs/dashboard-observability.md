@@ -488,6 +488,11 @@ It adds no event schema or projection: the next ordinary attempt is visible in
 the existing review history, while an incomplete read admits no attempt. Runnable
 `tests/test_ordinary_discussion_revalidation.py` covers same/changed heads, external
 resolution, reconstruction, incomplete reads and receipt-only deduplication.
+`test_two_accepted_ordinary_sources_survive_selected_invalidation` additionally
+passes two independently accepted roots through actual production revalidation,
+including simultaneous and successive edits and both conclusive dispositions.
+Canonical revocation uses the existing ledger history and the next attempt uses
+existing ordinary validation events; no new event schema or projection is added.
 
 Stale base/contract/policy recovery after ordinary convergence emits
 `pr.strong-audit` with the current `head`, `base`, `reason`,

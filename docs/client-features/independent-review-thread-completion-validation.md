@@ -50,7 +50,12 @@ churn.
 
 Ordinary-only processing also retains earlier per-thread discussion bindings when a
 newer ordinary review does not evaluate those threads. A later unrelated PASS
-therefore cannot hide a changed discussion after reconstruction.
+therefore cannot hide a changed discussion after reconstruction. Invalidating one
+source converts every still-live accepted binding, including the latest ordinary
+result, into exact non-authorizing revalidation inputs before clearing the headline.
+Canonical correction acceptance is revoked through the existing revision-checked
+ledger transition using strictly observed native roots. Unavailable roots defer;
+simultaneous or later edits on another accepted root cannot disappear.
 
 Ordinary-only processing retains the exact changed thread identities separately
 from its revoked closure authority. This checkpoint survives process reconstruction

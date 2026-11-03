@@ -288,9 +288,10 @@ class EffectiveDecisionStore:
         if not isinstance(bindings, list):
             raise DecisionRetentionError("Retained discussion bindings are invalid")
         try:
-            values["prior_discussion_bindings"] = [OrdinaryCorrectionEvidence(**{**item, "accepted_sources": tuple(item.get("accepted_sources", ()))}) for item in bindings if isinstance(item, dict)]
-            if len(values["prior_discussion_bindings"]) != len(bindings):
+            decoded_bindings = [OrdinaryCorrectionEvidence(**{**item, "accepted_sources": tuple(item.get("accepted_sources", ()))}) for item in bindings if isinstance(item, dict)]
+            if len(decoded_bindings) != len(bindings):
                 raise ValueError("invalid binding")
+            values["prior_discussion_bindings"] = decoded_bindings
         except (TypeError, ValueError) as exc:
             raise DecisionRetentionError(f"Retained discussion bindings are invalid: {exc}") from exc
         return RetainedDecision(**values)  # type: ignore[arg-type]

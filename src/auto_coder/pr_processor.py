@@ -62,7 +62,7 @@ from .bounded_repair_bundle import (
     validate_repair_handoff_bundle,
 )
 from .branch_manager import BranchManager
-from .canonical_pr_blocker_ledger import BlockerLedgerSnapshot, CanonicalPRBlockerLedger
+from .canonical_pr_blocker_ledger import BlockerDisposition, BlockerLedgerSnapshot, CanonicalPRBlockerLedger
 from .checkout_lock import checkout_lock, serialize_checkout
 from .ci_repair_authority import current_ci_failure_authority
 from .ci_repair_verification import FocusedVerification, dedupe_targets, follow_up_budget_exhausted, verify_targets
@@ -1195,7 +1195,7 @@ def _resume_closure_before_admission(
                 _assert_ordinary_discussion_current(github_client, repo_name, pr_number, prior)
             except _OrdinaryDiscussionChanged:
                 selected = tuple(item.thread_id for item in prior.thread_dispositions if item.status == "ADDRESSED")
-                _invalidate_retained_discussion_authority(repo_name, pr_number, selected)
+                _invalidate_retained_discussion_authority(repo_name, pr_number, selected, github_client=github_client)
                 return RetainedClosureResumption(revalidate=True, discussion_changed=True, revalidate_thread_ids=selected, reason="the retained ordinary discussion changed"), False
     except Exception as exc:
         reason = f"retained ordinary discussion is unavailable: {exc}"
@@ -1207,19 +1207,60 @@ def _resume_closure_before_admission(
     return result.retained_closure, result.stop_processing
 
 
-def _invalidate_retained_discussion_authority(repo_name: str, pr_number: int, thread_ids: Sequence[str]) -> None:
+def _invalidate_retained_discussion_authority(repo_name: str, pr_number: int, thread_ids: Sequence[str], *, github_client: Any = None) -> None:
     """Revoke stale reuse while retaining non-authorizing input identities."""
     store = EffectiveDecisionStore(repo_name)
     retained = store.load(pr_number)
     if retained is None:
         raise DecisionRetentionError("The producing ordinary decision is unavailable")
+    # Clearing the headline must not erase another thread's producing binding.
+    # Convert every retained ADDRESSED source to a non-authorizing input obligation.
+    bindings = list(retained.prior_discussion_bindings)
+    if retained.ordinary_correction is not None:
+        bindings.append(retained.ordinary_correction)
+    pending = set(thread_ids).union(retained.discussion_revalidation_thread_ids)
+    for binding in bindings:
+        pending.update(item.thread_id for item in binding.restore().thread_dispositions if item.status == "ADDRESSED")
+    roots: dict[str, int] = {}
+    if github_client is not None:
+        observed = github_client.get_pr_review_threads_strict(repo_name, pr_number)
+        for thread in observed:
+            if thread.id in pending:
+                if thread.id in roots or not thread.comments or thread.comments_truncated:
+                    raise DecisionRetentionError("Retained discussion root is unavailable")
+                roots[thread.id] = thread.comments[0].database_id
+        if set(roots) != pending:
+            raise DecisionRetentionError("Retained discussion root is unavailable")
+    ledger = CanonicalPRBlockerLedger()
+    snapshot = ledger.get_snapshot("https://api.github.com", repo_name, pr_number, require_retained_state=True)
+    for thread_id in sorted(pending):
+        candidates = {blocker.blocker_id: blocker for blocker in snapshot.get_blockers_for_alias("github_thread", thread_id)}
+        if thread_id in roots:
+            candidates.update({blocker.blocker_id: blocker for blocker in snapshot.blockers if roots[thread_id] in blocker.get_root_comment_ids()})
+        for blocker in candidates.values():
+            if blocker.disposition is BlockerDisposition.VERIFIED_CORRECTION:
+                snapshot = ledger.record_transition(
+                    api_origin="https://api.github.com",
+                    repository=repo_name,
+                    pr_number=pr_number,
+                    operation_id=f"discussion_stale_{blocker.blocker_id}_{snapshot.ledger_revision}",
+                    expected_ledger_revision=snapshot.ledger_revision,
+                    blocker_id=blocker.blocker_id,
+                    target_disposition=BlockerDisposition.OPEN,
+                    evidence="Retained discussion authority requires independent reevaluation",
+                    transition_reason="Producing discussion binding was invalidated",
+                    reviewed_head_sha=retained.head_sha,
+                    reviewed_base_sha=retained.base_sha,
+                    review_attempt_id=retained.attempt_id,
+                    review_observation_identity=f"discussion_stale_{thread_id}",
+                )
     store.update(
         pr_number,
         ordinary_correction=None,
-        prior_discussion_bindings=[binding for binding in retained.prior_discussion_bindings if not any(item.thread_id in thread_ids for item in binding.restore().thread_dispositions)],
+        prior_discussion_bindings=[],
         pending_closure_source_identities=[],
         pending_reconciliation_source_identities=[],
-        discussion_revalidation_thread_ids=sorted(set(retained.discussion_revalidation_thread_ids).union(thread_ids)),
+        discussion_revalidation_thread_ids=sorted(pending),
         next_action=EffectiveNextAction.NONE.value,
     )
 
