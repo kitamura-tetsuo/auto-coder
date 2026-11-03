@@ -125,9 +125,10 @@ def _standalone_dashboard_env(repo_name: str) -> Iterator[Tuple[str, AutomationE
 
     tmp_dir = Path(tempfile.mkdtemp())
     previous_runtime_root = os.environ.get("AUTO_CODER_RUNTIME_ROOT")
-    os.environ["AUTO_CODER_RUNTIME_ROOT"] = str(tmp_dir / "runtime-root")
     primary_loop = _nicegui_core.loop
     shared_lifespan = primary_loop is not None and primary_loop.is_running()
+    if not shared_lifespan:
+        os.environ["AUTO_CODER_RUNTIME_ROOT"] = str(tmp_dir / "runtime-root")
     saved_ui_state = None
     try:
         if shared_lifespan and not _nicegui_core.app.is_started:
@@ -590,6 +591,10 @@ def test_standalone_server_preserves_parent_loop_and_live_client(_use_real_sleep
                 child.goto(f"{child_url}/")
                 child.wait_for_selector("text=Issue #9710", timeout=10000)
                 assert "Issue #9700" not in child.content()
+                assert slots.start_execution(ImplementationOwner("issue", 9702)) is not None
+                parent.wait_for_selector("text=Issue #9702", timeout=10000)
+                assert "Issue #9700" in parent.content()
+                assert "Issue #9702" not in child.content()
             finally:
                 child_context.close()
         assert core.loop is primary_loop and primary_loop.is_running()

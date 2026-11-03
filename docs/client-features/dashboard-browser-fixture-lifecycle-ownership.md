@@ -13,12 +13,16 @@ socket has lifespan disabled; the existing owner already performed startup and
 retains shutdown responsibility. With no running owner, the standalone fixture
 owns ordinary startup and shutdown. Fixture configuration and restoration run
 on the owner loop, preserving the parent's route and middleware registrations.
+A borrowed server also preserves the process runtime-root setting so an active
+parent repository keeps its original coordination-lock path. The child retains
+its own repository and slots file while using the existing coordination root.
 Setup and teardown retain finite bounds and fail when the server does not start
 or stop. No pruning, watchdog, browser requirement or timeout is relaxed.
 
 `test_standalone_server_preserves_parent_loop_and_live_client` drives real
 Chromium pages for the parent and temporary repository, checks the actual loop
-identity, closes the temporary server, then observes new slot data in the
+identity, observes new parent slot data while the temporary server is active,
+closes the temporary server, then observes additional parent slot data in the
 original live parent client and reloads it against the restored parent routes.
 The original fixture fails the loop-identity assertion. The pre-existing scroll,
 DOM identity, rendering rollback, single-flight and unavailable-state recovery
