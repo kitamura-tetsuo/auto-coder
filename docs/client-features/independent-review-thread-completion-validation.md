@@ -48,6 +48,10 @@ still reach the owning attempt's ordinary rejection instead of blocking a newer
 source forever. A genuinely unchanged, valid owned receipt does not cause review
 churn.
 
+Ordinary-only processing also retains earlier per-thread discussion bindings when a
+newer ordinary review does not evaluate those threads. A later unrelated PASS
+therefore cannot hide a changed discussion after reconstruction.
+
 Ordinary-only processing retains the exact changed thread identities separately
 from its revoked closure authority. This checkpoint survives process reconstruction
 and head/base changes, including externally resolved threads. The next input

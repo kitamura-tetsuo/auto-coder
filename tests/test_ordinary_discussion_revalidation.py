@@ -105,3 +105,50 @@ def test_corrupt_discussion_checkpoint_never_becomes_reusable_authority(flow_env
     store.storage_path.write_text(json.dumps(saved))
     with pytest.raises(DecisionRetentionError, match="discussion identities"):
         EffectiveDecisionStore(REPO).load(7469)
+
+@pytest.mark.parametrize("next_status", ["STILL_VALID", "ADDRESSED"])
+def test_ordinary_closure_binding_survives_unrelated_forced_pass(flow_env, monkeypatch, next_status):
+    monkeypatch.setattr("auto_coder.pr_processor._two_tier_gate_inputs", lambda *args, **kwargs: None)
+    flow = make_flow(flow_env, monkeypatch, 7470, "cloud", saved_status=None, auto_status=True)
+    flow.production_thread_collection = True
+    flow.resolve_on_approve = True
+    raw = json.loads(ordinary_response("unused", result="NEEDS_FIX"))
+    raw["thread_dispositions"] = []
+    raw["requirement_coverage"][0]["status"] = "VIOLATED"
+    finding = _demonstrated_finding_with_anchor(40)
+    finding["requirement_id"] = "#2401/REQ-001"
+    raw["findings"] = [finding]
+    flow.model_responses = [json.dumps(raw)]
+    flow.run()
+    root = [root for group in flow.router.review_roots.values() for root in group][0]
+    flow.root_id, flow.root_body = root["id"], root["body"]
+    flow.thread_id = f"PRRT_new_{flow.root_id}"
+    _repair_to(flow, "ordinary-repair")
+    flow.thread_replies.append(ReviewThreadComment(database_id=flow.root_id + 1, author_id=702, author_login="implementation-agent[bot]", body=f"Repair implemented.\n{REVIEW_ADDRESSED_MARKER}", in_reply_to_id=flow.root_id))
+    flow.model_responses = [ordinary_response(flow.thread_id, status="ADDRESSED", evidence="tests/test_state.py independently asserts the corrected invariant")]
+    flow.run()
+    assert flow.thread_resolved
+    raw_pass = json.loads(ordinary_response(flow.thread_id))
+    raw_pass["thread_dispositions"] = []
+    flow.model_responses = [json.dumps(raw_pass)]
+    calls = flow.model_calls
+    flow.run(force=True)
+    assert flow.model_calls == calls + 1
+    assert flow.thread_id not in flow.validation_sections[-1]
+    changed = "A later discussion identifies a concrete remaining transition."
+    flow.thread_replies.append(ReviewThreadComment(database_id=flow.root_id + 100, author_id=703, author_login="reviewer[bot]", body=changed, in_reply_to_id=flow.root_id))
+    flow.env = flow.env.reconstructed()
+    from auto_coder.pr_processor import _OrdinaryDiscussionChanged, _assert_ordinary_discussion_current
+
+    retained = EffectiveDecisionStore(REPO).load(flow.pr)
+    assert retained is not None and retained.prior_discussion_bindings
+    with pytest.raises(_OrdinaryDiscussionChanged):
+        _assert_ordinary_discussion_current(flow.client, REPO, flow.pr, retained.prior_discussion_bindings[0].restore())
+    calls = flow.model_calls
+    flow.model_responses = [ordinary_response(flow.thread_id, status=next_status, evidence="tests/test_state.py independently checks the transition")]
+    actions = flow.run()
+    assert flow.model_calls == calls + 1, actions
+    assert changed in flow.validation_sections[-1]
+    snapshot = flow.env.ledger.get_snapshot("https://api.github.com", REPO, flow.pr, require_retained_state=True)
+    expected = BlockerDisposition.OPEN if next_status == "STILL_VALID" else BlockerDisposition.VERIFIED_CORRECTION
+    assert all(blocker.disposition is expected for blocker in snapshot.blockers)

@@ -1186,8 +1186,11 @@ def _resume_closure_before_admission(
     try:
         retained = EffectiveDecisionStore(repo_name).load(pr_number)
         ordinary = retained.ordinary_correction if retained is not None else None
+        bindings = list(retained.prior_discussion_bindings) if retained is not None else []
         if ordinary is not None and not ordinary.requires_strong_policy:
-            prior = ordinary.restore()
+            bindings.append(ordinary)
+        for binding in bindings:
+            prior = binding.restore()
             try:
                 _assert_ordinary_discussion_current(github_client, repo_name, pr_number, prior)
             except _OrdinaryDiscussionChanged:
@@ -1213,6 +1216,7 @@ def _invalidate_retained_discussion_authority(repo_name: str, pr_number: int, th
     store.update(
         pr_number,
         ordinary_correction=None,
+        prior_discussion_bindings=[binding for binding in retained.prior_discussion_bindings if not any(item.thread_id in thread_ids for item in binding.restore().thread_dispositions)],
         pending_closure_source_identities=[],
         pending_reconciliation_source_identities=[],
         discussion_revalidation_thread_ids=sorted(set(retained.discussion_revalidation_thread_ids).union(thread_ids)),

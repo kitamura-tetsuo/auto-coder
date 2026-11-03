@@ -200,6 +200,7 @@ class RetainedDecision:
     # or permit closure. They survive external resolution and target changes.
     discussion_revalidation_thread_ids: list[str] = field(default_factory=list)
     ordinary_correction: Optional[OrdinaryCorrectionEvidence] = None
+    prior_discussion_bindings: list[OrdinaryCorrectionEvidence] = field(default_factory=list)
     attempt_id: str = ""
     attempt_sequence: int = 0
     source_revision: int = -1
@@ -283,6 +284,15 @@ class EffectiveDecisionStore:
                 values["ordinary_correction"] = OrdinaryCorrectionEvidence(**evidence)
             except (TypeError, ValueError) as exc:
                 raise DecisionRetentionError(f"Retained ordinary correction is invalid: {exc}") from exc
+        bindings = values.get("prior_discussion_bindings", [])
+        if not isinstance(bindings, list):
+            raise DecisionRetentionError("Retained discussion bindings are invalid")
+        try:
+            values["prior_discussion_bindings"] = [OrdinaryCorrectionEvidence(**{**item, "accepted_sources": tuple(item.get("accepted_sources", ()))}) for item in bindings if isinstance(item, dict)]
+            if len(values["prior_discussion_bindings"]) != len(bindings):
+                raise ValueError("invalid binding")
+        except (TypeError, ValueError) as exc:
+            raise DecisionRetentionError(f"Retained discussion bindings are invalid: {exc}") from exc
         return RetainedDecision(**values)  # type: ignore[arg-type]
 
     def load(self, pr_number: int) -> Optional[RetainedDecision]:
@@ -326,8 +336,21 @@ class EffectiveDecisionStore:
                 attempts.append(key)
         if record.next_action in waiting_actions and record.evidence_revision not in attempts:
             attempts.append(record.evidence_revision)
+        bindings = list(previous.prior_discussion_bindings) if previous is not None else []
+        if previous is not None and previous.ordinary_correction is not None and not previous.ordinary_correction.requires_strong_policy:
+            old = previous.ordinary_correction
+            old_result = old.restore()
+            for item in old_result.thread_dispositions:
+                if item.status == "ADDRESSED":
+                    binding = replace(old, payload=serialize_ordinary_result(replace(old_result, thread_dispositions=[item]), include_closure=True))
+                    if binding not in bindings:
+                        bindings.append(binding)
+        # A new result supersedes only the thread bindings it actually evaluated.
+        new_ids = {item.thread_id for item in record.ordinary_correction.restore().thread_dispositions if item.status == "ADDRESSED" and item.discussion_evidence_digest} if record.ordinary_correction is not None else set()
+        bindings = [binding for binding in bindings if not any(item.thread_id in new_ids for item in binding.restore().thread_dispositions)]
         carried = replace(
             record,
+            prior_discussion_bindings=bindings,
             reconciliation_attempts=attempts,
             discussion_revalidation_thread_ids=sorted(set(record.discussion_revalidation_thread_ids + (previous.discussion_revalidation_thread_ids if previous is not None else []))),
         )
