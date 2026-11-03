@@ -9,6 +9,7 @@ authoritative producer.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Sequence, Tuple
@@ -37,6 +38,7 @@ class RetainedClosureResumption:
     revalidate: bool = False
     discussion_changed: bool = False
     discussion_unavailable: bool = False
+    revalidate_thread_ids: tuple[str, ...] = ()
     unavailable: bool = False
     reason: str = ""
 
@@ -391,6 +393,16 @@ def assess_saved_review_state(ports, repo_name: str, pr_data: Dict[str, Any], he
     except (ports.DecisionRetentionError, RuntimeError, ValueError, OSError) as exc:
         return SavedReviewAssessment(ports.SAVED_REVIEW_WAIT, f"retained effective-decision state is unreadable: {exc}")
     revision = ports.evidence_revision(projection)
+    if retained is not None and retained.discussion_revalidation_thread_ids and retained.ordinary_correction is None:
+        if not ports.closure_projection_readable(projection):
+            return SavedReviewAssessment(ports.SAVED_REVIEW_WAIT, "changed discussion cannot be reassessed while accepted authority is unreadable", projection)
+        discussion = sorted((thread.thread_id, thread.discussion_evidence_digest) for thread in claimed_review_threads if thread.thread_id in retained.discussion_revalidation_thread_ids)
+        if {item[0] for item in discussion} != set(retained.discussion_revalidation_thread_ids):
+            return SavedReviewAssessment(ports.SAVED_REVIEW_WAIT, "changed discussion identities are not completely observable", projection)
+        recovery_key = "discussion-revalidation-v1:" + ports.hashlib.sha256(json.dumps([head_sha, target.base_sha, revision, discussion], sort_keys=True).encode()).hexdigest()
+        if not force and recovery_key in retained.reconciliation_attempts:
+            return SavedReviewAssessment(ports.SAVED_REVIEW_WAIT, "independent review was already admitted for this changed discussion", projection)
+        return SavedReviewAssessment(ports.SAVED_REVIEW_REVALIDATE, "retained discussion changed and requires an independent current-input decision", projection, "" if force else recovery_key)
     if changed_ordinary_inputs:
         if not ports.closure_projection_readable(projection):
             return SavedReviewAssessment(ports.SAVED_REVIEW_WAIT, "changed ordinary inputs cannot be reassessed while accepted authority is unreadable or ambiguous", projection)

@@ -239,6 +239,7 @@ class Flow:
         public_origin: bool = False,
         thread_gate_enabled: Optional[bool] = None,
         settle_concurrent_work: Optional[Callable[[], None]] = None,
+        on_review: Optional[Callable[[], None]] = None,
     ) -> Sequence[str]:
         mp = self.monkeypatch
         env = self.env
@@ -282,6 +283,8 @@ class Flow:
         def next_response(*_args: object, **_kwargs: object) -> str:
             self.model_calls += 1
             raw = responses.pop(0) if len(responses) > 1 else responses[0]
+            if on_review is not None:
+                on_review()
             if closure is not None and closure.on_review is not None:
                 closure.on_review()
             if closure is None or not supplied:

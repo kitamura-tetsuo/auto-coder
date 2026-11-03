@@ -196,6 +196,9 @@ class RetainedDecision:
     source_identities: list[str] = field(default_factory=list)
     pending_closure_source_identities: list[str] = field(default_factory=list)
     pending_reconciliation_source_identities: list[str] = field(default_factory=list)
+    # Input selection only: these identities never retain an ADDRESSED verdict
+    # or permit closure. They survive external resolution and target changes.
+    discussion_revalidation_thread_ids: list[str] = field(default_factory=list)
     ordinary_correction: Optional[OrdinaryCorrectionEvidence] = None
     attempt_id: str = ""
     attempt_sequence: int = 0
@@ -267,6 +270,9 @@ class EffectiveDecisionStore:
     def _decode(raw: dict[str, object]) -> RetainedDecision:
         known = {name for name in RetainedDecision.__dataclass_fields__}
         values = {key: value for key, value in raw.items() if key in known}
+        discussion = values.get("discussion_revalidation_thread_ids", [])
+        if not isinstance(discussion, list) or any(not isinstance(item, str) or not item for item in discussion) or len(set(discussion)) != len(discussion):
+            raise DecisionRetentionError("Retained discussion identities are invalid")
         ordinary = values.get("ordinary_correction")
         if ordinary is not None:
             if not isinstance(ordinary, dict):
@@ -320,7 +326,11 @@ class EffectiveDecisionStore:
                 attempts.append(key)
         if record.next_action in waiting_actions and record.evidence_revision not in attempts:
             attempts.append(record.evidence_revision)
-        carried = replace(record, reconciliation_attempts=attempts)
+        carried = replace(
+            record,
+            reconciliation_attempts=attempts,
+            discussion_revalidation_thread_ids=sorted(set(record.discussion_revalidation_thread_ids + (previous.discussion_revalidation_thread_ids if previous is not None else []))),
+        )
         if previous is not None and (previous.head_sha, previous.base_sha) == (record.head_sha, record.base_sha):
             same_producer = previous.ordinary_correction == record.ordinary_correction and (previous.attempt_id, previous.attempt_sequence) == (record.attempt_id, record.attempt_sequence)
             same_ordinary = record.ordinary_correction is not None and same_producer and previous.next_action == record.next_action and previous.status == record.status and previous.source_identities == record.source_identities and set(record.blocker_ids).issubset(previous.blocker_ids)

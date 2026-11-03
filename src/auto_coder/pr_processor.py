@@ -1182,8 +1182,42 @@ def _resume_closure_before_admission(
     processing_status: Optional[ProcessedPRResult],
     config: AutomationConfig,
 ) -> Tuple[Optional[RetainedClosureResumption], bool]:
+    pr_number = int(pr_data["number"])
+    try:
+        retained = EffectiveDecisionStore(repo_name).load(pr_number)
+        ordinary = retained.ordinary_correction if retained is not None else None
+        if ordinary is not None and not ordinary.requires_strong_policy:
+            prior = ordinary.restore()
+            try:
+                _assert_ordinary_discussion_current(github_client, repo_name, pr_number, prior)
+            except _OrdinaryDiscussionChanged:
+                selected = tuple(item.thread_id for item in prior.thread_dispositions if item.status == "ADDRESSED")
+                _invalidate_retained_discussion_authority(repo_name, pr_number, selected)
+                return RetainedClosureResumption(revalidate=True, discussion_changed=True, revalidate_thread_ids=selected, reason="the retained ordinary discussion changed"), False
+    except Exception as exc:
+        reason = f"retained ordinary discussion is unavailable: {exc}"
+        _record_review_wait(repo_name, pr_number, head_sha, actions, processing_status, reason)
+        return RetainedClosureResumption(unavailable=True, discussion_unavailable=True, reason=reason), True
     result = _saved_review_service().resume_before_admission(_saved_review_request(github_client, repo_name, pr_data, head_sha, force, actions, processing_status, config))
+    if not result.stop_processing and result.retained_closure is None and retained is not None and retained.discussion_revalidation_thread_ids and retained.ordinary_correction is None:
+        return RetainedClosureResumption(revalidate=True, discussion_changed=True, revalidate_thread_ids=tuple(retained.discussion_revalidation_thread_ids), reason="an unfinished discussion reassessment remains"), False
     return result.retained_closure, result.stop_processing
+
+
+def _invalidate_retained_discussion_authority(repo_name: str, pr_number: int, thread_ids: Sequence[str]) -> None:
+    """Revoke stale reuse while retaining non-authorizing input identities."""
+    store = EffectiveDecisionStore(repo_name)
+    retained = store.load(pr_number)
+    if retained is None:
+        raise DecisionRetentionError("The producing ordinary decision is unavailable")
+    store.update(
+        pr_number,
+        ordinary_correction=None,
+        pending_closure_source_identities=[],
+        pending_reconciliation_source_identities=[],
+        discussion_revalidation_thread_ids=sorted(set(retained.discussion_revalidation_thread_ids).union(thread_ids)),
+        next_action=EffectiveNextAction.NONE.value,
+    )
 
 
 def _repair_strong_findings_before_validation(
@@ -1399,13 +1433,7 @@ class _GitHubClosureThreadTransport:
 
     def _invalidate_retained_discussion_authority(self) -> None:
         try:
-            EffectiveDecisionStore(self.payload.repository).update(
-                self.payload.pr_number,
-                ordinary_correction=None,
-                pending_closure_source_identities=[],
-                pending_reconciliation_source_identities=[],
-                next_action=EffectiveNextAction.NONE.value,
-            )
+            _invalidate_retained_discussion_authority(self.payload.repository, self.payload.pr_number, (self.thread.id,))
         except DecisionRetentionError:
             # A missing or concurrently superseded record grants no reusable authority.
             pass
@@ -2391,6 +2419,14 @@ def _get_claimed_review_thread_state(
     returned as a structured lookup error so callers can distinguish an API
     failure from an ordinary unresolved-thread blocker.
     """
+    try:
+        retained = EffectiveDecisionStore(repo_name).load(pr_number)
+        pending = retained.discussion_revalidation_thread_ids if retained is not None else []
+        if not isinstance(pending, list) or any(not isinstance(item, str) or not item for item in pending):
+            raise DecisionRetentionError("Retained discussion identities are malformed")
+        revalidate_resolved_thread_ids = tuple(sorted(set(revalidate_resolved_thread_ids).union(pending)))
+    except Exception as exc:
+        return ClaimedReviewThreadGateState(lookup_error=f"Retained discussion identities are unavailable: {exc}")
     gate = _get_review_thread_gate_state(github_client, repo_name, pr_number, config=config)
     if gate.lookup_error:
         return ClaimedReviewThreadGateState(lookup_error=gate.lookup_error)
@@ -2405,6 +2441,8 @@ def _get_claimed_review_thread_state(
             # to the ordinary "unresolved threads block merge" behavior.
             return ClaimedReviewThreadGateState(has_blocking_unresolved=True)
         threads = client.get_pr_review_threads_strict(repo_name, pr_number)
+        if not set(revalidate_resolved_thread_ids).issubset({thread.id for thread in threads}):
+            return ClaimedReviewThreadGateState(lookup_error="A retained discussion thread is missing from the authoritative observation")
     except GitHubRequestError:
         raise
     except Exception as e:
@@ -6243,9 +6281,12 @@ def _coordinate_pr_review(
                 elif resumption.revalidate and (published_status == "PASS" or resumption.discussion_changed):
                     saved_review_revalidation = True
                     actions.append(f"Revalidating PR #{pr_number} at unchanged commit {head_sha[:8]}: {resumption.reason}")
-            if resumption is not None and resumption.discussion_changed and resumption.retained_record is not None:
-                prior = restore_ordinary_result(resumption.retained_record)
-                rebound = _get_claimed_review_thread_state(github_client, repo_name, pr_number, config=config, revalidate_resolved_thread_ids=tuple(item.thread_id for item in prior.thread_dispositions if item.status == "ADDRESSED"))
+            if resumption is not None and resumption.discussion_changed:
+                selected = resumption.revalidate_thread_ids
+                if resumption.retained_record is not None:
+                    prior = restore_ordinary_result(resumption.retained_record)
+                    selected = tuple(sorted(set(selected).union(item.thread_id for item in prior.thread_dispositions if item.status == "ADDRESSED")))
+                rebound = _get_claimed_review_thread_state(github_client, repo_name, pr_number, config=config, revalidate_resolved_thread_ids=selected)
                 if rebound.lookup_error:
                     actions.append(f"Current discussion could not be collected for independent validation: {rebound.lookup_error}")
                     return actions
@@ -6661,19 +6702,19 @@ def _coordinate_pr_review(
                             resolved_thread_ids = list(closure_report)
                             unfinished_closure_outcomes = tuple(getattr(closure_report, "unfinished_outcomes", ()))
                             if resolved_thread_ids:
+                                retained_discussion = EffectiveDecisionStore(repo_name).load(pr_number)
+                                if retained_discussion is not None and set(retained_discussion.discussion_revalidation_thread_ids).intersection(resolved_thread_ids):
+                                    EffectiveDecisionStore(repo_name).update(
+                                        pr_number,
+                                        discussion_revalidation_thread_ids=sorted(set(retained_discussion.discussion_revalidation_thread_ids).difference(resolved_thread_ids)),
+                                    )
                                 actions.append(f"Resolved {len(resolved_thread_ids)} claimed review thread(s) for PR #{pr_number} after independent validation")
                             if unfinished_closure_outcomes:
                                 if any(outcome.phase == "discussion-freshness" for outcome in unfinished_closure_outcomes):
                                     # The retained ordinary payload produced the stale disposition.
                                     # Remove its reuse authority so the next admitted lifecycle invokes
                                     # independent validation with the freshly collected discussion.
-                                    EffectiveDecisionStore(repo_name).update(
-                                        pr_number,
-                                        ordinary_correction=None,
-                                        pending_closure_source_identities=[],
-                                        pending_reconciliation_source_identities=[],
-                                        next_action=EffectiveNextAction.NONE.value,
-                                    )
+                                    _invalidate_retained_discussion_authority(repo_name, pr_number, tuple(outcome.thread_id for outcome in unfinished_closure_outcomes if outcome.phase == "discussion-freshness"))
                                 details = "; ".join(f"{outcome.thread_id} [{outcome.phase}]: {outcome.reason}" for outcome in unfinished_closure_outcomes)
                                 actions.append(f"Review-thread closure incomplete for PR #{pr_number}: " f"{len(resolved_thread_ids)} confirmed, {len(unfinished_closure_outcomes)} unfinished; {details}")
                                 _record_pr_stage(

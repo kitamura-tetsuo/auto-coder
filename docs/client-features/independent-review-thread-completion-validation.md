@@ -48,6 +48,16 @@ still reach the owning attempt's ordinary rejection instead of blocking a newer
 source forever. A genuinely unchanged, valid owned receipt does not cause review
 churn.
 
+Ordinary-only processing retains the exact changed thread identities separately
+from its revoked closure authority. This checkpoint survives process reconstruction
+and head/base changes, including externally resolved threads. The next input
+recollects those complete discussions before consuming a saved same-head PASS;
+the checkpoint cannot itself accept a correction or resolve a thread. Only a
+confirmed independently accepted closure clears its corresponding identity.
+Unavailable discussion waits without another reviewer, and successful receipt-only
+recovery does not repeat the review. Production-coordinator regressions are in
+`tests/test_ordinary_discussion_revalidation.py`.
+
 When two-tier and canonical consumers independently accept the same root/head,
 a current, complete discussion binding plus the new canonical acceptance can
 reuse the confirmed same-head resolution. A receipt by itself, a pending foreign

@@ -1,5 +1,23 @@
 # Dashboard observability verification
 
+Durable worker failures emit repository/target-scoped `worker.failure-backoff`
+stage results under origin `durable-invalidation-worker`. `deferred` means the
+unfinished entity's retry deadline was committed; its facts retain the reason,
+deadline and generation. `failed` with `retry_state_persistence_failed` means the
+worker stopped without releasing or completing its processing claim. A short
+diagnostic execution binds failures that occur before ordinary PR/Issue execution
+scope exists; it is not a provider invocation or implementation result. The
+generic detail renderer projects these recorded outcomes and facts without a new
+dashboard control-flow claim. Diagnostic failure cannot change retry ownership.
+The same failed outcome applies when an error-free pending PR-review result
+cannot persist its wake: no successful deferral or completion is observed, and
+the processing claim (including newer generation responsibility) remains owned.
+Run `bash scripts/test.sh tests/test_invalidation_failure_backoff.py
+tests/test_entity_invalidation.py` for worker/scheduler/SQLite, reconstructed
+deadline, concurrent notification, failed transaction, and production evidence-row
+checks. The operational behavior is documented in
+[`durable-github-entity-invalidations.md`](client-features/durable-github-entity-invalidations.md).
+
 Private target reevaluation adds a trusted-socket command-intake origin without
 adding a dashboard-owned outcome or processing lifecycle. Bounded Loguru
 diagnostics correlate the operation ID, exact target, accepting process run,
@@ -463,6 +481,13 @@ regressions in `tests/test_single_review_ordinary_closure_flow.py` include
 `test_incomplete_discussion_cannot_certify_the_producing_ordinary_result`.
 These inspect cycle acceptance/publication, actual next validator discussion and
 resolve/merge effects, including valid receipt-only updates and incomplete reads.
+
+The ordinary-only path uses the same existing saved-review wait and independent
+validation events after reconstructing its non-authorizing discussion checkpoint.
+It adds no event schema or projection: the next ordinary attempt is visible in
+the existing review history, while an incomplete read admits no attempt. Runnable
+`tests/test_ordinary_discussion_revalidation.py` covers same/changed heads, external
+resolution, reconstruction, incomplete reads and receipt-only deduplication.
 
 Stale base/contract/policy recovery after ordinary convergence emits
 `pr.strong-audit` with the current `head`, `base`, `reason`,
