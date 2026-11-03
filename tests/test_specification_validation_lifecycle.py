@@ -2275,3 +2275,55 @@ def test_incomplete_exact_ready_record_cannot_authorize_reuse(tmp_path):
     assert replacement.review_mode == "FULL"
     assert replacement.evaluation_source == "model"
     restarted_calls.assert_called_once()
+
+
+@pytest.mark.parametrize("changed_current", [False, True])
+@pytest.mark.parametrize("corruption", ["empty-retained", "empty-finding", "duplicate-id", "bad-category", "null-objective"])
+def test_corrupt_retained_finding_or_objective_never_reuses_authority(tmp_path, changed_current, corruption):
+    gate = lifecycle(tmp_path, "BLOCKED")
+    original = gate.decide(build_normative_issue_manifest(1734, "Title", BODY), "Title", BODY)
+    state = json.loads(gate.store.path.read_text())
+    record = state[original.identity.key]
+    assert len(record["finding_ids"]) == len(record["retained_findings"]) == 1
+    if corruption == "empty-retained":
+        record["retained_findings"] = []
+    elif corruption == "empty-finding":
+        record["retained_findings"][0]["finding"] = {}
+    elif corruption == "duplicate-id":
+        record["retained_findings"].append(dict(record["retained_findings"][0]))
+    elif corruption == "bad-category":
+        record["retained_findings"][0]["finding"]["category"] = []
+    else:
+        inputs = json.loads(record["review_inputs"])
+        inputs["objective"] = None
+        record["review_inputs"] = json.dumps(inputs)
+    gate.store.path.write_text(json.dumps(state))
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    restarted = lifecycle(tmp_path, "READY", calls)
+    current = BODY + "\n\n## Context\nNew current context." if changed_current else BODY
+
+    decision = restarted.decide(build_normative_issue_manifest(1734, "Title", current), "Title", current)
+
+    assert decision.verdict == "READY"
+    assert decision.evaluation_source == "model"
+    assert decision.review_mode == "FULL"
+    assert decision.predecessor_decision_key is None
+    calls.assert_called_once()
+
+
+def test_policy_rollback_does_not_select_an_older_predecessor(tmp_path, monkeypatch):
+    policy = {"value": "semantic-policy-P"}
+    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.validation_policy_identity", lambda: policy["value"])
+    first = lifecycle(tmp_path, "READY").decide(build_normative_issue_manifest(1734, "Title", BODY), "Title", BODY)
+    policy["value"] = "semantic-policy-Q"
+    second_body = BODY + "\n\n## Context\nAccepted under a different policy."
+    second = lifecycle(tmp_path, "READY").decide(build_normative_issue_manifest(1734, "Title", second_body), "Title", second_body)
+    accepted = json.loads((tmp_path / "decisions.json").read_text())
+    assert accepted[second.identity.key]["accepted_sequence"] > accepted[first.identity.key]["accepted_sequence"]
+    policy["value"] = "semantic-policy-P"
+    current = second_body + "\nChanged again after policy rollback."
+
+    decision = lifecycle(tmp_path, "READY").decide(build_normative_issue_manifest(1734, "Title", current), "Title", current)
+
+    assert decision.review_mode == "FULL"
+    assert decision.predecessor_decision_key is None

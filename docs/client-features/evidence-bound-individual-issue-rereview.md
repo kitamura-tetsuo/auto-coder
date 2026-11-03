@@ -79,6 +79,10 @@ Retained input JSON must contain every captured field with its supported shape
 and matching manifest, specification and relationship identities. A partial
 JSON object is not complete evidence. An incomplete newest accepted record
 selects FULL review rather than exact-current reuse or an older predecessor.
+Complete retained finding payloads must cover the current finding and disposition
+identities, and include the captured Objective anchor. Predecessor selection starts
+from the newest accepted record before policy/rerun/role compatibility checks;
+an intervening incompatible record cannot expose an older compatible predecessor.
 
 Integrity and orchestration tests use independently authored expected logical
 inputs and a hand-authored wire tree. They measure complete outgoing prompts,

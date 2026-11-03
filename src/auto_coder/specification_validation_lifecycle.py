@@ -392,6 +392,19 @@ _IDENTITY_LOCKS: dict[str, threading.Lock] = {}
 _IDENTITY_LOCKS_GUARD = threading.Lock()
 
 
+def _stored_finding_is_complete(value: object) -> bool:
+    """Check the full retained payload before it becomes predecessor evidence."""
+    if not isinstance(value, dict) or set(value) != set(SpecificationFinding.__dataclass_fields__):
+        return False
+    return bool(
+        isinstance(value["category"], str)
+        and value["category"] in SPECIFICATION_FINDING_CATEGORIES
+        and isinstance(value["requirement_ids"], list)
+        and all(isinstance(item, str) for item in value["requirement_ids"])
+        and all(isinstance(value[field], str) for field in ("explanation", "clarification", "counterexample", "missing_normative_boundary"))
+    )
+
+
 class SpecificationValidationStore:
     """Atomic JSON store for completed READY/BLOCKED decisions."""
 
@@ -433,9 +446,9 @@ class SpecificationValidationStore:
         if raw.get("identity") != asdict(identity):
             return None
         authority, _request_id, _state = self.reruns.authority(ReviewSubject(self.repository, "individual", identity.issue_number))
-        if int(raw.get("rerun_authority") or 0) != authority:
-            return None
         if not self._raw_has_complete_evidence(raw, identity):
+            return None
+        if raw["rerun_authority"] != authority:
             return None
         return self._decision_from_raw(identity, raw, evaluation_source="stored-decision-reuse")
 
@@ -447,6 +460,12 @@ class SpecificationValidationStore:
             binding = json.loads(identity.manifest_binding)
             expected = {str(item["requirement_id"]) for item in binding["requirements"]} | {"contract-wide"}
         except (KeyError, TypeError, json.JSONDecodeError):
+            return False
+        sequence = raw.get("accepted_sequence")
+        authority = raw.get("rerun_authority")
+        if type(sequence) is not int or sequence <= 0 or type(authority) is not int or authority < 0:
+            return False
+        if not isinstance(raw.get("verdict"), str) or raw["verdict"] not in {"READY", "BLOCKED"}:
             return False
         required_inputs = {"manifest", "title", "body", "role", "parent_number", "related_contracts", "objective", "baseline", "prior_applied_outcomes"}
         if not isinstance(inputs, dict) or set(inputs) != required_inputs:
@@ -465,7 +484,9 @@ class SpecificationValidationStore:
         if hashlib.sha256(json.dumps(relationship, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest() != identity.relationship_digest:
             return False
         objective = inputs["objective"]
-        if objective is not None:
+        if objective is None:
+            return False
+        else:
             if not isinstance(objective, dict) or set(objective) != {"issue_number", "state", "original_text", "source_identity", "current"}:
                 return False
             current = objective["current"]
@@ -498,12 +519,14 @@ class SpecificationValidationStore:
             or not isinstance(finding_ids, list)
             or not isinstance(findings, list)
             or len(finding_ids) != len(findings)
-            or any(not isinstance(item, str) for item in finding_ids)
+            or any(not isinstance(item, str) or not item for item in finding_ids)
             or len(set(finding_ids)) != len(finding_ids)
+            or any(not _stored_finding_is_complete(item) for item in findings)
             or any(
                 not isinstance(item, dict)
                 or set(item) != {"finding_id", "disposition", "reasoning"}
                 or not isinstance(item.get("finding_id"), str)
+                or not isinstance(item.get("disposition"), str)
                 or item.get("disposition") not in {"RESOLVED", "STILL_VALID", "REGRESSED", "UNVERIFIED"}
                 or not isinstance(item.get("reasoning"), str)
                 or not str(item.get("reasoning")).strip()
@@ -513,15 +536,24 @@ class SpecificationValidationStore:
                 not isinstance(item, dict)
                 or set(item) != {"finding_id", "finding", "disposition", "reasoning"}
                 or not isinstance(item.get("finding_id"), str)
-                or not isinstance(item.get("finding"), dict)
+                or not item.get("finding_id")
+                or not _stored_finding_is_complete(item.get("finding"))
+                or not isinstance(item.get("disposition"), str)
                 or item.get("disposition") not in {"RESOLVED", "STILL_VALID", "REGRESSED", "UNVERIFIED"}
                 or not isinstance(item.get("reasoning"), str)
                 for item in retained
             )
         ):
             return False
-        boundaries = [item.get("boundary") for item in coverage if isinstance(item, dict) and set(item) == {"boundary", "status", "no_impact_reason"} and item.get("status") in {"FRESH", "CARRIED"}]
-        return len(boundaries) == len(set(boundaries)) and set(boundaries) == expected
+        retained_by_id = {item["finding_id"]: item for item in retained}
+        if len(retained_by_id) != len(retained) or len({item["finding_id"] for item in dispositions}) != len(dispositions):
+            return False
+        if any(finding_id not in retained_by_id or retained_by_id[finding_id]["finding"] != finding for finding_id, finding in zip(finding_ids, findings)):
+            return False
+        if any(item["finding_id"] not in retained_by_id or any(retained_by_id[item["finding_id"]][field] != item[field] for field in ("disposition", "reasoning")) for item in dispositions):
+            return False
+        boundaries = [item.get("boundary") for item in coverage if isinstance(item, dict) and set(item) == {"boundary", "status", "no_impact_reason"} and isinstance(item.get("status"), str) and item.get("status") in {"FRESH", "CARRIED"} and isinstance(item.get("no_impact_reason"), str)]
+        return len(boundaries) == len(coverage) == len(set(boundaries)) and set(boundaries) == expected
 
     def _decision_from_raw(self, identity: ValidationIdentity, raw: dict[str, object], evaluation_source: str = "model") -> ValidationDecision:
         raw_findings = raw.get("findings")
@@ -610,15 +642,21 @@ class SpecificationValidationStore:
             identity_raw = raw.get("identity")
             if not isinstance(identity_raw, dict):
                 continue
+            if identity_raw.get("repository") != identity.repository or identity_raw.get("issue_number") != identity.issue_number:
+                continue
             try:
                 candidate_identity = ValidationIdentity(**identity_raw)
             except (TypeError, ValueError):
-                continue
-            if candidate_identity.repository == identity.repository and candidate_identity.issue_number == identity.issue_number and candidate_identity.policy_identity == identity.policy_identity and int(raw.get("rerun_authority") or 0) == authority:
-                candidates.append((int(raw.get("accepted_sequence") or 0), candidate_identity, raw))
+                return None
+            sequence = raw.get("accepted_sequence")
+            if type(sequence) is not int or sequence <= 0:
+                return None
+            candidates.append((sequence, candidate_identity, raw))
         if not candidates:
             return None
         _sequence, candidate_identity, raw = max(candidates, key=lambda item: item[0])
+        if sum(sequence == _sequence for sequence, _identity, _raw in candidates) != 1 or candidate_identity.policy_identity != identity.policy_identity or raw.get("rerun_authority") != authority:
+            return None
         if not self._raw_has_complete_evidence(raw, candidate_identity):
             return None
         try:
