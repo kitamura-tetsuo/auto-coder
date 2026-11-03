@@ -3144,3 +3144,15 @@ tests/test_single_review_ordinary_closure_flow.py tests/test_pr_review_effects.p
 tests/test_ordinary_discussion_revalidation.py`. Existing
 `pr.review-thread-closure` confirmed/unfinished facts describe this recovery;
 there is no new event schema or dashboard behavior.
+
+
+The PR2745 qualification also repairs a test-harness scheduling precondition:
+`test_large_unread_prompt_does_not_block_cancellation` uses real cooperative
+sleep while exercising the actual four-MiB unread prompt, real process and
+positive cancellation settlement. It reuses the restoring sparse-switch
+fixture from `tests/test_local_conflict_repair_job.py`; both tests retain their
+original three/five-second limits and complete result assertions. The cancellation
+test always requests cancellation and joins its owned thread on assertion
+failure. Removing only its real-sleep admission fails the controlled schedule.
+This is test-only scheduling/cleanup, not a changed production cancellation or
+dashboard behavior. Run both affected test files through `scripts/test.sh`.
