@@ -4,6 +4,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import time
 from contextlib import ExitStack
 from pathlib import Path
@@ -315,19 +316,34 @@ def test_explicit_resume_with_high_msp_pipe_descriptors(mock_ui, tmp_path, monke
     processes = []
     original_write = MuseClient._msp_write
     original_turn = MuseClient._run_msp_turn_observed
+    original_popen = subprocess.Popen
     reserved = []
+    released_pipe_descriptors = []
 
     def release_reserved():
         while reserved:
             os.close(reserved.pop())
 
     def run_after_release(client, *args, **kwargs):
-        release_reserved()
-        return original_turn(client, *args, **kwargs)
+        def launch_after_release(*launch_args, **launch_kwargs):
+            assert len(reserved) == 64 and max(reserved) < 1024
+            release_reserved()
+            process = original_popen(*launch_args, **launch_kwargs)
+            descriptors = tuple(getattr(process, name).fileno() for name in ("stdin", "stdout", "stderr"))
+            released_pipe_descriptors.append(descriptors)
+            # Establish the counterexample before the high-FD duplication:
+            # the unchanged host really acquired the newly released low slots.
+            return process
+
+        with monkeypatch.context() as launch_patch:
+            launch_patch.setattr("auto_coder.muse_client.subprocess.Popen", launch_after_release)
+            return original_turn(client, *args, **kwargs)
 
     def observe_write(client, process, payload, total_bytes, deadline):
         assert process.stdin is not None and process.stdout is not None and process.stderr is not None
         if process not in processes:
+            if release_low_descriptors:
+                assert released_pipe_descriptors and max(released_pipe_descriptors[-1]) < 1024
             # Duplicate the real parent pipe ends instead of assuming unrelated
             # low descriptors stay open between reservation and host launch.
             for name, mode in (("stdin", "wb"), ("stdout", "rb"), ("stderr", "rb")):
@@ -355,6 +371,7 @@ def test_explicit_resume_with_high_msp_pipe_descriptors(mock_ui, tmp_path, monke
             monkeypatch.setattr(MuseClient, "_run_msp_turn_observed", run_after_release)
         _exercise_retained_resume(mock_ui, tmp_path, monkeypatch, refusal, reason, backend)
         assert not reserved
+        assert bool(released_pipe_descriptors) == release_low_descriptors
     assert processes
     assert all(process.poll() is not None for process in processes)
     for process in {process.pid: process for process in processes}.values():

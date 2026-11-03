@@ -3148,3 +3148,26 @@ selection also drives the actual guard/Supervisor/authenticated-readback path
 in `tests/test_management_fresh_end_to_end.py` with a positively observed zombie
 held through the retained-history case. That whole-host test remains distinct
 from the single-real-task projection used by the focused kernel regression.
+
+
+### Cache failure after GitHub response headers (issue #2742)
+
+`_finalize_caching_failure` emits the existing secret-safe GitHub request
+outcome with `event=wire_response_before_cache_failure` and supplies the known
+wire evidence to the Governor. It preserves header status, delivery certainty
+and throttle metadata; the caller still receives its original cache/body error
+or cancellation. A header-based success classification is not decoded GraphQL
+success, provider delivery, an entity stage completion, or merge clearance.
+No new dashboard event/schema is added: this is internal HTTP admission
+accounting, before an Issue/PR processing outcome is established. Existing typed
+stage errors/deferrals and retained work remain the dashboard evidence. Do not
+project a completed wire reservation as PR progress or synthesize an event for
+an unobserved historical failure.
+
+Run `bash scripts/test.sh tests/test_gh_cache_exception_observations.py` for both
+production adapters, real SQLite contention, body failures with GET/POST,
+header throttle preservation, before-wire refusal and cancellation. The checks
+assert original failures, single sends, consumed receipts, durable occupancy
+and later independently requested communication/cache-hit isolation. Existing
+`tests/test_github_request_outcomes.py`, `tests/test_gh_cache_timeouts.py` and
+`tests/test_github_request_governor.py` retain the wider boundary/pacing gates.

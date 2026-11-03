@@ -120,3 +120,11 @@ repeated timeout, and a killed controller followed by a reopened store and the r
 MSP transport. Each case asserts one session start, exact-session resumption,
 preserved partial edits, unchanged attempt/incarnation, and publication of both
 the original and continued edits to a real local Git remote.
+
+The descriptor-release regression verifies that all 64 fixture-owned reservations
+are below1024 and releases them at the actual production Popen boundary. It
+records the real parent pipe descriptors before duplication and requires each to
+be below1024; only then can the unchanged >=1024 production-write assertion
+prove the fixture correction. A saturated low-descriptor layout fails this
+bounded precondition instead of silently passing an unexercised release case.
+No unrelated descriptor is closed.
