@@ -487,7 +487,7 @@ def _validate_host_proc_profile(pid_namespace: str, uid_map: str, mountinfo: str
 def _task_is_unreferenced_zombie(task: Path) -> bool:
     """Prove the same exited task has no nsproxy; never waive unknown evidence."""
     if not task.name.isdecimal() or int(task.name) <= 0 or str(int(task.name)) != task.name:
-        return False
+        raise ValueError("task identity is malformed")
     descriptor = None
     try:
         descriptor = os.open(task, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -510,7 +510,9 @@ def _task_is_unreferenced_zombie(task: Path) -> bool:
         except FileNotFoundError:
             return identity() == before
         return False
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        # Another disappearing task entry can be reobserved by a whole scan.
+        # Permission and malformed-proof errors must instead remain hard errors.
         return False
     finally:
         if descriptor is not None:
@@ -537,8 +539,13 @@ def _assert_all_task_networks_absent(proc_root: Path, namespace: str) -> None:
             try:
                 current = os.readlink(task / "ns/net")
             except FileNotFoundError:
-                if task.exists() and not _task_is_unreferenced_zombie(task):
-                    raise _TaskNamespaceUnavailable(f"task network namespace is unavailable (pid={process.name}, tid={task.name})")
+                if task.exists():
+                    try:
+                        zombie = _task_is_unreferenced_zombie(task)
+                    except (OSError, ValueError) as exc:
+                        raise ValueError(f"task network namespace is unavailable (pid={process.name}, tid={task.name}): lifetime proof failed ({type(exc).__name__})") from exc
+                    if not zombie:
+                        raise _TaskNamespaceUnavailable(f"task network namespace is unavailable (pid={process.name}, tid={task.name})")
                 continue
             if current == namespace:
                 raise HostObservationUnavailable("prior network namespace still has a task")

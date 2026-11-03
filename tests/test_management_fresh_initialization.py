@@ -671,6 +671,62 @@ def test_network_observation_does_not_retry_other_refusals(monkeypatch: pytest.M
     assert delays == []
 
 
+@pytest.mark.parametrize("fault", ["permission", "malformed", "zero_token"])
+def test_missing_namespace_does_not_erase_hard_lifetime_proof_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str) -> None:
+    from auto_coder.management import fresh_host_observation as observation
+
+    task = tmp_path / "42/task/42"
+    (task / "ns").mkdir(parents=True)
+    (task / "stat").write_text("42 (child) Z" if fault == "malformed" else _task_stat(42, token="0" if fault == "zero_token" else "42"))
+    readlink = os.readlink
+    original_open = os.open
+    permission = PermissionError("controlled held-directory stat-open denial")
+
+    def open_stat(path, flags, *args, **kwargs):
+        if fault == "permission" and path == "stat":
+            raise permission
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(observation.os, "open", open_stat)
+    monkeypatch.setattr(observation.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(observation.os, "readlink", lambda path, *args, **kwargs: "host" if str(path).startswith("/proc/") else readlink(path, *args, **kwargs))
+    monkeypatch.setattr(observation, "_validate_host_proc_profile", lambda *args: None)
+    scan = observation._assert_all_task_networks_absent
+    scans = []
+
+    def complete_scan(root, namespace):
+        scans.append((root, namespace))
+        return scan(tmp_path, namespace)
+
+    delays = []
+
+    def task_exits_before_hypothetical_retry(delay):
+        delays.append(delay)
+        # The old classifier could erase the observed hard error by accepting
+        # this later clean scan. No retry is permitted after that hard error.
+        (task / "stat").unlink()
+        (task / "ns").rmdir()
+        task.rmdir()
+        task.parent.rmdir()
+        task.parent.parent.rmdir()
+
+    monkeypatch.setattr(observation, "_assert_all_task_networks_absent", complete_scan)
+    monkeypatch.setattr(observation.time, "sleep", task_exits_before_hypothetical_retry)
+    with pytest.raises(HostObservationUnavailable) as caught:
+        observation.assert_prior_network_unreferenced("net:[202]")
+    assert len(scans) == 1
+    assert delays == []
+    causes = []
+    cause = caught.value.__cause__
+    while cause is not None:
+        causes.append(cause)
+        cause = cause.__cause__
+    if fault == "permission":
+        assert permission in causes
+    else:
+        assert any(isinstance(cause, ValueError) and "task lifetime evidence is incomplete" in str(cause) for cause in causes)
+
+
 @pytest.mark.parametrize("fault", ["live", "truncated", "missing", "unreadable", "bad_pid", "bad_task_id", "zero_token", "bad_token", "changed_token", "state_changes", "namespace_reappears"])
 def test_unknown_task_is_never_waived_as_a_zombie(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str) -> None:
     from auto_coder.management.fresh_host_observation import _assert_all_task_networks_absent
