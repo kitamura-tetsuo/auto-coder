@@ -1600,7 +1600,8 @@ def test_due_resumption_preserves_effects_after_later_snapshot_failure(tmp_path,
     implementation.assert_not_called()
 
 
-def test_initial_snapshot_failure_blocks_until_selected_retry(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure_boundary", ["initial_snapshot", "local_job_store", "candidate_processing"])
+def test_initial_snapshot_failure_blocks_until_selected_retry(tmp_path, monkeypatch, failure_boundary):
     issue = {"number": 7, "title": "Carried title", "body": "Requirements"}
     engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
     identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
@@ -1608,7 +1609,14 @@ def test_initial_snapshot_failure_blocks_until_selected_retry(tmp_path, monkeypa
     assert store.complete_effect(identity, "confirmed")
     retained = store.manual_retry(identity, now=time.time() - 1)
     assert retained is not None
-    engine.github.get_issue_dispatch_snapshot_strict.side_effect = ValueError("malformed snapshot")
+    failure = ValueError("non-typed Issue evaluation failure")
+    if failure_boundary == "initial_snapshot":
+        engine.github.get_issue_dispatch_snapshot_strict.side_effect = failure
+    elif failure_boundary == "local_job_store":
+        monkeypatch.setattr(engine, "_get_local_job_store", MagicMock(side_effect=failure))
+    else:
+        monkeypatch.setattr(engine, "_get_local_job_store", MagicMock())
+        monkeypatch.setattr(engine, "_process_single_candidate_unified", MagicMock(side_effect=failure))
     scheduler = PendingWorkScheduler(store, repository="owner/repo", clock=lambda: time.time() + 3600)
     scheduler.register_handler(ISSUE_PROCESSING_STAGE, _IssueProcessingStageHandler(engine, "owner/repo"))
 

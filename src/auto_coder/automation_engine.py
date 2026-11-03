@@ -657,7 +657,13 @@ class _IssueProcessingStageHandler:
         if obligation.identity.revision and current_revision != obligation.identity.revision:
             return StageOutcome(superseded=True)
         candidate = Candidate(type="issue", data=fresh_issue, priority=0, issue_number=issue_number)
-        result = engine._process_single_candidate(self._repo_name, candidate, origin="issue-pending-work-resumption")
+        try:
+            result = engine._process_single_candidate(self._repo_name, candidate, origin="issue-pending-work-resumption")
+        except GitHubRequestError as exc:
+            return StageOutcome(error=exc)
+        except Exception as exc:
+            logger.opt(exception=True).warning("Issue pending-work candidate evaluation failed repository={} issue={}", self._repo_name, issue_number)
+            return StageOutcome(blocked_reason=PendingReason.EVALUATION_FAILED, blocked_error=str(exc))
         if result.target_outcome is ExplicitTargetOutcome.DEFERRED or result.error:
             if result.error:
                 logger.warning(

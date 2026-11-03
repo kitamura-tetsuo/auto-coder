@@ -105,3 +105,11 @@ migration for each repository that needs it, start the upgraded controllers, ins
 `pending-work list`, and use targeted `retry` only for a selected retained block. The old
 database is preserved but is not the live queue after cutover; running old and upgraded
 writers together is unsupported.
+
+A non-typed failure during a resumed Issue's candidate processing, including the
+local job-store lookup after its successful strict refresh, becomes a retained
+`EVALUATION_FAILED` operational block. Ordinary scans and generic wakes cannot
+retry it; the existing selected manual retry preserves identity and effects.
+Typed GitHub request failures retain their existing classification and deadlines.
+The initial-refresh regression also injects failures at both actual candidate
+boundaries through the production handler and scheduler/store.

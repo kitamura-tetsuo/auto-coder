@@ -365,14 +365,19 @@ def _finalize_caching_response(
     return finalize_response(resp, base, observation_hook, "local_cache_hit")
 
 
-def _finalize_caching_failure(observation_hook: ObservationHook | None) -> None:
+def _finalize_caching_failure(observation_hook: ObservationHook | None, failure: BaseException) -> None:
     """Retain known wire headers when cache/body processing prevents a response.
 
     Consuming these observations does not decode a body or complete the caller's
     operation. Its original exception still escapes; no request is replayed.
     Nothing is inferred when the failure preceded a recorded wire response.
     """
-    for outcome in take_wire_outcomes():
+    outcomes = take_wire_outcomes()
+    if outcomes and isinstance(failure, (httpx.RequestError, httpx.StreamError)):
+        # Preserve the original exception identity and prevent an enclosing
+        # transport retry from replaying a request with received headers.
+        setattr(failure, "_auto_coder_response_received", True)
+    for outcome in outcomes:
         log_outcome(outcome, "wire_response_before_cache_failure")
         if observation_hook:
             observation_hook(outcome)
@@ -397,8 +402,8 @@ def _caching_request(client: httpx.Client, method: str, url: str, *, path_templa
     extensions.setdefault("auto_coder_operation_id", operation_id)
     try:
         resp = client.request(method, url, extensions=extensions, **kwargs)
-    except BaseException:
-        _finalize_caching_failure(observation_hook)
+    except BaseException as exc:
+        _finalize_caching_failure(observation_hook, exc)
         raise
     _finalize_caching_response(resp, operation_id=operation_id, subsystem=subsystem, path_template=path_template, started=started, observation_hook=observation_hook)
     return resp
@@ -413,7 +418,7 @@ def retry_with_backoff(retries=3, backoff_in_seconds=1):
                 try:
                     return func(*args, **kwargs)
                 except (httpx.RequestError, httpx.StreamError, httpx.RemoteProtocolError, httpx.PoolTimeout) as e:
-                    if x == retries:
+                    if getattr(e, "_auto_coder_response_received", False) or x == retries:
                         raise
                     sleep = backoff_in_seconds * 2**x
                     logger.warning(f"Network error in {func.__name__} ({e}), retrying in {sleep}s...")
@@ -662,8 +667,8 @@ def get_ghapi_client(
             started = time.monotonic()
             try:
                 resp = client.request(method=verb, url=url, headers=headers, content=content_data, json=json_data, params=query, follow_redirects=True, timeout=timeout, extensions={"auto_coder_operation_id": operation_id})
-            except BaseException:
-                _finalize_caching_failure(effective_observation)
+            except BaseException as exc:
+                _finalize_caching_failure(effective_observation, exc)
                 raise
             wire_outcomes = take_wire_outcomes()
 

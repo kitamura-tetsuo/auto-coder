@@ -3249,3 +3249,30 @@ test always requests cancellation and joins its owned thread on assertion
 failure. Removing only its real-sleep admission fails the controlled schedule.
 This is test-only scheduling/cleanup, not a changed production cancellation or
 dashboard behavior. Run both affected test files through `scripts/test.sh`.
+
+
+### Integration review repairs: unchanged authority and failure evidence (#2746)
+
+Resumed Issue candidate exceptions now settle as the existing `EVALUATION_FAILED`
+block, with the same identity, effects and retry accounting. Generic wakes and
+ordinary scans do not provide retry authority. The operator can distinguish this
+block from an error-free protected-owner Deferred using existing pending-work
+state and the candidate-evaluation warning; no success or completion is inferred.
+Run `bash scripts/test.sh tests/test_pending_work_resumption.py` for initial
+refresh, actual local job-store and subsequent candidate-failure controls.
+
+`wire_response_before_cache_failure` still means only received-header evidence.
+The original retryable body exception carries an internal no-replay marker to
+the existing outer wrapper; there is no new public event or mutation-success
+claim. The actual GraphQL closure regression proves one POST, original exception,
+one durable reservation settlement and an independently requested next operation.
+Run `bash scripts/test.sh tests/test_gh_cache_exception_observations.py`.
+
+An already-resolved native thread plus a newer PR-level PASS with an exact
+`INCONCLUSIVE` thread digest cannot confirm the old uncertain closure effect.
+The required `ADDRESSED` disposition remains independent of native resolved state
+and PR-level coverage. No effect identity, immutable payload or review history
+is rewritten. Run `bash scripts/test.sh tests/test_single_review_ordinary_closure_flow.py`
+for the real model-boundary/retention/reconstruction/resumption control. These
+fixture-driven production tests are not evidence that a historical provider
+message was delivered or that an external GitHub mutation succeeded.

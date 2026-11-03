@@ -869,7 +869,7 @@ def test_newer_plain_pass_does_not_replace_accepted_discussion_binding(flow_env:
         assert flow.merge.call_count == 1, (actions, resumed)
 
 
-@pytest.mark.parametrize("replacement", ["current", "plain", "changed_discussion"])
+@pytest.mark.parametrize("replacement", ["current", "plain", "changed_discussion", "inconclusive"])
 def test_missing_original_discussion_binding_recovers_only_from_independent_current_evidence(flow_env: Env, monkeypatch: pytest.MonkeyPatch, replacement: str) -> None:
     from dataclasses import replace
 
@@ -895,8 +895,10 @@ def test_missing_original_discussion_binding_recovers_only_from_independent_curr
     assert len(original) == 1, first
     assert json.loads(original[0]["exact_payload"])["discussion_evidence"] == []
     assert original[0]["status"] == "UNCERTAIN"
+    resolve_calls = flow.client.resolve_review_thread.call_count
     before = flow.model_calls
-    flow.model_responses = [ordinary_response(flow.thread_id, status="ADDRESSED", evidence="tests/test_state.py independently verifies the complete current root")]
+    disposition = "INCONCLUSIVE" if replacement == "inconclusive" else "ADDRESSED"
+    flow.model_responses = [ordinary_response(flow.thread_id, status=disposition, evidence="tests/test_state.py independently evaluates the complete current root")]
     refreshed = flow.run(closure=ClosureScript(status="FIXED"))
     assert flow.model_calls == before + 1, refreshed
     retained = EffectiveDecisionStore(REPO).load(flow.pr)
@@ -929,3 +931,7 @@ def test_missing_original_discussion_binding_recovers_only_from_independent_curr
     assert len(after) == 1
     assert (after[0]["operation_id"], after[0]["exact_payload"]) == (original[0]["operation_id"], original[0]["exact_payload"])
     assert after[0]["status"] == ("CONFIRMED" if replacement == "current" else status_before_reconciliation)
+    if replacement == "inconclusive":
+        assert flow.client.resolve_review_thread.call_count == resolve_calls
+        assert status_before_reconciliation == after[0]["status"] == "UNCERTAIN"
+        flow.merge.assert_not_called()

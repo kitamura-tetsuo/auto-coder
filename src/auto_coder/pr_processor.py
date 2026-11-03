@@ -1518,7 +1518,7 @@ class _GitHubClosureThreadTransport:
             if bound.attempt_sequence <= view.record.attempt_sequence:
                 return False
             _assert_ordinary_discussion_current(self.client, self.payload.repository, self.payload.pr_number, bound)
-            return any(item.thread_id == self.thread.id and item.discussion_evidence_digest == actual for item in bound.thread_dispositions)
+            return any(item.thread_id == self.thread.id and item.status == "ADDRESSED" and item.evidence.strip() and item.discussion_evidence_digest == actual for item in bound.thread_dispositions)
         except Exception:
             return False
 

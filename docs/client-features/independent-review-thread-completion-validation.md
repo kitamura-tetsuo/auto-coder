@@ -234,3 +234,12 @@ tests/test_single_review_ordinary_closure_flow.py tests/test_pr_review_effects.p
 tests/test_ordinary_discussion_revalidation.py`. Existing
 `pr.review-thread-closure` confirmed/unfinished facts describe this recovery;
 there is no new event schema or dashboard behavior.
+
+When an accepted closure lacks its original discussion binding, a later retained
+PASS must explicitly classify this exact authenticated thread as `ADDRESSED`,
+with nonempty independent evidence and its complete current discussion digest.
+A matching digest with `INCONCLUSIVE` is insufficient, even if the PR-level
+verdict is PASS and the native thread is already resolved. The production-flow
+regression supplies that orthogonal model response before normal retention,
+reconstructs the stores and resumes the original immutable uncertain effect;
+it must remain nonauthorizing without another resolve or false confirmation.
