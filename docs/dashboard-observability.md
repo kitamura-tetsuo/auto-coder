@@ -3,7 +3,9 @@
 Individual specification-review evidence interning changes only the reversible
 prompt representation. Existing Review-lane origins, durable decision/audit fields,
 coverage/dispositions, currentness fences and dashboard projections remain the
-same. Invalid required transport evidence follows the existing fail-closed ERROR
+same schema. The semantic policy identity now binds the receiving instruction
+templates as well: an older-policy decision is not reused, and the existing
+review history records a fresh FULL assessment. Invalid required transport evidence follows the existing fail-closed ERROR
 path; a smaller payload is not a readiness or progress event. Run
 `bash scripts/test.sh tests/test_individual_evidence_envelope.py
 tests/test_specification_analyzer.py tests/test_specification_validation_lifecycle.py

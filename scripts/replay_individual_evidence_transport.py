@@ -17,6 +17,7 @@ from auto_coder.llm_backend_config import active_repo_context
 from auto_coder.objective_evidence import ObjectiveAnchor, extract_objective
 from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.specification_analyzer import IncrementalReviewContext, IndividualRelationshipContext, IndividualReviewEvidence, analyze_issue_specification
+from auto_coder.specification_validation_lifecycle import validation_policy_identity
 
 
 def replay(output: Path, repository: str, execute: bool) -> list[dict[str, object]]:
@@ -59,6 +60,7 @@ def replay(output: Path, repository: str, execute: bool) -> list[dict[str, objec
                 context = IncrementalReviewContext(mode, "advisory-predecessor" if predecessor else None, predecessor, '{"changed_fields":[]}' if predecessor else "")
                 evidence = IndividualReviewEvidence(body, (), objective, context)
                 case = name + "-" + mode.lower()
+                policy_identity = validation_policy_identity()
 
                 def receiver(prompt: str) -> str:
                     payload = prompt.rsplit("```json\n", 1)[1].split("\n```", 1)[0]
@@ -76,8 +78,13 @@ def replay(output: Path, repository: str, execute: bool) -> list[dict[str, objec
 
                 result = analyze_issue_specification(manifest, body, review_evidence=evidence, relationship_context=IndividualRelationshipContext("standalone", related), prompt_runner=receiver)
                 prompt = (output / (case + ".prompt.txt")).read_text(encoding="utf-8")
+                observed_backend, observed_model = manager.get_last_backend_and_model() if execute and manager is not None else (None, None)
                 record = {
                     "case": case,
+                    "case_version": "individual-evidence-advisory-v1",
+                    "policy_identity": policy_identity,
+                    "observed_backend": observed_backend,
+                    "observed_model": observed_model,
                     "semantic_execution": execute,
                     "expected_advisory_boundary": "A genuine missing no-write invariant" if name == "missing-invariant" else "Avatar editing is adjacent and non-blocking",
                     "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),

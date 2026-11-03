@@ -378,6 +378,8 @@ def validation_policy_identity() -> str:
     contract = {
         "version": VALIDATION_SCHEMA_VERSION,
         "prompt": prompt,
+        "evidence_field_reference_prompt": issue_prompts.get("individual_evidence_field_reference") if isinstance(issue_prompts, dict) else None,
+        "evidence_envelope_prompt": issue_prompts.get("individual_evidence_envelope") if isinstance(issue_prompts, dict) else None,
         "categories": sorted(SPECIFICATION_FINDING_CATEGORIES),
         "result_fields": ["verdict", "remediation", "findings"],
     }

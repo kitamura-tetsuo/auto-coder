@@ -2,9 +2,12 @@
 
 import hashlib
 import json
+import runpy
 import subprocess
 import sys
+from copy import deepcopy
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -12,8 +15,8 @@ from auto_coder.individual_evidence_envelope import decode_individual_evidence, 
 from auto_coder.objective_evidence import ObjectiveAnchor, ObjectiveExtraction, objective_evidence_json
 from auto_coder.prompt_loader import load_prompts, render_prompt
 from auto_coder.requirement_contract import NormativeIssueManifest, NormativeRequirement
-from auto_coder.specification_analyzer import IncrementalReviewContext, IndividualRelationshipContext, IndividualReviewEvidence, analyze_issue_specification
-from auto_coder.specification_validation_lifecycle import validation_policy_identity
+from auto_coder.specification_analyzer import IncrementalReviewContext, IndividualRelationshipContext, IndividualReviewEvidence, SpecificationAnalysisResult, analyze_issue_specification
+from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle, validation_policy_identity
 from tests.support.individual_review_evidence import prompt_evidence
 
 
@@ -65,11 +68,37 @@ def test_invalid_envelopes_never_return_partial_authoritative_input(corruption):
         decode_individual_evidence(encoded)
 
 
-def test_representation_does_not_change_semantic_policy_identity():
+def test_original_semantic_template_is_preserved():
     # Captured from main90 before adding this transport representation.
     prompt = load_prompts()["issue"]["adversarial_specification_analysis"]
     assert hashlib.sha256(prompt.encode()).hexdigest() == "60e7f4a89994f93b47597fa070001758fae757e21728139f5dd87d453d5e99cf"
-    assert validation_policy_identity() == "f10942add788a4307afca214389e3476081b2da941608012a65685f3cb95f582"
+
+
+@pytest.mark.parametrize("template", ["individual_evidence_field_reference", "individual_evidence_envelope"])
+def test_receiving_instruction_change_invalidates_exact_reuse_and_predecessor(tmp_path, monkeypatch, template):
+    manifest = NormativeIssueManifest(7, "Current", True, True, (NormativeRequirement("REQ-001", "Preserve state."),))
+    modes = []
+
+    def analyzer(_manifest, _body):
+        modes.append("called")
+        return SpecificationAnalysisResult("READY")
+
+    gate = SpecificationValidationLifecycle("owner/repo", "unchanged-route", tmp_path / "decisions.json", analyzer)
+    original = gate.decide(manifest, "Current", "REQ-001: Preserve state.")
+    gate.decide(manifest, "Current", "REQ-001: Preserve state.")
+    assert modes == ["called"]
+    assert original.review_mode == "FULL"
+    changed = deepcopy(load_prompts())
+    changed["issue"][template] += "\nA decision-affecting instruction changed."
+    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.load_prompts", lambda: changed)
+    assert validation_policy_identity() != original.identity.policy_identity
+    gate = SpecificationValidationLifecycle("owner/repo", "unchanged-route", tmp_path / "decisions.json", analyzer)
+    current = gate.decide(manifest, "Current", "REQ-001: Preserve state.")
+    assert current.identity.policy_identity != original.identity.policy_identity
+    assert modes == ["called", "called"]
+    assert current.review_mode == "FULL"
+    edited = gate.decide(manifest, "Current", "REQ-001: Preserve state.\nUpdated context.")
+    assert edited.review_mode == "INCREMENTAL"  # Only the new compatible policy is usable.
 
 
 @pytest.mark.parametrize("corruption", ["unsupported", "missing", "conflicting"])
@@ -107,6 +136,9 @@ def test_advisory_cases_render_complete_inputs_without_claiming_semantic_results
     for record in records:
         assert record["semantic_execution"] is False
         assert record["observed_result"] is None
+        assert record["case_version"] == "individual-evidence-advisory-v1"
+        assert record["policy_identity"] == validation_policy_identity()
+        assert record["observed_backend"] is None and record["observed_model"] is None
         prompt = (output / (record["case"] + ".prompt.txt")).read_text()
         inputs = prompt_evidence(prompt)
         requirements = inputs["current"]["manifest"]["requirements"]
@@ -114,6 +146,29 @@ def test_advisory_cases_render_complete_inputs_without_claiming_semantic_results
         assert "without modifying persisted live state" in inputs["current"]["objective"]["original_text"]
         assert inputs["current"]["relationship"]["role"] == "standalone"
         assert "avatar" in inputs["current"]["body"]
+
+
+def test_live_replay_records_actual_execution_model_and_versions(tmp_path, monkeypatch):
+    module = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/replay_individual_evidence_transport.py"))
+    replay = module["replay"]
+    manager = Mock()
+    manager.get_last_backend_and_model.return_value = ("observed-fallback", "observed-model")
+    calls = []
+
+    def execute(prompt, *, backend_manager, is_noedit):
+        assert backend_manager is manager and is_noedit is True
+        calls.append(prompt)
+        return '{"verdict":"ERROR","remediation":"NONE","findings":[],"finding_dispositions":[],"coverage":[]}'
+
+    monkeypatch.setitem(replay.__globals__, "create_adversarial_validation_backend_manager", lambda **_: manager)
+    monkeypatch.setitem(replay.__globals__, "run_llm_prompt", execute)
+    records = replay(tmp_path / "controlled-metadata", "owner/repo", True)
+    assert len(calls) == len(records) == 4
+    for record in records:
+        assert record["observed_backend"] == "observed-fallback"
+        assert record["observed_model"] == "observed-model"
+        assert record["case_version"] == "individual-evidence-advisory-v1"
+        assert record["policy_identity"] == validation_policy_identity()
 
 
 @pytest.mark.parametrize("role,parent_context", [("standalone", None), ("child", ""), ("child", "Closed parent evidence\r\n")])

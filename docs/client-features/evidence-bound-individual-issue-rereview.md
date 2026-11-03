@@ -65,8 +65,11 @@ instructions plus every definition to that same prompt; output validation still
 uses the complete original manifest and predecessor context.
 
 This representation is transport, not review authority. The existing semantic
-policy template is unchanged; changing serialization alone does not manufacture
-compatible predecessors or rerun authority. Exact durable reuse still makes zero
+policy template is unchanged. The semantic policy identity also binds the two
+receiving instruction templates, because their instructions can affect decisions;
+this migration conservatively revalidates older-policy decisions using FULL input.
+Changing serialization alone does not manufacture compatible predecessors or rerun
+authority. Exact durable reuse under the same complete policy still makes zero
 semantic calls. Existing selection uses the latest accepted compatible predecessor
 or FULL review for valid current inputs when optional legacy/corrupt/incompatible
 history cannot be used. Unsupported/corrupt required current evidence remains
@@ -83,7 +86,9 @@ nor transport reliability or semantic discrimination.
 `uv run python scripts/replay_individual_evidence_transport.py --repository OWNER/REPO
 --output NEW_DIRECTORY` renders separate advisory missing-no-write-invariant and
 adjacent-avatar-demand cases in FULL/INCREMENTAL form, with complete reconstructed
-inputs and prompt hashes. Add `--execute` to make one configured read-only semantic
+inputs and prompt hashes. The result records the case version and semantic policy
+identity; executed cases also record the backend/model observed after the call,
+including fallback selection. Add `--execute` to make one configured read-only semantic
 call per case and retain actual responses/results. Rendering and preselected test
 responses are not semantic proof. Observed model verdicts are advisory, may vary,
 and are not a new deterministic CI or merge gate.
