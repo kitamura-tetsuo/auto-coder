@@ -59,7 +59,7 @@ the normal Loguru sinks. An unbound scheduler may exist during engine constructi
 but cannot enter its serving loop; production installs the immutable binding and all
 handlers before starting recovery.
 
-An unexpected failure of the initial strict Issue refresh retains the unfinished
+An unexpected failure of the strict Issue refresh or subsequent candidate evaluation retains the unfinished
 obligation as an evaluation-failed operational block. Polling and generic wakes do
 not retry it; an operator can rearm the selected obligation using pending-work retry.
 

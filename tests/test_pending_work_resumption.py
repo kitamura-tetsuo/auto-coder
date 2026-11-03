@@ -1600,6 +1600,49 @@ def test_due_resumption_preserves_effects_after_later_snapshot_failure(tmp_path,
     implementation.assert_not_called()
 
 
+def test_candidate_exception_blocks_until_selected_retry(tmp_path, monkeypatch):
+    issue = {"number": 7, "title": "Carried title", "body": "Requirements"}
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    store.defer(identity, _admission_deferral(), (ISSUE_PROCESSING_REFRESH_EFFECT, ISSUE_PROCESSING_STAGE, "confirmed"))
+    assert store.complete_effect(identity, "confirmed")
+    retained = store.manual_retry(identity, now=time.time() - 1)
+    assert retained is not None
+    engine._get_local_job_store = MagicMock(side_effect=ValueError("job store unavailable"))
+    scheduler = PendingWorkScheduler(store, repository="owner/repo", clock=lambda: time.time() + 3600)
+    scheduler.register_handler(ISSUE_PROCESSING_STAGE, _IssueProcessingStageHandler(engine, "owner/repo"))
+
+    async def scan():
+        await scheduler._dispatch_due()
+        if scheduler._tasks:
+            await asyncio.gather(*tuple(scheduler._tasks))
+
+    async def scenario():
+        await scan()
+        blocked = store.get(identity)
+        assert blocked is not None
+        assert blocked.identity == identity
+        assert blocked.reason is PendingReason.EVALUATION_FAILED
+        assert blocked.last_error == "job store unavailable"
+        assert blocked.not_before == 0
+        assert blocked.unfinished_effects == retained.unfinished_effects
+        assert blocked.throttle_attempts == retained.throttle_attempts
+        assert store.due(time.time() + 7200) == []
+        await scan()
+        scheduler.wake()
+        await scan()
+        assert engine.github.get_issue_dispatch_snapshot_strict.call_count == 1
+        assert engine._get_local_job_store.call_count == 1
+        assert store.get(identity) == blocked
+        assert scheduler.manual_retry(identity) is not None
+        await scan()
+        assert engine.github.get_issue_dispatch_snapshot_strict.call_count == 2
+        assert engine._get_local_job_store.call_count == 2
+        assert store.get(identity).reason is PendingReason.EVALUATION_FAILED
+
+    asyncio.run(scenario())
+
+
 def test_initial_snapshot_failure_blocks_until_selected_retry(tmp_path, monkeypatch):
     issue = {"number": 7, "title": "Carried title", "body": "Requirements"}
     engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
