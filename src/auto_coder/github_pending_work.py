@@ -1160,7 +1160,7 @@ class PendingWorkScheduler:
                 # after its in-memory dispatch has exited. Re-scan interrupted
                 # claims on every controller turn so repaired storage can
                 # resume the same identity without requiring a daemon restart.
-                # _claim_and_run's in-flight guard excludes genuinely active
+                # The in-flight guard excludes genuinely active
                 # dispatches from this recovery path.
                 await self._recover_interrupted()
                 await self._dispatch_due()
@@ -1227,7 +1227,12 @@ class PendingWorkScheduler:
             if handler is None:
                 logger.warning("No stage handler registered for interrupted obligation {}; leaving blocked", obligation.identity.key())
                 continue
-            await self._claim_and_run(obligation, handler.recover)
+            key = obligation.identity.key()
+            with self._in_flight_lock:
+                if key in self._in_flight:
+                    continue
+                self._in_flight.add(key)
+            self._spawn(obligation, handler.recover)
 
     async def _dispatch_due(self) -> None:
         try:

@@ -407,10 +407,12 @@ def test_production_binding_isolates_equal_issue_due_and_overlapping_recovery(tm
         assert store.get(identities[active_repository]).status == "running"
 
         await passive_scheduler._recover_interrupted()
+        await asyncio.gather(*tuple(passive_scheduler._tasks))
         assert store.get(identities[passive_repository]) is None
         assert store.get(identities[active_repository]) is not None
         active_github.release.set()
         await asyncio.wait_for(active_task, 2)
+        await asyncio.gather(*tuple(active_scheduler._tasks))
 
     asyncio.run(overlap_recovery())
 
@@ -418,6 +420,64 @@ def test_production_binding_isolates_equal_issue_due_and_overlapping_recovery(tm
     for repo in repositories:
         wire_targets = [call[1:] for call in github_by_repo[repo].calls]
         assert wire_targets == [(repo, 5411), (repo, 5411)]
+
+
+@pytest.mark.parametrize("recover_on_startup", [True, False])
+def test_interrupted_issue_recovery_does_not_block_other_work_or_shutdown(tmp_path, recover_on_startup):
+    store = PendingWorkStore(tmp_path / "pending.db")
+    issue = {"number": 7, "title": "Title", "body": "Body", "labels": [], "user": {"id": 999}}
+    github = _BarrierIssueGithub({7: [issue], 8: [{**issue, "number": 8}]})
+    github.block = True
+    engine = AutomationEngine(github, _skip_all_issues_config())
+    scheduler = PendingWorkScheduler(store, repository="owner/repo", poll_interval=0.02)
+    scheduler.register_handler(ISSUE_PROCESSING_STAGE, _IssueProcessingStageHandler(engine, "owner/repo"))
+    interrupted = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    error = _github_error(GitHubApiOutcome.REFUSED, delivery=DeliveryCertainty.DEFINITELY_NOT_SENT)
+    effects = ("authoritative-refresh", "issue-processing")
+
+    async def scenario():
+        shutdown = asyncio.Event()
+        if recover_on_startup:
+            store.defer(interrupted, error, effects, governor_deadline=time.time())
+            store.mark_running(interrupted)
+        task = asyncio.create_task(scheduler.run(shutdown))
+        try:
+            if not recover_on_startup:
+                await asyncio.sleep(0.05)
+                store.defer(interrupted, error, effects, governor_deadline=time.time())
+                store.mark_running(interrupted)
+                scheduler.wake()
+            assert await asyncio.to_thread(github.entered.wait, 2)
+            # The unrelated row uses a separate handler so only the recovered
+            # production Issue strict read is held at the barrier.
+            class OtherHandler:
+                def dispatch(self, obligation):
+                    return StageOutcome(completed_effects=obligation.unfinished_effects)
+
+                recover = dispatch
+
+            scheduler.register_handler("other", OtherHandler())
+            other_identity = WorkIdentity("owner/repo", "other:8", "other")
+            store.defer(other_identity, error, ("other-effect",), governor_deadline=time.time())
+            scheduler.wake()
+            for _ in range(200):
+                if store.get(other_identity) is None:
+                    break
+                await asyncio.sleep(0.01)
+            assert store.get(other_identity) is None
+            assert store.get(interrupted).status == "running"
+            shutdown.set()
+            await asyncio.wait_for(task, 2)
+            retained = store.get(interrupted)
+            assert retained is not None
+            assert retained.status == "running"
+            assert retained.unfinished_effects == effects
+        finally:
+            github.release.set()
+            shutdown.set()
+            await asyncio.wait_for(task, 2)
+
+    asyncio.run(scenario())
 
 
 def test_production_binding_rejects_scp_style_git_remote(tmp_path, monkeypatch):

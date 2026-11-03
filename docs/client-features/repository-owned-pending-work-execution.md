@@ -35,7 +35,9 @@ received during an active evaluation remains effective after its settlement,
 without concurrent same-key dispatch. Waking neither resets durable accounting or
 receipts nor shortens a future not-before or unblocks an operational failure.
 Regular-wait references are process-local scheduling state; interruption and
-restart retain and recover the same durable unfinished obligation.
+restart retain and recover the same durable unfinished obligation. Interrupted
+handlers run as tracked tasks, so other eligible work and shutdown remain responsive
+while recovery is in progress; cancellation leaves the interrupted row unfinished.
 
 Repository-specific storage is resolved beneath
 `~/.auto-coder/repositories/<sha256-owner-key>/github_pending_work.db`. A durable

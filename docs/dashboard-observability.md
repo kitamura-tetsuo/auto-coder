@@ -6,6 +6,10 @@ regular wait; an independent wake changes scan timing only. No stage outcome or
 fact schema changes: the existing `issue-pending-work-resumption` origin still
 enters ordinary production admission, and the dashboard continues to show its
 actual Deferred/allowed/refused processing evidence and retained pending work.
+Interrupted recovery now runs concurrently with other eligible work; it uses the
+same production handler and trace emissions, without adding or suppressing events.
+The same-scheduler recovery and shutdown regression is
+`tests/test_pending_work_resumption.py::test_interrupted_issue_recovery_does_not_block_other_work_or_shutdown`.
 Run `bash scripts/test.sh tests/test_issue_pending_wait_cadence.py
 tests/test_github_pending_work.py tests/test_pending_work_resumption.py` to exercise
 real SQLite retention, protected-owner admission, strict refresh timing, regular
