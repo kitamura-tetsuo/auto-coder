@@ -45,10 +45,15 @@ def existing_owner(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("timing", ["before-expiry", "after-expiry", "external-idle", "external-thread", "external-inflight", "unrelated-completion"])
+@pytest.mark.parametrize("unrelated_deadline", [None, 1, 3600])
 @pytest.mark.asyncio
-async def test_real_protected_owner_deferred_preserves_armed_wait(tmp_path, monkeypatch, timing):
+async def test_real_protected_owner_deferred_preserves_armed_wait(tmp_path, monkeypatch, timing, unrelated_deadline):
     engine, store, identity, slots, owner = existing_owner(monkeypatch, tmp_path)
     now = [time.time()]
+    if unrelated_deadline is not None:
+        unrelated = WorkIdentity("owner/repo", "issue:8", "future-other-stage", "future-other-revision")
+        store.defer(unrelated, _admission_deferral(), ("other",))
+        assert store.manual_retry(unrelated, now=now[0] + unrelated_deadline) is not None
     entered = []
     outcomes = []
     reader_times = []
@@ -94,14 +99,23 @@ async def test_real_protected_owner_deferred_preserves_armed_wait(tmp_path, monk
     scheduler = ObservedScheduler(store, repository="owner/repo", poll_interval=30, clock=lambda: now[0])
     engine.pending_work_scheduler = scheduler
     scheduler.register_handler(ISSUE_PROCESSING_STAGE, ObservedHandler(engine, "owner/repo"))
+
+    class FutureOtherHandler:
+        def dispatch(self, obligation):
+            return StageOutcome(completed_effects=("other",))
+
+        recover = dispatch
+
+    scheduler.register_handler("future-other-stage", FutureOtherHandler())
     shutdown = asyncio.Event()
     task = asyncio.create_task(scheduler.run(shutdown))
     try:
         await reached(lambda: scheduler._wake_event is not None)
         scheduler.wake()
         await reached(lambda: len(outcomes) == 1)
-        expiry = next(arm + delay for arm, delay in reversed(arms) if delay > 0)
+        expiry = next(arm + 30 for arm, delay in reversed(arms) if delay > 0)
         assert expiry == pytest.approx(entered[0] + 23)
+        assert scheduler._regular_wait_deadline == pytest.approx(expiry)
         assert outcomes == [StageOutcome()]
         assert dispositions[-1].target_outcome is ExplicitTargetOutcome.DEFERRED
         assert "ownership already exists" in dispositions[-1].actions[0]
@@ -172,7 +186,7 @@ async def test_real_protected_owner_deferred_preserves_armed_wait(tmp_path, monk
         # armed regular wait; checking only the first retry misses a spin.
         await asyncio.sleep(0.03)
         assert len(entered) == 2
-        second_expiry = next(arm + delay for arm, delay in reversed(arms) if delay > 0)
+        second_expiry = next(arm + 30 for arm, delay in reversed(arms) if delay > 0)
         now[0] = second_expiry
         scheduler._wake_event.set()
         await reached(lambda: len(entered) == 3 and not scheduler._in_flight)

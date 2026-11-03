@@ -23,6 +23,9 @@ Each later unchanged deferral uses its own newly armed regular wait. An expired
 reference or a row already claimed in memory cannot rearm a zero-delay spin.
 Another handler's internal settlement is also a scan notification, never an
 independently requested public wake.
+An unrelated future deadline changes the next eligibility scan, not the armed
+no-progress polling cadence for an unchanged Issue. Nearer and later unrelated
+deadlines therefore neither accelerate its repeated deferrals nor starve it.
 
 An independently requested scheduler wake (including existing registration and
 selected manual-retry notifications) can request an earlier due-work scan. A wake

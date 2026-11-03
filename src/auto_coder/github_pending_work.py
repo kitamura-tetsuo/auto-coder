@@ -1136,12 +1136,14 @@ class PendingWorkScheduler:
             raise PendingWorkOwnershipError("Pending-work scheduler cannot run without a repository binding")
         self._loop = asyncio.get_running_loop()
         self._wake_event = asyncio.Event()
-        self._regular_wait_deadline = self._clock() + self._next_delay()
+        self._regular_wait_deadline = self._clock() + self._poll_interval
         try:
             await self._recover_interrupted()
             while not shutdown_event.is_set():
                 delay = self._next_delay()
-                self._regular_wait_deadline = self._clock() + delay
+                # A nearer unrelated deadline may advance the eligibility scan,
+                # but cannot change this turn's configured no-progress cadence.
+                self._regular_wait_deadline = self._clock() + self._poll_interval
                 wake_wait = asyncio.ensure_future(self._wake_event.wait())
                 shutdown_wait = asyncio.ensure_future(shutdown_event.wait())
                 try:

@@ -10,7 +10,7 @@ Run `bash scripts/test.sh tests/test_issue_pending_wait_cadence.py
 tests/test_github_pending_work.py tests/test_pending_work_resumption.py` to exercise
 real SQLite retention, protected-owner admission, strict refresh timing, regular
 expiry on either side of settlement, repeated unchanged deferrals, unrelated
-internal completions, and independent idle/in-flight wakes.
+internal completions, nearer/later unrelated deadlines, and independent idle/in-flight wakes.
 
 Durable worker failures emit repository/target-scoped `worker.failure-backoff`
 stage results under origin `durable-invalidation-worker`. `deferred` means the
