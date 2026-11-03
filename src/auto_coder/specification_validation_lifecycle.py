@@ -401,8 +401,12 @@ def _stored_finding_is_complete(value: object) -> bool:
         isinstance(value["category"], str)
         and value["category"] in SPECIFICATION_FINDING_CATEGORIES
         and isinstance(value["requirement_ids"], list)
-        and all(isinstance(item, str) for item in value["requirement_ids"])
+        and all(isinstance(item, str) and item for item in value["requirement_ids"])
+        and len(set(value["requirement_ids"])) == len(value["requirement_ids"])
         and all(isinstance(value[field], str) for field in ("explanation", "clarification", "counterexample", "missing_normative_boundary"))
+        and value["explanation"].strip()
+        and value["clarification"].strip()
+        and (value["category"] != "false_success_gap" or (value["counterexample"].strip() and value["missing_normative_boundary"].strip()))
     )
 
 
@@ -540,7 +544,7 @@ class SpecificationValidationStore:
                 or set(item) != {"finding_id", "disposition", "reasoning"}
                 or not isinstance(item.get("finding_id"), str)
                 or not isinstance(item.get("disposition"), str)
-                or item.get("disposition") not in {"RESOLVED", "STILL_VALID", "REGRESSED", "UNVERIFIED"}
+                or item.get("disposition") not in {"RESOLVED", "STILL_VALID", "REGRESSED"}
                 or not isinstance(item.get("reasoning"), str)
                 or not str(item.get("reasoning")).strip()
                 for item in dispositions
@@ -552,8 +556,9 @@ class SpecificationValidationStore:
                 or not item.get("finding_id")
                 or not _stored_finding_is_complete(item.get("finding"))
                 or not isinstance(item.get("disposition"), str)
-                or item.get("disposition") not in {"RESOLVED", "STILL_VALID", "REGRESSED", "UNVERIFIED"}
+                or item.get("disposition") not in {"RESOLVED", "STILL_VALID", "REGRESSED"}
                 or not isinstance(item.get("reasoning"), str)
+                or not str(item.get("reasoning")).strip()
                 for item in retained
             )
         ):

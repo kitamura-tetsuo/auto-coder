@@ -2278,7 +2278,7 @@ def test_incomplete_exact_ready_record_cannot_authorize_reuse(tmp_path):
 
 
 @pytest.mark.parametrize("changed_current", [False, True])
-@pytest.mark.parametrize("corruption", ["empty-retained", "empty-finding", "duplicate-id", "bad-category", "null-objective"])
+@pytest.mark.parametrize("corruption", ["empty-retained", "empty-finding", "duplicate-id", "bad-category", "unverified-retained", "empty-reasoning", "null-objective"])
 def test_corrupt_retained_finding_or_objective_never_reuses_authority(tmp_path, changed_current, corruption):
     gate = lifecycle(tmp_path, "BLOCKED")
     original = gate.decide(build_normative_issue_manifest(1734, "Title", BODY), "Title", BODY)
@@ -2293,6 +2293,10 @@ def test_corrupt_retained_finding_or_objective_never_reuses_authority(tmp_path, 
         record["retained_findings"].append(dict(record["retained_findings"][0]))
     elif corruption == "bad-category":
         record["retained_findings"][0]["finding"]["category"] = []
+    elif corruption == "unverified-retained":
+        record["retained_findings"][0]["disposition"] = "UNVERIFIED"
+    elif corruption == "empty-reasoning":
+        record["retained_findings"][0]["reasoning"] = " "
     else:
         inputs = json.loads(record["review_inputs"])
         inputs["objective"] = None
@@ -2410,3 +2414,35 @@ def test_retained_finding_validation_uses_bound_caller_manifest_not_body(tmp_pat
     else:
         assert decision.verdict == "BLOCKED" and decision.evaluation_source == "stored-decision-reuse"
         calls.assert_not_called()
+
+
+@pytest.mark.parametrize("changed_current", [False, True])
+@pytest.mark.parametrize("corruption", ["empty-explanation", "empty-clarification", "false-success-incomplete", "duplicate-requirement-ids"])
+def test_resolved_retained_payload_must_remain_complete(tmp_path, changed_current, corruption):
+    results = [SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")]
+    gate = lifecycle(tmp_path, "BLOCKED", lambda *_args: results.pop(0))
+    first = gate.decide(build_normative_issue_manifest(1734, "Title", BODY), "Title", BODY)
+    results.append(SpecificationAnalysisResult("READY", dispositions=(FindingDisposition(first.finding_ids[0], "RESOLVED", "The original counterexample is resolved."),)))
+    body = BODY + "\n\n## Context\nClarified accepted input."
+    latest = gate.decide(build_normative_issue_manifest(1734, "Title", body), "Title", body)
+    state = json.loads(gate.store.path.read_text())
+    record = state[latest.identity.key]
+    assert record["findings"] == []
+    retained = record["retained_findings"][0]["finding"]
+    if corruption == "empty-explanation":
+        retained["explanation"] = " "
+    elif corruption == "empty-clarification":
+        retained["clarification"] = ""
+    elif corruption == "false-success-incomplete":
+        retained["category"] = "false_success_gap"
+    else:
+        retained["requirement_ids"] = ["REQ-001", "REQ-001"]
+    gate.store.path.write_text(json.dumps(state))
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    current = body + "\nAnother context change." if changed_current else body
+
+    decision = lifecycle(tmp_path, "READY", calls).decide(build_normative_issue_manifest(1734, "Title", current), "Title", current)
+
+    assert decision.verdict == "READY" and decision.review_mode == "FULL"
+    assert decision.evaluation_source == "model" and decision.predecessor_decision_key is None
+    calls.assert_called_once()
