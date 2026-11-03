@@ -17,6 +17,7 @@ with each other's assertions.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 import threading
@@ -96,6 +97,8 @@ def dashboard_env() -> Iterator[Tuple[str, AutomationEngine, ImplementationSlotR
         finally:
             server.should_exit = True
             thread.join(timeout=5)
+            if thread.is_alive():
+                raise RuntimeError("dashboard server did not stop in time")
     finally:
         if previous_runtime_root is None:
             os.environ.pop("AUTO_CODER_RUNTIME_ROOT", None)
@@ -106,7 +109,10 @@ def dashboard_env() -> Iterator[Tuple[str, AutomationEngine, ImplementationSlotR
 @contextmanager
 def _standalone_dashboard_env(repo_name: str) -> Iterator[Tuple[str, AutomationEngine, ImplementationSlotRepository]]:
     """Like `dashboard_env`, but a fresh, fully isolated engine/server used
-    by exactly one test.
+    by exactly one test. An overlapping server borrows the active NiceGUI
+    loop and lifespan; its own socket has lifespan disabled because the owner
+    has already started NiceGUI. A standalone invocation without an active
+    loop owns its ordinary startup and shutdown.
 
     NiceGUI's `reconnect_timeout` (a few seconds) keeps a disconnected
     client's session -- and its `ui.timer` -- alive for a grace period
@@ -116,29 +122,68 @@ def _standalone_dashboard_env(repo_name: str) -> Iterator[Tuple[str, AutomationE
     left over from an earlier test on the same shared server, so it needs
     its own server rather than the module-scoped `dashboard_env`.
     """
+    from nicegui import core as _nicegui_core
+    from nicegui.client import Client
+
     tmp_dir = Path(tempfile.mkdtemp())
     previous_runtime_root = os.environ.get("AUTO_CODER_RUNTIME_ROOT")
-    os.environ["AUTO_CODER_RUNTIME_ROOT"] = str(tmp_dir / "runtime-root")
+    primary_loop = _nicegui_core.loop
+    shared_lifespan = primary_loop is not None and primary_loop.is_running()
+    if not shared_lifespan:
+        os.environ["AUTO_CODER_RUNTIME_ROOT"] = str(tmp_dir / "runtime-root")
+    saved_ui_state = None
     try:
+        if shared_lifespan and not _nicegui_core.app.is_started:
+            raise RuntimeError("active NiceGUI lifespan is not ready for a borrowed server")
         slots = ImplementationSlotRepository(repo_name, 30, tmp_dir / "slots.json")
         engine = AutomationEngine(MagicMock())
         engine.implementation_slots = slots
-
         app = FastAPI()
 
-        from nicegui import core as _nicegui_core
-
-        if _nicegui_core.app.middleware_stack is not None:
+        def configure():
+            saved = (list(_nicegui_core.app.router.routes), dict(Client.page_routes), list(_nicegui_core.app.user_middleware), _nicegui_core.app.middleware_stack)
             _nicegui_core.app.middleware_stack = None
+            try:
+                init_dashboard(app, engine, repo_name)
+            except BaseException:
+                restore(saved)
+                raise
+            return saved
 
-        init_dashboard(app, engine, repo_name)
+        def restore(saved):
+            routes, pages, middleware, stack = saved
+            _nicegui_core.app.router.routes[:] = routes
+            Client.page_routes.clear()
+            Client.page_routes.update(pages)
+            _nicegui_core.app.user_middleware[:] = middleware
+            _nicegui_core.app.middleware_stack = stack
 
-        config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning")
+        async def configure_on_owner():
+            return configure()
+
+        if shared_lifespan:
+            assert primary_loop is not None
+            saved_ui_state = asyncio.run_coroutine_threadsafe(configure_on_owner(), primary_loop).result(timeout=5)
+        else:
+            configure()
+
+        # Additional sockets borrow the active global lifecycle; their engines
+        # and durable stores remain independent. No second pruning loop starts.
+        config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning", lifespan="off" if shared_lifespan else "auto")
         server = uvicorn.Server(config)
-        thread = threading.Thread(target=server.run, daemon=True)
-        thread.start()
+        future = None
+        thread = None
+        if shared_lifespan:
+            assert primary_loop is not None
+            future = asyncio.run_coroutine_threadsafe(server.serve(), primary_loop)
+        else:
+            thread = threading.Thread(target=server.run, daemon=True)
+            thread.start()
         try:
             for _ in range(200):
+                if future is not None and future.done():
+                    future.result()
+                    raise RuntimeError("standalone dashboard server exited during setup")
                 if server.started:
                     break
                 time.sleep(0.05)
@@ -148,8 +193,20 @@ def _standalone_dashboard_env(repo_name: str) -> Iterator[Tuple[str, AutomationE
             yield f"http://127.0.0.1:{port}/dashboard", engine, slots
         finally:
             server.should_exit = True
-            thread.join(timeout=5)
+            if future is not None:
+                future.result(timeout=5)
+            if thread is not None:
+                thread.join(timeout=5)
+                if thread.is_alive():
+                    raise RuntimeError("standalone dashboard server did not stop in time")
     finally:
+        if saved_ui_state is not None:
+
+            async def restore_on_owner():
+                restore(saved_ui_state)
+
+            assert primary_loop is not None
+            asyncio.run_coroutine_threadsafe(restore_on_owner(), primary_loop).result(timeout=5)
         if previous_runtime_root is None:
             os.environ.pop("AUTO_CODER_RUNTIME_ROOT", None)
         else:
@@ -512,3 +569,41 @@ def test_returned_unavailable_after_success_preserves_rendered_state(_use_real_s
             recovered_banner_text = page.locator("text=Implementation slots as of").inner_text()
             recovered_timestamp = recovered_banner_text.split("as of ")[1].split(" (local")[0]
             assert recovered_timestamp != success_timestamp, "recovery must show a genuinely newer successful-observation timestamp, not silently keep the stale one"
+
+
+def test_standalone_server_preserves_parent_loop_and_live_client(_use_real_sleep, _use_real_home, dashboard_env) -> None:
+    """Issue2734: a temporary server cannot own a second NiceGUI lifecycle."""
+    from nicegui import core
+
+    base_url, _engine, slots = dashboard_env
+    primary_loop = core.loop
+    assert primary_loop is not None and primary_loop.is_running()
+    assert slots.start_execution(ImplementationOwner("issue", 9700)) is not None
+    with _headless_page() as parent:
+        parent.goto(f"{base_url}/")
+        parent.wait_for_selector("text=Issue #9700", timeout=10000)
+        with _standalone_dashboard_env("owner/repo-overlap") as (child_url, _child_engine, child_slots):
+            assert core.loop is primary_loop, "temporary fixture replaced the active NiceGUI event loop"
+            assert child_slots.start_execution(ImplementationOwner("issue", 9710)) is not None
+            browser = parent.context.browser
+            assert browser is not None
+            child_context = browser.new_context(viewport={"width": 900, "height": 500})
+            child = child_context.new_page()
+            try:
+                child.goto(f"{child_url}/")
+                child.wait_for_selector("text=Issue #9710", timeout=10000)
+                assert "Issue #9700" not in child.content()
+                assert slots.start_execution(ImplementationOwner("issue", 9702)) is not None
+                parent.wait_for_selector("text=Issue #9702", timeout=10000)
+                assert "Issue #9700" in parent.content()
+                assert "Issue #9702" not in child.content()
+            finally:
+                child_context.close()
+        assert core.loop is primary_loop and primary_loop.is_running()
+        assert slots.start_execution(ImplementationOwner("issue", 9701)) is not None
+        parent.wait_for_selector("text=Issue #9701", timeout=10000)
+        assert "Issue #9700" in parent.content()
+        assert "Issue #9710" not in parent.content()
+        parent.reload()
+        parent.wait_for_selector("text=Issue #9701", timeout=10000)
+        assert "Issue #9710" not in parent.content()

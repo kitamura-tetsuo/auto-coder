@@ -133,6 +133,8 @@ def adjudication_browser_server() -> Iterator[tuple[str, dict]]:
     finally:
         server.should_exit = True
         thread.join(timeout=5)
+        if thread.is_alive():
+            raise RuntimeError("dashboard server did not stop in time")
 
 
 def test_conflict_history_has_context_decision_actor_and_comment_links(_use_real_sleep, adjudication_browser_server) -> None:
