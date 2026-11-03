@@ -3031,6 +3031,14 @@ command and bounded supervisor log messages. It does not create a dashboard job
 or change the dashboard event schema; a process launch alone is not reported as
 authenticated readiness. The isolated fresh-initialization and supervisor tests
 exercise refusal, claim and status boundaries.
+An incomplete host namespace scan records its attempt and PID/TID in the host
+observer's warning sink. Up to two further complete observations revalidate host
+authority and procfs visibility; they never reuse partial absence evidence or
+repeat a launch claim. These host-only observations do not create worker
+dashboard events or change the existing availability/readiness interpretation.
+Run `bash scripts/test.sh tests/test_management_fresh_initialization.py` for
+bounded rescan/refusal regressions; the dedicated root host selection in
+`supervisor-integration-tests.yml` retains its 19 real cases and no-skip check.
 
 ## Local PR repair startup recovery
 

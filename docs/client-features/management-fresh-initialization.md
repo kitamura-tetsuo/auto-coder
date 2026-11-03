@@ -84,6 +84,15 @@ of an exited task, not permission to ignore an unreadable live task. A zombie
 leader never exempts its non-leader siblings. Missing, malformed, changed or
 contradictory proof remains unavailable. This is a bounded observation, not a reservation against
 future namespace or listener changes.
+For a still-existing task with an ENOENT network link and no positive zombie
+proof, the observer may make two further complete observations, separated by
+10 ms. Every attempt revalidates the host authority and unrestricted procfs
+profile before scanning all tasks. The failed observation never exempts a task
+or contributes partial absence evidence. A matching prior-namespace task or a
+different authority, profile, permission or enumeration failure refuses
+immediately; persistent uncertainty refuses after the third attempt. Diagnostic
+warnings retain the incomplete attempt and its PID/TID. This repeats only
+read-only observation, never an initialization claim or launch operation.
 
 For a supported staged Docker cutover, keep the old management and proxy
 container objects stopped and inspectable through admission. Do not use Compose
