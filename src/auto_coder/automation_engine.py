@@ -662,7 +662,7 @@ class _IssueProcessingStageHandler:
         except GitHubRequestError as exc:
             return StageOutcome(error=exc)
         except Exception as exc:
-            logger.opt(exception=True).warning("Issue pending-work candidate evaluation failed repository={} issue={}", self._repo_name, issue_number)
+            logger.opt(exception=True).warning("Issue pending-work evaluation failed repository={} issue={}", self._repo_name, issue_number)
             return StageOutcome(blocked_reason=PendingReason.EVALUATION_FAILED, blocked_error=str(exc))
         if result.target_outcome is ExplicitTargetOutcome.DEFERRED or result.error:
             if result.error:

@@ -1617,6 +1617,7 @@ def test_initial_snapshot_failure_blocks_until_selected_retry(tmp_path, monkeypa
     else:
         monkeypatch.setattr(engine, "_get_local_job_store", MagicMock())
         monkeypatch.setattr(engine, "_process_single_candidate_unified", MagicMock(side_effect=failure))
+    failed_call = engine.github.get_issue_dispatch_snapshot_strict if failure_boundary == "initial_snapshot" else engine._get_local_job_store if failure_boundary == "local_job_store" else engine._process_single_candidate_unified
     scheduler = PendingWorkScheduler(store, repository="owner/repo", clock=lambda: time.time() + 3600)
     scheduler.register_handler(ISSUE_PROCESSING_STAGE, _IssueProcessingStageHandler(engine, "owner/repo"))
 
@@ -1631,6 +1632,8 @@ def test_initial_snapshot_failure_blocks_until_selected_retry(tmp_path, monkeypa
         assert blocked is not None
         assert blocked.identity == identity
         assert blocked.reason is PendingReason.EVALUATION_FAILED
+        assert blocked.last_error == str(failure)
+        assert blocked.not_before == 0
         assert blocked.unfinished_effects == retained.unfinished_effects
         assert blocked.throttle_attempts == retained.throttle_attempts
         assert store.due(time.time() + 7200) == []
@@ -1638,10 +1641,12 @@ def test_initial_snapshot_failure_blocks_until_selected_retry(tmp_path, monkeypa
         scheduler.wake()
         await scan()
         assert engine.github.get_issue_dispatch_snapshot_strict.call_count == 1
+        assert failed_call.call_count == 1
         assert store.get(identity) == blocked
         assert scheduler.manual_retry(identity) is not None
         await scan()
         assert engine.github.get_issue_dispatch_snapshot_strict.call_count == 2
+        assert failed_call.call_count == 2
         assert store.get(identity).reason is PendingReason.EVALUATION_FAILED
 
     asyncio.run(scenario())

@@ -20,6 +20,10 @@ An unexpected initial strict Issue refresh failure is retained as an
 enter the admission trace. Run `bash scripts/test.sh
 tests/test_pending_work_resumption.py::test_initial_snapshot_failure_blocks_until_selected_retry`
 to verify retention, generic wakes, and selected retry at the production handler.
+Unexpected candidate-processing failures after a successful refresh use the same
+operational block and existing pending-work snapshot, without a new trace schema.
+The local-job-store and subsequent-candidate variants of that regression also
+check exact last_error, zero not-before and failed-boundary call counts.
 
 Durable worker failures emit repository/target-scoped `worker.failure-backoff`
 stage results under origin `durable-invalidation-worker`. `deferred` means the
