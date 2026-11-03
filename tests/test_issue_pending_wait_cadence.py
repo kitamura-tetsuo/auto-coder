@@ -293,3 +293,62 @@ async def test_wake_preserves_real_common_allow_or_author_refusal(tmp_path, monk
     assert result.success is bool(allowed)
     assert effects == (["ordinary-implementation"] if allowed else [])
     assert engine.github.get_issue_dispatch_snapshot_strict.called
+
+
+@pytest.mark.parametrize("scan_elapsed", [7, 31])
+@pytest.mark.parametrize("delay_before_spawn", [False, True])
+@pytest.mark.asyncio
+async def test_scan_delay_preserves_the_wait_expiry_of_the_dispatched_issue(tmp_path, monkeypatch, scan_elapsed, delay_before_spawn):
+    engine, store, identity, slots, owner = existing_owner(monkeypatch, tmp_path)
+    now = [time.time()]
+    outcomes = []
+    dispatched_expiries = []
+
+    class ObservedHandler(_IssueProcessingStageHandler):
+        def dispatch(self, obligation):
+            result = super().dispatch(obligation)
+            outcomes.append(result)
+            return result
+
+    class DelayedScanScheduler(PendingWorkScheduler):
+        async def _dispatch_due(self):
+            first = not dispatched_expiries
+            if first:
+                dispatched_expiries.append(self._regular_wait_deadline)
+                if delay_before_spawn:
+                    now[0] = dispatched_expiries[0] - 30 + scan_elapsed
+            await super()._dispatch_due()
+            if first and not delay_before_spawn:
+                # The actual due scan has scheduled the production handler,
+                # but its coroutine has not read or claimed the durable row.
+                # Time passes before run arms its following controller wait.
+                now[0] = dispatched_expiries[0] - 30 + scan_elapsed
+
+    scheduler = DelayedScanScheduler(store, repository="owner/repo", poll_interval=30, clock=lambda: now[0])
+    scheduler.register_handler(ISSUE_PROCESSING_STAGE, ObservedHandler(engine, "owner/repo"))
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(scheduler.run(shutdown))
+    try:
+        await reached(lambda: scheduler._wake_event is not None)
+        scheduler.wake()
+        if scan_elapsed < 30:
+            await reached(lambda: len(outcomes) == 1 and not scheduler._in_flight)
+            assert scheduler._unchanged_waits[identity.key()][0] == dispatched_expiries[0]
+            await asyncio.sleep(0.03)
+            assert len(outcomes) == 1
+            now[0] = dispatched_expiries[0]
+            scheduler._wake_event.set()  # Existing timer expiry, no new wake authority.
+        await reached(lambda: len(outcomes) >= 2)
+        assert now[0] == dispatched_expiries[0] + max(0, scan_elapsed - 30)
+        assert outcomes[:2] == [StageOutcome(), StageOutcome()]
+        assert slots.active_owners() == (owner,)
+        assert slots.snapshot().owners[0].provider_sessions == ("existing-provider",)
+        await reached(lambda: not scheduler._in_flight)
+        retained = store.get(identity)
+        assert retained is not None and retained.status == "waiting"
+        assert retained.unfinished_effects == ("refresh", "implementation")
+        await asyncio.sleep(0.03)
+        assert len(outcomes) == 2
+    finally:
+        shutdown.set()
+        await asyncio.wait_for(task, 3)

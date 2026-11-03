@@ -3280,3 +3280,12 @@ is rewritten. Run `bash scripts/test.sh tests/test_single_review_ordinary_closur
 for the real model-boundary/retention/reconstruction/resumption control. These
 fixture-driven production tests are not evidence that a historical provider
 message was delivered or that an external GitHub mutation succeeded.
+
+Dispatch-turn wait expiry is captured before queued handler execution, including
+when asynchronous scans or task scheduling consume the interval. This corrects
+the timing of existing `issue-processing` resumptions, without adding a trace
+origin, event, outcome, permission or dashboard schema. Existing retained
+identity/effect and Deferred observations remain authoritative; an elapsed
+regular wait is only scan eligibility. Run `bash scripts/test.sh
+tests/test_issue_pending_wait_cadence.py` for the real protected-owner scan-delay
+regression, repeated-turn cadence and unchanged common-admission controls.

@@ -120,3 +120,13 @@ Thread entry alone is insufficient evidence that the strict read has run.
 Epoch-based arm/deadline comparisons use zero relative tolerance and one
 microsecond absolute tolerance, so large wall-clock values cannot hide drift.
 This strengthens the test oracle without changing scheduler timing or traces.
+
+The controller arms each dispatch turn's regular wait before its asynchronous
+interrupted/due scans. Scheduling a handler captures that expiry together with
+the wake generation; starting its coroutine cannot borrow the following turn's
+mutable deadline. Scan or scheduling latency therefore cannot add a new interval
+after the original expiry. Each later dispatch still receives its own armed
+wait, preserving recurring no-progress cadence rather than reusing an expired
+previous turn. The real protected-owner regression advances the clock by seven
+or thirty-one seconds, both before and after task scheduling, and verifies the
+original deadline, immediate eligibility after expiry, and no third-entry spin.
