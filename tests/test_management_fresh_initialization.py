@@ -1,5 +1,6 @@
 """Durable fresh-instance intent does not itself authorize a launch."""
 
+import errno
 import fcntl
 import hashlib
 import json
@@ -727,6 +728,66 @@ def test_missing_namespace_does_not_erase_hard_lifetime_proof_error(tmp_path: Pa
         assert any(isinstance(cause, ValueError) and "task lifetime evidence is incomplete" in str(cause) for cause in causes)
 
 
+@pytest.mark.parametrize("fault_errno,persistent", [(errno.ESRCH, False), (errno.ESRCH, True), (errno.EACCES, False), (None, False)])
+def test_missing_namespace_reobserves_only_explicit_task_disappearance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault_errno: int | None, persistent: bool) -> None:
+    from auto_coder.management import fresh_host_observation as observation
+
+    task = tmp_path / "42/task/44"
+    (task / "ns").mkdir(parents=True)
+    (task / "stat").write_text(_task_stat(44))
+    original_open = os.open
+    readlink = os.readlink
+    vanished = ProcessLookupError(fault_errno, "controlled held-task lifetime loss")
+
+    def open_stat(path, flags, *args, **kwargs):
+        if path == "stat":
+            raise vanished
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(observation.os, "open", open_stat)
+    monkeypatch.setattr(observation.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(observation.os, "readlink", lambda path, *args, **kwargs: "host" if str(path).startswith("/proc/") else readlink(path, *args, **kwargs))
+    profiles = []
+    monkeypatch.setattr(observation, "_validate_host_proc_profile", lambda *args: profiles.append(args))
+    scan = observation._assert_all_task_networks_absent
+    scans = []
+
+    def complete_scan(root, namespace):
+        scans.append((root, namespace))
+        return scan(tmp_path, namespace)
+
+    delays = []
+
+    def task_exits(delay):
+        delays.append(delay)
+        if not persistent:
+            (task / "stat").unlink()
+            (task / "ns").rmdir()
+            task.rmdir()
+            task.parent.rmdir()
+            task.parent.parent.rmdir()
+
+    monkeypatch.setattr(observation, "_assert_all_task_networks_absent", complete_scan)
+    monkeypatch.setattr(observation.time, "sleep", task_exits)
+    if fault_errno == errno.ESRCH and not persistent:
+        observation.assert_prior_network_unreferenced("net:[202]")
+        assert len(scans) == len(profiles) == 2
+        assert delays == [0.01]
+    else:
+        with pytest.raises(HostObservationUnavailable) as caught:
+            observation.assert_prior_network_unreferenced("net:[202]")
+        attempts = 3 if fault_errno == errno.ESRCH else 1
+        assert len(scans) == len(profiles) == attempts
+        assert delays == [0.01] * (attempts - 1)
+        causes = []
+        cause = caught.value.__cause__
+        while cause is not None:
+            causes.append(cause)
+            cause = cause.__cause__
+        assert vanished in causes
+        assert any("pid=42, tid=44" in str(cause) for cause in causes)
+
+
 @pytest.mark.parametrize("fault", ["live", "truncated", "missing", "unreadable", "bad_pid", "bad_task_id", "zero_token", "bad_token", "changed_token", "state_changes", "namespace_reappears"])
 def test_unknown_task_is_never_waived_as_a_zombie(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str) -> None:
     from auto_coder.management.fresh_host_observation import _assert_all_task_networks_absent
@@ -785,3 +846,46 @@ def test_zombie_leader_does_not_hide_a_live_nonleader_namespace(tmp_path: Path) 
     (worker / "ns/net").symlink_to("net:[202]")
     with pytest.raises(HostObservationUnavailable, match="still has a task"):
         _assert_all_task_networks_absent(tmp_path, "net:[202]")
+
+
+@pytest.mark.parametrize("final_cause", ["missing-link", "ESRCH"])
+def test_fresh_host_command_reports_the_final_incomplete_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], final_cause: str) -> None:
+    from auto_coder.management import fresh_host as command
+    from auto_coder.management import fresh_host_observation as observation
+
+    intent = _intent(tmp_path)
+    fence = tmp_path / "held-fence"
+    fence.write_bytes(b"")
+    monkeypatch.setattr(command, "load_fresh_initialization", lambda *args, **kwargs: (intent, None))
+    monkeypatch.setattr(command, "_evidence", lambda path: (None, None, intent.prior_evidence_sha256))
+    monkeypatch.setattr(command, "acquire_prior_owner_fence", lambda *args, **kwargs: os.open(fence, os.O_RDONLY))
+    # Only unrelated guard preconditions/listener setup are outside this unit
+    # boundary. The command executes the production bounded observer/refusal.
+    monkeypatch.setattr(command, "serve_one_fresh_grant", lambda *args: observation.assert_prior_network_unreferenced("net:[202]"))
+    monkeypatch.setattr(sys, "argv", ["fresh-host", "guard", "--state-root", str(tmp_path / "state"), "--evidence-file", str(tmp_path / "evidence"), "--prior-lock", str(fence), "--guard-dir", str(tmp_path / "guard"), "--prior-network-fd", "123"])
+    monkeypatch.setattr(observation.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(observation.os, "readlink", lambda path: "host")
+    profiles = []
+    monkeypatch.setattr(observation, "_validate_host_proc_profile", lambda *args: profiles.append(args))
+    scans = []
+    delays = []
+    monkeypatch.setattr(observation.time, "sleep", delays.append)
+
+    def incomplete(root, namespace):
+        pid, tid = [(42, 43), (55, 56), (66, 67)][len(scans)]
+        scans.append((root, namespace))
+        if len(scans) == 3 and final_cause == "ESRCH":
+            raise observation._TaskNamespaceUnavailable(f"task lifetime disappeared during namespace proof (pid={pid}, tid={tid}; ESRCH)") from ProcessLookupError(errno.ESRCH, "task exited")
+        raise observation._TaskNamespaceUnavailable(f"task network namespace is unavailable (pid={pid}, tid={tid})")
+
+    monkeypatch.setattr(observation, "_assert_all_task_networks_absent", incomplete)
+    with pytest.raises(SystemExit) as caught:
+        command.main()
+    assert caught.value.code == 1
+    assert len(scans) == len(profiles) == 3
+    assert delays == [0.01, 0.01]
+    diagnostic = capsys.readouterr().err.rstrip().splitlines()[-1]
+    assert diagnostic.startswith("fresh host observation unavailable: network namespace observation unavailable")
+    assert "pid=66, tid=67" in diagnostic
+    assert ("ESRCH" if final_cause == "ESRCH" else "task network namespace is unavailable") in diagnostic
+    assert not (tmp_path / "state/fresh-initialization.json").exists()

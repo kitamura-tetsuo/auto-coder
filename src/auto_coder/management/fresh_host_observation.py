@@ -543,6 +543,8 @@ def _assert_all_task_networks_absent(proc_root: Path, namespace: str) -> None:
                     try:
                         zombie = _task_is_unreferenced_zombie(task)
                     except (OSError, ValueError) as exc:
+                        if isinstance(exc, ProcessLookupError) and exc.errno == errno.ESRCH:
+                            raise _TaskNamespaceUnavailable(f"task lifetime disappeared during namespace proof (pid={process.name}, tid={task.name}; ESRCH)") from exc
                         raise ValueError(f"task network namespace is unavailable (pid={process.name}, tid={task.name}): lifetime proof failed ({type(exc).__name__})") from exc
                     if not zombie:
                         raise _TaskNamespaceUnavailable(f"task network namespace is unavailable (pid={process.name}, tid={task.name})")
@@ -569,7 +571,7 @@ def assert_prior_network_unreferenced(namespace: str) -> None:
                 logger.warning("Host network absence scan {}/3 incomplete: {}; reobserving the complete host context and task set", attempt + 1, exc)
                 time.sleep(0.01)
     except (OSError, ValueError) as exc:
-        raise HostObservationUnavailable("network namespace observation unavailable") from exc
+        raise HostObservationUnavailable(f"network namespace observation unavailable: {exc}") from exc
 
 
 def assert_host_listener_absent(port: int) -> None:
