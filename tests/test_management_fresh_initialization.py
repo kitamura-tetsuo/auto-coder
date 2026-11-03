@@ -1,5 +1,6 @@
 """Durable fresh-instance intent does not itself authorize a launch."""
 
+import errno
 import fcntl
 import hashlib
 import json
@@ -725,6 +726,66 @@ def test_missing_namespace_does_not_erase_hard_lifetime_proof_error(tmp_path: Pa
         assert permission in causes
     else:
         assert any(isinstance(cause, ValueError) and "task lifetime evidence is incomplete" in str(cause) for cause in causes)
+
+
+@pytest.mark.parametrize("fault_errno,persistent", [(errno.ESRCH, False), (errno.ESRCH, True), (errno.EACCES, False), (None, False)])
+def test_missing_namespace_reobserves_only_explicit_task_disappearance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault_errno: int | None, persistent: bool) -> None:
+    from auto_coder.management import fresh_host_observation as observation
+
+    task = tmp_path / "42/task/44"
+    (task / "ns").mkdir(parents=True)
+    (task / "stat").write_text(_task_stat(44))
+    original_open = os.open
+    readlink = os.readlink
+    vanished = ProcessLookupError(fault_errno, "controlled held-task lifetime loss")
+
+    def open_stat(path, flags, *args, **kwargs):
+        if path == "stat":
+            raise vanished
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(observation.os, "open", open_stat)
+    monkeypatch.setattr(observation.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(observation.os, "readlink", lambda path, *args, **kwargs: "host" if str(path).startswith("/proc/") else readlink(path, *args, **kwargs))
+    profiles = []
+    monkeypatch.setattr(observation, "_validate_host_proc_profile", lambda *args: profiles.append(args))
+    scan = observation._assert_all_task_networks_absent
+    scans = []
+
+    def complete_scan(root, namespace):
+        scans.append((root, namespace))
+        return scan(tmp_path, namespace)
+
+    delays = []
+
+    def task_exits(delay):
+        delays.append(delay)
+        if not persistent:
+            (task / "stat").unlink()
+            (task / "ns").rmdir()
+            task.rmdir()
+            task.parent.rmdir()
+            task.parent.parent.rmdir()
+
+    monkeypatch.setattr(observation, "_assert_all_task_networks_absent", complete_scan)
+    monkeypatch.setattr(observation.time, "sleep", task_exits)
+    if fault_errno == errno.ESRCH and not persistent:
+        observation.assert_prior_network_unreferenced("net:[202]")
+        assert len(scans) == len(profiles) == 2
+        assert delays == [0.01]
+    else:
+        with pytest.raises(HostObservationUnavailable) as caught:
+            observation.assert_prior_network_unreferenced("net:[202]")
+        attempts = 3 if fault_errno == errno.ESRCH else 1
+        assert len(scans) == len(profiles) == attempts
+        assert delays == [0.01] * (attempts - 1)
+        causes = []
+        cause = caught.value.__cause__
+        while cause is not None:
+            causes.append(cause)
+            cause = cause.__cause__
+        assert vanished in causes
+        assert any("pid=42, tid=44" in str(cause) for cause in causes)
 
 
 @pytest.mark.parametrize("fault", ["live", "truncated", "missing", "unreadable", "bad_pid", "bad_task_id", "zero_token", "bad_token", "changed_token", "state_changes", "namespace_reappears"])

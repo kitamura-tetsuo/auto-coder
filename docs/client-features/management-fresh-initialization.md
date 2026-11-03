@@ -145,3 +145,16 @@ controlled OS stat-open PermissionError and malformed/zero-token files; a
 hypothetical sleep removes the task, so a forbidden retry cannot hide the error.
 This is a unit boundary control, not a claim of a real-kernel EACCES reproduction.
 Run `bash scripts/test.sh tests/test_management_fresh_initialization.py`.
+
+An explicit `ProcessLookupError` with `errno.ESRCH` while opening or reading the
+held task lifetime after its missing namespace link is also task-disappearance
+evidence for a complete rescan, never absence proof. The bounded three-attempt
+limit and per-attempt authority/profile checks remain unchanged. Other or absent
+error numbers remain immediate hard refusals.
+`test_missing_namespace_reobserves_only_explicit_task_disappearance` exercises
+the real scanner and held-directory reader against real temporary task entries,
+with controlled OS stat-open errors: transient disappearance requires a second
+whole scan, persistent ESRCH retains its original cause after three scans, and
+mismatched/unknown error numbers cannot be erased by a later task exit. These
+unit controls reproduce the recorded CI error class, not a claim of a native
+ESRCH reproduction.

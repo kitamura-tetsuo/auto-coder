@@ -543,6 +543,8 @@ def _assert_all_task_networks_absent(proc_root: Path, namespace: str) -> None:
                     try:
                         zombie = _task_is_unreferenced_zombie(task)
                     except (OSError, ValueError) as exc:
+                        if isinstance(exc, ProcessLookupError) and exc.errno == errno.ESRCH:
+                            raise _TaskNamespaceUnavailable(f"task lifetime disappeared during namespace proof (pid={process.name}, tid={task.name}; ESRCH)") from exc
                         raise ValueError(f"task network namespace is unavailable (pid={process.name}, tid={task.name}): lifetime proof failed ({type(exc).__name__})") from exc
                     if not zombie:
                         raise _TaskNamespaceUnavailable(f"task network namespace is unavailable (pid={process.name}, tid={task.name})")
