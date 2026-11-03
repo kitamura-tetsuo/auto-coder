@@ -209,3 +209,28 @@ failure/retry integration is
       - "`_merge_pr`'s existing pre-merge safeguard re-fetches the authoritative GitHub review-thread state after any resolution and before merging, so automatic merge proceeds only when no unresolved thread remains (claimed-but-unresolved threads included) and every other merge gate also passes."
       - "Closure execution returns one typed outcome for every claimed thread selected in the invocation, including omitted, rejected, non-authorizing, failed, unconfirmed, and not-attempted work. Each outcome keeps the independent decision, durable acceptance, and exact GitHub effect state separate and carries the repository, PR, evaluated head, attempt, root, and known blocker identities."
       - "PR processing emits confirmed and unfinished counts plus each unfinished thread ID, phase, and reason on `pr.review-thread-closure`. A semantic PASS remains a semantic PASS, but an unfinished closure produces a failed processing outcome and prevents merge without being delegated as an implementation defect; a later independently admitted successful attempt can progress normally."
+
+
+### Missing original discussion binding recovery (issue #2744)
+
+An accepted closure can have an empty original discussion binding when its
+authenticated finding root was already resolved before the producing ordinary
+review. That empty input still grants no authority. Recovery may use the existing
+replacement-binding path only after a later registered, independently retained
+and publication-confirmed PASS covers the exact accepted sources and current
+complete ADDRESSED discussion for the same target, policy, epoch and finding
+revision. A bare PASS, native resolved state or newly computed digest is
+insufficient. The original accepted payload and effect identity stay immutable;
+uncertain effects are reconciled rather than blindly resent. Other unresolved
+threads and all merge gates remain blocking.
+
+The production resumption/transport regression
+`test_missing_original_discussion_binding_recovers_only_from_independent_current_evidence`
+in `tests/test_single_review_ordinary_closure_flow.py` retains real attempt,
+closure, decision and effect stores across reconstruction. Controlled model and
+GitHub boundaries distinguish valid later evidence from a bare PASS or later
+changed discussion. Run `bash scripts/test.sh
+tests/test_single_review_ordinary_closure_flow.py tests/test_pr_review_effects.py
+tests/test_ordinary_discussion_revalidation.py`. Existing
+`pr.review-thread-closure` confirmed/unfinished facts describe this recovery;
+there is no new event schema or dashboard behavior.

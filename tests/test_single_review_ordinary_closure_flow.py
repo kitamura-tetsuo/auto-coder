@@ -867,3 +867,65 @@ def test_newer_plain_pass_does_not_replace_accepted_discussion_binding(flow_env:
         resumed = flow.run(closure=ClosureScript(status="FIXED"))
         assert flow.model_calls == calls_after_c, resumed
         assert flow.merge.call_count == 1, (actions, resumed)
+
+
+@pytest.mark.parametrize("replacement", ["current", "plain", "changed_discussion"])
+def test_missing_original_discussion_binding_recovers_only_from_independent_current_evidence(flow_env: Env, monkeypatch: pytest.MonkeyPatch, replacement: str) -> None:
+    from dataclasses import replace
+
+    from auto_coder.effective_decision_application import EffectiveDecisionStore
+    from auto_coder.ordinary_closure_evidence import serialize_ordinary_result
+    from auto_coder.pr_review_effects import ReviewEffectRepository
+
+    flow = _repaired_flow(flow_env, monkeypatch, 7471, resolve_on_approve=True)
+    flow.production_thread_collection = True
+    flow.auto_status = True
+    # Another actor has resolved this exact root before the first ordinary
+    # review. Native resolution is not independently bound discussion evidence.
+    flow.thread_resolved = True
+    flow.model_responses = [json.dumps({**json.loads(ADDRESSED), "thread_dispositions": []})]
+    first = flow.run(closure=ClosureScript(status="FIXED"))
+    accepted = flow_env.cycle.snapshot(flow.pr).accepted_closure
+    assert accepted is not None, first
+    assert flow.merge.call_count == 0, first
+    source = OrdinaryClosureEvidenceRepository(REPO).inspect(accepted.source_identity).record
+    assert source is not None
+    effects = ReviewEffectRepository(REPO)
+    original = [item for item in json.loads(effects.storage_path.read_text())["operations"].values() if item["pr_number"] == flow.pr and item["purpose"] == "finding-thread-resolution"]
+    assert len(original) == 1, first
+    assert json.loads(original[0]["exact_payload"])["discussion_evidence"] == []
+    assert original[0]["status"] == "UNCERTAIN"
+    before = flow.model_calls
+    flow.model_responses = [ordinary_response(flow.thread_id, status="ADDRESSED", evidence="tests/test_state.py independently verifies the complete current root")]
+    refreshed = flow.run(closure=ClosureScript(status="FIXED"))
+    assert flow.model_calls == before + 1, refreshed
+    retained = EffectiveDecisionStore(REPO).load(flow.pr)
+    assert retained is not None and retained.ordinary_correction is not None
+    assert retained.ordinary_correction.attempt_sequence > source.attempt_sequence
+    assert retained.ordinary_correction.restore().thread_dispositions[0].discussion_evidence_digest
+    status_before_reconciliation = effects.get(original[0]["operation_id"]).status
+    store = EffectiveDecisionStore(REPO)
+    if replacement == "plain":
+        ordinary = retained.ordinary_correction
+        store.update(flow.pr, ordinary_correction=replace(ordinary, payload=serialize_ordinary_result(replace(ordinary.restore(), thread_dispositions=[]))))
+    elif replacement == "changed_discussion":
+        flow.thread_replies.append(ReviewThreadComment(database_id=flow.root_id + 100, author_id=704, author_login="reviewer[bot]", body="A later concrete counterexample remains unreviewed", in_reply_to_id=flow.root_id))
+    _reconstruct_flow_stores(flow)
+    calls = flow.model_calls
+    # Resume the actual immutable effect directly: no extra review or payload
+    # rewrite can turn missing or changed replacement evidence into authority.
+    from auto_coder.github_app_reviewer import ReviewerAppConfig
+    from auto_coder.pr_processor import _consume_pending_two_tier_publication
+    from tests.test_effective_decision_pr_flow import reviewer_for
+
+    inputs = replace(flow.gate_inputs, head_sha=flow.h2)
+    reviewer = reviewer_for(flow.env.tmp, monkeypatch, flow.router)
+    config = ReviewerAppConfig("4765828", "client", flow.env.tmp / "reviewer.pem")
+    with patch("auto_coder.pr_processor.load_reviewer_app_config", return_value=config), patch("auto_coder.pr_processor.GitHubAppReviewer", return_value=reviewer), patch("auto_coder.pr_processor._two_tier_gate_inputs", return_value=inputs):
+        published, reason = _consume_pending_two_tier_publication(REPO, flow.pr, inputs, github_client=flow.client)
+    assert published is (replacement == "current"), (first, refreshed, reason)
+    assert flow.model_calls == calls
+    after = [item for item in json.loads(ReviewEffectRepository(REPO).storage_path.read_text())["operations"].values() if item["pr_number"] == flow.pr and item["purpose"] == "finding-thread-resolution"]
+    assert len(after) == 1
+    assert (after[0]["operation_id"], after[0]["exact_payload"]) == (original[0]["operation_id"], original[0]["exact_payload"])
+    assert after[0]["status"] == ("CONFIRMED" if replacement == "current" else status_before_reconciliation)
