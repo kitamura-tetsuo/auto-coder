@@ -365,6 +365,19 @@ def _finalize_caching_response(
     return finalize_response(resp, base, observation_hook, "local_cache_hit")
 
 
+def _finalize_caching_failure(observation_hook: ObservationHook | None) -> None:
+    """Retain known wire headers when cache/body processing prevents a response.
+
+    Consuming these observations does not decode a body or complete the caller's
+    operation. Its original exception still escapes; no request is replayed.
+    Nothing is inferred when the failure preceded a recorded wire response.
+    """
+    for outcome in take_wire_outcomes():
+        log_outcome(outcome, "wire_response_before_cache_failure")
+        if observation_hook:
+            observation_hook(outcome)
+
+
 def _caching_request(client: httpx.Client, method: str, url: str, *, path_template: str, subsystem: str = "ghapi", **kwargs: Any) -> httpx.Response:
     """Perform one direct ``get_caching_client()`` request and resolve its reservation.
 
@@ -382,7 +395,11 @@ def _caching_request(client: httpx.Client, method: str, url: str, *, path_templa
     started = time.monotonic()
     extensions = dict(kwargs.pop("extensions", None) or {})
     extensions.setdefault("auto_coder_operation_id", operation_id)
-    resp = client.request(method, url, extensions=extensions, **kwargs)
+    try:
+        resp = client.request(method, url, extensions=extensions, **kwargs)
+    except BaseException:
+        _finalize_caching_failure(observation_hook)
+        raise
     _finalize_caching_response(resp, operation_id=operation_id, subsystem=subsystem, path_template=path_template, started=started, observation_hook=observation_hook)
     return resp
 
@@ -645,7 +662,8 @@ def get_ghapi_client(
             started = time.monotonic()
             try:
                 resp = client.request(method=verb, url=url, headers=headers, content=content_data, json=json_data, params=query, follow_redirects=True, timeout=timeout, extensions={"auto_coder_operation_id": operation_id})
-            except GitHubRequestError:
+            except BaseException:
+                _finalize_caching_failure(effective_observation)
                 raise
             wire_outcomes = take_wire_outcomes()
 
