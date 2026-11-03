@@ -2220,6 +2220,44 @@ def test_corrupt_newest_predecessor_forces_full_instead_of_using_older_record(tm
     assert third.predecessor_decision_key is None
 
 
+@pytest.mark.parametrize("corruption", ["minimal", "manifest", "title", "body", "role", "parent_number", "related_contracts", "objective", "baseline", "prior_applied_outcomes", "wrong-manifest", "wrong-body", "wrong-related", "wrong-objective-state", "wrong-objective-current"])
+@pytest.mark.parametrize("changed_current", [False, True])
+def test_structurally_incomplete_newest_evidence_is_neither_reused_nor_a_predecessor(tmp_path, corruption, changed_current):
+    gate = lifecycle(tmp_path, "READY")
+    gate.decide(build_normative_issue_manifest(1734, "Title", BODY), "Title", BODY)
+    body = BODY + "\n\n## Context\nNewest accepted evidence."
+    latest = gate.decide(build_normative_issue_manifest(1734, "Title", body), "Title", body)
+    state = json.loads(gate.store.path.read_text())
+    inputs = json.loads(state[latest.identity.key]["review_inputs"])
+    if corruption == "minimal":
+        inputs = {"role": "standalone", "parent_number": None}
+    elif corruption == "wrong-manifest":
+        inputs["manifest"]["requirements"][0]["text"] = "Different normative authority"
+    elif corruption == "wrong-body":
+        inputs["body"] = "A different captured body"
+    elif corruption == "wrong-related":
+        inputs["related_contracts"] = "A different related contract"
+    elif corruption == "wrong-objective-state":
+        inputs["objective"]["state"] = []
+    elif corruption == "wrong-objective-current":
+        inputs["objective"]["current"]["status"] = {}
+    else:
+        del inputs[corruption]
+    state[latest.identity.key]["review_inputs"] = json.dumps(inputs)
+    gate.store.path.write_text(json.dumps(state))
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    restarted = lifecycle(tmp_path, "READY", calls)
+    current = body + "\nA newer context edit." if changed_current else body
+
+    decision = restarted.decide(build_normative_issue_manifest(1734, "Title", current), "Title", current)
+
+    assert decision.verdict == "READY"
+    assert decision.review_mode == "FULL"
+    assert decision.evaluation_source == "model"
+    assert decision.predecessor_decision_key is None
+    calls.assert_called_once()
+
+
 def test_incomplete_exact_ready_record_cannot_authorize_reuse(tmp_path):
     calls = Mock(return_value=SpecificationAnalysisResult("READY"))
     gate = lifecycle(tmp_path, "READY", calls)

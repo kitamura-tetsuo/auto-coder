@@ -65,8 +65,8 @@ instructions plus every definition to that same prompt; output validation still
 uses the complete original manifest and predecessor context.
 
 This representation is transport, not review authority. The existing semantic
-policy template is unchanged. The semantic policy identity also binds the two
-receiving instruction templates, because their instructions can affect decisions;
+policy template is unchanged. The semantic policy identity also binds the global
+header and the two receiving instruction templates, because their instructions can affect decisions;
 this migration conservatively revalidates older-policy decisions using FULL input.
 Changing serialization alone does not manufacture compatible predecessors or rerun
 authority. Exact durable reuse under the same complete policy still makes zero
@@ -75,6 +75,10 @@ or FULL review for valid current inputs when optional legacy/corrupt/incompatibl
 history cannot be used. Unsupported/corrupt required current evidence remains
 ERROR. Currentness/late-result fences and complete coverage/dispositions remain
 required. A decision-affecting semantic-policy change still invalidates reuse.
+Retained input JSON must contain every captured field with its supported shape
+and matching manifest, specification and relationship identities. A partial
+JSON object is not complete evidence. An incomplete newest accepted record
+selects FULL review rather than exact-current reuse or an older predecessor.
 
 Integrity and orchestration tests use independently authored expected logical
 inputs and a hand-authored wire tree. They measure complete outgoing prompts,

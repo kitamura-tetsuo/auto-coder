@@ -373,11 +373,13 @@ def validation_policy_identity() -> str:
     (REQ-002). ``VALIDATION_SCHEMA_VERSION`` is bumped whenever this contract
     changes in a decision-affecting way, including this migration itself.
     """
-    issue_prompts = load_prompts().get("issue")
+    prompts = load_prompts()
+    issue_prompts = prompts.get("issue")
     prompt = issue_prompts.get("adversarial_specification_analysis") if isinstance(issue_prompts, dict) else None
     contract = {
         "version": VALIDATION_SCHEMA_VERSION,
         "prompt": prompt,
+        "header": prompts.get("header"),
         "evidence_field_reference_prompt": issue_prompts.get("individual_evidence_field_reference") if isinstance(issue_prompts, dict) else None,
         "evidence_envelope_prompt": issue_prompts.get("individual_evidence_envelope") if isinstance(issue_prompts, dict) else None,
         "categories": sorted(SPECIFICATION_FINDING_CATEGORIES),
@@ -446,6 +448,43 @@ class SpecificationValidationStore:
             expected = {str(item["requirement_id"]) for item in binding["requirements"]} | {"contract-wide"}
         except (KeyError, TypeError, json.JSONDecodeError):
             return False
+        required_inputs = {"manifest", "title", "body", "role", "parent_number", "related_contracts", "objective", "baseline", "prior_applied_outcomes"}
+        if not isinstance(inputs, dict) or set(inputs) != required_inputs:
+            return False
+        if (
+            inputs["manifest"] != binding
+            or any(not isinstance(inputs[field], str) for field in ("title", "body", "role", "related_contracts", "baseline"))
+            or (inputs["parent_number"] is not None and (type(inputs["parent_number"]) is not int or inputs["parent_number"] <= 0))
+            or not isinstance(inputs["prior_applied_outcomes"], list)
+            or any(not isinstance(item, str) for item in inputs["prior_applied_outcomes"])
+        ):
+            return False
+        if specification_digest(inputs["title"], inputs["body"]) != identity.specification_digest:
+            return False
+        relationship = {field: inputs[field] for field in ("role", "related_contracts", "parent_number")}
+        if hashlib.sha256(json.dumps(relationship, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest() != identity.relationship_digest:
+            return False
+        objective = inputs["objective"]
+        if objective is not None:
+            if not isinstance(objective, dict) or set(objective) != {"issue_number", "state", "original_text", "source_identity", "current"}:
+                return False
+            current = objective["current"]
+            if (
+                type(objective["issue_number"]) is not int
+                or objective["issue_number"] != identity.issue_number
+                or not isinstance(objective["state"], str)
+                or objective["state"] not in {"ANCHORED", "UNANCHORED"}
+                or not isinstance(objective["source_identity"], str)
+                or not objective["source_identity"]
+                or (objective["state"] == "ANCHORED" and not isinstance(objective["original_text"], str))
+                or (objective["state"] == "UNANCHORED" and objective["original_text"] is not None)
+                or not isinstance(current, dict)
+                or set(current) != {"status", "text"}
+                or not isinstance(current["status"], str)
+                or current["status"] not in {"PRESENT", "ABSENT", "INVALID"}
+                or (current["text"] is not None and not isinstance(current["text"], str))
+            ):
+                return False
         coverage = raw.get("coverage")
         dispositions = raw.get("finding_dispositions")
         retained = raw.get("retained_findings")

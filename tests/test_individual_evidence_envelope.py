@@ -74,7 +74,7 @@ def test_original_semantic_template_is_preserved():
     assert hashlib.sha256(prompt.encode()).hexdigest() == "60e7f4a89994f93b47597fa070001758fae757e21728139f5dd87d453d5e99cf"
 
 
-@pytest.mark.parametrize("template", ["individual_evidence_field_reference", "individual_evidence_envelope"])
+@pytest.mark.parametrize("template", ["individual_evidence_field_reference", "individual_evidence_envelope", "header"])
 def test_receiving_instruction_change_invalidates_exact_reuse_and_predecessor(tmp_path, monkeypatch, template):
     manifest = NormativeIssueManifest(7, "Current", True, True, (NormativeRequirement("REQ-001", "Preserve state."),))
     modes = []
@@ -89,7 +89,10 @@ def test_receiving_instruction_change_invalidates_exact_reuse_and_predecessor(tm
     assert modes == ["called"]
     assert original.review_mode == "FULL"
     changed = deepcopy(load_prompts())
-    changed["issue"][template] += "\nA decision-affecting instruction changed."
+    if template == "header":
+        changed["header"] += "\nA decision-affecting instruction changed."
+    else:
+        changed["issue"][template] += "\nA decision-affecting instruction changed."
     monkeypatch.setattr("auto_coder.specification_validation_lifecycle.load_prompts", lambda: changed)
     assert validation_policy_identity() != original.identity.policy_identity
     gate = SpecificationValidationLifecycle("owner/repo", "unchanged-route", tmp_path / "decisions.json", analyzer)
