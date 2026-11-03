@@ -35,6 +35,7 @@ from .specification_analyzer import (
     individual_relationship_context,
     individual_review_evidence,
     objective_integrity_result,
+    parse_specification_analysis_response,
 )
 from .specification_repair_rounds import (
     AuthoritativeRepairState,
@@ -551,6 +552,16 @@ class SpecificationValidationStore:
         if any(finding_id not in retained_by_id or retained_by_id[finding_id]["finding"] != finding for finding_id, finding in zip(finding_ids, findings)):
             return False
         if any(item["finding_id"] not in retained_by_id or any(retained_by_id[item["finding_id"]][field] != item[field] for field in ("disposition", "reasoning")) for item in dispositions):
+            return False
+        manifest = build_normative_issue_manifest(identity.issue_number, inputs["title"], inputs["body"])
+        # Remediation is subsequently updated by the authoritative repair state;
+        # it is not an immutable copy of the model response's remediation field.
+        if not isinstance(raw.get("remediation"), str) or raw["remediation"] not in {"NONE", "EDIT_IN_PLACE", "REISSUE_REQUIRED"}:
+            return False
+        core = json.dumps({"verdict": raw["verdict"], "findings": raw["findings"], "remediation": "EDIT_IN_PLACE" if raw["verdict"] == "BLOCKED" else "NONE"})
+        if parse_specification_analysis_response(core, manifest).verdict == "ERROR":
+            return False
+        if raw["verdict"] == "READY" and any(item["disposition"] in {"STILL_VALID", "REGRESSED"} for item in dispositions):
             return False
         boundaries = [
             item["boundary"]

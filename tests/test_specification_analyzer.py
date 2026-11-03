@@ -388,3 +388,26 @@ def test_public_operation_rejects_conflicting_duplicate_json_members(response):
     assert result.verdict == "ERROR"
     assert result.findings == ()
     assert result.is_ready is False
+
+
+@pytest.mark.parametrize("field", ["status", "disposition"])
+@pytest.mark.parametrize("value", [[], {}, None, True])
+def test_incremental_non_string_enums_return_error_without_raising(field, value):
+    manifest = _manifest()
+    context = IncrementalReviewContext("INCREMENTAL", predecessor_evidence=json.dumps({"findings": [{"finding_id": "old-finding"}]}))
+    payload = {
+        "verdict": "READY",
+        "remediation": "NONE",
+        "findings": [],
+        "finding_dispositions": [{"finding_id": "old-finding", "disposition": "RESOLVED", "reasoning": "No longer reachable."}],
+        "coverage": [{"boundary": boundary, "status": "FRESH", "no_impact_reason": ""} for boundary in [item.requirement_id for item in manifest.requirements] + ["contract-wide"]],
+    }
+    if field == "status":
+        payload["coverage"][0][field] = value
+    else:
+        payload["finding_dispositions"][0][field] = value
+
+    result = parse_incremental_specification_response(json.dumps(payload), manifest, context)
+
+    assert result.verdict == "ERROR"
+    assert result.findings == ()

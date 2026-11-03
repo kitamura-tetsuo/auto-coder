@@ -2357,3 +2357,30 @@ def test_corrupt_retained_coverage_selects_full_without_authorizing_or_crashing(
     assert decision.evaluation_source == "model"
     assert decision.predecessor_decision_key is None
     calls.assert_called_once()
+
+
+@pytest.mark.parametrize("changed_current", [False, True])
+@pytest.mark.parametrize("disposition", ["STILL_VALID", "REGRESSED"])
+def test_retained_ready_cannot_contradict_its_predecessor_dispositions(tmp_path, changed_current, disposition):
+    results = [SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")]
+    gate = lifecycle(tmp_path, "BLOCKED", lambda *_args: results.pop(0))
+    first = gate.decide(build_normative_issue_manifest(1734, "Title", BODY), "Title", BODY)
+    results.append(SpecificationAnalysisResult("READY", dispositions=(FindingDisposition(first.finding_ids[0], "RESOLVED", "The ambiguity was removed."),)))
+    body = BODY + "\n\n## Context\nClarified accepted input."
+    latest = gate.decide(build_normative_issue_manifest(1734, "Title", body), "Title", body)
+    state = json.loads(gate.store.path.read_text())
+    record = state[latest.identity.key]
+    assert record["verdict"] == "READY" and record["review_mode"] == "INCREMENTAL"
+    record["finding_dispositions"][0]["disposition"] = disposition
+    record["retained_findings"][0]["disposition"] = disposition
+    gate.store.path.write_text(json.dumps(state))
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    current = body + "\nAnother change." if changed_current else body
+
+    decision = lifecycle(tmp_path, "READY", calls).decide(build_normative_issue_manifest(1734, "Title", current), "Title", current)
+
+    assert decision.verdict == "READY"
+    assert decision.review_mode == "FULL"
+    assert decision.evaluation_source == "model"
+    assert decision.predecessor_decision_key is None
+    calls.assert_called_once()

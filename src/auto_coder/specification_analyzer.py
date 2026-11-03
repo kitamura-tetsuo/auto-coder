@@ -273,6 +273,7 @@ def parse_incremental_specification_response(
             not isinstance(boundary, str)
             or boundary in seen_boundaries
             or (boundary not in known_ids and boundary != "contract-wide")
+            or not isinstance(status, str)
             or status not in {"FRESH", "CARRIED", "UNRESOLVED"}
             or not isinstance(reason, str)
             or (status == "CARRIED" and not reason.strip())
@@ -302,7 +303,7 @@ def parse_incremental_specification_response(
         if not isinstance(raw, dict) or set(raw) != {"finding_id", "disposition", "reasoning"}:
             return _error("Specification analyzer finding disposition is malformed")
         finding_id, disposition, reasoning = raw["finding_id"], raw["disposition"], raw["reasoning"]
-        if not isinstance(finding_id, str) or finding_id not in predecessor_ids or finding_id in seen_findings or disposition not in {"RESOLVED", "STILL_VALID", "REGRESSED", "UNVERIFIED"} or not isinstance(reasoning, str) or not reasoning.strip():
+        if not isinstance(finding_id, str) or finding_id not in predecessor_ids or finding_id in seen_findings or not isinstance(disposition, str) or disposition not in {"RESOLVED", "STILL_VALID", "REGRESSED", "UNVERIFIED"} or not isinstance(reasoning, str) or not reasoning.strip():
             return _error("Specification analyzer finding disposition is invalid")
         seen_findings.add(finding_id)
         dispositions.append(FindingDisposition(finding_id, disposition, reasoning.strip()))
