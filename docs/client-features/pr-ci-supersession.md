@@ -40,8 +40,13 @@ For comparison, the different-revision run
 had 3–4 second shard/lint queues, a 7 second aggregate queue, and finished in
 8m16s from job creation to final completion. It is not a controlled benchmark.
 
-The post-change hosted overlap observation is recorded only after an older run is
-seen pending or running before submission of its replacement. Until that sequence
-is executed, cancellation status, retained revision, retained test result, and
-post-change queue/execution durations are **unavailable**, rather than inferred
+For the post-change hosted overlap check, revision
+`074d246cd1f2e0f6f6f5bc378139faf24c9166aa` was observed in the `queued` state
+before its replacement was submitted. Its identified runs were PR Tests
+[`41730325906`](https://github.com/kitamura-tetsuo/auto-coder/actions/runs/41730325906),
+Browser Tests `41730325605`, OpenCode Live Tests `41730325708`, Muse Live Tests
+`41730325818`, Supervisor Integration Tests `41730325761`, and Test Source for
+Runtime `41730325637`. Cancellation conclusions, retained revision/result, and
+post-change queue/execution durations are recorded from subsequent Actions
+readback; any value not yet terminal remains **unavailable**, rather than inferred
 from the workflow definitions.
