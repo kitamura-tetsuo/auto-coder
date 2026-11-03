@@ -1,5 +1,7 @@
 """Issue2725 production sender/journal/reclamation over native-shaped HTTP."""
 
+import sqlite3
+from contextlib import closing
 from copy import deepcopy
 from pathlib import Path
 
@@ -15,6 +17,8 @@ from auto_coder.codex_work_accounting import CodexWorkAccounting
 from auto_coder.codex_work_reconstruction import production_codex_reconstructor, reconstruct_active_codex_work
 from auto_coder.implementation_reclamation_scheduler import ReclamationObligationStore, run_due_reclamation_checks, schedule_reevaluation
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from auto_coder.pr_processor import _send_followup_with_quota_admission
+from auto_coder.pr_repair import ExistingPrRepairTarget, build_existing_pr_repair_prompt
 from auto_coder.public_api import project_slots
 
 REPOSITORY = "owner/repo"
@@ -82,7 +86,7 @@ class TerminalGitHub:
         return {"number": 91, "state": "open" if self.open_pr else "closed", "merged": not self.open_pr}
 
 
-def actual_followup(tmp_path, monkeypatch, *, handoff=True):
+def actual_followup(tmp_path, monkeypatch, *, handoff=True, bounded_repair=True):
     monkeypatch.setenv("HOME", str(tmp_path))
     slots = ImplementationSlotRepository(REPOSITORY, 1)
     owner = ImplementationOwner("issue", 2725)
@@ -110,7 +114,12 @@ def actual_followup(tmp_path, monkeypatch, *, handoff=True):
     client.repo_name = REPOSITORY
     client.wham_client = wham
     client.active_tasks = {}
-    assert client.send_followup(TASK, "Repair the existing implementation PR #91.", ("logical-followup-2725",))
+    if bounded_repair:
+        target = ExistingPrRepairTarget(REPOSITORY, 91, "fix/2725", "main", "a" * 40)
+        prompt = build_existing_pr_repair_prompt(target, "Apply the bounded correction to this PR.")
+        assert _send_followup_with_quota_admission(client, REPOSITORY, TASK, prompt, ("logical-followup-2725",), repair_target=target)
+    else:
+        assert client.send_followup(TASK, "Publish a replacement PR for the previous output.", ("logical-followup-2725",))
     assert len(provider.posts) == 1
     return slots, owner, incarnation, runs, recovery, run, provider, wham
 
@@ -148,14 +157,18 @@ def test_real_followup_reconstructs_and_reclaims_on_first_due_check(tmp_path, mo
     assert slots.start_execution(ImplementationOwner("issue", 2726)) is not None
 
 
-@pytest.mark.parametrize("gap", ["unmatched", "duplicate", "interleaved", "missing-baseline", "missing-history", "wrong-parent", "unrelated-response", "publication", "open-pr", "competing-ambiguous", "cycle", "missing-ancestor", "wrong-turn-identity", "source-race"])
+@pytest.mark.parametrize(
+    "gap", ["unmatched", "duplicate", "later-duplicate", "interleaved", "missing-baseline", "missing-history", "wrong-parent", "unrelated-response", "publication", "unbound-publication", "open-pr", "competing-ambiguous", "cycle", "missing-ancestor", "wrong-turn-identity", "source-race"]
+)
 def test_real_followup_uncertainty_retains_capacity_without_replay(tmp_path, monkeypatch, gap):
-    slots, owner, incarnation, runs, _recovery, run, provider, wham = actual_followup(tmp_path, monkeypatch, handoff=gap != "publication")
+    slots, owner, incarnation, runs, _recovery, run, provider, wham = actual_followup(tmp_path, monkeypatch, handoff=gap != "publication", bounded_repair=gap != "unbound-publication")
     if gap == "unmatched":
         provider.turns[-2]["turn"]["input_items"][0]["content"][0]["text"] += "Different request"
     elif gap in {"duplicate", "interleaved"}:
         text = provider.turns[-2]["turn"]["input_items"][0]["content"][0]["text"] if gap == "duplicate" else "An unrelated manual request"
         provider.turns.insert(-1, native_turn(TASK + "~usertrn_competing", "user", BASELINE, text=text))
+    elif gap == "later-duplicate":
+        provider.turns.extend([native_turn(TASK + "~usertrn_later", "user", RESPONSE, text=provider.turns[-2]["turn"]["input_items"][0]["content"][0]["text"]), native_turn(TASK + "~assttrn_later", "assistant", TASK + "~usertrn_later")])
     elif gap == "missing-baseline":
         provider.turns = [turn for turn in provider.turns if turn["id"] != BASELINE]
     elif gap == "missing-history":
@@ -206,7 +219,15 @@ def test_actual_followup_observation_does_not_settle_or_mutate_sources(tmp_path,
     snapshot = accounting.snapshot(owner, incarnation)
 
     def retained_files():
-        return {str(path.relative_to(tmp_path)): path.read_bytes() for path in Path(tmp_path).rglob("*") if path.is_file()}
+        result = {}
+        for path in Path(tmp_path).rglob("*"):
+            if not path.is_file() or ".sqlite3" in path.name:
+                continue
+            result[str(path.relative_to(tmp_path))] = path.read_bytes()
+        for path in Path(tmp_path).rglob("*.sqlite3"):
+            with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as connection:
+                result[str(path.relative_to(tmp_path))] = "\n".join(connection.iterdump()).encode()
+        return result
 
     before = retained_files()
     observation = collect_codex_retirement_observation(REPOSITORY, owner, incarnation, slots, snapshot, runs, TerminalGitHub(), wham=wham, recovery=recovery)

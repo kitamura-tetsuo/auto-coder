@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -214,7 +215,29 @@ def production_codex_reconstructor(repository: str, issue_number: int) -> CodexW
             phase = CodexWorkPhase.ACCEPTED if statuses == {"delivered"} else CodexWorkPhase.DELIVERY_UNKNOWN
             request = ",".join(identities)
             handoff = recovery.get(repository, task)
-            completed_handoff = bool(handoff and handoff.repository == repository and handoff.task_id == task and handoff.state is RecoveryOutcome.PR_OBSERVED and handoff.handoff_complete and bound_owner is not None and handoff.pr_number in bound_owner.implementation_prs)
+            repair_bindings = {(record.repair_repository, record.repair_issue_number, record.repair_owner_incarnation, record.repair_pr_number, record.repair_head_sha, record.repair_head_branch, record.repair_base_branch) for _key, record in members}
+            supported_repair = bool(
+                bound_owner is not None
+                and len(repair_bindings) == 1
+                and all(
+                    record.repair_repository == repository
+                    and type(record.repair_issue_number) is int
+                    and record.repair_issue_number == issue_number
+                    and record.repair_owner_incarnation == bound_owner.incarnation
+                    and type(record.repair_pr_number) is int
+                    and record.repair_pr_number in bound_owner.implementation_prs
+                    and isinstance(record.repair_head_sha, str)
+                    and re.fullmatch(r"[0-9a-f]{40}", record.repair_head_sha) is not None
+                    and isinstance(record.repair_head_branch, str)
+                    and bool(record.repair_head_branch)
+                    and isinstance(record.repair_base_branch, str)
+                    and bool(record.repair_base_branch)
+                    and handoff is not None
+                    and record.repair_pr_number == handoff.pr_number
+                    for _key, record in members
+                )
+            )
+            completed_handoff = bool(supported_repair and handoff and handoff.repository == repository and handoff.task_id == task and handoff.state is RecoveryOutcome.PR_OBSERVED and handoff.handoff_complete)
             handoff_pr = handoff.pr_number if completed_handoff and handoff is not None else None
             handoff_sources.append((task, handoff))
             operations.append(operation(stable_codex_operation_id("follow-up", request), "follow-up", request, phase, task, baseline, request_fingerprint=fingerprint or None, handoff_pr_number=handoff_pr, publication_complete=completed_handoff, tracking_complete=completed_handoff))

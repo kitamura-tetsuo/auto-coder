@@ -21,7 +21,10 @@ exactly one user child with that exact message, and its terminal assistant child
 Wrapper and nested identities and parent links must agree; missing ancestors,
 cycles, competing requests, duplicate identities, incomplete pagination or an
 unrelated terminal response remain unknown. Mapping order and task-level
-completion alone do not establish request completion. The resulting certificate
+completion alone do not establish request completion. Repeated matching input
+anywhere in the returned history remains ambiguous, even after another terminal
+assistant. The original prepared message cannot be matched by selecting only
+the first child of the retained baseline. The resulting certificate
 retains both native user and assistant identities; it never rewrites the original
 delivery journal or sends another request.
 

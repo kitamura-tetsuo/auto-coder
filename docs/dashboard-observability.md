@@ -2284,7 +2284,11 @@ capacity evidence, not evidence of implementation progress or delivery success.
 No new structured origin or renderer field is introduced. Production sender,
 HTTP normalization, due-check, restart and public slot-projection assertions are
 covered by `tests/test_codex_followup_reclamation.py`; its read-only collection
-case also asserts that source files and accounting remain unchanged.
+case also asserts unchanged file journals, logical SQLite contents and accounting
+(SQLite WAL/shared-memory lifecycle is not a logical source mutation). The
+existing-PR producer binding is retained before sending; absent legacy bindings
+and duplicate message matches remain unknown rather than being backfilled from
+the initial task handoff.
 
 ## Definitive Parent-Issue refusal settlement
 

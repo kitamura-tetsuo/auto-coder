@@ -78,5 +78,20 @@ logical operation. A fingerprint or PR binding cannot subsequently change or
 disappear. Publication and tracking are complete only when the retained
 `pr_observed` recovery record has a completed handoff and the same PR is a member
 of the current Issue reservation. An unrelated handoff supplies no authority.
+The existing-PR repair producers carry their exact repository/PR/head/branch
+contract to the sender. Before POST, the sender validates its bounded prompt and
+records that contract with the actual Issue/incarnation under the same owner
+guard. Reconstruction requires every grouped source record to agree with that
+binding. A generic continuation, replacement-publication request or historical
+record without this producer binding remains unsupported for handoff completion;
+an older task-level receipt cannot retroactively supply the missing contract.
 The source token includes recovery records and PR membership, and is rechecked
 at commit. Reconstruction never treats an unavailable source as an empty one.
+
+Recovery keeps the current journals and retired history. Restore a qualified
+worker build using an owned drain/stop and one observed start against the same
+current state; never restore an older journal over later activity or clear an
+unknown operation to free capacity. If correlation or the producer binding is
+unavailable, retain the reservation with its ordinary reevaluation obligation
+until independently supported evidence or an explicitly authorized disposition
+exists. The repair does not infer a retrospective binding for legacy records.
