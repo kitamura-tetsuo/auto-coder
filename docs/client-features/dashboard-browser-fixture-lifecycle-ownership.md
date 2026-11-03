@@ -17,7 +17,8 @@ A borrowed server also preserves the process runtime-root setting so an active
 parent repository keeps its original coordination-lock path. The child retains
 its own repository and slots file while using the existing coordination root.
 Setup and teardown retain finite bounds and fail when the server does not start
-or stop. No pruning, watchdog, browser requirement or timeout is relaxed.
+or stop. The module-owned slots, detail and adjudication servers also check that
+their threads actually exit within their existing five-second teardown bounds. No pruning, watchdog, browser requirement or timeout is relaxed.
 
 `test_standalone_server_preserves_parent_loop_and_live_client` drives real
 Chromium pages for the parent and temporary repository, checks the actual loop
@@ -29,7 +30,7 @@ DOM identity, rendering rollback, single-flight and unavailable-state recovery
 assertions remain intact.
 
 Run with provisioned Chromium and `AUTO_CODER_REQUIRE_BROWSER=1`:
-`bash scripts/test.sh tests/test_dashboard_detail_scroll_stability.py tests/test_dashboard_slots_scroll_stability.py`.
+`bash scripts/test.sh tests/test_dashboard_adjudication_browser.py tests/test_dashboard_detail_scroll_stability.py tests/test_dashboard_slots_scroll_stability.py`.
 These bounded results establish harness and rendering behavior; they do not
 replace full source/publication CI or diagnose the separate native exit139.
 Production dashboard behavior, event schema, admission and public projections

@@ -97,6 +97,8 @@ def dashboard_env() -> Iterator[Tuple[str, AutomationEngine, ImplementationSlotR
         finally:
             server.should_exit = True
             thread.join(timeout=5)
+            if thread.is_alive():
+                raise RuntimeError("dashboard server did not stop in time")
     finally:
         if previous_runtime_root is None:
             os.environ.pop("AUTO_CODER_RUNTIME_ROOT", None)
