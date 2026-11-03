@@ -68,6 +68,7 @@ def encode_individual_evidence(inputs: dict[str, object], requirement_texts: tup
     references: dict[str, str] = {}
     normative_atoms = frozenset(text for text in requirement_texts if text)
     captured: set[str] = set()
+    captured_requirement_atoms: set[str] = set()
     json_forms: dict[str, tuple[str, object]] = {}
 
     def collect(value: object) -> None:
@@ -87,6 +88,8 @@ def encode_individual_evidence(inputs: dict[str, object], requirement_texts: tup
                 except (ValueError, TypeError, RecursionError):
                     pass
         elif isinstance(value, dict):
+            if isinstance(value.get("requirement_id"), str) and isinstance(value.get("text"), str) and value["text"]:
+                captured_requirement_atoms.add(value["text"])
             for key, item in value.items():
                 collect(key)
                 collect(item)
@@ -98,7 +101,9 @@ def encode_individual_evidence(inputs: dict[str, object], requirement_texts: tup
     # Generic captured strings are byte candidates, not parsed authority.
     # This also interns a related member's manifest text inside its body while
     # preserving both occurrences' original non-normative locations.
-    atoms = normative_atoms | {text for text in captured if len(text) >= 32}
+    # Related/predecessor manifest atoms are byte candidates, including short
+    # texts; collecting them never promotes body evidence into authority.
+    atoms = normative_atoms | captured_requirement_atoms | {text for text in captured if len(text) >= 32}
 
     def intern(text: str) -> str:
         if text in references:

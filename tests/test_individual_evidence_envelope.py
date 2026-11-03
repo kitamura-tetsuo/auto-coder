@@ -112,6 +112,9 @@ def test_review_lane_reconstructs_real_persisted_resolved_and_closed_family_evid
                     observed = github.issues[entry["issue_number"]]
                     assert entry["body_non_normative_evidence"] == observed["body"]
                     assert entry["title"] == observed["title"]
+                    wire = captured[-1][0].rsplit("```json\n", 1)[1].split("\n```", 1)[0]
+                    for requirement in entry["normative_manifest"]:
+                        assert wire.count(requirement["text"]) == 1
             if phase:
                 previous = gate.store.get(decisions[phase - 1].identity)
                 predecessor = json.loads(inputs["incremental"]["predecessor_evidence"])
