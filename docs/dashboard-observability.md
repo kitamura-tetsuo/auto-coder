@@ -1,5 +1,17 @@
 # Dashboard observability verification
 
+Individual specification-review evidence interning changes only the reversible
+prompt representation. Existing Review-lane origins, durable decision/audit fields,
+coverage/dispositions, currentness fences and dashboard projections remain the
+same. Invalid required transport evidence follows the existing fail-closed ERROR
+path; a smaller payload is not a readiness or progress event. Run
+`bash scripts/test.sh tests/test_individual_evidence_envelope.py
+tests/test_specification_analyzer.py tests/test_specification_validation_lifecycle.py
+tests/test_specification_regression_fixtures.py tests/test_specification_drift_sequence.py`
+for complete reconstruction, production-boundary coverage and retained authority
+behavior. Semantic replay is separately advisory; see the individual rereview
+client-feature fragment for commands and evidence limits.
+
 Durable worker failures emit repository/target-scoped `worker.failure-backoff`
 stage results under origin `durable-invalidation-worker`. `deferred` means the
 unfinished entity's retry deadline was committed; its facts retain the reason,

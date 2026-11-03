@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Callable, Iterator, Optional
 
 from .backend_manager import BackendManager, run_llm_prompt
+from .individual_evidence_envelope import decode_individual_evidence, encode_individual_evidence
 from .logger_config import get_logger
-from .objective_evidence import ObjectiveAnchor, objective_evidence_json
+from .objective_evidence import ObjectiveAnchor
 from .prompt_loader import render_prompt
 from .requirement_contract import NormativeIssueManifest
 
@@ -347,28 +348,49 @@ def analyze_issue_specification(
     relationship_context = relationship_context or _RELATIONSHIP_CONTEXT.get() or IndividualRelationshipContext()
     if relationship_context.role not in {"standalone", "child"}:
         return _error("Specification analysis received an invalid authoritative relationship role")
-    requirements = json.dumps(
-        [{"requirement_id": item.requirement_id, "text": item.text} for item in manifest.requirements],
-        ensure_ascii=False,
-        indent=2,
-    )
+    inputs: dict[str, object] = {
+        "current": {
+            "manifest": asdict(manifest),
+            "title": manifest.title,
+            "body": issue_body,
+            "parent_context": parent_context,
+            "relationship": asdict(relationship_context),
+            "baseline": review_evidence.baseline,
+            "prior_applied_outcomes": review_evidence.prior_applied_outcomes,
+            "objective": asdict(review_evidence.objective) if review_evidence.objective is not None else None,
+        },
+        "incremental": asdict(review_evidence.incremental),
+    }
+    try:
+        envelope = encode_individual_evidence(inputs, tuple(item.text for item in manifest.requirements))
+        # The receiving boundary validates every reference and its complete
+        # reconstruction before any semantic transport. Output parsing still
+        # consumes the original manifest and incremental context below.
+        decode_individual_evidence(envelope)
+    except (ValueError, TypeError, RecursionError):
+        return _error("Required individual review evidence could not be reconstructed")
+
+    def field(path: str) -> str:
+        return render_prompt("issue.individual_evidence_field_reference", field_path=path)
+
     prompt = render_prompt(
         "issue.adversarial_specification_analysis",
         issue_number=manifest.issue_number,
-        issue_title=manifest.title,
-        normative_manifest=requirements,
-        issue_body=issue_body,
-        parent_context=parent_context or "(No parent Issue context supplied.)",
+        issue_title=field("current.title"),
+        normative_manifest=field("current.manifest.requirements"),
+        issue_body=field("current.body"),
+        parent_context=field("current.parent_context"),
         relationship_role=relationship_context.role,
-        related_contracts=relationship_context.related_contracts,
-        durable_baseline=review_evidence.baseline if review_evidence else "(No earlier baseline is available.)",
-        prior_applied_outcomes=("\n\n".join(review_evidence.prior_applied_outcomes) if review_evidence and review_evidence.prior_applied_outcomes else "(No prior applied material review outcomes.)"),
-        objective_evidence=(objective_evidence_json(review_evidence.objective) if review_evidence and review_evidence.objective else "(Required Objective evidence is unavailable.)"),
+        related_contracts=field("current.relationship.related_contracts"),
+        durable_baseline=field("current.baseline"),
+        prior_applied_outcomes=field("current.prior_applied_outcomes"),
+        objective_evidence=field("current.objective"),
         review_mode=review_evidence.incremental.mode,
-        predecessor_decision_key=review_evidence.incremental.predecessor_decision_key or "(none)",
-        predecessor_evidence=review_evidence.incremental.predecessor_evidence or "(none; perform a full review)",
-        assessed_delta=review_evidence.incremental.assessed_delta or "(none; perform a full review)",
+        predecessor_decision_key=field("incremental.predecessor_decision_key"),
+        predecessor_evidence=field("incremental.predecessor_evidence"),
+        assessed_delta=field("incremental.assessed_delta"),
     )
+    prompt += "\n\n" + render_prompt("issue.individual_evidence_envelope", evidence_envelope=envelope)
     try:
         if prompt_runner is not None:
             response = prompt_runner(prompt)

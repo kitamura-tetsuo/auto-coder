@@ -11,6 +11,7 @@ from auto_coder.specification_analyzer import (
 )
 from auto_coder.specification_analyzer import analyze_issue_specification as _analyze_issue_specification
 from auto_coder.specification_analyzer import parse_incremental_specification_response, parse_specification_analysis_response
+from tests.support.individual_review_evidence import prompt_evidence
 
 
 def analyze_issue_specification(manifest, issue_body, **kwargs):
@@ -73,9 +74,12 @@ def test_supported_manifest_origin_reaches_analysis_without_reparsing_body():
 
     assert result.verdict == "BLOCKED"
     assert result.findings[0].category == "hidden_requirement"
-    assert '"requirement_id": "REQ-001"' in captured[0]
-    assert '"requirement_id": "REQ-002"' in captured[0]
-    assert '"requirement_id": "REQ-999"' not in captured[0]
+    authoritative = prompt_evidence(captured[0])["current"]["manifest"]
+    assert authoritative["requirements"] == (
+        {"requirement_id": "REQ-001", "text": "Preview renders the selected draft."},
+        {"requirement_id": "REQ-002", "text": "The result is JSON."},
+    )
+    assert "REQ-999" not in {item["requirement_id"] for item in authoritative["requirements"]}
     assert "REQ-999: This conflicting raw Markdown" in captured[0]
     assert "Parent Issue context (non-normative evidence only)" in captured[0]
 
@@ -158,7 +162,7 @@ REQ-002: Values other than the booleans `true` and `false` must produce the obse
     assert result.verdict == "READY"
     assert "External references are not defects by themselves" in captured[0]
     assert "The blocker is missing normative semantics" in captured[0]
-    assert '"requirement_id": "REQ-001"' in captured[0]
+    assert prompt_evidence(captured[0])["current"]["manifest"]["requirements"][0] == {"requirement_id": "REQ-001", "text": manifest.requirements[0].text}
     assert "External Settings interface" in captured[0]
     assert "Do not retrieve, inspect, or request" in captured[0]
     assert "no retrieval tool exists" in captured[0]

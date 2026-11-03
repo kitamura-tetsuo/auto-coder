@@ -145,14 +145,18 @@ def test_cumulative_drift_traverses_history_prompt_parser_and_reissue_applicatio
 
     def model(prompt: str, **_kwargs: object) -> str:
         prompts.append(prompt)
-        current_body = prompt.split("Issue Markdown body", 1)[1].split("Parent Issue context", 1)[0]
+        from tests.support.individual_review_evidence import prompt_evidence
+
+        current_body = prompt_evidence(prompt)["current"]["body"]
         if "block conflicting work for the entire retained lifecycle" in current_body:
             return response("READY")
         if "semantic pull-request labels fuzzily" in current_body:
             assert "manual-CI guard" in prompt
             assert "Durable first-review baseline" in prompt
             assert "urgent emergency capacity" in prompt
-            assert prompt.count('"verdict": "BLOCKED"') == 2
+            prior = prompt_evidence(prompt)["current"]["prior_applied_outcomes"]
+            assert len(prior) == 2
+            assert all(json.loads(outcome)["verdict"] == "BLOCKED" for outcome in prior)
             return response(
                 "BLOCKED",
                 "REISSUE_REQUIRED",
