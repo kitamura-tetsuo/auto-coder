@@ -1956,6 +1956,13 @@ resolved findings and changed closed-sibling evidence. Its actual outgoing
 model request is independently reconstructed; these are transport/authority
 assertions, not fixed semantic verdicts or deployment evidence.
 
+The bound-input profile changes the existing policy identity and produces an
+ordinary fresh FULL assessment for unproven older records. It adds no processing
+origin or dashboard event schema. Unreadable required history yields the existing
+local ERROR with no semantic call, while exact current reuse retains its original
+producing mode beneath the REUSED view. Coverage in the same lifecycle and real
+Review-lane tests checks those outcomes and preservation of accepted record bytes.
+
 # Explicit Issue-review rerun authority
 
 Explicit review reruns add durable authorization state but do not add a new

@@ -106,3 +106,14 @@ parse to establish Requirement authority. Production Review-lane regressions
 independently reconstruct standalone and reconciled-child FULL/INCREMENTAL
 requests from real persisted predecessors, resolved findings and changed closed
 siblings. Missing/corrupt optional evidence selects FULL without granting reuse.
+
+The bound-review-inputs validation profile records a SHA-256 of the exact
+captured input string. Missing or mismatched input integrity evidence cannot
+authorize reuse or a predecessor; older profiles take the explicit FULL-review
+path while their history remains retained. The first baseline and immutable
+Objective are also checked against their separate retained history, and the
+captured current Objective must match its actual body. A required history-read
+failure remains an explicit local ERROR without another semantic call or a
+rewrite of the accepted record. Controller checkpoints preserve the producing
+FULL/INCREMENTAL mode beneath the REUSED diagnostic view, so valid carried
+coverage does not spuriously trigger a fresh review.

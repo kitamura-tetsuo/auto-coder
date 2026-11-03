@@ -108,34 +108,33 @@ def encode_individual_evidence(inputs: dict[str, object], requirement_texts: tup
         references[text] = reference
         definitions.append(None)
         definition: object = ["s", text]
-        if text not in normative_atoms:
-            form = json_forms.get(text)
-            if form is not None:
-                definition = ["j", form[0], _structure(form[1], intern)]
-            else:
-                matches: list[tuple[int, int, str]] = []
-                for atom in atoms:
-                    if len(atom) >= len(text):
-                        continue
-                    start = text.find(atom)
-                    if start >= 0:
-                        heapq.heappush(matches, (start, -len(atom), atom))
-                parts = []
-                offset = 0
-                while matches:
-                    start, size, atom = heapq.heappop(matches)
-                    if start >= offset:
-                        if start > offset:
-                            parts.append(intern(text[offset:start]))
-                        parts.append(intern(atom))
-                        offset = start + len(atom)
-                    following = text.find(atom, offset)
-                    if following >= 0:
-                        heapq.heappush(matches, (following, size, atom))
-                if parts:
-                    if offset < len(text):
-                        parts.append(intern(text[offset:]))
-                    definition = ["c", parts]
+        form = json_forms.get(text) if text not in normative_atoms else None
+        if form is not None:
+            definition = ["j", form[0], _structure(form[1], intern)]
+        else:
+            matches: list[tuple[int, int, str]] = []
+            for atom in atoms:
+                if len(atom) >= len(text):
+                    continue
+                start = text.find(atom)
+                if start >= 0:
+                    heapq.heappush(matches, (start, -len(atom), atom))
+            parts = []
+            offset = 0
+            while matches:
+                start, size, atom = heapq.heappop(matches)
+                if start >= offset:
+                    if start > offset:
+                        parts.append(intern(text[offset:start]))
+                    parts.append(intern(atom))
+                    offset = start + len(atom)
+                following = text.find(atom, offset)
+                if following >= 0:
+                    heapq.heappush(matches, (following, size, atom))
+            if parts:
+                if offset < len(text):
+                    parts.append(intern(text[offset:]))
+                definition = ["c", parts]
         definitions[index] = definition
         return reference
 

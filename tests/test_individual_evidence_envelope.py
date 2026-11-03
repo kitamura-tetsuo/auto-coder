@@ -21,6 +21,29 @@ from tests.support.individual_review_evidence import prompt_evidence
 from tests.test_issue_review_service import FakeGitHub, engine_with_lane
 
 
+def test_contained_normative_atoms_are_interned_once_in_actual_request(tmp_path, monkeypatch):
+    body = "## Requirements\nREQ-001: Keep state and log.\nREQ-002: Keep state\n\n## Context\nKeep state and log. Keep state"
+    from auto_coder.requirement_contract import build_normative_issue_manifest
+
+    manifest = build_normative_issue_manifest(7, "Contained atoms", body)
+    captured = []
+
+    def transport(prompt):
+        captured.append(prompt)
+        return json.dumps({"verdict": "READY", "remediation": "NONE", "findings": [], "finding_dispositions": [], "coverage": [{"boundary": boundary, "status": "FRESH", "no_impact_reason": ""} for boundary in ("REQ-001", "REQ-002", "contract-wide")]})
+
+    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.analyze_issue_specification", lambda current, text: analyze_issue_specification(current, text, prompt_runner=transport))
+    gate = SpecificationValidationLifecycle("owner/repo", "configured-route", tmp_path / "decisions.json")
+    decision = gate.decide(manifest, "Contained atoms", body)
+
+    assert decision.verdict == "READY"
+    wire = captured[0].rsplit("```json\n", 1)[1].split("\n```", 1)[0]
+    assert wire.count("Keep state") == 1
+    inputs = prompt_evidence(captured[0])
+    assert inputs["current"]["body"] == body
+    assert inputs["current"]["manifest"]["requirements"] == ({"requirement_id": "REQ-001", "text": "Keep state and log."}, {"requirement_id": "REQ-002", "text": "Keep state"})
+
+
 @pytest.mark.parametrize("role", ["standalone", "child"])
 def test_review_lane_reconstructs_real_persisted_resolved_and_closed_family_evidence(tmp_path, monkeypatch, role):
     """Transport oracle starts at the real Review lane, not a supplied predecessor."""

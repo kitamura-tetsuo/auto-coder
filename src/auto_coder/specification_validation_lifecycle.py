@@ -17,7 +17,7 @@ from .github_pending_work import WorkIdentity, get_pending_work_store
 from .invocation_admission import bind_invocation_target, take_pending_invocation_handle
 from .issue_review_publication import find_confirmed_publication
 from .issue_review_rerun import IssueReviewRerunStore, RerunAuthorityUnavailable, ReviewSubject
-from .objective_evidence import ObjectiveAnchorStore
+from .objective_evidence import ObjectiveAnchorStore, extract_objective
 from .prompt_loader import load_prompts
 from .reissue_required_store import ReissueRequiredStore
 from .requirement_contract import NormativeIssueManifest, NormativeRequirement, build_normative_issue_manifest
@@ -46,7 +46,7 @@ from .specification_repair_rounds import (
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 from .util.github_request_outcome import GitHubRequestError
 
-VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v8-retained-findings"
+VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v9-bound-review-inputs"
 FINDINGS_MARKER_PREFIX = "auto-coder-specification-validation"
 
 # Pending-work stage for the two independently-trackable BLOCKED publication
@@ -457,8 +457,7 @@ class SpecificationValidationStore:
             return None
         return self._decision_from_raw(identity, raw, evaluation_source="stored-decision-reuse")
 
-    @staticmethod
-    def _raw_has_complete_evidence(raw: dict[str, object], identity: ValidationIdentity) -> bool:
+    def _raw_has_complete_evidence(self, raw: dict[str, object], identity: ValidationIdentity) -> bool:
         """Require the complete evidence envelope before a record can authorize reuse."""
         try:
             inputs = json.loads(raw["review_inputs"] if isinstance(raw["review_inputs"], str) else "")
@@ -487,6 +486,8 @@ class SpecificationValidationStore:
         required_inputs = {"manifest", "title", "body", "role", "parent_number", "related_contracts", "objective", "baseline", "prior_applied_outcomes"}
         if not isinstance(inputs, dict) or set(inputs) != required_inputs:
             return False
+        if raw.get("review_inputs_digest") != hashlib.sha256(str(raw["review_inputs"]).encode("utf-8")).hexdigest():
+            return False
         if (
             inputs["manifest"] != binding
             or any(not isinstance(inputs[field], str) for field in ("title", "body", "role", "related_contracts", "baseline"))
@@ -496,6 +497,12 @@ class SpecificationValidationStore:
         ):
             return False
         if specification_digest(inputs["title"], inputs["body"]) != identity.specification_digest:
+            return False
+        try:
+            history = IndividualReviewHistoryStore(self.repository, self.path.with_name("individual_review_history.json"))._read().get(str(identity.issue_number))
+        except (OSError, ValueError, TypeError):
+            return False
+        if not isinstance(history, dict) or inputs["baseline"] != history.get("baseline"):
             return False
         relationship = {field: inputs[field] for field in ("role", "related_contracts", "parent_number")}
         if hashlib.sha256(json.dumps(relationship, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest() != identity.relationship_digest:
@@ -522,6 +529,9 @@ class SpecificationValidationStore:
                 or current["status"] not in {"PRESENT", "ABSENT", "INVALID"}
                 or (current["text"] is not None and not isinstance(current["text"], str))
             ):
+                return False
+            anchor = history.get("objective_anchor")
+            if not isinstance(anchor, dict) or any(objective[field] != anchor.get(field) for field in ("state", "original_text", "source_identity")) or current != asdict(extract_objective(inputs["body"])):
                 return False
         coverage = raw.get("coverage")
         dispositions = raw.get("finding_dispositions")
@@ -745,6 +755,10 @@ class SpecificationValidationStore:
             raise ValueError("ERROR decisions must not be persisted")
         with self.locked("repository-state"):
             state = self._read()
+            previous = state.get(decision.identity.key)
+            review_mode = decision.review_mode
+            if review_mode == "REUSED" and isinstance(previous, dict):
+                review_mode = previous.get("review_mode", "REUSED")
             state[decision.identity.key] = {
                 "identity": asdict(decision.identity),
                 "verdict": decision.verdict,
@@ -758,13 +772,14 @@ class SpecificationValidationStore:
                 "execution_provenance": decision.execution_provenance,
                 "rerun_authority": decision.rerun_authority,
                 "rerun_request_id": decision.rerun_request_id,
-                "review_mode": decision.review_mode,
+                "review_mode": review_mode,
                 "predecessor_decision_key": decision.predecessor_decision_key,
                 "assessed_delta": decision.assessed_delta,
                 "finding_ids": list(decision.finding_ids),
                 "finding_dispositions": [asdict(item) for item in decision.finding_dispositions],
                 "coverage": [asdict(item) for item in decision.coverage],
                 "review_inputs": decision.review_inputs,
+                "review_inputs_digest": hashlib.sha256(decision.review_inputs.encode("utf-8")).hexdigest(),
                 "accepted_sequence": decision.accepted_sequence
                 or 1
                 + max(
