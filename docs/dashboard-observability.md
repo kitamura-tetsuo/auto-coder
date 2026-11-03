@@ -468,6 +468,32 @@ admission gate or dashboard projection is added; production-to-view coverage is
 `tests/test_single_review_ordinary_closure_flow.py` and
 `tests/test_effective_decision_pr_flow.py`.
 
+Issue #2678 also checks the producing discussion at the ordinary closure target
+observer before cycle acceptance and during retained-source recovery. Its
+`pr.ordinary-closure` DEFERRED reason includes `discussion-freshness` for a
+complete mismatch; unavailable discussion remains non-authorizing. The existing
+review-thread gate and later ordinary validation retain their normal identities.
+No new event schema or dashboard projection is introduced. Runnable production
+regressions in `tests/test_single_review_ordinary_closure_flow.py` include
+`test_production_collection_revalidates_discussion_changed_during_review`,
+`test_changed_discussion_after_retention_never_certifies_during_recovery`,
+`test_resolved_accepted_source_rechecks_discussion_before_reuse`, and
+`test_incomplete_discussion_cannot_certify_the_producing_ordinary_result`.
+These inspect cycle acceptance/publication, actual next validator discussion and
+resolve/merge effects, including valid receipt-only updates and incomplete reads.
+
+The ordinary-only path uses the same existing saved-review wait and independent
+validation events after reconstructing its non-authorizing discussion checkpoint.
+It adds no event schema or projection: the next ordinary attempt is visible in
+the existing review history, while an incomplete read admits no attempt. Runnable
+`tests/test_ordinary_discussion_revalidation.py` covers same/changed heads, external
+resolution, reconstruction, incomplete reads and receipt-only deduplication.
+`test_two_accepted_ordinary_sources_survive_selected_invalidation` additionally
+passes two independently accepted roots through actual production revalidation,
+including simultaneous and successive edits and both conclusive dispositions.
+Canonical revocation uses the existing ledger history and the next attempt uses
+existing ordinary validation events; no new event schema or projection is added.
+
 Stale base/contract/policy recovery after ordinary convergence emits
 `pr.strong-audit` with the current `head`, `base`, `reason`,
 `publication_reason`, and `renewed_strong_required=true`. COMPLETED means only
@@ -3017,6 +3043,27 @@ Rediscovery intentionally preserves those fields; publication receipts remain
 in the local-job effect journal rather than being inferred from the presence
 of a pending-work row.
 
+
+### Accepted closure discussion after a newer ordinary PASS
+
+The production recovery path continues to emit the existing
+`pr.review-thread-closure` unfinished phase/reason when retained discussion is
+changed or cannot be confirmed, including when a newer plain PASS supersedes
+the ordinary verdict. The accepted closure remains the dependent source until
+an actual scope-bound independent correction supplies current discussion
+evidence. That correction is retained in the ordinary effective-decision
+record; the original closure publication and effect operation identities stay
+unchanged, so uncertain writes are reconciled rather than silently retried.
+There is no new event schema or dashboard projection: the existing unfinished
+reason and retained ordinary attempt identify the block and its reevaluation.
+
+Run `bash scripts/test.sh tests/test_single_review_ordinary_closure_flow.py`.
+`test_newer_plain_pass_does_not_replace_accepted_discussion_binding` drives the
+production forced ordinary review, reconstruction, publication and merge paths
+with add/edit/delete, unchanged and authenticated receipt-only controls. It
+checks both retained resolved closures and pending publication, fresh
+STILL_VALID/ADDRESSED outcomes, and refusal of replacement records with changed
+scope, missing source coverage or missing/mismatched thread evidence.
 
 ### Recorded open-target enumeration
 

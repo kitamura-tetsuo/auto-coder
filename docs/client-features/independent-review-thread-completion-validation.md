@@ -30,7 +30,48 @@ resolution; an added, edited, removed, incomplete, or ambiguous substantive
 comment leaves the thread unresolved for a later independent evaluation. The
 one authenticated, schema-valid controller closure receipt is housekeeping and
 is excluded from this binding, while forged or marker-looking ordinary replies
-remain substantive evidence.
+remain substantive evidence. On recovery, retained ordinary results are checked
+against the current discussion before reuse; a changed discussion admits a new
+independent review, while an unavailable authoritative read defers processing.
+Two-tier closure effects use the same authenticated receipt protocol; historical
+two-tier status replies remain part of the substantive discussion.
+
+The discussion binding is checked before the producing ordinary assessment can
+certify the review cycle or publish its closure, including recovery of an
+unapplied retained source. Complete changed evidence remains retained but
+non-authorizing and admits a fresh independent input; incomplete evidence defers.
+Already resolved native threads do not bypass this check. Only the exact retained
+ADDRESSED thread identities may be included in the new validation's local
+classification view after resolution; this never unresolves a native thread or
+adds unrelated findings to the correction scope. Superseded pending sources
+still reach the owning attempt's ordinary rejection instead of blocking a newer
+source forever. A genuinely unchanged, valid owned receipt does not cause review
+churn.
+
+Ordinary-only processing also retains earlier per-thread discussion bindings when a
+newer ordinary review does not evaluate those threads. A later unrelated PASS
+therefore cannot hide a changed discussion after reconstruction. Invalidating one
+source converts every still-live accepted binding, including the latest ordinary
+result, into exact non-authorizing revalidation inputs before clearing the headline.
+Canonical correction acceptance is revoked through the existing revision-checked
+ledger transition using strictly observed native roots. Unavailable roots defer;
+simultaneous or later edits on another accepted root cannot disappear.
+
+Ordinary-only processing retains the exact changed thread identities separately
+from its revoked closure authority. This checkpoint survives process reconstruction
+and head/base changes, including externally resolved threads. The next input
+recollects those complete discussions before consuming a saved same-head PASS;
+the checkpoint cannot itself accept a correction or resolve a thread. Only a
+confirmed independently accepted closure clears its corresponding identity.
+Unavailable discussion waits without another reviewer, and successful receipt-only
+recovery does not repeat the review. Production-coordinator regressions are in
+`tests/test_ordinary_discussion_revalidation.py`.
+
+When two-tier and canonical consumers independently accept the same root/head,
+a current, complete discussion binding plus the new canonical acceptance can
+reuse the confirmed same-head resolution. A receipt by itself, a pending foreign
+operation, a changed head or a rollback obligation cannot authorize that reuse.
+The controller does not issue a second resolve for the already confirmed effect.
 
 Independently accepted closure maintains one controller-owned reply per exact
 API origin, repository, PR, thread and root comment. The reply begins with
@@ -159,7 +200,8 @@ failure/retry integration is
       - "Every PR-processing entry point uses the same claimed-aware merge transition workflow. A quick/single-PR pass cannot bypass independent validation or re-delegate claimed-addressed threads, and when claimed and ordinary unresolved threads coexist only the ordinary blockers are included in repair delegation."
       - "The validator returns one independent disposition per claimed thread in a `thread_dispositions` list: `ADDRESSED` (the original defect is demonstrably gone on the current head), `STILL_VALID` (it remains), or `INCONCLUSIVE` (the evidence cannot establish either safely). The prompt explicitly forbids deriving ADDRESSED merely from the implementation agent's claim, a GitHub `outdated` state, a moved/deleted diff line, a passing test alone, or a pushed commit alone; every disposition requires a concrete rationale and evidence grounded in the current implementation."
       - "Thread dispositions are parsed leniently and independently of the PR-level verdict: a malformed or incomplete entry is dropped (logged) without failing the PR-level PASS/NEEDS_FIX/INCONCLUSIVE/BLOCKED result, and a thread may be ADDRESSED while the PR itself is NEEDS_FIX for an unrelated defect, or vice versa."
-      - "The controller binds each produced disposition to the complete substantive discussion supplied to that validation and retains that binding with ordinary-result recovery. Closure re-observes the native thread before canonical acceptance and immediately before resolution; any added, edited, removed, incomplete, or ambiguous ordinary discussion revokes stale acceptance and requires independent reevaluation. Only a schema-valid authenticated owned closure receipt or strict two-tier closure-status envelope is excluded from the binding; marker-looking, malformed, duplicated, or unauthenticated comments remain substantive."
+      - "The controller binds each produced disposition to the complete substantive discussion supplied to that validation and retains that binding with ordinary-result recovery. Closure re-observes the native thread before canonical acceptance, when reconciling an already-resolved receipt, and immediately before resolution; any added, edited, removed, incomplete, or ambiguous ordinary discussion revokes stale acceptance and requires independent reevaluation. Only a schema-valid authenticated owned closure receipt or strict two-tier closure-status envelope is excluded from the binding; marker-looking, malformed, duplicated, or unauthenticated comments remain substantive."
+      - "An accepted closure keeps its discussion dependency even after a newer plain PASS on the same head. A replacement must be an actually retained, publication-confirmed independent PASS for the same head/base/contract/policy, open epoch, strong round, audited head and finding revision, covering the accepted sources and all previously ADDRESSED threads with current bound evidence. Recovery preserves the original immutable publication identity and reconciles unknown writes instead of creating a new operation."
       - "Resolution is fail-closed end to end (`resolve_addressed_review_threads`): it acts only on independently accepted ADDRESSED dispositions for threads actually claimed in this run, persists canonical acceptance and enforces all owned obligations before effects, and refuses stale heads. Each actual resolve requires the authenticated reusable reply to be observably PENDING for its exact operation. Missing, ambiguous or failed receipt evidence and unconfirmed resolve effects produce unfinished outcomes without blocking successful sibling closures or fabricating resolution."
       - "Stale-resolution BLOCKER/CLEARED comments are authoritative only when their author matches the login proven by Auto-Coder's active GitHub credential; exact lookalike markers from humans or implementation agents are ignored. A resolved thread with a truncated comment list has incomplete latest-marker evidence regardless of which marker is visible, so merge processing fails closed without attempting an automatic unresolve from that partial page."
       - "Every resolution-time head comparison and stale-marker head comparison uses a strict direct REST lookup that bypasses the shared GitHub GET cache. A stale-marker scan that performs a head comparison repeats that authoritative lookup after scanning all threads and requires the same head SHA, so a push from H1 to H2 during the scan fails closed without mutation. A missing, malformed, failed, or changed authoritative lookup cannot validate a resolution or dismiss an H1 blocker."

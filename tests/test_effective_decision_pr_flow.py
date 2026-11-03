@@ -239,6 +239,7 @@ class Flow:
         public_origin: bool = False,
         thread_gate_enabled: Optional[bool] = None,
         settle_concurrent_work: Optional[Callable[[], None]] = None,
+        on_review: Optional[Callable[[], None]] = None,
     ) -> Sequence[str]:
         mp = self.monkeypatch
         env = self.env
@@ -265,7 +266,7 @@ class Flow:
 
         def current_state(*_a: object, **_k: object) -> ClaimedReviewThreadGateState:
             if self.production_thread_collection:
-                return _get_claimed_review_thread_state(client, REPO, self.pr, config=AutomationConfig())
+                return _get_claimed_review_thread_state(client, REPO, self.pr, config=AutomationConfig(), revalidate_resolved_thread_ids=_k.get("revalidate_resolved_thread_ids", ()))
             if thread_state is not None:
                 return thread_state
             live = tuple(thread for thread in self.threads() if not thread.is_resolved)
@@ -282,6 +283,8 @@ class Flow:
         def next_response(*_args: object, **_kwargs: object) -> str:
             self.model_calls += 1
             raw = responses.pop(0) if len(responses) > 1 else responses[0]
+            if on_review is not None:
+                on_review()
             if closure is not None and closure.on_review is not None:
                 closure.on_review()
             if closure is None or not supplied:
@@ -1138,7 +1141,8 @@ def test_ledger_ahead_reconciliation_resumes_independent_closure_without_approva
             publication="CONFIRMED",
         )
     )
-    flow.model_responses = [ordinary_response(flow.thread_id, status="ADDRESSED")]
+    # This already-resolved root is not a newly claimed native-thread decision.
+    flow.model_responses = [json.dumps({**json.loads(ordinary_response(flow.thread_id, status="ADDRESSED")), "thread_dispositions": []})]
     # Expanded scope requires renewed Strong completion after closure; the
     # fixture deliberately leaves that independent reviewer unavailable.
     script = ClosureScript(status="FIXED", scope="EXPANDED")
