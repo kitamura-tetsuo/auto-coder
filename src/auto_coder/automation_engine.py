@@ -646,6 +646,9 @@ class _IssueProcessingStageHandler:
             fresh_issue = engine.github.get_issue_dispatch_snapshot_strict(self._repo_name, issue_number)
         except GitHubRequestError as exc:
             return StageOutcome(error=exc)
+        except Exception as exc:
+            logger.opt(exception=True).warning("Issue pending-work initial refresh failed repository={} issue={}", self._repo_name, issue_number)
+            return StageOutcome(blocked_reason=PendingReason.EVALUATION_FAILED, blocked_error=str(exc))
         if not isinstance(fresh_issue, dict) or fresh_issue.get("number") != issue_number or "pull_request" in fresh_issue:
             # No longer an authoritative open Issue snapshot; nothing left for
             # this obligation to authorize.

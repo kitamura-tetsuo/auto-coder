@@ -11,6 +11,11 @@ tests/test_github_pending_work.py tests/test_pending_work_resumption.py` to exer
 real SQLite retention, protected-owner admission, strict refresh timing, regular
 expiry on either side of settlement, repeated unchanged deferrals, unrelated
 internal completions, nearer/later unrelated deadlines, and independent idle/in-flight wakes.
+An unexpected initial strict Issue refresh failure is retained as an
+`evaluation_failed` operational block in the pending-work snapshot; it does not
+enter the admission trace. Run `bash scripts/test.sh
+tests/test_pending_work_resumption.py::test_initial_snapshot_failure_blocks_until_selected_retry`
+to verify retention, generic wakes, and selected retry at the production handler.
 
 Durable worker failures emit repository/target-scoped `worker.failure-backoff`
 stage results under origin `durable-invalidation-worker`. `deferred` means the
