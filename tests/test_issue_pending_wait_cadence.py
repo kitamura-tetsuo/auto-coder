@@ -1,0 +1,249 @@
+"""Issue #2722: scheduler wakes must preserve ordinary admission authority."""
+
+import asyncio
+import inspect
+import threading
+import time
+from unittest.mock import MagicMock
+
+import pytest
+
+from auto_coder.automation_config import ExplicitTargetOutcome
+from auto_coder.automation_engine import ISSUE_PROCESSING_STAGE, _issue_content_revision, _IssueProcessingStageHandler
+from auto_coder.github_pending_work import PendingWorkScheduler, StageOutcome, WorkIdentity
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from auto_coder.issue_dispatch import DispatchOutcome, DispatchResult, IssueAttemptIdentity
+from auto_coder.ordinary_issue_adapter import IssueDispatchExecution
+from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
+from tests.test_pending_work_resumption import _admission_deferral, _admitted_issue_engine
+
+
+async def reached(predicate):
+    async with asyncio.timeout(5):
+        while not predicate():
+            await asyncio.sleep(0.002)
+
+
+def existing_owner(monkeypatch, tmp_path):
+    issue = {"id": 70, "number": 7, "title": "Retained", "body": "## Requirements\nREQ-001: Preserve behavior.", "labels": [], "state": "open", "user": {"id": 1}}
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    engine.config.jules_mode = False
+    engine._get_authoritative_parent_number = MagicMock(return_value=None)
+    engine._preflight_explicit_issue_relationships = MagicMock(return_value=dict(issue))
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    owner = ImplementationOwner("issue", 7)
+    execution = slots.start_execution(owner)
+    assert execution is not None
+    assert slots.record_provider_session(owner, "existing-provider")
+    slots.finish_execution(owner, execution)
+    engine.implementation_slots = slots
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    store.defer(identity, _admission_deferral(), ("confirmed-already", "refresh", "implementation"))
+    store.complete_effect(identity, "confirmed-already")
+    assert store.manual_retry(identity, now=time.time() - 1) is not None
+    return engine, store, identity, slots, owner
+
+
+@pytest.mark.parametrize("timing", ["before-expiry", "after-expiry", "external-idle", "external-thread", "external-inflight"])
+@pytest.mark.asyncio
+async def test_real_protected_owner_deferred_preserves_armed_wait(tmp_path, monkeypatch, timing):
+    engine, store, identity, slots, owner = existing_owner(monkeypatch, tmp_path)
+    now = [time.time()]
+    entered = []
+    outcomes = []
+    reader_times = []
+    barrier = threading.Event()
+    reader = engine.github.get_issue_dispatch_snapshot_strict.return_value
+
+    def strict(repo, number):
+        assert (repo, number) == ("owner/repo", 7)
+        reader_times.append(now[0])
+        return dict(reader)
+
+    engine.github.get_issue_dispatch_snapshot_strict.side_effect = strict
+    normal = engine._process_single_candidate_unified
+    dispositions = []
+
+    def observe(*args, **kwargs):
+        assert not kwargs.get("force") and not kwargs.get("manual_retry")
+        result = normal(*args, **kwargs)
+        dispositions.append(result)
+        return result
+
+    engine._process_single_candidate_unified = observe
+
+    class ObservedHandler(_IssueProcessingStageHandler):
+        def dispatch(self, obligation):
+            if not entered:
+                now[0] += 7  # Entry is observably later than regular wait arm.
+            entered.append(now[0])
+            result = super().dispatch(obligation)
+            outcomes.append(result)
+            if len(entered) == 1:
+                assert barrier.wait(5)
+            return result
+
+    arms = []
+
+    class ObservedScheduler(PendingWorkScheduler):
+        def _next_delay(self):
+            delay = super()._next_delay()
+            arms.append((now[0], delay))
+            return delay
+
+    scheduler = ObservedScheduler(store, repository="owner/repo", poll_interval=30, clock=lambda: now[0])
+    engine.pending_work_scheduler = scheduler
+    scheduler.register_handler(ISSUE_PROCESSING_STAGE, ObservedHandler(engine, "owner/repo"))
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(scheduler.run(shutdown))
+    try:
+        await reached(lambda: scheduler._wake_event is not None)
+        scheduler.wake()
+        await reached(lambda: len(outcomes) == 1)
+        expiry = next(arm + delay for arm, delay in reversed(arms) if delay > 0)
+        assert expiry == pytest.approx(entered[0] + 23)
+        assert outcomes == [StageOutcome()]
+        assert dispositions[-1].target_outcome is ExplicitTargetOutcome.DEFERRED
+        assert "ownership already exists" in dispositions[-1].actions[0]
+        during = store.get(identity)
+        assert during.status == "running"
+        assert during.unfinished_effects == ("refresh", "implementation")
+        retained_attempts = during.throttle_attempts
+
+        if timing == "after-expiry":
+            now[0] = expiry + 1
+            scheduler._wake_event.set()  # Timer observation, not an independent wake.
+            await asyncio.sleep(0.03)
+            assert len(entered) == 1
+        elif timing == "external-inflight":
+            scheduler.wake()
+            await asyncio.sleep(0.03)
+            assert len(entered) == 1
+        if timing != "after-expiry":
+            now[0] += 5  # Settlement is also later than handler entry.
+        barrier.set()
+        await reached(lambda: not scheduler._in_flight)
+
+        if timing in {"after-expiry", "external-inflight"}:
+            await reached(lambda: len(entered) >= 2)
+        else:
+            await asyncio.sleep(0.03)
+            assert len(entered) == 1
+            retained = store.get(identity)
+            assert retained.status == "waiting"
+            assert retained.identity == identity
+            assert retained.unfinished_effects == ("refresh", "implementation")
+            assert retained.throttle_attempts == retained_attempts
+            if timing in {"external-idle", "external-thread"}:
+                if timing == "external-thread":
+                    await asyncio.to_thread(scheduler.wake)
+                else:
+                    scheduler.wake()
+            else:
+                now[0] = expiry
+                scheduler._wake_event.set()
+            await reached(lambda: len(entered) >= 2)
+        assert entered[1] == (expiry + 1 if timing == "after-expiry" else expiry if timing == "before-expiry" else entered[0] + 5)
+        assert reader_times[0] == entered[0]
+        assert reader_times[-1] == entered[1]
+        assert slots.active_owners() == (owner,)
+        assert slots.snapshot().owners[0].provider_sessions == ("existing-provider",)
+        assert all(result.target_outcome is ExplicitTargetOutcome.DEFERRED for result in dispositions)
+        assert all(result == StageOutcome() for result in outcomes)
+        await reached(lambda: not scheduler._in_flight)
+    finally:
+        barrier.set()
+        shutdown.set()
+        await asyncio.wait_for(task, 3)
+
+    retained = store.get(identity)
+    assert retained is not None
+    assert retained.unfinished_effects == ("refresh", "implementation")
+    # Process-local cadence state must not replace or erase durable recovery.
+    reopened = type(store)(tmp_path / "pending.db")
+    assert reopened.get(identity) == retained
+
+
+@pytest.mark.parametrize("independent_wake", [False, True])
+@pytest.mark.parametrize("allowed", [False, True, "after-deferred"])
+@pytest.mark.asyncio
+async def test_wake_preserves_real_common_allow_or_author_refusal(tmp_path, monkeypatch, independent_wake, allowed):
+    engine, store, identity, slots, owner = existing_owner(monkeypatch, tmp_path)
+    retained_owner = allowed == "after-deferred"
+    if not retained_owner:
+        assert slots.finish_provider_session(owner, "existing-provider")
+        assert slots.active_owners() == ()
+    engine._is_issue_author_allowed = MagicMock(return_value=bool(allowed))
+    engine._get_specification_validator = MagicMock(return_value=SpecificationValidationLifecycle("owner/repo", "test", tmp_path / "validation.json"))
+    engine.github.get_item_type_strict = MagicMock(return_value="issue")
+    engine.github.get_parent_issue_details_strict = MagicMock(return_value=None)
+    engine.github.get_open_sub_issues_strict = MagicMock(return_value=[])
+    issue = engine.github.get_issue_dispatch_snapshot_strict.return_value
+    issue["labels"] = [{"name": "implementation-ready"}]
+    issue["updated_at"] = "2026-01-01T00:00:00Z"
+    engine.github.get_issue_strict = MagicMock(return_value=dict(issue))
+    engine.github.get_issue = MagicMock(return_value=dict(issue))
+    engine._reconcile_validation_snapshot.return_value = dict(issue)
+    effects = []
+
+    def backend(repo, snapshot, config, github, candidates, **kwargs):
+        assert (repo, snapshot["number"]) == ("owner/repo", 7)
+        assert kwargs.get("retry_authority") is None
+        assert slots.current_execution_id(owner)
+        effects.append("ordinary-implementation")
+        return IssueDispatchExecution(DispatchResult(IssueAttemptIdentity("owner", "repo", 7, "test-attempt"), DispatchOutcome.LOCAL_COMPLETED), ["Implemented through the admitted backend boundary"])
+
+    monkeypatch.setattr("auto_coder.issue_processor._dispatch_issue_candidates", backend)
+    monkeypatch.setattr("auto_coder.issue_processor._ordinary_issue_candidates", lambda repo: ["test-backend"])
+    dispositions = []
+    common = engine._process_single_candidate_unified
+    signature = inspect.signature(common)
+
+    def observe(*args, **kwargs):
+        bound = signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        assert not bound.arguments["force"] and not bound.arguments["retry"]
+        result = common(*args, **kwargs)
+        if not bound.arguments["generation_serialized"]:
+            dispositions.append(result)
+        return result
+
+    engine._process_single_candidate_unified = observe
+    scheduler = PendingWorkScheduler(store, repository="owner/repo", poll_interval=0.03)
+    engine.pending_work_scheduler = scheduler
+    settle = threading.Event()
+
+    class TransitionHandler(_IssueProcessingStageHandler):
+        def dispatch(self, obligation):
+            result = super().dispatch(obligation)
+            if retained_owner and len(dispositions) == 1:
+                assert settle.wait(5)
+            return result
+
+    scheduler.register_handler(ISSUE_PROCESSING_STAGE, TransitionHandler(engine, "owner/repo"))
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(scheduler.run(shutdown))
+    try:
+        await reached(lambda: scheduler._wake_event is not None)
+        if independent_wake:
+            scheduler.wake()
+        if retained_owner:
+            await reached(lambda: len(dispositions) >= 1)
+            assert dispositions[0].target_outcome is ExplicitTargetOutcome.DEFERRED
+            assert effects == []
+            assert store.get(identity).unfinished_effects == ("refresh", "implementation")
+            assert slots.finish_provider_session(owner, "existing-provider")
+            settle.set()
+            # No webhook, restart, force or new external wake: the ordinary
+            # timer must reconsider ownership through the same common path.
+        await reached(lambda: store.get(identity) is None)
+    finally:
+        settle.set()
+        shutdown.set()
+        await asyncio.wait_for(task, 3)
+    assert len(dispositions) == (2 if retained_owner else 1)
+    result = dispositions[-1]
+    assert result.target_outcome is (ExplicitTargetOutcome.SUCCESS if allowed else ExplicitTargetOutcome.SKIPPED), result
+    assert result.success is bool(allowed)
+    assert effects == (["ordinary-implementation"] if allowed else [])
+    assert engine.github.get_issue_dispatch_snapshot_strict.called

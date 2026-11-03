@@ -1,5 +1,16 @@
 # Dashboard observability verification
 
+Issue pending-work own settlement retains an unfinished obligation rather than
+claiming implementation progress. The scheduler preserves the already armed
+regular wait; an independent wake changes scan timing only. No stage outcome or
+fact schema changes: the existing `issue-pending-work-resumption` origin still
+enters ordinary production admission, and the dashboard continues to show its
+actual Deferred/allowed/refused processing evidence and retained pending work.
+Run `bash scripts/test.sh tests/test_issue_pending_wait_cadence.py
+tests/test_github_pending_work.py tests/test_pending_work_resumption.py` to exercise
+real SQLite retention, protected-owner admission, strict refresh timing, regular
+expiry on either side of settlement, and independent idle/in-flight wakes.
+
 Durable worker failures emit repository/target-scoped `worker.failure-backoff`
 stage results under origin `durable-invalidation-worker`. `deferred` means the
 unfinished entity's retry deadline was committed; its facts retain the reason,

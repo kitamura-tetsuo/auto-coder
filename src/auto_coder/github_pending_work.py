@@ -1060,9 +1060,15 @@ class PendingWorkScheduler:
         self._clock = clock
         self._handlers: dict[str, StageHandler] = {}
         self._wake_event: asyncio.Event | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._in_flight: set[str] = set()
         self._in_flight_lock = threading.Lock()
         self._tasks: set[asyncio.Task[None]] = set()
+        self._wake_generation = 0
+        self._regular_wait_deadline = 0.0
+        # These are references to an already armed regular wait, not new
+        # durable retry deadlines or admission authority.
+        self._unchanged_waits: dict[str, tuple[float, int]] = {}
 
     def register_handler(self, stage: str, handler: StageHandler) -> None:
         """Register the owning handler for a semantic stage before the loop starts."""
@@ -1070,9 +1076,16 @@ class PendingWorkScheduler:
 
     def wake(self) -> None:
         """Interrupt an idle wait, e.g. after an admission-change notification."""
+        with self._in_flight_lock:
+            self._wake_generation += 1
+        self._notify()
+
+    def _notify(self) -> None:
+        """Request a scan without manufacturing an independent external wake."""
         event = self._wake_event
-        if event is not None and not event.is_set():
-            event.set()
+        loop = self._loop
+        if event is not None and loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(event.set)
 
     def manual_retry(self, identity: WorkIdentity) -> PendingObligation | None:
         """Operator-triggered retry of one selected retry-blocked obligation."""
@@ -1121,11 +1134,14 @@ class PendingWorkScheduler:
         """
         if self._repository_key is None:
             raise PendingWorkOwnershipError("Pending-work scheduler cannot run without a repository binding")
+        self._loop = asyncio.get_running_loop()
         self._wake_event = asyncio.Event()
+        self._regular_wait_deadline = self._clock() + self._next_delay()
         try:
             await self._recover_interrupted()
             while not shutdown_event.is_set():
                 delay = self._next_delay()
+                self._regular_wait_deadline = self._clock() + delay
                 wake_wait = asyncio.ensure_future(self._wake_event.wait())
                 shutdown_wait = asyncio.ensure_future(shutdown_event.wait())
                 try:
@@ -1157,13 +1173,32 @@ class PendingWorkScheduler:
                 pending_task.cancel()
             if pending_tasks:
                 await asyncio.gather(*pending_tasks, return_exceptions=True)
+            self._loop = None
 
     def _next_delay(self) -> float:
         try:
-            upcoming = self._store.next_due_at()
+            pending = self._store.due(float("inf"))
         except PendingWorkPersistenceError:
             return self._poll_interval
         now = self._clock()
+        deadlines = []
+        settled_due = False
+        retained_keys = {item.identity.key() for item in pending}
+        for key in tuple(self._unchanged_waits):
+            if key not in retained_keys and key not in self._in_flight:
+                self._unchanged_waits.pop(key, None)
+        for item in pending:
+            deadline = item.not_before
+            wait = self._unchanged_waits.get(item.identity.key())
+            if wait is not None:
+                expiry, generation = wait
+                if generation == self._wake_generation:
+                    deadline = max(deadline, expiry)
+                settled_due = settled_due or deadline <= now
+            deadlines.append(deadline)
+        upcoming = min(deadlines, default=None)
+        if settled_due:
+            return 0.0
         if upcoming is None or upcoming <= now:
             # A due-now obligation that cannot make progress (missing handler,
             # or a handler that just re-deferred it) must not spin the loop at
@@ -1193,6 +1228,9 @@ class PendingWorkScheduler:
             return
         for obligation in due:
             key = obligation.identity.key()
+            wait = self._unchanged_waits.get(key)
+            if wait is not None and wait[1] == self._wake_generation and self._clock() < wait[0]:
+                continue
             with self._in_flight_lock:
                 if key in self._in_flight:
                     continue
@@ -1206,7 +1244,7 @@ class PendingWorkScheduler:
             self._spawn(obligation, handler.dispatch)
 
     def _spawn(self, obligation: PendingObligation, entry: Callable[[PendingObligation], StageOutcome]) -> None:
-        task = asyncio.ensure_future(self._run_claimed(obligation, entry))
+        task = asyncio.ensure_future(self._run_claimed(obligation, entry, wake_generation=self._wake_generation))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
@@ -1218,9 +1256,12 @@ class PendingWorkScheduler:
             self._in_flight.add(key)
         await self._run_claimed(obligation, entry)
 
-    async def _run_claimed(self, obligation: PendingObligation, entry: Callable[[PendingObligation], StageOutcome]) -> None:
+    async def _run_claimed(self, obligation: PendingObligation, entry: Callable[[PendingObligation], StageOutcome], *, wake_generation: int | None = None) -> None:
         identity = obligation.identity
         key = identity.key()
+        generation = self._wake_generation if wake_generation is None else wake_generation
+        regular_expiry = self._regular_wait_deadline
+        unchanged_issue = False
         try:
             if repository_ownership_key(identity.repository) != self._repository_key:
                 logger.error(
@@ -1245,13 +1286,21 @@ class PendingWorkScheduler:
                 return
             try:
                 await asyncio.to_thread(self._apply_outcome, identity, outcome)
+                unchanged_issue = identity.stage == "issue-processing" and outcome == StageOutcome()
+                if unchanged_issue:
+                    self._unchanged_waits[key] = (regular_expiry, generation)
+                else:
+                    self._unchanged_waits.pop(key, None)
             except PendingWorkPersistenceError as exc:
                 logger.error("Could not persist outcome for GitHub pending obligation {}: {}", key, exc)
                 return
         finally:
             with self._in_flight_lock:
                 self._in_flight.discard(key)
-        self.wake()
+        if unchanged_issue:
+            self._notify()
+        else:
+            self.wake()
 
     def _apply_outcome(self, identity: WorkIdentity, outcome: StageOutcome) -> None:
         if outcome.superseded:

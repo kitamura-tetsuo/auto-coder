@@ -12,6 +12,22 @@ six production handlers check it again before repository reads or stage effects.
 Foreign records remain untouched in the shared legacy SQLite database and remain
 available to a controller bound to their repository.
 
+An error-free, unfinished Issue evaluation does not independently wake itself.
+Its next automatic entry respects the expiry of the regular scheduler wait
+already armed for that dispatch turn and any later durable not-before. Settlement
+does not start another polling interval: if that wait expired during evaluation,
+the retained work can be scanned immediately after settlement. This changes
+scheduling only; the production Issue handler still strictly refreshes the same
+Issue, rejects stale retained revisions and uses ordinary common admission.
+
+An independently requested scheduler wake (including existing registration and
+selected manual-retry notifications) can request an earlier due-work scan. A wake
+received during an active evaluation remains effective after its settlement,
+without concurrent same-key dispatch. Waking neither resets durable accounting or
+receipts nor shortens a future not-before or unblocks an operational failure.
+Regular-wait references are process-local scheduling state; interruption and
+restart retain and recover the same durable unfinished obligation.
+
 Repository-specific storage is resolved beneath
 `~/.auto-coder/repositories/<sha256-owner-key>/github_pending_work.db`. A durable
 owner record prevents a path collision from relabeling a database. A fresh
