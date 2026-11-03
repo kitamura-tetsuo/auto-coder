@@ -101,7 +101,10 @@ regression suite for this wiring: real `/hooks/github` deliveries through
 resulting evidence back from `RepoJobTraceCollector`'s snapshot.
 The mounted-page oracle checks exact recorded Issue target links, independently
 of numeric substrings in opaque trace IDs. Both ordinary and `999`-containing
-IDs remain visible while the enumerated PR `999` never becomes an Issue link.
+IDs remain visible while the enumerated PR `999` never becomes an Issue link
+or a `/detail/pr/999` link. The exclusion is checked against all rendered link
+destinations, before restricting the exact three-target equality to Issue links;
+filtering to Issue paths alone cannot prove the PR-link exclusion.
 Run
 `bash scripts/test.sh tests/test_repo_job_trace.py
 tests/test_entity_invalidation.py

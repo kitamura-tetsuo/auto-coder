@@ -195,8 +195,10 @@ class TestAS001IntakeRunningScanAndHandoffs:
         assert any("dependency-rescan.enumeration-completed" in value for value in rendered)
         assert any("Discovered Issues: 3" in value for value in rendered)
         assert any("Confirmed handoffs: 3" in value for value in rendered)
-        target_links = [call.args[1] for call in dashboard_ui.link.call_args_list if len(call.args) > 1 and call.args[1].startswith("/detail/issue/")]
+        rendered_links = [call.args[1] for call in dashboard_ui.link.call_args_list if len(call.args) > 1]
+        target_links = [path for path in rendered_links if path.startswith("/detail/issue/")]
         assert sorted(target_links) == ["/detail/issue/201", "/detail/issue/202", "/detail/issue/203"]
+        assert "/detail/pr/999" not in rendered_links
 
     def test_scan_is_visible_as_a_running_job_while_it_scans(self, tmp_path: Path, monkeypatch):
         """REQ-001: `active_workers` keeps showing the dependency job busy through the whole scan."""
