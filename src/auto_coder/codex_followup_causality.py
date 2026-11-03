@@ -24,6 +24,21 @@ def _parents(turns: Sequence[WhamTurn], by_id: dict[str, WhamTurn]) -> Optional[
         if parent is not None and parent not in by_id:
             return None
         parents[turn.id] = parent
+    expected_children: dict[str, set[str]] = {identity: set() for identity in by_id}
+    for identity, parent in parents.items():
+        if parent is not None:
+            expected_children[parent].add(identity)
+    for turn in turns:
+        raw = turn.raw_data
+        assert isinstance(raw, dict)
+        inner = raw.get("turn", raw)
+        assert isinstance(inner, dict)
+        for container in (raw, inner):
+            if "children" not in container:
+                continue
+            children = container["children"]
+            if not isinstance(children, list) or any(not isinstance(identity, str) for identity in children) or len(set(children)) != len(children) or set(children) != expected_children[turn.id]:
+                return None
     visited: set[str] = set()
     for identity in parents:
         path: set[str] = set()
@@ -37,7 +52,7 @@ def _parents(turns: Sequence[WhamTurn], by_id: dict[str, WhamTurn]) -> Optional[
     return parents
 
 
-def _input_text(turn: WhamTurn) -> Optional[str]:
+def native_user_text(turn: WhamTurn) -> Optional[str]:
     raw = turn.raw_data
     if not isinstance(raw, dict):
         return None
@@ -77,20 +92,14 @@ def followup_completion(task_id: str, baseline_id: str, fingerprint: str, turns:
     if len(users) != 1:
         return None
     user = users[0]
-    text = _input_text(user)
+    text = native_user_text(user)
     if text is None or hashlib.sha256(text.encode("utf-8")).hexdigest() != fingerprint:
         return None
-    user_inputs = [_input_text(turn) for turn in turns if turn.role.lower() in {"user", "human"}]
+    user_inputs = [native_user_text(turn) for turn in turns if turn.role.lower() in {"user", "human"}]
     if any(value is None for value in user_inputs) or sum(hashlib.sha256(value.encode("utf-8")).hexdigest() == fingerprint for value in user_inputs if value is not None) != 1:
         return None
     responses = [turn for turn in turns if turn.role.lower() in {"assistant", "agent", "bot", "asst"} and parents[turn.id] == user.id]
     if len(responses) != 1 or responses[0].status.lower() not in {"completed", "failed", "error", "cancelled", "canceled"}:
         return None
     response = responses[0]
-    for parent, child in ((baseline, user), (user, response)):
-        if not isinstance(parent.raw_data, dict):
-            return None
-        children = parent.raw_data.get("children")
-        if children is not None and (not isinstance(children, list) or any(not isinstance(identity, str) or identity not in by_id for identity in children) or len(set(children)) != len(children) or child.id not in children):
-            return None
     return user.id, response.id

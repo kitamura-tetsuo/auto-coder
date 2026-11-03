@@ -237,8 +237,14 @@ def production_codex_reconstructor(repository: str, issue_number: int) -> CodexW
                     for _key, record in members
                 )
             )
-            completed_handoff = bool(supported_repair and handoff and handoff.repository == repository and handoff.task_id == task and handoff.state is RecoveryOutcome.PR_OBSERVED and handoff.handoff_complete)
-            handoff_pr = handoff.pr_number if completed_handoff and handoff is not None else None
+            verified_handoff = bool(handoff and handoff.repository == repository and handoff.task_id == task and handoff.state is RecoveryOutcome.PR_OBSERVED and handoff.handoff_complete and bound_owner is not None and handoff.pr_number in bound_owner.implementation_prs)
+            completed_handoff = supported_repair and verified_handoff
+            missing_contract = repair_bindings == {("", 0, "", 0, "", "", "")}
+            # An old journal's task-level handoff is only a candidate. The
+            # observer must prove the operation's bounded producer contract
+            # from its exact fingerprint-bound native request before it can
+            # issue a certificate; no historical journal is backfilled.
+            handoff_pr = handoff.pr_number if verified_handoff and (supported_repair or missing_contract) and handoff is not None else None
             handoff_sources.append((task, handoff))
             operations.append(operation(stable_codex_operation_id("follow-up", request), "follow-up", request, phase, task, baseline, request_fingerprint=fingerprint or None, handoff_pr_number=handoff_pr, publication_complete=completed_handoff, tracking_complete=completed_handoff))
         owner_binding = None if bound_owner is None else (bound_owner.incarnation, bound_owner.implementation_prs)

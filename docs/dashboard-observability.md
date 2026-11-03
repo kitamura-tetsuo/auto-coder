@@ -2286,9 +2286,10 @@ HTTP normalization, due-check, restart and public slot-projection assertions are
 covered by `tests/test_codex_followup_reclamation.py`; its read-only collection
 case also asserts unchanged file journals, logical SQLite contents and accounting
 (SQLite WAL/shared-memory lifecycle is not a logical source mutation). The
-existing-PR producer binding is retained before sending; absent legacy bindings
-and duplicate message matches remain unknown rather than being backfilled from
-the initial task handoff.
+existing-PR producer binding is retained before sending. A historical unbound
+record requires the exact supported producer contract in its fingerprint-bound
+native input; duplicate/missing messages, conflicting journal bindings or graph
+edges remain unknown. No binding is backfilled from the initial task handoff.
 
 ## Definitive Parent-Issue refusal settlement
 

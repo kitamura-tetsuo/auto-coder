@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from auto_coder.cloud_run import CloudRun, CloudRunRepository
-from auto_coder.codex_cloud_client import CodexCloudClient
+from auto_coder.codex_cloud_client import CodexCloudClient, _codex_followup_state_path, _load_pending_followups, _save_pending_followups
 from auto_coder.codex_pr_recovery import CodexPRRecoveryStore, RecoveryOutcome
 from auto_coder.codex_retirement_observer import collect_codex_retirement_observation
 from auto_coder.codex_wham_client import CodexWhamClient
@@ -87,7 +87,7 @@ class TerminalGitHub:
         return {"number": 91, "state": "open" if self.open_pr else "closed", "merged": not self.open_pr}
 
 
-def actual_followup(tmp_path, monkeypatch, *, handoff=True, bounded_repair=True, crash_after_delivery=False):
+def actual_followup(tmp_path, monkeypatch, *, handoff=True, bounded_repair=True, crash_after_delivery=False, native_only_contract=False, target_pr=91):
     monkeypatch.setenv("HOME", str(tmp_path))
     slots = ImplementationSlotRepository(REPOSITORY, 1)
     owner = ImplementationOwner("issue", 2725)
@@ -119,9 +119,9 @@ def actual_followup(tmp_path, monkeypatch, *, handoff=True, bounded_repair=True,
     def send():
         if not bounded_repair:
             return client.send_followup(TASK, "Publish a replacement PR for the previous output.", ("logical-followup-2725",))
-        target = ExistingPrRepairTarget(REPOSITORY, 91, "fix/2725", "main", "a" * 40)
+        target = ExistingPrRepairTarget(REPOSITORY, target_pr, "fix/2725", "main", "a" * 40)
         prompt = build_existing_pr_repair_prompt(target, "Apply the bounded correction to this PR.")
-        return _send_followup_with_quota_admission(client, REPOSITORY, TASK, prompt, ("logical-followup-2725",), repair_target=target)
+        return _send_followup_with_quota_admission(client, REPOSITORY, TASK, prompt, ("logical-followup-2725",), repair_target=None if native_only_contract else target)
 
     if crash_after_delivery:
 
@@ -135,14 +135,17 @@ def actual_followup(tmp_path, monkeypatch, *, handoff=True, bounded_repair=True,
     else:
         assert send()
     assert len(provider.posts) == 1
+    records = _load_pending_followups(_codex_followup_state_path(REPOSITORY))
+    assert {record.repair_pr_number for record in records.values()} == ({0} if native_only_contract or not bounded_repair else {target_pr})
     return slots, owner, incarnation, runs, recovery, run, provider, wham
 
 
 @pytest.mark.parametrize("restart", [False, True])
 @pytest.mark.parametrize("late_handoff", [False, True])
 @pytest.mark.parametrize("crash_after_delivery", [False, True], ids=["normal-delivery", "post-receipt-crash"])
-def test_real_followup_reconstructs_and_reclaims_on_first_due_check(tmp_path, monkeypatch, restart, late_handoff, crash_after_delivery):
-    slots, owner, incarnation, runs, recovery, run, provider, wham = actual_followup(tmp_path, monkeypatch, handoff=not late_handoff, crash_after_delivery=crash_after_delivery)
+@pytest.mark.parametrize("native_only_contract", [False, True], ids=["journal-contract", "native-request-contract"])
+def test_real_followup_reconstructs_and_reclaims_on_first_due_check(tmp_path, monkeypatch, restart, late_handoff, crash_after_delivery, native_only_contract):
+    slots, owner, incarnation, runs, recovery, run, provider, wham = actual_followup(tmp_path, monkeypatch, handoff=not late_handoff, crash_after_delivery=crash_after_delivery, native_only_contract=native_only_contract)
     if late_handoff:
         reconstruct_active_codex_work(REPOSITORY, slots)
         assert recovery.mark_handoff(run)
@@ -179,6 +182,11 @@ def test_real_followup_reconstructs_and_reclaims_on_first_due_check(tmp_path, mo
         "duplicate",
         "later-duplicate",
         "later-missing-text",
+        "contradictory-children",
+        "omitted-child",
+        "foreign-child",
+        "wrong-native-pr",
+        "conflicting-journal-contract",
         "interleaved",
         "missing-baseline",
         "missing-history",
@@ -195,7 +203,7 @@ def test_real_followup_reconstructs_and_reclaims_on_first_due_check(tmp_path, mo
     ],
 )
 def test_real_followup_uncertainty_retains_capacity_without_replay(tmp_path, monkeypatch, gap):
-    slots, owner, incarnation, runs, _recovery, run, provider, wham = actual_followup(tmp_path, monkeypatch, handoff=gap != "publication", bounded_repair=gap != "unbound-publication")
+    slots, owner, incarnation, runs, _recovery, run, provider, wham = actual_followup(tmp_path, monkeypatch, handoff=gap != "publication", bounded_repair=gap != "unbound-publication", native_only_contract=gap == "wrong-native-pr", target_pr=92 if gap == "wrong-native-pr" else 91)
     if gap == "unmatched":
         provider.turns[-2]["turn"]["input_items"][0]["content"][0]["text"] += "Different request"
     elif gap in {"duplicate", "interleaved"}:
@@ -207,6 +215,9 @@ def test_real_followup_uncertainty_retains_capacity_without_replay(tmp_path, mon
             del provider.turns[-2]["turn"]["input_items"]
     elif gap == "missing-baseline":
         provider.turns = [turn for turn in provider.turns if turn["id"] != BASELINE]
+    elif gap in {"contradictory-children", "omitted-child", "foreign-child"}:
+        provider.turns[1]["children"] = {"contradictory-children": [REQUEST, RESPONSE], "omitted-child": [], "foreign-child": [REQUEST, TASK + "~usertrn_absent"]}[gap]
+        provider.turns[-2]["children"] = [RESPONSE]
     elif gap == "missing-history":
         provider.incomplete = True
     elif gap == "wrong-parent":
@@ -231,6 +242,12 @@ def test_real_followup_uncertainty_retains_capacity_without_replay(tmp_path, mon
             runs.update_claim(run)
 
         provider.on_read = change_source_after_capture
+    elif gap == "conflicting-journal-contract":
+        path = _codex_followup_state_path(REPOSITORY)
+        records = _load_pending_followups(path)
+        for record in records.values():
+            record.repair_pr_number = 92
+        _save_pending_followups(path, records)
     store = ReclamationObligationStore.for_slots(slots)
     assert schedule_reevaluation(owner, slots, store, due_at=100)
 
@@ -247,8 +264,9 @@ def test_real_followup_uncertainty_retains_capacity_without_replay(tmp_path, mon
     assert [entry.owner_number for entry in projection.owners] == [2725]
 
 
-def test_actual_followup_observation_does_not_settle_or_mutate_sources(tmp_path, monkeypatch):
-    slots, owner, incarnation, runs, recovery, _run, provider, wham = actual_followup(tmp_path, monkeypatch)
+@pytest.mark.parametrize("native_only_contract", [False, True])
+def test_actual_followup_observation_does_not_settle_or_mutate_sources(tmp_path, monkeypatch, native_only_contract):
+    slots, owner, incarnation, runs, recovery, _run, provider, wham = actual_followup(tmp_path, monkeypatch, native_only_contract=native_only_contract)
     reconstructor = production_codex_reconstructor(REPOSITORY, owner.number)
     accounting = CodexWorkAccounting(slots, reconstructor.consistency_ids)
     accounting.reconcile_from_receipt(owner, incarnation, reconstructor.reconstruct())

@@ -85,6 +85,13 @@ guard. Reconstruction requires every grouped source record to agree with that
 binding. A generic continuation, replacement-publication request or historical
 record without this producer binding remains unsupported for handoff completion;
 an older task-level receipt cannot retroactively supply the missing contract.
+For an unbound historical record, reconstruction retains only a candidate PR
+handoff, with publication/tracking still unproven. The observer can establish the
+missing operation responsibility from its exact fingerprint-bound native user
+input only when that input matches the complete supported existing-PR producer
+template (including consistent repository/PR/head/branch fields). An unrelated
+or replacement request, an unsupported template or a conflicting partial journal
+binding remains unknown. No historical journal is backfilled or relabeled.
 The source token includes recovery records and PR membership, and is rechecked
 at commit. Reconstruction never treats an unavailable source as an empty one.
 
@@ -94,4 +101,4 @@ current state; never restore an older journal over later activity or clear an
 unknown operation to free capacity. If correlation or the producer binding is
 unavailable, retain the reservation with its ordinary reevaluation obligation
 until independently supported evidence or an explicitly authorized disposition
-exists. The repair does not infer a retrospective binding for legacy records.
+exists. The repair never infers responsibility from the task-level handoff alone.

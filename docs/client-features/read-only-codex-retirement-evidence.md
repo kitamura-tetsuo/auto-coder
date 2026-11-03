@@ -28,6 +28,13 @@ the first child of the retained baseline. The resulting certificate
 retains both native user and assistant identities; it never rewrites the original
 delivery journal or sends another request.
 
+Exposed child lists are checked against every native parent edge, not merely
+searched for the expected child. Foreign, omitted or contradictory edges are
+unknown. When a historical journal lacks producer metadata, its exact preserved
+native request may still prove the supported existing-PR contract; the candidate
+handoff alone never supplies publication/tracking completion. The collector
+does not write that contract into the original source record.
+
 The PR candidate set is the union of durable slot membership, all PRs retained
 by every bound CloudRun, the complete verified-attribution registry, native
 Issue associations, retained publication heads, and strict open-PR discovery.
