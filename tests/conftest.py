@@ -11,6 +11,8 @@ from unittest.mock import Mock
 
 import pytest
 
+pytest_plugins = ["tests.pytest_fault_diagnostics"]
+
 # Ensure 'src' directory is on sys.path so 'auto_coder' package is importable everywhere
 _repo_root = Path(__file__).resolve().parents[1]
 _src_path = _repo_root / "src"
