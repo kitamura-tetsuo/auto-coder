@@ -46,7 +46,18 @@ before its replacement was submitted. Its identified runs were PR Tests
 [`41730325906`](https://github.com/kitamura-tetsuo/auto-coder/actions/runs/41730325906),
 Browser Tests `41730325605`, OpenCode Live Tests `41730325708`, Muse Live Tests
 `41730325818`, Supervisor Integration Tests `41730325761`, and Test Source for
-Runtime `41730325637`. Cancellation conclusions, retained revision/result, and
-post-change queue/execution durations are recorded from subsequent Actions
-readback; any value not yet terminal remains **unavailable**, rather than inferred
-from the workflow definitions.
+Runtime `41730325637`. After revision
+`140b43dae8451f7c056498264a16faa11f24cf00` was submitted, readback showed the
+older PR Tests, Browser Tests, OpenCode Live Tests, Supervisor Integration Tests,
+and Test Source for Runtime runs completed with `cancelled`; the older Muse run
+had already completed successfully before supersession could apply.
+
+The retained revision's Muse Live Tests run
+[`41730433484`](https://github.com/kitamura-tetsuo/auto-coder/actions/runs/41730433484)
+completed successfully, recording an actual test result for that exact revision
+rather than treating the YAML inspection as hosted evidence. Its job
+`126246006403` queued for 55s and executed for 26s. For a cancellation timing
+observation, older OpenCode job `126245636627` had a 0s queue and ran for 44s
+before its run concluded `cancelled`. Other retained jobs were incomplete at this
+readback, so their result and post-change queue/execution durations remain
+**unavailable**, rather than inferred from the workflow definitions.
