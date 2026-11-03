@@ -2327,3 +2327,33 @@ def test_policy_rollback_does_not_select_an_older_predecessor(tmp_path, monkeypa
 
     assert decision.review_mode == "FULL"
     assert decision.predecessor_decision_key is None
+
+
+@pytest.mark.parametrize("changed_current", [False, True])
+@pytest.mark.parametrize("corruption", ["carried-empty", "carried-whitespace", "carried-full", "boundary-list", "boundary-dict", "boundary-empty", "fresh-reason"])
+def test_corrupt_retained_coverage_selects_full_without_authorizing_or_crashing(tmp_path, changed_current, corruption):
+    gate = lifecycle(tmp_path, "READY")
+    original = gate.decide(build_normative_issue_manifest(1734, "Title", BODY), "Title", BODY)
+    state = json.loads(gate.store.path.read_text())
+    entry = state[original.identity.key]["coverage"][0]
+    if corruption.startswith("carried"):
+        entry["status"] = "CARRIED"
+        entry["no_impact_reason"] = " " if corruption == "carried-whitespace" else ""
+        if corruption == "carried-full":
+            entry["no_impact_reason"] = "Cannot carry a boundary in a FULL review"
+    elif corruption == "fresh-reason":
+        entry["no_impact_reason"] = "Not a carried boundary"
+    else:
+        entry["boundary"] = {"boundary-list": [], "boundary-dict": {}, "boundary-empty": ""}[corruption]
+    gate.store.path.write_text(json.dumps(state))
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    restarted = lifecycle(tmp_path, "READY", calls)
+    current = BODY + "\n\n## Context\nChanged current context." if changed_current else BODY
+
+    decision = restarted.decide(build_normative_issue_manifest(1734, "Title", current), "Title", current)
+
+    assert decision.verdict == "READY"
+    assert decision.review_mode == "FULL"
+    assert decision.evaluation_source == "model"
+    assert decision.predecessor_decision_key is None
+    calls.assert_called_once()

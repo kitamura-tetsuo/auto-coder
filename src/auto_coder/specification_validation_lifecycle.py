@@ -552,7 +552,19 @@ class SpecificationValidationStore:
             return False
         if any(item["finding_id"] not in retained_by_id or any(retained_by_id[item["finding_id"]][field] != item[field] for field in ("disposition", "reasoning")) for item in dispositions):
             return False
-        boundaries = [item.get("boundary") for item in coverage if isinstance(item, dict) and set(item) == {"boundary", "status", "no_impact_reason"} and isinstance(item.get("status"), str) and item.get("status") in {"FRESH", "CARRIED"} and isinstance(item.get("no_impact_reason"), str)]
+        boundaries = [
+            item["boundary"]
+            for item in coverage
+            if isinstance(item, dict)
+            and set(item) == {"boundary", "status", "no_impact_reason"}
+            and isinstance(item["boundary"], str)
+            and item["boundary"] in expected
+            and isinstance(item["status"], str)
+            and item["status"] in {"FRESH", "CARRIED"}
+            and isinstance(item["no_impact_reason"], str)
+            and (bool(item["no_impact_reason"].strip()) if item["status"] == "CARRIED" else not item["no_impact_reason"])
+            and (item["status"] != "CARRIED" or raw.get("review_mode") == "INCREMENTAL")
+        ]
         return len(boundaries) == len(coverage) == len(set(boundaries)) and set(boundaries) == expected
 
     def _decision_from_raw(self, identity: ValidationIdentity, raw: dict[str, object], evaluation_source: str = "model") -> ValidationDecision:
