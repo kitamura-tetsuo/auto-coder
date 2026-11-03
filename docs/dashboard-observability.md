@@ -3119,3 +3119,28 @@ selection also drives the actual guard/Supervisor/authenticated-readback path
 in `tests/test_management_fresh_end_to_end.py` with a positively observed zombie
 held through the retained-history case. That whole-host test remains distinct
 from the single-real-task projection used by the focused kernel regression.
+
+
+### Missing original discussion binding recovery (issue #2744)
+
+An accepted closure can have an empty original discussion binding when its
+authenticated finding root was already resolved before the producing ordinary
+review. That empty input still grants no authority. Recovery may use the existing
+replacement-binding path only after a later registered, independently retained
+and publication-confirmed PASS covers the exact accepted sources and current
+complete ADDRESSED discussion for the same target, policy, epoch and finding
+revision. A bare PASS, native resolved state or newly computed digest is
+insufficient. The original accepted payload and effect identity stay immutable;
+uncertain effects are reconciled rather than blindly resent. Other unresolved
+threads and all merge gates remain blocking.
+
+The production resumption/transport regression
+`test_missing_original_discussion_binding_recovers_only_from_independent_current_evidence`
+in `tests/test_single_review_ordinary_closure_flow.py` retains real attempt,
+closure, decision and effect stores across reconstruction. Controlled model and
+GitHub boundaries distinguish valid later evidence from a bare PASS or later
+changed discussion. Run `bash scripts/test.sh
+tests/test_single_review_ordinary_closure_flow.py tests/test_pr_review_effects.py
+tests/test_ordinary_discussion_revalidation.py`. Existing
+`pr.review-thread-closure` confirmed/unfinished facts describe this recovery;
+there is no new event schema or dashboard behavior.
