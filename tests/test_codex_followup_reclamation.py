@@ -14,6 +14,7 @@ from auto_coder.codex_pr_recovery import CodexPRRecoveryStore, RecoveryOutcome
 from auto_coder.codex_retirement_observer import collect_codex_retirement_observation
 from auto_coder.codex_wham_client import CodexWhamClient
 from auto_coder.codex_work_accounting import CodexWorkAccounting
+from auto_coder.codex_work_fence import CodexWorkFence
 from auto_coder.codex_work_reconstruction import production_codex_reconstructor, reconstruct_active_codex_work
 from auto_coder.implementation_reclamation_scheduler import ReclamationObligationStore, run_due_reclamation_checks, schedule_reevaluation
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
@@ -86,7 +87,7 @@ class TerminalGitHub:
         return {"number": 91, "state": "open" if self.open_pr else "closed", "merged": not self.open_pr}
 
 
-def actual_followup(tmp_path, monkeypatch, *, handoff=True, bounded_repair=True):
+def actual_followup(tmp_path, monkeypatch, *, handoff=True, bounded_repair=True, crash_after_delivery=False):
     monkeypatch.setenv("HOME", str(tmp_path))
     slots = ImplementationSlotRepository(REPOSITORY, 1)
     owner = ImplementationOwner("issue", 2725)
@@ -114,20 +115,34 @@ def actual_followup(tmp_path, monkeypatch, *, handoff=True, bounded_repair=True)
     client.repo_name = REPOSITORY
     client.wham_client = wham
     client.active_tasks = {}
-    if bounded_repair:
+
+    def send():
+        if not bounded_repair:
+            return client.send_followup(TASK, "Publish a replacement PR for the previous output.", ("logical-followup-2725",))
         target = ExistingPrRepairTarget(REPOSITORY, 91, "fix/2725", "main", "a" * 40)
         prompt = build_existing_pr_repair_prompt(target, "Apply the bounded correction to this PR.")
-        assert _send_followup_with_quota_admission(client, REPOSITORY, TASK, prompt, ("logical-followup-2725",), repair_target=target)
+        return _send_followup_with_quota_admission(client, REPOSITORY, TASK, prompt, ("logical-followup-2725",), repair_target=target)
+
+    if crash_after_delivery:
+
+        def crash(*_args, **_kwargs):
+            raise RuntimeError("simulated process loss after delivered journal, before accounting")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(CodexWorkFence, "record_delivery", crash)
+            with pytest.raises(RuntimeError, match="simulated process loss"):
+                send()
     else:
-        assert client.send_followup(TASK, "Publish a replacement PR for the previous output.", ("logical-followup-2725",))
+        assert send()
     assert len(provider.posts) == 1
     return slots, owner, incarnation, runs, recovery, run, provider, wham
 
 
 @pytest.mark.parametrize("restart", [False, True])
 @pytest.mark.parametrize("late_handoff", [False, True])
-def test_real_followup_reconstructs_and_reclaims_on_first_due_check(tmp_path, monkeypatch, restart, late_handoff):
-    slots, owner, incarnation, runs, recovery, run, provider, wham = actual_followup(tmp_path, monkeypatch, handoff=not late_handoff)
+@pytest.mark.parametrize("crash_after_delivery", [False, True], ids=["normal-delivery", "post-receipt-crash"])
+def test_real_followup_reconstructs_and_reclaims_on_first_due_check(tmp_path, monkeypatch, restart, late_handoff, crash_after_delivery):
+    slots, owner, incarnation, runs, recovery, run, provider, wham = actual_followup(tmp_path, monkeypatch, handoff=not late_handoff, crash_after_delivery=crash_after_delivery)
     if late_handoff:
         reconstruct_active_codex_work(REPOSITORY, slots)
         assert recovery.mark_handoff(run)
