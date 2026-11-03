@@ -19,6 +19,10 @@ does not start another polling interval: if that wait expired during evaluation,
 the retained work can be scanned immediately after settlement. This changes
 scheduling only; the production Issue handler still strictly refreshes the same
 Issue, rejects stale retained revisions and uses ordinary common admission.
+Each later unchanged deferral uses its own newly armed regular wait. An expired
+reference or a row already claimed in memory cannot rearm a zero-delay spin.
+Another handler's internal settlement is also a scan notification, never an
+independently requested public wake.
 
 An independently requested scheduler wake (including existing registration and
 selected manual-retry notifications) can request an earlier due-work scan. A wake

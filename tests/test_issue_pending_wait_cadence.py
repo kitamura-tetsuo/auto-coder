@@ -44,7 +44,7 @@ def existing_owner(monkeypatch, tmp_path):
     return engine, store, identity, slots, owner
 
 
-@pytest.mark.parametrize("timing", ["before-expiry", "after-expiry", "external-idle", "external-thread", "external-inflight"])
+@pytest.mark.parametrize("timing", ["before-expiry", "after-expiry", "external-idle", "external-thread", "external-inflight", "unrelated-completion"])
 @pytest.mark.asyncio
 async def test_real_protected_owner_deferred_preserves_armed_wait(tmp_path, monkeypatch, timing):
     engine, store, identity, slots, owner = existing_owner(monkeypatch, tmp_path)
@@ -134,6 +134,23 @@ async def test_real_protected_owner_deferred_preserves_armed_wait(tmp_path, monk
             assert retained.identity == identity
             assert retained.unfinished_effects == ("refresh", "implementation")
             assert retained.throttle_attempts == retained_attempts
+            if timing == "unrelated-completion":
+                unrelated = WorkIdentity("owner/repo", "issue:8", "unrelated-stage", "other-revision")
+
+                class OtherHandler:
+                    def dispatch(self, obligation):
+                        return StageOutcome(completed_effects=("other",))
+
+                    recover = dispatch
+
+                scheduler.register_handler("unrelated-stage", OtherHandler())
+                store.defer(unrelated, _admission_deferral(), ("other",))
+                assert store.manual_retry(unrelated, now=now[0] - 1) is not None
+                scheduler._notify()  # Internal settlement, never an independent wake.
+                await reached(lambda: store.get(unrelated) is None)
+                await reached(lambda: not scheduler._in_flight)
+                await asyncio.sleep(0.03)
+                assert len(entered) == 1
             if timing in {"external-idle", "external-thread"}:
                 if timing == "external-thread":
                     await asyncio.to_thread(scheduler.wake)
@@ -143,7 +160,7 @@ async def test_real_protected_owner_deferred_preserves_armed_wait(tmp_path, monk
                 now[0] = expiry
                 scheduler._wake_event.set()
             await reached(lambda: len(entered) >= 2)
-        assert entered[1] == (expiry + 1 if timing == "after-expiry" else expiry if timing == "before-expiry" else entered[0] + 5)
+        assert entered[1] == (expiry + 1 if timing == "after-expiry" else expiry if timing in {"before-expiry", "unrelated-completion"} else entered[0] + 5)
         assert reader_times[0] == entered[0]
         assert reader_times[-1] == entered[1]
         assert slots.active_owners() == (owner,)
@@ -151,6 +168,16 @@ async def test_real_protected_owner_deferred_preserves_armed_wait(tmp_path, monk
         assert all(result.target_outcome is ExplicitTargetOutcome.DEFERRED for result in dispositions)
         assert all(result == StageOutcome() for result in outcomes)
         await reached(lambda: not scheduler._in_flight)
+        # A second and third unchanged deferral must each retain the newly
+        # armed regular wait; checking only the first retry misses a spin.
+        await asyncio.sleep(0.03)
+        assert len(entered) == 2
+        second_expiry = next(arm + delay for arm, delay in reversed(arms) if delay > 0)
+        now[0] = second_expiry
+        scheduler._wake_event.set()
+        await reached(lambda: len(entered) == 3 and not scheduler._in_flight)
+        await asyncio.sleep(0.03)
+        assert len(entered) == 3
     finally:
         barrier.set()
         shutdown.set()

@@ -1183,11 +1183,15 @@ class PendingWorkScheduler:
         now = self._clock()
         deadlines = []
         settled_due = False
+        with self._in_flight_lock:
+            in_flight = set(self._in_flight)
         retained_keys = {item.identity.key() for item in pending}
         for key in tuple(self._unchanged_waits):
             if key not in retained_keys and key not in self._in_flight:
                 self._unchanged_waits.pop(key, None)
         for item in pending:
+            if item.identity.key() in in_flight:
+                continue
             deadline = item.not_before
             wait = self._unchanged_waits.get(item.identity.key())
             if wait is not None:
@@ -1241,6 +1245,7 @@ class PendingWorkScheduler:
                 with self._in_flight_lock:
                     self._in_flight.discard(key)
                 continue
+            self._unchanged_waits.pop(key, None)
             self._spawn(obligation, handler.dispatch)
 
     def _spawn(self, obligation: PendingObligation, entry: Callable[[PendingObligation], StageOutcome]) -> None:
@@ -1297,10 +1302,7 @@ class PendingWorkScheduler:
         finally:
             with self._in_flight_lock:
                 self._in_flight.discard(key)
-        if unchanged_issue:
-            self._notify()
-        else:
-            self.wake()
+        self._notify()
 
     def _apply_outcome(self, identity: WorkIdentity, outcome: StageOutcome) -> None:
         if outcome.superseded:
