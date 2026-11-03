@@ -100,3 +100,9 @@ including fallback selection. Add `--execute` to make one configured read-only s
 call per case and retain actual responses/results. Rendering and preselected test
 responses are not semantic proof. Observed model verdicts are advisory, may vary,
 and are not a new deterministic CI or merge gate.
+
+Retained finding validation uses the bound caller manifest, never a fresh body
+parse to establish Requirement authority. Production Review-lane regressions
+independently reconstruct standalone and reconciled-child FULL/INCREMENTAL
+requests from real persisted predecessors, resolved findings and changed closed
+siblings. Missing/corrupt optional evidence selects FULL without granting reuse.

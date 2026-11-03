@@ -16,7 +16,7 @@ from auto_coder.implementation_slots import ImplementationOwner, ImplementationS
 from auto_coder.issue_review_rerun import RerunAuthorityUnavailable
 from auto_coder.issue_stage_routing import IssueStageRoutingStore
 from auto_coder.llm_backend_config import LLMBackendConfiguration
-from auto_coder.requirement_contract import build_normative_issue_manifest
+from auto_coder.requirement_contract import NormativeIssueManifest, NormativeRequirement, build_normative_issue_manifest
 from auto_coder.specification_analyzer import (
     FindingDisposition,
     IncrementalReviewContext,
@@ -2384,3 +2384,29 @@ def test_retained_ready_cannot_contradict_its_predecessor_dispositions(tmp_path,
     assert decision.evaluation_source == "model"
     assert decision.predecessor_decision_key is None
     calls.assert_called_once()
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_retained_finding_validation_uses_bound_caller_manifest_not_body(tmp_path, corrupt):
+    body = BODY + "\nREQ-002: This body entry is not in the caller manifest."
+    caller_id = "REQ-001" if corrupt else "REQ-CALLER"
+    manifest = NormativeIssueManifest(1734, "Caller title", True, True, (NormativeRequirement(caller_id, "Caller-owned normative text"),))
+    finding = SpecificationFinding("material_ambiguity", (caller_id,), "Undefined source.", "Define its source.", "", "")
+    gate = lifecycle(tmp_path, "BLOCKED", Mock(return_value=SpecificationAnalysisResult("BLOCKED", (finding,), remediation="EDIT_IN_PLACE")))
+    original = gate.decide(manifest, "Title", body)
+    if corrupt:
+        state = json.loads(gate.store.path.read_text())
+        state[original.identity.key]["findings"][0]["requirement_ids"] = ["REQ-002"]
+        state[original.identity.key]["retained_findings"][0]["finding"]["requirement_ids"] = ["REQ-002"]
+        gate.store.path.write_text(json.dumps(state))
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+
+    decision = lifecycle(tmp_path, "READY", calls).decide(manifest, "Title", body)
+
+    if corrupt:
+        assert decision.verdict == "READY" and decision.review_mode == "FULL"
+        assert decision.predecessor_decision_key is None
+        calls.assert_called_once()
+    else:
+        assert decision.verdict == "BLOCKED" and decision.evaluation_source == "stored-decision-reuse"
+        calls.assert_not_called()

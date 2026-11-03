@@ -20,7 +20,7 @@ from .issue_review_rerun import IssueReviewRerunStore, RerunAuthorityUnavailable
 from .objective_evidence import ObjectiveAnchorStore
 from .prompt_loader import load_prompts
 from .reissue_required_store import ReissueRequiredStore
-from .requirement_contract import NormativeIssueManifest, build_normative_issue_manifest
+from .requirement_contract import NormativeIssueManifest, NormativeRequirement, build_normative_issue_manifest
 from .runtime_locks import ensure_lock_directory, lock_path
 from .specification_analyzer import (
     SPECIFICATION_FINDING_CATEGORIES,
@@ -459,9 +459,21 @@ class SpecificationValidationStore:
         try:
             inputs = json.loads(raw["review_inputs"] if isinstance(raw["review_inputs"], str) else "")
             binding = json.loads(identity.manifest_binding)
-            expected = {str(item["requirement_id"]) for item in binding["requirements"]} | {"contract-wide"}
         except (KeyError, TypeError, json.JSONDecodeError):
             return False
+        if (
+            not isinstance(binding, dict)
+            or set(binding) != {"issue_number", "title", "explicit_contract_present", "explicit_contract_valid", "requirements"}
+            or type(binding["issue_number"]) is not int
+            or binding["issue_number"] != identity.issue_number
+            or not isinstance(binding["title"], str)
+            or binding["explicit_contract_present"] is not True
+            or binding["explicit_contract_valid"] is not True
+            or not isinstance(binding["requirements"], list)
+            or any(not isinstance(item, dict) or set(item) != {"requirement_id", "text"} or not isinstance(item["requirement_id"], str) or not item["requirement_id"] or not isinstance(item["text"], str) for item in binding["requirements"])
+        ):
+            return False
+        expected = {item["requirement_id"] for item in binding["requirements"]} | {"contract-wide"}
         sequence = raw.get("accepted_sequence")
         authority = raw.get("rerun_authority")
         if type(sequence) is not int or sequence <= 0 or type(authority) is not int or authority < 0:
@@ -553,7 +565,13 @@ class SpecificationValidationStore:
             return False
         if any(item["finding_id"] not in retained_by_id or any(retained_by_id[item["finding_id"]][field] != item[field] for field in ("disposition", "reasoning")) for item in dispositions):
             return False
-        manifest = build_normative_issue_manifest(identity.issue_number, inputs["title"], inputs["body"])
+        manifest = NormativeIssueManifest(
+            issue_number=binding["issue_number"],
+            title=binding["title"],
+            explicit_contract_present=binding["explicit_contract_present"],
+            explicit_contract_valid=binding["explicit_contract_valid"],
+            requirements=tuple(NormativeRequirement(item["requirement_id"], item["text"]) for item in binding["requirements"]),
+        )
         # Remediation is subsequently updated by the authoritative repair state;
         # it is not an immutable copy of the model response's remediation field.
         if not isinstance(raw.get("remediation"), str) or raw["remediation"] not in {"NONE", "EDIT_IN_PLACE", "REISSUE_REQUIRED"}:

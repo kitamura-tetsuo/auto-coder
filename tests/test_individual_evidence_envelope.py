@@ -18,6 +18,93 @@ from auto_coder.requirement_contract import NormativeIssueManifest, NormativeReq
 from auto_coder.specification_analyzer import IncrementalReviewContext, IndividualRelationshipContext, IndividualReviewEvidence, SpecificationAnalysisResult, analyze_issue_specification
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle, validation_policy_identity
 from tests.support.individual_review_evidence import prompt_evidence
+from tests.test_issue_review_service import FakeGitHub, engine_with_lane
+
+
+@pytest.mark.parametrize("role", ["standalone", "child"])
+def test_review_lane_reconstructs_real_persisted_resolved_and_closed_family_evidence(tmp_path, monkeypatch, role):
+    """Transport oracle starts at the real Review lane, not a supplied predecessor."""
+    target = 2
+    parents = {target: 1, **{number: 1 for number in range(100, 125)}} if role == "child" else {}
+    github = FakeGitHub([], parents=parents)
+    body = "## Objective\nPreserve the original contract.\n\n## Requirements\nREQ-001: Keep the caller's exact authority.\n\n## Context\n" + "Retained current evidence 日本語.\r\n" * 100
+    github.issues[target] = github.snapshot(target, body=body)
+    if role == "child":
+        github.issues[1] = github.snapshot(1, title="Parent", body="## Objective\nCoordinate the bounded family.")
+        for number in range(100, 125):
+            github.issues[number] = github.snapshot(number, title=f"Closed sibling {number}", state="closed", body=f"## Requirements\nREQ-001: Preserve member {number}.\n\n## Context\n" + f"Complete member {number} evidence 日本語.\r\n" * 100)
+    captured = []
+
+    def model_transport(prompt):
+        inputs = prompt_evidence(prompt)
+        captured.append((prompt, inputs))
+        predecessor = json.loads(inputs["incremental"]["predecessor_evidence"]) if inputs["incremental"]["predecessor_evidence"] else None
+        first = len(captured) == 1
+        finding = {"category": "material_ambiguity", "requirement_ids": ["REQ-001"], "explanation": "A source is undefined.", "clarification": "Define the source.", "counterexample": "", "missing_normative_boundary": ""}
+        return json.dumps(
+            {
+                "verdict": "BLOCKED" if first else "READY",
+                "remediation": "EDIT_IN_PLACE" if first else "NONE",
+                "findings": [finding] if first else [],
+                "finding_dispositions": [{"finding_id": entry["finding_id"], "disposition": "RESOLVED", "reasoning": "The exact original counterexample is resolved."} for entry in predecessor["findings"]] if predecessor else [],
+                "coverage": [{"boundary": boundary, "status": "FRESH", "no_impact_reason": ""} for boundary in ("REQ-001", "contract-wide")],
+            }
+        )
+
+    # Restore the real assembly/parser behind the suite's semantic-call guard;
+    # only the model transport is controlled, with real lifecycle contextvars.
+    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.analyze_issue_specification", lambda manifest, current_body: analyze_issue_specification(manifest, current_body, prompt_runner=model_transport))
+    engine = engine_with_lane(tmp_path, github, None, monkeypatch=monkeypatch)
+    service = engine._get_review_service("owner/repo")
+    gate = engine._get_specification_validator("owner/repo")
+    decisions = []
+    try:
+        for phase in range(3):
+            if phase == 1:
+                github.issues[target]["body"] += "\nThe original source is now explicit."
+            elif phase == 2:
+                github.issues[100 if role == "child" else target]["body"] += "\nChanged closed-sibling evidence." if role == "child" else "\nA later non-normative edit."
+            github.issues[target]["labels"] = [{"name": "implementation-ready"}]
+            outcome = service.pump_target(target, "lossless-production-boundary")
+            assert outcome is not None and outcome.status == "completed"
+            selected = [decision for decision in outcome.decisions.values() if hasattr(decision.identity, "issue_number") and decision.identity.issue_number == target]
+            assert len(selected) == 1
+            decisions.append(selected[0])
+            assert len(captured) == phase + 1
+            _, inputs = captured[-1]
+            current = inputs["current"]
+            stored = json.loads(gate.store.get(selected[0].identity).review_inputs)
+            assert current["body"] == github.issues[target]["body"] == stored["body"]
+            assert current["manifest"]["requirements"] == ({"requirement_id": "REQ-001", "text": "Keep the caller's exact authority."},)
+            assert current["title"] == stored["title"] == "Title"
+            assert current["relationship"]["role"] == role
+            assert current["baseline"] == stored["baseline"]
+            assert current["objective"] == stored["objective"]
+            assert current["prior_applied_outcomes"] == tuple(stored["prior_applied_outcomes"])
+            assert inputs["incremental"]["mode"] == ("FULL" if phase == 0 else "INCREMENTAL")
+            if role == "child":
+                related = json.loads(current["relationship"]["related_contracts"])
+                assert {entry["issue_number"] for entry in related} == {1, *range(100, 125)}
+                for entry in related:
+                    observed = github.issues[entry["issue_number"]]
+                    assert entry["body_non_normative_evidence"] == observed["body"]
+                    assert entry["title"] == observed["title"]
+            if phase:
+                previous = gate.store.get(decisions[phase - 1].identity)
+                predecessor = json.loads(inputs["incremental"]["predecessor_evidence"])
+                assert inputs["incremental"]["predecessor_decision_key"] == predecessor["decision_key"] == previous.identity.key
+                assert predecessor["accepted_sequence"] == previous.accepted_sequence
+                assert predecessor["review_inputs"] == json.loads(previous.review_inputs)
+                assert predecessor["findings"][0]["finding_id"] == decisions[0].finding_ids[0]
+                if phase == 2:
+                    assert predecessor["findings"][0]["last_disposition"] == "RESOLVED"
+                    delta = json.loads(inputs["incremental"]["assessed_delta"])
+                    field = "related_contracts" if role == "child" else "body"
+                    assert delta[field]["before"] == json.loads(previous.review_inputs)[field]
+                    assert delta[field]["after"] == stored[field]
+        assert decisions[-1].verdict == "READY"
+    finally:
+        engine.review_scheduler.shutdown()
 
 
 def test_independently_authored_wire_reconstructs_exact_typed_ordered_inputs():
