@@ -1,6 +1,7 @@
-"""Static guardrails for the dedicated real-process/container integration gate."""
+"""Static and executable guardrails for the parallel Supervisor integration gate."""
 
 import copy
+import json
 import os
 import re
 import subprocess
@@ -11,126 +12,136 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).parents[1]
+GROUPS = {"worker-bridge", "management-self-update", "fresh-host", "isolated-containers"}
 
 
-def _required_fresh_host_gate(workflow: dict) -> dict:
-    """Inspect the production job, prerequisites and mandatory host gate."""
-    job = workflow["jobs"]["supervisor-integration"]
-    assert "if" not in job
-    assert job.get("continue-on-error", False) is False
-    host_index = next(i for i, step in enumerate(job["steps"]) if step.get("name") == "Verify fresh initialization with host evidence")
-    for step in job["steps"][: host_index + 1]:
-        assert "if" not in step
-        assert step.get("continue-on-error", False) is False
-    host = job["steps"][host_index]
-    assert host["timeout-minutes"] == 15
-    return host
+def _workflow() -> dict:
+    return yaml.safe_load((ROOT / ".github/workflows/supervisor-integration-tests.yml").read_text())
 
 
-def test_required_fresh_host_gate_propagates_failures():
-    workflow = yaml.safe_load((ROOT / ".github/workflows/supervisor-integration-tests.yml").read_text())
-    _required_fresh_host_gate(workflow)
+def _step(job: dict, name: str) -> dict:
+    return next(step for step in job["steps"] if step.get("name") == name)
 
 
-@pytest.mark.parametrize("target", ["job", "host", "build", "dependencies"])
-@pytest.mark.parametrize("setting,value", [("continue-on-error", True), ("if", False)])
-def test_fresh_host_gate_guard_rejects_failure_tolerance_and_skipping(target, setting, value):
-    workflow = yaml.safe_load((ROOT / ".github/workflows/supervisor-integration-tests.yml").read_text())
-    modified = copy.deepcopy(workflow)
-    job = modified["jobs"]["supervisor-integration"]
-    if target == "job":
-        node = job
-    else:
-        name = {"host": "Verify fresh initialization with host evidence", "build": "Build the checked-out production image", "dependencies": "Install locked test dependencies"}[target]
-        node = next(step for step in job["steps"] if step.get("name") == name)
-    node[setting] = value
-    with pytest.raises(AssertionError):
-        _required_fresh_host_gate(modified)
-
-
-@pytest.mark.parametrize("scenario", ["success", "tag-failure", "pull-failure", "pytest-failure", "skipped-host", "incomplete-host", "missing-junit"])
-def test_production_fresh_host_command_rejects_failed_or_skipped_results(tmp_path, scenario):
-    """Run the extracted production shell; substitute only external producers."""
-    workflow = yaml.safe_load((ROOT / ".github/workflows/supervisor-integration-tests.yml").read_text())
-    host = _required_fresh_host_gate(workflow)
-    binaries = tmp_path / "bin"
-    binaries.mkdir()
-    scripts = {
-        "strace": "#!/bin/sh\nexit 0\n",
-        "sudo": '#!/bin/sh\nexec "$@"\n',
-        "docker": '#!/bin/sh\necho "$*" >> "$GITHUB_WORKSPACE/docker-invocations"\nif [ "$1-failure" = "$HOST_SCENARIO" ]; then exit 41; fi\n',
-        "python3": f'#!/bin/sh\nexec "{sys.executable}" "$@"\n',
-    }
-    for name, text in scripts.items():
-        path = binaries / name
-        path.write_text(text)
-        path.chmod(0o755)
-    interpreter = tmp_path / ".venv/bin/python"
-    interpreter.parent.mkdir(parents=True)
-    interpreter.write_text(
-        f"#!{sys.executable}\n"
-        "import os,sys\nfrom pathlib import Path\n"
-        "scenario=os.environ['HOST_SCENARIO']\n"
-        "Path('pytest-invocation').write_text(' '.join(sys.argv[1:]))\n"
-        "if scenario=='pytest-failure':sys.exit(42)\n"
-        "if scenario=='missing-junit':sys.exit(0)\n"
-        "tests=18 if scenario=='incomplete-host' else 19\n"
-        "skipped=1 if scenario=='skipped-host' else 0\n"
-        "p=Path('supervisor-integration-logs/fresh-initialization.xml');p.parent.mkdir(exist_ok=True)\n"
-        'p.write_text(f\'<testsuites><testsuite tests="{tests}" skipped="{skipped}"/></testsuites>\')\n'
-    )
-    interpreter.chmod(0o755)
-    environment = {**os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"], "GITHUB_WORKSPACE": str(tmp_path), "HOST_SCENARIO": scenario}
-    command = host["run"].replace("${{ github.sha }}", "fixture-exact-revision")
-    result = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", command], cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=5)
-    assert (result.returncode == 0) is (scenario == "success"), result.stdout + result.stderr
-    docker = (tmp_path / "docker-invocations").read_text().splitlines()
-    assert docker[0] == "tag auto-coder:supervisor-fixture-exact-revision auto-coder:management-local-abc65544"
-    if scenario == "tag-failure":
-        assert len(docker) == 1
-    else:
-        assert len(docker) == 2
-    assert (tmp_path / "pytest-invocation").exists() is (scenario not in {"tag-failure", "pull-failure"})
-
-
-def test_supervisor_integration_job_runs_independently_on_pull_requests() -> None:
-    workflow = yaml.safe_load((ROOT / ".github/workflows/supervisor-integration-tests.yml").read_text())
+def test_parallel_groups_and_stable_fail_closed_aggregate() -> None:
+    workflow = _workflow()
     assert workflow["name"] == "Supervisor Integration Tests"
-    assert "pull_request" in workflow["on"]
-    assert "workflow_dispatch" in workflow["on"]
+    assert set(workflow["on"]) == {"pull_request", "workflow_dispatch"}
     assert workflow["permissions"] == {"contents": "read"}
-    job = workflow["jobs"]["supervisor-integration"]
-    assert job["name"] == "Supervisor Integration Tests"
-    assert job["runs-on"] == "ubuntu-latest"
-    assert job["env"]["UV_LOCKED"] == "1"
-    steps = {step["name"]: step for step in job["steps"]}
-    assert steps["Install uv"]["with"]["version"] == "0.7.22"
-    assert "uv sync --locked --dev --extra test" in steps["Install locked test dependencies"]["run"]
-    management = steps["Verify authenticated management self-update"]
-    assert management["timeout-minutes"] == 55
-    assert job["timeout-minutes"] >= management["timeout-minutes"]
-    assert "-m supervisor_integration" in management["run"]
-    assert "tests/test_management_self_update_integration.py" in management["run"]
-    assert "tests/test_management_self_update_failures.py" in management["run"]
-    assert "--junitxml=supervisor-integration-logs/management-self-update.xml" in management["run"]
-    build = steps["Build the checked-out production image"]["run"]
-    assert "scripts/prepare_opencode_image.py" in build
-    host = steps["Verify fresh initialization with host evidence"]["run"]
-    assert "tests/test_management_retained_startup_container.py" in host
-    assert "tests/test_management_proxy_watcher_process_integration.py" in host
-    assert "== 19" in host and "skipped" in host
-    assert "-o timeout=60" in steps["Test real worker processes and management bridge"]["run"]
-    assert "test_forced_cancel_reaps_orphan_only_after_owned_thread_finishes" in steps["Test real worker processes and management bridge"]["run"]
-    assert "test_cancelled_async_wrapper_does_not_release_running_thread" in steps["Test real worker processes and management bridge"]["run"]
-    assert "set -o pipefail" in steps["Test real worker processes and management bridge"]["run"]
-    assert steps["Test real worker processes and management bridge"]["run"].count("tail -n 400") == 2
-    container = steps["Verify isolated Supervisor containers"]
-    assert "-m supervisor_integration" in container["run"]
-    assert "tests/test_supervisor_container_integration.py" in container["run"]
-    assert "tests/test_management_beta_deploy_container.py" in container["run"]
-    assert container["timeout-minutes"] >= 40
-    assert container["env"]["AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION"] == "1"
-    assert container["env"]["AUTOCODER_SUPERVISOR_IMAGE"]
+    assert set(workflow["jobs"]) == GROUPS | {"supervisor-integration"}
+    aggregate = workflow["jobs"]["supervisor-integration"]
+    assert aggregate["name"] == "Supervisor Integration Tests"
+    assert aggregate["if"] == "always()"
+    assert set(aggregate["needs"]) == GROUPS
+    gate = _step(aggregate, "Require every integration group to succeed")["run"]
+    assert "set(results) == expected" in gate
+    assert "data.get('result') != 'success'" in gate
+    for group in GROUPS:
+        job = workflow["jobs"][group]
+        assert "needs" not in job
+        assert job["runs-on"] == "ubuntu-latest"
+        assert job.get("continue-on-error", False) is False
+
+
+@pytest.mark.parametrize("result", ["failure", "cancelled", "skipped", None])
+def test_aggregate_decision_rejects_every_incomplete_result(result: str | None) -> None:
+    expected = GROUPS
+    values = {name: {"result": "success"} for name in expected}
+    if result is None:
+        values.pop("fresh-host")
+    else:
+        values["fresh-host"]["result"] = result
+    accepted = set(values) == expected and all(value.get("result") == "success" for value in values.values())
+    assert accepted is False
+
+
+def test_each_group_pins_tools_checkout_and_uploads_unique_diagnostics() -> None:
+    workflow = _workflow()
+    artifact_names = []
+    for group in GROUPS:
+        job = workflow["jobs"][group]
+        steps = job["steps"]
+        assert _step(job, "Setup Python")["with"]["python-version"] == "3.12"
+        assert _step(job, "Install uv")["with"]["version"] == "0.7.22"
+        assert "uv sync --locked --dev --extra test" in _step(job, "Install locked test dependencies")["run"]
+        checkout = _step(job, "Checkout")
+        assert checkout["uses"] == "actions/checkout@v7"
+        upload = next(step for step in steps if step.get("uses") == "actions/upload-artifact@v7")
+        assert upload["if"] == "always()"
+        assert upload["with"]["if-no-files-found"] == "error"
+        assert "${{ github.run_id }}-${{ github.run_attempt }}" in upload["with"]["name"]
+        artifact_names.append(upload["with"]["name"])
+    assert len(set(artifact_names)) == len(GROUPS)
+    for group in ("fresh-host", "isolated-containers"):
+        build = _step(workflow["jobs"][group], "Build the checked-out production image")["run"]
+        assert "scripts/prepare_opencode_image.py" in build
+        assert "auto-coder:supervisor-${{ github.sha }}" in build
+
+
+def test_all_baseline_selectors_and_execution_contexts_are_preserved() -> None:
+    workflow = _workflow()
+    worker = _step(workflow["jobs"]["worker-bridge"], "Test real worker processes and management bridge")["run"]
+    for selector in (
+        "tests/test_worker_supervisor.py",
+        "tests/test_worker_supervisor_bridge.py",
+        "tests/test_worker_versions.py",
+        "test_forced_cancel_reaps_orphan_only_after_owned_thread_finishes",
+        "test_cancelled_async_wrapper_does_not_release_running_thread",
+        "test_cancelled_wrapper_before_submission_does_not_retain_unstarted_work",
+        "test_cancelled_wrapper_keeps_queued_executor_work_owned",
+        "test_rejected_executor_submission_does_not_retain_unstarted_work",
+        "test_real_unix_socket_observes_same_engine_and_read_does_not_heartbeat",
+        "test_graceful_receipt_requires_stopped_closed_and_settled",
+    ):
+        assert selector in worker
+    assert worker.count("uv run pytest") == 2
+    assert "test_actual_daemon_uds_observes_admitted_drain_and_persists_receipt" in worker
+    assert "-o timeout=60" in worker and "set -o pipefail" in worker
+
+    management = _step(workflow["jobs"]["management-self-update"], "Verify authenticated management self-update")["run"]
+    for path in ("test_management_self_update_integration.py", "test_management_self_update_failures.py", "test_management_clean_restart_integration.py", "test_management_fresh_host_integration.py"):
+        assert path in management
+    assert "-m supervisor_integration" in management
+
+    host = _step(workflow["jobs"]["fresh-host"], "Verify fresh initialization with host evidence")["run"]
+    for path in ("test_management_fresh_end_to_end.py", "test_management_retained_startup_container.py", "test_management_proxy_watcher_process_integration.py"):
+        assert path in host
+    assert "sudo env" in host and "PYTHONPATH=$GITHUB_WORKSPACE/src" in host
+    assert "SUPERVISOR_ALLOWED_SKIP_REASONS" not in host and "strace" in host
+    allowed = workflow["jobs"]["management-self-update"]["env"]["SUPERVISOR_ALLOWED_SKIP_REASONS"]
+    assert "host root is required" in allowed
+    assert "production-profile image is not available locally" in allowed
+
+    containers = _step(workflow["jobs"]["isolated-containers"], "Verify isolated Supervisor containers")
+    for path in ("test_supervisor_container_integration.py", "test_worker_network_integration.py", "test_management_beta_deploy_container.py", "test_beta_runtime_smoke_container.py"):
+        assert path in containers["run"]
+    assert "-m supervisor_integration" in containers["run"]
+    assert containers["env"]["AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION"] == "1"
+
+
+def test_result_inventory_fails_closed_and_discovers_whole_file_cases(tmp_path: Path) -> None:
+    test_file = tmp_path / "test_sample.py"
+    test_file.write_text("def test_first(): pass\ndef test_added_later(): pass\n")
+    report = tmp_path / "report.json"
+    env = {**os.environ, "PYTHONPATH": str(ROOT), "SUPERVISOR_RESULTS_PATH": str(report)}
+    result = subprocess.run([sys.executable, "-m", "pytest", "-p", "scripts.supervisor_ci_results", "-q", str(test_file)], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(report.read_text())
+    assert len(payload["collected"]) == 2
+    assert {node.rsplit("::", 1)[-1] for node in payload["collected"]} == {"test_first", "test_added_later"}
+    assert set(payload["outcomes"].values()) == {"passed"}
+    assert not payload["missing"]
+    assert payload["first_case_phase_epoch"] <= payload["last_case_phase_epoch"]
+
+
+def test_result_inventory_rejects_mandatory_skip(tmp_path: Path) -> None:
+    test_file = tmp_path / "test_skip.py"
+    test_file.write_text("import pytest\n@pytest.mark.skip(reason='missing prerequisite')\ndef test_required(): pass\n")
+    report = tmp_path / "report.json"
+    env = {**os.environ, "PYTHONPATH": str(ROOT), "SUPERVISOR_RESULTS_PATH": str(report)}
+    result = subprocess.run([sys.executable, "-m", "pytest", "-p", "scripts.supervisor_ci_results", "-q", str(test_file)], env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert json.loads(report.read_text())["outcomes"].popitem()[1] == "forbidden-skip"
 
 
 def test_container_fixture_has_no_host_docker_or_external_network_access() -> None:
