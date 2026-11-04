@@ -1,7 +1,12 @@
+import importlib.util
 import os
 import re
 import shutil
+import signal
 import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -15,7 +20,7 @@ def _workflow():
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
 
-def _run_step(tmp_path, group, test_script, timeout="0.25", grace="0.1"):
+def _prepare_step(tmp_path, group, test_script, timeout="0.25", grace="0.1"):
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     shutil.copy(ROOT / "scripts/run_pr_test_shard.py", scripts)
@@ -26,7 +31,11 @@ def _run_step(tmp_path, group, test_script, timeout="0.25", grace="0.1"):
     run = next(step["run"] for step in _workflow()["jobs"]["tests-shard"]["steps"] if step["name"].startswith("Run tests with coverage"))
     run = re.sub(r"--attempt-timeout\s+\S+", f"--attempt-timeout {timeout}", run)
     run = re.sub(r"--termination-grace\s+\S+", f"--termination-grace {grace}", run)
-    run = run.replace("${{ matrix.group }}", str(group)).replace("uv run python", f"{shutil.which('python')} ")
+    return run.replace("${{ matrix.group }}", str(group)).replace("uv run python", f"{shutil.which('python')} ")
+
+
+def _run_step(tmp_path, group, test_script, timeout="0.25", grace="0.1"):
+    run = _prepare_step(tmp_path, group, test_script, timeout, grace)
     return subprocess.run(
         ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", run],
         cwd=tmp_path,
@@ -123,6 +132,149 @@ echo retry-started >> child-events
     child = int((tmp_path / "child-pid").read_text())
     stat = Path(f"/proc/{child}/stat")
     assert not stat.exists() or stat.read_text().split()[2] == "Z"
+
+
+def test_cancellation_kills_owned_term_resistant_group_without_retry(tmp_path):
+    run = _prepare_step(
+        tmp_path,
+        1,
+        """#!/bin/bash
+        echo invoked >> invocations
+        echo $$ > child-pid
+        echo child-started > child-started
+        trap '' TERM
+        while :; do echo retained-diagnostic; sleep .03; done
+        """,
+        timeout="10",
+        grace="0.1",
+    )
+    process = subprocess.Popen(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", run],
+        cwd=tmp_path,
+        env=os.environ.copy(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.monotonic() + 3
+    while not (tmp_path / "child-started").exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert (tmp_path / "child-started").exists()
+
+    process.send_signal(signal.SIGTERM)
+    stdout, stderr = process.communicate(timeout=5)
+
+    assert process.returncode != 0
+    assert (tmp_path / "invocations").read_text().splitlines() == ["invoked"]
+    logs = tmp_path / "pr-test-logs/shard-1"
+    assert "retained-diagnostic" in (logs / "attempt-1.stdout.log").read_text()
+    supervisor = (logs / "attempt-1.supervisor.log").read_text()
+    assert "cancelled by signal" in supervisor
+    assert "Escalating managed process group" in supervisor
+    assert "starting retry" not in stderr
+    child = int((tmp_path / "child-pid").read_text())
+    stat = Path(f"/proc/{child}/stat")
+    assert not stat.exists() or stat.read_text().split()[2] == "Z"
+    assert "retained-diagnostic" in stdout
+
+
+def test_unconfirmed_cancellation_cleanup_is_non_success_without_retry(tmp_path, monkeypatch):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "test.sh").write_text("#!/bin/bash\necho invoked >> invocations\nsleep .1\n", encoding="utf-8")
+    data = tmp_path / "tests/data"
+    data.mkdir(parents=True)
+    (data / "pr-test-durations.json").write_text('{"fixture": 1.0}', encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("cancel_cleanup_runner", ROOT / "scripts/run_pr_test_shard.py")
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runner, "_stop_group", lambda *_args: False)
+
+    def request_cancel_after_start():
+        deadline = time.monotonic() + 3
+        while not (tmp_path / "invocations").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        runner.cancel_signal = signal.SIGTERM
+
+    cancellation = threading.Thread(target=request_cancel_after_start)
+    cancellation.start()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_pr_test_shard.py",
+            "--group",
+            "1",
+            "--attempt-timeout",
+            "10",
+            "--termination-grace",
+            ".1",
+            "--max-attempts",
+            "2",
+            "--log-dir",
+            "pr-test-logs/shard-1",
+        ],
+    )
+
+    assert runner.main() != 0
+    cancellation.join(timeout=1)
+    assert not cancellation.is_alive()
+    assert (tmp_path / "invocations").read_text().splitlines() == ["invoked"]
+    supervisor = (tmp_path / "pr-test-logs/shard-1/attempt-1.supervisor.log").read_text()
+    assert "cancelled by signal" in supervisor
+    assert not (tmp_path / "pr-test-logs/shard-1/attempt-2.stdout.log").exists()
+
+
+@pytest.mark.parametrize("completion_signal", [None, signal.SIGINT, signal.SIGTERM])
+def test_cancellation_after_successful_child_exit_is_non_success(tmp_path, monkeypatch, completion_signal):
+    """Exercise the real successful attempt before delivering the boundary signal."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "test.sh").write_text("#!/bin/bash\necho invoked >> invocations\necho retained-success-output\n", encoding="utf-8")
+    data = tmp_path / "tests/data"
+    data.mkdir(parents=True)
+    (data / "pr-test-durations.json").write_text('{"fixture": 1.0}', encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("completion_boundary_runner", ROOT / "scripts/run_pr_test_shard.py")
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    original_attempt = runner._run_attempt
+    outcomes = []
+
+    def deliver_after_success(*args):
+        outcome = original_attempt(*args)
+        assert outcome == "success"
+        outcomes.append(outcome)
+        if completion_signal is not None:
+            signal.raise_signal(completion_signal)
+            assert runner.cancel_signal == completion_signal
+        return outcome
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runner, "_run_attempt", deliver_after_success)
+    monkeypatch.setattr(sys, "argv", ["run_pr_test_shard.py", "--group", "1", "--attempt-timeout", "10", "--max-attempts", "2", "--log-dir", "pr-test-logs/shard-1"])
+    handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        result = runner.main()
+    finally:
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+        runner.logger.remove()
+
+    assert outcomes == ["success"]
+    assert (tmp_path / "invocations").read_text().splitlines() == ["invoked"]
+    logs = tmp_path / "pr-test-logs/shard-1"
+    assert "retained-success-output" in (logs / "attempt-1.stdout.log").read_text()
+    assert not (logs / "attempt-2.stdout.log").exists()
+    diagnostic = (logs / "supervisor.log").read_text()
+    assert "starting retry" not in diagnostic
+    if completion_signal is None:
+        assert result == 0
+    else:
+        assert result != 0
+        assert "Cancellation observed after attempt 1" in diagnostic
 
 
 def test_two_timeouts_fail_and_keep_both_logs(tmp_path):
