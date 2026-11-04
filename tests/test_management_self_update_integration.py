@@ -54,7 +54,7 @@ from auto_coder.tested_source_refs import TestedSourcePublisher as SourcePublish
 from auto_coder.tested_source_refs import TestedSourceRecord as SourceRecord
 from auto_coder.tested_source_refs import serialize_record, tag_name
 from auto_coder.util.gh_cache import GitHubGitDataClient
-from tests.fixtures.ci_timing import recorder
+from tests.fixtures.ci_timing import installer_span, recorder
 
 pytestmark = [pytest.mark.supervisor_integration, pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep")]
 
@@ -499,13 +499,12 @@ def management_system(tmp_path: Path, _use_real_commands: None, _use_real_sleep:
     active_install: dict[str, str] = {"role": "unavailable", "source": "unavailable"}
 
     def timed_install(checkout: Path, environment: Path) -> None:
-        lock = checkout / "uv.lock"
-        lock_sha256 = hashlib.sha256(lock.read_bytes()).hexdigest() if lock.exists() else None
-        with timing.span(
+        with installer_span(
+            timing,
+            checkout,
             "management.installer",
             target_role=active_install["role"],
             target_source_sha=active_install["source"],
-            lock_sha256=lock_sha256,
             uv_version=uv_version,
         ):
             install(checkout, environment)

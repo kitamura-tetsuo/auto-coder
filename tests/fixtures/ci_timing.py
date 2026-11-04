@@ -7,6 +7,7 @@ being observed.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -165,6 +166,37 @@ def recorder() -> TimingRecorder:
     if _RECORDER is None:
         _RECORDER = TimingRecorder()
     return _RECORDER
+
+
+@contextmanager
+def installer_span(
+    timing: TimingRecorder,
+    checkout: Path,
+    phase_label: str,
+    *,
+    target_role: str,
+    target_source_sha: str,
+    uv_version: str,
+) -> Iterator[None]:
+    """Observe an installer without allowing provenance reads to block it."""
+
+    lock_sha256: str | None = None
+    if timing.enabled:
+        lock = checkout / "uv.lock"
+        try:
+            if lock.exists():
+                lock_sha256 = hashlib.sha256(lock.read_bytes()).hexdigest()
+        except OSError as error:
+            timing.last_error = f"lock digest unavailable for {lock}: {type(error).__name__}: {error}"
+            timing._report_error()
+    with timing.span(
+        phase_label,
+        target_role=target_role,
+        target_source_sha=target_source_sha,
+        lock_sha256=lock_sha256,
+        uv_version=uv_version,
+    ):
+        yield
 
 
 @contextmanager

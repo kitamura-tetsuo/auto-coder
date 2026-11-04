@@ -7,10 +7,11 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
 from scripts.summarize_ci_timing import summarize
 
 import tests.fixtures.ci_timing as ci_timing
-from tests.fixtures.ci_timing import TimingRecorder
+from tests.fixtures.ci_timing import TimingRecorder, installer_span
 
 
 def test_nested_and_repeated_spans_keep_distinct_identity(tmp_path: Path) -> None:
@@ -48,6 +49,64 @@ def test_unavailable_destination_does_not_replace_operation_result(tmp_path: Pat
     report = summarize(blocked)
     assert report["diagnostic_status"] == "unavailable"
     assert report["diagnostic_errors"]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_installer_span_lock_read_failure_preserves_installer_result(tmp_path: Path, monkeypatch, capfd, enabled: bool) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    lock = checkout / "uv.lock"
+    lock.write_text("lock", encoding="utf-8")
+    monkeypatch.delenv("AUTO_CODER_CI_TIMING_DIR", raising=False)
+    timing = TimingRecorder(tmp_path / "timing" if enabled else None)
+    original_read_bytes = Path.read_bytes
+
+    def unavailable(path: Path) -> bytes:
+        if path == lock:
+            raise OSError("diagnostic lock read failed")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", unavailable)
+    calls: list[tuple[Path, Path]] = []
+
+    def installer(source: Path, environment: Path) -> str:
+        calls.append((source, environment))
+        return "installed"
+
+    environment = tmp_path / "environment"
+    with installer_span(timing, checkout, "worker.installer", target_role="candidate", target_source_sha="a" * 40, uv_version="0.7.22"):
+        result = installer(checkout, environment)
+
+    assert result == "installed"
+    assert calls == [(checkout, environment)]
+    if enabled:
+        assert timing.last_error is not None and "diagnostic lock read failed" in timing.last_error
+        assert "CI timing diagnostic unavailable" in capfd.readouterr().err
+    else:
+        assert timing.last_error is None
+
+
+def test_installer_span_lock_read_failure_preserves_installer_exception(tmp_path: Path, monkeypatch) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    lock = checkout / "uv.lock"
+    lock.write_text("lock", encoding="utf-8")
+    timing = TimingRecorder(tmp_path / "timing")
+    original_read_bytes = Path.read_bytes
+
+    def unavailable(path: Path) -> bytes:
+        if path == lock:
+            raise OSError("diagnostic lock read failed")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", unavailable)
+    original = RuntimeError("original installer failure")
+
+    with pytest.raises(RuntimeError) as raised:
+        with installer_span(timing, checkout, "management.installer", target_role="current", target_source_sha="b" * 40, uv_version="0.7.22"):
+            raise original
+
+    assert raised.value is original
 
 
 def test_unavailable_diagnostic_logger_does_not_replace_operation_result(tmp_path: Path, monkeypatch) -> None:

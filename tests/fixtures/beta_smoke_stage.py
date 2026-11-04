@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from ci_timing import recorder
+from ci_timing import installer_span, recorder
 from loguru import logger
 
 from auto_coder.worker_versions import PrepareIntent, WorkerVersionConfig, WorkerVersionPreparer
@@ -28,9 +27,7 @@ def main() -> None:
         install = preparer._install
 
         def timed_install(checkout: Path, environment: Path) -> None:
-            lock = checkout / "uv.lock"
-            lock_sha256 = hashlib.sha256(lock.read_bytes()).hexdigest() if lock.exists() else None
-            with timing.span("worker.installer", target_role=role, target_source_sha=revision, lock_sha256=lock_sha256, uv_version="0.7.22"):
+            with installer_span(timing, checkout, "worker.installer", target_role=role, target_source_sha=revision, uv_version="0.7.22"):
                 install(checkout, environment)
 
         preparer._install = timed_install  # type: ignore[method-assign]
