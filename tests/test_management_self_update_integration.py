@@ -998,6 +998,12 @@ def test_authenticated_readback_is_bound_to_current_observation(management_syste
     assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None
     with sqlite3.connect(database) as connection:
         connection.execute("UPDATE proof SET payload=? WHERE instance_id=?", (original, INSTANCE))
+    with sqlite3.connect(system.settings.oauth.database_path) as connection:
+        connection.execute("UPDATE grants SET revoked=? WHERE id=?", (time.time(), proof.grant_id))
+    assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None
+    with sqlite3.connect(system.settings.oauth.database_path) as connection:
+        connection.execute("UPDATE grants SET revoked=NULL WHERE id=?", (proof.grant_id,))
+    assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is not None
     database.chmod(0o644)
     assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None
     database.chmod(0o600)
