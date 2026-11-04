@@ -505,7 +505,7 @@ def test_surplus_exact_boundary_schedules_strictly_future_recheck_from_parsed_us
         availability = resolve_adversarial_validation_availability("strong_pr")
 
     assert availability.exhausted is True
-    assert now < availability.retry_not_before_epoch <= now + 1800.0
+    assert availability.retry_not_before_epoch == math.nextafter(now, math.inf)
 
 
 def test_surplus_earlier_boundary_preempts_thirty_minute_recheck() -> None:
