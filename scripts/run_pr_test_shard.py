@@ -168,10 +168,13 @@ def _stop_group(process: subprocess.Popen[bytes], pgid: int, grace: float) -> bo
     return not _group_members(pgid)
 
 
-def _run_attempt(group: int, attempt: int, timeout: float, grace: float, log_dir: Path, durations: Path) -> str:
+def _run_attempt(group: int, attempt: int, timeout: float, grace: float, log_dir: Path, durations: Path, ci_tests_only: bool = False) -> str:
     # Emit a complete line per test so the line-oriented collector does not hide
     # progress within a file. Dump blocked threads before the outer deadline.
-    command = ["bash", "scripts/test.sh", "--splits", "4", "--group", str(group), "--splitting-algorithm", "duration_based_chunks", "--durations-path", str(durations), "-m", "not browser and not opencode_live and not muse_live and not supervisor_integration", "-vv", "-o", "faulthandler_timeout=30"]
+    command = ["bash", "scripts/test.sh"]
+    if ci_tests_only:
+        command.append("--ci-tests-only")
+    command.extend(["--splits", "4", "--group", str(group), "--splitting-algorithm", "duration_based_chunks", "--durations-path", str(durations), "-m", "not browser and not opencode_live and not muse_live and not supervisor_integration", "-vv", "-o", "faulthandler_timeout=30"])
     supervisor_log = log_dir / f"attempt-{attempt}.supervisor.log"
     sink = logger.add(
         supervisor_log,
@@ -236,17 +239,10 @@ def _run_attempt(group: int, attempt: int, timeout: float, grace: float, log_dir
                 logger.error("Attempt {} cancelled by signal {} after {:.3f}s", attempt, cancel_signal, now - started)
                 result = "cancelled" if _stop_group(process, pgid, grace) else "cleanup-failure"
                 break
-            if last_test_progress is not None and now - last_test_progress >= progress_idle_limit:
-                logger.error("Attempt {} stopped after {:.3f}s without a completed pytest test", attempt, now - last_test_progress)
-                result = "timeout" if _stop_group(process, pgid, grace) else "cleanup-failure"
-                break
-            if now >= deadline and last_test_progress is not None and now - last_test_progress < progress_idle_limit and deadline < absolute_deadline:
-                deadline = min(absolute_deadline, now + progress_idle_limit)
-                logger.info("Attempt {} extending bounded deadline to {:.3f}s: pytest tests are still completing", attempt, deadline - started)
-            if now >= deadline:
-                logger.error("Attempt {} timed out after {:.3f}s", attempt, now - started)
-                result = "timeout" if _stop_group(process, pgid, grace) else "cleanup-failure"
-                break
+            # A completed owned process group is authoritative even if the
+            # supervisor first observes it after the nominal deadline.  In
+            # particular, a finished nonzero attempt is an ordinary failure,
+            # not a timeout eligible for retry.
             status = process.poll()
             if status is not None and not _group_members(pgid):
                 _drain(selector, output_files, progress_tail)
@@ -257,6 +253,17 @@ def _run_attempt(group: int, attempt: int, timeout: float, grace: float, log_dir
                 else:
                     logger.error("Attempt {} ordinary failure with status {} after {:.3f}s", attempt, status, elapsed)
                     result = "failure"
+                break
+            if last_test_progress is not None and now - last_test_progress >= progress_idle_limit:
+                logger.error("Attempt {} stopped after {:.3f}s without a completed pytest test", attempt, now - last_test_progress)
+                result = "timeout" if _stop_group(process, pgid, grace) else "cleanup-failure"
+                break
+            if now >= deadline and last_test_progress is not None and now - last_test_progress < progress_idle_limit and deadline < absolute_deadline:
+                deadline = min(absolute_deadline, now + progress_idle_limit)
+                logger.info("Attempt {} extending bounded deadline to {:.3f}s: pytest tests are still completing", attempt, deadline - started)
+            if now >= deadline:
+                logger.error("Attempt {} timed out after {:.3f}s", attempt, now - started)
+                result = "timeout" if _stop_group(process, pgid, grace) else "cleanup-failure"
                 break
             selector.select(timeout=min(POLL_INTERVAL_SECONDS, max(0.0, deadline - now)))
 
@@ -275,6 +282,7 @@ def main() -> int:
     parser.add_argument("--termination-grace", type=float, default=10)
     parser.add_argument("--max-attempts", type=int, default=2, choices=(2,))
     parser.add_argument("--log-dir", type=Path, required=True)
+    parser.add_argument("--ci-tests-only", action="store_true")
     args = parser.parse_args()
     args.log_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -308,7 +316,7 @@ def main() -> int:
             logger.error("Duration input unavailable before attempt {}: {}", attempt, exc)
             return 1
         _remove_reports()
-        outcome = _run_attempt(args.group, attempt, args.attempt_timeout, args.termination_grace, args.log_dir, durations)
+        outcome = _run_attempt(args.group, attempt, args.attempt_timeout, args.termination_grace, args.log_dir, durations, args.ci_tests_only)
         try:
             if hashlib.sha256(durations.read_bytes()).digest() != duration_digest:
                 logger.error("Duration input changed during attempt {}", attempt)

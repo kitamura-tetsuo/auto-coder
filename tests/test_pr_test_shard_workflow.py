@@ -56,7 +56,7 @@ def test_production_step_passes_correct_shard_once(tmp_path, group):
 
     assert result.returncode == 0
     assert (tmp_path / "invocations").read_text().splitlines() == [
-        f"--splits 4 --group {group} --splitting-algorithm duration_based_chunks --durations-path pr-test-logs/shard-{group}/normalized-durations.json -m not browser and not opencode_live and not muse_live and not supervisor_integration -vv -o faulthandler_timeout=30"
+        f"--ci-tests-only --splits 4 --group {group} --splitting-algorithm duration_based_chunks --durations-path pr-test-logs/shard-{group}/normalized-durations.json -m not browser and not opencode_live and not muse_live and not supervisor_integration -vv -o faulthandler_timeout=30"
     ]
     assert "shard-output" in result.stdout
     assert (tmp_path / f"pr-test-logs/shard-{group}/attempt-1.stdout.log").exists()
@@ -77,8 +77,64 @@ def test_completed_nonzero_status_is_not_retried(tmp_path, status):
     assert "starting retry" not in result.stderr
 
 
+def test_completed_failure_observed_after_deadline_is_not_a_timeout(tmp_path, monkeypatch):
+    """A completed group wins over the deadline at the production supervisor."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copy(ROOT / "scripts/run_pr_test_shard.py", scripts)
+    (scripts / "test.sh").write_text("#!/bin/bash\nexit 9\n", encoding="utf-8")
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    durations = tmp_path / "durations.json"
+    durations.write_text('{"fixture":1.0}\n', encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location("post_deadline_runner", scripts / "run_pr_test_shard.py")
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    real_monotonic = time.monotonic
+    calls = 0
+    launched_process = None
+
+    def observe_after_completion():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return 0.0
+        if calls == 2:
+            deadline = real_monotonic() + 2
+            assert launched_process is not None
+            while runner._group_members(launched_process.pid) and real_monotonic() < deadline:
+                time.sleep(0.001)
+            return 2.0
+        return 2.0
+
+    monkeypatch.chdir(tmp_path)
+    real_popen = runner.subprocess.Popen
+    launched = []
+
+    def completed_popen(*args, **kwargs):
+        nonlocal launched_process
+        launched.append(args[0])
+        launched_process = real_popen(*args, **kwargs)
+        return launched_process
+
+    monkeypatch.setattr(runner.subprocess, "Popen", completed_popen)
+    monkeypatch.setattr(runner.time, "monotonic", observe_after_completion)
+    outcome = runner._run_attempt(1, 1, 1.0, 0.1, log_dir, durations)
+
+    assert outcome == "failure"
+    assert len(launched) == 1
+    assert "ordinary failure with status 9" in (log_dir / "attempt-1.supervisor.log").read_text()
+    runner.logger.remove()
+
+
 def test_changed_duration_input_cannot_be_accepted_or_retried(tmp_path):
-    result = _run_step(tmp_path, 1, '#!/bin/bash\nprintf "{}" > "$8"\nexit 0\n')
+    result = _run_step(
+        tmp_path,
+        1,
+        '#!/bin/bash\nwhile [ "$1" != "--durations-path" ]; do shift; done\nprintf "{}" > "$2"\nexit 0\n',
+    )
     assert result.returncode != 0
     assert "Duration input changed during attempt 1" in result.stderr
     assert "starting retry" not in result.stderr
@@ -346,6 +402,29 @@ def test_workflow_contract_and_aggregate_shell():
     assert "--max-attempts 2" in test_step["run"]
     assert "scripts/run_pr_test_shard.py" in test_step["run"]
     aggregate = workflow["jobs"]["tests"]
-    assert aggregate["needs"] == "tests-shard"
+    assert aggregate["needs"] == ["lint", "tests-shard"]
     assert aggregate["if"] == "always()"
-    assert '!= "success"' in aggregate["steps"][0]["run"]
+    aggregate_shell = aggregate["steps"][0]["run"]
+    assert "needs.lint.result" in aggregate_shell
+    assert "needs.tests-shard.result" in aggregate_shell
+
+
+@pytest.mark.parametrize(
+    "lint,shards,expected",
+    [
+        ("success", "success", 0),
+        ("failure", "success", 1),
+        ("cancelled", "success", 1),
+        ("skipped", "success", 1),
+        ("", "success", 1),
+        ("success", "failure", 1),
+        ("success", "cancelled", 1),
+        ("success", "skipped", 1),
+        ("success", "", 1),
+    ],
+)
+def test_aggregate_requires_current_dependency_success(lint, shards, expected):
+    shell = _workflow()["jobs"]["tests"]["steps"][0]["run"]
+    shell = shell.replace("${{ needs.lint.result }}", lint).replace("${{ needs.tests-shard.result }}", shards)
+    result = subprocess.run(["bash", "-c", shell], capture_output=True, text=True)
+    assert (result.returncode == 0) == (expected == 0)
