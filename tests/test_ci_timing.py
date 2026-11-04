@@ -50,6 +50,18 @@ def test_unavailable_destination_does_not_replace_operation_result(tmp_path: Pat
     assert report["diagnostic_errors"]
 
 
+def test_unavailable_diagnostic_logger_does_not_replace_operation_result(tmp_path: Path, monkeypatch) -> None:
+    timing = TimingRecorder(tmp_path)
+    timing.last_error = "original diagnostic failure"
+
+    def unavailable_sink(*_args, **_kwargs):
+        raise ValueError("logger sink unavailable")
+
+    monkeypatch.setattr(ci_timing.logger, "add", unavailable_sink)
+    timing._report_error()
+    assert timing.last_error == "original diagnostic failure"
+
+
 def test_context_uses_executed_checkout_not_pull_request_event_sha(tmp_path: Path, monkeypatch) -> None:
     event_sha = "f" * 40
     monkeypatch.setenv("GITHUB_SHA", event_sha)

@@ -91,9 +91,14 @@ class TimingRecorder:
                 catch=True,
             )
             logger.bind(ci_timing_direct=True).warning("CI timing diagnostic unavailable: {}", self.last_error)
+        except (OSError, ValueError):
+            pass
         finally:
             if sink_id is not None:
-                logger.remove(sink_id)
+                try:
+                    logger.remove(sink_id)
+                except ValueError:
+                    pass
             self._error_reported = True
 
     def emit(self, event_kind: str, **values: object) -> bool:
