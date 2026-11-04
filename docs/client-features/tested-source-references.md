@@ -86,3 +86,28 @@ total runner work increases by three copies of setup; queue time remains an
 external Actions measurement. Local collection regression checks establish the
 selection equivalence, but remote queue, setup, pytest, and total timings must be
 reported from an observed Actions run and are not claimed here as successful CI.
+
+### Observed timing evidence
+
+The first PR execution of the partition (run `41763251437`, attempt 1, revision
+`31857c14afd18598d2b149175f39d2e4e10f1dd4`) is recorded separately from the
+last successful unsharded `main` execution (run `41757750713`, revision
+`06e05ed4a43fe92eba91ee6f8fee689cf24f6e76`). These are adjacent observed
+revisions, not identical-runtime benchmark inputs, so the comparison describes
+the measured workflow behavior without claiming a controlled speedup or a
+successful source qualification: shard 1 exposed an existing timing-sensitive
+test failure and the aggregate correctly failed.
+
+| Observation | Unsharded main | Four-shard PR |
+| --- | ---: | ---: |
+| Queue before runner start | 3 s | 6m52s–15m03s per shard |
+| Setup before pytest | 1m12s | 49s–57s per shard |
+| Pytest critical path | 1h06m31s | 34m20s |
+| Sum of pytest execution | 1h06m31s | 1h03m44s |
+| Complete-test wall clock from job creation through constituents | 1h07m51s | 42m39s |
+| Sum of constituent runner occupancy | 1h07m48s | 1h07m14s |
+
+The after values come from the four constituent job and step timestamps; the
+aggregate then failed in four seconds after the last shard completed. Queue time
+is reported independently and is not counted as setup or runner work. A later
+green remote execution remains necessary before calling the partition qualified.

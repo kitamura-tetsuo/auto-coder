@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from scripts import check_source_test_shards
 
 from auto_coder.tested_source_refs import (
     REQUIRED_JOBS,
@@ -64,7 +65,10 @@ def assert_required_workflow_profile(workflow: object) -> None:
     assert complete["name"] == "Complete source tests with Chromium"
     assert complete["needs"] == ["complete-source-shard"]
     aggregate = next(step for step in complete["steps"] if step.get("name") == "Verify exact current-attempt shard evidence")
-    assert "scripts/check_source_test_shards.py" in aggregate["run"]
+    assert aggregate["run"].startswith("uv run python scripts/check_source_test_shards.py ")
+    assert "continue-on-error" not in aggregate
+    assert "|| true" not in aggregate["run"]
+    assert "set +e" not in aggregate["run"]
 
 
 def publish_workflow_result(
@@ -201,6 +205,7 @@ class FakeShardEvidence:
             for name in SOURCE_SHARD_JOBS
         ]
         self.total_count: int | None = len(self.jobs)
+        self.jobs_status = 200
 
     def request(self, method: str, path: str, payload: dict[str, object] | None = None) -> GitDataResponse:
         assert method == "GET" and payload is None
@@ -216,8 +221,53 @@ class FakeShardEvidence:
                 },
             )
         if path == "actions/runs/17/attempts/2/jobs?per_page=100":
-            return GitDataResponse(200, {"total_count": self.total_count, "jobs": self.jobs})
+            return GitDataResponse(self.jobs_status, {"total_count": self.total_count, "jobs": self.jobs})
         raise AssertionError(path)
+
+
+def run_actual_shard_gate(monkeypatch: pytest.MonkeyPatch, evidence: FakeShardEvidence) -> tuple[str, str]:
+    """Execute the production aggregate CLI and translate its process outcome."""
+    monkeypatch.setenv("GITHUB_TOKEN", "aggregate-read-token")
+    monkeypatch.setattr(check_source_test_shards, "GitHubGitDataClient", lambda _token, _repository: evidence)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_source_test_shards.py",
+            "--repository",
+            "owner/repo",
+            "--run-id",
+            "17",
+            "--run-attempt",
+            "2",
+            "--source-sha",
+            SHA,
+        ],
+    )
+    try:
+        exit_code = check_source_test_shards.main()
+    except SourceEvidenceError:
+        return ("completed", "failure")
+    assert exit_code == 0
+    return ("completed", "success")
+
+
+def publish_from_actual_shard_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    workflow: object,
+    evidence: FakeShardEvidence,
+    publication: FakeGitData,
+):
+    aggregate_outcome = run_actual_shard_gate(monkeypatch, evidence)
+    return publish_workflow_result(
+        workflow,
+        publication,
+        record(),
+        {
+            "Source identity and quality": ("completed", "success"),
+            "Complete source tests with Chromium": aggregate_outcome,
+        },
+    )
 
 
 def test_source_shard_attempt_accepts_exact_complete_current_attempt() -> None:
@@ -225,7 +275,10 @@ def test_source_shard_attempt_accepts_exact_complete_current_attempt() -> None:
     verify_source_shard_attempt(remote, 17, 2, SHA)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("defect", ["missing", "duplicate", "failed", "stale", "truncated", "wrong_sha"])
+@pytest.mark.parametrize(
+    "defect",
+    ["missing", "duplicate", "failed", "cancelled", "skipped", "unfinished", "stale", "truncated", "unavailable", "wrong_sha"],
+)
 def test_source_shard_attempt_rejects_incomplete_or_mixed_evidence(defect: str) -> None:
     remote = FakeShardEvidence()
     if defect == "missing":
@@ -236,14 +289,59 @@ def test_source_shard_attempt_rejects_incomplete_or_mixed_evidence(defect: str) 
         remote.total_count = len(remote.jobs)
     elif defect == "failed":
         remote.jobs[0]["conclusion"] = "failure"
+    elif defect in {"cancelled", "skipped"}:
+        remote.jobs[0]["conclusion"] = defect
+    elif defect == "unfinished":
+        remote.jobs[0]["status"] = "in_progress"
+        remote.jobs[0]["conclusion"] = None
     elif defect == "stale":
         remote.jobs[0]["run_attempt"] = 1
     elif defect == "truncated":
         remote.total_count = len(remote.jobs) + 1
+    elif defect == "unavailable":
+        remote.jobs_status = 503
     else:
         remote.source_sha = OTHER_SHA
     with pytest.raises(SourceEvidenceError):
         verify_source_shard_attempt(remote, 17, 2, SHA)  # type: ignore[arg-type]
+
+
+def test_actual_aggregate_success_is_the_publication_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    workflow = yaml.safe_load(Path(WORKFLOW_PATH).read_text(encoding="utf-8"))
+    publication = FakeGitData()
+
+    result = publish_from_actual_shard_gate(monkeypatch, workflow, FakeShardEvidence(), publication)
+
+    assert result.direct_commit_sha == SHA
+    assert publication.creates == 1
+
+
+@pytest.mark.parametrize("defect", ["missing", "duplicate", "failed", "cancelled", "skipped", "unfinished", "stale", "truncated", "unavailable"])
+def test_actual_aggregate_failure_cannot_authorize_publication(defect: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    workflow = yaml.safe_load(Path(WORKFLOW_PATH).read_text(encoding="utf-8"))
+    evidence = FakeShardEvidence()
+    if defect == "missing":
+        evidence.jobs.pop()
+        evidence.total_count = len(evidence.jobs)
+    elif defect == "duplicate":
+        evidence.jobs.append(dict(evidence.jobs[0]))
+        evidence.total_count = len(evidence.jobs)
+    elif defect in {"failed", "cancelled", "skipped"}:
+        evidence.jobs[0]["conclusion"] = defect
+    elif defect == "unfinished":
+        evidence.jobs[0].update(status="in_progress", conclusion=None)
+    elif defect == "stale":
+        evidence.jobs[0]["run_attempt"] = 1
+    elif defect == "truncated":
+        evidence.total_count = len(evidence.jobs) + 1
+    else:
+        evidence.jobs_status = 503
+    publication = FakeGitData()
+
+    with pytest.raises(SourceEvidenceError, match="completed successful"):
+        publish_from_actual_shard_gate(monkeypatch, workflow, evidence, publication)
+
+    assert publication.creates == 0
 
 
 def test_canonical_annotation_round_trip_and_rejects_extra_fields() -> None:
