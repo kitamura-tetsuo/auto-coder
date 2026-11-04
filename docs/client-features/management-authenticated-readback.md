@@ -28,6 +28,8 @@ For `env` shebangs, the executable must resolve through the child's configured
 PATH and match procfs; unsupported `env` options produce unavailable evidence. The
 private store is an owner-only regular file; unsafe permissions, replacement with a
 symlink or non-file, and persistence failures all make evidence unavailable.
+Valid state paths containing URI-reserved characters refer to the same private file
+for publication and readback.
 Application readback, the HTTP challenge,
 and startup/journal reconciliation remain separate facts. This contract does not
 start or stop a process, select a runtime, authorize recovery, or grant the OAuth

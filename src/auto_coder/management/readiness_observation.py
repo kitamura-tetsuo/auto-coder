@@ -10,7 +10,6 @@ import shlex
 import shutil
 import sqlite3
 import stat
-import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -117,7 +116,7 @@ def _connect(config: BootstrapConfig, *, readonly: bool = False) -> sqlite3.Conn
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
         raise sqlite3.OperationalError("readiness store ownership or permissions are unsafe")
     if readonly:
-        return sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
+        return sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=2)
     connection = sqlite3.connect(path, timeout=2)
     connection.execute("CREATE TABLE IF NOT EXISTS proof (instance_id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
     return connection

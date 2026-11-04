@@ -422,7 +422,8 @@ class ManagementSystem:
 
 @pytest.fixture
 def management_system(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None, request):
-    root = tmp_path / "management-system"
+    profile = getattr(request, "param", None)
+    root = tmp_path / ("management#system" if profile == "bootstrap_reserved_path" else "management-system")
     root.mkdir()
     source = root / "repository"
     source.mkdir()
@@ -491,7 +492,7 @@ def management_system(tmp_path: Path, _use_real_commands: None, _use_real_sleep:
 
     bootstrap = BootstrapConfig(INSTANCE, root / "supervisor", state, root / "operations", origin + "/mcp", current.management_runtime_id, (), graceful_timeout=0.4, management_version_root=root / "versions", management_config=config_path, verification_timeout=30)
     runtimes = [runtime_for_receipt(bootstrap, item) for item in (current, candidate)]
-    if getattr(request, "param", None) in {"bootstrap", "bootstrap_selected", "recovery", "recovery_plain", "restart_clean"}:
+    if profile in {"bootstrap", "bootstrap_reserved_path", "bootstrap_selected", "recovery", "recovery_plain", "restart_clean"}:
         from auto_coder.management.bootstrap_supervisor import RuntimeSpec
 
         executable = root / "bootstrap-python"
@@ -505,24 +506,24 @@ def management_system(tmp_path: Path, _use_real_commands: None, _use_real_sleep:
             (("PATH", os.defpath), ("PYTHONPATH", str(package_path)), ("PYTHONHOME", sys.base_prefix), ("PYTHONDONTWRITEBYTECODE", "1")),
             root / "drain-bootstrap.json",
         )
-        if request.param in {"bootstrap", "recovery_plain", "restart_clean"}:
+        if profile in {"bootstrap", "bootstrap_reserved_path", "recovery_plain", "restart_clean"}:
             bootstrap = replace(bootstrap, initial_runtime="bootstrap", management_config=None, management_version_root=None)
             runtimes = [initial]
         else:
             bootstrap = replace(bootstrap, initial_runtime="bootstrap", graceful_timeout=10, verification_timeout=120)
             runtimes = [initial, runtimes[1]]
         (Path(current.environment_path).parent / "MANAGEMENT_READY.json").unlink()
-    if getattr(request, "param", None) == "restart_clean":
+    if profile == "restart_clean":
         bootstrap = replace(bootstrap, restart_after_clean_shutdown=True, graceful_timeout=10)
-    if getattr(request, "param", None) == "recovery_installed":
+    if profile == "recovery_installed":
         bootstrap = replace(bootstrap, verification_timeout=120)
     value = asdict(bootstrap)
     value["runtimes"] = [{**asdict(item), "environment": dict(item.environment)} for item in runtimes]
     bootstrap_path.write_text(json.dumps(value, default=lambda value: str(value) if isinstance(value, Path) else value), encoding="utf-8")
     system = ManagementSystem(root, source, current_sha, candidate_sha, config_path, bootstrap_path, policy, origin, services, server, key, publisher, stager, current, candidate)
-    if getattr(request, "param", None) in {"recovery", "recovery_plain", "recovery_installed", "restart_clean"}:
+    if profile in {"recovery", "recovery_plain", "recovery_installed", "restart_clean"}:
         (root / "supervisor").mkdir(mode=0o700)
-        if request.param in {"recovery_plain", "restart_clean"}:
+        if profile in {"recovery_plain", "restart_clean"}:
             BootstrapStore(root / "supervisor", INSTANCE).load()
             with HandoffStore(root / "supervisor", INSTANCE)._connect():
                 pass
@@ -1016,6 +1017,25 @@ def test_authenticated_readback_is_bound_to_current_observation(management_syste
     assert system.request(token, "auto_coder_whoami", {"observation_id": revoked_id}).status_code == 401
     assert read_authenticated_readback(system.bootstrap, observation_id=revoked_id, observation_started_at=started, observation_ends_at=started + 30) is None
     assert _effect_counts(system) == before
+
+
+@pytest.mark.parametrize("management_system", ["bootstrap_reserved_path"], indirect=True)
+def test_authenticated_readback_supports_uri_reserved_state_path(management_system: ManagementSystem) -> None:
+    from auto_coder.management.readiness_observation import read_authenticated_readback
+
+    system = management_system
+    assert "#" in str(system.bootstrap.state_root)
+    token = system.issue()
+    effects = _effect_counts(system)
+    started = time.time()
+    observation_id = "f" * 32
+    system.call(token, "auto_coder_whoami", {"observation_id": observation_id})
+
+    proof = read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30)
+
+    assert proof is not None
+    assert proof.child_identity == ManagementBootstrapSupervisor._identity(system.child)
+    assert _effect_counts(system) == effects
 
 
 @pytest.mark.parametrize("management_system", ["bootstrap_selected"], indirect=True)
