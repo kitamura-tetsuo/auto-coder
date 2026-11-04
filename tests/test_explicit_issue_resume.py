@@ -326,7 +326,7 @@ def test_explicit_resume_with_high_msp_pipe_descriptors(mock_ui, tmp_path, monke
 
     def run_after_release(client, *args, **kwargs):
         def launch_after_release(*launch_args, **launch_kwargs):
-            assert len(reserved) == 64 and max(reserved) < 1024
+            assert len(reserved) >= 3 and max(reserved) < 1024
             release_reserved()
             process = original_popen(*launch_args, **launch_kwargs)
             descriptors = tuple(getattr(process, name).fileno() for name in ("stdin", "stdout", "stderr"))
@@ -367,7 +367,12 @@ def test_explicit_resume_with_high_msp_pipe_descriptors(mock_ui, tmp_path, monke
         if release_low_descriptors:
             stack.callback(release_reserved)
             for _ in range(64):
-                reserved.append(os.open(os.devnull, os.O_RDONLY))
+                descriptor = os.open(os.devnull, os.O_RDONLY)
+                if descriptor >= 1024:
+                    os.close(descriptor)
+                    break
+                reserved.append(descriptor)
+            assert len(reserved) >= 3
             monkeypatch.setattr(MuseClient, "_run_msp_turn_observed", run_after_release)
         _exercise_retained_resume(mock_ui, tmp_path, monkeypatch, refusal, reason, backend)
         assert not reserved
