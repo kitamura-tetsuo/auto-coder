@@ -12,37 +12,38 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  supervisor-integration:
-    name: Supervisor Integration Tests
+  worker-bridge:
+    name: Worker processes and bridge
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 20
     env:
       UV_LOCKED: "1"
+      PYTHONPATH: ${{ github.workspace }}/scripts
     steps:
-      - name: Checkout
+      - &checkout
+        name: Checkout
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-
-      - name: Setup Python
+      - &python
+        name: Setup Python
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-
-      - name: Install uv
+      - &uv
+        name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
           version: "0.7.22"
-
-      - name: Install locked test dependencies
+      - &dependencies
+        name: Install locked test dependencies
         run: uv sync --locked --dev --extra test
-
       - name: Test real worker processes and management bridge
         timeout-minutes: 10
         run: |
-          # Bound console output without hiding a failing pytest exit status.
           set -o pipefail
-          uv run pytest -q -vv \
+          SUPERVISOR_RESULTS_PATH=supervisor-integration-logs/worker-bridge.json \
+          uv run pytest -p supervisor_ci_results -q -vv \
             tests/test_worker_supervisor.py \
             tests/test_worker_supervisor_bridge.py \
             tests/test_worker_versions.py \
@@ -52,31 +53,71 @@ jobs:
             tests/test_graceful_shutdown.py::test_cancelled_wrapper_keeps_queued_executor_work_owned \
             tests/test_graceful_shutdown.py::test_rejected_executor_submission_does_not_retain_unstarted_work \
             tests/test_worker_management_bridge.py::test_real_unix_socket_observes_same_engine_and_read_does_not_heartbeat \
-            tests/test_worker_management_bridge.py::test_graceful_receipt_requires_stopped_closed_and_settled 2>&1 | tail -n 400
-          # Isolate the production daemon composition from long-lived process
-          # fixture state while retaining its complete UDS/terminal oracle.
-          uv run pytest -q -vv -s -o timeout=60 \
-            tests/test_worker_management_bridge.py::test_actual_daemon_uds_observes_admitted_drain_and_persists_receipt 2>&1 | tail -n 400
+            tests/test_worker_management_bridge.py::test_graceful_receipt_requires_stopped_closed_and_settled \
+            --junitxml=supervisor-integration-logs/worker-bridge.xml 2>&1 | tail -n 400
+          SUPERVISOR_RESULTS_PATH=supervisor-integration-logs/worker-daemon.json \
+          uv run pytest -p supervisor_ci_results -q -vv -s -o timeout=60 \
+            tests/test_worker_management_bridge.py::test_actual_daemon_uds_observes_admitted_drain_and_persists_receipt \
+            --junitxml=supervisor-integration-logs/worker-daemon.xml 2>&1 | tail -n 400
+      - &upload-worker
+        name: Upload worker diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: supervisor-integration-worker-bridge-${{ github.run_id }}-${{ github.run_attempt }}
+          path: supervisor-integration-logs/
+          if-no-files-found: error
 
+  management-self-update:
+    name: Authenticated management self-update
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    env:
+      UV_LOCKED: "1"
+      PYTHONPATH: ${{ github.workspace }}/scripts
+      SUPERVISOR_ALLOWED_SKIPS: '{"tests/test_management_fresh_host_integration.py::test_real_docker_published_listener_is_owned_by_replacement":"host root is required to observe the disposable Docker proxy","tests/test_management_fresh_host_integration.py::test_real_docker_listener_rejects_mismatched_container_address":"host root is required to observe the disposable Docker proxy","tests/test_management_fresh_host_integration.py::test_real_docker_listener_rejects_changed_container_inspection":"host root is required to observe the disposable Docker proxy","tests/test_management_fresh_host_integration.py::test_real_listener_accepts_only_mount_order_changes":"host root is required to observe the disposable Docker proxy","tests/test_management_fresh_host_integration.py::test_real_prior_supervisor_binds_instance_and_published_port":"production-profile image is not available locally"}'
+    steps:
+      - *checkout
+      - *python
+      - *uv
+      - *dependencies
       - name: Verify authenticated management self-update
-        # Real process tests take about 50-150s each on hosted runners. The
-        # 31 selected cases exceed 25 minutes without an individual failure.
         timeout-minutes: 55
+        env:
+          SUPERVISOR_RESULTS_PATH: supervisor-integration-logs/management-self-update.json
         run: |
-          uv run pytest -q -vv -m supervisor_integration \
+          uv run pytest -p supervisor_ci_results -q -vv -m supervisor_integration \
             tests/test_management_self_update_integration.py \
             tests/test_management_self_update_failures.py \
             tests/test_management_clean_restart_integration.py \
             tests/test_management_fresh_host_integration.py \
             --junitxml=supervisor-integration-logs/management-self-update.xml
+      - name: Upload management diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: supervisor-integration-management-${{ github.run_id }}-${{ github.run_attempt }}
+          path: supervisor-integration-logs/
+          if-no-files-found: error
 
-      - name: Build the checked-out production image
+  fresh-host:
+    name: Fresh host verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      UV_LOCKED: "1"
+    steps:
+      - *checkout
+      - *python
+      - *uv
+      - *dependencies
+      - &build
+        name: Build the checked-out production image
         timeout-minutes: 25
         run: |
           uv run python scripts/prepare_opencode_image.py \
             --tag "auto-coder:supervisor-${{ github.sha }}" \
             --log-dir supervisor-integration-logs
-
       - name: Verify fresh initialization with host evidence
         timeout-minutes: 15
         run: |
@@ -86,11 +127,9 @@ jobs:
           fi
           docker tag "auto-coder:supervisor-${{ github.sha }}" auto-coder:management-local-abc65544
           docker pull caddy@sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489
-          # Root is confined to these disposable-container tests on the
-          # ephemeral runner: it reads kernel namespace and proxy ownership
-          # evidence and traces execve; the child gets no added privileges.
-          sudo env "PATH=$PATH" "PYTHONPATH=$GITHUB_WORKSPACE/src" \
-            "$GITHUB_WORKSPACE/.venv/bin/python" -m pytest -q -vv -o timeout=240 \
+          sudo env "PATH=$PATH" "PYTHONPATH=$GITHUB_WORKSPACE/src:$GITHUB_WORKSPACE/scripts" \
+            "SUPERVISOR_RESULTS_PATH=$GITHUB_WORKSPACE/supervisor-integration-logs/fresh-host.json" \
+            "$GITHUB_WORKSPACE/.venv/bin/python" -m pytest -p supervisor_ci_results -q -vv -o timeout=240 \
             tests/test_management_fresh_host_integration.py::test_real_docker_published_listener_is_owned_by_replacement \
             tests/test_management_fresh_host_integration.py::test_real_docker_listener_rejects_mismatched_container_address \
             tests/test_management_fresh_host_integration.py::test_real_docker_listener_rejects_changed_container_inspection \
@@ -100,31 +139,61 @@ jobs:
             tests/test_management_retained_startup_container.py \
             tests/test_management_proxy_watcher_process_integration.py \
             --junitxml=supervisor-integration-logs/fresh-initialization.xml
-          python3 - supervisor-integration-logs/fresh-initialization.xml <<'PY'
-          import sys, xml.etree.ElementTree as ET
-          root = ET.parse(sys.argv[1]).getroot()
-          suites = list(root.iter('testsuite'))
-          assert sum(int(s.get('tests', 0)) for s in suites) == 19, 'expected all host tests'
-          assert all(int(s.get('skipped', 0)) == 0 for s in suites), 'host tests must not skip'
-          PY
+      - name: Upload fresh-host diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: supervisor-integration-fresh-host-${{ github.run_id }}-${{ github.run_attempt }}
+          path: supervisor-integration-logs/
+          if-no-files-found: error
 
+  isolated-containers:
+    name: Isolated Supervisor containers
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    env:
+      UV_LOCKED: "1"
+      PYTHONPATH: ${{ github.workspace }}/scripts
+      SUPERVISOR_REQUIRED_NODEIDS: '["tests/test_supervisor_container_integration.py::test_production_entrypoint_is_private_pid1_without_docker_socket","tests/test_supervisor_container_integration.py::test_release_beta_held_drain_replay_restart_and_crash_reconstruction","tests/test_supervisor_container_integration.py::test_real_process_issues_bootstrap_and_staged_ready_binding","tests/test_supervisor_container_integration.py::test_independently_prepared_staged_restart_preserves_held_intent","tests/test_worker_network_integration.py::test_two_channel_manager_restart_peer_isolation_and_lost_response","tests/test_management_beta_deploy_container.py::test_authenticated_beta_source_installs_real_version_and_reconciles_after_lost_reply","tests/test_beta_runtime_smoke_container.py::test_local_smoke_uses_installed_worker_real_progress_and_original_journal"]'
+    steps:
+      - *checkout
+      - *python
+      - *uv
+      - *dependencies
+      - *build
       - name: Verify isolated Supervisor containers
         timeout-minutes: 40
         env:
           AUTOCODER_SUPERVISOR_IMAGE: auto-coder:supervisor-${{ github.sha }}
           AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION: "1"
+          SUPERVISOR_RESULTS_PATH: supervisor-integration-logs/isolated-containers.json
         run: |
-          uv run pytest -q -vv -m supervisor_integration \
+          uv run pytest -p supervisor_ci_results -q -vv -m supervisor_integration \
             tests/test_supervisor_container_integration.py \
             tests/test_worker_network_integration.py \
             tests/test_management_beta_deploy_container.py \
             tests/test_beta_runtime_smoke_container.py \
             --junitxml=supervisor-integration-logs/results.xml
-
-      - name: Upload integration diagnostics
+      - name: Upload container diagnostics
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: supervisor-integration-${{ github.run_attempt }}
+          name: supervisor-integration-containers-${{ github.run_id }}-${{ github.run_attempt }}
           path: supervisor-integration-logs/
-          if-no-files-found: ignore
+          if-no-files-found: error
+
+  supervisor-integration:
+    name: Supervisor Integration Tests
+    if: always()
+    runs-on: ubuntu-latest
+    needs:
+      - worker-bridge
+      - management-self-update
+      - fresh-host
+      - isolated-containers
+    steps:
+      - *checkout
+      - name: Require every integration group to succeed
+        env:
+          REQUIRED_RESULTS: ${{ toJSON(needs) }}
+        run: python3 scripts/validate_supervisor_aggregate.py

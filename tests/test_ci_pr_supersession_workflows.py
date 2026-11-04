@@ -99,7 +99,8 @@ def test_required_profiles_and_fail_closed_prerequisites_are_unchanged() -> None
     assert "sha256sum --check" in muse_steps["Install pinned Muse Code host"]["run"]
     assert muse_steps["Run real-host conformance"]["run"] == "uv run pytest -m muse_live -vv tests/test_muse_background_live.py"
 
-    supervisor_steps = {step.get("name", ""): step for step in _load("Supervisor Integration Tests")["jobs"]["supervisor-integration"]["steps"]}
+    supervisor_workflow = _load("Supervisor Integration Tests")
+    supervisor_steps = {step.get("name", ""): step for step in supervisor_workflow["jobs"]["isolated-containers"]["steps"]}
     required_container = supervisor_steps["Verify isolated Supervisor containers"]
     assert required_container["env"]["AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION"] == "1"
     assert "pytest" in required_container["run"]
