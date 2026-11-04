@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from auto_coder.cli_helpers import AdversarialValidationAvailability
-from auto_coder.codex_usage_checker import CodexWeeklyUsage
+from auto_coder.cli_helpers import AdversarialValidationAvailability, resolve_adversarial_validation_availability
+from auto_coder.codex_usage_checker import CodexWeeklyUsage, parse_codex_weekly_usage
 from auto_coder.exceptions import LocalWriterSettlementError
 from auto_coder.llm_backend_config import LLMBackendConfiguration
 from auto_coder.pr_processor import TwoTierGateInputs, _execute_pending_strong_audit
@@ -458,3 +458,71 @@ def test_configured_strategy_retains_true_strong_exhaustion(
         assert time.time() < snapshot.retry_not_before <= time.time() + 1800.0
     else:
         assert snapshot.retry_not_before == pytest.approx(usage.reset_at.timestamp())
+
+
+def test_stale_explicit_recheck_cannot_supersede_newer_wait_or_invoke(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    inputs = _inputs(tmp_path, "base", "head")
+    inputs.gate.ordinary_pass(18, "head", "base", inputs.contract)
+    selected = inputs.gate.state.snapshot(18)
+    competing = inputs.gate.state.claim_strong_audit(18, RoundProvenance("head", "base"), inputs.contract, inputs.policy)
+    newer_deadline = time.time() + 900.0
+    inputs.gate.state.abandon_claim(18, competing.claim_id, "newer quota refusal", newer_deadline)
+
+    with patch("auto_coder.cli_helpers.resolve_adversarial_validation_availability") as resolver:
+        accepted, reason = _execute_pending_strong_audit(
+            "owner/repo",
+            18,
+            inputs,
+            allow_retry_override=True,
+            expected_version=selected.transition_version,
+        )
+
+    assert accepted is False
+    assert "wait changed before admission" in reason
+    resolver.assert_not_called()
+    retained = inputs.gate.state.snapshot(18)
+    assert retained.waiting_reason == "newer quota refusal"
+    assert retained.retry_not_before == newer_deadline
+
+
+def test_surplus_exact_boundary_schedules_strictly_future_recheck_from_parsed_usage() -> None:
+    now = 2_000_000_000.0
+    payload = {
+        "rateLimits": {
+            "primary": {"windowDurationMins": 10080, "usedPercent": 80.0, "resetsAt": now + 4 * 86400},
+        }
+    }
+    usage = parse_codex_weekly_usage(payload, now=datetime.fromtimestamp(now, tz=timezone.utc))
+
+    with (
+        patch("auto_coder.cli_helpers.time.time", return_value=now),
+        patch("auto_coder.cli_helpers.get_llm_config", return_value=_strong_codex_config("surplus")),
+        patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage),
+    ):
+        availability = resolve_adversarial_validation_availability("strong_pr")
+
+    assert availability.exhausted is True
+    assert now < availability.retry_not_before_epoch <= now + 1800.0
+
+
+def test_parsed_unchanged_twenty_percent_becomes_eligible_below_four_days() -> None:
+    now = datetime(2033, 5, 18, tzinfo=timezone.utc)
+    payload = {
+        "rateLimits": {
+            "primary": {"windowDurationMins": 10080, "usedPercent": 80.0, "resetsAt": (now + timedelta(days=4) - timedelta(microseconds=1)).timestamp()},
+        }
+    }
+    usage = parse_codex_weekly_usage(payload, now=now)
+    manager = MagicMock()
+
+    with (
+        patch("auto_coder.cli_helpers.get_llm_config", return_value=_strong_codex_config("surplus")),
+        patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage),
+        patch("auto_coder.cli_helpers.build_backend_manager", return_value=manager),
+    ):
+        availability = resolve_adversarial_validation_availability("strong_pr")
+
+    assert usage.minimum_remaining_percent == 20.0
+    assert availability.backend_manager is manager
+    assert availability.exhausted is False

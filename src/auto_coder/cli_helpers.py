@@ -1118,12 +1118,7 @@ def resolve_adversarial_validation_availability(validation_kind: Optional[str] =
         # Every otherwise-valid candidate is confirmed quota/usage exhausted
         # (REQ-003, REQ-004, AS-001). Any candidate excluded above (disabled or
         # incapable) never reaches this point, so it cannot suppress EXHAUSTED.
-        policy_denial = quota_strategy == "surplus" and all(
-            evaluation.actual_remaining_ratio is not None
-            and evaluation.actual_remaining_ratio > 0
-            and evaluation.reason.startswith(("Codex quota insufficient", "Codex Cloud quota insufficient"))
-            for evaluation in evaluations
-        )
+        policy_denial = quota_strategy == "surplus" and all(evaluation.actual_remaining_ratio is not None and evaluation.actual_remaining_ratio > 0 and evaluation.reason.startswith(("Codex quota insufficient", "Codex Cloud quota insufficient")) for evaluation in evaluations)
         reset_ats = [evaluation.reset_at for evaluation in evaluations]
         if policy_denial:
             retry_not_before_epoch = observation_time + ADVERSARIAL_VALIDATION_EXHAUSTION_DEFAULT_COOLDOWN_SECONDS

@@ -142,7 +142,7 @@ from .pr_repair_guard import (
 )
 from .pr_review_cycle import PHASE_ORDINARY_CLOSURE, VERDICT_FINDINGS, VERDICT_PASS, ClaimContendedError, ContractSnapshot, Finding
 from .pr_review_cycle import FindingDisposition as DurableFindingDisposition
-from .pr_review_cycle import NotApplicableError, RoundProvenance, StrongAuditRound, StrongPolicyIdentity
+from .pr_review_cycle import NotApplicableError, RoundProvenance, StaleTransitionError, StrongAuditRound, StrongPolicyIdentity
 from .pr_review_effects import CONFIRMED, REJECTED, UNCERTAIN, AcceptedReviewPayload, EffectAttempt, EffectOperation, ReviewEffectExecutor, ReviewEffectRepository
 from .pr_review_execution import ReviewExecutionInput, ReviewMode, execute_review
 from .pr_review_resumption import (
@@ -379,6 +379,7 @@ def _execute_pending_strong_audit(
     inputs: TwoTierGateInputs,
     *,
     allow_retry_override: bool = False,
+    expected_version: Optional[int] = None,
 ) -> Tuple[bool, str]:
     """Claim, execute, and durably accept one production strong-audit round."""
     provenance = RoundProvenance(inputs.head_sha, inputs.base_sha)
@@ -388,12 +389,15 @@ def _execute_pending_strong_audit(
             provenance,
             inputs.contract,
             inputs.policy,
+            expected_version=expected_version,
             allow_retry_override=allow_retry_override,
         )
     except ClaimContendedError:
         return False, "another controller owns the live strong-audit claim"
     except NotApplicableError as exc:
         return False, str(exc)
+    except StaleTransitionError as exc:
+        return False, f"strong-audit wait changed before admission: {exc}"
 
     try:
         with isolated_pr_head_worktree(repo_name, pr_number, inputs.head_sha) as worktree:
@@ -7148,6 +7152,7 @@ def _coordinate_pr_review(
                     pr_number,
                     two_tier_inputs,
                     allow_retry_override=force_adversarial_validation,
+                    expected_version=pending_snapshot.transition_version,
                 )
                 reviewer_backend = two_tier_inputs.policy.strong_route
                 stage_id = "pr.strong-audit"
