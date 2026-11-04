@@ -67,7 +67,14 @@ def assert_required_workflow_profile(workflow: object) -> None:
     assert "continue-on-error" not in fixture
     assert shard["env"]["AUTO_CODER_REQUIRE_BROWSER"] == "1"
     assert complete["name"] == "Complete source tests with Chromium"
+    assert complete["if"] == "always()"
     assert complete["needs"] == ["complete-source-shard"]
+    dependency_rejection = next(step for step in complete["steps"] if step.get("name") == "Reject an unsuccessful matrix dependency")
+    assert dependency_rejection == {
+        "name": "Reject an unsuccessful matrix dependency",
+        "if": "needs.complete-source-shard.result != 'success'",
+        "run": "exit 1",
+    }
     aggregate = next(step for step in complete["steps"] if step.get("name") == "Verify exact current-attempt shard evidence")
     assert aggregate["run"].startswith("uv run python scripts/check_source_test_shards.py ")
     assert "if" not in aggregate
@@ -211,9 +218,11 @@ class FakeShardEvidence:
         ]
         self.total_count: int | None = len(self.jobs)
         self.jobs_status = 200
+        self.requests: list[str] = []
 
     def request(self, method: str, path: str, payload: dict[str, object] | None = None) -> GitDataResponse:
         assert method == "GET" and payload is None
+        self.requests.append(path)
         if path == "actions/runs/17/attempts/2":
             return GitDataResponse(
                 200,
@@ -255,6 +264,24 @@ def run_actual_shard_gate(monkeypatch: pytest.MonkeyPatch, evidence: FakeShardEv
         return ("completed", "failure")
     assert exit_code == 0
     return ("completed", "success")
+
+
+def run_production_aggregate_decision(
+    monkeypatch: pytest.MonkeyPatch,
+    workflow: object,
+    dependency_result: str | None,
+    evidence: FakeShardEvidence,
+) -> tuple[str, str]:
+    """Execute the aggregate's production dependency decision before readback."""
+    assert_required_workflow_profile(workflow)
+    assert isinstance(workflow, dict)
+    steps = workflow["jobs"]["complete-source-tests"]["steps"]
+    rejection = next(step for step in steps if step.get("name") == "Reject an unsuccessful matrix dependency")
+    if dependency_result != "success":
+        result = subprocess.run(["bash", "-c", rejection["run"]], check=False)
+        assert result.returncode != 0
+        return ("completed", "failure")
+    return run_actual_shard_gate(monkeypatch, evidence)
 
 
 def publish_from_actual_shard_gate(
@@ -319,6 +346,31 @@ def test_actual_aggregate_success_is_the_publication_gate(monkeypatch: pytest.Mo
 
     assert result.direct_commit_sha == SHA
     assert publication.creates == 1
+
+
+@pytest.mark.parametrize(
+    ("dependency_result", "expected_outcome", "reads_evidence"),
+    [
+        ("success", ("completed", "success"), True),
+        ("failure", ("completed", "failure"), False),
+        ("cancelled", ("completed", "failure"), False),
+        ("skipped", ("completed", "failure"), False),
+        (None, ("completed", "failure"), False),
+    ],
+)
+def test_production_aggregate_dependency_decision_fails_before_readback(
+    dependency_result: str | None,
+    expected_outcome: tuple[str, str],
+    reads_evidence: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow = yaml.safe_load(Path(WORKFLOW_PATH).read_text(encoding="utf-8"))
+    evidence = FakeShardEvidence()
+
+    outcome = run_production_aggregate_decision(monkeypatch, workflow, dependency_result, evidence)
+
+    assert outcome == expected_outcome
+    assert bool(evidence.requests) is reads_evidence
 
 
 @pytest.mark.parametrize("defect", ["missing", "duplicate", "failed", "cancelled", "skipped", "unfinished", "stale", "truncated", "unavailable"])
