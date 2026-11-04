@@ -18,6 +18,7 @@ jobs:
     timeout-minutes: 20
     env:
       UV_LOCKED: "1"
+      PYTHONPATH: ${{ github.workspace }}/scripts
     steps:
       - &checkout
         name: Checkout
@@ -42,7 +43,7 @@ jobs:
         run: |
           set -o pipefail
           SUPERVISOR_RESULTS_PATH=supervisor-integration-logs/worker-bridge.json \
-          uv run pytest -p scripts.supervisor_ci_results -q -vv \
+          uv run pytest -p supervisor_ci_results -q -vv \
             tests/test_worker_supervisor.py \
             tests/test_worker_supervisor_bridge.py \
             tests/test_worker_versions.py \
@@ -55,7 +56,7 @@ jobs:
             tests/test_worker_management_bridge.py::test_graceful_receipt_requires_stopped_closed_and_settled \
             --junitxml=supervisor-integration-logs/worker-bridge.xml 2>&1 | tail -n 400
           SUPERVISOR_RESULTS_PATH=supervisor-integration-logs/worker-daemon.json \
-          uv run pytest -p scripts.supervisor_ci_results -q -vv -s -o timeout=60 \
+          uv run pytest -p supervisor_ci_results -q -vv -s -o timeout=60 \
             tests/test_worker_management_bridge.py::test_actual_daemon_uds_observes_admitted_drain_and_persists_receipt \
             --junitxml=supervisor-integration-logs/worker-daemon.xml 2>&1 | tail -n 400
       - &upload-worker
@@ -73,6 +74,7 @@ jobs:
     timeout-minutes: 65
     env:
       UV_LOCKED: "1"
+      PYTHONPATH: ${{ github.workspace }}/scripts
       SUPERVISOR_ALLOWED_SKIP_REASONS: '["host root is required to observe the disposable Docker proxy", "production-profile image is not available locally"]'
     steps:
       - *checkout
@@ -84,7 +86,7 @@ jobs:
         env:
           SUPERVISOR_RESULTS_PATH: supervisor-integration-logs/management-self-update.json
         run: |
-          uv run pytest -p scripts.supervisor_ci_results -q -vv -m supervisor_integration \
+          uv run pytest -p supervisor_ci_results -q -vv -m supervisor_integration \
             tests/test_management_self_update_integration.py \
             tests/test_management_self_update_failures.py \
             tests/test_management_clean_restart_integration.py \
@@ -125,9 +127,9 @@ jobs:
           fi
           docker tag "auto-coder:supervisor-${{ github.sha }}" auto-coder:management-local-abc65544
           docker pull caddy@sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489
-          sudo env "PATH=$PATH" "PYTHONPATH=$GITHUB_WORKSPACE/src" \
+          sudo env "PATH=$PATH" "PYTHONPATH=$GITHUB_WORKSPACE/src:$GITHUB_WORKSPACE/scripts" \
             "SUPERVISOR_RESULTS_PATH=$GITHUB_WORKSPACE/supervisor-integration-logs/fresh-host.json" \
-            "$GITHUB_WORKSPACE/.venv/bin/python" -m pytest -p scripts.supervisor_ci_results -q -vv -o timeout=240 \
+            "$GITHUB_WORKSPACE/.venv/bin/python" -m pytest -p supervisor_ci_results -q -vv -o timeout=240 \
             tests/test_management_fresh_host_integration.py::test_real_docker_published_listener_is_owned_by_replacement \
             tests/test_management_fresh_host_integration.py::test_real_docker_listener_rejects_mismatched_container_address \
             tests/test_management_fresh_host_integration.py::test_real_docker_listener_rejects_changed_container_inspection \
@@ -151,6 +153,7 @@ jobs:
     timeout-minutes: 70
     env:
       UV_LOCKED: "1"
+      PYTHONPATH: ${{ github.workspace }}/scripts
     steps:
       - *checkout
       - *python
@@ -164,7 +167,7 @@ jobs:
           AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION: "1"
           SUPERVISOR_RESULTS_PATH: supervisor-integration-logs/isolated-containers.json
         run: |
-          uv run pytest -p scripts.supervisor_ci_results -q -vv -m supervisor_integration \
+          uv run pytest -p supervisor_ci_results -q -vv -m supervisor_integration \
             tests/test_supervisor_container_integration.py \
             tests/test_worker_network_integration.py \
             tests/test_management_beta_deploy_container.py \
@@ -191,12 +194,4 @@ jobs:
       - name: Require every integration group to succeed
         env:
           REQUIRED_RESULTS: ${{ toJSON(needs) }}
-        run: |
-          python3 - <<'PY'
-          import json, os
-          expected = {'worker-bridge', 'management-self-update', 'fresh-host', 'isolated-containers'}
-          results = json.loads(os.environ['REQUIRED_RESULTS'])
-          assert set(results) == expected, f'missing or unexpected groups: {set(results) ^ expected}'
-          failed = {name: data.get('result') for name, data in results.items() if data.get('result') != 'success'}
-          assert not failed, f'required integration groups did not succeed: {failed}'
-          PY
+        run: python3 scripts/validate_supervisor_aggregate.py

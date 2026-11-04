@@ -34,8 +34,7 @@ def test_parallel_groups_and_stable_fail_closed_aggregate() -> None:
     assert aggregate["if"] == "always()"
     assert set(aggregate["needs"]) == GROUPS
     gate = _step(aggregate, "Require every integration group to succeed")["run"]
-    assert "set(results) == expected" in gate
-    assert "data.get('result') != 'success'" in gate
+    assert gate == "python3 scripts/validate_supervisor_aggregate.py"
     for group in GROUPS:
         job = workflow["jobs"][group]
         assert "needs" not in job
@@ -44,15 +43,32 @@ def test_parallel_groups_and_stable_fail_closed_aggregate() -> None:
 
 
 @pytest.mark.parametrize("result", ["failure", "cancelled", "skipped", None])
-def test_aggregate_decision_rejects_every_incomplete_result(result: str | None) -> None:
-    expected = GROUPS
-    values = {name: {"result": "success"} for name in expected}
+def test_actual_aggregate_decision_rejects_every_incomplete_result(result: str | None) -> None:
+    values = {name: {"result": "success"} for name in GROUPS}
     if result is None:
         values.pop("fresh-host")
     else:
         values["fresh-host"]["result"] = result
-    accepted = set(values) == expected and all(value.get("result") == "success" for value in values.values())
-    assert accepted is False
+    environment = {**os.environ, "REQUIRED_RESULTS": json.dumps(values)}
+    result_process = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/validate_supervisor_aggregate.py")],
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert result_process.returncode != 0
+
+
+def test_actual_aggregate_decision_accepts_all_successful_groups() -> None:
+    values = {name: {"result": "success"} for name in GROUPS}
+    environment = {**os.environ, "REQUIRED_RESULTS": json.dumps(values)}
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/validate_supervisor_aggregate.py")],
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_each_group_pins_tools_checkout_and_uploads_unique_diagnostics() -> None:
@@ -71,6 +87,8 @@ def test_each_group_pins_tools_checkout_and_uploads_unique_diagnostics() -> None
         assert upload["with"]["if-no-files-found"] == "error"
         assert "${{ github.run_id }}-${{ github.run_attempt }}" in upload["with"]["name"]
         artifact_names.append(upload["with"]["name"])
+        if group != "fresh-host":
+            assert job["env"]["PYTHONPATH"] == "${{ github.workspace }}/scripts"
     assert len(set(artifact_names)) == len(GROUPS)
     for group in ("fresh-host", "isolated-containers"):
         build = _step(workflow["jobs"][group], "Build the checked-out production image")["run"]
@@ -119,12 +137,12 @@ def test_all_baseline_selectors_and_execution_contexts_are_preserved() -> None:
     assert containers["env"]["AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION"] == "1"
 
 
-def test_result_inventory_fails_closed_and_discovers_whole_file_cases(tmp_path: Path) -> None:
+def test_result_inventory_fails_closed_and_discovers_whole_file_cases(tmp_path: Path, _use_real_commands) -> None:
     test_file = tmp_path / "test_sample.py"
     test_file.write_text("def test_first(): pass\ndef test_added_later(): pass\n")
     report = tmp_path / "report.json"
-    env = {**os.environ, "PYTHONPATH": str(ROOT), "SUPERVISOR_RESULTS_PATH": str(report)}
-    result = subprocess.run([sys.executable, "-m", "pytest", "-p", "scripts.supervisor_ci_results", "-q", str(test_file)], env=env, capture_output=True, text=True)
+    env = {**os.environ, "PYTHONPATH": str(ROOT / "scripts"), "SUPERVISOR_RESULTS_PATH": str(report)}
+    result = subprocess.run(["uv", "run", "pytest", "-p", "supervisor_ci_results", "-q", str(test_file)], env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
     payload = json.loads(report.read_text())
     assert len(payload["collected"]) == 2
@@ -134,12 +152,12 @@ def test_result_inventory_fails_closed_and_discovers_whole_file_cases(tmp_path: 
     assert payload["first_case_phase_epoch"] <= payload["last_case_phase_epoch"]
 
 
-def test_result_inventory_rejects_mandatory_skip(tmp_path: Path) -> None:
+def test_result_inventory_rejects_mandatory_skip(tmp_path: Path, _use_real_commands) -> None:
     test_file = tmp_path / "test_skip.py"
     test_file.write_text("import pytest\n@pytest.mark.skip(reason='missing prerequisite')\ndef test_required(): pass\n")
     report = tmp_path / "report.json"
-    env = {**os.environ, "PYTHONPATH": str(ROOT), "SUPERVISOR_RESULTS_PATH": str(report)}
-    result = subprocess.run([sys.executable, "-m", "pytest", "-p", "scripts.supervisor_ci_results", "-q", str(test_file)], env=env, capture_output=True, text=True)
+    env = {**os.environ, "PYTHONPATH": str(ROOT / "scripts"), "SUPERVISOR_RESULTS_PATH": str(report)}
+    result = subprocess.run(["uv", "run", "pytest", "-p", "supervisor_ci_results", "-q", str(test_file)], env=env, capture_output=True, text=True)
     assert result.returncode != 0
     assert json.loads(report.read_text())["outcomes"].popitem()[1] == "forbidden-skip"
 
