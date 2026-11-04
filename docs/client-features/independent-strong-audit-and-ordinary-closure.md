@@ -110,6 +110,12 @@ weekly quota remains positive even below the surplus reserve, whereas zero quota
 under `burst` and below-reserve quota under `surplus` remain exhausted. Unknown
 quota and non-quota construction failures retain their existing unavailable,
 non-exhausted behavior, and a strong route never borrows an ordinary fallback.
+Positive Codex quota denied only by the surplus reserve is automatically
+reobserved within thirty minutes or just after an earlier whole-day reserve
+boundary. True exhaustion retains its provider-reset safeguard. An explicit
+single-PR forced run may supersede a retained future deadline, but it still
+performs fresh route resolution and every ordinary and strong applicability
+gate before reviewer execution; the superseded wait remains durable evidence.
 
 When accepted strong findings survive into a later head, production processing
 does not run a separate closure-only reviewer. Instead, before the one ordinary

@@ -335,6 +335,7 @@ class PrReviewCycleRepository:
             "accepted_closure_id": "",
             "retry_not_before": 0.0,
             "attempt_error_reason": "",
+            "wait_history": [],
         }
 
     # -- (de)serialization --------------------------------------------------
@@ -657,6 +658,7 @@ class PrReviewCycleRepository:
         contract: ContractSnapshot,
         policy: StrongPolicyIdentity,
         expected_version: Optional[int] = None,
+        allow_retry_override: bool = False,
     ) -> ActiveClaim:
         """Atomically claim the strong-audit phase for exactly one H/B/M/P.
 
@@ -675,8 +677,20 @@ class PrReviewCycleRepository:
             self._check_version(pr_state, expected_version)
             if pr_state.get("closed"):
                 raise NotApplicableError("Cannot claim a strong audit for a closed PR")
-            if float(pr_state.get("retry_not_before", 0.0)) > time.time():
+            retained_deadline = float(pr_state.get("retry_not_before", 0.0))
+            if retained_deadline > time.time() and not allow_retry_override:
                 raise NotApplicableError("Strong-audit retry is deferred")
+            if retained_deadline > time.time():
+                history = pr_state.setdefault("wait_history", [])
+                if isinstance(history, list):
+                    history.append(
+                        {
+                            "reason": str(pr_state.get("attempt_error_reason", "")),
+                            "retry_not_before": retained_deadline,
+                            "superseded_at": time.time(),
+                            "superseded_by": "explicit-operator-recheck",
+                        }
+                    )
 
             # This check belongs inside the serialized read/validate/write
             # transition. A caller may have observed pending work immediately

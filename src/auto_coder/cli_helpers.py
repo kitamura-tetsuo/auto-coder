@@ -1,5 +1,6 @@
 """CLI helper functions for backend management and validation."""
 
+import math
 import os
 import shlex
 import shutil
@@ -1078,6 +1079,7 @@ class AdversarialValidationAvailability:
     backend_manager: Optional[BackendManager] = None
     exhausted: bool = False
     retry_not_before_epoch: Optional[float] = None
+    quota_policy_denial: bool = False
 
 
 def resolve_adversarial_validation_availability(validation_kind: Optional[str] = None, execution_cwd: Optional[str] = None) -> AdversarialValidationAvailability:
@@ -1108,6 +1110,7 @@ def resolve_adversarial_validation_availability(validation_kind: Optional[str] =
     from .quota_selector import evaluate_backend_quota, resolve_quota_selection_strategy
 
     quota_strategy = resolve_quota_selection_strategy(config)
+    observation_time = time.time()
     evaluations = [evaluate_backend_quota(backend_name=b, config=config, strategy=quota_strategy) for b in otherwise_valid]
     quota_eligible = [evaluation.backend_name for evaluation in evaluations if evaluation.is_eligible]
 
@@ -1115,12 +1118,31 @@ def resolve_adversarial_validation_availability(validation_kind: Optional[str] =
         # Every otherwise-valid candidate is confirmed quota/usage exhausted
         # (REQ-003, REQ-004, AS-001). Any candidate excluded above (disabled or
         # incapable) never reaches this point, so it cannot suppress EXHAUSTED.
+        policy_denial = quota_strategy == "surplus" and all(
+            evaluation.actual_remaining_ratio is not None
+            and evaluation.actual_remaining_ratio > 0
+            and evaluation.reason.startswith(("Codex quota insufficient", "Codex Cloud quota insufficient"))
+            for evaluation in evaluations
+        )
         reset_ats = [evaluation.reset_at for evaluation in evaluations]
-        if reset_ats and all(reset_at is not None for reset_at in reset_ats):
+        if policy_denial:
+            retry_not_before_epoch = observation_time + ADVERSARIAL_VALIDATION_EXHAUSTION_DEFAULT_COOLDOWN_SECONDS
+            for reset_at in reset_ats:
+                if reset_at is None:
+                    continue
+                remaining = reset_at.timestamp() - observation_time
+                whole_days = int(max(0.0, remaining) // 86400.0)
+                if whole_days > 0:
+                    # The exact boundary retains the higher reserve, so wake at
+                    # the first representable instant strictly after it.
+                    boundary = reset_at.timestamp() - whole_days * 86400.0
+                    if boundary >= observation_time:
+                        retry_not_before_epoch = min(retry_not_before_epoch, math.nextafter(boundary, math.inf))
+        elif reset_ats and all(reset_at is not None for reset_at in reset_ats):
             retry_not_before_epoch = min(reset_at.timestamp() for reset_at in reset_ats if reset_at is not None)
         else:
-            retry_not_before_epoch = time.time() + ADVERSARIAL_VALIDATION_EXHAUSTION_DEFAULT_COOLDOWN_SECONDS
-        return AdversarialValidationAvailability(exhausted=True, retry_not_before_epoch=retry_not_before_epoch)
+            retry_not_before_epoch = observation_time + ADVERSARIAL_VALIDATION_EXHAUSTION_DEFAULT_COOLDOWN_SECONDS
+        return AdversarialValidationAvailability(exhausted=True, retry_not_before_epoch=retry_not_before_epoch, quota_policy_denial=policy_denial)
 
     # At least one otherwise-valid candidate is quota-runnable (including a
     # candidate whose usage could not be retrieved, which remains runnable per

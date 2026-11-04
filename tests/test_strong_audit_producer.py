@@ -1,5 +1,6 @@
 import contextlib
 import subprocess
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -453,4 +454,7 @@ def test_configured_strategy_retains_true_strong_exhaustion(
     transport.assert_not_called()
     snapshot = inputs.gate.state.snapshot(pr_number)
     assert snapshot.waiting_reason == "strong reviewer route is EXHAUSTED"
-    assert snapshot.retry_not_before == pytest.approx(usage.reset_at.timestamp())
+    if strategy == "surplus":
+        assert time.time() < snapshot.retry_not_before <= time.time() + 1800.0
+    else:
+        assert snapshot.retry_not_before == pytest.approx(usage.reset_at.timestamp())

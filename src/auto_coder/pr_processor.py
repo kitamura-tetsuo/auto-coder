@@ -373,11 +373,23 @@ def _ensure_review_base_commit(worktree: str, base_sha: str) -> None:
         raise RuntimeError(f"reviewed base {base_sha} verification failed (exit={verified.returncode}): {diagnostic}")
 
 
-def _execute_pending_strong_audit(repo_name: str, pr_number: int, inputs: TwoTierGateInputs) -> Tuple[bool, str]:
+def _execute_pending_strong_audit(
+    repo_name: str,
+    pr_number: int,
+    inputs: TwoTierGateInputs,
+    *,
+    allow_retry_override: bool = False,
+) -> Tuple[bool, str]:
     """Claim, execute, and durably accept one production strong-audit round."""
     provenance = RoundProvenance(inputs.head_sha, inputs.base_sha)
     try:
-        claim = inputs.gate.state.claim_strong_audit(pr_number, provenance, inputs.contract, inputs.policy)
+        claim = inputs.gate.state.claim_strong_audit(
+            pr_number,
+            provenance,
+            inputs.contract,
+            inputs.policy,
+            allow_retry_override=allow_retry_override,
+        )
     except ClaimContendedError:
         return False, "another controller owns the live strong-audit claim"
     except NotApplicableError as exc:
@@ -7131,7 +7143,12 @@ def _coordinate_pr_review(
                 stage_id = "pr.ordinary-closure"
                 stage_label = f"pr#{pr_number} ordinary closure"
             else:
-                accepted, reason = _execute_pending_strong_audit(repo_name, pr_number, two_tier_inputs)
+                accepted, reason = _execute_pending_strong_audit(
+                    repo_name,
+                    pr_number,
+                    two_tier_inputs,
+                    allow_retry_override=force_adversarial_validation,
+                )
                 reviewer_backend = two_tier_inputs.policy.strong_route
                 stage_id = "pr.strong-audit"
                 stage_label = f"pr#{pr_number} strong audit"
@@ -7212,7 +7229,8 @@ def _coordinate_pr_review(
                 # pending effects receive a bounded retry so progress
                 # does not require a new webhook, commit, or restart.
                 actions.quota_deferred = True
-                actions.retry_not_before = pending_snapshot.retry_not_before or (time.time() + 60.0)
+                current_pending_snapshot = two_tier_inputs.gate.state.snapshot(pr_number)
+                actions.retry_not_before = current_pending_snapshot.retry_not_before or (time.time() + 60.0)
                 if processing_status is not None:
                     processing_status.outcome = PRProcessingOutcome.DEFERRED
                     processing_status.retry_not_before = actions.retry_not_before
