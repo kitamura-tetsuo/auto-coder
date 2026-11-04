@@ -678,17 +678,19 @@ class PrReviewCycleRepository:
             if pr_state.get("closed"):
                 raise NotApplicableError("Cannot claim a strong audit for a closed PR")
             retained_deadline = float(pr_state.get("retry_not_before", 0.0))
-            if retained_deadline > time.time() and not allow_retry_override:
+            now = time.time()
+            if retained_deadline > now and not allow_retry_override:
                 raise NotApplicableError("Strong-audit retry is deferred")
-            if retained_deadline > time.time():
+            retained_reason = str(pr_state.get("attempt_error_reason", ""))
+            if retained_deadline > 0.0 or retained_reason:
                 history = pr_state.setdefault("wait_history", [])
                 if isinstance(history, list):
                     history.append(
                         {
-                            "reason": str(pr_state.get("attempt_error_reason", "")),
+                            "reason": retained_reason,
                             "retry_not_before": retained_deadline,
-                            "superseded_at": time.time(),
-                            "superseded_by": "explicit-operator-recheck",
+                            "superseded_at": now,
+                            "superseded_by": "explicit-operator-recheck" if allow_retry_override and retained_deadline > now else "automatic-due-recheck",
                         }
                     )
 

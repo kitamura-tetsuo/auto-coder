@@ -398,6 +398,8 @@ def _execute_pending_strong_audit(
         return False, str(exc)
     except StaleTransitionError as exc:
         return False, f"strong-audit wait changed before admission: {exc}"
+    except Exception as exc:
+        return False, f"strong-audit admission persistence failed: {exc}"
 
     try:
         with isolated_pr_head_worktree(repo_name, pr_number, inputs.head_sha) as worktree:
