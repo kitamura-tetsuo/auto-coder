@@ -18,6 +18,7 @@ import shutil
 import signal
 import socket
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
@@ -947,6 +948,8 @@ def test_authenticated_readback_is_bound_to_current_observation(management_syste
     assert proof is not None
     assert proof.child_identity == ManagementBootstrapSupervisor._identity(system.child)
     assert proof.client_id == "operator-client"
+    assert proof.resource == system.settings.oauth.resource
+    assert set(proof.scopes.split()) == {READ_SCOPE, DEPLOY_SCOPE}
     assert read_authenticated_readback(system.bootstrap, observation_id="0" * 32, observation_started_at=started, observation_ends_at=started + 30) is None
     assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=proof.observed_at + 0.001, observation_ends_at=started + 30) is None
     # Each corrupted binding is tested against independently observed live OS
@@ -964,11 +967,12 @@ def test_authenticated_readback_is_bound_to_current_observation(management_syste
     wrong_config = replace(configured, runtimes=tuple(wrong_runtime if item == initial else item for item in configured.runtimes))
     assert read_authenticated_readback(wrong_config, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None
     database = system.root / "supervisor" / "management-readiness.sqlite3"
+    assert stat.S_IMODE(database.stat().st_mode) == 0o600
     with sqlite3.connect(database) as connection:
         original = connection.execute("SELECT payload FROM proof WHERE instance_id=?", (INSTANCE,)).fetchone()[0]
     old_generation = ManagementBootstrapSupervisor._identity(replace(system.child, child_generation=system.child.child_generation - 1))
     old_lifetime = ManagementBootstrapSupervisor._identity(replace(system.child, start_token="old-lifetime"))
-    for binding_name, bad in (("child_identity", old_generation), ("child_identity", old_lifetime), ("runtime_receipt", "sha256:wrong"), ("launch_nonce", "old-launch")):
+    for binding_name, bad in (("child_identity", old_generation), ("child_identity", old_lifetime), ("runtime_receipt", "sha256:wrong"), ("launch_nonce", "old-launch"), ("scopes", DEPLOY_SCOPE)):
         changed = json.loads(original)
         changed[binding_name] = bad
         with sqlite3.connect(database) as connection:
@@ -979,6 +983,9 @@ def test_authenticated_readback_is_bound_to_current_observation(management_syste
     assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None
     with sqlite3.connect(database) as connection:
         connection.execute("UPDATE proof SET payload=? WHERE instance_id=?", (original, INSTANCE))
+    database.chmod(0o644)
+    assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None
+    database.chmod(0o600)
     backup = database.with_suffix(".backup")
     database.rename(backup)
     database.mkdir()
