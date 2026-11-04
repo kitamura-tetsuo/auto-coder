@@ -33,6 +33,7 @@ from auto_coder.management.oauth_grants import OAuthGrantService
 from auto_coder.management.operation_executor import ManagementOperationDispatcher, OperationHandler
 from auto_coder.management.operation_store import ManagementOperationStore
 from auto_coder.management.operations import ActionParameter, AdmissionStatus, EffectReceipt, ManagedTarget, MutationStatus, OperationIntent, OperationPhase
+from auto_coder.management.source_acceptance import SourceAcceptancePublisher
 from auto_coder.management.source_evidence import BetaEvidenceReader
 from auto_coder.management.worker_lifecycle import LIFECYCLE_ACTIONS, WorkerLifecycle
 from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkClient
@@ -60,6 +61,7 @@ class _SourceService(GitEvidenceBoundary):
         subprocess.run(["git", "clone", "--bare", str(source), str(root)], check=True, capture_output=True, text=True)
         self.read_only_mutations: list[tuple[str, str]] = []
         self.fail_reads = False
+        self.lose_acceptance_ref_response = False
 
     def _git(self, *args: str, input: str | None = None) -> str:
         return subprocess.run(["git", f"--git-dir={self.repository}", *args], input=input, check=True, capture_output=True, text=True).stdout.strip()
@@ -98,6 +100,9 @@ class _SourceService(GitEvidenceBoundary):
             if subprocess.run(["git", f"--git-dir={self.repository}", "show-ref", "--verify", "--quiet", ref]).returncode == 0:
                 return GitDataResponse(422)
             self._git("update-ref", ref, str(payload["sha"]))
+            if self.lose_acceptance_ref_response and ref.startswith("refs/tags/auto-coder-beta-acceptance-"):
+                self.lose_acceptance_ref_response = False
+                raise RuntimeError("controlled lost acceptance ref response")
             return GitDataResponse(201)
         if method == "PATCH" and path.startswith("git/refs/tags/") and payload:
             ref = "refs/tags/" + path.removeprefix("git/refs/tags/")
@@ -162,6 +167,8 @@ def _configure_lifecycle(app, reader: BetaEvidenceReader) -> None:
     runtime.dispatcher = ManagementOperationDispatcher(runtime.journal)
     for action in sorted(LIFECYCLE_ACTIONS):
         runtime.dispatcher.register(action, OperationHandler(runtime.lifecycle.process, runtime.lifecycle.process))
+    if runtime.beta_acceptance is not None:
+        runtime.dispatcher.register("run_beta_acceptance", OperationHandler(runtime.beta_acceptance.forward, runtime.beta_acceptance.reconcile))
 
 
 def _accepted(journal: ManagementOperationStore, client: WorkerNetworkClient, deployed: str, source: str, key: str):
@@ -369,7 +376,8 @@ def test_local_smoke_uses_installed_worker_real_progress_and_original_journal(re
             policy.write_text("profile: beta\ntargets:\n  beta-worker:\n    channel: beta\n    repositories: [fixture/beta]\n", encoding="utf-8")
             settings = ManagementSettings(tmp_path, oauth, port=base.port, operating_policy_path=policy, operation_state_root=tmp_path / "journal", source_repository="owner/repo")
             grants = OAuthGrantService(oauth, identity, clock=lambda: state["now"])
-            app = create_management_app(settings, grants, worker_clients={"beta": client})
+            publisher = SourceAcceptancePublisher(GitHubGitDataClient("external-selector", "owner/repo", api_url=api_url), "owner/repo")
+            app = create_management_app(settings, grants, worker_clients={"beta": client}, beta_acceptance_source=reader, beta_acceptance_publisher=publisher, beta_acceptance_profile=SmokeProfile(total_seconds=180, interval_seconds=2))
             _configure_lifecycle(app, reader)
             configuration = tmp_path / "reconstruction.json"
             configuration.write_text(json.dumps({"journal_root": str(tmp_path / "journal"), "address": address, "secret": base64.b64encode(secret).decode(), "source_api": api_url}), encoding="utf-8")
@@ -438,6 +446,31 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
     assert all(sample["artifact"]["distribution_version"]["origin"] == "installed_distribution_metadata" for sample in qualifying)
     assert all(sample["runtime_binding"]["lock_sha256"] == ready_a["lock_sha256"] for sample in qualifying)
     assert journal.get(first.operation_id).record.phase is OperationPhase.ACCEPTED
+    remote.lose_acceptance_ref_response = True
+    worker = client.inspect_supervisor().data["worker"]
+    published = _call(
+        http,
+        bearer,
+        "auto_coder_run_beta_acceptance",
+        {
+            "target_id": "beta-worker",
+            "selected_git_sha": revisions[0],
+            "installed_runtime_id": worker["runtime_id"],
+            "process_run_id": worker["process_run_id"],
+            "deployment_generation": worker["deployment_generation"],
+            "supervisor_generation": client.inspect_supervisor().supervisor_generation,
+            "deployment_operation_id": deployed_id,
+            "idempotency_key": "local-pass-original",
+        },
+    )
+    assert published["status"] == "PASS_PUBLISHED"
+    readback = SourceAcceptancePublisher(remote, "owner/repo").read(first.operation_id)
+    assert readback is not None and readback.direct_commit_sha == revisions[0]
+    annotation = json.loads(readback.annotation)
+    assert annotation["local_evidence"] == document
+    assert annotation["local_evidence_content_sha256"] == passed.evidence.content_sha256
+    assert annotation["local_evidence"]["capture"] == first_capture["capture"]
+    assert _call(http, bearer, "auto_coder_beta_acceptance_get", {"target_id": "beta-worker", "operation_id": first.operation_id})["status"] == "PASS_PUBLISHED"
     replay = journal.admit(first.intent, first.authority)
     assert replay.status is AdmissionStatus.REPLAY and replay.record.operation_id == first.operation_id
     assert replay.record.authority == first.authority
@@ -451,7 +484,6 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
         assert producer.advance(first.operation_id).evidence.content == passed.evidence.content
     finally:
         remote.fail_reads = False
-    _release_local_lane(journal, first.operation_id)
 
     # The real maintenance loop sleeps for 60 seconds. Diagnostics inside a
     # bounded eight-second window must not manufacture a second progress event.

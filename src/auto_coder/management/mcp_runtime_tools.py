@@ -17,10 +17,13 @@ from pydantic import StrictInt
 
 from auto_coder.operating_policy import ActionClass, DecisionOutcome, PolicyIntent, TargetChannel, evaluate_snapshot, load_operating_policy
 from auto_coder.tested_source_refs import TestedSourcePublisher
+from auto_coder.util.gh_cache import GitHubGitDataClient
 
 from .action_scopes import DEPLOY_SCOPE, OPERATE_SCOPE, READ_SCOPE
 from .action_scopes import AcceptedAuthority as GrantAuthority
 from .action_scopes import PendingAuthorityStatus
+from .beta_runtime_smoke import ACTION as BETA_ACCEPTANCE_ACTION
+from .beta_runtime_smoke import BetaRuntimeSmokeProducer, SmokeProfile
 from .mcp_resource import ManagementTool, current_management_grant
 from .oauth_config import ManagementSettings
 from .oauth_grants import AuthenticatedGrant, OAuthGrantService
@@ -42,6 +45,8 @@ from .operations import (
 from .retained_journal import RetainedGuardedOperationStore, RetainedJournal
 from .self_update_operation import ManagementSelfUpdateHandler
 from .self_update_policy import ManagementUpdateAction
+from .source_acceptance import BetaAcceptanceHandler, SourceAcceptancePublisher
+from .source_evidence import BetaEvidenceReader
 from .worker_lifecycle import LIFECYCLE_ACTIONS, WorkerLifecycle
 from .worker_network_client import WorkerNetworkClient, WorkerNetworkResult
 
@@ -70,7 +75,18 @@ class ResolvedWorker:
 class ManagementRuntime:
     """One service-lifetime adapter, with no Docker or worker scheduling powers."""
 
-    def __init__(self, settings: ManagementSettings, grants: OAuthGrantService, clients: dict[str, WorkerNetworkClient], *, self_update_source_authority: TestedSourcePublisher | None = None, retained_journal: RetainedJournal | None = None) -> None:
+    def __init__(
+        self,
+        settings: ManagementSettings,
+        grants: OAuthGrantService,
+        clients: dict[str, WorkerNetworkClient],
+        *,
+        self_update_source_authority: TestedSourcePublisher | None = None,
+        retained_journal: RetainedJournal | None = None,
+        beta_acceptance_source: BetaEvidenceReader | None = None,
+        beta_acceptance_publisher: SourceAcceptancePublisher | None = None,
+        beta_acceptance_profile: SmokeProfile | None = None,
+    ) -> None:
         self.settings = settings
         self.grants = grants
         self.clients = clients
@@ -84,6 +100,22 @@ class ManagementRuntime:
         self.lifecycle = WorkerLifecycle(self)
         for action in sorted(LIFECYCLE_ACTIONS):
             self.dispatcher.register(action, OperationHandler(self.lifecycle.process, self.lifecycle.process))
+        self.beta_acceptance: BetaAcceptanceHandler | None = None
+        beta_client = clients.get("beta")
+        repository = settings.source_repository
+        if beta_client is not None and repository is not None:
+            source = beta_acceptance_source
+            publisher = beta_acceptance_publisher
+            if source is None or publisher is None:
+                token = ""
+                if settings.source_evidence_token_file is not None:
+                    token = settings.source_evidence_token_file.read_text(encoding="utf-8").strip()
+                git = GitHubGitDataClient(token, repository)
+                source = source or BetaEvidenceReader(git, repository)
+                publisher = publisher or SourceAcceptancePublisher(git, repository)
+            producer = BetaRuntimeSmokeProducer(self.journal, beta_client, source, beta_acceptance_profile or SmokeProfile())
+            self.beta_acceptance = BetaAcceptanceHandler(self, producer, publisher)
+            self.dispatcher.register(BETA_ACCEPTANCE_ACTION, OperationHandler(self.beta_acceptance.forward, self.beta_acceptance.reconcile))
         self._lifecycle_monitor: asyncio.Task[None] | None = None
 
     def retained_effect_permitted(self, record: OperationRecord) -> bool:
@@ -173,6 +205,12 @@ class ManagementRuntime:
     @staticmethod
     def _response(status: str, reason: str, **fields: object) -> dict[str, object]:
         return {"status": status, "reason": reason, **fields}
+
+    acceptance_action_class = ActionClass.DEPLOYMENT
+
+    @staticmethod
+    def is_resolved_worker(value: object) -> bool:
+        return isinstance(value, ResolvedWorker)
 
     @staticmethod
     def _grant(required: tuple[str, ...]) -> AuthenticatedGrant:
@@ -536,6 +574,70 @@ class ManagementRuntime:
     async def deploy_beta_source(self, target_id: str, selected_git_sha: str, idempotency_key: str, expected_supervisor_generation: str, expected_runtime_id: str | None = None, expected_process_run_id: str | None = None, expected_deployment_generation: str | None = None) -> dict[str, object]:
         return await self.lifecycle.admit("deploy_beta_source", target_id, idempotency_key, expected_supervisor_generation, expected_process_run_id, expected_deployment_generation, expected_runtime_id, selected_git_sha)
 
+    def _project_beta_acceptance(self, record: OperationRecord) -> dict[str, object]:
+        projected = self._project_operation(record)
+        try:
+            local = self.beta_acceptance.producer.read(record.operation_id) if self.beta_acceptance is not None else None
+        except (OSError, RuntimeError, ValueError, TypeError):
+            local = None
+        if local is not None:
+            projected["local_state"] = local.state.value
+            projected["local_result"] = local.evidence.local_result.value if local.evidence is not None else None
+            projected["local_evidence_id"] = local.evidence.local_evidence_id if local.evidence is not None else None
+            projected["next_sample_at"] = local.next_sample_at
+        if record.phase is OperationPhase.SUCCEEDED and record.effect.state is EffectState.CONFIRMED:
+            projected["status"] = "PASS_PUBLISHED"
+        return projected
+
+    async def run_beta_acceptance(self, target_id: str, selected_git_sha: str, installed_runtime_id: str, process_run_id: str, deployment_generation: str, supervisor_generation: str, deployment_operation_id: str, idempotency_key: str) -> dict[str, object]:
+        grant = self._grant((READ_SCOPE, DEPLOY_SCOPE))
+        values = (installed_runtime_id, process_run_id, deployment_generation, supervisor_generation, deployment_operation_id)
+        if self.beta_acceptance is None:
+            return self._response("UNAVAILABLE", "beta_acceptance_unconfigured")
+        if not isinstance(selected_git_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", selected_git_sha) or not isinstance(idempotency_key, str) or not _KEY.fullmatch(idempotency_key) or any(not isinstance(value, str) or not _IDENTITY.fullmatch(value) for value in values):
+            return self._response("INVALID_REQUEST", "invalid_beta_acceptance_request")
+        resolved = self._resolve(target_id, ActionClass.DEPLOYMENT)
+        if not isinstance(resolved, ResolvedWorker) or resolved.client.config.channel != "beta":
+            return resolved if isinstance(resolved, dict) else self._response("DENIED", "beta_target_required")
+        intent = OperationIntent(
+            resolved.target,
+            BETA_ACCEPTANCE_ACTION,
+            (
+                ActionParameter("target_id", target_id),
+                ActionParameter("source_sha", selected_git_sha),
+                ActionParameter("deployment_operation_id", deployment_operation_id),
+                ActionParameter("supervisor_generation", supervisor_generation),
+                ActionParameter("deployment_generation", deployment_generation),
+            ),
+            idempotency_key,
+            process_run_id,
+            installed_runtime_id,
+        )
+        authority = self._journal_authority(grant, self.grants.accepted_authority(grant))
+        old = await asyncio.to_thread(self.journal.find_by_key, intent, authority)
+        if old.status is ReadStatus.UNAVAILABLE:
+            return self._response("UNAVAILABLE", "journal_unavailable")
+        if old.record is not None:
+            if old.record.intent_fingerprint != intent.fingerprint():
+                return self._response("CONFLICT", "idempotency_key_conflict", operation_id=old.record.operation_id)
+            updated = await self.dispatcher.submit(old.record.operation_id)
+            return self._project_beta_acceptance(updated or old.record)
+        admitted = await asyncio.to_thread(self.journal.admit, intent, authority)
+        if admitted.status in {AdmissionStatus.UNAVAILABLE, AdmissionStatus.CONFLICT, AdmissionStatus.BUSY}:
+            return self._response(admitted.status.value.upper(), "journal_" + admitted.status.value, operation_id=admitted.record.operation_id if admitted.record else None)
+        assert admitted.record is not None
+        updated = await self.dispatcher.submit(admitted.record.operation_id)
+        return self._project_beta_acceptance(updated or admitted.record)
+
+    async def beta_acceptance_get(self, target_id: str, operation_id: str) -> dict[str, object]:
+        grant = self._grant((READ_SCOPE,))
+        record = self._owned_operation(target_id, operation_id, grant)
+        if isinstance(record, dict):
+            return record
+        if record.intent.action != BETA_ACCEPTANCE_ACTION:
+            return self._response("NOT_FOUND", "operation_not_found")
+        return self._project_beta_acceptance(record)
+
     @staticmethod
     def _ready_to_reevaluate(observed: dict[str, object], expected_run: str, expected_generation: str) -> bool:
         observation = observed.get("observation")
@@ -766,4 +868,6 @@ class ManagementRuntime:
             ManagementTool("auto_coder_stop_worker", self.stop_worker, (READ_SCOPE, DEPLOY_SCOPE), mutation),
             ManagementTool("auto_coder_restart_worker", self.restart_worker, (READ_SCOPE, DEPLOY_SCOPE), mutation),
             ManagementTool("auto_coder_deploy_beta_source", self.deploy_beta_source, (READ_SCOPE, DEPLOY_SCOPE), mutation),
+            ManagementTool("auto_coder_run_beta_acceptance", self.run_beta_acceptance, (READ_SCOPE, DEPLOY_SCOPE), mutation),
+            ManagementTool("auto_coder_beta_acceptance_get", self.beta_acceptance_get, (READ_SCOPE,), read),
         )
