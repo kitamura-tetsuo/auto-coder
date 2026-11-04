@@ -21,6 +21,10 @@ workflow, run, attempt, job, checkout, source revision, lock, runtime, target
 role, and caller-provided comparison label to compare like-for-like records.
 Malformed or unreadable records make the summary `incomplete` or `unavailable`;
 they never change the underlying helper or test result.
+Jobs with multiple pytest commands declare their expected invocation labels. The
+summary reports any label with no records as `missing_invocations` and marks the
+diagnostics incomplete rather than treating records from another invocation as
+complete evidence.
 
 These files are diagnostic evidence only. They do not make a test pass,
 authorize READY or publication, or replace the test process exit status. A

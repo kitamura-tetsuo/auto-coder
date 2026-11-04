@@ -119,6 +119,9 @@ def test_all_baseline_selectors_and_execution_contexts_are_preserved() -> None:
     ):
         assert selector in worker
     assert worker.count("uv run pytest") == 2
+    assert "AUTO_CODER_CI_TIMING_INVOCATION=worker-bridge" in worker
+    assert "AUTO_CODER_CI_TIMING_INVOCATION=worker-daemon" in worker
+    assert workflow["jobs"]["worker-bridge"]["env"]["AUTO_CODER_CI_TIMING_EXPECTED_INVOCATIONS"] == "worker-bridge,worker-daemon"
     assert "test_actual_daemon_uds_observes_admitted_drain_and_persists_receipt" in worker
     assert "-o timeout=60" in worker and "set -o pipefail" in worker
 
@@ -131,6 +134,9 @@ def test_all_baseline_selectors_and_execution_contexts_are_preserved() -> None:
     for path in ("test_management_fresh_end_to_end.py", "test_management_retained_startup_container.py", "test_management_proxy_watcher_process_integration.py"):
         assert path in host
     assert "sudo env" in host and "PYTHONPATH=$GITHUB_WORKSPACE/src" in host
+    assert 'checkout_sha="$(git rev-parse HEAD)"' in host
+    for name in ("AUTO_CODER_CI_TIMING_CHECKOUT_SHA", "GITHUB_SHA", "GITHUB_WORKFLOW", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB"):
+        assert f'"{name}=$' in host
     assert "SUPERVISOR_ALLOWED_SKIPS" not in host and "strace" in host
     allowed = workflow["jobs"]["management-self-update"]["env"]["SUPERVISOR_ALLOWED_SKIPS"]
     assert "host root is required" in allowed

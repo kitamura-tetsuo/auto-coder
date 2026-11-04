@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import os
 import signal
 import subprocess
@@ -140,11 +141,38 @@ def test_docker_propagation_is_opt_in_and_carries_verified_context(tmp_path: Pat
     monkeypatch.setattr(ci_timing, "_RECORDER", None)
     arguments = ci_timing.docker_timing_arguments(target_role="nested-install")
     joined = " ".join(arguments)
-    assert f"{tmp_path.resolve()}:/ci-timing" in joined
+    assert f"type=bind,src={tmp_path.resolve()},dst=/ci-timing" in joined
+    assert "--mount" in arguments
     assert "AUTO_CODER_CI_TIMING_INVOCATION=outer-invocation" in joined
     assert "AUTO_CODER_CI_TIMING_CHECKOUT_SHA=" in joined
     assert "AUTO_CODER_CI_TIMING_TARGET_ROLE=nested-install" in joined
     monkeypatch.setattr(ci_timing, "_RECORDER", None)
+
+
+def test_docker_timing_path_with_colon_uses_unambiguous_mount_syntax(tmp_path: Path, monkeypatch) -> None:
+    timing_directory = tmp_path / "timing:diagnostics"
+    monkeypatch.setenv("AUTO_CODER_CI_TIMING_DIR", str(timing_directory))
+    monkeypatch.setattr(ci_timing, "_RECORDER", None)
+
+    arguments = ci_timing.docker_timing_arguments(target_role="real-stage")
+
+    assert arguments[:2] == ["--mount", f"type=bind,src={timing_directory.resolve()},dst=/ci-timing"]
+    assert timing_directory.is_dir()
+    monkeypatch.setattr(ci_timing, "_RECORDER", None)
+
+
+def test_summary_marks_an_expected_missing_invocation_incomplete(tmp_path: Path) -> None:
+    timing = TimingRecorder(tmp_path)
+    timing.context = dataclasses.replace(timing.context, invocation_id="worker-bridge")
+    with timing.span("worker.batch"):
+        pass
+
+    report = summarize(tmp_path, ("worker-bridge", "worker-daemon"))
+
+    assert report["diagnostic_status"] == "incomplete"
+    assert report["observed_invocations"] == ["worker-bridge"]
+    assert report["missing_invocations"] == ["worker-daemon"]
+    assert "worker-daemon" in " ".join(report["diagnostic_errors"])
 
 
 def test_dedicated_nested_evidence_oracle_accepts_controlled_install_spans(tmp_path: Path, monkeypatch) -> None:

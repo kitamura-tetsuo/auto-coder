@@ -236,7 +236,7 @@ def docker_timing_arguments(container_directory: str = "/ci-timing", *, target_r
         "GITHUB_JOB": timing.context.job_key,
         "AUTO_CODER_CI_TIMING_TARGET_ROLE": target_role,
     }
-    arguments = ["-v", f"{timing.directory.resolve()}:{container_directory}"]
+    arguments = ["--mount", f"type=bind,src={timing.directory.resolve()},dst={container_directory}"]
     for key, value in environment.items():
         if value is not None:
             arguments.extend(["-e", f"{key}={value}"])

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 
-def summarize(directory: Path) -> dict[str, object]:
+def summarize(directory: Path, expected_invocations: tuple[str, ...] = ()) -> dict[str, object]:
     events: list[dict[str, object]] = []
     invalid = 0
     unavailable: list[str] = []
@@ -47,6 +48,14 @@ def summarize(directory: Path) -> dict[str, object]:
     phase_starts = {str(event["span_id"]): event for event in events if event.get("event_kind") == "pytest_phase_start"}
     reported_phases = {str(event["span_id"]) for event in phases if event.get("span_id") is not None}
     spans = [event for event in events if event.get("event_kind") == "span_end"]
+    observed_invocations = {
+        str(context["invocation_id"])
+        for event in events
+        if isinstance((context := event.get("context")), dict) and context.get("invocation_id") is not None
+    }
+    missing_invocations = sorted(set(expected_invocations) - observed_invocations)
+    if missing_invocations:
+        unavailable.append(f"missing expected invocation evidence: {', '.join(missing_invocations)}")
     return {
         "schema_version": 1,
         "native_pytest_phases": phases,
@@ -54,6 +63,9 @@ def summarize(directory: Path) -> dict[str, object]:
         "nested_harness_spans": spans,
         "incomplete_spans": [starts[key] for key in sorted(starts.keys() - ended)],
         "invalid_records": invalid,
+        "expected_invocations": list(expected_invocations),
+        "observed_invocations": sorted(observed_invocations),
+        "missing_invocations": missing_invocations,
         "diagnostic_status": "incomplete" if unavailable and events else "unavailable" if unavailable else "available",
         "diagnostic_errors": unavailable,
     }
@@ -64,7 +76,9 @@ def main() -> None:
     parser.add_argument("directory", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    rendered = json.dumps(summarize(args.directory), indent=2, sort_keys=True)
+    configured = os.environ.get("AUTO_CODER_CI_TIMING_EXPECTED_INVOCATIONS", "")
+    expected_invocations = tuple(value for value in configured.split(",") if value)
+    rendered = json.dumps(summarize(args.directory, expected_invocations), indent=2, sort_keys=True)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(rendered + "\n", encoding="utf-8")
