@@ -972,12 +972,26 @@ def test_authenticated_readback_is_bound_to_current_observation(management_syste
         original = connection.execute("SELECT payload FROM proof WHERE instance_id=?", (INSTANCE,)).fetchone()[0]
     old_generation = ManagementBootstrapSupervisor._identity(replace(system.child, child_generation=system.child.child_generation - 1))
     old_lifetime = ManagementBootstrapSupervisor._identity(replace(system.child, start_token="old-lifetime"))
-    for binding_name, bad in (("child_identity", old_generation), ("child_identity", old_lifetime), ("runtime_receipt", "sha256:wrong"), ("launch_nonce", "old-launch"), ("scopes", DEPLOY_SCOPE)):
+    for binding_name, bad in (
+        ("child_identity", old_generation),
+        ("child_identity", old_lifetime),
+        ("runtime_receipt", "sha256:wrong"),
+        ("launch_nonce", "old-launch"),
+        ("scopes", DEPLOY_SCOPE),
+        ("project_id", "other-project"),
+        ("resource", "https://other.invalid/mcp"),
+        ("client_id", "unconfigured-client"),
+    ):
         changed = json.loads(original)
         changed[binding_name] = bad
         with sqlite3.connect(database) as connection:
             connection.execute("UPDATE proof SET payload=? WHERE instance_id=?", (json.dumps(changed), INSTANCE))
         assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None
+        with sqlite3.connect(database) as connection:
+            connection.execute("UPDATE proof SET payload=? WHERE instance_id=?", (original, INSTANCE))
+        restored = read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30)
+        assert restored is not None
+        assert (restored.project_id, restored.resource, restored.client_id) == (proof.project_id, proof.resource, proof.client_id)
     with sqlite3.connect(database) as connection:
         connection.execute("UPDATE proof SET payload=? WHERE instance_id=?", ("not-json", INSTANCE))
     assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None

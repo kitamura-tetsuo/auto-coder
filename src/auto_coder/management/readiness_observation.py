@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 from .action_scopes import READ_SCOPE, validate_scope_set
 from .bootstrap_store import ChildPhase, ChildRecord
 from .bootstrap_supervisor import BootstrapConfig, ManagementBootstrapSupervisor, RuntimeSpec
-from .oauth_config import ManagementSettings
+from .oauth_config import ManagementSettings, load_management_settings
 from .oauth_grants import AuthenticatedGrant
 from .self_update_handoff import HandoffStore, observe_supervisor, runtime_for_receipt
 
@@ -227,7 +227,13 @@ def read_authenticated_readback(config: BootstrapConfig, *, observation_id: str,
         management_config = Path(proof.management_config_path)
         if not management_config.is_absolute() or management_config.is_symlink() or (config.management_config is not None and management_config != config.management_config):
             return None
-        if hashlib.sha256(management_config.read_bytes()).hexdigest() != proof.management_config_sha256 or hashlib.sha256(Path(proof.application_path).read_bytes()).hexdigest() != proof.application_sha256 or _live(config) != live or time.time() > observation_ends_at:
+        if hashlib.sha256(management_config.read_bytes()).hexdigest() != proof.management_config_sha256:
+            return None
+        settings = load_management_settings(management_config)
+        client = settings.oauth.client(proof.client_id)
+        if proof.project_id != settings.oauth.firebase_project_id or proof.resource != settings.oauth.resource or client is None or not set(scopes) <= set(client.allowed_scopes):
+            return None
+        if hashlib.sha256(Path(proof.application_path).read_bytes()).hexdigest() != proof.application_sha256 or _live(config) != live or time.time() > observation_ends_at:
             return None
         return proof
     except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
