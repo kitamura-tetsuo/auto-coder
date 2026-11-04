@@ -8,10 +8,12 @@ from pathlib import Path
 
 import pytest
 import yaml
+from scripts import check_source_test_shards
 
 from auto_coder.tested_source_refs import (
     REQUIRED_JOBS,
     SCHEMA_VERSION,
+    SOURCE_SHARD_JOBS,
     TEST_PROFILE,
     WORKFLOW_PATH,
 )
@@ -19,7 +21,7 @@ from auto_coder.tested_source_refs import TestedSourceError as SourceEvidenceErr
 from auto_coder.tested_source_refs import TestedSourcePublisher as SourcePublisher
 from auto_coder.tested_source_refs import TestedSourceRecord as SourceRecord
 from auto_coder.tested_source_refs import main as publication_main
-from auto_coder.tested_source_refs import parse_record, record_from_checkout, serialize_record
+from auto_coder.tested_source_refs import parse_record, record_from_checkout, serialize_record, verify_source_shard_attempt
 from auto_coder.util.gh_cache import GitDataResponse
 
 SHA = "a" * 40
@@ -31,10 +33,11 @@ def test_pull_request_full_source_selection_checks_out_head_without_publishing()
     root = Path(__file__).resolve().parents[1]
     workflow = yaml.safe_load((root / WORKFLOW_PATH).read_text())
     assert "pull_request" in workflow["on"]
-    steps = workflow["jobs"]["complete-source-tests"]["steps"]
+    steps = workflow["jobs"]["complete-source-shard"]["steps"]
     checkout = next(step for step in steps if str(step.get("uses", "")).startswith("actions/checkout@"))
     assert checkout["with"]["ref"] == "${{ github.event.pull_request.head.sha || github.sha }}"
-    assert next(step for step in steps if step.get("name") == "Run complete required source selection")["run"] == "uv run pytest -m 'not opencode_live' -vv"
+    command = next(step for step in steps if step.get("name") == "Run complete required source selection")["run"]
+    assert command.startswith("uv run pytest -m 'not opencode_live' -vv --splits 4 --group ${{ matrix.group }}")
     publisher = yaml.safe_load((root / ".github/workflows/publish-tested-source.yml").read_text())
     assert publisher["jobs"]["publish-tested-source"]["if"] == "github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main'"
 
@@ -43,6 +46,7 @@ def assert_required_workflow_profile(workflow: object) -> None:
     assert isinstance(workflow, dict)
     jobs = workflow["jobs"]
     quality = jobs["source-quality"]
+    shard = jobs["complete-source-shard"]
     complete = jobs["complete-source-tests"]
     quality_runs = [step["run"] for step in quality["steps"] if isinstance(step, dict) and isinstance(step.get("run"), str)]
     assert quality_runs == [
@@ -50,11 +54,33 @@ def assert_required_workflow_profile(workflow: object) -> None:
         'uv run python -c \'from auto_coder.build_identity import resolve_build_identity; r=resolve_build_identity("."); assert r.state == "clean" and r.source_revision == "${{ github.sha }}"\'\n',
         "uv run black --check src/ tests/\nuv run isort --check-only src/ tests/\nuv run flake8 src/ tests/\nuv run mypy --config-file pyproject.toml -p auto_coder\n",
     ]
-    complete_steps = {step.get("name"): step for step in complete["steps"] if isinstance(step, dict) and step.get("name")}
+    assert shard["strategy"] == {"fail-fast": False, "matrix": {"group": [1, 2, 3, 4]}}
+    complete_steps = {step.get("name"): step for step in shard["steps"] if isinstance(step, dict) and step.get("name")}
     assert complete_steps["Install Chromium"] == {"name": "Install Chromium", "run": "uv run playwright install --with-deps chromium"}
     assert complete_steps["Verify real headless Chromium"] == {"name": "Verify real headless Chromium", "run": "uv run python scripts/browser_preflight.py"}
-    assert complete_steps["Run complete required source selection"] == {"name": "Run complete required source selection", "run": "uv run pytest -m 'not opencode_live' -vv"}
-    assert complete["env"]["AUTO_CODER_REQUIRE_BROWSER"] == "1"
+    run = complete_steps["Run complete required source selection"]["run"]
+    assert run == ("uv run pytest -m 'not opencode_live' -vv --splits 4 " "--group ${{ matrix.group }} --splitting-algorithm duration_based_chunks " "--durations-path tests/data/pr-test-durations.json " "--junitxml source-test-results-${{ matrix.group }}.xml")
+    assert "if" not in complete_steps["Run complete required source selection"]
+    assert "continue-on-error" not in complete_steps["Run complete required source selection"]
+    fixture = complete_steps["Prepare Python-only management test fixture"]
+    assert "if" not in fixture
+    assert "continue-on-error" not in fixture
+    assert shard["env"]["AUTO_CODER_REQUIRE_BROWSER"] == "1"
+    assert complete["name"] == "Complete source tests with Chromium"
+    assert complete["if"] == "always()"
+    assert complete["needs"] == ["complete-source-shard"]
+    dependency_rejection = next(step for step in complete["steps"] if step.get("name") == "Reject an unsuccessful matrix dependency")
+    assert dependency_rejection == {
+        "name": "Reject an unsuccessful matrix dependency",
+        "if": "needs.complete-source-shard.result != 'success'",
+        "run": "exit 1",
+    }
+    aggregate = next(step for step in complete["steps"] if step.get("name") == "Verify exact current-attempt shard evidence")
+    assert aggregate["run"].startswith("uv run python scripts/check_source_test_shards.py ")
+    assert "if" not in aggregate
+    assert "continue-on-error" not in aggregate
+    assert "|| true" not in aggregate["run"]
+    assert "set +e" not in aggregate["run"]
 
 
 def publish_workflow_result(
@@ -174,6 +200,205 @@ class FakeGitData:
 
 def publisher(remote: FakeGitData) -> SourcePublisher:
     return SourcePublisher(remote, "owner/repo")  # type: ignore[arg-type]
+
+
+class FakeShardEvidence:
+    def __init__(self) -> None:
+        self.run_attempt = 2
+        self.source_sha = SHA
+        self.jobs: list[dict[str, object]] = [
+            {
+                "name": name,
+                "run_id": 17,
+                "run_attempt": 2,
+                "status": "completed",
+                "conclusion": "success",
+            }
+            for name in SOURCE_SHARD_JOBS
+        ]
+        self.total_count: int | None = len(self.jobs)
+        self.jobs_status = 200
+        self.requests: list[str] = []
+
+    def request(self, method: str, path: str, payload: dict[str, object] | None = None) -> GitDataResponse:
+        assert method == "GET" and payload is None
+        self.requests.append(path)
+        if path == "actions/runs/17/attempts/2":
+            return GitDataResponse(
+                200,
+                {
+                    "id": 17,
+                    "run_attempt": self.run_attempt,
+                    "head_sha": self.source_sha,
+                    "path": WORKFLOW_PATH,
+                    "status": "in_progress",
+                },
+            )
+        if path == "actions/runs/17/attempts/2/jobs?per_page=100":
+            return GitDataResponse(self.jobs_status, {"total_count": self.total_count, "jobs": self.jobs})
+        raise AssertionError(path)
+
+
+def run_actual_shard_gate(monkeypatch: pytest.MonkeyPatch, evidence: FakeShardEvidence) -> tuple[str, str]:
+    """Execute the production aggregate CLI and translate its process outcome."""
+    monkeypatch.setenv("GITHUB_TOKEN", "aggregate-read-token")
+    monkeypatch.setattr(check_source_test_shards, "GitHubGitDataClient", lambda _token, _repository: evidence)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_source_test_shards.py",
+            "--repository",
+            "owner/repo",
+            "--run-id",
+            "17",
+            "--run-attempt",
+            "2",
+            "--source-sha",
+            SHA,
+        ],
+    )
+    try:
+        exit_code = check_source_test_shards.main()
+    except SourceEvidenceError:
+        return ("completed", "failure")
+    assert exit_code == 0
+    return ("completed", "success")
+
+
+def run_production_aggregate_decision(
+    monkeypatch: pytest.MonkeyPatch,
+    workflow: object,
+    dependency_result: str | None,
+    evidence: FakeShardEvidence,
+) -> tuple[str, str]:
+    """Execute the aggregate's production dependency decision before readback."""
+    assert_required_workflow_profile(workflow)
+    assert isinstance(workflow, dict)
+    steps = workflow["jobs"]["complete-source-tests"]["steps"]
+    rejection = next(step for step in steps if step.get("name") == "Reject an unsuccessful matrix dependency")
+    if dependency_result != "success":
+        result = subprocess.run(["bash", "-c", rejection["run"]], check=False)
+        assert result.returncode != 0
+        return ("completed", "failure")
+    return run_actual_shard_gate(monkeypatch, evidence)
+
+
+def publish_from_actual_shard_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    workflow: object,
+    evidence: FakeShardEvidence,
+    publication: FakeGitData,
+):
+    aggregate_outcome = run_actual_shard_gate(monkeypatch, evidence)
+    return publish_workflow_result(
+        workflow,
+        publication,
+        record(),
+        {
+            "Source identity and quality": ("completed", "success"),
+            "Complete source tests with Chromium": aggregate_outcome,
+        },
+    )
+
+
+def test_source_shard_attempt_accepts_exact_complete_current_attempt() -> None:
+    remote = FakeShardEvidence()
+    verify_source_shard_attempt(remote, 17, 2, SHA)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "defect",
+    ["missing", "duplicate", "failed", "cancelled", "skipped", "unfinished", "stale", "truncated", "unavailable", "wrong_sha"],
+)
+def test_source_shard_attempt_rejects_incomplete_or_mixed_evidence(defect: str) -> None:
+    remote = FakeShardEvidence()
+    if defect == "missing":
+        remote.jobs.pop()
+        remote.total_count = len(remote.jobs)
+    elif defect == "duplicate":
+        remote.jobs.append(dict(remote.jobs[0]))
+        remote.total_count = len(remote.jobs)
+    elif defect == "failed":
+        remote.jobs[0]["conclusion"] = "failure"
+    elif defect in {"cancelled", "skipped"}:
+        remote.jobs[0]["conclusion"] = defect
+    elif defect == "unfinished":
+        remote.jobs[0]["status"] = "in_progress"
+        remote.jobs[0]["conclusion"] = None
+    elif defect == "stale":
+        remote.jobs[0]["run_attempt"] = 1
+    elif defect == "truncated":
+        remote.total_count = len(remote.jobs) + 1
+    elif defect == "unavailable":
+        remote.jobs_status = 503
+    else:
+        remote.source_sha = OTHER_SHA
+    with pytest.raises(SourceEvidenceError):
+        verify_source_shard_attempt(remote, 17, 2, SHA)  # type: ignore[arg-type]
+
+
+def test_actual_aggregate_success_is_the_publication_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    workflow = yaml.safe_load(Path(WORKFLOW_PATH).read_text(encoding="utf-8"))
+    publication = FakeGitData()
+
+    result = publish_from_actual_shard_gate(monkeypatch, workflow, FakeShardEvidence(), publication)
+
+    assert result.direct_commit_sha == SHA
+    assert publication.creates == 1
+
+
+@pytest.mark.parametrize(
+    ("dependency_result", "expected_outcome", "reads_evidence"),
+    [
+        ("success", ("completed", "success"), True),
+        ("failure", ("completed", "failure"), False),
+        ("cancelled", ("completed", "failure"), False),
+        ("skipped", ("completed", "failure"), False),
+        (None, ("completed", "failure"), False),
+    ],
+)
+def test_production_aggregate_dependency_decision_fails_before_readback(
+    dependency_result: str | None,
+    expected_outcome: tuple[str, str],
+    reads_evidence: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow = yaml.safe_load(Path(WORKFLOW_PATH).read_text(encoding="utf-8"))
+    evidence = FakeShardEvidence()
+
+    outcome = run_production_aggregate_decision(monkeypatch, workflow, dependency_result, evidence)
+
+    assert outcome == expected_outcome
+    assert bool(evidence.requests) is reads_evidence
+
+
+@pytest.mark.parametrize("defect", ["missing", "duplicate", "failed", "cancelled", "skipped", "unfinished", "stale", "truncated", "unavailable"])
+def test_actual_aggregate_failure_cannot_authorize_publication(defect: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    workflow = yaml.safe_load(Path(WORKFLOW_PATH).read_text(encoding="utf-8"))
+    evidence = FakeShardEvidence()
+    if defect == "missing":
+        evidence.jobs.pop()
+        evidence.total_count = len(evidence.jobs)
+    elif defect == "duplicate":
+        evidence.jobs.append(dict(evidence.jobs[0]))
+        evidence.total_count = len(evidence.jobs)
+    elif defect in {"failed", "cancelled", "skipped"}:
+        evidence.jobs[0]["conclusion"] = defect
+    elif defect == "unfinished":
+        evidence.jobs[0].update(status="in_progress", conclusion=None)
+    elif defect == "stale":
+        evidence.jobs[0]["run_attempt"] = 1
+    elif defect == "truncated":
+        evidence.total_count = len(evidence.jobs) + 1
+    else:
+        evidence.jobs_status = 503
+    publication = FakeGitData()
+
+    with pytest.raises(SourceEvidenceError, match="completed successful"):
+        publish_from_actual_shard_gate(monkeypatch, workflow, evidence, publication)
+
+    assert publication.creates == 0
 
 
 def test_canonical_annotation_round_trip_and_rejects_extra_fields() -> None:
@@ -325,18 +550,41 @@ def test_workflows_keep_source_authority_independent_from_legacy_image_publish()
     assert 'AUTO_CODER_REQUIRE_BROWSER: "1"' in source
 
     narrowed = deepcopy(workflow)
-    narrowed["jobs"]["complete-source-tests"]["steps"][-1]["run"] += " tests/test_tested_source_refs.py"
+    narrowed["jobs"]["complete-source-shard"]["steps"][-2]["run"] += " tests/test_tested_source_refs.py"
     narrowed_remote = FakeGitData()
     with pytest.raises(AssertionError):
         publish_workflow_result(narrowed, narrowed_remote, record(), {name: ("completed", "success") for name in REQUIRED_JOBS})
     assert narrowed_remote.creates == 0
 
     skipped = deepcopy(workflow)
-    skipped["jobs"]["complete-source-tests"]["steps"][-1]["if"] = "false"
+    skipped["jobs"]["complete-source-shard"]["steps"][-2]["if"] = "false"
     skipped_remote = FakeGitData()
     with pytest.raises(AssertionError):
         publish_workflow_result(skipped, skipped_remote, record(), {name: ("completed", "success") for name in REQUIRED_JOBS})
     assert skipped_remote.creates == 0
+
+    masked_shard = deepcopy(workflow)
+    masked_shard["jobs"]["complete-source-shard"]["steps"][-2]["continue-on-error"] = True
+    masked_shard_remote = FakeGitData()
+    with pytest.raises(AssertionError):
+        publish_workflow_result(masked_shard, masked_shard_remote, record(), {name: ("completed", "success") for name in REQUIRED_JOBS})
+    assert masked_shard_remote.creates == 0
+
+    masked_fixture = deepcopy(workflow)
+    fixture = next(step for step in masked_fixture["jobs"]["complete-source-shard"]["steps"] if step.get("name") == "Prepare Python-only management test fixture")
+    fixture["continue-on-error"] = True
+    masked_fixture_remote = FakeGitData()
+    with pytest.raises(AssertionError):
+        publish_workflow_result(masked_fixture, masked_fixture_remote, record(), {name: ("completed", "success") for name in REQUIRED_JOBS})
+    assert masked_fixture_remote.creates == 0
+
+    disabled_validator = deepcopy(workflow)
+    validator = next(step for step in disabled_validator["jobs"]["complete-source-tests"]["steps"] if step.get("name") == "Verify exact current-attempt shard evidence")
+    validator["if"] = "false"
+    disabled_validator_remote = FakeGitData()
+    with pytest.raises(AssertionError):
+        publish_workflow_result(disabled_validator, disabled_validator_remote, record(), {name: ("completed", "success") for name in REQUIRED_JOBS})
+    assert disabled_validator_remote.creates == 0
 
 
 def test_checkout_record_uses_real_clean_git_identity_and_locked_input(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:

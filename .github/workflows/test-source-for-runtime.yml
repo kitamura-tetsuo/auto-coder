@@ -7,6 +7,7 @@ name: Test Source for Runtime
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.run_id) }}
@@ -37,8 +38,12 @@ jobs:
           uv run flake8 src/ tests/
           uv run mypy --config-file pyproject.toml -p auto_coder
 
-  complete-source-tests:
-    name: Complete source tests with Chromium
+  complete-source-shard:
+    name: Complete source tests (${{ matrix.group }}/4)
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4]
     runs-on: ubuntu-latest
     env:
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
@@ -64,4 +69,46 @@ jobs:
       - name: Verify real headless Chromium
         run: uv run python scripts/browser_preflight.py
       - name: Run complete required source selection
-        run: uv run pytest -m 'not opencode_live' -vv
+        run: >-
+          uv run pytest -m 'not opencode_live' -vv
+          --splits 4 --group ${{ matrix.group }}
+          --splitting-algorithm duration_based_chunks
+          --durations-path tests/data/pr-test-durations.json
+          --junitxml source-test-results-${{ matrix.group }}.xml
+      - name: Retain shard diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: source-test-results-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.group }}
+          path: source-test-results-${{ matrix.group }}.xml
+          if-no-files-found: error
+
+  complete-source-tests:
+    name: Complete source tests with Chromium
+    if: always()
+    needs: [complete-source-shard]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject an unsuccessful matrix dependency
+        if: needs.complete-source-shard.result != 'success'
+        run: exit 1
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.22"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - name: Verify exact current-attempt shard evidence
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          uv run python scripts/check_source_test_shards.py
+          --repository '${{ github.repository }}'
+          --run-id '${{ github.run_id }}'
+          --run-attempt '${{ github.run_attempt }}'
+          --source-sha '${{ github.event.pull_request.head.sha || github.sha }}'

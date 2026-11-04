@@ -14,10 +14,11 @@ from scripts import prepare_management_test_image as preparation
 @pytest.mark.parametrize("name,selection", [("publish-beta.yml", 'bash scripts/test.sh -m "not opencode_live"'), ("test-source-for-runtime.yml", "uv run pytest -m 'not opencode_live' -vv")])
 def test_complete_workflow_prepares_python_fixture_before_unchanged_tests(name, selection):
     workflow = yaml.safe_load((Path(__file__).parents[1] / ".github/workflows" / name).read_text())
-    selected = [job for job in workflow["jobs"].values() if any(step.get("run") == selection for step in job["steps"])]
+    selected = [job for job in workflow["jobs"].values() if any(str(step.get("run", "")).startswith(selection) for step in job["steps"])]
     assert len(selected) == 1
     commands = [step.get("run") for step in selected[0]["steps"]]
-    assert commands.index("uv run python scripts/prepare_management_test_image.py") < commands.index(selection)
+    test_command = next(command for command in commands if str(command).startswith(selection))
+    assert commands.index("uv run python scripts/prepare_management_test_image.py") < commands.index(test_command)
 
 
 def test_dirty_fixture_does_not_build_or_publish_identity(tmp_path, monkeypatch):
@@ -57,5 +58,5 @@ def test_failed_fixture_never_exports_a_publishable_image(tmp_path, monkeypatch,
 
 def test_source_fixture_precedes_checkout_local_chromium_download():
     workflow = yaml.safe_load((Path(__file__).parents[1] / ".github/workflows/test-source-for-runtime.yml").read_text())
-    commands = [step.get("run") for step in workflow["jobs"]["complete-source-tests"]["steps"]]
+    commands = [step.get("run") for step in workflow["jobs"]["complete-source-shard"]["steps"]]
     assert commands.index("uv run python scripts/prepare_management_test_image.py") < commands.index("uv run playwright install --with-deps chromium")

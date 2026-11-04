@@ -36,7 +36,8 @@ def test_all_six_production_workflows_have_pr_only_supersession() -> None:
             "group": GROUP_EXPRESSION,
             "cancel-in-progress": CANCEL_EXPRESSION,
         }
-        assert workflow["permissions"] == {"contents": "read"}
+        expected_permissions = {"contents": "read", "actions": "read"} if expected_name == "Test Source for Runtime" else {"contents": "read"}
+        assert workflow["permissions"] == expected_permissions
 
 
 def test_group_event_matrix_isolates_workflows_prs_and_non_pr_runs() -> None:
@@ -75,7 +76,7 @@ def test_existing_trigger_checkout_and_check_identities_are_preserved() -> None:
     assert source["on"] == {"push": {"branches": ["main"]}, "pull_request": None}
     assert source["jobs"]["source-quality"]["name"] == "Source identity and quality"
     assert source["jobs"]["complete-source-tests"]["name"] == "Complete source tests with Chromium"
-    source_checkout = source["jobs"]["complete-source-tests"]["steps"][0]
+    source_checkout = source["jobs"]["complete-source-shard"]["steps"][0]
     assert source_checkout["with"]["ref"] == "${{ github.event.pull_request.head.sha || github.sha }}"
 
 
@@ -103,7 +104,7 @@ def test_required_profiles_and_fail_closed_prerequisites_are_unchanged() -> None
     assert required_container["env"]["AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION"] == "1"
     assert "pytest" in required_container["run"]
 
-    source_job = _load("Test Source for Runtime")["jobs"]["complete-source-tests"]
+    source_job = _load("Test Source for Runtime")["jobs"]["complete-source-shard"]
     assert source_job["env"]["AUTO_CODER_REQUIRE_BROWSER"] == "1"
     source_steps = {step.get("name", ""): step for step in source_job["steps"]}
     assert "scripts/prepare_management_test_image.py" in source_steps["Prepare Python-only management test fixture"]["run"]
