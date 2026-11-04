@@ -63,3 +63,26 @@ the GIL. Only nonfatal scheduled dumps use the Python-owned timer; this change
 does not replace a hard deadline with a GIL-dependent Python thread. A real
 `ctypes.PyDLL` regression holds the GIL past the deadline and checks that the
 process exits before the native call completes.
+
+## Four-way complete-source partition
+
+The complete `not opencode_live` selection is scheduled as four independent
+source-test jobs. Pytest's current collection remains authoritative: the fixed
+duration snapshot balances known cases, while new and parameterized node IDs are
+still assigned exactly once. Every shard independently prepares the verified
+management fixture, installs and launches Chromium, and owns its pytest process
+and diagnostic artifact.
+
+`Complete source tests with Chromium` remains the publication-facing aggregate.
+It fails unless an Actions readback finds exactly one completed-success result
+for each fixed shard name in the triggering run and attempt. The readback is
+bound to the workflow path and exact PR-head or main-push SHA, so missing,
+duplicate, stale-attempt, or mixed results cannot qualify publication. Historical
+eligible unsharded tags continue to use their recorded aggregate and quality job.
+
+The topology reduces the pytest critical path to the slowest shard. Each shard
+still pays checkout, locked installation, fixture, and browser setup costs, so
+total runner work increases by three copies of setup; queue time remains an
+external Actions measurement. Local collection regression checks establish the
+selection equivalence, but remote queue, setup, pytest, and total timings must be
+reported from an observed Actions run and are not claimed here as successful CI.

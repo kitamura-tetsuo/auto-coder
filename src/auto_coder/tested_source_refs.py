@@ -23,6 +23,7 @@ SCHEMA_VERSION = 1
 TEST_PROFILE = "source-required-v1"
 WORKFLOW_PATH = ".github/workflows/test-source-for-runtime.yml"
 REQUIRED_JOBS = frozenset({"Source identity and quality", "Complete source tests with Chromium"})
+SOURCE_SHARD_JOBS = tuple(f"Complete source tests ({group}/4)" for group in range(1, 5))
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
@@ -122,6 +123,46 @@ def _object(response: GitDataResponse, operation: str) -> dict[str, object]:
     return response.data
 
 
+def verify_source_shard_attempt(
+    client: GitHubGitDataClient,
+    run_id: int,
+    run_attempt: int,
+    source_sha: str,
+) -> None:
+    """Require all four source shards from one exact, current workflow attempt."""
+    if type(run_id) is not int or run_id <= 0 or type(run_attempt) is not int or run_attempt <= 0:
+        raise TestedSourceError("run_id and run_attempt must be positive integers")
+    _require_sha(source_sha, "source_sha")
+    run = _object(client.request("GET", f"actions/runs/{run_id}/attempts/{run_attempt}"), "source shard run readback")
+    expected = {
+        "id": run_id,
+        "run_attempt": run_attempt,
+        "head_sha": source_sha,
+        "path": WORKFLOW_PATH,
+    }
+    if any(run.get(key) != value for key, value in expected.items()):
+        raise TestedSourceError("source shards are not from the exact workflow run attempt and source")
+
+    jobs_data = _object(
+        client.request("GET", f"actions/runs/{run_id}/attempts/{run_attempt}/jobs?per_page=100"),
+        "source shard jobs readback",
+    )
+    jobs = jobs_data.get("jobs")
+    if not isinstance(jobs, list) or not jobs or jobs_data.get("total_count") != len(jobs):
+        raise TestedSourceError("source shard job evidence is missing or incomplete")
+    observed: dict[str, int] = {name: 0 for name in SOURCE_SHARD_JOBS}
+    for item in jobs:
+        if not isinstance(item, dict):
+            raise TestedSourceError("source shard job evidence is malformed")
+        name = item.get("name")
+        if name in observed:
+            observed[str(name)] += 1
+            if item.get("run_id") != run_id or item.get("run_attempt") != run_attempt or item.get("status") != "completed" or item.get("conclusion") != "success":
+                raise TestedSourceError(f"source shard did not succeed in the exact attempt: {name}")
+    if any(count != 1 for count in observed.values()):
+        raise TestedSourceError("source shard job evidence is missing or duplicated")
+
+
 class TestedSourcePublisher:
     """Validate Actions evidence and create/read one immutable annotated ref."""
 
@@ -154,7 +195,7 @@ class TestedSourcePublisher:
         jobs = jobs_data.get("jobs")
         if not isinstance(jobs, list) or jobs_data.get("total_count") != len(jobs):
             raise TestedSourceError("workflow job evidence is missing or incomplete")
-        observed: set[str] = set()
+        observed: dict[str, int] = {name: 0 for name in REQUIRED_JOBS}
         for item in jobs:
             if not isinstance(item, dict):
                 raise TestedSourceError("workflow job evidence is malformed")
@@ -162,9 +203,9 @@ class TestedSourcePublisher:
             if name in REQUIRED_JOBS:
                 if item.get("status") != "completed" or item.get("conclusion") != "success" or item.get("run_attempt") != record.run_attempt:
                     raise TestedSourceError(f"required workflow job did not succeed: {name}")
-                observed.add(str(name))
-        if observed != REQUIRED_JOBS:
-            raise TestedSourceError("required workflow job evidence is missing")
+                observed[str(name)] += 1
+        if any(count != 1 for count in observed.values()):
+            raise TestedSourceError("required workflow job evidence is missing or duplicated")
 
     def read(self, source_sha: str) -> TestedSourceReadback | None:
         name = tag_name(source_sha)

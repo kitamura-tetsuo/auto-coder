@@ -34,3 +34,10 @@ The fixture identity check runs before Chromium downloads into the checkout's
 clean Git source. The workflow still installs and verifies real Chromium before
 running the unchanged complete test selection. It does not ignore dirty source,
 relax identity validation, or treat fixture preparation as browser verification.
+
+The source workflow now prepares these prerequisites independently in each of
+four concurrent complete-selection shards. The required aggregate uses read-only
+Actions access to verify all four exact current-attempt results before it can
+supply the unchanged publication-facing job name. This does not make a PR run
+publishable, mix attempts, or change the exact main-push revision required by the
+publisher.
