@@ -191,6 +191,7 @@ jobs:
       - fresh-host
       - isolated-containers
     steps:
+      - *checkout
       - name: Require every integration group to succeed
         env:
           REQUIRED_RESULTS: ${{ toJSON(needs) }}

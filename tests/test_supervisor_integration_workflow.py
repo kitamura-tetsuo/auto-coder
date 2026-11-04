@@ -33,6 +33,7 @@ def test_parallel_groups_and_stable_fail_closed_aggregate() -> None:
     assert aggregate["name"] == "Supervisor Integration Tests"
     assert aggregate["if"] == "always()"
     assert set(aggregate["needs"]) == GROUPS
+    assert _step(aggregate, "Checkout")["uses"] == "actions/checkout@v7"
     gate = _step(aggregate, "Require every integration group to succeed")["run"]
     assert gate == "python3 scripts/validate_supervisor_aggregate.py"
     for group in GROUPS:
