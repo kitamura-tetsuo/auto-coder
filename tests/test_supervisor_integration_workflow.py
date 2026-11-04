@@ -126,8 +126,8 @@ def test_all_baseline_selectors_and_execution_contexts_are_preserved() -> None:
     for path in ("test_management_fresh_end_to_end.py", "test_management_retained_startup_container.py", "test_management_proxy_watcher_process_integration.py"):
         assert path in host
     assert "sudo env" in host and "PYTHONPATH=$GITHUB_WORKSPACE/src" in host
-    assert "SUPERVISOR_ALLOWED_SKIP_REASONS" not in host and "strace" in host
-    allowed = workflow["jobs"]["management-self-update"]["env"]["SUPERVISOR_ALLOWED_SKIP_REASONS"]
+    assert "SUPERVISOR_ALLOWED_SKIPS" not in host and "strace" in host
+    allowed = workflow["jobs"]["management-self-update"]["env"]["SUPERVISOR_ALLOWED_SKIPS"]
     assert "host root is required" in allowed
     assert "production-profile image is not available locally" in allowed
 
@@ -136,6 +136,9 @@ def test_all_baseline_selectors_and_execution_contexts_are_preserved() -> None:
         assert path in containers["run"]
     assert "-m supervisor_integration" in containers["run"]
     assert containers["env"]["AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION"] == "1"
+    required = json.loads(workflow["jobs"]["isolated-containers"]["env"]["SUPERVISOR_REQUIRED_NODEIDS"])
+    assert len(required) == 7
+    assert all(nodeid.startswith("tests/") for nodeid in required)
 
 
 def test_result_inventory_fails_closed_and_discovers_whole_file_cases(tmp_path: Path, _use_real_commands) -> None:
@@ -161,6 +164,58 @@ def test_result_inventory_rejects_mandatory_skip(tmp_path: Path, _use_real_comma
     result = subprocess.run(["uv", "run", "pytest", "-p", "supervisor_ci_results", "-q", str(test_file)], env=env, capture_output=True, text=True)
     assert result.returncode != 0
     assert json.loads(report.read_text())["outcomes"].popitem()[1] == "forbidden-skip"
+
+
+def test_result_inventory_rejects_deselected_baseline_and_discovers_new_marked_case(tmp_path: Path, _use_real_commands) -> None:
+    test_file = tmp_path / "test_container_group.py"
+    report = tmp_path / "report.json"
+    required = ["test_container_group.py::test_baseline", "test_container_group.py::test_lost_marker"]
+    test_file.write_text("import pytest\n" "@pytest.mark.supervisor_integration\n" "def test_baseline(): pass\n" "def test_lost_marker(): pass\n" "@pytest.mark.supervisor_integration\n" "def test_added_marked_case(): pass\n")
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(ROOT / "scripts"),
+        "SUPERVISOR_RESULTS_PATH": str(report),
+        "SUPERVISOR_REQUIRED_NODEIDS": json.dumps(required),
+    }
+    command = ["uv", "run", "pytest", "-p", "supervisor_ci_results", "--rootdir", str(tmp_path), "-q", "-m", "supervisor_integration", str(test_file)]
+    result = subprocess.run(command, env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    payload = json.loads(report.read_text())
+    assert payload["missing_selection"] == ["test_container_group.py::test_lost_marker"]
+    assert "test_container_group.py::test_added_marked_case" in payload["collected"]
+
+    test_file.write_text(test_file.read_text().replace("def test_lost_marker", "@pytest.mark.supervisor_integration\ndef test_lost_marker"))
+    result = subprocess.run(command, env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(report.read_text())
+    assert not payload["missing_selection"]
+    assert len(payload["collected"]) == 3
+
+
+@pytest.mark.parametrize(
+    "filename,allowed_nodeid,expected_success",
+    [
+        ("test_management_self_update_integration.py", "tests/test_management_fresh_host_integration.py::test_real_prior_supervisor_binds_instance_and_published_port", False),
+        ("test_management_fresh_host_integration.py", "test_management_fresh_host_integration.py::test_real_prior_supervisor_binds_instance_and_published_port", True),
+    ],
+)
+def test_management_skip_permission_is_scoped_to_duplicate_host_case(tmp_path: Path, _use_real_commands, filename: str, allowed_nodeid: str, expected_success: bool) -> None:
+    test_file = tmp_path / filename
+    test_file.write_text("import pytest\n" "def test_real_prior_supervisor_binds_instance_and_published_port():\n" "    pytest.skip('production-profile image is not available locally')\n")
+    report = tmp_path / "report.json"
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(ROOT / "scripts"),
+        "SUPERVISOR_RESULTS_PATH": str(report),
+        "SUPERVISOR_ALLOWED_SKIPS": json.dumps({allowed_nodeid: "production-profile image is not available locally"}),
+    }
+    result = subprocess.run(
+        ["uv", "run", "pytest", "-p", "supervisor_ci_results", "--rootdir", str(tmp_path), "-q", str(test_file)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert (result.returncode == 0) is expected_success, result.stdout + result.stderr
 
 
 def test_container_fixture_has_no_host_docker_or_external_network_access() -> None:
