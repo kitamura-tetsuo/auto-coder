@@ -91,6 +91,7 @@ jobs:
           # ephemeral runner: it reads kernel namespace and proxy ownership
           # evidence and traces execve; the child gets no added privileges.
           sudo env "PATH=$PATH" "PYTHONPATH=$GITHUB_WORKSPACE/src" \
+            "AUTO_CODER_CI_TIMING_DIR=$AUTO_CODER_CI_TIMING_DIR" \
             "$GITHUB_WORKSPACE/.venv/bin/python" -m pytest -q -vv -o timeout=240 \
             tests/test_management_fresh_host_integration.py::test_real_docker_published_listener_is_owned_by_replacement \
             tests/test_management_fresh_host_integration.py::test_real_docker_listener_rejects_mismatched_container_address \
