@@ -261,7 +261,19 @@ class BetaAcceptanceHandler:
         if record.effect.state is not EffectState.SENT_UNKNOWN:
             return self.forward(record)
         try:
+            observation = self.producer.read(record.operation_id)
+            if observation.state is not SmokeState.COMPLETE or observation.evidence is None:
+                return record
+            evidence = observation.evidence
+            if evidence.local_result is not LocalResult.PASS or evidence.content_sha256 != record.effect.correlation_identity:
+                return record
             published = self.publisher.read(record.operation_id)
+            expected_annotation = annotation_from_local(evidence, self.publisher.repository)
         except (SourceAcceptanceError, RuntimeError, OSError):
             return record
-        return self._complete(record, published) if published is not None else record
+        if published is None or published.annotation != expected_annotation:
+            return record
+        expected = json.loads(expected_annotation)
+        if published.direct_commit_sha != expected["source_sha"]:
+            return record
+        return self._complete(record, published)

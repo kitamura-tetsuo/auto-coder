@@ -43,13 +43,25 @@ class Git:
         return GitDataResponse(404)
 
 
-def evidence(result="PASS"):
+def evidence(result="PASS", *, operation_id="accept-1", source_sha=SHA, runtime_id="runtime-a"):
     content = json.dumps(
-        {"schema_version": 1, "record_type": "beta-runtime-smoke", "operation_id": "accept-1", "repository": "owner/repo", "source_sha": SHA, "local_evidence_id": "beta-runtime-smoke-v1:accept-1", "local_result": result, "capture": {"source": {"repository": "owner/repo", "source_sha": SHA}}},
+        {
+            "schema_version": 1,
+            "record_type": "beta-runtime-smoke",
+            "operation_id": operation_id,
+            "repository": "owner/repo",
+            "source_sha": source_sha,
+            "local_evidence_id": f"beta-runtime-smoke-v1:{operation_id}",
+            "local_result": result,
+            "capture": {
+                "source": {"repository": "owner/repo", "source_sha": source_sha},
+                "installed_runtime_id": runtime_id,
+            },
+        },
         sort_keys=True,
         separators=(",", ":"),
     )
-    return LocalSmokeEvidence("beta-runtime-smoke-v1:accept-1", hashlib.sha256(content.encode()).hexdigest(), content)
+    return LocalSmokeEvidence(f"beta-runtime-smoke-v1:{operation_id}", hashlib.sha256(content.encode()).hexdigest(), content)
 
 
 @pytest.mark.parametrize("lost", [False, True])
@@ -113,3 +125,78 @@ def test_nonpass_local_result_is_durably_rejected_before_publication(tmp_path):
         "local_result": LocalResult.BLOCKED.value,
         "reason": "installed_candidate_mismatch",
     }
+
+
+@pytest.mark.parametrize(
+    "published_source,published_runtime,settles",
+    [(SHA, "runtime-a", True), ("c" * 40, "runtime-a", False), (SHA, "runtime-b", False)],
+)
+def test_reconcile_confirms_only_the_original_durable_local_evidence(tmp_path, published_source, published_runtime, settles):
+    journal = ManagementOperationStore(tmp_path)
+    authority = AcceptedAuthority(
+        "issuer",
+        "resource",
+        "project",
+        "operator",
+        "client",
+        "grant",
+        ("auto-coder.read", "auto-coder.deploy"),
+        1,
+        2,
+    )
+    admitted = journal.admit(
+        OperationIntent(
+            ManagedTarget("beta", "beta", "owner/repo"),
+            "run_beta_acceptance",
+            (),
+            "key",
+        ),
+        authority,
+    )
+    assert admitted.record is not None
+    operation_id = admitted.record.operation_id
+    original = evidence(operation_id=operation_id)
+    begun = journal.begin_effect(
+        operation_id,
+        admitted.record.revision,
+        owner_attempt_id=f"publish-{operation_id}",
+        attempt_id=f"publish-{operation_id}",
+        correlation_identity=original.content_sha256,
+    )
+    assert begun.record is not None
+    held = journal.transition(
+        operation_id,
+        begun.record.revision,
+        OperationPhase.NEEDS_ATTENTION,
+        safe_error_category="UNKNOWN:source_acceptance_publication",
+    )
+    assert held.record is not None
+
+    git = Git()
+    publisher = SourceAcceptancePublisher(git, "owner/repo")
+    publisher.publish(
+        evidence(
+            operation_id=operation_id,
+            source_sha=published_source,
+            runtime_id=published_runtime,
+        ),
+        "2026-01-01T00:00:00Z",
+    )
+
+    class Producer:
+        def __init__(self):
+            self.journal = journal
+
+        def read(self, requested_operation_id):
+            assert requested_operation_id == operation_id
+            return SmokeObservation(
+                SmokeState.COMPLETE,
+                operation_id,
+                "pass",
+                original,
+            )
+
+    reconstructed = BetaAcceptanceHandler(object(), Producer(), publisher)
+    result = reconstructed.reconcile(held.record)
+    assert (result.phase is OperationPhase.SUCCEEDED) is settles
+    assert (result.effect.state is EffectState.CONFIRMED) is settles
