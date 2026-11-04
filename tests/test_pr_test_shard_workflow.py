@@ -56,7 +56,7 @@ def test_production_step_passes_correct_shard_once(tmp_path, group):
 
     assert result.returncode == 0
     assert (tmp_path / "invocations").read_text().splitlines() == [
-        f"--splits 4 --group {group} --splitting-algorithm duration_based_chunks --durations-path pr-test-logs/shard-{group}/normalized-durations.json -m not browser and not opencode_live and not muse_live and not supervisor_integration -vv -o faulthandler_timeout=30"
+        f"--ci-tests-only --splits 4 --group {group} --splitting-algorithm duration_based_chunks --durations-path pr-test-logs/shard-{group}/normalized-durations.json -m not browser and not opencode_live and not muse_live and not supervisor_integration -vv -o faulthandler_timeout=30"
     ]
     assert "shard-output" in result.stdout
     assert (tmp_path / f"pr-test-logs/shard-{group}/attempt-1.stdout.log").exists()
@@ -78,7 +78,11 @@ def test_completed_nonzero_status_is_not_retried(tmp_path, status):
 
 
 def test_changed_duration_input_cannot_be_accepted_or_retried(tmp_path):
-    result = _run_step(tmp_path, 1, '#!/bin/bash\nprintf "{}" > "$8"\nexit 0\n')
+    result = _run_step(
+        tmp_path,
+        1,
+        '#!/bin/bash\nwhile [ "$1" != "--durations-path" ]; do shift; done\nprintf "{}" > "$2"\nexit 0\n',
+    )
     assert result.returncode != 0
     assert "Duration input changed during attempt 1" in result.stderr
     assert "starting retry" not in result.stderr
@@ -346,6 +350,29 @@ def test_workflow_contract_and_aggregate_shell():
     assert "--max-attempts 2" in test_step["run"]
     assert "scripts/run_pr_test_shard.py" in test_step["run"]
     aggregate = workflow["jobs"]["tests"]
-    assert aggregate["needs"] == "tests-shard"
+    assert aggregate["needs"] == ["lint", "tests-shard"]
     assert aggregate["if"] == "always()"
-    assert '!= "success"' in aggregate["steps"][0]["run"]
+    aggregate_shell = aggregate["steps"][0]["run"]
+    assert "needs.lint.result" in aggregate_shell
+    assert "needs.tests-shard.result" in aggregate_shell
+
+
+@pytest.mark.parametrize(
+    "lint,shards,expected",
+    [
+        ("success", "success", 0),
+        ("failure", "success", 1),
+        ("cancelled", "success", 1),
+        ("skipped", "success", 1),
+        ("", "success", 1),
+        ("success", "failure", 1),
+        ("success", "cancelled", 1),
+        ("success", "skipped", 1),
+        ("success", "", 1),
+    ],
+)
+def test_aggregate_requires_current_dependency_success(lint, shards, expected):
+    shell = _workflow()["jobs"]["tests"]["steps"][0]["run"]
+    shell = shell.replace("${{ needs.lint.result }}", lint).replace("${{ needs.tests-shard.result }}", shards)
+    result = subprocess.run(["bash", "-c", shell], capture_output=True, text=True)
+    assert (result.returncode == 0) == (expected == 0)

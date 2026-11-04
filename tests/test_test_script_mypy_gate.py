@@ -492,6 +492,24 @@ def test_collector_exit_status_is_returned_not_overwritten(fixture_repo: Path) -
     assert "All code quality checks passed" in result.stdout
 
 
+def test_explicit_ci_tests_only_skips_quality_and_preserves_argv_and_status(fixture_repo: Path) -> None:
+    _provision_uv_venv(fixture_repo)
+    _write(fixture_repo, "src/auto_coder/_tests_only_leaf.py", 'value: int = "wrong"\n')
+    argv = ["-m", "not browser", "--maxfail", "1"]
+
+    result = _run_test_script(
+        fixture_repo,
+        ["--ci-tests-only", *argv],
+        ci=True,
+        extra_env={"STUB_COLLECTOR_EXIT_CODE": "7"},
+    )
+
+    assert result.returncode == 7
+    assert "Running code quality checks" not in result.stdout
+    assert "Installing code quality tools" not in result.stdout
+    assert json.loads((fixture_repo / "collector-invocations.json").read_text()) == [argv]
+
+
 # ---------------------------------------------------------------------------
 # AS-005: the target-container failure reaches the caller
 # ---------------------------------------------------------------------------
