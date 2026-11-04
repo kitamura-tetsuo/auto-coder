@@ -133,10 +133,14 @@ def _grant_is_current(settings: ManagementSettings, proof: ReadinessProof, scope
             "SELECT client_id,resource,scope,project,uid,expires,revoked FROM grants WHERE id=?",
             (proof.grant_id,),
         ).fetchone()
+    if row is None:
+        return False
+    grant_scopes = validate_scope_set(tuple(row[2].split()))
     return (
         authority == (settings.oauth.canonical_issuer, settings.oauth.resource, settings.oauth.firebase_project_id)
-        and row is not None
-        and row[:5] == (proof.client_id, proof.resource, " ".join(scopes), proof.project_id, proof.uid)
+        and (row[0], row[1], row[3], row[4]) == (proof.client_id, proof.resource, proof.project_id, proof.uid)
+        and row[2] == " ".join(grant_scopes)
+        and set(scopes) <= set(grant_scopes)
         and isinstance(row[5], (int, float))
         and not isinstance(row[5], bool)
         and math.isfinite(row[5])

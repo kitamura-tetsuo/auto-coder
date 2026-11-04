@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from auto_coder.management.action_scopes import READ_SCOPE
 from auto_coder.management.bootstrap_store import ChildPhase
 from auto_coder.management.bootstrap_supervisor import ManagementBootstrapSupervisor
 from auto_coder.management.recovery_mailbox import RecoveryMailbox
@@ -28,7 +29,13 @@ def _launch_history(system: ManagementSystem) -> list[int]:
 @pytest.mark.parametrize("management_system", ["recovery", "recovery_installed"], indirect=True)
 def test_real_local_cli_competing_recoveries_and_authenticated_readback(management_system: ManagementSystem) -> None:
     system = management_system
-    token = system.issue(uid="other")
+    tokens = system.issue_tokens(uid="other")
+    token = tokens["access_token"]
+    refresh_token = tokens["refresh_token"]
+    assert isinstance(token, str) and isinstance(refresh_token, str)
+    with sqlite3.connect(system.settings.oauth.database_path) as connection:
+        original_grant = connection.execute("SELECT * FROM grants").fetchone()
+    assert original_grant is not None and original_grant[3] == " ".join(system.settings.oauth.enabled_scopes)
     old = system.child
     assert old.selected_runtime == system.bootstrap.initial_runtime
     assert _launch_history(system) == [old.pid]
@@ -96,13 +103,23 @@ def test_real_local_cli_competing_recoveries_and_authenticated_readback(manageme
     assert len([row for row in _effect_counts(system) if row[0] == "RECOVER_SELECTED"]) == 1
     before = _effect_counts(system)
     assert system.request(None, "auto_coder_whoami", {"observation_id": claimed.observation_id}).status_code == 401
-    assert system.call(token, "auto_coder_whoami", {"observation_id": claimed.observation_id})["uid"] == "other"
+    with system.connect() as client:
+        narrowed_response = client.post(
+            "/token",
+            data={"grant_type": "refresh_token", "client_id": "other-client", "refresh_token": refresh_token, "resource": system.origin + "/mcp", "scope": READ_SCOPE},
+        )
+    assert narrowed_response.status_code == 200, narrowed_response.text
+    narrowed = narrowed_response.json()
+    assert narrowed["scope"] == READ_SCOPE
+    assert system.call(narrowed["access_token"], "auto_coder_whoami", {"observation_id": claimed.observation_id})["uid"] == "other"
     completed = _wait(lambda: (item if (item := mailbox.get(claimed.intent.request_id)).status == "succeeded" else None), timeout=30, description="authenticated readiness")
     assert completed.child_identity == ManagementBootstrapSupervisor._identity(new)
     message = "Management local recovery outcome request=" + completed.intent.request_id + " status=succeeded"
     assert _wait(lambda: message in (system.root / "supervisor.log").read_text(), timeout=10, description="local recovery outcome log")
     assert submit(completed.intent.request_id)["status"] == "succeeded"
     assert _effect_counts(system) == before
+    with sqlite3.connect(system.settings.oauth.database_path) as connection:
+        assert connection.execute("SELECT * FROM grants").fetchone() == original_grant
     assert system.child == new
     assert _launch_history(system) == [old.pid, new.pid]
     assert not system.journal.list_operations().records
