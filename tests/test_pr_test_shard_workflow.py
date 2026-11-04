@@ -77,6 +77,58 @@ def test_completed_nonzero_status_is_not_retried(tmp_path, status):
     assert "starting retry" not in result.stderr
 
 
+def test_completed_failure_observed_after_deadline_is_not_a_timeout(tmp_path, monkeypatch):
+    """A completed group wins over the deadline at the production supervisor."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copy(ROOT / "scripts/run_pr_test_shard.py", scripts)
+    (scripts / "test.sh").write_text("#!/bin/bash\nexit 9\n", encoding="utf-8")
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    durations = tmp_path / "durations.json"
+    durations.write_text('{"fixture":1.0}\n', encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location("post_deadline_runner", scripts / "run_pr_test_shard.py")
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    real_monotonic = time.monotonic
+    calls = 0
+    launched_process = None
+
+    def observe_after_completion():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return 0.0
+        if calls == 2:
+            deadline = real_monotonic() + 2
+            assert launched_process is not None
+            while runner._group_members(launched_process.pid) and real_monotonic() < deadline:
+                time.sleep(0.001)
+            return 2.0
+        return 2.0
+
+    monkeypatch.chdir(tmp_path)
+    real_popen = runner.subprocess.Popen
+    launched = []
+
+    def completed_popen(*args, **kwargs):
+        nonlocal launched_process
+        launched.append(args[0])
+        launched_process = real_popen(*args, **kwargs)
+        return launched_process
+
+    monkeypatch.setattr(runner.subprocess, "Popen", completed_popen)
+    monkeypatch.setattr(runner.time, "monotonic", observe_after_completion)
+    outcome = runner._run_attempt(1, 1, 1.0, 0.1, log_dir, durations)
+
+    assert outcome == "failure"
+    assert len(launched) == 1
+    assert "ordinary failure with status 9" in (log_dir / "attempt-1.supervisor.log").read_text()
+    runner.logger.remove()
+
+
 def test_changed_duration_input_cannot_be_accepted_or_retried(tmp_path):
     result = _run_step(
         tmp_path,

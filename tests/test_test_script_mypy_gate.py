@@ -37,6 +37,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 pytestmark = pytest.mark.usefixtures("_use_real_commands")
 
@@ -508,6 +509,53 @@ def test_explicit_ci_tests_only_skips_quality_and_preserves_argv_and_status(fixt
     assert "Running code quality checks" not in result.stdout
     assert "Installing code quality tools" not in result.stdout
     assert json.loads((fixture_repo / "collector-invocations.json").read_text()) == [argv]
+
+
+def test_workflow_shard_reaches_real_test_script_without_weakening_default(fixture_repo: Path) -> None:
+    """Exercise workflow -> bounded runner -> real test.sh -> collector."""
+    _provision_uv_venv(fixture_repo)
+    shutil.copy2(RUN_PR_TEST_SHARD, fixture_repo / "scripts/run_pr_test_shard.py")
+    _write(fixture_repo, "tests/data/pr-test-durations.json", '{"fixture": 1.0}\n')
+    _write(fixture_repo, "src/auto_coder/_workflow_leaf.py", 'value: int = "wrong"\n')
+    workflow = yaml.safe_load((ROOT / ".github/workflows/pr-tests.yml").read_text(encoding="utf-8"))
+    command = next(step["run"] for step in workflow["jobs"]["tests-shard"]["steps"] if step["name"].startswith("Run tests with coverage"))
+    command = command.replace("${{ matrix.group }}", "2")
+    command = command.replace("uv run python", str(fixture_repo / ".venv/bin/python"))
+    env = _uv_env(GITHUB_ACTIONS="true", STUB_COLLECTOR_EXIT_CODE="7")
+
+    shard = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", command],
+        cwd=fixture_repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    expected = [
+        "--splits",
+        "4",
+        "--group",
+        "2",
+        "--splitting-algorithm",
+        "duration_based_chunks",
+        "--durations-path",
+        "pr-test-logs/shard-2/normalized-durations.json",
+        "-m",
+        "not browser and not opencode_live and not muse_live and not supervisor_integration",
+        "-vv",
+        "-o",
+        "faulthandler_timeout=30",
+    ]
+    assert shard.returncode != 0
+    assert "ordinary failure with status 7" in shard.stderr
+    assert "Running code quality checks" not in shard.stdout
+    assert json.loads((fixture_repo / "collector-invocations.json").read_text()) == [expected]
+
+    default = _run_test_script(fixture_repo, expected, ci=True, extra_env={"STUB_COLLECTOR_EXIT_CODE": "0"})
+    assert default.returncode != 0
+    assert "_workflow_leaf.py" in default.stdout + default.stderr
+    assert json.loads((fixture_repo / "collector-invocations.json").read_text()) == [expected]
 
 
 # ---------------------------------------------------------------------------

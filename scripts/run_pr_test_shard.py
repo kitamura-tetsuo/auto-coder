@@ -239,17 +239,10 @@ def _run_attempt(group: int, attempt: int, timeout: float, grace: float, log_dir
                 logger.error("Attempt {} cancelled by signal {} after {:.3f}s", attempt, cancel_signal, now - started)
                 result = "cancelled" if _stop_group(process, pgid, grace) else "cleanup-failure"
                 break
-            if last_test_progress is not None and now - last_test_progress >= progress_idle_limit:
-                logger.error("Attempt {} stopped after {:.3f}s without a completed pytest test", attempt, now - last_test_progress)
-                result = "timeout" if _stop_group(process, pgid, grace) else "cleanup-failure"
-                break
-            if now >= deadline and last_test_progress is not None and now - last_test_progress < progress_idle_limit and deadline < absolute_deadline:
-                deadline = min(absolute_deadline, now + progress_idle_limit)
-                logger.info("Attempt {} extending bounded deadline to {:.3f}s: pytest tests are still completing", attempt, deadline - started)
-            if now >= deadline:
-                logger.error("Attempt {} timed out after {:.3f}s", attempt, now - started)
-                result = "timeout" if _stop_group(process, pgid, grace) else "cleanup-failure"
-                break
+            # A completed owned process group is authoritative even if the
+            # supervisor first observes it after the nominal deadline.  In
+            # particular, a finished nonzero attempt is an ordinary failure,
+            # not a timeout eligible for retry.
             status = process.poll()
             if status is not None and not _group_members(pgid):
                 _drain(selector, output_files, progress_tail)
@@ -260,6 +253,17 @@ def _run_attempt(group: int, attempt: int, timeout: float, grace: float, log_dir
                 else:
                     logger.error("Attempt {} ordinary failure with status {} after {:.3f}s", attempt, status, elapsed)
                     result = "failure"
+                break
+            if last_test_progress is not None and now - last_test_progress >= progress_idle_limit:
+                logger.error("Attempt {} stopped after {:.3f}s without a completed pytest test", attempt, now - last_test_progress)
+                result = "timeout" if _stop_group(process, pgid, grace) else "cleanup-failure"
+                break
+            if now >= deadline and last_test_progress is not None and now - last_test_progress < progress_idle_limit and deadline < absolute_deadline:
+                deadline = min(absolute_deadline, now + progress_idle_limit)
+                logger.info("Attempt {} extending bounded deadline to {:.3f}s: pytest tests are still completing", attempt, deadline - started)
+            if now >= deadline:
+                logger.error("Attempt {} timed out after {:.3f}s", attempt, now - started)
+                result = "timeout" if _stop_group(process, pgid, grace) else "cleanup-failure"
                 break
             selector.select(timeout=min(POLL_INTERVAL_SECONDS, max(0.0, deadline - now)))
 
