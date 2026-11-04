@@ -1492,8 +1492,6 @@ class _GitHubClosureThreadTransport:
 
     def _discussion_is_current(self) -> bool:
         expected = dict(self.payload.discussion_evidence).get(self.thread.id, "")
-        if not expected:
-            return False
         threads = self.client.get_pr_review_threads_strict(self.payload.repository, self.payload.pr_number)
         matches = [thread for thread in threads if thread.id == self.thread.id]
         if len(matches) != 1:
@@ -1501,7 +1499,7 @@ class _GitHubClosureThreadTransport:
         try:
             login = self.client.get_authenticated_user_login()
             actual = substantive_discussion_digest(matches[0], login)
-            if actual == expected:
+            if expected and actual == expected:
                 return True
             # Keep the immutable publication/effect identity. A later, actually
             # retained independent decision may refresh the dependency binding,
@@ -1520,7 +1518,7 @@ class _GitHubClosureThreadTransport:
             if bound.attempt_sequence <= view.record.attempt_sequence:
                 return False
             _assert_ordinary_discussion_current(self.client, self.payload.repository, self.payload.pr_number, bound)
-            return any(item.thread_id == self.thread.id and item.discussion_evidence_digest == actual for item in bound.thread_dispositions)
+            return any(item.thread_id == self.thread.id and item.status == "ADDRESSED" and item.evidence.strip() and item.discussion_evidence_digest == actual for item in bound.thread_dispositions)
         except Exception:
             return False
 

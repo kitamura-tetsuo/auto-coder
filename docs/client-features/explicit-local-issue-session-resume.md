@@ -57,6 +57,11 @@ policy. The original implementation prompt accompanies the continuation, with
 instructions to inspect retained edits and complete the task and relevant tests.
 MSP pipe readiness supports high-numbered open file descriptors without changing
 the invocation deadline, stderr draining, or identity and failure checks.
+The high-descriptor regression duplicates the real parent pipe ends above 1023
+before the first production write. It also releases test-owned low descriptors
+immediately before host launch, so unrelated descriptor closure cannot silently
+turn the regression into a low-descriptor test. The fixture closes its duplicates
+and retains the existing session, refusal, publication and process-group checks.
 Only a confirmed final response after writer settlement can hand files back to
 the retained publication workspace and enter the ordinary result/finalizer path.
 Failure preserves the retained workspace and a reconciliation reason.
@@ -115,3 +120,11 @@ repeated timeout, and a killed controller followed by a reopened store and the r
 MSP transport. Each case asserts one session start, exact-session resumption,
 preserved partial edits, unchanged attempt/incarnation, and publication of both
 the original and continued edits to a real local Git remote.
+
+The descriptor-release regression verifies that all 64 fixture-owned reservations
+are below1024 and releases them at the actual production Popen boundary. It
+records the real parent pipe descriptors before duplication and requires each to
+be below1024; only then can the unchanged >=1024 production-write assertion
+prove the fixture correction. A saturated low-descriptor layout fails this
+bounded precondition instead of silently passing an unexercised release case.
+No unrelated descriptor is closed.

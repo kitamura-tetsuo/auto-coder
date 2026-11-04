@@ -16,15 +16,22 @@ import sqlite3
 import stat
 import struct
 import subprocess
+import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+from loguru import logger
 
 from .fresh_initialization import FreshInitializationIntent
 
 
 class HostObservationUnavailable(ValueError):
     """The exact prior containment or lifetime could not be established."""
+
+
+class _TaskNamespaceUnavailable(ValueError):
+    """An existing task's network link could not be positively observed."""
 
 
 @dataclass(frozen=True)
@@ -480,7 +487,7 @@ def _validate_host_proc_profile(pid_namespace: str, uid_map: str, mountinfo: str
 def _task_is_unreferenced_zombie(task: Path) -> bool:
     """Prove the same exited task has no nsproxy; never waive unknown evidence."""
     if not task.name.isdecimal() or int(task.name) <= 0 or str(int(task.name)) != task.name:
-        return False
+        raise ValueError("task identity is malformed")
     descriptor = None
     try:
         descriptor = os.open(task, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -503,7 +510,9 @@ def _task_is_unreferenced_zombie(task: Path) -> bool:
         except FileNotFoundError:
             return identity() == before
         return False
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        # Another disappearing task entry can be reobserved by a whole scan.
+        # Permission and malformed-proof errors must instead remain hard errors.
         return False
     finally:
         if descriptor is not None:
@@ -530,8 +539,15 @@ def _assert_all_task_networks_absent(proc_root: Path, namespace: str) -> None:
             try:
                 current = os.readlink(task / "ns/net")
             except FileNotFoundError:
-                if task.exists() and not _task_is_unreferenced_zombie(task):
-                    raise ValueError("task network namespace is unavailable")
+                if task.exists():
+                    try:
+                        zombie = _task_is_unreferenced_zombie(task)
+                    except (OSError, ValueError) as exc:
+                        if isinstance(exc, ProcessLookupError) and exc.errno == errno.ESRCH:
+                            raise _TaskNamespaceUnavailable(f"task lifetime disappeared during namespace proof (pid={process.name}, tid={task.name}; ESRCH)") from exc
+                        raise ValueError(f"task network namespace is unavailable (pid={process.name}, tid={task.name}): lifetime proof failed ({type(exc).__name__})") from exc
+                    if not zombie:
+                        raise _TaskNamespaceUnavailable(f"task network namespace is unavailable (pid={process.name}, tid={task.name})")
                 continue
             if current == namespace:
                 raise HostObservationUnavailable("prior network namespace still has a task")
@@ -542,12 +558,20 @@ def assert_prior_network_unreferenced(namespace: str) -> None:
     if not namespace.startswith("net:[") or not namespace.endswith("]") or not namespace[5:-1].isdecimal():
         raise HostObservationUnavailable("invalid prior network namespace")
     try:
-        if os.geteuid() != 0 or os.readlink("/proc/self/ns/pid") != os.readlink("/proc/1/ns/pid") or os.readlink("/proc/self/ns/user") != os.readlink("/proc/1/ns/user"):
-            raise HostObservationUnavailable("observer is not in the host PID namespace")
-        _validate_host_proc_profile(os.readlink("/proc/self/ns/pid"), Path("/proc/self/uid_map").read_text(encoding="ascii"), Path("/proc/self/mountinfo").read_text(encoding="ascii"))
-        _assert_all_task_networks_absent(Path("/proc"), namespace)
+        for attempt in range(3):
+            try:
+                if os.geteuid() != 0 or os.readlink("/proc/self/ns/pid") != os.readlink("/proc/1/ns/pid") or os.readlink("/proc/self/ns/user") != os.readlink("/proc/1/ns/user"):
+                    raise HostObservationUnavailable("observer is not in the host PID namespace")
+                _validate_host_proc_profile(os.readlink("/proc/self/ns/pid"), Path("/proc/self/uid_map").read_text(encoding="ascii"), Path("/proc/self/mountinfo").read_text(encoding="ascii"))
+                _assert_all_task_networks_absent(Path("/proc"), namespace)
+                return
+            except _TaskNamespaceUnavailable as exc:
+                if attempt == 2:
+                    raise
+                logger.warning("Host network absence scan {}/3 incomplete: {}; reobserving the complete host context and task set", attempt + 1, exc)
+                time.sleep(0.01)
     except (OSError, ValueError) as exc:
-        raise HostObservationUnavailable("network namespace observation unavailable") from exc
+        raise HostObservationUnavailable(f"network namespace observation unavailable: {exc}") from exc
 
 
 def assert_host_listener_absent(port: int) -> None:

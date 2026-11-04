@@ -84,6 +84,15 @@ of an exited task, not permission to ignore an unreadable live task. A zombie
 leader never exempts its non-leader siblings. Missing, malformed, changed or
 contradictory proof remains unavailable. This is a bounded observation, not a reservation against
 future namespace or listener changes.
+For a still-existing task with an ENOENT network link and no positive zombie
+proof, the observer may make two further complete observations, separated by
+10 ms. Every attempt revalidates the host authority and unrestricted procfs
+profile before scanning all tasks. The failed observation never exempts a task
+or contributes partial absence evidence. A matching prior-namespace task or a
+different authority, profile, permission or enumeration failure refuses
+immediately; persistent uncertainty refuses after the third attempt. Diagnostic
+warnings retain the incomplete attempt and its PID/TID. This repeats only
+read-only observation, never an initialization claim or launch operation.
 
 For a supported staged Docker cutover, keep the old management and proxy
 container objects stopped and inspectable through admission. Do not use Compose
@@ -121,3 +130,44 @@ outcome does not release either fence.
 The host operator must preserve the old image, configuration and stores and
 review a deployment-specific stop, verification and rollback plan before any
 live change. Rollback must not erase the fresh intent or an unresolved launch.
+
+
+Missing namespace links do not make unrelated proof errors retryable. The real
+held-directory lifetime reader propagates permission and malformed-evidence
+errors; the scanner retains their cause with PID/TID and error class and refuses
+immediately, even if that task would disappear before another scan. Only an
+actual disappearing entry or a readable non-zombie/unstable proof remains an
+unknown missing-link observation eligible for the existing bounded full rescan.
+The positive stable-zombie proof is unchanged. The outer-helper regression
+`test_missing_namespace_does_not_erase_hard_lifetime_proof_error` traverses real
+temporary task directories and the real scanner/held-directory reader, with a
+controlled OS stat-open PermissionError and malformed/zero-token files; a
+hypothetical sleep removes the task, so a forbidden retry cannot hide the error.
+This is a unit boundary control, not a claim of a real-kernel EACCES reproduction.
+Run `bash scripts/test.sh tests/test_management_fresh_initialization.py`.
+
+An explicit `ProcessLookupError` with `errno.ESRCH` while opening or reading the
+held task lifetime after its missing namespace link is also task-disappearance
+evidence for a complete rescan, never absence proof. The bounded three-attempt
+limit and per-attempt authority/profile checks remain unchanged. Other or absent
+error numbers remain immediate hard refusals.
+`test_missing_namespace_reobserves_only_explicit_task_disappearance` exercises
+the real scanner and held-directory reader against real temporary task entries,
+with controlled OS stat-open errors: transient disappearance requires a second
+whole scan, persistent ESRCH retains its original cause after three scans, and
+mismatched/unknown error numbers cannot be erased by a later task exit. These
+unit controls reproduce the recorded CI error class, not a claim of a native
+ESRCH reproduction.
+
+
+The final namespace refusal includes the last observation's diagnostic in the
+outer `HostObservationUnavailable` text, retaining its original chained cause.
+The actual host command prints that text, so the final PID/TID and missing-link
+or ESRCH reason remain visible even when all three scans encounter different
+tasks. Earlier retry warnings do not substitute for the final failure. The
+command-boundary regression
+`test_fresh_host_command_reports_the_final_incomplete_scan` drives the actual
+CLI/refusal handler and bounded observer with three distinct controlled tasks;
+no claim or listener grant is created. Retry, evidence and launch authority
+are unchanged. Run `bash scripts/test.sh
+tests/test_management_fresh_initialization.py`.

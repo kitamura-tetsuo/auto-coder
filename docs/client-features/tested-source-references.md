@@ -39,3 +39,27 @@ selection; this is not an OpenCode live-runtime preparation or image publication
 The fixture is exported only after immutable Docker ID and installed source/version
 readback match the clean checkout. Missing Docker, failed build or mismatched
 provenance blocks the gate rather than skipping its readonly-bind test.
+
+Nonfatal scheduled pytest diagnostics use an owned Python thread and the synchronous
+all-thread faulthandler API while holding the GIL. This avoids the demonstrated
+native watchdog race with freed code metadata on the supported Python runtime.
+The configured Source 60-second and ordinary-shard 30-second intervals, exit
+behavior, complete selections, assertions, retries and hard deadlines stay intact;
+workflow files and production code do not change. Native fatal-signal handling
+and the original pytest descriptor/handler restoration remain enabled.
+
+Each timer owns a duplicate output descriptor and is cancelled and joined before
+completion, interactive exceptions or debugger entry can release it. Diagnostic
+errors fail visibly. Explicit disabled/default-zero settings remain unchanged.
+A Python thread can be delayed while native code holds the GIL; absence of a
+timely dump never proves a pass, and the existing test/CI hard failure deadlines
+still apply. Diagnostic output is neither Source qualification nor runtime
+recovery proof. The actual main Source/publication runs and installed worker
+verification remain separate requirements.
+
+The configured `faulthandler_exit_on_timeout=true` path delegates to pytest's
+original native timeout protocol, including prompt exit while native code holds
+the GIL. Only nonfatal scheduled dumps use the Python-owned timer; this change
+does not replace a hard deadline with a GIL-dependent Python thread. A real
+`ctypes.PyDLL` regression holds the GIL past the deadline and checks that the
+process exits before the native call completes.

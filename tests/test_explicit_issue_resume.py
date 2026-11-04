@@ -3,6 +3,8 @@
 import json
 import os
 import re
+import stat
+import subprocess
 import time
 from contextlib import ExitStack
 from pathlib import Path
@@ -299,6 +301,7 @@ def _exercise_retained_resume(mock_ui, tmp_path, monkeypatch, refusal, reason, b
 
 
 @patch("auto_coder.dashboard.ui")
+@pytest.mark.parametrize("release_low_descriptors", [False, True])
 @pytest.mark.parametrize(
     "refusal, reason, backend",
     [
@@ -307,26 +310,71 @@ def _exercise_retained_resume(mock_ui, tmp_path, monkeypatch, refusal, reason, b
         ("MSP_RESUME_MODEL", "Muse MSP session omitted or uses an incompatible model", "muse-retained"),
     ],
 )
-def test_explicit_resume_with_high_msp_pipe_descriptors(mock_ui, tmp_path, monkeypatch, _use_real_commands, _use_real_sleep, refusal, reason, backend):
+def test_explicit_resume_with_high_msp_pipe_descriptors(mock_ui, tmp_path, monkeypatch, _use_real_commands, _use_real_sleep, refusal, reason, backend, release_low_descriptors):
+    import fcntl
+
     processes = []
     original_write = MuseClient._msp_write
+    original_turn = MuseClient._run_msp_turn_observed
+    original_popen = subprocess.Popen
+    reserved = []
+    released_pipe_descriptors = []
+
+    def release_reserved():
+        while reserved:
+            os.close(reserved.pop())
+
+    def run_after_release(client, *args, **kwargs):
+        def launch_after_release(*launch_args, **launch_kwargs):
+            assert len(reserved) == 64 and max(reserved) < 1024
+            release_reserved()
+            process = original_popen(*launch_args, **launch_kwargs)
+            descriptors = tuple(getattr(process, name).fileno() for name in ("stdin", "stdout", "stderr"))
+            released_pipe_descriptors.append(descriptors)
+            # Establish the counterexample before the high-FD duplication:
+            # the unchanged host really acquired the newly released low slots.
+            return process
+
+        with monkeypatch.context() as launch_patch:
+            launch_patch.setattr("auto_coder.muse_client.subprocess.Popen", launch_after_release)
+            return original_turn(client, *args, **kwargs)
 
     def observe_write(client, process, payload, total_bytes, deadline):
         assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+        if process not in processes:
+            if release_low_descriptors:
+                assert released_pipe_descriptors and max(released_pipe_descriptors[-1]) < 1024
+            # Duplicate the real parent pipe ends instead of assuming unrelated
+            # low descriptors stay open between reservation and host launch.
+            for name, mode in (("stdin", "wb"), ("stdout", "rb"), ("stderr", "rb")):
+                stream = getattr(process, name)
+                assert stat.S_ISFIFO(os.fstat(stream.fileno()).st_mode)
+                descriptor = fcntl.fcntl(stream.fileno(), fcntl.F_DUPFD_CLOEXEC, 1024)
+                try:
+                    replacement = os.fdopen(descriptor, mode, buffering=0)
+                except BaseException:
+                    os.close(descriptor)
+                    raise
+                stack.callback(replacement.close)
+                setattr(process, name, replacement)
+                stream.close()
         assert min(process.stdin.fileno(), process.stdout.fileno(), process.stderr.fileno()) >= 1024
         processes.append(process)
         return original_write(client, process, payload, total_bytes, deadline)
 
     monkeypatch.setattr(MuseClient, "_msp_write", observe_write)
     with ExitStack() as stack:
-        while True:
-            fd = os.open(os.devnull, os.O_RDONLY)
-            stack.callback(os.close, fd)
-            if fd >= 1023:
-                break
+        if release_low_descriptors:
+            stack.callback(release_reserved)
+            for _ in range(64):
+                reserved.append(os.open(os.devnull, os.O_RDONLY))
+            monkeypatch.setattr(MuseClient, "_run_msp_turn_observed", run_after_release)
         _exercise_retained_resume(mock_ui, tmp_path, monkeypatch, refusal, reason, backend)
+        assert not reserved
+        assert bool(released_pipe_descriptors) == release_low_descriptors
     assert processes
     assert all(process.poll() is not None for process in processes)
     for process in {process.pid: process for process in processes}.values():
+        assert all(getattr(process, name).closed for name in ("stdin", "stdout", "stderr"))
         with pytest.raises(ProcessLookupError):
             os.killpg(process.pid, 0)

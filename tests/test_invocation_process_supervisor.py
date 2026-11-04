@@ -19,6 +19,7 @@ from src.auto_coder.invocation_process_supervisor import (
     PromptTransport,
     WriterState,
 )
+from tests.test_local_conflict_repair_job import sparse_thread_switches  # noqa: F401
 
 
 class ProcessGroupOwner:
@@ -176,7 +177,7 @@ def test_large_output_is_drained_while_provider_runs(tmp_path: Path) -> None:
     assert result.stderr == "e" * size
 
 
-def test_large_unread_prompt_does_not_block_cancellation(tmp_path: Path) -> None:
+def test_large_unread_prompt_does_not_block_cancellation(tmp_path: Path, _use_real_sleep, sparse_thread_switches) -> None:
     supervisor = make_supervisor(ProcessGroupOwner(tmp_path / "owners"))
     cancellation = threading.Event()
     launch = request(
@@ -190,17 +191,21 @@ def test_large_unread_prompt_does_not_block_cancellation(tmp_path: Path) -> None
     worker = threading.Thread(target=lambda: results.append(supervisor.run(launch)))
     started = time.monotonic()
     worker.start()
-    deadline = started + 3
-    while supervisor.state(launch.invocation_id) is not WriterState.ACTIVE:
-        assert time.monotonic() < deadline
-        time.sleep(0.01)
-    cancellation.set()
-    worker.join(timeout=3)
+    try:
+        deadline = started + 3
+        while supervisor.state(launch.invocation_id) is not WriterState.ACTIVE:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        cancellation.set()
+        worker.join(timeout=3)
 
-    assert not worker.is_alive()
-    assert time.monotonic() - started < 3
-    assert results[0].outcome is InvocationOutcome.CANCELLED
-    assert results[0].writer_state is WriterState.POSITIVELY_STOPPED
+        assert not worker.is_alive()
+        assert time.monotonic() - started < 3
+        assert results[0].outcome is InvocationOutcome.CANCELLED
+        assert results[0].writer_state is WriterState.POSITIVELY_STOPPED
+    finally:
+        cancellation.set()
+        worker.join(timeout=3)
 
 
 def test_large_unread_prompt_does_not_block_timeout(tmp_path: Path) -> None:

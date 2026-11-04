@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import time
 from pathlib import Path
 from threading import Event
@@ -353,7 +354,18 @@ def test_selected_local_origin_runs_through_runner_and_persists_exact_manifest(t
     runner.close()
 
 
-def test_normal_mergeability_remediation_admits_and_runs_in_private_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+@pytest.fixture
+def sparse_thread_switches():
+    """Require cooperative waiting rather than depending on frequent preemption."""
+    previous = sys.getswitchinterval()
+    sys.setswitchinterval(6.0)
+    try:
+        yield
+    finally:
+        sys.setswitchinterval(previous)
+
+
+def test_normal_mergeability_remediation_admits_and_runs_in_private_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands, _use_real_sleep, sparse_thread_switches) -> None:
     """Normal conflict processing reaches durable admission before checkout."""
     root, head_sha, base_sha = history(tmp_path)
     peer_head = git(root, "rev-parse", "HEAD").stdout.strip()

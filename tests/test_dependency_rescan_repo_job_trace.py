@@ -11,7 +11,9 @@ singleton, exactly as a future dashboard consumer would.
 import asyncio
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -103,7 +105,12 @@ def _post_dependency_webhook(engine, delivery_id="close-1", number=101):
 
 
 class TestAS001IntakeRunningScanAndHandoffs:
-    def test_webhook_intake_scan_and_handoffs_are_recorded(self, tmp_path: Path, monkeypatch):
+    @pytest.mark.parametrize("trace_prefix", ["abc", "999"])
+    def test_webhook_intake_scan_and_handoffs_are_recorded(self, tmp_path: Path, monkeypatch, trace_prefix: str):
+        def trace_uuid():
+            return UUID(hex=trace_prefix + uuid4().hex[3:])
+
+        monkeypatch.setattr("src.auto_coder.repo_job_trace.uuid", SimpleNamespace(uuid4=trace_uuid))
         monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
         github = MagicMock()
         github.get_open_entities_strict.return_value = OpenGitHubEntities(
@@ -184,10 +191,14 @@ class TestAS001IntakeRunningScanAndHandoffs:
             pages["/jobs/dependency-rescan"]()
 
         rendered = [str(call.args[0]) for call in dashboard_ui.label.call_args_list]
+        assert f"Attempt {executions[0].execution_id}" in rendered
         assert any("dependency-rescan.enumeration-completed" in value for value in rendered)
         assert any("Discovered Issues: 3" in value for value in rendered)
         assert any("Confirmed handoffs: 3" in value for value in rendered)
-        assert not any("999" in value for value in rendered)
+        rendered_links = [call.args[1] for call in dashboard_ui.link.call_args_list if len(call.args) > 1]
+        target_links = [path for path in rendered_links if path.startswith("/detail/issue/")]
+        assert sorted(target_links) == ["/detail/issue/201", "/detail/issue/202", "/detail/issue/203"]
+        assert "/detail/pr/999" not in rendered_links
 
     def test_scan_is_visible_as_a_running_job_while_it_scans(self, tmp_path: Path, monkeypatch):
         """REQ-001: `active_workers` keeps showing the dependency job busy through the whole scan."""
