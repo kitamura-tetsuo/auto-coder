@@ -16,6 +16,29 @@ test evidence, and the retained run must execute its existing checks for its own
 checked-out revision. No check result or tested-source identity is copied between
 runs.
 
+## Cancellation and mandatory host-gate regression boundaries
+
+An observed shard cancellation takes precedence over a successful child outcome,
+including the interval after the owned child has exited and before the controller
+consumes that outcome. The controller retains the attempt's output and cancellation
+diagnostic, returns nonzero, and does not retry. Live-group TERM/KILL escalation,
+cleanup confirmation, ordinary-failure handling and timeout-only retry are unchanged.
+`test_cancellation_after_successful_child_exit_is_non_success` exercises the real
+successful child/attempt and delivers SIGINT or SIGTERM at that boundary, with a
+no-cancellation success control. Both signal cases returned zero before the repair.
+
+The Supervisor production-definition guards also inspect the mandatory fresh-host
+job, its prerequisite steps and the host step for failure tolerance or conditions
+that can bypass verification. Negative controls cover both job/step skipping and
+`continue-on-error`. Bounded shell tests execute the extracted production host
+command with controlled external prerequisites and pytest/JUnit outcomes: image
+tag/pull failure, failing pytest, skipped or incomplete host results and missing
+JUnit must remain non-success, alongside a successful nineteen-test control.
+These isolated gate tests do not replace the unchanged required real host/container
+CI executions. No workflow timeout, profile, permission or skip policy is changed.
+This change affects CI exit handling and regression guards only; it does not change
+production processing trace emissions, structured event schemas or dashboard views.
+
 ## Timing observations
 
 Queue duration below is `started_at - created_at`; execution duration is

@@ -227,6 +227,56 @@ def test_unconfirmed_cancellation_cleanup_is_non_success_without_retry(tmp_path,
     assert not (tmp_path / "pr-test-logs/shard-1/attempt-2.stdout.log").exists()
 
 
+@pytest.mark.parametrize("completion_signal", [None, signal.SIGINT, signal.SIGTERM])
+def test_cancellation_after_successful_child_exit_is_non_success(tmp_path, monkeypatch, completion_signal):
+    """Exercise the real successful attempt before delivering the boundary signal."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "test.sh").write_text("#!/bin/bash\necho invoked >> invocations\necho retained-success-output\n", encoding="utf-8")
+    data = tmp_path / "tests/data"
+    data.mkdir(parents=True)
+    (data / "pr-test-durations.json").write_text('{"fixture": 1.0}', encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("completion_boundary_runner", ROOT / "scripts/run_pr_test_shard.py")
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    original_attempt = runner._run_attempt
+    outcomes = []
+
+    def deliver_after_success(*args):
+        outcome = original_attempt(*args)
+        assert outcome == "success"
+        outcomes.append(outcome)
+        if completion_signal is not None:
+            signal.raise_signal(completion_signal)
+            assert runner.cancel_signal == completion_signal
+        return outcome
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runner, "_run_attempt", deliver_after_success)
+    monkeypatch.setattr(sys, "argv", ["run_pr_test_shard.py", "--group", "1", "--attempt-timeout", "10", "--max-attempts", "2", "--log-dir", "pr-test-logs/shard-1"])
+    handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        result = runner.main()
+    finally:
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+        runner.logger.remove()
+
+    assert outcomes == ["success"]
+    assert (tmp_path / "invocations").read_text().splitlines() == ["invoked"]
+    logs = tmp_path / "pr-test-logs/shard-1"
+    assert "retained-success-output" in (logs / "attempt-1.stdout.log").read_text()
+    assert not (logs / "attempt-2.stdout.log").exists()
+    diagnostic = (logs / "supervisor.log").read_text()
+    assert "starting retry" not in diagnostic
+    if completion_signal is None:
+        assert result == 0
+    else:
+        assert result != 0
+        assert "Cancellation observed after attempt 1" in diagnostic
+
+
 def test_two_timeouts_fail_and_keep_both_logs(tmp_path):
     result = _run_step(tmp_path, 4, "#!/bin/bash\necho invoked >> invocations\nsleep 2\n")
 

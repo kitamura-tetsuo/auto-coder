@@ -316,6 +316,9 @@ def main() -> int:
         except OSError as exc:
             logger.error("Duration input unavailable after attempt {}: {}", attempt, exc)
             return 1
+        if cancel_signal is not None:
+            logger.error("Cancellation observed after attempt {} ({}); success and retry suppressed", attempt, outcome)
+            return 1
         if outcome == "success":
             return 0
         if outcome != "timeout" or attempt == args.max_attempts or cancel_signal is not None:
