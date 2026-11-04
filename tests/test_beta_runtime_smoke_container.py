@@ -440,23 +440,12 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
         assert len(snapshot[1]["samples"]) == 1 and snapshot[1]["samples"][0]["qualifying"] is True
         return snapshot[1]
 
-    def publish_result(record, key: str):
-        params = {part.name: part.value for part in record.intent.parameters}
-        return _call(
-            http,
-            bearer,
-            "auto_coder_run_beta_acceptance",
-            {
-                "target_id": "beta-worker",
-                "selected_git_sha": params["source_sha"],
-                "installed_runtime_id": record.intent.expected_artifact,
-                "process_run_id": record.intent.expected_incarnation,
-                "deployment_generation": params["deployment_generation"],
-                "supervisor_generation": params["supervisor_generation"],
-                "deployment_operation_id": params["deployment_operation_id"],
-                "idempotency_key": key,
-            },
-        )
+    def reject_local_result(record):
+        current = journal.get(record.operation_id).record
+        assert current is not None
+        settled = app.state.management_runtime.beta_acceptance.forward(current)
+        assert settled.phase is OperationPhase.FAILED
+        return settled
 
     first = accept("local-pass-original")
     first_capture = captured(first)
@@ -614,7 +603,7 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
     finally:
         ready_path.write_bytes(original_ready)
     assert producer.advance(operation.operation_id).evidence.local_result.value == "BLOCKED"
-    assert publish_result(operation, "wrong-same-sha-ready")["status"] == "FAILED"
+    reject_local_result(operation)
     assert SourceAcceptancePublisher(remote, "owner/repo").read(operation.operation_id) is None
 
     provenance = _host_path(runtime, installations[0]["installed"]["module"]).parent / "build_provenance.json"
@@ -741,7 +730,7 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
     assert replaced["capture"] == replacement_capture["capture"]
     assert replaced["window"] == replacement_capture["window"]
     assert len([sample for sample in replaced["samples"] if sample["qualifying"]]) == 1
-    assert publish_result(replacement, "worker-replaced-between-samples")["status"] == "FAILED"
+    reject_local_result(replacement)
     assert SourceAcceptancePublisher(remote, "owner/repo").read(replacement.operation_id) is None
 
     # A genuine lifecycle predicate violation is FAIL, not unavailable evidence.
