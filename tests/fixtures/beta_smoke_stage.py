@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
 
+from ci_timing import recorder
 from loguru import logger
 
 from auto_coder.worker_versions import PrepareIntent, WorkerVersionConfig, WorkerVersionPreparer
@@ -19,9 +21,26 @@ def main() -> None:
     logger.add(sys.stdout, format=layout)
     logger.add("/runtime/staging.log", rotation="10 MB", format=layout)
     outputs = []
+    timing = recorder()
     for index, (revision, root) in enumerate(((sys.argv[1], "worker-versions"), (sys.argv[2], "worker-versions"), (sys.argv[1], "alternate-versions"))):
         preparer = WorkerVersionPreparer(WorkerVersionConfig(source_repository=Path("/source"), version_root=Path("/runtime") / root, python_executable=Path(sys.executable), uv_executable=Path("/usr/local/bin/uv"), uv_version="0.7.22"))
-        prepared = preparer.prepare(PrepareIntent(source_sha=revision, attempt_id=f"smoke-{index}"))
+        role = ("source-a", "source-b", "source-a-alternate")[index]
+        install = preparer._install
+
+        def timed_install(checkout: Path, environment: Path) -> None:
+            lock = checkout / "uv.lock"
+            lock_sha256 = hashlib.sha256(lock.read_bytes()).hexdigest() if lock.exists() else None
+            with timing.span("worker.installer", target_role=role, target_source_sha=revision, lock_sha256=lock_sha256, uv_version="0.7.22"):
+                install(checkout, environment)
+
+        preparer._install = timed_install  # type: ignore[method-assign]
+        with timing.span(
+            "worker.prepare",
+            target_role=role,
+            target_source_sha=revision,
+            uv_version="0.7.22",
+        ):
+            prepared = preparer.prepare(PrepareIntent(source_sha=revision, attempt_id=f"smoke-{index}"))
         receipt = prepared.receipt
         ready = Path(receipt.environment_path).parent / "READY.json"
         assert preparer.read_ready(ready) == receipt

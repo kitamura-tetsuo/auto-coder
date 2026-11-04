@@ -11,6 +11,7 @@ import base64
 import json
 import os
 import random
+import shutil
 import subprocess
 import sys
 import threading
@@ -38,6 +39,7 @@ from auto_coder.management.worker_lifecycle import LIFECYCLE_ACTIONS, WorkerLife
 from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkClient
 from auto_coder.tested_source_refs import serialize_record
 from auto_coder.util.gh_cache import GitDataResponse, GitHubGitDataClient
+from tests.fixtures.ci_timing import recorder
 from tests.test_management_beta_deploy_container import _argument, _await_stage, _result
 from tests.test_management_mcp import _issue, real_boundary
 from tests.test_management_runtime_mcp import _call
@@ -218,7 +220,8 @@ def _finish(producer: BetaRuntimeSmokeProducer, operation_id: str, *, timeout: f
         assert observed.state.value not in {"CONFLICT", "UNAVAILABLE"}, observed
         return observed if observed.state.value == "COMPLETE" else None
 
-    return _wait_for(completed, timeout=timeout)
+    with recorder().span("beta_smoke.progress_observation", operation_id=operation_id, configured_timeout_seconds=timeout):
+        return _wait_for(completed, timeout=timeout)
 
 
 def _host_path(root: Path, path: str) -> Path:
@@ -266,6 +269,8 @@ def test_local_smoke_uses_installed_worker_real_progress_and_original_journal(re
         f"{fixtures}:/fixtures:ro",
         "-e",
         "HOME=/runtime/home",
+        "-e",
+        "AUTO_CODER_CI_TIMING_DIR=/runtime/ci-timing",
         "--entrypoint",
         "python",
         image,
@@ -384,6 +389,8 @@ def test_local_smoke_uses_installed_worker_real_progress_and_original_journal(re
     finally:
         log_root = Path(os.environ.get("GITHUB_WORKSPACE", str(Path(__file__).parents[1]))) / "supervisor-integration-logs"
         log_root.mkdir(parents=True, exist_ok=True)
+        if (runtime / "ci-timing").exists():
+            shutil.copytree(runtime / "ci-timing", log_root / "timing", dirs_exist_ok=True)
         for name, destination in ((worker_name, "local-smoke-worker.log"), (github_name, "local-smoke-github.log")):
             result = _docker("logs", name, check=False)
             (log_root / destination).write_text(result.stdout + result.stderr, encoding="utf-8")
@@ -468,13 +475,14 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
     short = BetaRuntimeSmokeProducer(journal, client, reader, SmokeProfile(total_seconds=8, interval_seconds=1))
     assert short.advance(stuck.operation_id).state.value == "IN_PROGRESS"
     diagnostics = []
-    until = time.monotonic() + 15
-    while time.monotonic() < until:
-        diagnostics.append(client.diagnostics("status").result_code)
-        observed = short.advance(stuck.operation_id)
-        if observed.state.value == "COMPLETE":
-            break
-        time.sleep(0.3)
+    with recorder().span("beta_smoke.blocked_progress_observation", operation_id=stuck.operation_id, configured_window_seconds=8):
+        until = time.monotonic() + 15
+        while time.monotonic() < until:
+            diagnostics.append(client.diagnostics("status").result_code)
+            observed = short.advance(stuck.operation_id)
+            if observed.state.value == "COMPLETE":
+                break
+            time.sleep(0.3)
     blocked = result(observed, "BLOCKED")
     assert diagnostics and all(code == "OK" for code in diagnostics)
     assert blocked["reason"] == "original_deadline_without_progress"

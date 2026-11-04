@@ -54,6 +54,7 @@ from auto_coder.tested_source_refs import TestedSourcePublisher as SourcePublish
 from auto_coder.tested_source_refs import TestedSourceRecord as SourceRecord
 from auto_coder.tested_source_refs import serialize_record, tag_name
 from auto_coder.util.gh_cache import GitHubGitDataClient
+from tests.fixtures.ci_timing import recorder
 
 pytestmark = [pytest.mark.supervisor_integration, pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep")]
 
@@ -479,13 +480,36 @@ def management_system(tmp_path: Path, _use_real_commands: None, _use_real_sleep:
         ),
         encoding="utf-8",
     )
-    current_sha = _snapshot_source(source, "current")
+    timing = recorder()
+    with timing.span("management.source_lock_preparation", target_role="current"):
+        current_sha = _snapshot_source(source, "current")
     _test_source(services, current_sha, 11)
-    candidate_sha = _snapshot_source(source, "candidate")
+    with timing.span("management.source_lock_preparation", target_role="candidate"):
+        candidate_sha = _snapshot_source(source, "candidate")
     _test_source(services, candidate_sha, 12)
     stager = ManagementVersionStager(ManagementRuntimeConfig(INSTANCE, REPOSITORY, source, root / "versions", Path(sys.executable), uv, uv_version, management_config=config_path, source_authority=publisher, protected_roots=(state, root / "operations", root / "supervisor")))
-    current = stager.prepare(ManagementPrepareIntent(current_sha, "current")).receipt
-    candidate = stager.prepare(ManagementPrepareIntent(candidate_sha, "candidate")).receipt
+    install = stager._preparer._install
+    active_install: dict[str, str] = {"role": "unavailable", "source": "unavailable"}
+
+    def timed_install(checkout: Path, environment: Path) -> None:
+        lock = checkout / "uv.lock"
+        lock_sha256 = hashlib.sha256(lock.read_bytes()).hexdigest() if lock.exists() else None
+        with timing.span(
+            "management.installer",
+            target_role=active_install["role"],
+            target_source_sha=active_install["source"],
+            lock_sha256=lock_sha256,
+            uv_version=uv_version,
+        ):
+            install(checkout, environment)
+
+    stager._preparer._install = timed_install  # type: ignore[method-assign]
+    active_install.update(role="current", source=current_sha)
+    with timing.span("management.version_prepare", target_role="current", target_source_sha=current_sha):
+        current = stager.prepare(ManagementPrepareIntent(current_sha, "current")).receipt
+    active_install.update(role="candidate", source=candidate_sha)
+    with timing.span("management.version_prepare", target_role="candidate", target_source_sha=candidate_sha):
+        candidate = stager.prepare(ManagementPrepareIntent(candidate_sha, "candidate")).receipt
     assert not list(Path(current.environment_path).rglob("*.pyc"))
     assert not list(Path(candidate.environment_path).rglob("*.pyc"))
     from auto_coder.management.self_update_handoff import runtime_for_receipt
@@ -528,10 +552,12 @@ def management_system(tmp_path: Path, _use_real_commands: None, _use_real_sleep:
             with HandoffStore(root / "supervisor", INSTANCE)._connect():
                 pass
     try:
-        system.start()
+        with timing.span("management.startup_readiness"):
+            system.start()
         yield system
     finally:
-        system.close()
+        with timing.span("management.cleanup"):
+            system.close()
 
 
 def _update(system: ManagementSystem, bearer: str, key: str = "restart-once", *, source: str | None = None) -> dict[str, object]:
@@ -547,7 +573,8 @@ def _wait_operation(system: ManagementSystem, bearer: str, operation_id: str, st
         result = _operation(system, bearer, operation_id)
         return result if result["status"] in statuses else None
 
-    return _wait(observed, timeout=timeout, interval=0.25, description=f"operation {operation_id} status in {sorted(statuses)}")
+    with recorder().span("management.operation_wait", operation_id=operation_id):
+        return _wait(observed, timeout=timeout, interval=0.25, description=f"operation {operation_id} status in {sorted(statuses)}")
 
 
 @contextmanager
