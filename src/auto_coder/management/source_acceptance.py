@@ -223,7 +223,26 @@ class BetaAcceptanceHandler:
         if observation.state is not SmokeState.COMPLETE or observation.evidence is None:
             return record
         if observation.evidence.local_result is not LocalResult.PASS:
-            changed = self.producer.journal.transition(record.operation_id, record.revision, OperationPhase.FAILED, safe_error_category=f"local_{observation.evidence.local_result.value.lower()}")
+            receipt = EffectReceipt(
+                observation.evidence.content_sha256,
+                "beta-runtime-smoke-local-result",
+                time.time(),
+                json.dumps(
+                    {
+                        "local_evidence_id": observation.evidence.local_evidence_id,
+                        "local_result": observation.evidence.local_result.value,
+                        "reason": observation.reason,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
+            changed = self.producer.journal.reject_before_effect(
+                record.operation_id,
+                record.revision,
+                category=f"local_{observation.evidence.local_result.value.lower()}",
+                evidence=receipt,
+            )
             return changed.record or record
         refusal = self._authority_refusal(record)
         if refusal is not None:

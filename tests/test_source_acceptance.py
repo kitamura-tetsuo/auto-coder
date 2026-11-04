@@ -3,8 +3,10 @@ import json
 
 import pytest
 
-from auto_coder.management.beta_runtime_smoke import LocalSmokeEvidence
-from auto_coder.management.source_acceptance import SourceAcceptanceError, SourceAcceptancePublisher
+from auto_coder.management.beta_runtime_smoke import LocalResult, LocalSmokeEvidence, SmokeObservation, SmokeState
+from auto_coder.management.operation_store import ManagementOperationStore
+from auto_coder.management.operations import AcceptedAuthority, EffectState, ManagedTarget, OperationIntent, OperationPhase
+from auto_coder.management.source_acceptance import BetaAcceptanceHandler, SourceAcceptanceError, SourceAcceptancePublisher
 from auto_coder.util.gh_cache import GitDataResponse
 
 SHA = "a" * 40
@@ -86,3 +88,28 @@ def test_readback_rejects_annotation_with_substituted_local_evidence():
     git.tag["message"] = json.dumps(annotation, sort_keys=True, separators=(",", ":"))
     with pytest.raises(SourceAcceptanceError, match="digest differs"):
         publisher.read("accept-1")
+
+
+def test_nonpass_local_result_is_durably_rejected_before_publication(tmp_path):
+    journal = ManagementOperationStore(tmp_path)
+    authority = AcceptedAuthority("issuer", "resource", "project", "operator", "client", "grant", ("auto-coder.read", "auto-coder.deploy"), 1, 2)
+    admitted = journal.admit(OperationIntent(ManagedTarget("beta", "beta", "worker/repo"), "run_beta_acceptance", (), "key"), authority)
+    assert admitted.record is not None
+    blocked = evidence("BLOCKED")
+
+    class Producer:
+        def __init__(self):
+            self.journal = journal
+
+        def advance(self, operation_id):
+            return SmokeObservation(SmokeState.COMPLETE, operation_id, "installed_candidate_mismatch", blocked)
+
+    settled = BetaAcceptanceHandler(object(), Producer(), object()).forward(admitted.record)
+    assert settled.phase is OperationPhase.FAILED
+    assert settled.effect.state is EffectState.REJECTED
+    assert settled.effect.receipt is not None
+    assert json.loads(settled.effect.receipt.safe_result) == {
+        "local_evidence_id": blocked.local_evidence_id,
+        "local_result": LocalResult.BLOCKED.value,
+        "reason": "installed_candidate_mismatch",
+    }
