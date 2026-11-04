@@ -196,6 +196,90 @@ def test_cancellation_after_recorded_response_preserves_original_failure(tmp_pat
         configure_github_request_boundary()
 
 
+@pytest.mark.parametrize("adapter", ["ghapi", "direct"])
+@pytest.mark.parametrize("status", [200, 429])
+@pytest.mark.parametrize("failure_type", [httpx.RemoteProtocolError, asyncio.CancelledError])
+@pytest.mark.parametrize("observer_failure_type", [RuntimeError, asyncio.CancelledError])
+@pytest.mark.parametrize("diagnostic_fails", [False, True])
+def test_observer_failure_never_masks_original_body_failure(tmp_path, monkeypatch, adapter, status, failure_type, observer_failure_type, diagnostic_fails):
+    from auto_coder.util.gh_cache import logger
+
+    monkeypatch.chdir(tmp_path)
+    governor = GitHubRequestGovernor(store_path=tmp_path / "governor.sqlite3")
+    failure = failure_type("original-body-DO_NOT_LOG")
+    observer_failure = observer_failure_type("observer-DO_NOT_LOG")
+    sent = []
+    observations = []
+    messages = []
+    sink = logger.add(messages.append, format="{message}")
+
+    class BrokenBody(httpx.SyncByteStream):
+        def __iter__(self):
+            raise failure
+            yield b""  # pragma: no cover
+
+    def respond(_transport, request):
+        sent.append((request.method, request.url.path))
+        headers = {"x-github-request-id": "observer-failure-headers"}
+        if status == 429:
+            headers["retry-after"] = "120"
+        return httpx.Response(status, headers=headers, stream=BrokenBody())
+
+    def observe(outcome):
+        observations.append(outcome)
+        governor.observe(outcome)
+        raise observer_failure
+
+    diagnostics = []
+
+    if diagnostic_fails:
+
+        def fail_diagnostic(outcome, event):
+            diagnostics.append((outcome, event))
+            raise observer_failure
+
+        monkeypatch.setattr("auto_coder.util.gh_cache.log_outcome", fail_diagnostic)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
+    configure_github_request_boundary(governor.admit, observe)
+    try:
+        with get_caching_client(admission_hook=governor.admit, observation_hook=observe) as client:
+            monkeypatch.setattr("auto_coder.util.gh_cache.get_caching_client", lambda *args: client)
+            api = get_ghapi_client("fixture-token", admission_hook=governor.admit, observation_hook=observe)
+
+            @retry_with_backoff()
+            def invoke():
+                if adapter == "ghapi":
+                    api("/repos/owner/repo/issues/1", verb="POST")
+                else:
+                    _caching_request(client, "POST", "https://api.github.com/repos/owner/repo/issues/1", path_template="/repos/owner/repo/issues/{id}")
+
+            with pytest.raises(failure_type) as caught:
+                invoke()
+            assert caught.value is failure
+            assert sent == [("POST", "/repos/owner/repo/issues/1")]
+            assert len(observations) == 1
+            outcome = observations[0]
+            assert outcome.status == status
+            assert outcome.delivery is DeliveryCertainty.HTTP_RESPONSE_RECEIVED
+            assert outcome.metadata.github_request_id == "observer-failure-headers"
+            assert take_wire_outcomes() == []
+            if diagnostic_fails:
+                assert diagnostics == [(outcome, "wire_response_before_cache_failure")]
+            with sqlite3.connect(tmp_path / "governor.sqlite3") as connection:
+                assert connection.execute("SELECT resolved FROM reservations").fetchall() == [(1,)]
+            if status == 429:
+                assert outcome.metadata.retry_after_seconds == 120
+                with pytest.raises(GitHubRequestDeferred):
+                    api("/repos/owner/repo/issues/2")
+                assert len(sent) == 1
+            assert "DO_NOT_LOG" not in "".join(str(message) for message in messages)
+    finally:
+        configure_github_request_boundary()
+        governor.close()
+        logger.remove(sink)
+
+
 def test_production_graphql_body_failure_never_replays_finalized_mutation(tmp_path, monkeypatch):
     from auto_coder.util.gh_cache import GitHubClient
 

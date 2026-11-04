@@ -378,9 +378,19 @@ def _finalize_caching_failure(observation_hook: ObservationHook | None, failure:
         # transport retry from replaying a request with received headers.
         setattr(failure, "_auto_coder_response_received", True)
     for outcome in outcomes:
-        log_outcome(outcome, "wire_response_before_cache_failure")
+        # Finalization is secondary to the request's already active failure.
+        # Neither a diagnostic sink nor an observer may replace that exception
+        # or cancellation. Attempt each boundary once, without replay or new
+        # diagnostics that could expose the secondary exception's contents.
+        try:
+            log_outcome(outcome, "wire_response_before_cache_failure")
+        except BaseException:
+            pass
         if observation_hook:
-            observation_hook(outcome)
+            try:
+                observation_hook(outcome)
+            except BaseException:
+                pass
 
 
 def _caching_request(client: httpx.Client, method: str, url: str, *, path_template: str, subsystem: str = "ghapi", **kwargs: Any) -> httpx.Response:

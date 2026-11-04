@@ -43,3 +43,13 @@ one mutation send and one matching reservation settlement, then permits only a
 separately requested operation. Both adapters' body-failure cases also traverse
 the actual outer retry wrapper. This is not a successful mutation receipt or
 permission to replay an uncertain operation.
+
+If the failure-path diagnostic sink or observation callback itself raises,
+finalization still attempts the observation once and the original request error
+or cancellation propagates unchanged. Secondary failures neither trigger a
+request replay nor expose their exception text through additional diagnostics.
+A callback invocation is not proof of durable settlement if that callback failed
+before retaining its evidence. Regression coverage exercises both adapters with
+real received headers, a failing body, ordinary exceptions and cancellation from
+the observer, optional diagnostic-sink failure, one mutation send, and retained
+429 cooldown evidence.
