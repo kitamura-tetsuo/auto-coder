@@ -347,7 +347,7 @@ class ManagementSystem:
     def connect(self) -> httpx.Client:
         return httpx.Client(base_url=self.origin, timeout=120, trust_env=False)
 
-    def issue(self, *, scopes: tuple[str, ...] = SCOPES, uid: str = "operator") -> str:
+    def issue_tokens(self, *, scopes: tuple[str, ...] = SCOPES, uid: str = "operator") -> dict[str, object]:
         with self.connect() as client:
             verifier = "v" * 48
             challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
@@ -362,7 +362,14 @@ class ManagementSystem:
             code = parse_qs(urlsplit(approved.headers["location"]).query)["code"][0]
             tokens = client.post("/token", data={"grant_type": "authorization_code", "client_id": uid + "-client", "code": code, "redirect_uri": redirect_uri, "resource": self.origin + "/mcp", "code_verifier": verifier})
             assert tokens.status_code == 200, tokens.text
-            return tokens.json()["access_token"]
+            result = tokens.json()
+            assert isinstance(result, dict)
+            return result
+
+    def issue(self, *, scopes: tuple[str, ...] = SCOPES, uid: str = "operator") -> str:
+        access_token = self.issue_tokens(scopes=scopes, uid=uid)["access_token"]
+        assert isinstance(access_token, str)
+        return access_token
 
     def request(self, bearer: str | None, name: str, arguments: dict[str, object] | None = None) -> httpx.Response:
         with self.connect() as client:
@@ -998,6 +1005,12 @@ def test_authenticated_readback_is_bound_to_current_observation(management_syste
     assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None
     with sqlite3.connect(database) as connection:
         connection.execute("UPDATE proof SET payload=? WHERE instance_id=?", (original, INSTANCE))
+    with sqlite3.connect(system.settings.oauth.database_path) as connection:
+        connection.execute("UPDATE grants SET revoked=? WHERE id=?", (time.time(), proof.grant_id))
+    assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None
+    with sqlite3.connect(system.settings.oauth.database_path) as connection:
+        connection.execute("UPDATE grants SET revoked=NULL WHERE id=?", (proof.grant_id,))
+    assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is not None
     database.chmod(0o644)
     assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None
     database.chmod(0o600)

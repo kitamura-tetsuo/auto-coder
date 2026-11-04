@@ -122,6 +122,33 @@ def _connect(config: BootstrapConfig, *, readonly: bool = False) -> sqlite3.Conn
     return connection
 
 
+def _grant_is_current(settings: ManagementSettings, proof: ReadinessProof, scopes: tuple[str, ...], now: float) -> bool:
+    """Revalidate the proof's durable grant without initializing OAuth state."""
+    path = settings.oauth.database_path
+    if path.is_symlink() or not path.is_file():
+        return False
+    with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=2) as connection:
+        authority = connection.execute("SELECT issuer,resource,project FROM authority WHERE singleton=1").fetchone()
+        row = connection.execute(
+            "SELECT client_id,resource,scope,project,uid,expires,revoked FROM grants WHERE id=?",
+            (proof.grant_id,),
+        ).fetchone()
+    if row is None:
+        return False
+    grant_scopes = validate_scope_set(tuple(row[2].split()))
+    return (
+        authority == (settings.oauth.canonical_issuer, settings.oauth.resource, settings.oauth.firebase_project_id)
+        and (row[0], row[1], row[3], row[4]) == (proof.client_id, proof.resource, proof.project_id, proof.uid)
+        and row[2] == " ".join(grant_scopes)
+        and set(scopes) <= set(grant_scopes)
+        and isinstance(row[5], (int, float))
+        and not isinstance(row[5], bool)
+        and math.isfinite(row[5])
+        and row[5] > now
+        and row[6] is None
+    )
+
+
 def publish_authenticated_readback(settings: ManagementSettings, grant: AuthenticatedGrant, *, startup_reconciled: bool, observation_id: str) -> None:
     """Persist non-secret evidence only from this authenticated, running child."""
     if not startup_reconciled or settings.bootstrap_config_path is None or settings.config_path is None or len(observation_id) != 32 or any(c not in "0123456789abcdef" for c in observation_id):
@@ -230,7 +257,7 @@ def read_authenticated_readback(config: BootstrapConfig, *, observation_id: str,
             return None
         settings = load_management_settings(management_config)
         client = settings.oauth.client(proof.client_id)
-        if proof.project_id != settings.oauth.firebase_project_id or proof.resource != settings.oauth.resource or client is None or not set(scopes) <= set(client.allowed_scopes):
+        if proof.project_id != settings.oauth.firebase_project_id or proof.resource != settings.oauth.resource or client is None or not set(scopes) <= set(client.allowed_scopes) or not _grant_is_current(settings, proof, scopes, now):
             return None
         if hashlib.sha256(Path(proof.application_path).read_bytes()).hexdigest() != proof.application_sha256 or _live(config) != live or time.time() > observation_ends_at:
             return None
