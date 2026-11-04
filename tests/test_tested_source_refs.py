@@ -61,11 +61,16 @@ def assert_required_workflow_profile(workflow: object) -> None:
     run = complete_steps["Run complete required source selection"]["run"]
     assert run == ("uv run pytest -m 'not opencode_live' -vv --splits 4 " "--group ${{ matrix.group }} --splitting-algorithm duration_based_chunks " "--durations-path tests/data/pr-test-durations.json " "--junitxml source-test-results-${{ matrix.group }}.xml")
     assert "if" not in complete_steps["Run complete required source selection"]
+    assert "continue-on-error" not in complete_steps["Run complete required source selection"]
+    fixture = complete_steps["Prepare Python-only management test fixture"]
+    assert "if" not in fixture
+    assert "continue-on-error" not in fixture
     assert shard["env"]["AUTO_CODER_REQUIRE_BROWSER"] == "1"
     assert complete["name"] == "Complete source tests with Chromium"
     assert complete["needs"] == ["complete-source-shard"]
     aggregate = next(step for step in complete["steps"] if step.get("name") == "Verify exact current-attempt shard evidence")
     assert aggregate["run"].startswith("uv run python scripts/check_source_test_shards.py ")
+    assert "if" not in aggregate
     assert "continue-on-error" not in aggregate
     assert "|| true" not in aggregate["run"]
     assert "set +e" not in aggregate["run"]
@@ -505,6 +510,29 @@ def test_workflows_keep_source_authority_independent_from_legacy_image_publish()
     with pytest.raises(AssertionError):
         publish_workflow_result(skipped, skipped_remote, record(), {name: ("completed", "success") for name in REQUIRED_JOBS})
     assert skipped_remote.creates == 0
+
+    masked_shard = deepcopy(workflow)
+    masked_shard["jobs"]["complete-source-shard"]["steps"][-2]["continue-on-error"] = True
+    masked_shard_remote = FakeGitData()
+    with pytest.raises(AssertionError):
+        publish_workflow_result(masked_shard, masked_shard_remote, record(), {name: ("completed", "success") for name in REQUIRED_JOBS})
+    assert masked_shard_remote.creates == 0
+
+    masked_fixture = deepcopy(workflow)
+    fixture = next(step for step in masked_fixture["jobs"]["complete-source-shard"]["steps"] if step.get("name") == "Prepare Python-only management test fixture")
+    fixture["continue-on-error"] = True
+    masked_fixture_remote = FakeGitData()
+    with pytest.raises(AssertionError):
+        publish_workflow_result(masked_fixture, masked_fixture_remote, record(), {name: ("completed", "success") for name in REQUIRED_JOBS})
+    assert masked_fixture_remote.creates == 0
+
+    disabled_validator = deepcopy(workflow)
+    validator = next(step for step in disabled_validator["jobs"]["complete-source-tests"]["steps"] if step.get("name") == "Verify exact current-attempt shard evidence")
+    validator["if"] = "false"
+    disabled_validator_remote = FakeGitData()
+    with pytest.raises(AssertionError):
+        publish_workflow_result(disabled_validator, disabled_validator_remote, record(), {name: ("completed", "success") for name in REQUIRED_JOBS})
+    assert disabled_validator_remote.creates == 0
 
 
 def test_checkout_record_uses_real_clean_git_identity_and_locked_input(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
