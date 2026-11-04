@@ -7,6 +7,10 @@ name: OpenCode Live Tests
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   opencode-live-tests:
     name: OpenCode Live Tests
@@ -31,6 +35,11 @@ jobs:
       - name: Sync dependencies with uv
         run: |
           uv sync --locked --dev --extra test
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
 
       - name: Install pinned OpenCode CLI
         run: |

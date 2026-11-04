@@ -59,6 +59,12 @@ readiness. The bootstrap accepts neither OAuth tokens nor a public IPC listener.
 An atomic durable generation reservation fences concurrent Supervisor participants;
 only the winner can spawn, while a stale contender receives `CONFLICT` or `UNKNOWN`.
 
+If the Supervisor cannot observe its own process-start token at a presence
+poll, it retains the owner lock and existing child, publishes no invented
+identity and suspends subsequent effect processing until a valid observation
+returns. This is an observation at the polling boundary, not a guarantee that
+the token remains observable at every instant before a later effect.
+
 A graceful stop sends one cooperative `SIGTERM`. Its JSON drain receipt must match
 the exact generation, launch nonce, PID, and Linux process-start token; a file left
 by an earlier generation is never accepted. The next runtime is not started

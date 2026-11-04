@@ -23,6 +23,7 @@ from auto_coder.adversarial_validator import (
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.backend_manager import BackendManager
 from auto_coder.exceptions import AutoCoderUsageLimitError
+from auto_coder.ordinary_closure_evidence import deserialize_ordinary_result, serialize_ordinary_result
 from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER
 from auto_coder.review_thread_validation import (
     ClaimedReviewThread,
@@ -30,6 +31,7 @@ from auto_coder.review_thread_validation import (
     classify_review_threads,
     render_claimed_review_threads_section,
     resolve_addressed_review_threads,
+    substantive_discussion_digest,
 )
 from auto_coder.reviewer_session_registry import ReviewerSession, ReviewerSessionRegistry, TestOracleGap
 from auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
@@ -861,14 +863,27 @@ def test_same_head_addressed_gap_thread_persists_before_unrelated_inconclusive_r
     assert result.diagnostic_category == ("change_provenance_clarification" if unrelated_blocker == "provenance" else "incomplete_evidence_coverage" if unrelated_blocker == "finding" else None)
     assert result.open_test_oracle_gaps == []
     assert result.thread_dispositions[0].status == "ADDRESSED"
+    assert result.thread_dispositions[0].discussion_evidence_digest == claimed.discussion_evidence_digest
+    restored = deserialize_ordinary_result(serialize_ordinary_result(result))
+    assert restored.thread_dispositions[0].discussion_evidence_digest == claimed.discussion_evidence_digest
     assert saved is not None
     assert saved.last_head_sha == "sha-a"
     assert saved.test_oracle_gaps[0].status == "RESOLVED"
     assert "tests/test_grid.py" in saved.test_oracle_gaps[0].resolution_evidence
 
+    validated_discussion_digest = claimed.discussion_evidence_digest
     client = _closure_client([claimed])
     client.get_pull_request_head_sha_strict.return_value = "sha-a"
-    client.remote_threads[0].comments[0].body = claimed.original_finding
+    client.remote_threads[0].comments = [
+        ReviewThreadComment(database_id=42, author_id=7, author_login="auto-coder-reviewer[bot]", body=claimed.original_finding),
+        ReviewThreadComment(
+            database_id=43,
+            author_id=8,
+            author_login="agent[bot]",
+            body=f"Added and ran the direct-boundary regression test.\n{REVIEW_ADDRESSED_MARKER}",
+        ),
+    ]
+    object.__setattr__(claimed, "discussion_evidence_digest", validated_discussion_digest)
     resolved = resolve_addressed_review_threads(
         client,
         "owner/repo",
@@ -1460,6 +1475,11 @@ def test_gap_persistence_failure_prevents_thread_projection_and_same_head_retry_
     client = _closure_client([claimed])
     client.get_pull_request_head_sha_strict.return_value = "sha-a"
     client.remote_threads[0].comments[0].body = claimed.original_finding
+    object.__setattr__(
+        claimed,
+        "discussion_evidence_digest",
+        substantive_discussion_digest(client.remote_threads[0], "auto-coder[bot]"),
+    )
 
     with (
         patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context),

@@ -23,6 +23,7 @@ from .codex_wham_client import CodexWhamClient, FollowUpDeliveryOutcome
 from .exceptions import AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .logger_config import get_logger
+from .pr_repair import ExistingPrRepairTarget, build_existing_pr_repair_prompt
 from .prompt_loader import render_prompt
 from .utils import CommandExecutor
 
@@ -58,6 +59,13 @@ class PendingCodexFollowUp:
     logical_identity: str = ""
     accepted_at: float = 0.0
     completed_turn_id: str = ""
+    repair_repository: str = ""
+    repair_issue_number: int = 0
+    repair_owner_incarnation: str = ""
+    repair_pr_number: int = 0
+    repair_head_sha: str = ""
+    repair_head_branch: str = ""
+    repair_base_branch: str = ""
 
 
 def _codex_followup_state_path(repo_name: Optional[str]) -> Path:
@@ -511,7 +519,7 @@ class CodexCloudClient(CloudTaskClientBase):
             logger.warning(f"Failed to apply changes for Codex Cloud task {task_id}: {e}")
             return False
 
-    def continue_if_paused(self, task_id: str, prompt: Optional[str] = None, force: bool = False) -> bool:
+    def continue_if_paused(self, task_id: str, prompt: Optional[str] = None, force: bool = False, *, repair_target: Optional[ExistingPrRepairTarget] = None) -> bool:
         """Attempt to continue a paused or waiting Codex Cloud task via WHAM follow-up.
 
         Resolves the latest usable assistant turn ID and sends a continuation prompt
@@ -542,7 +550,8 @@ class CodexCloudClient(CloudTaskClientBase):
         else:
             continuation_prompt = prompt
 
-        if self.send_followup(task_id, continuation_prompt, force=force):
+        sent = self.send_followup(task_id, continuation_prompt, force=force, repair_target=repair_target) if repair_target is not None else self.send_followup(task_id, continuation_prompt, force=force)
+        if sent:
             self.last_continued_at[task_id] = now
             logger.info(f"Successfully sent continuation follow-up to Codex Cloud task '{task_id}'")
             return True
@@ -646,13 +655,30 @@ class CodexCloudClient(CloudTaskClientBase):
         latest = max(accepted, key=lambda record: record.accepted_at)
         return latest.completed_turn_id
 
-    def send_followup(self, task_id: str, message: str, logical_identities: tuple[str, ...] = (), force: bool = False) -> bool:
+    def send_existing_pr_followup(self, task_id: str, message: str, target: ExistingPrRepairTarget, logical_identities: tuple[str, ...] = ()) -> bool:
+        """Carry the existing-PR producer contract into the durable sender journal."""
+        return self.send_followup(task_id, message, logical_identities, repair_target=target)
+
+    def send_followup(self, task_id: str, message: str, logical_identities: tuple[str, ...] = (), force: bool = False, *, repair_target: Optional[ExistingPrRepairTarget] = None) -> bool:
         """Send work once, reconciling any prior ambiguous POST before retrying."""
         if not is_valid_codex_cloud_task_id(task_id) or not message:
             logger.warning("Codex Cloud follow-up requires a task ID and message")
             return False
 
         from .cloud_provider_instructions import CloudTaskOperation, prepare_cloud_task
+
+        if repair_target is not None and (
+            repair_target.repo_name != self.repo_name
+            or type(repair_target.pr_number) is not int
+            or repair_target.pr_number <= 0
+            or not isinstance(repair_target.head_sha, str)
+            or re.fullmatch(r"[0-9a-f]{40}", repair_target.head_sha) is None
+            or not repair_target.head_branch
+            or not repair_target.base_branch
+            or not message.startswith(build_existing_pr_repair_prompt(repair_target, "").rstrip())
+        ):
+            logger.warning("Existing-PR follow-up does not match its exact producer contract; not sent")
+            return False
 
         # An existing-session continuation is never eligible for the initial
         # component (REQ-007); routed through the same boundary for parity
@@ -700,6 +726,23 @@ class CodexCloudClient(CloudTaskClientBase):
             return False
 
         def send_registered_followup():
+            repair_binding = {}
+            if repair_target is not None and fence is not None and work_identity is not None:
+                from .implementation_slots import ImplementationOwner, ImplementationSlotSnapshot
+
+                snapshot = fence.accounting.slots.snapshot()
+                bound = next((item for item in snapshot.owners if item.owner == ImplementationOwner("issue", work_identity.issue_number)), None) if isinstance(snapshot, ImplementationSlotSnapshot) else None
+                if bound is None or bound.incarnation != work_identity.incarnation or repair_target.pr_number not in bound.implementation_prs:
+                    raise ValueError("Existing-PR repair target is not bound to this current reservation")
+                repair_binding = {
+                    "repair_repository": work_identity.repository,
+                    "repair_issue_number": work_identity.issue_number,
+                    "repair_owner_incarnation": work_identity.incarnation,
+                    "repair_pr_number": repair_target.pr_number,
+                    "repair_head_sha": repair_target.head_sha,
+                    "repair_head_branch": repair_target.head_branch,
+                    "repair_base_branch": repair_target.base_branch,
+                }
             with _followup_state_lock:
                 pending = _load_pending_followups(state_path)
                 for identity in identities:
@@ -709,6 +752,7 @@ class CodexCloudClient(CloudTaskClientBase):
                         message_fingerprint=message_fingerprint,
                         pre_send_turn_id=turn_id,
                         logical_identity=identity,
+                        **repair_binding,
                     )
                 _save_pending_followups(state_path, pending)
             return wham.send_follow_up(task_id=task_id, turn_id=turn_id, prompt=message)
@@ -731,6 +775,13 @@ class CodexCloudClient(CloudTaskClientBase):
                         status=FollowUpDeliveryOutcome.DELIVERED.value,
                         logical_identity=identity,
                         accepted_at=accepted_at,
+                        repair_repository=pending[key].repair_repository,
+                        repair_issue_number=pending[key].repair_issue_number,
+                        repair_owner_incarnation=pending[key].repair_owner_incarnation,
+                        repair_pr_number=pending[key].repair_pr_number,
+                        repair_head_sha=pending[key].repair_head_sha,
+                        repair_head_branch=pending[key].repair_head_branch,
+                        repair_base_branch=pending[key].repair_base_branch,
                     )
             elif result.outcome is FollowUpDeliveryOutcome.NOT_DELIVERED:
                 for key in keys:

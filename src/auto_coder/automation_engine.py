@@ -131,6 +131,7 @@ from .local_job_runner import LocalJobRunner
 from .logger_config import get_logger
 from .merge_operation_scheduler import get_merge_operation_scheduler
 from .merge_operation_state import MergeOperation
+from .open_target_observations import OpenTarget, OpenTargetObservations
 from .parent_issue_reconciliation import ParentDeclarationStatus, ParentOperationalError, ParentSpecificationError, parse_parent_declaration
 from .pr_processor import PR_PROCESSING_STAGE, LocalPRRepairContext
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
@@ -645,6 +646,9 @@ class _IssueProcessingStageHandler:
             fresh_issue = engine.github.get_issue_dispatch_snapshot_strict(self._repo_name, issue_number)
         except GitHubRequestError as exc:
             return StageOutcome(error=exc)
+        except Exception as exc:
+            logger.opt(exception=True).warning("Issue pending-work initial refresh failed repository={} issue={}", self._repo_name, issue_number)
+            return StageOutcome(blocked_reason=PendingReason.EVALUATION_FAILED, blocked_error=str(exc))
         if not isinstance(fresh_issue, dict) or fresh_issue.get("number") != issue_number or "pull_request" in fresh_issue:
             # No longer an authoritative open Issue snapshot; nothing left for
             # this obligation to authorize.
@@ -653,7 +657,13 @@ class _IssueProcessingStageHandler:
         if obligation.identity.revision and current_revision != obligation.identity.revision:
             return StageOutcome(superseded=True)
         candidate = Candidate(type="issue", data=fresh_issue, priority=0, issue_number=issue_number)
-        result = engine._process_single_candidate(self._repo_name, candidate, origin="issue-pending-work-resumption")
+        try:
+            result = engine._process_single_candidate(self._repo_name, candidate, origin="issue-pending-work-resumption")
+        except GitHubRequestError as exc:
+            return StageOutcome(error=exc)
+        except Exception as exc:
+            logger.opt(exception=True).warning("Issue pending-work evaluation failed repository={} issue={}", self._repo_name, issue_number)
+            return StageOutcome(blocked_reason=PendingReason.EVALUATION_FAILED, blocked_error=str(exc))
         if result.target_outcome is ExplicitTargetOutcome.DEFERRED or result.error:
             if result.error:
                 logger.warning(
@@ -1017,6 +1027,7 @@ class AutomationEngine:
         self.startup_reconciliation_error: Optional[str] = None
         self._startup_reconciliation_event: Optional[asyncio.Event] = None
         self.active_workers: Dict[int, Optional[Candidate]] = {}
+        self.open_target_observations = OpenTargetObservations()
         self.open_prs_snapshot: List[Dict[str, Any]] = []
         self.open_issues_snapshot: List[Dict[str, Any]] = []
         self._wake_up_event: Optional[asyncio.Event] = None
@@ -1054,6 +1065,7 @@ class AutomationEngine:
         self._shutdown_event: Optional[asyncio.Event] = None
         self._force_stop_event: Optional[asyncio.Event] = None
         self._critical_operations: Dict[asyncio.Task[Any], str] = {}
+        self._critical_thread_finished: Dict[asyncio.Task[Any], threading.Event] = {}
         # One invocation-admission gate per daemon lifetime (Issue #2009):
         # finer-grained, per-LLM-call shutdown protection that runs alongside
         # the coarser worker/maintenance-level `_run_local_critical` wait
@@ -1128,8 +1140,31 @@ class AutomationEngine:
 
     async def _run_local_critical(self, description: str, function: Any, *args: Any) -> Any:
         """Own synchronous work until its thread really returns, despite cancellation."""
+        thread_finished = threading.Event()
+        thread_submitted = False
+
+        def run_owned() -> tuple[bool, Any]:
+            try:
+                try:
+                    return True, function(*args)
+                except BaseException as exc:
+                    return False, exc
+            finally:
+                thread_finished.set()
+
+        async def submit_owned() -> tuple[bool, Any]:
+            try:
+                return await asyncio.to_thread(run_owned)
+            except asyncio.CancelledError:
+                raise
+            except BaseException:
+                # Function exceptions are returned by run_owned, so an error
+                # here means the executor could not enter the owned call.
+                thread_finished.set()
+                raise
 
         async def run_in_thread() -> tuple[bool, Any]:
+            nonlocal thread_submitted
             # Keep BaseException on the awaiting coroutine.  Letting a shielded
             # child task finish with KeyboardInterrupt/SystemExit makes asyncio
             # treat it as a loop-level termination before the caller can observe
@@ -1138,7 +1173,10 @@ class AutomationEngine:
             gate_token = install_invocation_gate(self.invocation_gate)
             try:
                 try:
-                    return True, await asyncio.to_thread(function, *args)
+                    # Shield the submitted work so cancellation cannot remove a
+                    # queued executor call without its completion observation.
+                    thread_submitted = True
+                    return await asyncio.shield(submit_owned())
                 except BaseException as exc:
                     return False, exc
             finally:
@@ -1146,7 +1184,14 @@ class AutomationEngine:
                 reset_admission_check(token)
 
         task = asyncio.create_task(run_in_thread(), name=f"local-critical:{description}")
+
+        def observe_unsubmitted(done: asyncio.Task[Any]) -> None:
+            if not thread_submitted:
+                thread_finished.set()
+
+        task.add_done_callback(observe_unsubmitted)
         self._critical_operations[task] = description
+        self._critical_thread_finished[task] = thread_finished
         try:
             try:
                 completed, value = await asyncio.shield(task)
@@ -1167,8 +1212,9 @@ class AutomationEngine:
                 return value
             raise value
         finally:
-            if task.done():
+            if task.done() and thread_finished.is_set():
                 self._critical_operations.pop(task, None)
+                self._critical_thread_finished.pop(task, None)
 
     async def _wait_for_protected_invocations(self) -> None:
         """Wait only for admitted LLM invocations to reach a durable checkpoint.
@@ -1219,11 +1265,27 @@ class AutomationEngine:
         already covers that.
         """
         while self._critical_operations:
-            pending = set(self._critical_operations)
-            logger.info(f"Waiting for {len(pending)} interrupted local operation(s) to finish returning: {list(self._critical_operations.values())}")
+            # A forced cancellation can leave the shielded thread task in the
+            # map after its caller exits. Task completion alone is insufficient:
+            # cancellation of the asyncio wrapper does not stop its thread.
+            for task in tuple(self._critical_operations):
+                finished = self._critical_thread_finished.get(task)
+                if task.done() and finished is not None and finished.is_set():
+                    self._critical_operations.pop(task, None)
+                    self._critical_thread_finished.pop(task, None)
+            if not self._critical_operations:
+                return
+            pending = {task for task in self._critical_operations if not task.done()}
+            logger.info(f"Waiting for {len(self._critical_operations)} interrupted local operation(s) to finish returning: {list(self._critical_operations.values())}")
             force_wait = asyncio.create_task(self._force_stop_event.wait()) if self._force_stop_event is not None else None
-            waiters = pending | ({force_wait} if force_wait is not None else set())
+            # A cancelled wrapper may already be done while its thread remains
+            # live; poll the real completion signal without spinning on it.
+            poll = asyncio.create_task(asyncio.sleep(0.05)) if len(pending) != len(self._critical_operations) else None
+            waiters = pending | ({force_wait} if force_wait is not None else set()) | ({poll} if poll is not None else set())
             done, _ = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+            if poll is not None and poll not in done:
+                poll.cancel()
+                await asyncio.gather(poll, return_exceptions=True)
             if force_wait is not None:
                 if force_wait in done:
                     return
@@ -3469,6 +3531,7 @@ class AutomationEngine:
         self.startup_reconciled = False
         self.startup_reconciliation_error = None
         try:
+            observation_revision = self.open_target_observations.revision()
             entities = await asyncio.to_thread(self.github.get_open_entities_strict, repo_name)
             open_issue_numbers = {issue.number for issue in entities.issues}
             for issue in entities.issues:
@@ -3491,8 +3554,13 @@ class AutomationEngine:
                     await self.invalidate_entity(repo_name, "pr", number)
         except BaseException as exc:
             self.startup_reconciliation_error = f"{type(exc).__name__}: {exc}"
+            self.open_target_observations.fail(self.startup_reconciliation_error)
             logger.opt(exception=True).error(f"Startup GitHub reconciliation failed for {repo_name}: {exc}")
             raise
+        self.open_target_observations.complete(
+            [OpenTarget("issue", issue.number, created_at=issue.created_at or "") for issue in entities.issues] + [OpenTarget("pr", number) for number in entities.pull_requests],
+            observation_revision,
+        )
         self.startup_reconciled = True
         logger.info(f"Startup GitHub reconciliation completed for {repo_name}: " f"{len(entities.issues)} Issues and {len(entities.pull_requests)} PRs invalidated")
 
@@ -4671,6 +4739,7 @@ class AutomationEngine:
                 decision_completed = False
                 deferral_committed = False
                 stop_after_persistence_failure = False
+                retry_failed_processing = False
                 definitive_refusal_reason: Optional[str] = None
                 unfinished_processing_disposition = False
                 invalidation_claim: Optional[ClaimedInvalidation] = None
@@ -4886,17 +4955,26 @@ class AutomationEngine:
                         )
                         definitive_refusal_reason = result.error
                     decision_completed = (not bool(result.error) or result.blocked_cacheable or result.definitive_parent_refusal) and not (candidate.urgent_admission and result.capacity_deferred)
+                    retry_failed_processing = bool(result.error) and not decision_completed
 
                     if invalidation_claim is not None and candidate.type == "pr" and result.outcome is PRProcessingOutcome.DEFERRED and result.retry_not_before is not None:
-                        retained = await asyncio.to_thread(
-                            self.invalidations.defer,
-                            invalidation_claim,
-                            "two-tier review work remains pending",
-                            result.retry_not_before,
-                            "pr-review-cycle",
-                        )
-                        deferral_committed = True
+                        # Pending review is never completion, even if persisting
+                        # its wake fails. Retain this claim rather than allowing
+                        # the generic finalizer to acknowledge or release it.
                         decision_completed = False
+                        try:
+                            retained = await asyncio.to_thread(
+                                self.invalidations.defer,
+                                invalidation_claim,
+                                "two-tier review work remains pending",
+                                result.retry_not_before,
+                                "pr-review-cycle",
+                            )
+                        except Exception as persistence_error:
+                            stop_after_persistence_failure = True
+                            self._record_worker_failure_backoff(invalidation_claim, Outcome.FAILED, None)
+                            raise RuntimeError("Pending PR review retry persistence failed") from persistence_error
+                        deferral_committed = True
                         logger.info(
                             "Retained two-tier PR review wake repository={} pr={} retry_at={}",
                             repo_name,
@@ -4984,6 +5062,7 @@ class AutomationEngine:
                                 int(item_number),
                             )
                         except Exception:
+                            retry_failed_processing = True
                             logger.opt(exception=True).error(
                                 "Failed to retire refused Issue work repository={} issue={} generation={}",
                                 repo_name,
@@ -4996,19 +5075,34 @@ class AutomationEngine:
                     else:
                         logger.opt(exception=True).error(f"Worker {worker_id} error processing candidate: {e}")
                         get_health_monitor().record_event("worker_error", f"worker {worker_id}: {type(e).__name__}: {e}", f"{candidate.type} #{item_number}")
+                        retry_failed_processing = True
                 finally:
                     completion_transition = None
                     if invalidation_claim is not None:
                         if decision_completed:
-                            if candidate.type == "dependency":
-                                completion_transition = self.invalidations.complete_with_outcome(invalidation_claim)
+                            completion_transition = self.invalidations.complete_with_outcome(invalidation_claim)
+                        elif not deferral_committed and not stop_after_persistence_failure and retry_failed_processing:
+                            try:
+                                retained = await asyncio.to_thread(
+                                    self.invalidations.defer,
+                                    invalidation_claim,
+                                    "operational_processing_failure",
+                                    time.time() + 60,
+                                )
+                            except Exception as persistence_error:
+                                stop_after_persistence_failure = True
+                                logger.opt(exception=True).error("Failed to persist worker failure backoff repository={} entity={}#{}: {}", repo_name, candidate.type, item_number, persistence_error)
+                                self._record_worker_failure_backoff(invalidation_claim, Outcome.FAILED, None)
                             else:
-                                completion_transition = self.invalidations.complete_with_outcome(invalidation_claim)
+                                deferral_committed = True
+                                self._record_worker_failure_backoff(invalidation_claim, Outcome.DEFERRED, retained.retry_not_before)
+                                if self._invalidation_wake_event is not None:
+                                    self._invalidation_wake_event.set()
                         elif not deferral_committed and not stop_after_persistence_failure:
                             self.invalidations.release(invalidation_claim)
-                            # Retry transient authoritative-fetch/processing
-                            # failures independently of the maintenance loop,
-                            # but retain the former backoff against hot loops.
+                            # Uncommitted/cancelled work remains recoverable;
+                            # caught operational failures retain their own
+                            # durable deadline before reaching this branch.
                             if self._invalidation_wake_event is not None:
                                 asyncio.get_running_loop().call_later(60, self._invalidation_wake_event.set)
                     if repo_job_scope is not None:
@@ -5047,6 +5141,26 @@ class AutomationEngine:
                 if stop_after_persistence_failure:
                     logger.error(f"Worker {worker_id} stopped after deferral persistence failure")
                     return
+
+    @staticmethod
+    def _record_worker_failure_backoff(claim: ClaimedInvalidation, outcome: Outcome, retry_at: Optional[float]) -> None:
+        """Observe the committed retry transition without governing its outcome."""
+        try:
+            identity = claim.identity
+            collector = get_trace_collector()
+            facts = {"reason": "retry_state_persistence_failed" if outcome is Outcome.FAILED else "operational_processing_failure", "retry_at": retry_at, "generation": claim.generation}
+            with collector.start_execution(
+                repository=identity.repository,
+                item_type=identity.entity_type,
+                item_number=identity.number,
+                origin="durable-invalidation-worker",
+                stage_id="worker.failure-backoff",
+                label=f"{identity.entity_type}#{identity.number} failed reevaluation retry",
+            ) as handle:
+                collector.record_event(EventKind.STAGE_RESULT, stage_id="worker.failure-backoff", origin="durable-invalidation-worker", outcome=outcome, facts=facts)
+                handle.set_outcome(outcome)
+        except Exception:
+            logger.opt(exception=True).debug("Worker failure-backoff diagnostic recording failed; preserving durable outcome")
 
     def _record_recovered_dependency_work(self, repo_name: str, recovered_identities: list[EntityIdentity]) -> None:
         """Record startup-recovered dependency-rescan work (REQ-001, REQ-004).
@@ -5638,9 +5752,18 @@ class AutomationEngine:
             queued_map[(c.type, c.data.get("number"))] = c.priority
 
         open_items_status = []
+        observed_targets, open_target_observation = self.open_target_observations.snapshot()
+        observed_prs = [{"number": item.number, "title": item.title, "created_at": item.created_at} for item in observed_targets if item.kind == "pr"]
+        observed_issues = [{"number": item.number, "title": item.title, "created_at": item.created_at} for item in observed_targets if item.kind == "issue"]
+
+        # Legacy callers may still supply advisory polling snapshots. They do
+        # not turn an unobserved event-driven enumeration into a known empty.
+        if open_target_observation["availability"] == "unavailable" and not observed_targets:
+            observed_prs = self.open_prs_snapshot
+            observed_issues = self.open_issues_snapshot
 
         # Process PRs
-        for pr in self.open_prs_snapshot:
+        for pr in observed_prs:
             number = pr.get("number")
             status_str = "Open"
             worker_id = processing_map.get(("pr", number))
@@ -5660,7 +5783,7 @@ class AutomationEngine:
             )
 
         # Process Issues
-        for issue in self.open_issues_snapshot:
+        for issue in observed_issues:
             number = issue.get("number")
             status_str = "Open"
             worker_id = processing_map.get(("issue", number))
@@ -5723,6 +5846,7 @@ class AutomationEngine:
                 for wid, c in self.active_workers.items()
             },
             "open_items": open_items_status,
+            "open_target_observation": open_target_observation,
             "pending_work": self.pending_work_scheduler.snapshot() if self.pending_work_scheduler is not None else [],
             "merge_operations": self.merge_operation_scheduler.snapshot(),
             "refill_faults": [dataclasses.asdict(fault) for fault in self._refill_fault_snapshot()],
@@ -9768,6 +9892,7 @@ class AutomationEngine:
                     except httpx.HTTPStatusError as error:
                         if error.response.status_code == 404:
                             logger.info(f"PR #{number} no longer exists in {repo_name}")
+                            self.open_target_observations.observe(OpenTarget("pr", number), "absent")
                             # This strict 404 is authoritative terminal evidence.
                             # Commit retirement before returning absence to the
                             # durable worker, which may then complete generation.
@@ -9786,6 +9911,7 @@ class AutomationEngine:
                     logger.error(f"PR #{number} not found in {repo_name}")
                     return None
                 if propagate_errors:
+                    self.open_target_observations.observe(OpenTarget("pr", number, str(pr_data.get("title") or ""), str(pr_data.get("created_at") or "")), str(pr_data.get("state") or ""))
                     if pr_data.get("state") == "closed":
                         self.invalidations.retire_ci_watches(repo_name, number)
                         self._schedule_pr_owner_reclamation(repo_name, pr_data)
@@ -9825,6 +9951,7 @@ class AutomationEngine:
                     except httpx.HTTPStatusError as error:
                         if error.response.status_code == 404:
                             logger.info(f"Issue #{number} no longer exists in {repo_name}")
+                            self.open_target_observations.observe(OpenTarget("issue", number), "absent")
                             return None
                         raise
                     if "pull_request" in issue:
@@ -9843,6 +9970,8 @@ class AutomationEngine:
                 issue_data = self.github.get_issue_details(issue)
                 if not issue_data or not issue_data.get("number"):
                     return None
+                if propagate_errors:
+                    self.open_target_observations.observe(OpenTarget("issue", number, str(issue_data.get("title") or ""), str(issue_data.get("created_at") or "")), str(issue_data.get("state") or ""))
                 if propagate_errors and issue_data.get("state") == "closed":
                     # This data came from the matching strict snapshot above.
                     # Commit closure effects before allowlist/admission filters

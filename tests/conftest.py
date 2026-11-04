@@ -11,6 +11,8 @@ from unittest.mock import Mock
 
 import pytest
 
+pytest_plugins = ["tests.pytest_fault_diagnostics"]
+
 # Ensure 'src' directory is on sys.path so 'auto_coder' package is importable everywhere
 _repo_root = Path(__file__).resolve().parents[1]
 _src_path = _repo_root / "src"
@@ -20,6 +22,12 @@ if str(_src_path) not in sys.path:
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager
 from src.auto_coder.specification_analyzer import SpecificationAnalysisResult
+
+
+def pytest_runtest_logreport(report):
+    """Expose failed phases even if a later test prevents the summary."""
+    if report.failed and os.environ.get("AUTO_CODER_IMMEDIATE_TEST_FAILURES") == "1":
+        print(f"\nImmediate failure: {report.nodeid} ({report.when})\n{report.longreprtext}", file=sys.stderr, flush=True)
 
 
 @pytest.fixture(autouse=True)

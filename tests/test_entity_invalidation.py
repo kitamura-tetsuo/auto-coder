@@ -929,7 +929,7 @@ def test_fetch_failure_remains_durable_and_restart_retries(tmp_path: Path, monke
         await process_github_payload("pull_request", {"action": "opened", "pull_request": {"number": 100}}, failing, "owner/repo", "outage")
         worker = asyncio.create_task(failing._worker_loop("owner/repo", 0))
         for _ in range(200):
-            if transport.call_count == 1:
+            if transport.call_count == 1 and failing.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100)) is not None:
                 break
             await asyncio.sleep(0.01)
         worker.cancel()
@@ -940,6 +940,10 @@ def test_fetch_failure_remains_durable_and_restart_retries(tmp_path: Path, monke
 
     asyncio.run(fail_once())
     assert failing.invalidations.pending_count("owner/repo") == 1
+    retained = failing.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100))
+    assert retained is not None and retained.retry_not_before > time.time() + 55
+    assert failing.invalidations.claim("owner/repo") is None
+    monkeypatch.setattr("src.auto_coder.entity_invalidation.time.time", lambda: retained.retry_not_before)
 
     response = MagicMock()
     response.raise_for_status.return_value = None
@@ -1845,6 +1849,11 @@ def test_closed_revocation_failure_recovers_across_engine_reconstruction(tmp_pat
     assert first._get_specification_validator("owner/repo").reruns.authority(subject)[2] == "deferred"
     first._process_single_candidate.assert_called_once()
     first.issue_stage_routing._connection.execute("DROP TRIGGER fail_closure_cleanup")
+
+    retained = first.invalidations.get_deferred(EntityIdentity("owner/repo", "issue", 7))
+    assert retained is not None and retained.retry_not_before > time.time() + 55
+    assert first.invalidations.claim("owner/repo") is None
+    monkeypatch.setattr("src.auto_coder.entity_invalidation.time.time", lambda: retained.retry_not_before)
 
     restarted = build_engine()
     asyncio.run(run_claim(restarted, enqueue=False))

@@ -70,3 +70,35 @@ be replaced or removed, and settled or definitely unsent operations cannot gain
 a task binding. Binding records acceptance without settling execution or handoff
 obligations, so subsequent CI continuations can pass the normal fence without
 making the Issue reservation releasable.
+
+Ordinary due reclamation refreshes a complete reconstruction under the existing
+owner guard before reading accounting. It can bind the original prepared
+follow-up message fingerprint and a verified PR-recovery handoff to that same
+logical operation. A fingerprint or PR binding cannot subsequently change or
+disappear. Publication and tracking are complete only when the retained
+`pr_observed` recovery record has a completed handoff and the same PR is a member
+of the current Issue reservation. An unrelated handoff supplies no authority.
+The existing-PR repair producers carry their exact repository/PR/head/branch
+contract to the sender. Before POST, the sender validates its bounded prompt and
+records that contract with the actual Issue/incarnation under the same owner
+guard. Reconstruction requires every grouped source record to agree with that
+binding. A generic continuation, replacement-publication request or historical
+record without this producer binding remains unsupported for handoff completion;
+an older task-level receipt cannot retroactively supply the missing contract.
+For an unbound historical record, reconstruction retains only a candidate PR
+handoff, with publication/tracking still unproven. The observer can establish the
+missing operation responsibility from its exact fingerprint-bound native user
+input only when that input matches the complete supported existing-PR producer
+template (including consistent repository/PR/head/branch fields). An unrelated
+or replacement request, an unsupported template or a conflicting partial journal
+binding remains unknown. No historical journal is backfilled or relabeled.
+The source token includes recovery records and PR membership, and is rechecked
+at commit. Reconstruction never treats an unavailable source as an empty one.
+
+Recovery keeps the current journals and retired history. Restore a qualified
+worker build using an owned drain/stop and one observed start against the same
+current state; never restore an older journal over later activity or clear an
+unknown operation to free capacity. If correlation or the producer binding is
+unavailable, retain the reservation with its ordinary reevaluation obligation
+until independently supported evidence or an explicitly authorized disposition
+exists. The repair never infers responsibility from the task-level handoff alone.

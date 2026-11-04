@@ -17,9 +17,9 @@ import httpx
 import pytest
 
 from auto_coder.adversarial_validator import ReviewThreadDisposition
-from auto_coder.canonical_pr_blocker_ledger import BlockerAdmissionPayload, BlockerAlias, CanonicalPRBlockerLedger, CorrectionScope, QualifiedRequirement
+from auto_coder.canonical_pr_blocker_ledger import BlockerAdmissionPayload, BlockerAlias, BlockerDisposition, CanonicalPRBlockerLedger, CorrectionScope, QualifiedRequirement
 from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER
-from auto_coder.review_thread_closure_receipt import ClosureReceiptError, closure_receipt_lock, observe_closure_receipt, put_receipt
+from auto_coder.review_thread_closure_receipt import ClosureReceipt, ClosureReceiptError, closure_receipt_lock, observe_closure_receipt, put_receipt
 from auto_coder.review_thread_validation import (
     STALE_BLOCKER_CLEARED_MARKER,
     STALE_BLOCKER_MARKER,
@@ -221,7 +221,12 @@ class ReceiptScenario:
     def claimed(self, client=None):
         client = client or self.client()
         snapshot = self.ledger().get_snapshot(API_ORIGIN, REPOSITORY, PR_NUMBER, require_retained_state=True)
-        classification = classify_review_threads(client.get_pr_review_threads_strict(REPOSITORY, PR_NUMBER), {REVIEWER_ID}, snapshot=snapshot)
+        classification = classify_review_threads(
+            client.get_pr_review_threads_strict(REPOSITORY, PR_NUMBER),
+            {REVIEWER_ID},
+            snapshot=snapshot,
+            authenticated_controller_login=client.get_authenticated_user_login(),
+        )
         assert classification.blocking_unresolved_count == 0
         return classification.claimed
 
@@ -235,7 +240,15 @@ class ReceiptScenario:
             PR_NUMBER,
             self.transport.head,
             selected,
-            [ReviewThreadDisposition(thread_id=THREAD_ID, status=status, rationale=rationale, evidence="src/retry.py resets the counter before entering the retry loop; tests/test_retry.py exercises this boundary.")],
+            [
+                ReviewThreadDisposition(
+                    thread_id=THREAD_ID,
+                    status=status,
+                    rationale=rationale,
+                    evidence="src/retry.py resets the counter before entering the retry loop; tests/test_retry.py exercises this boundary.",
+                    discussion_evidence_digest=selected[0].discussion_evidence_digest,
+                )
+            ],
             stale_registry=registry or self.registry(),
             ledger=self.ledger(),
             base_sha=BASE,
@@ -296,6 +309,87 @@ def test_same_head_reopen_and_reconstruction_reuse_one_reply(receipt_scenario):
     assert len(scenario.transport.posts) == 1
     assert scenario.transport.patches
     assert len({comment_id for comment_id, _body in scenario.transport.patches}) == 1
+
+
+def test_reply_during_receipt_publication_revokes_canonical_acceptance(receipt_scenario):
+    scenario = receipt_scenario
+    claimed = scenario.claimed()
+
+    def add_counterexample():
+        scenario.transport.before_create = None
+        scenario.transport.comments.append(
+            RemoteComment(
+                ROOT_ID + 20,
+                "The same-scope retry counterexample still fails.",
+                "reviewer[bot]",
+                999,
+            )
+        )
+
+    scenario.transport.before_create = add_counterexample
+    report = scenario.close(claimed=claimed)
+
+    blocker = scenario.ledger().get_snapshot(API_ORIGIN, REPOSITORY, PR_NUMBER, require_retained_state=True).get_blocker(scenario.blocker_id)
+    assert blocker is not None
+    assert blocker.disposition == BlockerDisposition.OPEN
+    assert report.accepted_closures == ()
+    assert report.resolved_thread_ids == ()
+    assert report.thread_outcomes[0].acceptance_state == "NOT_ACCEPTED"
+    assert "resolve" not in scenario.transport.effects
+
+
+@pytest.mark.parametrize("phase", ["PENDING", "RESOLVED"])
+@pytest.mark.parametrize("next_status", ["STILL_VALID", "ADDRESSED"])
+def test_resolved_receipt_reconciliation_rejects_intervening_discussion_edit(receipt_scenario, monkeypatch, phase, next_status):
+    import auto_coder.pr_blocker_closure as closure
+
+    scenario = receipt_scenario
+    claimed = scenario.claimed()
+    if phase == "PENDING":
+        scenario.transport.lose_resolves = 1
+    scenario.close(claimed=claimed)
+    assert scenario.transport.resolved
+    receipt = observe_closure_receipt(scenario.client(), REPOSITORY, PR_NUMBER, THREAD_ID, ROOT_ID).receipt
+    assert receipt is not None and receipt.phase == phase
+    effects_before = list(scenario.transport.effects)
+    original_observe = closure.observe_closure_receipt
+    reads = 0
+    counterexample = "The retry counter still fails after a subsequent attempt."
+
+    def edit_before_reconciliation(*args, **kwargs):
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            scenario.transport.comments[1].body += "\n" + counterexample
+        return original_observe(*args, **kwargs)
+
+    monkeypatch.setattr(closure, "observe_closure_receipt", edit_before_reconciliation)
+    replay = scenario.close(claimed=claimed)
+    assert reads == 2
+    assert replay.accepted_closures == ()
+    assert replay.resolved_thread_ids == ()
+    assert scenario.transport.effects == effects_before
+    blocker = scenario.ledger().get_snapshot(API_ORIGIN, REPOSITORY, PR_NUMBER, require_retained_state=True).get_blocker(scenario.blocker_id)
+    assert blocker is not None and blocker.disposition == BlockerDisposition.OPEN
+    monkeypatch.setattr(closure, "observe_closure_receipt", original_observe)
+    # The ordinary classifier intentionally excludes resolved threads. Use the
+    # production retained-source revalidation entry point without reopening it.
+    import auto_coder.pr_processor as processor
+
+    monkeypatch.setattr(processor, "_resolve_eligible_review_thread_ids", lambda _repo: {REVIEWER_ID})
+    current = processor._get_claimed_review_thread_state(scenario.client(), REPOSITORY, PR_NUMBER, revalidate_resolved_thread_ids=(THREAD_ID,)).claimed
+    assert scenario.transport.resolved
+    assert len(current) == 1
+    assert counterexample in current[0].discussion
+    next_result = scenario.close(status=next_status, claimed=current)
+    if next_status == "STILL_VALID":
+        assert next_result.accepted_closures == ()
+        assert next_result.resolved_thread_ids == ()
+    else:
+        assert len(next_result.accepted_closures) == 1
+        assert next_result.resolved_thread_ids == (THREAD_ID,)
+        assert scenario.transport.effects.count("resolve") == effects_before.count("resolve")
+        assert len(scenario.transport.posts) == 1
 
 
 def test_confirmed_replay_does_not_mutate_github_again(receipt_scenario):
@@ -656,6 +750,24 @@ def test_changed_head_rebinds_same_reply_after_independent_acceptance(receipt_sc
     assert result.resolved_thread_ids == (THREAD_ID,)
     assert len(scenario.transport.posts) == 1
     assert NEXT_HEAD in next(comment.body for comment in scenario.transport.comments if comment.login == CONTROLLER_LOGIN)
+
+
+def test_new_head_independent_closure_retires_unresolved_prior_two_tier_receipt(receipt_scenario):
+    scenario = receipt_scenario
+    client = scenario.client()
+    observation = observe_closure_receipt(client, REPOSITORY, PR_NUMBER, THREAD_ID, ROOT_ID)
+    old_receipt = ClosureReceipt(repository=REPOSITORY, pr_number=PR_NUMBER, thread_id=THREAD_ID, root_comment_database_id=ROOT_ID, operation_key="prior-two-tier-operation", validated_head_sha=HEAD, phase="PENDING", rationale="Previously validated", evidence="Prior evidence")
+    put_receipt(client, observation, old_receipt)
+    scenario.transport.head = NEXT_HEAD
+
+    result = scenario.close(rationale="The independently inspected correction is valid on the new head.")
+
+    assert result.resolved_thread_ids == (THREAD_ID,)
+    assert scenario.transport.resolved
+    assert len(scenario.transport.posts) == 1
+    current = observe_closure_receipt(client, REPOSITORY, PR_NUMBER, THREAD_ID, ROOT_ID).receipt
+    assert current is not None and current.phase == "RESOLVED" and current.validated_head_sha == NEXT_HEAD
+    assert current.operation_key != old_receipt.operation_key
 
 
 def test_wrong_author_receipt_cannot_be_adopted(receipt_scenario):

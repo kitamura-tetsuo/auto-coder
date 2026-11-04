@@ -117,6 +117,8 @@ def dashboard_base_url() -> Iterator[str]:
     finally:
         server.should_exit = True
         thread.join(timeout=5)
+        if thread.is_alive():
+            raise RuntimeError("dashboard server did not stop in time")
 
 
 def _headless_page():

@@ -16,7 +16,7 @@ from auto_coder.implementation_slots import ImplementationOwner, ImplementationS
 from auto_coder.issue_review_rerun import RerunAuthorityUnavailable
 from auto_coder.issue_stage_routing import IssueStageRoutingStore
 from auto_coder.llm_backend_config import LLMBackendConfiguration
-from auto_coder.requirement_contract import build_normative_issue_manifest
+from auto_coder.requirement_contract import NormativeIssueManifest, NormativeRequirement, build_normative_issue_manifest
 from auto_coder.specification_analyzer import (
     FindingDisposition,
     IncrementalReviewContext,
@@ -2220,6 +2220,44 @@ def test_corrupt_newest_predecessor_forces_full_instead_of_using_older_record(tm
     assert third.predecessor_decision_key is None
 
 
+@pytest.mark.parametrize("corruption", ["minimal", "manifest", "title", "body", "role", "parent_number", "related_contracts", "objective", "baseline", "prior_applied_outcomes", "wrong-manifest", "wrong-body", "wrong-related", "wrong-objective-state", "wrong-objective-current"])
+@pytest.mark.parametrize("changed_current", [False, True])
+def test_structurally_incomplete_newest_evidence_is_neither_reused_nor_a_predecessor(tmp_path, corruption, changed_current):
+    gate = lifecycle(tmp_path, "READY")
+    gate.decide(build_normative_issue_manifest(1734, "Title", BODY), "Title", BODY)
+    body = BODY + "\n\n## Context\nNewest accepted evidence."
+    latest = gate.decide(build_normative_issue_manifest(1734, "Title", body), "Title", body)
+    state = json.loads(gate.store.path.read_text())
+    inputs = json.loads(state[latest.identity.key]["review_inputs"])
+    if corruption == "minimal":
+        inputs = {"role": "standalone", "parent_number": None}
+    elif corruption == "wrong-manifest":
+        inputs["manifest"]["requirements"][0]["text"] = "Different normative authority"
+    elif corruption == "wrong-body":
+        inputs["body"] = "A different captured body"
+    elif corruption == "wrong-related":
+        inputs["related_contracts"] = "A different related contract"
+    elif corruption == "wrong-objective-state":
+        inputs["objective"]["state"] = []
+    elif corruption == "wrong-objective-current":
+        inputs["objective"]["current"]["status"] = {}
+    else:
+        del inputs[corruption]
+    state[latest.identity.key]["review_inputs"] = json.dumps(inputs)
+    gate.store.path.write_text(json.dumps(state))
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    restarted = lifecycle(tmp_path, "READY", calls)
+    current = body + "\nA newer context edit." if changed_current else body
+
+    decision = restarted.decide(build_normative_issue_manifest(1734, "Title", current), "Title", current)
+
+    assert decision.verdict == "READY"
+    assert decision.review_mode == "FULL"
+    assert decision.evaluation_source == "model"
+    assert decision.predecessor_decision_key is None
+    calls.assert_called_once()
+
+
 def test_incomplete_exact_ready_record_cannot_authorize_reuse(tmp_path):
     calls = Mock(return_value=SpecificationAnalysisResult("READY"))
     gate = lifecycle(tmp_path, "READY", calls)
@@ -2237,3 +2275,228 @@ def test_incomplete_exact_ready_record_cannot_authorize_reuse(tmp_path):
     assert replacement.review_mode == "FULL"
     assert replacement.evaluation_source == "model"
     restarted_calls.assert_called_once()
+
+
+@pytest.mark.parametrize("changed_current", [False, True])
+@pytest.mark.parametrize("corruption", ["empty-retained", "empty-finding", "duplicate-id", "bad-category", "unverified-retained", "empty-reasoning", "null-objective"])
+def test_corrupt_retained_finding_or_objective_never_reuses_authority(tmp_path, changed_current, corruption):
+    gate = lifecycle(tmp_path, "BLOCKED")
+    original = gate.decide(build_normative_issue_manifest(1734, "Title", BODY), "Title", BODY)
+    state = json.loads(gate.store.path.read_text())
+    record = state[original.identity.key]
+    assert len(record["finding_ids"]) == len(record["retained_findings"]) == 1
+    if corruption == "empty-retained":
+        record["retained_findings"] = []
+    elif corruption == "empty-finding":
+        record["retained_findings"][0]["finding"] = {}
+    elif corruption == "duplicate-id":
+        record["retained_findings"].append(dict(record["retained_findings"][0]))
+    elif corruption == "bad-category":
+        record["retained_findings"][0]["finding"]["category"] = []
+    elif corruption == "unverified-retained":
+        record["retained_findings"][0]["disposition"] = "UNVERIFIED"
+    elif corruption == "empty-reasoning":
+        record["retained_findings"][0]["reasoning"] = " "
+    else:
+        inputs = json.loads(record["review_inputs"])
+        inputs["objective"] = None
+        record["review_inputs"] = json.dumps(inputs)
+    gate.store.path.write_text(json.dumps(state))
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    restarted = lifecycle(tmp_path, "READY", calls)
+    current = BODY + "\n\n## Context\nNew current context." if changed_current else BODY
+
+    decision = restarted.decide(build_normative_issue_manifest(1734, "Title", current), "Title", current)
+
+    assert decision.verdict == "READY"
+    assert decision.evaluation_source == "model"
+    assert decision.review_mode == "FULL"
+    assert decision.predecessor_decision_key is None
+    calls.assert_called_once()
+
+
+def test_policy_rollback_does_not_select_an_older_predecessor(tmp_path, monkeypatch):
+    policy = {"value": "semantic-policy-P"}
+    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.validation_policy_identity", lambda: policy["value"])
+    first = lifecycle(tmp_path, "READY").decide(build_normative_issue_manifest(1734, "Title", BODY), "Title", BODY)
+    policy["value"] = "semantic-policy-Q"
+    second_body = BODY + "\n\n## Context\nAccepted under a different policy."
+    second = lifecycle(tmp_path, "READY").decide(build_normative_issue_manifest(1734, "Title", second_body), "Title", second_body)
+    accepted = json.loads((tmp_path / "decisions.json").read_text())
+    assert accepted[second.identity.key]["accepted_sequence"] > accepted[first.identity.key]["accepted_sequence"]
+    policy["value"] = "semantic-policy-P"
+    current = second_body + "\nChanged again after policy rollback."
+
+    decision = lifecycle(tmp_path, "READY").decide(build_normative_issue_manifest(1734, "Title", current), "Title", current)
+
+    assert decision.review_mode == "FULL"
+    assert decision.predecessor_decision_key is None
+
+
+@pytest.mark.parametrize("changed_current", [False, True])
+@pytest.mark.parametrize("corruption", ["carried-empty", "carried-whitespace", "carried-full", "boundary-list", "boundary-dict", "boundary-empty", "fresh-reason"])
+def test_corrupt_retained_coverage_selects_full_without_authorizing_or_crashing(tmp_path, changed_current, corruption):
+    gate = lifecycle(tmp_path, "READY")
+    original = gate.decide(build_normative_issue_manifest(1734, "Title", BODY), "Title", BODY)
+    state = json.loads(gate.store.path.read_text())
+    entry = state[original.identity.key]["coverage"][0]
+    if corruption.startswith("carried"):
+        entry["status"] = "CARRIED"
+        entry["no_impact_reason"] = " " if corruption == "carried-whitespace" else ""
+        if corruption == "carried-full":
+            entry["no_impact_reason"] = "Cannot carry a boundary in a FULL review"
+    elif corruption == "fresh-reason":
+        entry["no_impact_reason"] = "Not a carried boundary"
+    else:
+        entry["boundary"] = {"boundary-list": [], "boundary-dict": {}, "boundary-empty": ""}[corruption]
+    gate.store.path.write_text(json.dumps(state))
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    restarted = lifecycle(tmp_path, "READY", calls)
+    current = BODY + "\n\n## Context\nChanged current context." if changed_current else BODY
+
+    decision = restarted.decide(build_normative_issue_manifest(1734, "Title", current), "Title", current)
+
+    assert decision.verdict == "READY"
+    assert decision.review_mode == "FULL"
+    assert decision.evaluation_source == "model"
+    assert decision.predecessor_decision_key is None
+    calls.assert_called_once()
+
+
+@pytest.mark.parametrize("changed_current", [False, True])
+@pytest.mark.parametrize("disposition", ["STILL_VALID", "REGRESSED"])
+def test_retained_ready_cannot_contradict_its_predecessor_dispositions(tmp_path, changed_current, disposition):
+    results = [SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")]
+    gate = lifecycle(tmp_path, "BLOCKED", lambda *_args: results.pop(0))
+    first = gate.decide(build_normative_issue_manifest(1734, "Title", BODY), "Title", BODY)
+    results.append(SpecificationAnalysisResult("READY", dispositions=(FindingDisposition(first.finding_ids[0], "RESOLVED", "The ambiguity was removed."),)))
+    body = BODY + "\n\n## Context\nClarified accepted input."
+    latest = gate.decide(build_normative_issue_manifest(1734, "Title", body), "Title", body)
+    state = json.loads(gate.store.path.read_text())
+    record = state[latest.identity.key]
+    assert record["verdict"] == "READY" and record["review_mode"] == "INCREMENTAL"
+    record["finding_dispositions"][0]["disposition"] = disposition
+    record["retained_findings"][0]["disposition"] = disposition
+    gate.store.path.write_text(json.dumps(state))
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    current = body + "\nAnother change." if changed_current else body
+
+    decision = lifecycle(tmp_path, "READY", calls).decide(build_normative_issue_manifest(1734, "Title", current), "Title", current)
+
+    assert decision.verdict == "READY"
+    assert decision.review_mode == "FULL"
+    assert decision.evaluation_source == "model"
+    assert decision.predecessor_decision_key is None
+    calls.assert_called_once()
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_retained_finding_validation_uses_bound_caller_manifest_not_body(tmp_path, corrupt):
+    body = BODY + "\nREQ-002: This body entry is not in the caller manifest."
+    caller_id = "REQ-001" if corrupt else "REQ-CALLER"
+    manifest = NormativeIssueManifest(1734, "Caller title", True, True, (NormativeRequirement(caller_id, "Caller-owned normative text"),))
+    finding = SpecificationFinding("material_ambiguity", (caller_id,), "Undefined source.", "Define its source.", "", "")
+    gate = lifecycle(tmp_path, "BLOCKED", Mock(return_value=SpecificationAnalysisResult("BLOCKED", (finding,), remediation="EDIT_IN_PLACE")))
+    original = gate.decide(manifest, "Title", body)
+    if corrupt:
+        state = json.loads(gate.store.path.read_text())
+        state[original.identity.key]["findings"][0]["requirement_ids"] = ["REQ-002"]
+        state[original.identity.key]["retained_findings"][0]["finding"]["requirement_ids"] = ["REQ-002"]
+        gate.store.path.write_text(json.dumps(state))
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+
+    decision = lifecycle(tmp_path, "READY", calls).decide(manifest, "Title", body)
+
+    if corrupt:
+        assert decision.verdict == "READY" and decision.review_mode == "FULL"
+        assert decision.predecessor_decision_key is None
+        calls.assert_called_once()
+    else:
+        assert decision.verdict == "BLOCKED" and decision.evaluation_source == "stored-decision-reuse"
+        calls.assert_not_called()
+
+
+@pytest.mark.parametrize("changed_current", [False, True])
+@pytest.mark.parametrize("corruption", ["empty-explanation", "empty-clarification", "false-success-incomplete", "duplicate-requirement-ids"])
+def test_resolved_retained_payload_must_remain_complete(tmp_path, changed_current, corruption):
+    results = [SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")]
+    gate = lifecycle(tmp_path, "BLOCKED", lambda *_args: results.pop(0))
+    first = gate.decide(build_normative_issue_manifest(1734, "Title", BODY), "Title", BODY)
+    results.append(SpecificationAnalysisResult("READY", dispositions=(FindingDisposition(first.finding_ids[0], "RESOLVED", "The original counterexample is resolved."),)))
+    body = BODY + "\n\n## Context\nClarified accepted input."
+    latest = gate.decide(build_normative_issue_manifest(1734, "Title", body), "Title", body)
+    state = json.loads(gate.store.path.read_text())
+    record = state[latest.identity.key]
+    assert record["findings"] == []
+    retained = record["retained_findings"][0]["finding"]
+    if corruption == "empty-explanation":
+        retained["explanation"] = " "
+    elif corruption == "empty-clarification":
+        retained["clarification"] = ""
+    elif corruption == "false-success-incomplete":
+        retained["category"] = "false_success_gap"
+    else:
+        retained["requirement_ids"] = ["REQ-001", "REQ-001"]
+    gate.store.path.write_text(json.dumps(state))
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    current = body + "\nAnother context change." if changed_current else body
+
+    decision = lifecycle(tmp_path, "READY", calls).decide(build_normative_issue_manifest(1734, "Title", current), "Title", current)
+
+    assert decision.verdict == "READY" and decision.review_mode == "FULL"
+    assert decision.evaluation_source == "model" and decision.predecessor_decision_key is None
+    calls.assert_called_once()
+
+
+@pytest.mark.parametrize("changed_current", [False, True])
+@pytest.mark.parametrize("corruption", ["baseline", "original-objective", "current-objective", "prior-applied-outcomes", "missing-input-digest"])
+def test_optional_retained_immutable_evidence_matches_independent_history(tmp_path, changed_current, corruption):
+    body = "## Objective\nPreserve the anchored contract.\n\n" + BODY
+    gate = lifecycle(tmp_path, "READY")
+    first = gate.decide(build_normative_issue_manifest(1734, "Title", body), "Title", body)
+    history_before = gate.history_store.path.read_bytes()
+    state = json.loads(gate.store.path.read_text())
+    inputs = json.loads(state[first.identity.key]["review_inputs"])
+    if corruption == "baseline":
+        inputs["baseline"] = '{"body":"A substituted historical contract"}'
+    elif corruption == "original-objective":
+        inputs["objective"]["original_text"] = "A substituted original Objective."
+    elif corruption == "prior-applied-outcomes":
+        inputs["prior_applied_outcomes"] = ["An outcome that was never captured."]
+    elif corruption == "missing-input-digest":
+        state[first.identity.key].pop("review_inputs_digest", None)
+    else:
+        inputs["objective"]["current"]["text"] = "A substituted current Objective."
+    state[first.identity.key]["review_inputs"] = json.dumps(inputs)
+    gate.store.path.write_text(json.dumps(state))
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    current = body + "\n\n## Context\nChanged current context." if changed_current else body
+
+    decision = lifecycle(tmp_path, "READY", calls).decide(build_normative_issue_manifest(1734, "Title", current), "Title", current)
+
+    assert decision.verdict == "READY" and decision.review_mode == "FULL"
+    assert decision.evaluation_source == "model" and decision.predecessor_decision_key is None
+    assert gate.history_store.path.read_bytes() == history_before
+    calls.assert_called_once()
+
+
+def test_controller_checkpoint_preserves_incremental_carried_coverage_for_exact_reuse(tmp_path):
+    results = [SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")]
+    gate = lifecycle(tmp_path, "BLOCKED", lambda *_args: results.pop(0))
+    first = gate.decide(build_normative_issue_manifest(1734, "Title", BODY), "Title", BODY)
+    from auto_coder.specification_analyzer import ReviewCoverage
+
+    results.append(SpecificationAnalysisResult("READY", dispositions=(FindingDisposition(first.finding_ids[0], "RESOLVED", "The ambiguity is resolved."),), coverage=(ReviewCoverage("REQ-001", "CARRIED", "The Requirement boundary is unchanged."), ReviewCoverage("contract-wide", "FRESH"))))
+    body = BODY + "\n\n## Context\nClarified current evidence."
+    second = gate.decide(build_normative_issue_manifest(1734, "Title", body), "Title", body)
+    reused = gate.store.get(second.identity)
+    assert reused is not None and reused.review_mode == "REUSED"
+    gate.store.save(reused)
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+
+    decision = lifecycle(tmp_path, "READY", calls).decide(build_normative_issue_manifest(1734, "Title", body), "Title", body)
+
+    assert decision.verdict == "READY" and decision.evaluation_source == "stored-decision-reuse"
+    assert decision.coverage == reused.coverage
+    assert json.loads(gate.store.path.read_text())[second.identity.key]["review_mode"] == "INCREMENTAL"
+    calls.assert_not_called()

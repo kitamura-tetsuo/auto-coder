@@ -27,6 +27,7 @@ from auto_coder.pr_review_effects import (
     ReviewEffectExecutor,
     ReviewEffectRepository,
 )
+from auto_coder.review_thread_validation import substantive_discussion_digest
 from auto_coder.two_tier_pr_gate import TwoTierPrGate
 from auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
 
@@ -396,7 +397,7 @@ def test_production_consumer_recovers_with_a_new_executor(tmp_path, monkeypatch,
 
 
 @pytest.mark.parametrize("disposition", ["FIXED", "INVALID"])
-@pytest.mark.parametrize("failure", ["none", "reply", "resolve", "lost_response", "changed_head", "reply_changed_head", "stale_head", "missing_root", "untrusted_root", "truncated_thread"])
+@pytest.mark.parametrize("failure", ["none", "reply", "resolve", "lost_response", "changed_head", "reply_changed_head", "reply_discussion", "stale_head", "missing_root", "untrusted_root", "truncated_thread"])
 def test_accepted_closure_resolves_only_its_authenticated_finding_and_resumes(tmp_path, monkeypatch, disposition, failure):
     monkeypatch.setenv("HOME", str(tmp_path))
     contract = ContractSnapshot(("#2209",), "REQ-001: Preserve the accepted payload.")
@@ -431,26 +432,37 @@ def test_accepted_closure_resolves_only_its_authenticated_finding_and_resumes(tm
     class Client:
         head = "head-b"
         resolved = False
+        replies = []
 
         def get_pull_request_head_sha_strict(self, repo, number):
             return self.head
+
+        def get_authenticated_user_login(self):
+            return "controller[bot]"
 
         def get_pr_review_threads_strict(self, repo, number):
             if active_failure == "missing_root":
                 return []
             return [
-                ReviewThread(id="finding-thread", is_resolved=self.resolved, comments=[ReviewThreadComment(database_id=12, body=roots[0].body)], comments_truncated=active_failure == "truncated_thread"),
-                ReviewThread(id="human-thread", is_resolved=False, comments=[ReviewThreadComment(database_id=13, body="Unrelated human finding")]),
+                ReviewThread(id="finding-thread", is_resolved=self.resolved, comments=[ReviewThreadComment(database_id=12, author_id=4765828, author_login="reviewer[bot]", body=roots[0].body), *self.replies], comments_truncated=active_failure == "truncated_thread"),
+                ReviewThread(id="human-thread", is_resolved=False, comments=[ReviewThreadComment(database_id=13, author_id=99, author_login="human", body="Unrelated human finding")]),
             ]
 
         def reply_to_review_thread(self, repo, number, root, body):
             assert root == 12
-            assert f"**{disposition}**" in body and "head-b" in body and "Verified correction evidence" in body
+            assert "auto-coder-review-thread-closure:v1" in body and "head-b" in body and "Verified correction evidence" in body
             calls.append("reply")
             if active_failure == "reply":
                 raise RuntimeError("reply unavailable")
+            self.replies.append(ReviewThreadComment(database_id=14, author_id=42, author_login="controller[bot]", body=body, in_reply_to_id=root))
             if active_failure == "reply_changed_head":
                 self.head = "head-c"
+            if active_failure == "reply_discussion":
+                self.replies.append(ReviewThreadComment(database_id=15, author_id=88, author_login="reviewer", body="New counterexample", in_reply_to_id=root))
+
+        def update_review_thread_comment(self, repo, comment_id, body):
+            assert comment_id == 14
+            self.replies[0].body = body
 
         def resolve_review_thread(self, thread):
             assert thread == "finding-thread"
@@ -469,12 +481,20 @@ def test_accepted_closure_resolves_only_its_authenticated_finding_and_resumes(tm
             self.resolved = False
 
     client = Client()
+    original_closure_payload = AcceptedReviewPayload.closure
+
+    def closure_payload(*args, **kwargs):
+        payload = original_closure_payload(*args, **kwargs)
+        return replace(payload, discussion_evidence=(("finding-thread", validated_digest),))
+
+    monkeypatch.setattr(AcceptedReviewPayload, "closure", staticmethod(closure_payload))
     monkeypatch.setattr(pr_processor, "load_reviewer_app_config", lambda repo_name: object())
     monkeypatch.setattr(pr_processor, "GitHubAppReviewer", Reviewer)
     monkeypatch.setattr(pr_processor.GitHubClient, "get_instance", lambda: client)
     monkeypatch.setattr(pr_processor, "_record_pr_stage", lambda *args: stages.append(args))
     assert pr_processor._consume_pending_two_tier_publication("owner/repo", 42, inputs)[0] is True
     assert calls == []  # OPEN findings never authorize resolution.
+    validated_digest = substantive_discussion_digest(client.get_pr_review_threads_strict("owner/repo", 42)[0], "controller[bot]")
     snapshot = cycle.record_ordinary_pass(42, RoundProvenance("head-b", "base-a"), contract)
     cycle.certify_closure(42, RoundProvenance("head-b", "base-a"), contract, policy, strong.round_id, snapshot.finding_set_revision, [FindingDisposition(finding.finding_id, disposition, "Verified correction evidence", "head-b")], bounded=True, bounded_evidence="Only the finding was corrected")
     inputs = replace(inputs, head_sha="head-b")
@@ -503,6 +523,13 @@ def test_accepted_closure_resolves_only_its_authenticated_finding_and_resumes(tm
         if failure == "reply_changed_head":
             assert calls == ["reply"]
             assert client.resolved is False
+        if failure == "reply_discussion":
+            from auto_coder.review_thread_closure_receipt import parse_owned_receipt
+
+            receipt = parse_owned_receipt(client.get_pr_review_threads_strict("owner/repo", 42)[0], "controller[bot]")
+            assert receipt is not None and receipt.phase == "ROLLED_BACK"
+            assert calls == ["reply"] and not client.resolved
+            return
         prior_resolves = calls.count("resolve")
         active_failure = "none"
         client.head = "head-b"
@@ -512,6 +539,11 @@ def test_accepted_closure_resolves_only_its_authenticated_finding_and_resumes(tm
         assert len(publications) == 2  # Confirmed closure publication is never resent.
         assert calls.count("resolve") == prior_resolves + int(failure != "lost_response")
         assert cycle.snapshot(42).accepted_closure.publication_status == PUBLICATION_ACKNOWLEDGED
+    from auto_coder.review_thread_closure_receipt import parse_owned_receipt
+
+    receipt = parse_owned_receipt(client.get_pr_review_threads_strict("owner/repo", 42)[0], "controller[bot]")
+    assert receipt is not None and receipt.phase == "RESOLVED"
+    assert len(client.replies) == 1
 
 
 def test_closure_payload_attribution_is_explicit_and_leaves_legacy_identity_unchanged() -> None:

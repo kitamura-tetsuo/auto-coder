@@ -126,6 +126,27 @@ def test_supervisor_observation_is_read_only_and_requires_live_presence(tmp_path
         _stop_process(started.record.pid)
 
 
+@pytest.mark.parametrize("env_shebang", [False, True])
+def test_readback_runtime_observation_checks_running_script(tmp_path: Path, env_shebang: bool, _use_real_sleep: None, _use_real_commands: None) -> None:
+    from auto_coder.management.readiness_observation import _live
+
+    runtime = _runtime(tmp_path)
+    if env_shebang:
+        runtime.executable.write_bytes(runtime.executable.read_bytes().replace(b"#!/usr/bin/python3", b"#!/usr/bin/env python3", 1))
+        runtime = replace(_resign_runtime(runtime), environment=(("PATH", "/usr/bin:/bin"),))
+    supervisor = _supervisor(tmp_path, runtime)
+    started = supervisor.start_selected("start", "attempt", runtime.reference)
+    try:
+        _await_child_ready(runtime)
+        supervisor.store.publish_supervisor(supervisor.incarnation, os.getpid(), supervisor._start_token(os.getpid()))
+        observed = _live(supervisor.config)
+        assert observed == (started.record, runtime)
+        different = replace(runtime, arguments=(*runtime.arguments, "wrong"))
+        assert _live(replace(supervisor.config, runtimes=(different,))) is None
+    finally:
+        _stop_process(started.record.pid)
+
+
 def test_failed_application_safety_restore_is_exact_and_once(tmp_path: Path, _use_real_sleep: None, _use_real_commands: None) -> None:
     old, candidate = _runtime(tmp_path, "old"), _runtime(tmp_path, "candidate")
     supervisor = _supervisor(tmp_path, old, candidate)
@@ -350,7 +371,7 @@ def test_receipt_changed_after_real_old_stop_uses_one_previous_runtime_return(tm
         _stop_process(result.record.pid)
 
 
-@pytest.mark.parametrize("reader", ("read", "active", "change", "runtime"))
+@pytest.mark.parametrize("reader", ("read", "active", "change", "runtime", "runtime_readonly"))
 def test_corrupt_mutable_handoff_cannot_change_original_intent(tmp_path: Path, reader: str) -> None:
     import json
 
@@ -368,7 +389,14 @@ def test_corrupt_mutable_handoff_cannot_change_original_intent(tmp_path: Path, r
         elif reader == "change":
             store.change(record, phase=HandoffPhase.SUCCEEDED)
         else:
-            store.runtime("candidate")
+            store.runtime("candidate", readonly=reader == "runtime_readonly")
+
+
+def test_readonly_runtime_lookup_does_not_create_missing_store(tmp_path: Path) -> None:
+    store = HandoffStore(tmp_path / "absent", "manager")
+    with pytest.raises(sqlite3.OperationalError):
+        store.runtime("candidate", readonly=True)
+    assert not store.path.exists()
 
 
 @pytest.mark.parametrize("field,value", (("source_sha", "wrong"), ("runtime_id", "wrong"), ("receipt_identity", "wrong"), ("child_identity", "old"), ("grant_id", ""), ("uid", "other"), ("client_id", "other"), ("observed_at", float("nan")), ("observed_at", 0)))
@@ -451,3 +479,28 @@ def test_real_module_supervisor_uses_canonical_lifecycle_types(tmp_path: Path, _
         supervisor.terminate()
         supervisor.wait(timeout=5)
         _stop_process(child_pid)
+
+
+def test_confirmed_previous_exit_before_start_token_is_not_restored(tmp_path: Path, monkeypatch, _use_real_sleep: None, _use_real_commands: None) -> None:
+    old, candidate = _runtime(tmp_path, "old"), _runtime(tmp_path, "candidate")
+    supervisor = _supervisor(tmp_path, old, candidate)
+    first = supervisor.start_selected("initial", "a", "old")
+    _await_child_ready(old)
+    assert supervisor.request_graceful_stop("stop", "b", supervisor._identity(first.record)).status is ResultStatus.STOPPED
+    started = supervisor.start_selected("candidate", "c", "candidate")
+    _await_child_ready(candidate)
+    stopped = supervisor.request_graceful_stop("candidate-stop", "d", supervisor._identity(started.record))
+    assert stopped.status is ResultStatus.STOPPED
+    old.executable.write_bytes(b"#!/bin/sh\nexit 21\n")
+    replacement = _resign_runtime(old)
+    supervisor.config = replace(supervisor.config, runtimes=(replacement, candidate))
+
+    def after_previous_exit(pid: int) -> str:
+        os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+        return ""
+
+    monkeypatch.setattr(supervisor, "_start_token", after_previous_exit)
+    failed = supervisor.restore_previous("restore", "e", supervisor._identity(stopped.record), "old")
+    assert failed.status is ResultStatus.NEEDS_ATTENTION
+    assert failed.record.recovery_used and failed.record.pid == 0
+    assert supervisor.restore_previous("restore", "e", supervisor._identity(stopped.record), "old").record == failed.record

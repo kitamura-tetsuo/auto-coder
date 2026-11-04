@@ -12,6 +12,36 @@ six production handlers check it again before repository reads or stage effects.
 Foreign records remain untouched in the shared legacy SQLite database and remain
 available to a controller bound to their repository.
 
+An error-free, unfinished Issue evaluation does not independently wake itself.
+Its next automatic entry respects the expiry of the regular scheduler wait
+already armed for that dispatch turn and any later durable not-before. Settlement
+does not start another polling interval: if that wait expired during evaluation,
+the retained work can be scanned immediately after settlement. This changes
+scheduling only; the production Issue handler still strictly refreshes the same
+Issue, rejects stale retained revisions and uses ordinary common admission.
+Each later unchanged deferral uses the controller wait immediately preceding
+its own dispatch scan. If that wait has elapsed, evaluation is immediately
+eligible after settlement, including when it elapsed before handler entry.
+The next evaluation retains its own preceding wait; its future expiry and the
+in-flight guard prevent an unbounded zero-delay self-redispatch loop.
+Another handler's internal settlement is also a scan notification, never an
+independently requested public wake.
+An unrelated future deadline changes the next eligibility scan, not the armed
+no-progress polling cadence for an unchanged Issue. Nearer and later unrelated
+deadlines therefore neither accelerate its repeated deferrals nor starve it.
+An already-due row without a registered handler also cannot restart another
+Issue's remaining armed wait; its next scan respects the earlier future expiry.
+
+An independently requested scheduler wake (including existing registration and
+selected manual-retry notifications) can request an earlier due-work scan. A wake
+received during an active evaluation remains effective after its settlement,
+without concurrent same-key dispatch. Waking neither resets durable accounting or
+receipts nor shortens a future not-before or unblocks an operational failure.
+Regular-wait references are process-local scheduling state; interruption and
+restart retain and recover the same durable unfinished obligation. Interrupted
+handlers run as tracked tasks, so other eligible work and shutdown remain responsive
+while recovery is in progress; cancellation leaves the interrupted row unfinished.
+
 Repository-specific storage is resolved beneath
 `~/.auto-coder/repositories/<sha256-owner-key>/github_pending_work.db`. A durable
 owner record prevents a path collision from relabeling a database. A fresh
@@ -31,6 +61,10 @@ Ownership refusals identify both the configured and obligation repositories thro
 the normal Loguru sinks. An unbound scheduler may exist during engine construction,
 but cannot enter its serving loop; production installs the immutable binding and all
 handlers before starting recovery.
+
+An unexpected failure of the strict Issue refresh or subsequent candidate evaluation retains the unfinished
+obligation as an evaluation-failed operational block. Polling and generic wakes do
+not retry it; an operator can rearm the selected obligation using pending-work retry.
 
 ## Production adoption and operator workflow
 
@@ -74,3 +108,28 @@ migration for each repository that needs it, start the upgraded controllers, ins
 `pending-work list`, and use targeted `retry` only for a selected retained block. The old
 database is preserved but is not the live queue after cutover; running old and upgraded
 writers together is unsupported.
+
+A non-typed failure during a resumed Issue's candidate processing, including the
+local job-store lookup after its successful strict refresh, becomes a retained
+`EVALUATION_FAILED` operational block. Ordinary scans and generic wakes cannot
+retry it; the existing selected manual retry preserves identity and effects.
+Typed GitHub request failures retain their existing classification and deadlines.
+The initial-refresh regression also injects failures at both actual candidate
+boundaries through the production handler and scheduler/store.
+
+The bounded cadence regression observes completion of the actual second
+production handler evaluation before asserting its strict-reader timestamp.
+Thread entry alone is insufficient evidence that the strict read has run.
+Epoch-based arm/deadline comparisons use zero relative tolerance and one
+microsecond absolute tolerance, so large wall-clock values cannot hide drift.
+This strengthens the test oracle without changing scheduler timing or traces.
+
+Scheduling a handler captures the regular wait immediately preceding its scan,
+together with the wake generation. Starting its coroutine cannot borrow the
+following loop's mutable deadline. Time spent in that actual preceding wait,
+the scan or task scheduling cannot add a new interval after its expiry. The
+real protected-owner regression advances the clock by seven or thirty-one
+seconds before/after task scheduling; recurring waves independently record the
+preceding controller arms and verify immediate eligibility for elapsed waits,
+future-wait enforcement, and no unbounded self-redispatch. This is the timing
+origin explicitly confirmed by the user for #2746/REQ-001 on 2026-11-04 JST.

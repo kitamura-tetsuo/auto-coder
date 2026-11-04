@@ -1,0 +1,358 @@
+import asyncio
+import sqlite3
+
+import httpx
+import pytest
+
+from auto_coder.github_request_governor import GitHubRequestDeferred, GitHubRequestGovernor
+from auto_coder.util.gh_cache import _caching_request, get_caching_client, get_ghapi_client, retry_with_backoff
+from auto_coder.util.github_request_outcome import DeliveryCertainty, GitHubApiOutcome, RequestProvenance, configure_github_request_boundary, take_wire_outcomes
+
+
+@pytest.mark.parametrize("adapter", ["ghapi", "direct"])
+def test_real_cache_write_lock_does_not_strand_wire_reservation(tmp_path, monkeypatch, adapter):
+    monkeypatch.chdir(tmp_path)
+    governor = GitHubRequestGovernor(store_path=tmp_path / "governor.sqlite3")
+    sent = []
+    locks = []
+
+    def respond(_transport, request):
+        sent.append(request.url.path)
+        if len(sent) == 1:
+            lock = sqlite3.connect(tmp_path / ".cache/gh_cache.db", timeout=0)
+            lock.execute("BEGIN IMMEDIATE")
+            locks.append(lock)
+        return httpx.Response(200, headers={"cache-control": "max-age=60", "x-ratelimit-remaining": "10"}, json={"state": "open"})
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
+    configure_github_request_boundary(governor.admit, governor.observe)
+    try:
+        with get_caching_client(admission_hook=governor.admit, observation_hook=governor.observe) as client:
+            monkeypatch.setattr("auto_coder.util.gh_cache.get_caching_client", lambda *args: client)
+            api = get_ghapi_client("fixture-token", admission_hook=governor.admit, observation_hook=governor.observe)
+            with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+                if adapter == "ghapi":
+                    api("/repos/owner/repo/issues/1")
+                else:
+                    _caching_request(client, "GET", "https://api.github.com/repos/owner/repo/issues/1", path_template="/repos/owner/repo/issues/{id}")
+            for lock in locks:
+                lock.rollback()
+                lock.close()
+            locks.clear()
+            assert sent == ["/repos/owner/repo/issues/1"]
+            with sqlite3.connect(tmp_path / "governor.sqlite3") as connection:
+                assert connection.execute("SELECT resolved FROM reservations").fetchall() == [(1,)]
+            assert api("/repos/owner/repo/issues/2") == {"state": "open"}
+            assert sent == ["/repos/owner/repo/issues/1", "/repos/owner/repo/issues/2"]
+    finally:
+        for lock in locks:
+            lock.rollback()
+            lock.close()
+        configure_github_request_boundary()
+        governor.close()
+
+
+@pytest.mark.parametrize("adapter", ["ghapi", "direct"])
+@pytest.mark.parametrize("method", ["GET", "POST"])
+@pytest.mark.parametrize("status", [200, 429])
+def test_cached_body_failure_retains_headers_without_replay(tmp_path, monkeypatch, adapter, method, status):
+    monkeypatch.chdir(tmp_path)
+    governor = GitHubRequestGovernor(store_path=tmp_path / "governor.sqlite3")
+    sent = []
+    observations = []
+    failure = httpx.RemoteProtocolError("body unavailable; token=DO_NOT_LOG")
+
+    class BrokenBody(httpx.SyncByteStream):
+        def __iter__(self):
+            raise failure
+            yield b""  # pragma: no cover
+
+    def observe(outcome):
+        observations.append(outcome)
+        governor.observe(outcome)
+
+    def respond(_transport, request):
+        sent.append((request.method, request.url.path))
+        if len(sent) == 1:
+            headers = {"x-ratelimit-remaining": "5", "x-github-request-id": "received-header"}
+            if status == 429:
+                headers["retry-after"] = "120"
+            return httpx.Response(status, headers=headers, stream=BrokenBody())
+        return httpx.Response(200, headers={"cache-control": "max-age=60"}, json={"state": "open"})
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
+    configure_github_request_boundary(governor.admit, observe)
+    try:
+        with get_caching_client(admission_hook=governor.admit, observation_hook=observe) as client:
+            monkeypatch.setattr("auto_coder.util.gh_cache.get_caching_client", lambda *args: client)
+            api = get_ghapi_client("fixture-token", admission_hook=governor.admit, observation_hook=observe)
+
+            @retry_with_backoff()
+            def invoke():
+                if adapter == "ghapi":
+                    api("/repos/owner/repo/issues/1", verb=method)
+                else:
+                    _caching_request(client, method, "https://api.github.com/repos/owner/repo/issues/1", path_template="/repos/owner/repo/issues/{id}")
+
+            with pytest.raises(httpx.RemoteProtocolError) as caught:
+                invoke()
+            assert caught.value is failure
+            assert sent == [(method, "/repos/owner/repo/issues/1")]
+            assert len(observations) == 1
+            outcome = observations[0]
+            assert outcome.status == status
+            assert outcome.delivery is DeliveryCertainty.HTTP_RESPONSE_RECEIVED
+            assert outcome.provenance is RequestProvenance.NETWORK
+            assert outcome.metadata.github_request_id == "received-header"
+            assert outcome.metadata.rate_limit_remaining == 5
+            assert outcome.message is None
+            assert take_wire_outcomes() == []
+            with sqlite3.connect(tmp_path / "governor.sqlite3") as connection:
+                assert connection.execute("SELECT resolved FROM reservations").fetchall() == [(1,)]
+            if status == 429:
+                assert outcome.classification is GitHubApiOutcome.SECONDARY_THROTTLED
+                assert outcome.metadata.retry_after_seconds == 120
+                with pytest.raises(GitHubRequestDeferred) as deferred:
+                    api("/repos/owner/repo/issues/2")
+                assert deferred.value.reason == "rate_limit_cooldown"
+                assert len(sent) == 1
+            else:
+                assert api("/repos/owner/repo/issues/2") == {"state": "open"}
+                assert api("/repos/owner/repo/issues/2") == {"state": "open"}
+                assert len(sent) == 2
+                assert [item.provenance for item in observations] == [RequestProvenance.NETWORK, RequestProvenance.NETWORK, RequestProvenance.LOCAL_CACHE]
+                assert sum(item.context.attempt_id == outcome.context.attempt_id for item in observations) == 1
+    finally:
+        configure_github_request_boundary()
+        governor.close()
+
+
+@pytest.mark.parametrize("adapter", ["ghapi", "direct"])
+def test_cache_failure_before_wire_creates_no_receipt(tmp_path, monkeypatch, adapter):
+    monkeypatch.chdir(tmp_path)
+    governor = GitHubRequestGovernor(store_path=tmp_path / "governor.sqlite3")
+    observations = []
+    failure = sqlite3.OperationalError("local pre-send storage failure")
+
+    def fail_before_transport(_self, _request):
+        raise failure
+
+    monkeypatch.setattr("auto_coder.util.gh_cache._GitHubCacheTransport.handle_request", fail_before_transport)
+    configure_github_request_boundary(governor.admit, observations.append)
+    try:
+        with get_caching_client(admission_hook=governor.admit, observation_hook=observations.append) as client:
+            monkeypatch.setattr("auto_coder.util.gh_cache.get_caching_client", lambda *args: client)
+            api = get_ghapi_client("fixture-token", admission_hook=governor.admit, observation_hook=observations.append)
+            with pytest.raises(sqlite3.OperationalError) as caught:
+                if adapter == "ghapi":
+                    api("/repos/owner/repo/issues/1")
+                else:
+                    _caching_request(client, "GET", "https://api.github.com/repos/owner/repo/issues/1", path_template="/repos/owner/repo/issues/{id}")
+            assert caught.value is failure
+            assert observations == []
+            assert take_wire_outcomes() == []
+            with sqlite3.connect(tmp_path / "governor.sqlite3") as connection:
+                assert connection.execute("SELECT count(*) FROM reservations").fetchone() == (0,)
+    finally:
+        configure_github_request_boundary()
+        governor.close()
+
+
+@pytest.mark.parametrize("adapter", ["ghapi", "direct"])
+def test_cancellation_after_recorded_response_preserves_original_failure(tmp_path, monkeypatch, adapter):
+    monkeypatch.chdir(tmp_path)
+    observations = []
+    sent = []
+    failure = asyncio.CancelledError("cancelled after wire response")
+
+    def respond(_transport, request):
+        sent.append(request.url.path)
+        return httpx.Response(200, json={"state": "open"})
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
+    configure_github_request_boundary(lambda _context: True, observations.append)
+    try:
+        with get_caching_client(admission_hook=lambda _context: True, observation_hook=observations.append) as client:
+            original_request = client.request
+
+            def cancel_after_response(*args, **kwargs):
+                original_request(*args, **kwargs).close()
+                raise failure
+
+            monkeypatch.setattr(client, "request", cancel_after_response)
+            monkeypatch.setattr("auto_coder.util.gh_cache.get_caching_client", lambda *args: client)
+            api = get_ghapi_client("fixture-token", admission_hook=lambda _context: True, observation_hook=observations.append)
+            with pytest.raises(asyncio.CancelledError) as caught:
+                if adapter == "ghapi":
+                    api("/repos/owner/repo/issues/1")
+                else:
+                    _caching_request(client, "GET", "https://api.github.com/repos/owner/repo/issues/1", path_template="/repos/owner/repo/issues/{id}")
+            assert caught.value is failure
+            assert sent == ["/repos/owner/repo/issues/1"]
+            assert len(observations) == 1
+            assert observations[0].delivery is DeliveryCertainty.HTTP_RESPONSE_RECEIVED
+            assert take_wire_outcomes() == []
+    finally:
+        configure_github_request_boundary()
+
+
+@pytest.mark.parametrize("adapter", ["ghapi", "direct"])
+@pytest.mark.parametrize("status", [200, 429])
+@pytest.mark.parametrize("failure_type", [httpx.RemoteProtocolError, asyncio.CancelledError])
+@pytest.mark.parametrize("observer_failure_type", [RuntimeError, asyncio.CancelledError])
+@pytest.mark.parametrize("diagnostic_fails", [False, True])
+def test_observer_failure_never_masks_original_body_failure(tmp_path, monkeypatch, adapter, status, failure_type, observer_failure_type, diagnostic_fails):
+    from auto_coder.util.gh_cache import logger
+
+    monkeypatch.chdir(tmp_path)
+    governor = GitHubRequestGovernor(store_path=tmp_path / "governor.sqlite3")
+    failure = failure_type("original-body-DO_NOT_LOG")
+    observer_failure = observer_failure_type("observer-DO_NOT_LOG")
+    sent = []
+    observations = []
+    messages = []
+    sink = logger.add(messages.append, format="{message}")
+
+    class BrokenBody(httpx.SyncByteStream):
+        def __iter__(self):
+            raise failure
+            yield b""  # pragma: no cover
+
+    def respond(_transport, request):
+        sent.append((request.method, request.url.path))
+        headers = {"x-github-request-id": "observer-failure-headers"}
+        if status == 429:
+            headers["retry-after"] = "120"
+        return httpx.Response(status, headers=headers, stream=BrokenBody())
+
+    def observe(outcome):
+        observations.append(outcome)
+        governor.observe(outcome)
+        raise observer_failure
+
+    diagnostics = []
+
+    if diagnostic_fails:
+
+        def fail_diagnostic(outcome, event):
+            diagnostics.append((outcome, event))
+            raise observer_failure
+
+        monkeypatch.setattr("auto_coder.util.gh_cache.log_outcome", fail_diagnostic)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
+    configure_github_request_boundary(governor.admit, observe)
+    try:
+        with get_caching_client(admission_hook=governor.admit, observation_hook=observe) as client:
+            monkeypatch.setattr("auto_coder.util.gh_cache.get_caching_client", lambda *args: client)
+            api = get_ghapi_client("fixture-token", admission_hook=governor.admit, observation_hook=observe)
+
+            @retry_with_backoff()
+            def invoke():
+                if adapter == "ghapi":
+                    api("/repos/owner/repo/issues/1", verb="POST")
+                else:
+                    _caching_request(client, "POST", "https://api.github.com/repos/owner/repo/issues/1", path_template="/repos/owner/repo/issues/{id}")
+
+            with pytest.raises(failure_type) as caught:
+                invoke()
+            assert caught.value is failure
+            assert sent == [("POST", "/repos/owner/repo/issues/1")]
+            assert len(observations) == 1
+            outcome = observations[0]
+            assert outcome.status == status
+            assert outcome.delivery is DeliveryCertainty.HTTP_RESPONSE_RECEIVED
+            assert outcome.metadata.github_request_id == "observer-failure-headers"
+            assert take_wire_outcomes() == []
+            if diagnostic_fails:
+                assert diagnostics == [(outcome, "wire_response_before_cache_failure")]
+            with sqlite3.connect(tmp_path / "governor.sqlite3") as connection:
+                assert connection.execute("SELECT resolved FROM reservations").fetchall() == [(1,)]
+            if status == 429:
+                assert outcome.metadata.retry_after_seconds == 120
+                with pytest.raises(GitHubRequestDeferred):
+                    api("/repos/owner/repo/issues/2")
+                assert len(sent) == 1
+            assert "DO_NOT_LOG" not in "".join(str(message) for message in messages)
+    finally:
+        configure_github_request_boundary()
+        governor.close()
+        logger.remove(sink)
+
+
+def test_production_graphql_body_failure_never_replays_finalized_mutation(tmp_path, monkeypatch):
+    from auto_coder.util.gh_cache import GitHubClient
+
+    monkeypatch.chdir(tmp_path)
+    clock = [1000.0]
+
+    def advance(delay):
+        clock[0] += delay
+
+    governor = GitHubRequestGovernor(store_path=tmp_path / "governor.sqlite3", monotonic=lambda: clock[0], wall_time=lambda: clock[0], waiter=advance)
+    sent = []
+    observations = []
+    failure = httpx.RemoteProtocolError("received headers, incomplete body")
+
+    class BrokenBody(httpx.SyncByteStream):
+        def __iter__(self):
+            raise failure
+            yield b""  # pragma: no cover
+
+    def observe(outcome):
+        observations.append(outcome)
+        governor.observe(outcome)
+
+    def respond(_transport, request):
+        sent.append((request.method, request.url.path))
+        if len(sent) == 1:
+            return httpx.Response(200, headers={"x-github-request-id": "mutation-headers"}, stream=BrokenBody())
+        return httpx.Response(200, json={"data": {"resolveReviewThread": {"thread": {"id": "PRRT_exact", "isResolved": True}}}})
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
+    configure_github_request_boundary(governor.admit_blocking, observe)
+    try:
+        with get_caching_client(admission_hook=governor.admit_blocking, observation_hook=observe) as client:
+            monkeypatch.setattr("auto_coder.util.gh_cache.get_caching_client", lambda *args: client)
+            github = GitHubClient("fixture-token")
+            with pytest.raises(httpx.RemoteProtocolError) as caught:
+                github.resolve_review_thread("PRRT_exact")
+            assert caught.value is failure
+            assert sent == [("POST", "/graphql")]
+            assert len(observations) == 1
+            assert observations[0].delivery is DeliveryCertainty.HTTP_RESPONSE_RECEIVED
+            assert observations[0].metadata.github_request_id == "mutation-headers"
+            with sqlite3.connect(tmp_path / "governor.sqlite3") as connection:
+                assert connection.execute("SELECT resolved FROM reservations").fetchall() == [(1,)]
+            assert take_wire_outcomes() == []
+            # Only this separately requested operation may cross the boundary.
+            github.resolve_review_thread("PRRT_exact")
+            assert sent == [("POST", "/graphql"), ("POST", "/graphql")]
+            assert len(observations) == 2
+            with sqlite3.connect(tmp_path / "governor.sqlite3") as connection:
+                assert connection.execute("SELECT resolved FROM reservations").fetchall() == [(1,), (1,)]
+    finally:
+        configure_github_request_boundary()
+        governor.close()
+
+
+@pytest.mark.parametrize("failures", [1, 4])
+def test_unobserved_transport_retry_preserves_existing_budget(failures):
+    calls = []
+    failure = httpx.ConnectError("no response recorded")
+
+    @retry_with_backoff(retries=3)
+    def request():
+        calls.append(len(calls))
+        if len(calls) <= failures:
+            raise failure
+        return "completed"
+
+    if failures == 1:
+        assert request() == "completed"
+        assert len(calls) == 2
+    else:
+        with pytest.raises(httpx.ConnectError) as caught:
+            request()
+        assert caught.value is failure
+        assert len(calls) == 4

@@ -1,5 +1,48 @@
 # Dashboard observability verification
 
+Issue pending-work own settlement retains an unfinished obligation rather than
+claiming implementation progress. The scheduler preserves the already armed
+regular wait; an independent wake changes scan timing only. No stage outcome or
+fact schema changes: the existing `issue-pending-work-resumption` origin still
+enters ordinary production admission, and the dashboard continues to show its
+actual Deferred/allowed/refused processing evidence and retained pending work.
+Interrupted recovery now runs concurrently with other eligible work; it uses the
+same production handler and trace emissions, without adding or suppressing events.
+The same-scheduler recovery and shutdown regression is
+`tests/test_pending_work_resumption.py::test_interrupted_issue_recovery_does_not_block_other_work_or_shutdown`.
+Run `bash scripts/test.sh tests/test_issue_pending_wait_cadence.py
+tests/test_github_pending_work.py tests/test_pending_work_resumption.py` to exercise
+real SQLite retention, protected-owner admission, strict refresh timing, regular
+expiry on either side of settlement, repeated unchanged deferrals, unrelated
+internal completions, nearer/later unrelated deadlines, and independent idle/in-flight wakes.
+An unexpected initial strict Issue refresh failure is retained as an
+`evaluation_failed` operational block in the pending-work snapshot; it does not
+enter the admission trace. Run `bash scripts/test.sh
+tests/test_pending_work_resumption.py::test_initial_snapshot_failure_blocks_until_selected_retry`
+to verify retention, generic wakes, and selected retry at the production handler.
+Unexpected candidate-processing failures after a successful refresh use the same
+operational block and existing pending-work snapshot, without a new trace schema.
+The local-job-store and subsequent-candidate variants of that regression also
+check exact last_error, zero not-before and failed-boundary call counts.
+
+Durable worker failures emit repository/target-scoped `worker.failure-backoff`
+stage results under origin `durable-invalidation-worker`. `deferred` means the
+unfinished entity's retry deadline was committed; its facts retain the reason,
+deadline and generation. `failed` with `retry_state_persistence_failed` means the
+worker stopped without releasing or completing its processing claim. A short
+diagnostic execution binds failures that occur before ordinary PR/Issue execution
+scope exists; it is not a provider invocation or implementation result. The
+generic detail renderer projects these recorded outcomes and facts without a new
+dashboard control-flow claim. Diagnostic failure cannot change retry ownership.
+The same failed outcome applies when an error-free pending PR-review result
+cannot persist its wake: no successful deferral or completion is observed, and
+the processing claim (including newer generation responsibility) remains owned.
+Run `bash scripts/test.sh tests/test_invalidation_failure_backoff.py
+tests/test_entity_invalidation.py` for worker/scheduler/SQLite, reconstructed
+deadline, concurrent notification, failed transaction, and production evidence-row
+checks. The operational behavior is documented in
+[`durable-github-entity-invalidations.md`](client-features/durable-github-entity-invalidations.md).
+
 Private target reevaluation adds a trusted-socket command-intake origin without
 adding a dashboard-owned outcome or processing lifecycle. Bounded Loguru
 diagnostics correlate the operation ID, exact target, accepting process run,
@@ -10,6 +53,18 @@ The real socket and persistence projection are exercised by `bash
 scripts/test.sh tests/test_worker_management_bridge.py -k reevaluation`.
 
 Management journal operation IDs, phases, targets, and safe categories use the existing Loguru sinks without changing worker command/trace lifecycle events. Its separate contract is documented in [`client-features/management-operation-journal.md`](client-features/management-operation-journal.md).
+
+Local management recovery uses a private Supervisor mailbox rather than the
+management operation journal or worker Issue/PR trace lifecycle. The owning
+Supervisor logs the bounded request ID and transition status; the complete local
+status is read with `management recovery-status`. The real-CLI scenarios in
+`tests/test_management_recovery_integration.py` verify these outcomes and their
+process effects. This path does not introduce a dashboard-owned event schema.
+
+When the Supervisor cannot observe its own process start token, it logs that
+its lifetime is unavailable and holds physical effects until a valid observation
+returns. It retains its owner fence and existing child without reporting a new
+process identity. The real-process bootstrap test verifies this hold and resume.
 
 Management self-update adds a fixed authenticated MCP origin to that same journal
 and dispatcher. Admission and durable Supervisor handoff log the operation ID and
@@ -437,6 +492,32 @@ Retained evidence waiting on an unavailable observation is a deferred
 admission gate or dashboard projection is added; production-to-view coverage is
 `tests/test_single_review_ordinary_closure_flow.py` and
 `tests/test_effective_decision_pr_flow.py`.
+
+Issue #2678 also checks the producing discussion at the ordinary closure target
+observer before cycle acceptance and during retained-source recovery. Its
+`pr.ordinary-closure` DEFERRED reason includes `discussion-freshness` for a
+complete mismatch; unavailable discussion remains non-authorizing. The existing
+review-thread gate and later ordinary validation retain their normal identities.
+No new event schema or dashboard projection is introduced. Runnable production
+regressions in `tests/test_single_review_ordinary_closure_flow.py` include
+`test_production_collection_revalidates_discussion_changed_during_review`,
+`test_changed_discussion_after_retention_never_certifies_during_recovery`,
+`test_resolved_accepted_source_rechecks_discussion_before_reuse`, and
+`test_incomplete_discussion_cannot_certify_the_producing_ordinary_result`.
+These inspect cycle acceptance/publication, actual next validator discussion and
+resolve/merge effects, including valid receipt-only updates and incomplete reads.
+
+The ordinary-only path uses the same existing saved-review wait and independent
+validation events after reconstructing its non-authorizing discussion checkpoint.
+It adds no event schema or projection: the next ordinary attempt is visible in
+the existing review history, while an incomplete read admits no attempt. Runnable
+`tests/test_ordinary_discussion_revalidation.py` covers same/changed heads, external
+resolution, reconstruction, incomplete reads and receipt-only deduplication.
+`test_two_accepted_ordinary_sources_survive_selected_invalidation` additionally
+passes two independently accepted roots through actual production revalidation,
+including simultaneous and successive edits and both conclusive dispositions.
+Canonical revocation uses the existing ledger history and the next attempt uses
+existing ordinary validation events; no new event schema or projection is added.
 
 Stale base/contract/policy recovery after ordinary convergence emits
 `pr.strong-audit` with the current `head`, `base`, `reason`,
@@ -1903,6 +1984,36 @@ dashboard coverage remain unchanged. The production-boundary tests in
 `tests/test_jules_candidate_submission.py` establish that the inactive
 adapter preserves its durable claims and exact reconciliation state without
 substituting dashboard diagnostics for provider/session ownership.
+# Individual evidence transport and retained authority
+
+Individual specification-review evidence interning changes only the reversible
+prompt representation. Existing Review-lane origins, durable decision/audit fields,
+coverage/dispositions, currentness fences and dashboard projections remain the
+same schema. The semantic policy identity now binds the receiving instruction
+templates as well: an older-policy decision is not reused, and the existing
+review history records a fresh FULL assessment. Invalid required transport evidence follows the existing fail-closed ERROR
+path; a smaller payload is not a readiness or progress event. Run
+`bash scripts/test.sh tests/test_individual_evidence_envelope.py
+tests/test_specification_analyzer.py tests/test_specification_validation_lifecycle.py
+tests/test_specification_regression_fixtures.py tests/test_specification_drift_sequence.py
+tests/test_issue_review_service.py`
+for complete reconstruction, production-boundary coverage and retained authority
+behavior. Semantic replay is separately advisory; see the individual rereview
+client-feature fragment for commands and evidence limits.
+
+The real Review lane is also exercised for standalone and reconciled-child
+FULL/INCREMENTAL sequences with persisted accepted predecessors, retained
+resolved findings and changed closed-sibling evidence. Its actual outgoing
+model request is independently reconstructed; these are transport/authority
+assertions, not fixed semantic verdicts or deployment evidence.
+
+The bound-input profile changes the existing policy identity and produces an
+ordinary fresh FULL assessment for unproven older records. It adds no processing
+origin or dashboard event schema. Unreadable required history yields the existing
+local ERROR with no semantic call, while exact current reuse retains its original
+producing mode beneath the REUSED view. Coverage in the same lifecycle and real
+Review-lane tests checks those outcomes and preservation of accepted record bytes.
+
 # Explicit Issue-review rerun authority
 
 Explicit review reruns add durable authorization state but do not add a new
@@ -2243,6 +2354,23 @@ Recovery-linked PR candidates, first-check settlement from durable handoff
 evidence, final guarded token revalidation, and provider-selective startup
 reconstruction remain internal safety decisions on that same reclamation path;
 they do not introduce a dashboard origin, outcome, route, or event schema.
+
+Journaled follow-up completion now uses the actual prepared message, native
+baseline/user/assistant graph, complete history, and the same reservation's
+verified PR handoff. Ordinary due checks refresh reconstruction before consuming
+these facts. A committed retirement retains the native witness in historical
+accounting and changes the existing slot projection from occupied to available;
+read-only evidence collection and ambiguous delivery leave it occupied. This is
+capacity evidence, not evidence of implementation progress or delivery success.
+No new structured origin or renderer field is introduced. Production sender,
+HTTP normalization, due-check, restart and public slot-projection assertions are
+covered by `tests/test_codex_followup_reclamation.py`; its read-only collection
+case also asserts unchanged file journals, logical SQLite contents and accounting
+(SQLite WAL/shared-memory lifecycle is not a logical source mutation). The
+existing-PR producer binding is retained before sending. A historical unbound
+record requires the exact supported producer contract in its fingerprint-bound
+native input; duplicate/missing messages, conflicting journal bindings or graph
+edges remain unknown. No binding is backfilled from the initial task handoff.
 
 ## Definitive Parent-Issue refusal settlement
 
@@ -2801,6 +2929,12 @@ both successful completion and late-activity suppression.
 `test_pr_correction_adapter_runner_delivers_gate_controlled_muse_background_result`
 crosses the corresponding admitted correction, exact-head workspace, production
 adapter, runner, and validation wake while retaining the same trace schema.
+CI-failure and merge-conflict adapters also bind their existing Muse interaction
+to the durable PR job. `tests/test_muse_msp.py::test_pr_repair_runner_records_real_muse_failure_for_cleanup`
+crosses the real fixture transport, adapter, runner, finalizer and cleanup;
+unresolved tasks and multiple sessions retain the workspace. This binding adds
+durable settlement evidence to the existing local backend interaction, without
+adding an origin, outcome, structured event or dashboard renderer.
 
 The Issue #2506 scheduler adoption is observability-neutral. Candidate
 collection now consumes the typed PR progress-policy route from the same single
@@ -2916,6 +3050,21 @@ refused recovery never reaches a fresh offer or changes slot state.
 PR job kinds and every job state, foreign-repository isolation, and reclamation
 only after settlement or absence of retained responsibility.
 
+Explicit fresh management initialization reports its one-time request, launch,
+unknown outcome and authenticated readiness through the private local status
+command and bounded supervisor log messages. It does not create a dashboard job
+or change the dashboard event schema; a process launch alone is not reported as
+authenticated readiness. The isolated fresh-initialization and supervisor tests
+exercise refusal, claim and status boundaries.
+An incomplete host namespace scan records its attempt and PID/TID in the host
+observer's warning sink. Up to two further complete observations revalidate host
+authority and procfs visibility; they never reuse partial absence evidence or
+repeat a launch claim. These host-only observations do not create worker
+dashboard events or change the existing availability/readiness interpretation.
+Run `bash scripts/test.sh tests/test_management_fresh_initialization.py` for
+bounded rescan/refusal regressions; the dedicated root host selection in
+`supervisor-integration-tests.yml` retains its 19 real cases and no-skip check.
+
 ## Local PR repair startup recovery
 
 The existing pending-work snapshot reports retained local PR repair
@@ -2926,3 +3075,217 @@ use the same production-to-dashboard contract as other pending-work stages.
 Rediscovery intentionally preserves those fields; publication receipts remain
 in the local-job effect journal rather than being inferred from the presence
 of a pending-work row.
+
+
+### Accepted closure discussion after a newer ordinary PASS
+
+The production recovery path continues to emit the existing
+`pr.review-thread-closure` unfinished phase/reason when retained discussion is
+changed or cannot be confirmed, including when a newer plain PASS supersedes
+the ordinary verdict. The accepted closure remains the dependent source until
+an actual scope-bound independent correction supplies current discussion
+evidence. That correction is retained in the ordinary effective-decision
+record; the original closure publication and effect operation identities stay
+unchanged, so uncertain writes are reconciled rather than silently retried.
+There is no new event schema or dashboard projection: the existing unfinished
+reason and retained ordinary attempt identify the block and its reevaluation.
+
+Run `bash scripts/test.sh tests/test_single_review_ordinary_closure_flow.py`.
+`test_newer_plain_pass_does_not_replace_accepted_discussion_binding` drives the
+production forced ordinary review, reconstruction, publication and merge paths
+with add/edit/delete, unchanged and authenticated receipt-only controls. It
+checks both retained resolved closures and pending publication, fresh
+STILL_VALID/ADDRESSED outcomes, and refusal of replacement records with changed
+scope, missing source coverage or missing/mismatched thread evidence.
+
+### Recorded open-target enumeration
+
+`AutomationEngine._reconcile_open_github_entities` supplies the dashboard's
+advisory open identities from its existing complete strict enumeration. Successful
+strict per-target reads update open/closed/404 observations before admission
+filtering; they never confer execution authority. `get_status()` projects those
+rows and `open_target_observation` (availability, complete observation time, source
+and diagnostic reason). `dashboard.py` renders the tested `open_targets_notice`
+projection, distinguishing unavailable, stale and observed empty from known rows.
+Transport failures retain prior targets. This changes no trace event schema or
+public diagnostic allowlist, and it adds no GitHub polling.
+
+Verification: `pytest -q tests/test_open_target_observations.py
+tests/test_entity_invalidation.py`. These tests use real reconciliation, durable
+invalidations, strict-target boundaries, the engine status projection and the
+production presentation function. They cover nonempty/empty startup, failed
+enumeration, open/closed/404, non-admitted authors, transport failures and a newer
+target observation racing enumeration.
+
+
+### Producer-only lifecycle progress
+
+The private worker observation keeps its existing bounded heartbeat schema but
+selects the actual retained producer-loop sample. Worker beats no longer hide
+that sample or refresh its age; a new process without a producer beat reports
+unavailable. General health snapshots still report the latest-any-loop stage.
+This is management readiness evidence, not an Issue/PR progress or completion
+event. No worker trace emission, dashboard projection, public API schema,
+readiness predicate or deadline changes.
+
+Run `bash scripts/test.sh tests/test_health_monitor.py
+tests/test_worker_management_bridge.py tests/test_management_worker_lifecycle.py`.
+`test_real_socket_keeps_producer_progress_when_worker_beats_interleave` reaches
+the actual UDS listener, records real monitor calls between reads and checks
+worker-only unavailable, unchanged repeated samples, genuine producer advances
+and preserved general health state. The age regression proves unrelated worker
+activity cannot freshen a stopped producer. Existing lifecycle tests retain
+same-incarnation, installed-source, serving, gate and two-sample checks.
+
+### Fresh-host exited-task namespace evidence
+
+The trusted host observer can prove a missing task network link belongs to an
+exited zombie, using the same held task directory and stable positive start
+token around the ENOENT read. It still scans live sibling tasks and refuses
+unknown state. This changes a host evidence predicate, not an Issue/PR origin,
+trace schema, dashboard projection, deadline or launch authority. Existing
+bounded host-observation failures remain the diagnostic surface.
+
+Run `bash scripts/test.sh tests/test_management_fresh_initialization.py` for the
+real held/unreaped-child and damaged-proof controls. The unchanged root host CI
+selection also drives the actual guard/Supervisor/authenticated-readback path
+in `tests/test_management_fresh_end_to_end.py` with a positively observed zombie
+held through the retained-history case. That whole-host test remains distinct
+from the single-real-task projection used by the focused kernel regression.
+
+
+### Cache failure after GitHub response headers (issue #2742)
+
+`_finalize_caching_failure` emits the existing secret-safe GitHub request
+outcome with `event=wire_response_before_cache_failure` and supplies the known
+wire evidence to the Governor. It preserves header status, delivery certainty
+and throttle metadata; the caller still receives its original cache/body error
+or cancellation. A header-based success classification is not decoded GraphQL
+success, provider delivery, an entity stage completion, or merge clearance.
+No new dashboard event/schema is added: this is internal HTTP admission
+accounting, before an Issue/PR processing outcome is established. Existing typed
+stage errors/deferrals and retained work remain the dashboard evidence. Do not
+project a completed wire reservation as PR progress or synthesize an event for
+an unobserved historical failure.
+
+Run `bash scripts/test.sh tests/test_gh_cache_exception_observations.py` for both
+production adapters, real SQLite contention, body failures with GET/POST,
+header throttle preservation, before-wire refusal and cancellation. The checks
+assert original failures, single sends, consumed receipts, durable occupancy
+and later independently requested communication/cache-hit isolation. Existing
+`tests/test_github_request_outcomes.py`, `tests/test_gh_cache_timeouts.py` and
+`tests/test_github_request_governor.py` retain the wider boundary/pacing gates.
+
+
+Missing namespace links do not make unrelated proof errors retryable. The real
+held-directory lifetime reader propagates permission and malformed-evidence
+errors; the scanner retains their cause with PID/TID and error class and refuses
+immediately, even if that task would disappear before another scan. Only an
+actual disappearing entry or a readable non-zombie/unstable proof remains an
+unknown missing-link observation eligible for the existing bounded full rescan.
+The positive stable-zombie proof is unchanged. The outer-helper regression
+`test_missing_namespace_does_not_erase_hard_lifetime_proof_error` traverses real
+temporary task directories and the real scanner/held-directory reader, with a
+controlled OS stat-open PermissionError and malformed/zero-token files; a
+hypothetical sleep removes the task, so a forbidden retry cannot hide the error.
+This is a unit boundary control, not a claim of a real-kernel EACCES reproduction.
+Run `bash scripts/test.sh tests/test_management_fresh_initialization.py`.
+
+An explicit `ProcessLookupError` with `errno.ESRCH` while opening or reading the
+held task lifetime after its missing namespace link is also task-disappearance
+evidence for a complete rescan, never absence proof. The bounded three-attempt
+limit and per-attempt authority/profile checks remain unchanged. Other or absent
+error numbers remain immediate hard refusals.
+`test_missing_namespace_reobserves_only_explicit_task_disappearance` exercises
+the real scanner and held-directory reader against real temporary task entries,
+with controlled OS stat-open errors: transient disappearance requires a second
+whole scan, persistent ESRCH retains its original cause after three scans, and
+mismatched/unknown error numbers cannot be erased by a later task exit. These
+unit controls reproduce the recorded CI error class, not a claim of a native
+ESRCH reproduction.
+
+
+The final namespace refusal includes the last observation's diagnostic in the
+outer `HostObservationUnavailable` text, retaining its original chained cause.
+The actual host command prints that text, so the final PID/TID and missing-link
+or ESRCH reason remain visible even when all three scans encounter different
+tasks. Earlier retry warnings do not substitute for the final failure. The
+command-boundary regression
+`test_fresh_host_command_reports_the_final_incomplete_scan` drives the actual
+CLI/refusal handler and bounded observer with three distinct controlled tasks;
+no claim or listener grant is created. Retry, evidence and launch authority
+are unchanged. Run `bash scripts/test.sh
+tests/test_management_fresh_initialization.py`.
+
+
+### Missing original discussion binding recovery (issue #2744)
+
+An accepted closure can have an empty original discussion binding when its
+authenticated finding root was already resolved before the producing ordinary
+review. That empty input still grants no authority. Recovery may use the existing
+replacement-binding path only after a later registered, independently retained
+and publication-confirmed PASS covers the exact accepted sources and current
+complete ADDRESSED discussion for the same target, policy, epoch and finding
+revision. A bare PASS, native resolved state or newly computed digest is
+insufficient. The original accepted payload and effect identity stay immutable;
+uncertain effects are reconciled rather than blindly resent. Other unresolved
+threads and all merge gates remain blocking.
+
+The production resumption/transport regression
+`test_missing_original_discussion_binding_recovers_only_from_independent_current_evidence`
+in `tests/test_single_review_ordinary_closure_flow.py` retains real attempt,
+closure, decision and effect stores across reconstruction. Controlled model and
+GitHub boundaries distinguish valid later evidence from a bare PASS or later
+changed discussion. Run `bash scripts/test.sh
+tests/test_single_review_ordinary_closure_flow.py tests/test_pr_review_effects.py
+tests/test_ordinary_discussion_revalidation.py`. Existing
+`pr.review-thread-closure` confirmed/unfinished facts describe this recovery;
+there is no new event schema or dashboard behavior.
+
+
+The PR2745 qualification also repairs a test-harness scheduling precondition:
+`test_large_unread_prompt_does_not_block_cancellation` uses real cooperative
+sleep while exercising the actual four-MiB unread prompt, real process and
+positive cancellation settlement. It reuses the restoring sparse-switch
+fixture from `tests/test_local_conflict_repair_job.py`; both tests retain their
+original three/five-second limits and complete result assertions. The cancellation
+test always requests cancellation and joins its owned thread on assertion
+failure. Removing only its real-sleep admission fails the controlled schedule.
+This is test-only scheduling/cleanup, not a changed production cancellation or
+dashboard behavior. Run both affected test files through `scripts/test.sh`.
+
+
+### Integration review repairs: unchanged authority and failure evidence (#2746)
+
+Resumed Issue candidate exceptions now settle as the existing `EVALUATION_FAILED`
+block, with the same identity, effects and retry accounting. Generic wakes and
+ordinary scans do not provide retry authority. The operator can distinguish this
+block from an error-free protected-owner Deferred using existing pending-work
+state and the candidate-evaluation warning; no success or completion is inferred.
+Run `bash scripts/test.sh tests/test_pending_work_resumption.py` for initial
+refresh, actual local job-store and subsequent candidate-failure controls.
+
+`wire_response_before_cache_failure` still means only received-header evidence.
+The original retryable body exception carries an internal no-replay marker to
+the existing outer wrapper; there is no new public event or mutation-success
+claim. The actual GraphQL closure regression proves one POST, original exception,
+one durable reservation settlement and an independently requested next operation.
+Run `bash scripts/test.sh tests/test_gh_cache_exception_observations.py`.
+
+An already-resolved native thread plus a newer PR-level PASS with an exact
+`INCONCLUSIVE` thread digest cannot confirm the old uncertain closure effect.
+The required `ADDRESSED` disposition remains independent of native resolved state
+and PR-level coverage. No effect identity, immutable payload or review history
+is rewritten. Run `bash scripts/test.sh tests/test_single_review_ordinary_closure_flow.py`
+for the real model-boundary/retention/reconstruction/resumption control. These
+fixture-driven production tests are not evidence that a historical provider
+message was delivered or that an external GitHub mutation succeeded.
+
+The preceding controller wait's expiry is captured before queued handler execution,
+including when waiting, asynchronous scans or scheduling consume the interval. This corrects
+the timing of existing `issue-processing` resumptions, without adding a trace
+origin, event, outcome, permission or dashboard schema. Existing retained
+identity/effect and Deferred observations remain authoritative; an elapsed
+regular wait is only scan eligibility. Run `bash scripts/test.sh
+tests/test_issue_pending_wait_cadence.py` for the real protected-owner scan-delay
+regression, repeated-turn cadence and unchanged common-admission controls.

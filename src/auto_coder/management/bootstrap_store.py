@@ -60,14 +60,29 @@ class EffectRecord:
 class BootstrapStore:
     """Versioned state isolated from OAuth and management-operation databases."""
 
-    def __init__(self, root: Path, instance_id: str) -> None:
+    def __init__(self, root: Path, instance_id: str, *, require_existing: bool = False) -> None:
         if not root.is_absolute() or not instance_id or len(instance_id) > 128:
             raise ValueError("an absolute state root and bounded instance id are required")
         self.root = root
         self.instance_id = instance_id
         self.path = root / "management-child.sqlite3"
+        self.require_existing = require_existing
 
     def _connect(self) -> sqlite3.Connection:
+        if self.require_existing:
+            if self.path.is_symlink() or not self.path.is_file():
+                raise sqlite3.DatabaseError("management child ledger is unavailable")
+            connection = sqlite3.connect(self.path.as_uri() + "?mode=rw", uri=True, timeout=30, isolation_level=None)
+            connection.row_factory = sqlite3.Row
+            try:
+                connection.execute("PRAGMA busy_timeout=30000")
+                row = connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+                if row is None or row[0] != SCHEMA_VERSION:
+                    raise sqlite3.DatabaseError("unsupported management child schema")
+                return connection
+            except Exception:
+                connection.close()
+                raise
         self.root.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         connection.row_factory = sqlite3.Row

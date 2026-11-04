@@ -76,6 +76,14 @@ read-only queries for exactly that ID. Stages include `PREPARING`, `DRAINING`,
 `RECONCILING_PRIOR`, and `NEEDS_ATTENTION`. Unknown results and finite
 deadlines hold their lane and do not claim success.
 
+For bootstrap process control, a reconstructed Supervisor can be adopted for
+the same management operation only after its authenticated readback returns
+the exact original effect ID and request digest, and its current process state
+matches the durable stop or start receipt. A still-draining or starting effect
+continues to wait; missing or mismatched evidence holds the lane. Any subsequent
+effect still rechecks the original grant and current operating policy. This does
+not give bootstrap a staged `VERIFIED` runtime binding.
+
 The worker-container preparer performs a separate pinned locked-`uv` install
 for the exact source and independently verifies its immutable `READY.json`;
 failure leaves the incumbent and selected pointer alone. Real graceful stop
@@ -85,7 +93,9 @@ draining; no deadline sends SIGKILL, forced second SIGINT, or a container
 restart. A subsequent start is generation-fenced and success additionally
 requires the live new worker's matching installed source/version/lock identity,
 completed startup reconciliation, daemon-serving, open invocation gate and
-at least two increasing genuine `producer:` heartbeat observations. Neither
+at least two increasing genuine `producer:` heartbeat observations. The worker
+retains the last actual producer sample separately from interleaved worker
+heartbeats; generic activity and diagnostic reads cannot supply or refresh it. Neither
 CI PASS, READY, PID existence nor Supervisor liveness is sufficient.
 
 On verified new-beta-child crash after actual incumbent exit, at most one

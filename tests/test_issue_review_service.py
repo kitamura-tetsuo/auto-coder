@@ -548,9 +548,14 @@ def test_unavailable_evidence_prevents_unsafe_terminal_reuse(tmp_path, monkeypat
     assert engine._get_review_service(REPO).pump_target(1, "test-origin") is not None
     assert calls.call_count == 1
 
+    store = engine._get_specification_validator(REPO).store
+    retained_before = store.path.read_bytes()
     (tmp_path / "individual_review_history.json").write_text("{broken", encoding="utf-8")
     decision, _ = engine._review_individual_via_lane(REPO, 1, "Title", BODY, None, "test-origin")
-    assert decision is None
+    assert decision is not None and decision.verdict == "ERROR"
+    assert decision.evaluation_source == "local-only"
+    assert decision.remediation_reason.startswith("Objective evidence unavailable:")
+    assert store.path.read_bytes() == retained_before
     assert calls.call_count == 1
 
 

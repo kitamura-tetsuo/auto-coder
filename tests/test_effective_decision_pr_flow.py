@@ -15,7 +15,7 @@ import json
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any, Iterator, Optional, Sequence
+from typing import Any, Callable, Iterator, Optional, Sequence
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -48,6 +48,7 @@ from auto_coder.pr_processor import (
     ReviewRepairRouteDisposition,
     TwoTierGateInputs,
     _consume_pending_two_tier_publication,
+    _get_claimed_review_thread_state,
     _handle_pr_merge,
     _review_feedback_identity,
     process_pull_request,
@@ -173,6 +174,7 @@ class Flow:
     thread_resolved: bool = False
     live_head: str = ""  # the live PR head when it differs from the head being processed
     current_base: str = ""  # the live PR base; defaults to the environment base and may advance while a reviewer runs
+    production_thread_collection: bool = False
 
     def __post_init__(self) -> None:
         self.head = self.head or self.env.head
@@ -210,7 +212,15 @@ class Flow:
         if not self.root_body:
             return self.extra_threads + published
         resolved = self.thread_resolved or (self.resolve_on_approve and any(review["event"] == "APPROVE" for review in self.reviews))
-        comments = [ReviewThreadComment(database_id=self.root_id, author_login=REVIEWER_LOGIN, body=self.root_body), *(replace(reply) for reply in self.thread_replies)]
+        comments = [
+            ReviewThreadComment(
+                database_id=self.root_id,
+                author_id=4765828,
+                author_login=REVIEWER_LOGIN,
+                body=self.root_body,
+            ),
+            *(replace(reply) for reply in self.thread_replies),
+        ]
         return self.extra_threads + published + (ReviewThread(id=self.thread_id, is_resolved=resolved, comments=comments),)
 
     def pr_data(self) -> dict[str, Any]:
@@ -228,12 +238,22 @@ class Flow:
         closure: Optional[ClosureScript] = None,
         public_origin: bool = False,
         thread_gate_enabled: Optional[bool] = None,
+        settle_concurrent_work: Optional[Callable[[], None]] = None,
+        on_review: Optional[Callable[[], None]] = None,
     ) -> Sequence[str]:
         mp = self.monkeypatch
         env = self.env
         client = self.client
         client.get_authenticated_user_login.return_value = CONTROLLER_LOGIN
-        client.get_pr_review_threads_strict.side_effect = lambda *_a, **_k: list(self.threads())
+        if self.production_thread_collection:
+            client._production_threads = lambda: list(self.threads())
+            setattr(
+                type(client),
+                "get_pr_review_threads_strict",
+                lambda current, *_a, **_k: current._production_threads(),
+            )
+        else:
+            client.get_pr_review_threads_strict.side_effect = lambda *_a, **_k: list(self.threads())
         client.reply_to_review_thread.side_effect = self._reply_to_thread
         client.update_review_thread_comment.side_effect = self._update_thread_comment
         client.resolve_review_thread.side_effect = lambda thread: self._set_thread_resolved(thread, self.resolve_on_approve)
@@ -245,6 +265,8 @@ class Flow:
         client.get_pull_request_metadata_strict.side_effect = lambda *_a, **_k: {**self.pr_data(), "head": {"ref": "feature-branch", "sha": self.live_head or self.head}, "base": {"ref": "main", "sha": self.current_base}, "state": "open"}
 
         def current_state(*_a: object, **_k: object) -> ClaimedReviewThreadGateState:
+            if self.production_thread_collection:
+                return _get_claimed_review_thread_state(client, REPO, self.pr, config=AutomationConfig(), revalidate_resolved_thread_ids=_k.get("revalidate_resolved_thread_ids", ()))
             if thread_state is not None:
                 return thread_state
             live = tuple(thread for thread in self.threads() if not thread.is_resolved)
@@ -261,6 +283,8 @@ class Flow:
         def next_response(*_args: object, **_kwargs: object) -> str:
             self.model_calls += 1
             raw = responses.pop(0) if len(responses) > 1 else responses[0]
+            if on_review is not None:
+                on_review()
             if closure is not None and closure.on_review is not None:
                 closure.on_review()
             if closure is None or not supplied:
@@ -350,6 +374,13 @@ class Flow:
             patch("auto_coder.pr_processor.get_linked_issues_context", side_effect=lambda *_a, **_k: current_validation_context(REPO, self.pr_data()).issue_context),
             patch("auto_coder.pr_correction_job.offer_pr_correction_job", side_effect=self._local_offer),
         ]
+        if self.production_thread_collection:
+            patches.append(
+                patch(
+                    "auto_coder.pr_processor._resolve_eligible_review_thread_ids",
+                    return_value={4765828},
+                )
+            )
         if public_origin:
             label = MagicMock()
             label.__enter__.return_value = True
@@ -388,12 +419,18 @@ class Flow:
         with contextlib.ExitStack() as stack:
             for item in patches:
                 stack.enter_context(item)
-            if public_origin:
-                self.status = process_pull_request(client, config, REPO, self.pr_data(), force_adversarial_validation=force)
-                return self.status.actions_taken
-            actions = _handle_pr_merge(client, REPO, self.pr_data(), config, {}, self.status, force_adversarial_validation=force)
-            assert isinstance(actions, PRReviewCoordinationResult)
-            return actions
+            try:
+                if public_origin:
+                    self.status = process_pull_request(client, config, REPO, self.pr_data(), force_adversarial_validation=force)
+                    return self.status.actions_taken
+                actions = _handle_pr_merge(client, REPO, self.pr_data(), config, {}, self.status, force_adversarial_validation=force)
+                assert isinstance(actions, PRReviewCoordinationResult)
+                return actions
+            finally:
+                # Child boundary patches must unwind before the enclosing flow
+                # patches; crossing their lifetimes restores stale test doubles.
+                if settle_concurrent_work is not None:
+                    settle_concurrent_work()
 
     def _ci_results(self):
         """Pre-validation CI is green; later reads (the post-validation refresh) may differ."""
@@ -1104,7 +1141,8 @@ def test_ledger_ahead_reconciliation_resumes_independent_closure_without_approva
             publication="CONFIRMED",
         )
     )
-    flow.model_responses = [ordinary_response(flow.thread_id, status="ADDRESSED")]
+    # This already-resolved root is not a newly claimed native-thread decision.
+    flow.model_responses = [json.dumps({**json.loads(ordinary_response(flow.thread_id, status="ADDRESSED")), "thread_dispositions": []})]
     # Expanded scope requires renewed Strong completion after closure; the
     # fixture deliberately leaves that independent reviewer unavailable.
     script = ClosureScript(status="FIXED", scope="EXPANDED")
@@ -1850,6 +1888,12 @@ def test_genuinely_ambiguous_association_spends_one_focused_attempt_per_evidence
 def test_acceptance_after_the_authority_check_is_ordered_after_the_authorized_transmission(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
     import threading
 
+    import auto_coder.pr_processor as processor
+
+    original_worktree = processor.isolated_pr_head_worktree
+    child_at_teardown = threading.Event()
+    release_child = threading.Event()
+
     pr = 9300
     flow = make_flow(flow_env, monkeypatch, pr, "cloud", saved_status=None)
     save_empty_session(flow_env, pr, flow.head)
@@ -1858,7 +1902,11 @@ def test_acceptance_after_the_authority_check_is_ordered_after_the_authorized_tr
     outcome: dict[str, bool] = {}
 
     def concurrent_acceptance() -> None:
-        accept_strong(flow_env, pr, [finding_json("finding-late")], head=flow.head)
+        def before_boundary_teardown() -> None:
+            child_at_teardown.set()
+            assert release_child.wait(timeout=30)
+
+        accept_strong(flow_env, pr, [finding_json("finding-late")], head=flow.head, before_boundary_teardown=before_boundary_teardown)
         outcome["accepted"] = True
 
     worker = threading.Thread(target=concurrent_acceptance)
@@ -1869,11 +1917,23 @@ def test_acceptance_after_the_authority_check_is_ordered_after_the_authorized_tr
         outcome["blocked_until_send"] = worker.is_alive()
 
     flow.router.before_review = pause_before_transport
-    flow.run(public_origin=True)
-    worker.join(timeout=30)
+
+    def settle_concurrent_work() -> None:
+        assert child_at_teardown.wait(timeout=30)
+        release_child.set()
+        worker.join(timeout=30)
+        assert not worker.is_alive()
+
+    try:
+        flow.run(public_origin=True, settle_concurrent_work=settle_concurrent_work)
+    finally:
+        release_child.set()
+        if worker.ident is not None:
+            worker.join(timeout=30)
 
     assert outcome == {"blocked_until_send": True, "accepted": True}  # acceptance could not interleave between the check and the send
     assert [review["event"] for review in flow.reviews] == ["APPROVE"]  # it followed the authorized transmission
+    assert processor.isolated_pr_head_worktree is original_worktree
 
 
 def test_failed_checkpoint_write_is_not_overwritten_by_the_precomputed_decision(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:

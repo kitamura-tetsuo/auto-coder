@@ -7,6 +7,8 @@ import os
 import select
 import signal
 import sqlite3
+import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,7 @@ from tests.test_management_self_update_integration import (
     ManagementSystem,
     _effect_counts,
     _operation,
+    _run,
     _snapshot_source,
     _test_source,
     _update,
@@ -230,6 +233,7 @@ def test_installed_incompatible_oauth_schema_refuses_authenticated_update_before
     assert _effect_counts(system) == before_effects
 
 
+@pytest.mark.parametrize("management_system", ["recovery_installed"], indirect=True)
 def test_real_installed_candidate_startup_exception_restores_exact_previous_once(management_system: ManagementSystem) -> None:
     system = management_system
     token = system.issue()
@@ -291,3 +295,71 @@ def test_real_installed_candidate_startup_exception_restores_exact_previous_once
     assert handoff["phase"] == "process_restored" and handoff["proof"] is None
     assert handoff["handoff"]["candidate"]["source_sha"] == candidate.source_sha
     assert handoff["handoff"]["previous"]["receipt_identity"] == system.current.receipt_identity
+
+    # A proven self-update safety return is a completed episode. A later
+    # separate child death may be recovered only after its handoff and journal
+    # still join to the exact restored lifetime.
+    from auto_coder.management.bootstrap_store import ChildPhase
+    from auto_coder.management.recovery_mailbox import RecoveryMailbox
+
+    os.kill(restored_child.pid, signal.SIGKILL)
+    stopped = _wait(lambda: (child if (child := system.child).phase is ChildPhase.NEEDS_ATTENTION and child.child_generation == restored_child.child_generation else None), timeout=30, description="restored child exit")
+    mailbox = RecoveryMailbox(system.bootstrap.state_root, INSTANCE)
+
+    def submit(request_id: str) -> None:
+        output = _run(
+            [
+                sys.executable,
+                "-m",
+                "auto_coder.cli",
+                "management",
+                "recover",
+                "--config",
+                str(system.config_path),
+                "--request-id",
+                request_id,
+                "--expected-supervisor",
+                stopped.supervisor_incarnation,
+                "--expected-generation",
+                str(stopped.child_generation),
+                "--expected-runtime",
+                stopped.selected_runtime,
+                "--expected-receipt",
+                stopped.runtime_receipt,
+                "--expected-source-receipt",
+                stopped.source_receipt,
+            ],
+            system.root,
+            timeout=20,
+        )
+        assert json.loads(output.splitlines()[-1])["status"] in {"pending", "claimed", "launched", "refused", "succeeded"}
+
+    with sqlite3.connect(receipt_json) as connection:
+        original = connection.execute("SELECT record_json,phase FROM handoffs WHERE operation_id=?", (operation_id,)).fetchone()
+    assert original is not None
+    for field, value in (("phase", "needs_attention"), ("restored_identity", "forged-lifetime")):
+        altered = json.loads(original[0])
+        altered[field] = value
+        phase = value if field == "phase" else original[1]
+        with sqlite3.connect(receipt_json) as connection:
+            connection.execute("UPDATE handoffs SET record_json=?,phase=? WHERE operation_id=?", (json.dumps(altered, sort_keys=True), phase, operation_id))
+        try:
+            request_id = str(uuid.uuid4())
+            submit(request_id)
+            assert _wait(lambda: mailbox.get(request_id).status == "refused", timeout=30, description="unsettled or forged handoff refusal")
+            assert dict(_effect_counts(system)) == after_effects
+        finally:
+            with sqlite3.connect(receipt_json) as connection:
+                connection.execute("UPDATE handoffs SET record_json=?,phase=? WHERE operation_id=?", (*original, operation_id))
+    request_id = str(uuid.uuid4())
+    submit(request_id)
+    launched = _wait(lambda: (item if (item := mailbox.get(request_id)).status == "launched" else None), timeout=40, description="local recovery after completed restore")
+    system.wait_serving(runtime=system.current.management_runtime_id)
+    latest = system.child
+    assert latest.child_generation == restored_child.child_generation + 1
+    assert latest.pid not in {0, old.pid, restored_child.pid}
+    assert dict(_effect_counts(system))["RECOVER_SELECTED"] == 1
+    assert system.call(token, "auto_coder_whoami", {"observation_id": launched.observation_id})["uid"] == "operator"
+    assert _wait(lambda: mailbox.get(request_id).status == "succeeded", timeout=30, description="fresh authenticated recovery proof")
+    submit(request_id)
+    assert dict(_effect_counts(system))["RECOVER_SELECTED"] == 1

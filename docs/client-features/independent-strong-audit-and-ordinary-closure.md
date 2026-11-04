@@ -95,6 +95,14 @@ exit codes and up to 2,000 redacted characters of Git diagnostics in the durable
 waiting reason and existing dashboard trace. No reviewer is invoked without
 the required evidence and no failed preparation grants PASS.
 
+The production-origin regression suite also checks concurrent fixture lifetime:
+child-thread boundary overrides finish before the enclosing flow restores its
+overrides. An event-bound teardown barrier detects a leaked synthetic worktree
+without relying on test ordering or sleeps. The subsequent real-Git shallow
+checkout test still acquires the exact advanced base and preserves caller state;
+a real unavailable-base fetch refuses without invoking the reviewer. These are
+test-harness checks and add no production command, permission, or trace behavior.
+
 Availability resolution applies the loaded `quota_selection.strategy` at its
 initial candidate-classification boundary, consistently for issue, ordinary PR,
 and strong PR routes. Consequently, `burst` keeps a Codex reviewer runnable while

@@ -5,7 +5,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
-import select
+import selectors
 import shlex
 import signal
 import stat
@@ -22,7 +22,7 @@ from .execution_trace import EventKind, Outcome, current_scope, get_trace_collec
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .local_execution_boundary import get_current_local_execution_boundary
-from .local_job_handoff import LocalJobClaim
+from .local_job_handoff import LocalJobClaim, LocalJobKind
 from .logger_config import get_logger
 from .muse_background_observation import (
     MuseBackgroundObservation,
@@ -55,6 +55,20 @@ _MUSE_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high",
 # Auto-Coder policy (not a Muse timeout): how long one host-resolved approval may stay pending.
 _MUSE_APPROVAL_SETTLEMENT_SECONDS = 5.0
 _APPROVAL_POLICY_RESULTS = frozenset({"deny", "allow"})
+
+
+def _wait_msp_pipes(reads: list[int], writes: list[int], timeout: float) -> tuple[set[int], set[int]]:
+    """Wait for MSP pipes without the descriptor-number limit of select()."""
+    with selectors.DefaultSelector() as selector:
+        for fd in reads:
+            selector.register(fd, selectors.EVENT_READ)
+        for fd in writes:
+            selector.register(fd, selectors.EVENT_WRITE)
+        events = selector.select(timeout)
+    return (
+        {key.fd for key, mask in events if mask & selectors.EVENT_READ},
+        {key.fd for key, mask in events if mask & selectors.EVENT_WRITE},
+    )
 
 
 class _MspEndOfStream(Exception):
@@ -633,7 +647,7 @@ class MuseClient(LLMClientBase):
                 continue
             reads = [stderr_fd] if stderr_fd is not None else []
             wake = diag.select_timeout()
-            readable, writable, _ = select.select(reads, [stdin_fd], [], remaining if wake is None else min(remaining, wake))
+            readable, writable = _wait_msp_pipes(reads, [stdin_fd], remaining if wake is None else min(remaining, wake))
             if stderr_fd is not None and stderr_fd in readable:
                 self._drain_msp_stderr(stderr_fd)
             if stdin_fd not in writable:
@@ -748,7 +762,7 @@ class MuseClient(LLMClientBase):
             if stderr_fd is not None:
                 reads.append(stderr_fd)
             wake = diag.select_timeout()
-            readable, _, _ = select.select(reads, [], [], remaining if wake is None else min(remaining, wake))
+            readable, _ = _wait_msp_pipes(reads, [], remaining if wake is None else min(remaining, wake))
             if not readable:
                 if time.monotonic() >= deadline:
                     raise self._msp_timeout()
@@ -1162,6 +1176,10 @@ class MuseClient(LLMClientBase):
             logger.warning("LLM invocation: Muse Code MSP host is being called. Keep LLM calls minimized.")
             diag.enter_phase("host_startup")
             retained_observer = current_muse_job_observation()
+            if retained_observer is not None and retained_observer.job.kind in {LocalJobKind.PR_CI_FAILURE, LocalJobKind.PR_MERGE_CONFLICT} and session_id is None and retained_observer.store.get_continuation(retained_observer.job.job_id) is not None:
+                if not retained_observer.store.bind_continuation_writer(retained_observer.job.job_id, retained_observer.executor_token, cwd, "ambiguous:multiple-provider-sessions"):
+                    raise RuntimeError("Multiple Muse provider sessions could not be fenced")
+                retained_observer = None
             if retained_observer is not None and session_id is not None:
                 previous = recover_muse_observation(retained_observer.store, retained_observer.job.job_id)
                 if previous is not None and (
@@ -1240,14 +1258,18 @@ class MuseClient(LLMClientBase):
             if session_id is not None and canonical_id != session_id:
                 raise RuntimeError("Muse MSP resumed a different session identity")
             diag.session_confirmed(canonical_id)
-            job_observer = current_muse_job_observation()
+            job_observer = retained_observer
             if job_observer is not None:
-                job_observer.store.bind_continuation(
+                bound = job_observer.store.bind_continuation(
                     LocalJobClaim(job_observer.job, True),
                     canonical_id,
                     job_observer.executor_token,
                     deadline_at=time.time() + self.timeout,
                 )
+                if bound is None and job_observer.job.kind in {LocalJobKind.PR_CI_FAILURE, LocalJobKind.PR_MERGE_CONFLICT}:
+                    if not job_observer.store.bind_continuation_writer(job_observer.job.job_id, job_observer.executor_token, cwd, "ambiguous:multiple-provider-sessions"):
+                        raise RuntimeError("Muse provider session could not be fenced")
+                    job_observer = None
             workspace = metadata.get("workspaceRoot")
             if not isinstance(workspace, str) or workspace != str(cwd):
                 raise RuntimeError("Muse MSP session belongs to an incompatible workspace")
