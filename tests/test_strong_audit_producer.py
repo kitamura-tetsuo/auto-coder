@@ -1,5 +1,6 @@
 import contextlib
 import json
+import math
 import subprocess
 import time
 from datetime import datetime, timedelta, timezone
@@ -507,6 +508,31 @@ def test_surplus_exact_boundary_schedules_strictly_future_recheck_from_parsed_us
     assert now < availability.retry_not_before_epoch <= now + 1800.0
 
 
+def test_surplus_earlier_boundary_preempts_thirty_minute_recheck() -> None:
+    now = 2_000_000_000.0
+    boundary_delay = 600.0
+    payload = {
+        "rateLimits": {
+            "primary": {
+                "windowDurationMins": 10080,
+                "usedPercent": 80.0,
+                "resetsAt": now + 4 * 86400 + boundary_delay,
+            },
+        }
+    }
+    usage = parse_codex_weekly_usage(payload, now=datetime.fromtimestamp(now, tz=timezone.utc))
+
+    with (
+        patch("auto_coder.cli_helpers.time.time", return_value=now),
+        patch("auto_coder.cli_helpers.get_llm_config", return_value=_strong_codex_config("surplus")),
+        patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage),
+    ):
+        availability = resolve_adversarial_validation_availability("strong_pr")
+
+    assert availability.exhausted is True
+    assert availability.retry_not_before_epoch == math.nextafter(now + boundary_delay, math.inf)
+
+
 def test_parsed_unchanged_twenty_percent_becomes_eligible_below_four_days() -> None:
     now = datetime(2033, 5, 18, tzinfo=timezone.utc)
     payload = {
@@ -628,3 +654,83 @@ def test_due_recheck_persistence_interruption_retains_original_wait(tmp_path: Pa
     recovered = _inputs(tmp_path, "base", "head").gate.state.snapshot(21)
     assert recovered.waiting_reason == "surplus reserve denied"
     assert recovered.retry_not_before == 100.0
+
+
+def test_loaded_burst_force_recovers_recorded_surplus_wait_through_real_resolver(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repository, base, head = _repository(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    inputs = _inputs(tmp_path, base, head)
+    inputs.gate.ordinary_pass(22, head, base, inputs.contract)
+    observation = datetime.now(timezone.utc)
+    payload = {
+        "rateLimits": {
+            "primary": {
+                "windowDurationMins": 10080,
+                "usedPercent": 80.0,
+                "resetsAt": (observation + timedelta(days=4)).timestamp(),
+            },
+        }
+    }
+    usage = parse_codex_weekly_usage(payload, now=observation)
+    manager = MagicMock()
+
+    @contextlib.contextmanager
+    def worktree(*args, **kwargs):
+        yield str(repository)
+
+    def review_result(review_input, backend_manager, execution_cwd):
+        assert backend_manager is manager
+        return ReviewExecutionResult(
+            mode=ReviewMode.STRONG_AUDIT,
+            round_id=review_input.round_id,
+            attempt_id=review_input.attempt_id,
+            head_sha=head,
+            base_sha=base,
+            contract_identity=inputs.contract.identity,
+            policy_identity=inputs.policy.identity,
+            finding_set_revision=0,
+            reviewer_provenance="strong/codex/model",
+            verdict=VERDICT_PASS,
+        )
+
+    with (
+        patch("auto_coder.pr_processor.isolated_pr_head_worktree", worktree),
+        patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage),
+        patch("auto_coder.cli_helpers.get_llm_config", return_value=_strong_codex_config("surplus")),
+        patch("auto_coder.cli_helpers.build_backend_manager", return_value=manager) as build_manager,
+        patch("auto_coder.pr_processor.execute_review", side_effect=review_result) as reviewer,
+    ):
+        denied, _reason = _execute_pending_strong_audit("owner/repo", 22, inputs)
+
+    assert denied is False
+    reviewer.assert_not_called()
+    build_manager.assert_not_called()
+    retained = inputs.gate.state.snapshot(22)
+    assert retained.retry_not_before > time.time()
+
+    with (
+        patch("auto_coder.pr_processor.isolated_pr_head_worktree", worktree),
+        patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage),
+        patch("auto_coder.cli_helpers.get_llm_config", return_value=_strong_codex_config("burst")),
+        patch("auto_coder.cli_helpers.build_backend_manager", return_value=manager),
+        patch("auto_coder.pr_processor.execute_review", side_effect=review_result) as reviewer,
+    ):
+        accepted, _reason = _execute_pending_strong_audit(
+            "owner/repo",
+            22,
+            inputs,
+            allow_retry_override=True,
+            expected_version=retained.transition_version,
+        )
+
+    assert accepted is True
+    reviewer.assert_called_once()
+    persisted = json.loads((tmp_path / ".auto-coder" / "owner/repo" / "pr_review_cycle.json").read_text())
+    history = persisted["prs"]["22"]["wait_history"]
+    assert len(history) == 1
+    assert history[0]["reason"] == "strong reviewer route is EXHAUSTED"
+    assert history[0]["retry_not_before"] == retained.retry_not_before
+    assert history[0]["superseded_by"] == "explicit-operator-recheck"
