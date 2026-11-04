@@ -18,6 +18,7 @@ import shutil
 import signal
 import socket
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
@@ -421,7 +422,8 @@ class ManagementSystem:
 
 @pytest.fixture
 def management_system(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None, request):
-    root = tmp_path / "management-system"
+    profile = getattr(request, "param", None)
+    root = tmp_path / ("management#system" if profile == "bootstrap_reserved_path" else "management-system")
     root.mkdir()
     source = root / "repository"
     source.mkdir()
@@ -490,7 +492,7 @@ def management_system(tmp_path: Path, _use_real_commands: None, _use_real_sleep:
 
     bootstrap = BootstrapConfig(INSTANCE, root / "supervisor", state, root / "operations", origin + "/mcp", current.management_runtime_id, (), graceful_timeout=0.4, management_version_root=root / "versions", management_config=config_path, verification_timeout=30)
     runtimes = [runtime_for_receipt(bootstrap, item) for item in (current, candidate)]
-    if getattr(request, "param", None) in {"bootstrap", "bootstrap_selected", "recovery", "recovery_plain", "restart_clean"}:
+    if profile in {"bootstrap", "bootstrap_reserved_path", "bootstrap_selected", "recovery", "recovery_plain", "restart_clean"}:
         from auto_coder.management.bootstrap_supervisor import RuntimeSpec
 
         executable = root / "bootstrap-python"
@@ -504,24 +506,24 @@ def management_system(tmp_path: Path, _use_real_commands: None, _use_real_sleep:
             (("PATH", os.defpath), ("PYTHONPATH", str(package_path)), ("PYTHONHOME", sys.base_prefix), ("PYTHONDONTWRITEBYTECODE", "1")),
             root / "drain-bootstrap.json",
         )
-        if request.param in {"bootstrap", "recovery_plain", "restart_clean"}:
+        if profile in {"bootstrap", "bootstrap_reserved_path", "recovery_plain", "restart_clean"}:
             bootstrap = replace(bootstrap, initial_runtime="bootstrap", management_config=None, management_version_root=None)
             runtimes = [initial]
         else:
             bootstrap = replace(bootstrap, initial_runtime="bootstrap", graceful_timeout=10, verification_timeout=120)
             runtimes = [initial, runtimes[1]]
         (Path(current.environment_path).parent / "MANAGEMENT_READY.json").unlink()
-    if getattr(request, "param", None) == "restart_clean":
+    if profile == "restart_clean":
         bootstrap = replace(bootstrap, restart_after_clean_shutdown=True, graceful_timeout=10)
-    if getattr(request, "param", None) == "recovery_installed":
+    if profile == "recovery_installed":
         bootstrap = replace(bootstrap, verification_timeout=120)
     value = asdict(bootstrap)
     value["runtimes"] = [{**asdict(item), "environment": dict(item.environment)} for item in runtimes]
     bootstrap_path.write_text(json.dumps(value, default=lambda value: str(value) if isinstance(value, Path) else value), encoding="utf-8")
     system = ManagementSystem(root, source, current_sha, candidate_sha, config_path, bootstrap_path, policy, origin, services, server, key, publisher, stager, current, candidate)
-    if getattr(request, "param", None) in {"recovery", "recovery_plain", "recovery_installed", "restart_clean"}:
+    if profile in {"recovery", "recovery_plain", "recovery_installed", "restart_clean"}:
         (root / "supervisor").mkdir(mode=0o700)
-        if request.param in {"recovery_plain", "restart_clean"}:
+        if profile in {"recovery_plain", "restart_clean"}:
             BootstrapStore(root / "supervisor", INSTANCE).load()
             with HandoffStore(root / "supervisor", INSTANCE)._connect():
                 pass
@@ -947,6 +949,8 @@ def test_authenticated_readback_is_bound_to_current_observation(management_syste
     assert proof is not None
     assert proof.child_identity == ManagementBootstrapSupervisor._identity(system.child)
     assert proof.client_id == "operator-client"
+    assert proof.resource == system.settings.oauth.resource
+    assert set(proof.scopes.split()) == {READ_SCOPE, DEPLOY_SCOPE}
     assert read_authenticated_readback(system.bootstrap, observation_id="0" * 32, observation_started_at=started, observation_ends_at=started + 30) is None
     assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=proof.observed_at + 0.001, observation_ends_at=started + 30) is None
     # Each corrupted binding is tested against independently observed live OS
@@ -964,21 +968,39 @@ def test_authenticated_readback_is_bound_to_current_observation(management_syste
     wrong_config = replace(configured, runtimes=tuple(wrong_runtime if item == initial else item for item in configured.runtimes))
     assert read_authenticated_readback(wrong_config, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None
     database = system.root / "supervisor" / "management-readiness.sqlite3"
+    assert stat.S_IMODE(database.stat().st_mode) == 0o600
     with sqlite3.connect(database) as connection:
         original = connection.execute("SELECT payload FROM proof WHERE instance_id=?", (INSTANCE,)).fetchone()[0]
     old_generation = ManagementBootstrapSupervisor._identity(replace(system.child, child_generation=system.child.child_generation - 1))
     old_lifetime = ManagementBootstrapSupervisor._identity(replace(system.child, start_token="old-lifetime"))
-    for binding_name, bad in (("child_identity", old_generation), ("child_identity", old_lifetime), ("runtime_receipt", "sha256:wrong"), ("launch_nonce", "old-launch")):
+    for binding_name, bad in (
+        ("child_identity", old_generation),
+        ("child_identity", old_lifetime),
+        ("runtime_receipt", "sha256:wrong"),
+        ("launch_nonce", "old-launch"),
+        ("scopes", DEPLOY_SCOPE),
+        ("project_id", "other-project"),
+        ("resource", "https://other.invalid/mcp"),
+        ("client_id", "unconfigured-client"),
+    ):
         changed = json.loads(original)
         changed[binding_name] = bad
         with sqlite3.connect(database) as connection:
             connection.execute("UPDATE proof SET payload=? WHERE instance_id=?", (json.dumps(changed), INSTANCE))
         assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None
+        with sqlite3.connect(database) as connection:
+            connection.execute("UPDATE proof SET payload=? WHERE instance_id=?", (original, INSTANCE))
+        restored = read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30)
+        assert restored is not None
+        assert (restored.project_id, restored.resource, restored.client_id) == (proof.project_id, proof.resource, proof.client_id)
     with sqlite3.connect(database) as connection:
         connection.execute("UPDATE proof SET payload=? WHERE instance_id=?", ("not-json", INSTANCE))
     assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None
     with sqlite3.connect(database) as connection:
         connection.execute("UPDATE proof SET payload=? WHERE instance_id=?", (original, INSTANCE))
+    database.chmod(0o644)
+    assert read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30) is None
+    database.chmod(0o600)
     backup = database.with_suffix(".backup")
     database.rename(backup)
     database.mkdir()
@@ -995,6 +1017,25 @@ def test_authenticated_readback_is_bound_to_current_observation(management_syste
     assert system.request(token, "auto_coder_whoami", {"observation_id": revoked_id}).status_code == 401
     assert read_authenticated_readback(system.bootstrap, observation_id=revoked_id, observation_started_at=started, observation_ends_at=started + 30) is None
     assert _effect_counts(system) == before
+
+
+@pytest.mark.parametrize("management_system", ["bootstrap_reserved_path"], indirect=True)
+def test_authenticated_readback_supports_uri_reserved_state_path(management_system: ManagementSystem) -> None:
+    from auto_coder.management.readiness_observation import read_authenticated_readback
+
+    system = management_system
+    assert "#" in str(system.bootstrap.state_root)
+    token = system.issue()
+    effects = _effect_counts(system)
+    started = time.time()
+    observation_id = "f" * 32
+    system.call(token, "auto_coder_whoami", {"observation_id": observation_id})
+
+    proof = read_authenticated_readback(system.bootstrap, observation_id=observation_id, observation_started_at=started, observation_ends_at=started + 30)
+
+    assert proof is not None
+    assert proof.child_identity == ManagementBootstrapSupervisor._identity(system.child)
+    assert _effect_counts(system) == effects
 
 
 @pytest.mark.parametrize("management_system", ["bootstrap_selected"], indirect=True)

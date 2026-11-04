@@ -229,7 +229,7 @@ class HandoffStore:
 
     def runtime(self, reference: str, *, readonly: bool = False) -> ManagementReadyReceipt | None:
         if readonly:
-            connection = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, timeout=2)
+            connection = sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True, timeout=2)
             connection.row_factory = sqlite3.Row
         else:
             connection = self._connect()
@@ -309,7 +309,7 @@ def observe_supervisor(config: "BootstrapConfig") -> tuple[str, ChildRecord] | N
 
     path = config.state_root / "management-child.sqlite3"
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2) as connection:
+        with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=2) as connection:
             row = connection.execute("SELECT incarnation,pid,start_token,updated_at FROM supervisor_presence WHERE instance_id=?", (config.instance_id,)).fetchone()
             child = connection.execute("SELECT record_json FROM child_state WHERE instance_id=?", (config.instance_id,)).fetchone()
         if row is None or child is None or time.time() - row[3] > max(30, config.graceful_timeout + 5) or ManagementBootstrapSupervisor._start_token(row[1]) != row[2]:
