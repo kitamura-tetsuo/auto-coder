@@ -10,11 +10,26 @@ from pathlib import Path
 def summarize(directory: Path) -> dict[str, object]:
     events: list[dict[str, object]] = []
     invalid = 0
-    for path in sorted(directory.glob("timing-*.jsonl")):
-        for line in path.read_text(encoding="utf-8").splitlines():
+    unavailable: list[str] = []
+    try:
+        paths = sorted(directory.glob("timing-*.jsonl"))
+    except OSError as error:
+        paths = []
+        unavailable.append(f"{type(error).__name__}: {error}")
+    if not directory.is_dir():
+        unavailable.append("timing directory is unavailable")
+    elif not paths:
+        unavailable.append("no timing record files were observed")
+    for path in paths:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError as error:
+            unavailable.append(f"{path.name}: {type(error).__name__}: {error}")
+            continue
+        for line in lines:
             try:
                 events.append(json.loads(line))
-            except (json.JSONDecodeError, OSError):
+            except json.JSONDecodeError:
                 invalid += 1
     starts = {str(event["span_id"]): event for event in events if event.get("event_kind") == "span_start"}
     ended = {str(event["span_id"]) for event in events if event.get("event_kind") == "span_end"}
@@ -29,6 +44,8 @@ def summarize(directory: Path) -> dict[str, object]:
         "nested_harness_spans": spans,
         "incomplete_spans": [starts[key] for key in sorted(starts.keys() - ended)],
         "invalid_records": invalid,
+        "diagnostic_status": "unavailable" if unavailable else "available",
+        "diagnostic_errors": unavailable,
     }
 
 

@@ -7,7 +7,9 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
+from _pytest.terminal import TerminalReporter
 
+from tests.fixtures.ci_timing import pytest_phase_context as timing_phase_context
 from tests.fixtures.ci_timing import recorder
 
 _PHASE_SPANS: dict[tuple[str, str], str] = {}
@@ -32,21 +34,24 @@ def _phase(item: pytest.Item, when: str):
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_setup(item: pytest.Item):
     timing, span_id, started = _phase(item, "setup")
-    yield
+    with timing_phase_context(item.nodeid, span_id):
+        yield
     timing.emit("pytest_phase_boundary", span_id=span_id, nodeid=item.nodeid, pytest_phase="setup", observer_elapsed_ms=(time.perf_counter_ns() - started) / 1_000_000)
 
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_call(item: pytest.Item):
     timing, span_id, started = _phase(item, "call")
-    yield
+    with timing_phase_context(item.nodeid, span_id):
+        yield
     timing.emit("pytest_phase_boundary", span_id=span_id, nodeid=item.nodeid, pytest_phase="call", observer_elapsed_ms=(time.perf_counter_ns() - started) / 1_000_000)
 
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_teardown(item: pytest.Item):
     timing, span_id, started = _phase(item, "teardown")
-    yield
+    with timing_phase_context(item.nodeid, span_id):
+        yield
     timing.emit("pytest_phase_boundary", span_id=span_id, nodeid=item.nodeid, pytest_phase="teardown", observer_elapsed_ms=(time.perf_counter_ns() - started) / 1_000_000)
 
 
@@ -61,3 +66,11 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         wasxfail=getattr(report, "wasxfail", None),
         longrepr=str(report.longrepr) if report.failed else None,
     )
+
+
+def pytest_terminal_summary(terminalreporter: TerminalReporter) -> None:
+    """Expose a lost diagnostic sink without replacing pytest's outcome."""
+
+    error = recorder().last_error
+    if error is not None:
+        terminalreporter.write_line(f"CI timing diagnostic unavailable: {error}", red=True)

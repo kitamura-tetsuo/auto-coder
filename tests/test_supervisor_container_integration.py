@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.ci_timing import docker_timing_arguments, require_nested_install_evidence
+
 pytestmark = pytest.mark.supervisor_integration
 
 _FIXTURES = Path(__file__).parent / "fixtures"
@@ -283,6 +285,7 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
             f"{runtime}:/runtime",
             "-v",
             f"{fixtures}:/fixtures:ro",
+            *docker_timing_arguments(target_role="bootstrap-stage"),
             "-e",
             "HOME=/runtime/home",
             "--entrypoint",
@@ -295,6 +298,7 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
     except subprocess.CalledProcessError as error:
         pytest.fail(f"Real staged preparation failed:\n{error.stdout[-8000:]}\n{error.stderr[-8000:]}")
     staged = json.loads(prepared.stdout.strip().splitlines()[-1])
+    require_nested_install_evidence("bootstrap-stage", revision)
     ready = staged["receipt"]
     assert ready["source_sha"] == ready["installed_provenance"]["source_revision"] == revision
     assert ready["installed_runtime_id"] != "bootstrap"
@@ -608,6 +612,7 @@ def test_independently_prepared_staged_restart_preserves_held_intent(tmp_path: P
                     f"{runtime}:/runtime",
                     "-v",
                     f"{fixtures}:/fixtures:ro",
+                    *docker_timing_arguments(target_role=attempt),
                     "-e",
                     "HOME=/runtime/home",
                     "--entrypoint",
@@ -621,6 +626,7 @@ def test_independently_prepared_staged_restart_preserves_held_intent(tmp_path: P
             except subprocess.CalledProcessError as error:
                 pytest.fail(f"Independent staged preparation {attempt} failed:\n{error.stdout[-8000:]}\n{error.stderr[-8000:]}")
             stage = json.loads(result.stdout.strip().splitlines()[-1])
+            require_nested_install_evidence(attempt, revision)
             prepared.append(stage["receipt"])
             if first_attempt_path is None:
                 # Preparation correctly reuses an existing READY for the same

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -30,18 +31,19 @@ def main() -> None:
         raise SystemExit("expected a complete checkout SHA [attempt-id] or --verify READY path")
     attempt_id = sys.argv[2] if len(sys.argv) == 3 else "supervisor-acceptance"
     timing = recorder()
+    target_role = os.environ.get("AUTO_CODER_CI_TIMING_TARGET_ROLE", "supervisor-stage")
     install = preparer._install
 
     def timed_install(checkout: Path, environment: Path) -> None:
         lock = checkout / "uv.lock"
         lock_sha256 = hashlib.sha256(lock.read_bytes()).hexdigest() if lock.exists() else None
-        with timing.span("worker.installer", target_role="supervisor-stage", target_source_sha=sys.argv[1], lock_sha256=lock_sha256, uv_version="0.7.22"):
+        with timing.span("worker.installer", target_role=target_role, target_source_sha=sys.argv[1], lock_sha256=lock_sha256, uv_version="0.7.22"):
             install(checkout, environment)
 
     preparer._install = timed_install  # type: ignore[method-assign]
     with timing.span(
         "worker.prepare",
-        target_role="supervisor-stage",
+        target_role=target_role,
         target_source_sha=sys.argv[1],
         uv_version="0.7.22",
     ):

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from scripts.summarize_ci_timing import summarize
 
+import tests.fixtures.ci_timing as ci_timing
 from tests.fixtures.ci_timing import TimingRecorder
 
 
@@ -42,6 +45,35 @@ def test_unavailable_destination_does_not_replace_operation_result(tmp_path: Pat
         result = "original-result"
     assert result == "original-result"
     assert timing.last_error is not None
+    report = summarize(blocked)
+    assert report["diagnostic_status"] == "unavailable"
+    assert report["diagnostic_errors"]
+
+
+def test_context_uses_executed_checkout_not_pull_request_event_sha(tmp_path: Path, monkeypatch) -> None:
+    event_sha = "f" * 40
+    monkeypatch.setenv("GITHUB_SHA", event_sha)
+    timing = TimingRecorder(tmp_path)
+    actual = subprocess.run(["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    assert timing.context.checkout_sha == actual
+    assert timing.context.event_sha == event_sha
+
+
+def test_docker_propagation_is_opt_in_and_carries_verified_context(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("AUTO_CODER_CI_TIMING_DIR", raising=False)
+    monkeypatch.setattr(ci_timing, "_RECORDER", None)
+    assert ci_timing.docker_timing_arguments() == []
+
+    monkeypatch.setenv("AUTO_CODER_CI_TIMING_DIR", str(tmp_path))
+    monkeypatch.setenv("AUTO_CODER_CI_TIMING_INVOCATION", "outer-invocation")
+    monkeypatch.setattr(ci_timing, "_RECORDER", None)
+    arguments = ci_timing.docker_timing_arguments(target_role="nested-install")
+    joined = " ".join(arguments)
+    assert f"{tmp_path.resolve()}:/ci-timing" in joined
+    assert "AUTO_CODER_CI_TIMING_INVOCATION=outer-invocation" in joined
+    assert "AUTO_CODER_CI_TIMING_CHECKOUT_SHA=" in joined
+    assert "AUTO_CODER_CI_TIMING_TARGET_ROLE=nested-install" in joined
+    monkeypatch.setattr(ci_timing, "_RECORDER", None)
 
 
 def _pytest_subprocess(tmp_path: Path, body: str) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
@@ -65,7 +97,10 @@ def _pytest_subprocess(tmp_path: Path, body: str) -> tuple[subprocess.CompletedP
 
 
 def test_real_pytest_entry_records_native_phases_and_preserves_failure(tmp_path: Path) -> None:
-    result, report = _pytest_subprocess(tmp_path, "def test_original_failure():\n    assert False, 'original sentinel'\n")
+    result, report = _pytest_subprocess(
+        tmp_path,
+        "from tests.fixtures.ci_timing import recorder\n" "def test_original_failure():\n" "    with recorder().span('inside-call'):\n" "        assert False, 'original sentinel'\n",
+    )
     assert result.returncode == 1
     assert "original sentinel" in result.stdout
     phases = report["native_pytest_phases"]
@@ -78,6 +113,84 @@ def test_real_pytest_entry_records_native_phases_and_preserves_failure(tmp_path:
     assert all(phase["nodeid"].endswith("test_sample.py::test_original_failure") for phase in phases)
     assert all(isinstance(phase["native_duration_ms"], float) for phase in phases)
     assert report["incomplete_pytest_phases"] == []
+    nested = next(span for span in report["nested_harness_spans"] if span["phase_label"] == "inside-call")
+    call = next(phase for phase in phases if phase["pytest_phase"] == "call")
+    assert nested["nodeid"] == call["nodeid"]
+    assert nested["parent_span_id"] == call["span_id"]
+
+
+def test_fixture_error_preserves_setup_error_and_marks_call_not_reached(tmp_path: Path) -> None:
+    result, report = _pytest_subprocess(
+        tmp_path,
+        "import pytest\n" "@pytest.fixture\n" "def broken():\n" "    raise RuntimeError('fixture sentinel')\n" "def test_fixture_error(broken):\n" "    raise AssertionError('call must not run')\n",
+    )
+    assert result.returncode == 1
+    assert "fixture sentinel" in result.stdout
+    phases = report["native_pytest_phases"]
+    assert [(phase["pytest_phase"], phase["outcome"]) for phase in phases] == [("setup", "failed"), ("teardown", "passed")]
+    assert not any(event.get("pytest_phase") == "call" for event in report["incomplete_pytest_phases"])
+
+
+def test_observed_interrupt_preserves_interrupt_cleanup_and_incomplete_call(tmp_path: Path) -> None:
+    test_file = tmp_path / "test_interrupt.py"
+    boundary = tmp_path / "entered"
+    cleanup = tmp_path / "cleanup"
+    test_file.write_text(
+        "import pathlib,pytest,time\n"
+        f"boundary=pathlib.Path({str(boundary)!r})\n"
+        f"cleanup=pathlib.Path({str(cleanup)!r})\n"
+        "@pytest.fixture\n"
+        "def owned():\n"
+        "    yield\n"
+        "    cleanup.write_text('done')\n"
+        "def test_blocking(owned):\n"
+        "    boundary.write_text('entered')\n"
+        "    while True: time.sleep(0.1)\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "timing"
+    environment = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1]), "AUTO_CODER_CI_TIMING_DIR": str(output)}
+    process = subprocess.Popen(
+        [sys.executable, "-m", "pytest", "-q", "-p", "tests.ci_timing_plugin", str(test_file)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=environment,
+    )
+    deadline = time.monotonic() + 15
+    observed = False
+    while time.monotonic() < deadline:
+        report = summarize(output)
+        observed = boundary.exists() and any(event.get("pytest_phase") == "call" for event in report["incomplete_pytest_phases"])
+        if observed:
+            break
+        time.sleep(0.05)
+    assert observed, "controller never observed the real blocking call boundary"
+    process.send_signal(signal.SIGINT)
+    stdout, stderr = process.communicate(timeout=15)
+    assert process.returncode not in (0, None), stdout + stderr
+    assert "KeyboardInterrupt" in stdout + stderr
+    assert cleanup.read_text(encoding="utf-8") == "done"
+    report = summarize(output)
+    assert any(event.get("pytest_phase") == "call" for event in report["incomplete_pytest_phases"])
+
+
+def test_unavailable_pytest_output_reports_loss_without_changing_success(tmp_path: Path) -> None:
+    target = tmp_path / "occupied"
+    target.write_text("not a directory", encoding="utf-8")
+    test_file = tmp_path / "test_ok.py"
+    test_file.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    environment = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1]), "AUTO_CODER_CI_TIMING_DIR": str(target)}
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "tests.ci_timing_plugin", str(test_file)],
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "CI timing diagnostic unavailable" in result.stdout + result.stderr
+    assert summarize(target)["diagnostic_status"] == "unavailable"
 
 
 def test_disabled_pytest_timing_preserves_success_without_records(tmp_path: Path) -> None:
@@ -94,3 +207,29 @@ def test_disabled_pytest_timing_preserves_success_without_records(tmp_path: Path
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert not list(tmp_path.glob("timing-*.jsonl"))
+
+
+def test_enabled_and_disabled_preserve_same_failure_and_cleanup(tmp_path: Path) -> None:
+    outcomes = []
+    for enabled in (False, True):
+        case = tmp_path / ("enabled" if enabled else "disabled")
+        case.mkdir()
+        cleanup = case / "cleanup"
+        test_file = case / "test_failure.py"
+        test_file.write_text(
+            "import pathlib,pytest\n" f"cleanup=pathlib.Path({str(cleanup)!r})\n" "@pytest.fixture\n" "def owned():\n" "    yield\n" "    cleanup.write_text('done')\n" "def test_failure(owned):\n" "    assert False, 'same original failure'\n",
+            encoding="utf-8",
+        )
+        environment = {key: value for key, value in os.environ.items() if key != "AUTO_CODER_CI_TIMING_DIR"}
+        environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+        if enabled:
+            environment["AUTO_CODER_CI_TIMING_DIR"] = str(case / "timing")
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "tests.ci_timing_plugin", str(test_file)],
+            capture_output=True,
+            text=True,
+            env=environment,
+            timeout=30,
+        )
+        outcomes.append((result.returncode, "same original failure" in result.stdout, cleanup.read_text(encoding="utf-8")))
+    assert outcomes == [(1, True, "done"), (1, True, "done")]

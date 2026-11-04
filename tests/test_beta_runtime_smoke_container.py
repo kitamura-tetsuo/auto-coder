@@ -11,7 +11,6 @@ import base64
 import json
 import os
 import random
-import shutil
 import subprocess
 import sys
 import threading
@@ -39,7 +38,7 @@ from auto_coder.management.worker_lifecycle import LIFECYCLE_ACTIONS, WorkerLife
 from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkClient
 from auto_coder.tested_source_refs import serialize_record
 from auto_coder.util.gh_cache import GitDataResponse, GitHubGitDataClient
-from tests.fixtures.ci_timing import recorder
+from tests.fixtures.ci_timing import docker_timing_arguments, recorder, require_nested_install_evidence
 from tests.test_management_beta_deploy_container import _argument, _await_stage, _result
 from tests.test_management_mcp import _issue, real_boundary
 from tests.test_management_runtime_mcp import _call
@@ -267,10 +266,9 @@ def test_local_smoke_uses_installed_worker_real_progress_and_original_journal(re
         f"{runtime}:/runtime",
         "-v",
         f"{fixtures}:/fixtures:ro",
+        *docker_timing_arguments(),
         "-e",
         "HOME=/runtime/home",
-        "-e",
-        "AUTO_CODER_CI_TIMING_DIR=/runtime/ci-timing",
         "--entrypoint",
         "python",
         image,
@@ -279,6 +277,8 @@ def test_local_smoke_uses_installed_worker_real_progress_and_original_journal(re
         timeout=1200,
     )
     installations = json.loads(staged.stdout.strip().splitlines()[-1])
+    for role, revision in zip(("source-a", "source-b", "source-a-alternate"), (revisions[0], revisions[1], revisions[0])):
+        require_nested_install_evidence(role, revision)
     ready_a, ready_b, alternate = [item["receipt"] for item in installations]
     assert all(item["installed"]["editable"] is False for item in installations)
     assert ready_a["source_sha"] == alternate["source_sha"] != ready_b["source_sha"]
@@ -389,8 +389,6 @@ def test_local_smoke_uses_installed_worker_real_progress_and_original_journal(re
     finally:
         log_root = Path(os.environ.get("GITHUB_WORKSPACE", str(Path(__file__).parents[1]))) / "supervisor-integration-logs"
         log_root.mkdir(parents=True, exist_ok=True)
-        if (runtime / "ci-timing").exists():
-            shutil.copytree(runtime / "ci-timing", log_root / "timing", dirs_exist_ok=True)
         for name, destination in ((worker_name, "local-smoke-worker.log"), (github_name, "local-smoke-github.log")):
             result = _docker("logs", name, check=False)
             (log_root / destination).write_text(result.stdout + result.stderr, encoding="utf-8")

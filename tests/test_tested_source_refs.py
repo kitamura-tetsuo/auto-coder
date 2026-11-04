@@ -550,21 +550,24 @@ def test_workflows_keep_source_authority_independent_from_legacy_image_publish()
     assert 'AUTO_CODER_REQUIRE_BROWSER: "1"' in source
 
     narrowed = deepcopy(workflow)
-    narrowed["jobs"]["complete-source-shard"]["steps"][-2]["run"] += " tests/test_tested_source_refs.py"
+    narrowed_selection = next(step for step in narrowed["jobs"]["complete-source-shard"]["steps"] if step.get("name") == "Run complete required source selection")
+    narrowed_selection["run"] += " tests/test_tested_source_refs.py"
     narrowed_remote = FakeGitData()
     with pytest.raises(AssertionError):
         publish_workflow_result(narrowed, narrowed_remote, record(), {name: ("completed", "success") for name in REQUIRED_JOBS})
     assert narrowed_remote.creates == 0
 
     skipped = deepcopy(workflow)
-    skipped["jobs"]["complete-source-shard"]["steps"][-2]["if"] = "false"
+    skipped_selection = next(step for step in skipped["jobs"]["complete-source-shard"]["steps"] if step.get("name") == "Run complete required source selection")
+    skipped_selection["if"] = "false"
     skipped_remote = FakeGitData()
     with pytest.raises(AssertionError):
         publish_workflow_result(skipped, skipped_remote, record(), {name: ("completed", "success") for name in REQUIRED_JOBS})
     assert skipped_remote.creates == 0
 
     masked_shard = deepcopy(workflow)
-    masked_shard["jobs"]["complete-source-shard"]["steps"][-2]["continue-on-error"] = True
+    masked_selection = next(step for step in masked_shard["jobs"]["complete-source-shard"]["steps"] if step.get("name") == "Run complete required source selection")
+    masked_selection["continue-on-error"] = True
     masked_shard_remote = FakeGitData()
     with pytest.raises(AssertionError):
         publish_workflow_result(masked_shard, masked_shard_remote, record(), {name: ("completed", "success") for name in REQUIRED_JOBS})
