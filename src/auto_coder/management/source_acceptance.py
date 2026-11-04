@@ -116,6 +116,13 @@ class SourceAcceptancePublisher:
             record = json.loads(annotation)
         except json.JSONDecodeError as exc:
             raise SourceAcceptanceError("acceptance annotation is invalid") from exc
+        local = record.get("local_evidence") if isinstance(record, dict) else None
+        local_id = record.get("local_evidence_id") if isinstance(record, dict) else None
+        local_digest = record.get("local_evidence_content_sha256") if isinstance(record, dict) else None
+        if not isinstance(local, dict) or not isinstance(local_id, str) or not isinstance(local_digest, str):
+            raise SourceAcceptanceError("acceptance local evidence is missing")
+        local_content = json.dumps(local, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+        expected_annotation = annotation_from_local(LocalSmokeEvidence(local_id, local_digest, local_content), self.repository)
         if (
             not isinstance(record, dict)
             or record.get("schema_version") != 1
@@ -125,7 +132,7 @@ class SourceAcceptancePublisher:
             or record.get("source_sha") != direct["sha"]
             or record.get("local_result") != "PASS"
             or "PASS_PUBLISHED" in record
-            or json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False) != annotation
+            or expected_annotation != annotation
         ):
             raise SourceAcceptanceError("acceptance annotation conflicts with its ref or target")
         return PublishedSourceAcceptance(f"refs/tags/{name}", oid, direct["sha"], annotation)

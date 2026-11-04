@@ -73,5 +73,16 @@ def test_existing_mismatched_tag_is_a_collision():
     publisher = SourceAcceptancePublisher(git, "owner/repo")
     publisher.publish(evidence(), "2026-01-01T00:00:00Z")
     git.tag["message"] = git.tag["message"].replace(SHA, "c" * 40)
-    with pytest.raises(SourceAcceptanceError, match="conflicts"):
+    with pytest.raises(SourceAcceptanceError, match="differs|conflicts"):
         publisher.publish(evidence(), "2026-01-01T00:00:00Z")
+
+
+def test_readback_rejects_annotation_with_substituted_local_evidence():
+    git = Git()
+    publisher = SourceAcceptancePublisher(git, "owner/repo")
+    publisher.publish(evidence(), "2026-01-01T00:00:00Z")
+    annotation = json.loads(git.tag["message"])
+    annotation["local_evidence"]["capture"]["source"]["source_sha"] = "c" * 40
+    git.tag["message"] = json.dumps(annotation, sort_keys=True, separators=(",", ":"))
+    with pytest.raises(SourceAcceptanceError, match="digest differs"):
+        publisher.read("accept-1")

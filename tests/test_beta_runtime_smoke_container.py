@@ -383,6 +383,22 @@ def test_local_smoke_uses_installed_worker_real_progress_and_original_journal(re
             configuration.write_text(json.dumps({"journal_root": str(tmp_path / "journal"), "address": address, "secret": base64.b64encode(secret).decode(), "source_api": api_url}), encoding="utf-8")
             with TestClient(app, base_url=origin) as http:
                 bearer = _issue(http, settings, signed, "alice", "alice-client", READ_SCOPE + " " + DEPLOY_SCOPE)["access_token"]
+                invalid = _call(
+                    http,
+                    bearer,
+                    "auto_coder_run_beta_acceptance",
+                    {
+                        "target_id": "beta-worker",
+                        "selected_git_sha": "main",
+                        "installed_runtime_id": "runtime",
+                        "process_run_id": "process",
+                        "deployment_generation": "deployment",
+                        "supervisor_generation": "supervisor",
+                        "deployment_operation_id": "operation",
+                        "idempotency_key": "invalid-source",
+                    },
+                )
+                assert invalid == {"status": "INVALID_REQUEST", "reason": "invalid_beta_acceptance_request"}
                 deployed = _call(http, bearer, "auto_coder_deploy_beta_source", _argument(client, revisions[0], "smoke-deploy-a"))
                 deployment_id = str(deployed["operation_id"])
                 _await_stage(app, deployment_id, "SUCCEEDED", timeout=210)
@@ -423,6 +439,24 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
         assert snapshot is not None and snapshot[1]["capture"] is not None
         assert len(snapshot[1]["samples"]) == 1 and snapshot[1]["samples"][0]["qualifying"] is True
         return snapshot[1]
+
+    def publish_result(record, key: str):
+        params = {part.name: part.value for part in record.intent.parameters}
+        return _call(
+            http,
+            bearer,
+            "auto_coder_run_beta_acceptance",
+            {
+                "target_id": "beta-worker",
+                "selected_git_sha": params["source_sha"],
+                "installed_runtime_id": record.intent.expected_artifact,
+                "process_run_id": record.intent.expected_incarnation,
+                "deployment_generation": params["deployment_generation"],
+                "supervisor_generation": params["supervisor_generation"],
+                "deployment_operation_id": params["deployment_operation_id"],
+                "idempotency_key": key,
+            },
+        )
 
     first = accept("local-pass-original")
     first_capture = captured(first)
@@ -580,7 +614,8 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
     finally:
         ready_path.write_bytes(original_ready)
     assert producer.advance(operation.operation_id).evidence.local_result.value == "BLOCKED"
-    _release_local_lane(journal, operation.operation_id)
+    assert publish_result(operation, "wrong-same-sha-ready")["status"] == "FAILED"
+    assert SourceAcceptancePublisher(remote, "owner/repo").read(operation.operation_id) is None
 
     provenance = _host_path(runtime, installations[0]["installed"]["module"]).parent / "build_provenance.json"
     operation = accept("missing-installed-provenance")
@@ -640,6 +675,16 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
     assert later_capture["capture"]["source"]["proof_run_id"] == 101
     assert (later_capture["capture"]["source"]["selected_run_id"], later_capture["capture"]["source"]["selected_run_attempt"]) == (12, 1)
     assert result(_finish(producer, later.operation_id), "PASS")["capture"] == later_capture["capture"]
+    grant_service = app.state.management_runtime.grants
+    original_grant_settings = grant_service.settings
+    grant_service.settings = replace(original_grant_settings, enabled_scopes=(READ_SCOPE,))
+    try:
+        held = app.state.management_runtime.beta_acceptance.forward(journal.get(later.operation_id).record)
+        assert held.phase is OperationPhase.NEEDS_ATTENTION
+        assert held.safe_error_category == "original_authority_denied"
+        assert SourceAcceptancePublisher(remote, "owner/repo").read(later.operation_id) is None
+    finally:
+        grant_service.settings = original_grant_settings
     _release_local_lane(journal, later.operation_id)
 
     remote.executions[(12, 2)] = (revisions[0], "2026-10-03T03:00:00Z")
@@ -696,7 +741,8 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
     assert replaced["capture"] == replacement_capture["capture"]
     assert replaced["window"] == replacement_capture["window"]
     assert len([sample for sample in replaced["samples"] if sample["qualifying"]]) == 1
-    _release_local_lane(journal, replacement.operation_id)
+    assert publish_result(replacement, "worker-replaced-between-samples")["status"] == "FAILED"
+    assert SourceAcceptancePublisher(remote, "owner/repo").read(replacement.operation_id) is None
 
     # A genuine lifecycle predicate violation is FAIL, not unavailable evidence.
     refreshed = _call(http, bearer, "auto_coder_deploy_beta_source", _argument(client, revisions[1], "smoke-deploy-b-refreshed"))
