@@ -150,7 +150,7 @@ def test_real_local_cli_competing_recoveries_and_authenticated_readback(manageme
     assert _launch_history(system) == [old.pid, new.pid, latest.pid]
 
 
-@pytest.mark.parametrize("boundary", ["before_claim", "after_claim", "after_launch"])
+@pytest.mark.parametrize("boundary", ["before_claim", "after_effect", "after_launch"])
 @pytest.mark.parametrize("management_system", ["recovery"], indirect=True)
 def test_real_owner_crash_and_replay_never_launch_twice(management_system: ManagementSystem, boundary: str) -> None:
     system = management_system
@@ -196,13 +196,31 @@ def test_real_owner_crash_and_replay_never_launch_twice(management_system: Manag
     if boundary == "before_claim":
         journal_lock = sqlite3.connect(system.root / "operations" / "management-operations.sqlite3", isolation_level=None)
         journal_lock.execute("BEGIN IMMEDIATE")
-    if boundary == "after_claim":
+    if boundary == "after_effect":
         with sqlite3.connect(child_path) as connection:
-            connection.execute("CREATE TRIGGER reject_recovery_effect BEFORE INSERT ON effects WHEN NEW.action='RECOVER_SELECTED' BEGIN SELECT RAISE(ABORT, 'effect barrier'); END")
+            # The effect insert uses its own committed transaction. Refusing
+            # the following child reservation therefore leaves an observable
+            # prepared RECOVER_SELECTED row without launching a process.
+            connection.execute("CREATE TRIGGER stop_after_recovery_effect BEFORE UPDATE ON child_state BEGIN SELECT RAISE(ABORT, 'post-effect barrier'); END")
     try:
         assert submit(request_id, stopped.supervisor_incarnation)["status"] in {"pending", "claimed", "launched", "unknown"}
-        expected = {"before_claim": {"pending"}, "after_claim": {"claimed", "unknown"}, "after_launch": {"launched"}}[boundary]
-        record = _wait(lambda: (item if (item := mailbox.get(request_id)).status in expected else None), timeout=30, description=f"durable {boundary} barrier")
+        expected = {"before_claim": {"pending"}, "after_effect": {"claimed", "unknown"}, "after_launch": {"launched"}}[boundary]
+
+        def reached_boundary():
+            item = mailbox.get(request_id)
+            if item.status not in expected:
+                return None
+            if boundary == "after_effect":
+                with sqlite3.connect(child_path) as connection:
+                    if connection.execute("SELECT action,phase FROM effects WHERE operation_id=?", ("recovery-" + request_id,)).fetchone() != ("RECOVER_SELECTED", "prepared"):
+                        return None
+            return item
+
+        record = _wait(reached_boundary, timeout=30, description=f"durable {boundary} barrier")
+        if boundary == "after_effect":
+            with sqlite3.connect(child_path) as connection:
+                assert connection.execute("SELECT action,phase FROM effects WHERE operation_id=?", ("recovery-" + request_id,)).fetchone() == ("RECOVER_SELECTED", "prepared")
+            assert _launch_history(system) == [old.pid]
         if boundary == "after_launch":
             system.wait_serving(runtime="bootstrap")
             assert system.child.child_generation == old.child_generation + 1
@@ -217,9 +235,9 @@ def test_real_owner_crash_and_replay_never_launch_twice(management_system: Manag
         if journal_lock is not None:
             journal_lock.rollback()
             journal_lock.close()
-        if boundary == "after_claim":
+        if boundary == "after_effect":
             with sqlite3.connect(child_path) as connection:
-                connection.execute("DROP TRIGGER reject_recovery_effect")
+                connection.execute("DROP TRIGGER stop_after_recovery_effect")
     system.supervisor_log.close()
     system.start(wait=False)
     with sqlite3.connect(child_path) as connection:
@@ -241,7 +259,12 @@ def test_real_owner_crash_and_replay_never_launch_twice(management_system: Manag
     else:
         assert system.child.child_generation == old.child_generation
         assert _launch_history(system) == [old.pid]
-        assert not [item for item in before if item[0] == "RECOVER_SELECTED"]
+        if boundary == "after_effect":
+            assert [item for item in before if item[0] == "RECOVER_SELECTED"] == [("RECOVER_SELECTED", 1)]
+            with sqlite3.connect(child_path) as connection:
+                assert connection.execute("SELECT phase FROM effects WHERE operation_id=?", ("recovery-" + request_id,)).fetchone() == ("prepared",)
+        else:
+            assert not [item for item in before if item[0] == "RECOVER_SELECTED"]
 
 
 @pytest.mark.parametrize("management_system", ["recovery_plain"], indirect=True)
