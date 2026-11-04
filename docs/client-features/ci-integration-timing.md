@@ -19,6 +19,8 @@ nested harness spans and lists a start without an observed end under
 `incomplete_spans`; incomplete never means zero duration or success. Use the
 workflow, run, attempt, job, checkout, source revision, lock, runtime, target
 role, and caller-provided comparison label to compare like-for-like records.
+Malformed or unreadable records make the summary `incomplete` or `unavailable`;
+they never change the underlying helper or test result.
 
 These files are diagnostic evidence only. They do not make a test pass,
 authorize READY or publication, or replace the test process exit status. A

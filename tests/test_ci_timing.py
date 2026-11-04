@@ -76,6 +76,62 @@ def test_docker_propagation_is_opt_in_and_carries_verified_context(tmp_path: Pat
     monkeypatch.setattr(ci_timing, "_RECORDER", None)
 
 
+def test_dedicated_nested_evidence_oracle_accepts_controlled_install_spans(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AUTO_CODER_CI_TIMING_DIR", str(tmp_path))
+    monkeypatch.setattr(ci_timing, "_RECORDER", None)
+    timing = ci_timing.recorder()
+    for label in ("worker.prepare", "worker.installer"):
+        with timing.span(label, target_role="controlled-install", target_source_sha="a" * 40):
+            pass
+
+    evidence = ci_timing.observe_nested_install_evidence("controlled-install", "a" * 40)
+    assert evidence.complete is True
+    assert set(evidence.labels) == {"worker.prepare", "worker.installer"}
+    assert evidence.errors == ()
+    monkeypatch.setattr(ci_timing, "_RECORDER", None)
+
+
+def test_real_harness_boundary_keeps_result_and_cleanup_when_timing_is_unavailable_or_partial(tmp_path: Path, monkeypatch, capfd) -> None:
+    outcomes = []
+    for case in ("disabled", "unavailable", "partial"):
+        root = tmp_path / case
+        if case == "disabled":
+            monkeypatch.delenv("AUTO_CODER_CI_TIMING_DIR", raising=False)
+        elif case == "unavailable":
+            root.write_text("occupied", encoding="utf-8")
+            monkeypatch.setenv("AUTO_CODER_CI_TIMING_DIR", str(root))
+        else:
+            root.mkdir()
+            (root / "timing-partial.jsonl").write_text('{"event_kind":"diagnostic"}\nnot-json\n', encoding="utf-8")
+            monkeypatch.setenv("AUTO_CODER_CI_TIMING_DIR", str(root))
+        monkeypatch.setattr(ci_timing, "_RECORDER", None)
+        cleanup: list[str] = []
+        try:
+            docker_arguments = ci_timing.docker_timing_arguments(target_role="real-helper")
+            # This models the existing Docker boundary after it has returned
+            # the authoritative installed-source receipt.
+            receipt = {"source_sha": "b" * 40, "installed_runtime_id": "valid-runtime"}
+            evidence = ci_timing.observe_nested_install_evidence("real-helper", receipt["source_sha"])
+            assert receipt["installed_runtime_id"] == "valid-runtime"
+        finally:
+            cleanup.append("original-cleanup")
+        outcomes.append((case, receipt, cleanup, bool(docker_arguments), evidence.complete))
+
+    assert [(case, receipt["installed_runtime_id"], cleanup) for case, receipt, cleanup, _mounted, _complete in outcomes] == [
+        ("disabled", "valid-runtime", ["original-cleanup"]),
+        ("unavailable", "valid-runtime", ["original-cleanup"]),
+        ("partial", "valid-runtime", ["original-cleanup"]),
+    ]
+    assert [(mounted, complete) for _case, _receipt, _cleanup, mounted, complete in outcomes] == [
+        (False, False),
+        (False, False),
+        (True, False),
+    ]
+    assert "CI timing diagnostic unavailable" in capfd.readouterr().err
+    assert summarize(tmp_path / "partial")["diagnostic_status"] == "incomplete"
+    monkeypatch.setattr(ci_timing, "_RECORDER", None)
+
+
 def _pytest_subprocess(tmp_path: Path, body: str) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
     test_file = tmp_path / "test_sample.py"
     test_file.write_text(body, encoding="utf-8")

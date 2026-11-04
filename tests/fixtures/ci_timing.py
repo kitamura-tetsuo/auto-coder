@@ -206,17 +206,48 @@ def docker_timing_arguments(container_directory: str = "/ci-timing", *, target_r
     return arguments
 
 
-def require_nested_install_evidence(target_role: str, source_sha: str) -> None:
-    """Assert an enabled real helper retained prepare and installer spans."""
+@dataclass(frozen=True)
+class NestedInstallEvidence:
+    complete: bool
+    labels: tuple[str, ...]
+    errors: tuple[str, ...]
+
+
+def observe_nested_install_evidence(target_role: str, source_sha: str) -> NestedInstallEvidence:
+    """Inspect nested evidence without making it an acceptance prerequisite."""
 
     timing = recorder()
     if not timing.enabled or timing.directory is None:
-        return
+        return NestedInstallEvidence(False, (), ("timing is disabled",))
     events: list[dict[str, object]] = []
-    for path in timing.directory.glob("timing-*.jsonl"):
-        for line in path.read_text(encoding="utf-8").splitlines():
-            event = json.loads(line)
+    errors: list[str] = []
+    try:
+        paths = list(timing.directory.glob("timing-*.jsonl"))
+    except OSError as error:
+        paths = []
+        errors.append(f"{type(error).__name__}: {error}")
+    for path in paths:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError as error:
+            errors.append(f"{path.name}: {type(error).__name__}: {error}")
+            continue
+        for line in lines:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError as error:
+                errors.append(f"{path.name}: invalid JSON at {error.lineno}:{error.colno}")
+                continue
+            if not isinstance(event, dict):
+                errors.append(f"{path.name}: timing record is not an object")
+                continue
             if event.get("event_kind") == "span_end" and event.get("target_role") == target_role and event.get("target_source_sha") == source_sha:
                 events.append(event)
-    labels = {event.get("phase_label") for event in events}
-    assert {"worker.prepare", "worker.installer"} <= labels, f"missing retained nested timing evidence for {target_role} {source_sha}: {sorted(str(label) for label in labels)}"
+    labels = tuple(sorted(str(event.get("phase_label")) for event in events))
+    complete = {"worker.prepare", "worker.installer"} <= set(labels)
+    if not complete:
+        errors.append(f"missing nested prepare/installer evidence for {target_role} {source_sha}")
+    if errors:
+        timing.last_error = "; ".join(errors)
+        timing._report_error()
+    return NestedInstallEvidence(complete, labels, tuple(errors))

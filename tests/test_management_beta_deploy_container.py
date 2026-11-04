@@ -28,7 +28,7 @@ from auto_coder.management.oauth_grants import OAuthGrantService
 from auto_coder.management.source_evidence import BetaEvidenceReader
 from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkClient, WorkerNetworkResult
 from auto_coder.tested_source_refs import serialize_record
-from tests.fixtures.ci_timing import docker_timing_arguments, require_nested_install_evidence
+from tests.fixtures.ci_timing import docker_timing_arguments, observe_nested_install_evidence
 from tests.test_beta_source_selection import selector
 from tests.test_management_mcp import _issue, real_boundary
 from tests.test_management_runtime_mcp import _call
@@ -156,7 +156,7 @@ def test_authenticated_beta_source_installs_real_version_and_reconciles_after_lo
         timeout=1200,
     )
     ready = json.loads(staged.stdout.strip().splitlines()[-1])["receipt"]
-    require_nested_install_evidence("management-beta-stage", sha)
+    observe_nested_install_evidence("management-beta-stage", sha)
     assert ready["source_sha"] == sha and ready["installed_runtime_id"] != "bootstrap"
 
     # Exercise the production proof/selection validators over a controlled

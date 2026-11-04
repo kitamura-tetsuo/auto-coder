@@ -38,7 +38,7 @@ from auto_coder.management.worker_lifecycle import LIFECYCLE_ACTIONS, WorkerLife
 from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkClient
 from auto_coder.tested_source_refs import serialize_record
 from auto_coder.util.gh_cache import GitDataResponse, GitHubGitDataClient
-from tests.fixtures.ci_timing import docker_timing_arguments, recorder, require_nested_install_evidence
+from tests.fixtures.ci_timing import docker_timing_arguments, observe_nested_install_evidence, recorder
 from tests.test_management_beta_deploy_container import _argument, _await_stage, _result
 from tests.test_management_mcp import _issue, real_boundary
 from tests.test_management_runtime_mcp import _call
@@ -278,7 +278,7 @@ def test_local_smoke_uses_installed_worker_real_progress_and_original_journal(re
     )
     installations = json.loads(staged.stdout.strip().splitlines()[-1])
     for role, revision in zip(("source-a", "source-b", "source-a-alternate"), (revisions[0], revisions[1], revisions[0])):
-        require_nested_install_evidence(role, revision)
+        observe_nested_install_evidence(role, revision)
     ready_a, ready_b, alternate = [item["receipt"] for item in installations]
     assert all(item["installed"]["editable"] is False for item in installations)
     assert ready_a["source_sha"] == alternate["source_sha"] != ready_b["source_sha"]

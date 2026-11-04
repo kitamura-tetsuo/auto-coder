@@ -28,9 +28,19 @@ def summarize(directory: Path) -> dict[str, object]:
             continue
         for line in lines:
             try:
-                events.append(json.loads(line))
+                event = json.loads(line)
             except json.JSONDecodeError:
                 invalid += 1
+                continue
+            if not isinstance(event, dict):
+                invalid += 1
+                continue
+            if event.get("event_kind") in {"span_start", "span_end", "pytest_phase_start"} and not isinstance(event.get("span_id"), str):
+                invalid += 1
+                continue
+            events.append(event)
+    if invalid:
+        unavailable.append(f"{invalid} invalid timing record(s) were ignored")
     starts = {str(event["span_id"]): event for event in events if event.get("event_kind") == "span_start"}
     ended = {str(event["span_id"]) for event in events if event.get("event_kind") == "span_end"}
     phases = [event for event in events if event.get("event_kind") == "pytest_phase_report"]
@@ -44,7 +54,7 @@ def summarize(directory: Path) -> dict[str, object]:
         "nested_harness_spans": spans,
         "incomplete_spans": [starts[key] for key in sorted(starts.keys() - ended)],
         "invalid_records": invalid,
-        "diagnostic_status": "unavailable" if unavailable else "available",
+        "diagnostic_status": "incomplete" if unavailable and events else "unavailable" if unavailable else "available",
         "diagnostic_errors": unavailable,
     }
 
