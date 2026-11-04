@@ -181,7 +181,10 @@ def test_cancellation_kills_owned_term_resistant_group_without_retry(tmp_path):
 def test_unconfirmed_cancellation_cleanup_is_non_success_without_retry(tmp_path, monkeypatch):
     scripts = tmp_path / "scripts"
     scripts.mkdir()
-    (scripts / "test.sh").write_text("#!/bin/bash\necho invoked >> invocations\nsleep .1\n", encoding="utf-8")
+    (scripts / "test.sh").write_text(
+        '#!/bin/bash\necho invoked >> invocations\nkill -TERM "$PPID"\nsleep .1\n',
+        encoding="utf-8",
+    )
     data = tmp_path / "tests/data"
     data.mkdir(parents=True)
     (data / "pr-test-durations.json").write_text('{"fixture": 1.0}', encoding="utf-8")
@@ -192,14 +195,6 @@ def test_unconfirmed_cancellation_cleanup_is_non_success_without_retry(tmp_path,
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(runner, "_stop_group", lambda *_args: False)
 
-    def request_cancel_after_start():
-        deadline = time.monotonic() + 3
-        while not (tmp_path / "invocations").exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
-        runner.cancel_signal = signal.SIGTERM
-
-    cancellation = threading.Thread(target=request_cancel_after_start)
-    cancellation.start()
     monkeypatch.setattr(
         sys,
         "argv",
@@ -219,8 +214,6 @@ def test_unconfirmed_cancellation_cleanup_is_non_success_without_retry(tmp_path,
     )
 
     assert runner.main() != 0
-    cancellation.join(timeout=1)
-    assert not cancellation.is_alive()
     assert (tmp_path / "invocations").read_text().splitlines() == ["invoked"]
     supervisor = (tmp_path / "pr-test-logs/shard-1/attempt-1.supervisor.log").read_text()
     assert "cancelled by signal" in supervisor
