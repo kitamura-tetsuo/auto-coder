@@ -7,6 +7,7 @@ configuration loading, admission, dispatch, resolution and persistence stay real
 import asyncio
 import json
 import math
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,6 +32,14 @@ class OriginScenario:
     def __init__(self, root, monkeypatch):
         self.root = root
         self.runner = asyncio.Runner()
+        # Keep real manager/client construction without requiring a host CLI.
+        # No model execution is allowed through this external probe transport.
+        cli_dir = root / "bin"
+        cli_dir.mkdir()
+        codex = cli_dir / "codex"
+        codex.write_text('#!/bin/sh\nif [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then\n  echo "codex fixture transport"\n  exit 0\nfi\necho "unexpected Codex execution" >&2\nexit 97\n')
+        codex.chmod(0o755)
+        monkeypatch.setenv("PATH", str(cli_dir) + os.pathsep + os.environ["PATH"])
         self.clock = 1800000000.0
         self.reset = self.clock + 4 * 86400 + 600
         self.used = 80.0
