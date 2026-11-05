@@ -54,6 +54,7 @@ from auto_coder.tested_source_refs import TestedSourcePublisher as SourcePublish
 from auto_coder.tested_source_refs import TestedSourceRecord as SourceRecord
 from auto_coder.tested_source_refs import serialize_record, tag_name
 from auto_coder.util.gh_cache import GitHubGitDataClient
+from tests.fixtures.ci_timing import installer_span, recorder
 
 pytestmark = [pytest.mark.supervisor_integration, pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep")]
 
@@ -486,13 +487,35 @@ def management_system(tmp_path: Path, _use_real_commands: None, _use_real_sleep:
         ),
         encoding="utf-8",
     )
-    current_sha = _snapshot_source(source, "current")
+    timing = recorder()
+    with timing.span("management.source_lock_preparation", target_role="current"):
+        current_sha = _snapshot_source(source, "current")
     _test_source(services, current_sha, 11)
-    candidate_sha = _snapshot_source(source, "candidate")
+    with timing.span("management.source_lock_preparation", target_role="candidate"):
+        candidate_sha = _snapshot_source(source, "candidate")
     _test_source(services, candidate_sha, 12)
     stager = ManagementVersionStager(ManagementRuntimeConfig(INSTANCE, REPOSITORY, source, root / "versions", Path(sys.executable), uv, uv_version, management_config=config_path, source_authority=publisher, protected_roots=(state, root / "operations", root / "supervisor")))
-    current = stager.prepare(ManagementPrepareIntent(current_sha, "current")).receipt
-    candidate = stager.prepare(ManagementPrepareIntent(candidate_sha, "candidate")).receipt
+    install = stager._preparer._install
+    active_install: dict[str, str] = {"role": "unavailable", "source": "unavailable"}
+
+    def timed_install(checkout: Path, environment: Path) -> None:
+        with installer_span(
+            timing,
+            checkout,
+            "management.installer",
+            target_role=active_install["role"],
+            target_source_sha=active_install["source"],
+            uv_version=uv_version,
+        ):
+            install(checkout, environment)
+
+    stager._preparer._install = timed_install  # type: ignore[method-assign]
+    active_install.update(role="current", source=current_sha)
+    with timing.span("management.version_prepare", target_role="current", target_source_sha=current_sha):
+        current = stager.prepare(ManagementPrepareIntent(current_sha, "current")).receipt
+    active_install.update(role="candidate", source=candidate_sha)
+    with timing.span("management.version_prepare", target_role="candidate", target_source_sha=candidate_sha):
+        candidate = stager.prepare(ManagementPrepareIntent(candidate_sha, "candidate")).receipt
     assert not list(Path(current.environment_path).rglob("*.pyc"))
     assert not list(Path(candidate.environment_path).rglob("*.pyc"))
     from auto_coder.management.self_update_handoff import runtime_for_receipt
@@ -535,10 +558,12 @@ def management_system(tmp_path: Path, _use_real_commands: None, _use_real_sleep:
             with HandoffStore(root / "supervisor", INSTANCE)._connect():
                 pass
     try:
-        system.start()
+        with timing.span("management.startup_readiness"):
+            system.start()
         yield system
     finally:
-        system.close()
+        with timing.span("management.cleanup"):
+            system.close()
 
 
 def _update(system: ManagementSystem, bearer: str, key: str = "restart-once", *, source: str | None = None) -> dict[str, object]:
@@ -554,7 +579,14 @@ def _wait_operation(system: ManagementSystem, bearer: str, operation_id: str, st
         result = _operation(system, bearer, operation_id)
         return result if result["status"] in statuses else None
 
-    return _wait(observed, timeout=timeout, interval=0.25, description=f"operation {operation_id} status in {sorted(statuses)}")
+    with recorder().span("management.operation_wait", operation_id=operation_id):
+        return _wait(observed, timeout=timeout, interval=0.25, description=f"operation {operation_id} status in {sorted(statuses)}")
+
+
+def _wait_operation_transition(predicate, *, timeout: float = 20, description: str = "condition", interval: float = 0.03, operation_id: str | None = None):
+    """Observe a custom operation predicate without changing the existing wait."""
+    with recorder().span("management.operation_wait", operation_id=operation_id, wait_boundary=description):
+        return _wait(predicate, timeout=timeout, description=description, interval=interval)
 
 
 @contextmanager
@@ -595,7 +627,7 @@ def test_real_self_update_drains_reconnects_twice_and_replays_original_operation
         initiating = socket.create_connection(("127.0.0.1", endpoint.port), timeout=5)
         headers = f"POST /mcp HTTP/1.1\r\nHost: {endpoint.netloc}\r\nAuthorization: Bearer {token}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nContent-Length: {len(request_body)}\r\nConnection: close\r\n\r\n".encode()
         initiating.sendall(headers + request_body)
-        original = _wait(lambda: next(iter(system.journal.list_operations().records), None), timeout=30, description="durable self-update admission")
+        original = _wait_operation_transition(lambda: next(iter(system.journal.list_operations().records), None), timeout=30, description="durable self-update admission")
         assert system.services.held_ci.wait(20)
         # The original response is definitely lost before CI preflight can finish.
         initiating.close()
@@ -612,14 +644,14 @@ def test_real_self_update_drains_reconnects_twice_and_replays_original_operation
         assert system.journal.get(original.operation_id).record.authority == original.authority
         system.services.release_ci.set()
         store = HandoffStore(system.root / "supervisor", INSTANCE)
-        _wait(lambda: store.read(original.operation_id) is not None, timeout=90, description="committed Supervisor handoff")
-        _wait(lambda: "reconciliation unavailable operation=" + original.operation_id in (system.root / "supervisor.log").read_text(), description="failed persisted stop claim")
+        _wait_operation_transition(lambda: store.read(original.operation_id) is not None, timeout=90, description="committed Supervisor handoff", operation_id=original.operation_id)
+        _wait_operation_transition(lambda: "reconciliation unavailable operation=" + original.operation_id in (system.root / "supervisor.log").read_text(), description="failed persisted stop claim", operation_id=original.operation_id)
         assert store.read(original.operation_id).phase is HandoffPhase.SUBMITTED
         assert not system.child.intended_stop
         assert system.child.pid == old.pid
         with sqlite3.connect(handoff_database) as database:
             database.execute("DROP TRIGGER fail_stop_commit")
-        _wait(lambda: system.child.intended_stop, timeout=30, description="Supervisor graceful drain")
+        _wait_operation_transition(lambda: system.child.intended_stop, timeout=30, description="Supervisor graceful drain", operation_id=original.operation_id)
         assert system.child.pid == old.pid
         assert ManagementBootstrapSupervisor._start_token(old.pid) == old.start_token
         assert system.child.selected_runtime == system.current.management_runtime_id
@@ -632,7 +664,7 @@ def test_real_self_update_drains_reconnects_twice_and_replays_original_operation
         assert ManagementBootstrapSupervisor._start_token(old.pid) == old.start_token
         (system.root / "oauth" / "release-request").touch()
         assert held.result(timeout=15) == {"drained": True}
-        _wait(lambda: store.read(original.operation_id).phase is HandoffPhase.STOPPED, timeout=20, description="real stopped child before blocked candidate start")
+        _wait_operation_transition(lambda: store.read(original.operation_id).phase is HandoffPhase.STOPPED, timeout=20, description="real stopped child before blocked candidate start", operation_id=original.operation_id)
         assert system.child.pid == 0
         assert not ManagementBootstrapSupervisor._start_token(old.pid)
         assert system.child.selected_runtime == system.current.management_runtime_id
@@ -657,7 +689,7 @@ def test_real_self_update_drains_reconnects_twice_and_replays_original_operation
     earlier_failures = (system.root / "supervisor.log").read_text().count(failure_log)
     fresh = system.issue()
     assert system.call(fresh, "auto_coder_whoami")["uid"] == "operator"
-    _wait(lambda: (system.root / "supervisor.log").read_text().count(failure_log) > earlier_failures, description="failed durable authenticated success receipt")
+    _wait_operation_transition(lambda: (system.root / "supervisor.log").read_text().count(failure_log) > earlier_failures, description="failed durable authenticated success receipt", operation_id=original.operation_id)
     assert store.read(original.operation_id).proof is not None
     assert store.read(original.operation_id).phase is HandoffPhase.AWAITING_PROOF
     assert _operation(system, fresh, original.operation_id)["status"] != "SUCCEEDED"
@@ -672,7 +704,7 @@ def test_real_self_update_drains_reconnects_twice_and_replays_original_operation
         record = system.journal.get(original.operation_id).record
         return response if record.effect.state.value == "confirmed" else None
 
-    unsettled = _wait(confirmed_without_terminal, timeout=20, interval=0.25, description="durable effect evidence before blocked terminal journal settlement")
+    unsettled = _wait_operation_transition(confirmed_without_terminal, timeout=20, interval=0.25, description="durable effect evidence before blocked terminal journal settlement", operation_id=original.operation_id)
     assert unsettled["status"] != "SUCCEEDED"
     assert system.journal.get(original.operation_id).record.phase.value != "succeeded"
     assert store.read(original.operation_id).phase is HandoffPhase.SUCCEEDED
@@ -683,7 +715,7 @@ def test_real_self_update_drains_reconnects_twice_and_replays_original_operation
         observed = _operation(system, fresh, original.operation_id)
         return observed if observed["status"] == "SUCCEEDED" else None
 
-    succeeded = _wait(successful, timeout=15, description="runtime-bound protected authenticated proof")
+    succeeded = _wait_operation_transition(successful, timeout=15, description="runtime-bound protected authenticated proof", operation_id=original.operation_id)
     assert succeeded["operation_id"] == original.operation_id
     assert succeeded["candidate_source_sha"] == system.candidate_sha
     verification = succeeded["verification"]
