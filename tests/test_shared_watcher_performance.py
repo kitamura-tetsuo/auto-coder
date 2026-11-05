@@ -5,15 +5,16 @@ Tests for Shared Watcher: Performance and Optimization.
 import sys
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
+from watchdog.events import FileModifiedEvent
 
 # Add the test_watcher module to the path
 test_watcher_path = Path(__file__).parent.parent / "src" / "auto_coder" / "mcp_servers" / "test_watcher"
 sys.path.insert(0, str(test_watcher_path))
 
-from test_watcher_tool import TestWatcherTool
+from test_watcher_tool import GitIgnoreFileHandler, TestWatcherTool
 
 
 class TestEnhancedDebouncingPerformance:
@@ -157,27 +158,30 @@ class TestPerformanceImpact:
             # All files should have been processed
             assert mock_run_tests.call_count == 10
 
-    def test_enhanced_debouncing_reduces_updates(self, tmp_path):
-        """Test that enhanced debouncing reduces unnecessary updates."""
+    @pytest.mark.parametrize(("next_event_after", "same_file_runs"), [(0.499, 1), (0.5, 2), (0.501, 2)])
+    def test_file_event_debouncing_reduces_duplicate_updates(self, tmp_path, next_event_after, same_file_runs):
+        """Exercise the production debounce boundary, independently of scheduler delay."""
         tool = TestWatcherTool(project_root=str(tmp_path))
+        handler = GitIgnoreFileHandler(tool.project_root, tool.gitignore_spec, tool._on_file_changed)
+        first_file = str(tmp_path / "src" / "first.py")
+        second_file = str(tmp_path / "src" / "second.py")
 
-        # Mock the methods
-        with patch.object(tool, "_run_playwright_tests") as mock_run_tests:
+        # Control event timestamps, not the elapsed time or expensive test runner.
+        # No sleep is needed to test the 500 ms suppression window.
+        with patch("test_watcher_tool.time") as event_clock, patch.object(tool, "_run_playwright_tests") as mock_run_tests:
+            for offset in (0, 0.01, 0.02, 0.03, 0.04):
+                event_clock.time.return_value = 10.0 + offset
+                handler.on_modified(FileModifiedEvent(first_file))
+            mock_run_tests.assert_called_once_with(True)
 
-            # Create files in the same directory
-            files_in_same_dir = [f"src/file{i}.py" for i in range(5)]
+            event_clock.time.return_value = 10.0 + next_event_after
+            handler.on_modified(FileModifiedEvent(first_file))
+            assert mock_run_tests.call_args_list == [call(True)] * same_file_runs
 
-            start_time = time.time()
-
-            # Trigger changes rapidly
-            for file_path in files_in_same_dir:
-                tool._on_file_changed(file_path)
-                time.sleep(0.01)  # Small delay to allow debouncing
-
-            elapsed = time.time() - start_time
-
-            # Should complete quickly due to debouncing
-            assert elapsed < 0.5
+            # Debouncing is per file, so a distinct path in the same directory
+            # must still trigger immediately at the identical timestamp.
+            handler.on_modified(FileModifiedEvent(second_file))
+            assert mock_run_tests.call_args_list == [call(True)] * (same_file_runs + 1)
 
     def test_burst_file_changes_handled_efficiently(self, tmp_path):
         """Test that burst file changes are handled efficiently."""
