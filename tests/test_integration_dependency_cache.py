@@ -50,6 +50,15 @@ def test_symlink_loop_falls_back_and_preserves_caller_execution(tmp_path: Path, 
     assert calls == ["ordinary-preparation"]
 
 
+def test_unknown_user_cache_falls_back_before_container_launch(monkeypatch: pytest.MonkeyPatch) -> None:
+    configured = "~auto_coder_missing_cache_owner_2733/uv-cache"
+    monkeypatch.setenv("AUTO_CODER_INTEGRATION_UV_CACHE_DIR", configured)
+    result = dependency_cache_arguments()
+    assert result.condition == "fallback"
+    assert result.arguments == ()
+    assert result.host_directory == Path(configured)
+
+
 def test_observer_delegates_success_and_failure_without_changing_results(tmp_path: Path) -> None:
     executable = tmp_path / "fixture-uv"
     executable.write_text(
@@ -92,12 +101,17 @@ def test_retained_records_establish_attributable_same_input_reduction(tmp_path: 
         "python_executable": "/usr/bin/python3.12",
         "uv_version": "0.7.22",
         "cache_namespace": "comparison",
+        "timing_invocation_id": ci_timing.recorder().context.invocation_id,
+        "outcome": "completed",
+        "returncode": 0,
     }
     cold = {
         **common,
         "target_role": "cold",
         "cache_condition": "cold",
         "environment_path": "/runtime/cold",
+        "observation_id": "cold-observation",
+        "attempt_id": "cold-attempt",
         "packages": {"downloaded": ["anyio", "httpx"], "built": ["auto-coder"]},
     }
     warm = {
@@ -105,14 +119,86 @@ def test_retained_records_establish_attributable_same_input_reduction(tmp_path: 
         "target_role": "warm",
         "cache_condition": "warm",
         "environment_path": "/runtime/warm",
-        "previous_population": {"target_role": "cold", "outcome": "completed"},
+        "observation_id": "warm-observation",
+        "attempt_id": "warm-attempt",
+        "previous_population": {
+            "population_id": "cold-population",
+            "target_role": "cold",
+            "attempt_id": "cold-attempt",
+            "source_sha": "a" * 40,
+            "lock_sha256": "b" * 64,
+            "outcome": "completed",
+        },
         "packages": {"downloaded": [], "built": ["auto-coder"]},
     }
     (tmp_path / "dependency-work-cold.jsonl").write_text(json.dumps(cold) + "\n", encoding="utf-8")
     (tmp_path / "dependency-work-warm.jsonl").write_text(json.dumps(warm) + "\n", encoding="utf-8")
+    for role in ("cold", "warm"):
+        for label in ("worker.prepare", "worker.installer"):
+            ci_timing.recorder().emit(
+                "span_end",
+                phase_label=label,
+                target_role=role,
+                target_source_sha="a" * 40,
+                outcome="completed",
+            )
     comparison = ci_timing.observe_dependency_cache_comparison("cold", "warm")
     assert comparison.complete is True
     assert comparison.reusable_cold_work == 2
     assert comparison.reusable_warm_work == 0
     retained = "\n".join(path.read_text(encoding="utf-8") for path in tmp_path.glob("timing-*.jsonl"))
     assert '"event_kind": "dependency_cache_comparison"' in retained
+
+
+@pytest.mark.parametrize(
+    "mutation, expected_error",
+    [
+        ("missing_spans", "missing completed prepare/installer spans"),
+        ("stale_invocation", "different timing invocation"),
+        ("missing_input", "exact-input/identity evidence is missing"),
+        ("wrong_populator", "lineage does not identify"),
+    ],
+)
+def test_comparison_rejects_incomplete_or_unattributable_evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str, expected_error: str) -> None:
+    monkeypatch.setenv("AUTO_CODER_CI_TIMING_DIR", str(tmp_path))
+    monkeypatch.setattr(ci_timing, "_RECORDER", None)
+    invocation = ci_timing.recorder().context.invocation_id
+    common = {
+        "parser_status": "recognized",
+        "target_source_sha": "a" * 40,
+        "lock_sha256": "b" * 64,
+        "python_executable": "/usr/bin/python3.12",
+        "uv_version": "0.7.22",
+        "cache_namespace": "comparison",
+        "timing_invocation_id": invocation,
+        "outcome": "completed",
+        "returncode": 0,
+        "packages": {"downloaded": ["anyio"], "built": ["auto-coder"]},
+    }
+    cold = {**common, "target_role": "cold", "cache_condition": "cold", "environment_path": "/cold", "observation_id": "cold", "attempt_id": "cold-attempt"}
+    warm = {
+        **common,
+        "target_role": "warm",
+        "cache_condition": "warm",
+        "environment_path": "/warm",
+        "observation_id": "warm",
+        "attempt_id": "warm-attempt",
+        "packages": {"downloaded": [], "built": ["auto-coder"]},
+        "previous_population": {"population_id": "population", "target_role": "cold", "attempt_id": "cold-attempt", "source_sha": "a" * 40, "lock_sha256": "b" * 64, "outcome": "completed"},
+    }
+    if mutation == "stale_invocation":
+        warm["timing_invocation_id"] = "stale"
+    elif mutation == "missing_input":
+        warm["lock_sha256"] = None
+    elif mutation == "wrong_populator":
+        warm["previous_population"] = {**warm["previous_population"], "attempt_id": "other-attempt"}
+    for role in ("cold", "warm"):
+        if mutation == "missing_spans" and role == "warm":
+            continue
+        for label in ("worker.prepare", "worker.installer"):
+            ci_timing.recorder().emit("span_end", phase_label=label, target_role=role, outcome="completed")
+    (tmp_path / "dependency-work-cold.jsonl").write_text(json.dumps(cold) + "\n", encoding="utf-8")
+    (tmp_path / "dependency-work-warm.jsonl").write_text(json.dumps(warm) + "\n", encoding="utf-8")
+    comparison = ci_timing.observe_dependency_cache_comparison("cold", "warm")
+    assert comparison.complete is False
+    assert any(expected_error in error for error in comparison.errors)

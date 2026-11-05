@@ -286,6 +286,7 @@ def observe_dependency_cache_comparison(cold_role: str, warm_role: str) -> Depen
     timing = recorder()
     errors: list[str] = []
     records: dict[str, dict[str, object]] = {}
+    completed_spans: dict[str, set[str]] = {cold_role: set(), warm_role: set()}
     if timing.directory is None:
         errors.append("timing is disabled")
     else:
@@ -307,6 +308,28 @@ def observe_dependency_cache_comparison(cold_role: str, warm_role: str) -> Depen
                     continue
                 if isinstance(candidate, dict) and candidate.get("target_role") in {cold_role, warm_role}:
                     records[str(candidate["target_role"])] = candidate
+        try:
+            timing_paths = list(timing.directory.glob("timing-*.jsonl"))
+        except OSError as error:
+            timing_paths = []
+            errors.append(f"timing spans: {type(error).__name__}: {error}")
+        for path in timing_paths:
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError as error:
+                errors.append(f"{path.name}: {type(error).__name__}: {error}")
+                continue
+            for line in lines:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict) or event.get("event_kind") != "span_end" or event.get("outcome") != "completed":
+                    continue
+                role = event.get("target_role")
+                context = event.get("context")
+                if role in completed_spans and isinstance(context, dict) and context.get("invocation_id") == timing.context.invocation_id:
+                    completed_spans[str(role)].add(str(event.get("phase_label")))
     cold, warm = records.get(cold_role), records.get(warm_role)
     if cold is None or warm is None:
         errors.append("missing retained cold or warm uv work record")
@@ -323,12 +346,30 @@ def observe_dependency_cache_comparison(cold_role: str, warm_role: str) -> Depen
     cold_work, warm_work = reusable(cold), reusable(warm)
     if cold and warm:
         exact_fields = ("target_source_sha", "lock_sha256", "python_executable", "uv_version", "cache_namespace")
+        required_fields = (*exact_fields, "environment_path", "observation_id", "attempt_id", "timing_invocation_id")
+        if any(not cold.get(field) or not warm.get(field) for field in required_fields):
+            errors.append("cold or warm exact-input/identity evidence is missing")
         if any(cold.get(field) != warm.get(field) for field in exact_fields):
             errors.append("cold and warm inputs do not match")
+        if cold.get("timing_invocation_id") != timing.context.invocation_id or warm.get("timing_invocation_id") != timing.context.invocation_id:
+            errors.append("cold or warm record belongs to a different timing invocation")
+        if cold.get("outcome") != "completed" or warm.get("outcome") != "completed" or cold.get("returncode") != 0 or warm.get("returncode") != 0:
+            errors.append("cold or warm uv work did not complete successfully")
+        for role in (cold_role, warm_role):
+            if {"worker.prepare", "worker.installer"} - completed_spans[role]:
+                errors.append(f"missing completed prepare/installer spans for {role}")
         if cold.get("cache_condition") != "cold" or warm.get("cache_condition") != "warm":
             errors.append("cache conditions are not a cold-then-warm sequence")
         previous = warm.get("previous_population")
-        if not isinstance(previous, dict) or previous.get("target_role") != cold_role:
+        if (
+            not isinstance(previous, dict)
+            or previous.get("target_role") != cold_role
+            or previous.get("attempt_id") != cold.get("attempt_id")
+            or previous.get("source_sha") != cold.get("target_source_sha")
+            or previous.get("lock_sha256") != cold.get("lock_sha256")
+            or previous.get("outcome") != "completed"
+            or not previous.get("population_id")
+        ):
             errors.append("warm lineage does not identify the completed cold preparation")
         if cold.get("environment_path") == warm.get("environment_path"):
             errors.append("cold and warm installation destinations are not independent")

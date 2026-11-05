@@ -28,8 +28,9 @@ def dependency_cache_arguments(*, namespace: str | None = None, reset: bool = Fa
         result = DependencyCacheArguments((), "uncached", None)
         _record(result, None)
         return result
-    unresolved = Path(configured).expanduser()
+    unresolved = Path(configured)
     try:
+        unresolved = unresolved.expanduser()
         directory = unresolved.resolve()
         if namespace:
             directory /= namespace
