@@ -560,7 +560,8 @@ def test_commit_failure_preserves_corrective_workspace(tmp_path: Path, monkeypat
 
 
 @pytest.mark.parametrize("body", ["<!-- auto-coder-two-tier-finding:v1 -->\nFix the reachable race.", "Human review: revert the unrelated nullable default change."])
-def test_local_route_invokes_real_execution_boundary_with_two_tier_feedback(body: str) -> None:
+@pytest.mark.parametrize("shared_reply", [False, True])
+def test_local_route_invokes_real_execution_boundary_with_two_tier_feedback(body: str, shared_reply: bool) -> None:
     evidence = PullRequestRoutingMetadata(
         api_origin="https://api.github.com",
         repository="owner/repo",
@@ -582,6 +583,15 @@ def test_local_route_invokes_real_execution_boundary_with_two_tier_feedback(body
             )
         ],
     )
+    if shared_reply:
+        from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER, REVIEW_GUIDANCE_MARKER
+
+        body += "\n" + REVIEW_GUIDANCE_MARKER
+        thread.comments = [
+            ReviewThreadComment(database_id=89, body="Previous finding", author_login="implementer"),
+            ReviewThreadComment(database_id=90, body="Implemented the fix\n" + REVIEW_ADDRESSED_MARKER, author_login="implementer"),
+            ReviewThreadComment(database_id=91, body=body, author_login="implementer"),
+        ]
     pr_data = {
         "number": 42,
         "body": evidence.body,
@@ -609,7 +619,13 @@ def test_local_route_invokes_real_execution_boundary_with_two_tier_feedback(body
     from auto_coder.canonical_pr_blocker_ledger import CanonicalPRBlockerLedger
 
     snapshot = CanonicalPRBlockerLedger().get_snapshot("https://api.github.com", "owner/repo", 42)
-    blockers = snapshot.get_blockers_for_alias("github_root_comment", "91")
+    blockers = snapshot.get_blockers_for_alias("external_review_comment", "comment:91")
+    if not shared_reply:
+        assert snapshot.get_blockers_for_alias("github_root_comment", "91") == blockers
+    else:
+        assert snapshot.get_blockers_for_alias("github_root_comment", "89") == ()
+        assert "Previous finding" not in request.prompt
+        assert "Implemented the fix" not in request.prompt
     assert len(blockers) == 1
     assert blockers[0].blocker_id in request.prompt
     assert blockers[0].accepted_scope.description == body

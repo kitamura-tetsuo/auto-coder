@@ -24,3 +24,26 @@ External review comments also receive controller-owned canonical blocker IDs at
 repair preparation. Their original scope joins managed findings in the repair
 bundle, including mixed reviews; native comment delivery receipts continue to
 prevent duplicate follow-ups. See [External review feedback tracking](external-review-feedback-tracking.md).
+
+When a reviewer uses the PR implementer's GitHub account, a corrective reply must
+end with `<!-- auto-coder-review-guidance:v1 -->` on its own line. This explicitly
+selects the reviewer role for that reply. Unmarked author replies (including
+acknowledgments that report incomplete work) remain excluded; neither account
+identity, prose heuristics, nor absence of an addressed claim establishes that
+role. Replies carrying an addressed marker remain implementation claims even if
+they also contain the guidance marker. Adjudication envelopes still belong only
+to the adjudication orchestrator. The guidance marker grants no adjudication,
+closure, approval, or merge authority. This selection also applies to explicit
+local review corrections after the latest addressed claim.
+
+New guidance uses its native comment identity with the existing receipt and
+pending-reservation protocol. It does not renew an old root request, and editing
+a delivered comment does not allocate a new delivery. To supply new guidance,
+post a new explicitly marked reply. Existing unmarked same-account discussions
+cannot be retrospectively classified safely; an operator must provide explicit
+new guidance. Auto-Coder does not edit or resend historical comments to recover
+that role information.
+
+A poll finding only prior delivery receipts is deferred while the unresolved
+thread remains blocked. It does not claim a fresh accepted handoff. Receipts
+prove prior delegation, not current implementation progress or completed repair.

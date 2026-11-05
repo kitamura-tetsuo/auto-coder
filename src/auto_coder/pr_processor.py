@@ -175,6 +175,7 @@ from .review_capture.pr_adversarial_audit import (
     record_effect,
     record_reused,
 )
+from .review_feedback_marker import reply_requests_review_correction
 from .review_thread_closure_receipt import ClosureReceipt, closure_receipt_lock, observe_closure_receipt, put_receipt
 from .review_thread_validation import (
     ClaimedReviewThread,
@@ -2309,7 +2310,7 @@ class CIRepairSubmission:
 
 
 class CloudReviewRepairResult(list[str]):
-    """Actions plus confirmation that blocking review work has an owner."""
+    """Actions plus fresh delivery confirmation or an explicit processing wait."""
 
     def __init__(self, values: Sequence[str] = (), delivered: bool = False, deferred: bool = False, retry_not_before: Optional[float] = None, route_disposition: str = "CLOUD", local_phase: str = "", wait_reason: str = "") -> None:
         super().__init__(values)
@@ -10021,7 +10022,7 @@ def _delegate_cloud_review_thread_repair(
                 for index, comment in enumerate(thread.comments):
                     if index <= addressed_through:
                         continue
-                    if index and implementer and is_same_github_login(comment.author_login, implementer):
+                    if index and implementer and is_same_github_login(comment.author_login, implementer) and not reply_requests_review_correction(comment.body):
                         continue
                     if is_adjudication_envelope(comment.body) or is_change_provenance_thread(thread):
                         continue
@@ -10132,13 +10133,14 @@ def _delegate_cloud_review_thread_repair(
         (thread, comment, _review_feedback_identity(prefix, thread, index))
         for thread in unresolved_threads
         for index, comment in enumerate(thread.comments)
-        # A root is reviewer feedback by definition. Later comments create new
-        # work only when they come from someone other than the PR implementer.
+        # A root is reviewer feedback by definition. A shared reviewer/implementer
+        # account must explicitly declare corrective guidance; unmarked replies
+        # remain ambiguous. Addressed claims cannot declare corrective guidance.
         # A structural adjudication envelope (REQ-009) is a machine-readable
         # decision, not free-form reviewer prose; review_adjudication_orchestrator
         # owns routing its effect, so it must never be forwarded here verbatim,
         # authorized or not.
-        if (index == 0 or not implementer_login or not is_same_github_login(comment.author_login, implementer_login)) and not is_adjudication_envelope(comment.body)
+        if (index == 0 or not implementer_login or not is_same_github_login(comment.author_login, implementer_login) or reply_requests_review_correction(comment.body)) and not is_adjudication_envelope(comment.body)
     ]
     with _cloud_review_delivery_lock:
         try:
@@ -10156,7 +10158,7 @@ def _delegate_cloud_review_thread_repair(
         pending = [(thread, comment, identity) for thread, comment, identity in findings if identity not in delivered]
     if not pending:
         logger.info(f"All actionable review feedback for PR #{pr_number} was already delegated")
-        return CloudReviewRepairResult([f"{provider_label} review repair was already requested for PR #{pr_number} for all current actionable feedback"], delivered=True)
+        return CloudReviewRepairResult([f"{provider_label} review repair was already requested for PR #{pr_number} for all current actionable feedback"], deferred=True)
 
     blocked = [(thread, comment, identity) for thread, comment, identity in pending if identity in indeterminate]
     pending = [(thread, comment, identity) for thread, comment, identity in pending if identity not in indeterminate]

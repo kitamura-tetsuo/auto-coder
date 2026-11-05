@@ -11,6 +11,8 @@ fixed"), the agent's reply must contain this stable, versioned marker.
 
 import re
 
+from .review_adjudication import is_adjudication_envelope
+
 REVIEW_ADDRESSED_MARKER_VERSION = "v1"
 
 REVIEW_ADDRESSED_MARKER = f"<!-- auto-coder-review-addressed:{REVIEW_ADDRESSED_MARKER_VERSION} -->"
@@ -27,3 +29,19 @@ def reply_claims_review_addressed(body: str) -> bool:
     if not isinstance(body, str):
         return False
     return bool(_REVIEW_ADDRESSED_MARKER_RE.search(body))
+
+
+REVIEW_GUIDANCE_MARKER = "<!-- auto-coder-review-guidance:v1 -->"
+
+
+def reply_requests_review_correction(body: str) -> bool:
+    """Recognize explicit reviewer guidance when the account also implements.
+
+    The final standalone marker declares the role of this reply, not authority
+    to adjudicate or close a finding. An addressed claim wins over conflicting
+    role declarations. Unmarked prose remains ambiguous and is never guessed.
+    """
+    if not isinstance(body, str) or not body.rstrip().endswith("\n" + REVIEW_GUIDANCE_MARKER) or reply_claims_review_addressed(body):
+        return False
+    guidance = body.rstrip()[: -len(REVIEW_GUIDANCE_MARKER)].rstrip()
+    return bool(guidance) and not is_adjudication_envelope(guidance)

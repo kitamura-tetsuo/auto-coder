@@ -215,3 +215,10 @@ handoff is `ACCEPTED_HANDOFF`; unavailable publication, identity or repair route
 is `DEFERRED`. `ordinary_reviewer_admitted=false` indicates that no ordinary
 reviewer was admitted to rediscover the unchanged Strong findings. Correction
 completion subsequently uses the existing ordinary validation/closure history.
+
+For generic cloud review-thread repair, `pr.repair-delegation` reports
+`ACCEPTED_HANDOFF` only after a newly accepted delivery with a durable receipt.
+An unchanged poll with only prior receipts reports `DEFERRED`, preserving the
+unresolved-thread gate. An explicit same-account guidance reply can produce one
+new handoff; its repeated polls are deferred. The existing trace schema and
+renderer remain unchanged; neither state establishes implementation completion.

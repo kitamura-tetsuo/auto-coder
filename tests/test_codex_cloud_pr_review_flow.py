@@ -93,6 +93,9 @@ def test_review_repair_uses_existing_task_and_deduplicates_unchanged_state(tmp_p
 
     assert first == ["Requested Codex Cloud task 'task_e_review5262' to address unresolved review threads for PR #5262"]
     assert second == ["Codex Cloud review repair was already requested for PR #5262 for all current actionable feedback"]
+    assert first.delivered is True
+    assert second.delivered is False
+    assert second.deferred is True
     send_followup.assert_called_once()
     task_id, prompt = send_followup.call_args.args[:2]
     assert task_id == "task_e_review5262"
@@ -433,10 +436,20 @@ def test_unresolved_repair_without_durable_owner_fails_processing_visibly() -> N
     assert not any("processing deferred" in action for action in actions)
 
 
-def test_accepted_repair_without_any_durable_receipt_is_not_redelivered(tmp_path) -> None:
+@pytest.mark.parametrize("shared_account_guidance", [False, True])
+def test_accepted_repair_without_any_durable_receipt_is_not_redelivered(tmp_path, shared_account_guidance) -> None:
     """A transport success with indeterminate persistence fails closed across runs."""
     thread = _thread()
+    if shared_account_guidance:
+        from auto_coder.review_feedback_marker import REVIEW_GUIDANCE_MARKER
+
+        thread.comments = [ReviewThreadComment(database_id=104, body="Retain the required oracle\n" + REVIEW_GUIDANCE_MARKER, author_login="maintainer")]
+        thread.comments.insert(0, ReviewThreadComment(database_id=101, body="Old finding", author_login="maintainer"))
     client = _github_client()
+    if shared_account_guidance:
+        client.get_authenticated_user_login.return_value = "controller"
+        identity = _review_feedback_identity("owner/repo#5262:jules:existing-jules-session:", thread, 0)
+        client.get_pr_comments.return_value = [{"user": {"login": "controller"}, "body": _cloud_review_feedback_markers([identity])}]
     provider = MagicMock()
     provider.send_followup.return_value = True
     config = AutomationConfig()
@@ -469,7 +482,7 @@ def test_accepted_repair_without_any_durable_receipt_is_not_redelivered(tmp_path
     assert second_status.outcome is PRProcessingOutcome.FAILED
     assert any("duplicate delivery was suppressed" in action for action in second_actions)
     persisted = json.loads((tmp_path / "repairs.json").read_text(encoding="utf-8"))
-    assert persisted["delivered_feedback"] == []
+    assert persisted["delivered_feedback"] == ([identity] if shared_account_guidance else [])
     assert len(persisted["pending_feedback"]) == 1
 
 
@@ -550,3 +563,61 @@ def test_external_feedback_ledger_failure_prevents_provider_dispatch(tmp_path):
     assert result.delivered is False
     assert "external feedback identity is unavailable" in result[0]
     send_followup.assert_not_called()
+
+
+@pytest.mark.parametrize("root_author", ["maintainer", "reviewer"])
+def test_shared_account_guidance_reaches_production_gate_once(tmp_path, root_author):
+    """Old receipts are waits; only explicit new guidance creates a handoff."""
+    from auto_coder.execution_trace import Outcome
+    from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER, REVIEW_GUIDANCE_MARKER
+
+    original = ReviewThread(id="PRRT_shared", comments=[ReviewThreadComment(database_id=701, body="Cover the required recovery boundary", author_login=root_author)])
+    acknowledged = ReviewThread(
+        id=original.id,
+        comments=original.comments
+        + [
+            ReviewThreadComment(database_id=702, body="Added a focused case\n" + REVIEW_ADDRESSED_MARKER, author_login="maintainer"),
+            ReviewThreadComment(database_id=703, body="The complete integration scenarios have not yet been established", author_login="maintainer"),
+        ],
+    )
+    guidance = ReviewThread(
+        id=original.id,
+        comments=acknowledged.comments + [ReviewThreadComment(database_id=704, body="The loaded resolver still lacks recovery coverage\n" + REVIEW_GUIDANCE_MARKER, author_login="MAINTAINER")],
+    )
+    client = _github_client()
+    client.get_authenticated_user_login.return_value = "controller"
+    root_identity = _review_feedback_identity("owner/repo#5262:codex-cloud:task_e_review5262:", original, 0)
+    client.get_pr_comments.return_value = [{"user": {"login": "controller"}, "body": _cloud_review_feedback_markers([root_identity])}]
+    config = AutomationConfig()
+    config.AUTO_MERGE = True
+    state = ClaimedReviewThreadGateState(unresolved=(original,), blocking_unresolved=(original,), has_blocking_unresolved=True)
+    statuses = []
+    with (
+        patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=tmp_path / "repairs.json"),
+        patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+        patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+        patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
+        patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=state) as observe_threads,
+        patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=True) as send,
+        patch("auto_coder.pr_processor._record_pr_stage", wraps=_record_pr_stage) as stages,
+        patch("auto_coder.pr_processor._merge_pr") as merge,
+    ):
+        for thread in (original, acknowledged, guidance, guidance):
+            observe_threads.return_value = ClaimedReviewThreadGateState(unresolved=(thread,), blocking_unresolved=(thread,), has_blocking_unresolved=True)
+            status = ProcessedPRResult(pr_data=_pr_data())
+            _take_pr_actions(client, "owner/repo", _pr_data(), config, status)
+            statuses.append(status)
+    assert send.call_count == 1
+    prompt = send.call_args.args[1]
+    assert "The loaded resolver still lacks recovery coverage" in prompt
+    assert "Cover the required recovery boundary" not in prompt
+    assert "Added a focused case" not in prompt
+    assert "The complete integration scenarios" not in prompt
+    delegation = [call.args[3] for call in stages.call_args_list if call.args[1] == "pr.repair-delegation"]
+    assert delegation == [Outcome.DEFERRED, Outcome.DEFERRED, Outcome.ACCEPTED_HANDOFF, Outcome.DEFERRED]
+    assert all(status.error is None for status in statuses)
+    assert statuses[0].outcome is PRProcessingOutcome.DEFERRED
+    assert statuses[-1].outcome is PRProcessingOutcome.DEFERRED
+    merge.assert_not_called()
+    client.resolve_review_thread.assert_not_called()
+    client.reply_to_review_thread.assert_not_called()
