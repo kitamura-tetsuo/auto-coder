@@ -491,11 +491,13 @@ def test_real_pytest_cleanup_preserves_diagnostics_across_cases(tmp_path: Path, 
         tmp_path,
         "from tests.conftest import _cleanup_loguru_handlers\n"
         "from tests.fixtures.ci_timing import recorder\n"
-        "def test_first():\n"
+        "def test_first(capsys):\n"
         "    with recorder().span('before-real-cleanup'): pass\n"
+        "    assert 'before-real-cleanup' in capsys.readouterr().out\n"
         f"    assert {not original_failure!r}, 'original first-case failure'\n"
-        "def test_second():\n"
-        "    with recorder().span('after-real-cleanup'): pass\n",
+        "def test_second(capsys):\n"
+        "    with recorder().span('after-real-cleanup'): pass\n"
+        "    assert 'after-real-cleanup' in capsys.readouterr().out\n",
     )
     assert result.returncode == int(original_failure), result.stdout + result.stderr
     if original_failure:
