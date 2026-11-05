@@ -561,7 +561,8 @@ def test_commit_failure_preserves_corrective_workspace(tmp_path: Path, monkeypat
 
 @pytest.mark.parametrize("body", ["<!-- auto-coder-two-tier-finding:v1 -->\nFix the reachable race.", "Human review: revert the unrelated nullable default change."])
 @pytest.mark.parametrize("shared_reply", [False, True])
-def test_local_route_invokes_real_execution_boundary_with_two_tier_feedback(body: str, shared_reply: bool) -> None:
+@pytest.mark.parametrize("envelope_author", ["human", "implementer"])
+def test_local_route_invokes_real_execution_boundary_with_two_tier_feedback(body: str, shared_reply: bool, envelope_author: str) -> None:
     evidence = PullRequestRoutingMetadata(
         api_origin="https://api.github.com",
         repository="owner/repo",
@@ -592,6 +593,11 @@ def test_local_route_invokes_real_execution_boundary_with_two_tier_feedback(body
             ReviewThreadComment(database_id=90, body="Implemented the fix\n" + REVIEW_ADDRESSED_MARKER, author_login="implementer"),
             ReviewThreadComment(database_id=91, body=body, author_login="implementer"),
         ]
+    from auto_coder.review_adjudication import Decision, render_decision
+    from auto_coder.review_feedback_marker import REVIEW_GUIDANCE_MARKER
+
+    envelope = render_decision(Decision("decision", "context", "a" * 40, "digest", "UPHOLD", "FIX", (), "bounded correction", "chatgpt-assisted"))
+    thread.comments.append(ReviewThreadComment(database_id=92, body=envelope + "\n" + REVIEW_GUIDANCE_MARKER, author_login=envelope_author))
     pr_data = {
         "number": 42,
         "body": evidence.body,
@@ -631,6 +637,7 @@ def test_local_route_invokes_real_execution_boundary_with_two_tier_feedback(body
     assert blockers[0].accepted_scope.description == body
     assert body in request.prompt
     assert "REQ-001: preserve the race invariant" in request.prompt
+    assert "auto-coder-review-adjudication:v1" not in request.prompt
     assert request.head_ref == "issue-7_attempt-1"
     assert request.feedback_identities
     assert result.route_disposition == "LOCAL_EXECUTION"

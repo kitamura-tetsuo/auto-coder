@@ -3348,3 +3348,9 @@ parameterized uncertain-receipt test also covers shared-account guidance without
 allowing a duplicate send after both receipt writes fail. The role declaration
 and its legacy limitation are documented in
 [Provider-aware unresolved review repair](client-features/provider-aware-unresolved-review-repair.md).
+
+The shared-account production regression also covers an operator annotation of
+an existing unmarked native reply: the unmarked poll is deferred, adding the
+role marker to that same comment permits one handoff, and subsequent wording
+edits and repeated polls are deferred with unchanged receipt identity. This
+adds no new processing origin or trace field and performs no live annotation.

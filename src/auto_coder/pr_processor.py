@@ -155,7 +155,7 @@ from .pr_review_resumption import (
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import get_prompt_template, render_prompt
-from .review_adjudication import AdjudicationStatus, is_adjudication_envelope
+from .review_adjudication import AdjudicationStatus
 from .review_adjudication_github import ADJUDICATION_DB_ENV, DEFAULT_ADJUDICATION_DB_PATH, AdjudicationContextStore, AdjudicationSnapshot, ReviewAdjudicationService, reconcile_thread
 from .review_adjudication_orchestrator import (
     ADJUDICATION_EFFECTS_DB_ENV,
@@ -175,7 +175,7 @@ from .review_capture.pr_adversarial_audit import (
     record_effect,
     record_reused,
 )
-from .review_feedback_marker import reply_requests_review_correction
+from .review_feedback_marker import is_adjudication_feedback, reply_requests_review_correction
 from .review_thread_closure_receipt import ClosureReceipt, closure_receipt_lock, observe_closure_receipt, put_receipt
 from .review_thread_validation import (
     ClaimedReviewThread,
@@ -10024,7 +10024,7 @@ def _delegate_cloud_review_thread_repair(
                         continue
                     if index and implementer and is_same_github_login(comment.author_login, implementer) and not reply_requests_review_correction(comment.body):
                         continue
-                    if is_adjudication_envelope(comment.body) or is_change_provenance_thread(thread):
+                    if is_adjudication_feedback(comment.body) or is_change_provenance_thread(thread):
                         continue
                     identity = _review_feedback_identity(f"{repo_name}#{pr_number}:local:", thread, index)
                     feedback_entries.append((thread.id, comment.body, identity))
@@ -10140,7 +10140,7 @@ def _delegate_cloud_review_thread_repair(
         # decision, not free-form reviewer prose; review_adjudication_orchestrator
         # owns routing its effect, so it must never be forwarded here verbatim,
         # authorized or not.
-        if (index == 0 or not implementer_login or not is_same_github_login(comment.author_login, implementer_login) or reply_requests_review_correction(comment.body)) and not is_adjudication_envelope(comment.body)
+        if (index == 0 or not implementer_login or not is_same_github_login(comment.author_login, implementer_login) or reply_requests_review_correction(comment.body)) and not is_adjudication_feedback(comment.body)
     ]
     with _cloud_review_delivery_lock:
         try:

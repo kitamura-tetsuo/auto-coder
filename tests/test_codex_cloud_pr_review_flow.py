@@ -566,7 +566,8 @@ def test_external_feedback_ledger_failure_prevents_provider_dispatch(tmp_path):
 
 
 @pytest.mark.parametrize("root_author", ["maintainer", "reviewer"])
-def test_shared_account_guidance_reaches_production_gate_once(tmp_path, root_author):
+@pytest.mark.parametrize("existing_unmarked, retained_identity", [(False, "none"), (True, "none"), (True, "delivered"), (True, "pending")])
+def test_shared_account_guidance_reaches_production_gate_once(tmp_path, root_author, existing_unmarked, retained_identity):
     """Old receipts are waits; only explicit new guidance creates a handoff."""
     from auto_coder.execution_trace import Outcome
     from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER, REVIEW_GUIDANCE_MARKER
@@ -584,9 +585,26 @@ def test_shared_account_guidance_reaches_production_gate_once(tmp_path, root_aut
         id=original.id,
         comments=acknowledged.comments + [ReviewThreadComment(database_id=704, body="The loaded resolver still lacks recovery coverage\n" + REVIEW_GUIDANCE_MARKER, author_login="MAINTAINER")],
     )
+    unmarked = ReviewThread(
+        id=original.id,
+        comments=acknowledged.comments + [ReviewThreadComment(database_id=704, body="The loaded resolver still lacks recovery coverage", author_login="MAINTAINER")],
+    )
+    edited = ReviewThread(
+        id=original.id,
+        comments=acknowledged.comments + [ReviewThreadComment(database_id=704, body="Clarified wording for the same delivered correction\n" + REVIEW_GUIDANCE_MARKER, author_login="MAINTAINER")],
+    )
+    polls = (original, acknowledged, unmarked, guidance, edited, guidance) if existing_unmarked else (original, acknowledged, guidance, guidance)
     client = _github_client()
     client.get_authenticated_user_login.return_value = "controller"
     root_identity = _review_feedback_identity("owner/repo#5262:codex-cloud:task_e_review5262:", original, 0)
+    guidance_identity = _review_feedback_identity("owner/repo#5262:codex-cloud:task_e_review5262:", guidance, len(guidance.comments) - 1)
+    state_path = tmp_path / "repairs.json"
+    if retained_identity != "none":
+        from auto_coder.pr_processor import _record_review_feedback_state
+
+        delivered = {root_identity, guidance_identity} if retained_identity == "delivered" else {root_identity}
+        pending = {guidance_identity} if retained_identity == "pending" else set()
+        _record_review_feedback_state(state_path, delivered, pending)
     client.get_pr_comments.return_value = [{"user": {"login": "controller"}, "body": _cloud_review_feedback_markers([root_identity])}]
     config = AutomationConfig()
     config.AUTO_MERGE = True
@@ -602,22 +620,35 @@ def test_shared_account_guidance_reaches_production_gate_once(tmp_path, root_aut
         patch("auto_coder.pr_processor._record_pr_stage", wraps=_record_pr_stage) as stages,
         patch("auto_coder.pr_processor._merge_pr") as merge,
     ):
-        for thread in (original, acknowledged, guidance, guidance):
+        for thread in polls:
             observe_threads.return_value = ClaimedReviewThreadGateState(unresolved=(thread,), blocking_unresolved=(thread,), has_blocking_unresolved=True)
             status = ProcessedPRResult(pr_data=_pr_data())
             _take_pr_actions(client, "owner/repo", _pr_data(), config, status)
             statuses.append(status)
-    assert send.call_count == 1
-    prompt = send.call_args.args[1]
-    assert "The loaded resolver still lacks recovery coverage" in prompt
-    assert "Cover the required recovery boundary" not in prompt
-    assert "Added a focused case" not in prompt
-    assert "The complete integration scenarios" not in prompt
+    assert send.call_count == (1 if retained_identity == "none" else 0)
+    if retained_identity == "none":
+        prompt = send.call_args.args[1]
+        assert "The loaded resolver still lacks recovery coverage" in prompt
+        assert "Cover the required recovery boundary" not in prompt
+        assert "Added a focused case" not in prompt
+        assert "The complete integration scenarios" not in prompt
     delegation = [call.args[3] for call in stages.call_args_list if call.args[1] == "pr.repair-delegation"]
-    assert delegation == [Outcome.DEFERRED, Outcome.DEFERRED, Outcome.ACCEPTED_HANDOFF, Outcome.DEFERRED]
-    assert all(status.error is None for status in statuses)
+    expected = [Outcome.DEFERRED, Outcome.DEFERRED, Outcome.DEFERRED, Outcome.ACCEPTED_HANDOFF, Outcome.DEFERRED, Outcome.DEFERRED] if existing_unmarked else [Outcome.DEFERRED, Outcome.DEFERRED, Outcome.ACCEPTED_HANDOFF, Outcome.DEFERRED]
+    if retained_identity == "delivered":
+        expected = [Outcome.DEFERRED] * len(polls)
+    elif retained_identity == "pending":
+        expected = [Outcome.DEFERRED] * 3 + [Outcome.FAILED] * 3
+    assert delegation == expected
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert set(persisted["delivered_feedback"]) == ({root_identity} if retained_identity == "pending" else {root_identity, guidance_identity})
+    assert set(persisted["pending_feedback"]) == ({guidance_identity} if retained_identity == "pending" else set())
+    if retained_identity == "pending":
+        assert all("duplicate delivery was suppressed" in status.error for status in statuses[3:])
+        assert statuses[-1].outcome is PRProcessingOutcome.FAILED
+    else:
+        assert all(status.error is None for status in statuses)
+        assert statuses[-1].outcome is PRProcessingOutcome.DEFERRED
     assert statuses[0].outcome is PRProcessingOutcome.DEFERRED
-    assert statuses[-1].outcome is PRProcessingOutcome.DEFERRED
     merge.assert_not_called()
     client.resolve_review_thread.assert_not_called()
     client.reply_to_review_thread.assert_not_called()

@@ -30,19 +30,33 @@ end with `<!-- auto-coder-review-guidance:v1 -->` on its own line. This explicit
 selects the reviewer role for that reply. Unmarked author replies (including
 acknowledgments that report incomplete work) remain excluded; neither account
 identity, prose heuristics, nor absence of an addressed claim establishes that
-role. Replies carrying an addressed marker remain implementation claims even if
-they also contain the guidance marker. Adjudication envelopes still belong only
+role. PR-author replies carrying an addressed marker remain implementation claims even if
+they also contain the guidance marker. A trailing guidance marker cannot make
+an adjudication envelope into ordinary feedback, regardless of its author. Adjudication envelopes still belong only
 to the adjudication orchestrator. The guidance marker grants no adjudication,
 closure, approval, or merge authority. This selection also applies to explicit
 local review corrections after the latest addressed claim.
 
 New guidance uses its native comment identity with the existing receipt and
 pending-reservation protocol. It does not renew an old root request, and editing
-a delivered comment does not allocate a new delivery. To supply new guidance,
-post a new explicitly marked reply. Existing unmarked same-account discussions
-cannot be retrospectively classified safely; an operator must provide explicit
-new guidance. Auto-Coder does not edit or resend historical comments to recover
-that role information.
+a delivered comment does not allocate a new delivery. Genuinely new guidance
+uses a new explicitly marked reply; copying old guidance into a new reply creates
+a different identity and can duplicate work semantically.
+
+An existing unmarked reply can instead receive an explicit role annotation on
+that same native comment. The reviewer/operator must first verify that the
+original reply is reviewer guidance, still applies to the current head and
+contract, and has not been superseded by later implementation or review. Append
+the guidance marker to that original reply, preserving its substantive prose
+and native ID, rather than copying its text into a new comment. A formerly excluded identity can then be delivered once through
+the normal polling path. If that identity already has a confirmed receipt or an
+uncertain pending reservation, the marker/edit does not authorize redelivery;
+wording edits after delivery also retain the same identity. The production-path
+regression covers unmarked, annotated and subsequently edited versions of one
+native reply. This is an explicit operator declaration, not automatic inference
+from historical prose. Auto-Coder does not annotate old comments, clear receipt
+state, force reevaluation, resend requests or restart active work for recovery.
+Ordinary independent adjudication and closure gates still apply.
 
 A poll finding only prior delivery receipts is deferred while the unresolved
 thread remains blocked. It does not claim a fresh accepted handoff. Receipts

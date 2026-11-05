@@ -34,6 +34,24 @@ def reply_claims_review_addressed(body: str) -> bool:
 REVIEW_GUIDANCE_MARKER = "<!-- auto-coder-review-guidance:v1 -->"
 
 
+def _review_guidance_body(body: str) -> str:
+    """Remove terminal role declarations without modifying substantive prose."""
+    guidance = body.rstrip()
+    while guidance.endswith("\n" + REVIEW_GUIDANCE_MARKER):
+        guidance = guidance[: -len(REVIEW_GUIDANCE_MARKER)].rstrip()
+    return "" if guidance == REVIEW_GUIDANCE_MARKER else guidance
+
+
+def is_adjudication_feedback(body: str) -> bool:
+    """Keep role declarations from laundering an adjudication into prose.
+
+    This is an intake exclusion only. It does not change adjudication parsing,
+    authentication, acceptance, or effect ownership. Repeated same-comment
+    annotations cannot change the result.
+    """
+    return is_adjudication_envelope(_review_guidance_body(body))
+
+
 def reply_requests_review_correction(body: str) -> bool:
     """Recognize explicit reviewer guidance when the account also implements.
 
@@ -43,5 +61,5 @@ def reply_requests_review_correction(body: str) -> bool:
     """
     if not isinstance(body, str) or not body.rstrip().endswith("\n" + REVIEW_GUIDANCE_MARKER) or reply_claims_review_addressed(body):
         return False
-    guidance = body.rstrip()[: -len(REVIEW_GUIDANCE_MARKER)].rstrip()
-    return bool(guidance) and not is_adjudication_envelope(guidance)
+    guidance = _review_guidance_body(body)
+    return bool(guidance) and not is_adjudication_feedback(body)
