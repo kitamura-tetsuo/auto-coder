@@ -22,3 +22,22 @@ and facts `effect=saved-review-reassessment`, `requires_reassessment=true`,
 `pr.repair-delegation` delivery or a reused-review audit record. Subsequent
 validation or refusal events describe the actual result; the dashboard uses its
 existing stage/fact rendering with no new schema or processing origin.
+
+Typed saved corrections also reacquire their selected canonical roots before
+replay. A resolved authenticated root whose complete substantive discussion has
+not been independently assessed at the saved input binding becomes an exact
+`discussion_revalidation_thread_ids` obligation. The checkpoint is consumed
+before Strong repair or saved ordinary replay, survives reconstruction, and
+recollects the root and chronological replies even without an addressed marker.
+Only those owned roots enter this local input view; native resolution is never
+PASS, canonical acceptance, or permission to resend a correction.
+
+A bound STILL_VALID disposition prevents another reviewer invocation for
+unchanged evidence. New substantive replies require independent reassessment;
+missing dispositions and incomplete or unauthenticated observations cannot close
+the blocker. Accepted-Strong lifecycle, independent completion, publication, CI,
+and merge gates retain their existing authority. Production emits
+`pr.adversarial-validation` / `Deferred` with
+`effect=saved-discussion-reassessment`, the exact `thread_ids`, `examined_head`,
+`saved_verdict`, `requires_reassessment=true`, and a bounded reason. This records
+an input obligation, not successful review or delivery.

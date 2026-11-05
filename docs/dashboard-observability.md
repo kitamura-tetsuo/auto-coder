@@ -3310,3 +3310,21 @@ feedback controls, early-route reassessment and scheduler refusal. The regressio
 assert reviewer attempts, review publication transport, absent stale repair,
 closure/merge boundaries, and reassessment trace facts separately from delivery.
 See [saved PR review resumption](client-features/saved-pr-review-resumption.md).
+
+### Saved correction with resolved discussion evidence
+
+Before typed ordinary correction replay, selected canonical roots with new
+resolved-thread discussion become durable independent-review inputs. Production
+emits `pr.adversarial-validation` / `Deferred` with
+`effect=saved-discussion-reassessment`, exact `thread_ids`, `examined_head`,
+`saved_verdict`, `requires_reassessment=true`, and `reason`. The existing detail
+renderer displays these facts; no new stage, outcome, or dashboard schema is
+introduced. The event grants neither clearance nor corrective delivery.
+
+Run `bash scripts/test.sh tests/test_ordinary_discussion_revalidation.py
+tests/test_saved_review_reassessment_pr_flow.py` for reconstructed public PR
+coordinator coverage, both ordinary-only and accepted-Strong corrections,
+resolved replies without claim markers, current independent dispositions,
+omitted-disposition false success, unchanged-evidence reuse, and retained merge
+safeguards. These controlled transport regressions verify production routing and
+trace facts; they do not claim production deployment or runtime progress.

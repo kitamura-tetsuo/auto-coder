@@ -1186,6 +1186,11 @@ def _resume_closure_before_admission(
     try:
         retained = EffectiveDecisionStore(repo_name).load(pr_number)
         ordinary = retained.ordinary_correction if retained is not None else None
+        if retained is not None and ordinary is not None and retained.requires_handoff:
+            selected = _saved_correction_discussion_changes(github_client, repo_name, pr_number, retained, head_sha, str((pr_data.get("base") or {}).get("sha") or ""))
+            if selected:
+                _invalidate_retained_discussion_authority(repo_name, pr_number, selected, github_client=github_client)
+                return RetainedClosureResumption(revalidate=True, discussion_changed=True, revalidate_thread_ids=selected, reason="the saved correction has new resolved-thread discussion evidence"), False
         bindings = list(retained.prior_discussion_bindings) if retained is not None else []
         if ordinary is not None and not ordinary.requires_strong_policy:
             bindings.append(ordinary)
@@ -1201,10 +1206,62 @@ def _resume_closure_before_admission(
         reason = f"retained ordinary discussion is unavailable: {exc}"
         _record_review_wait(repo_name, pr_number, head_sha, actions, processing_status, reason)
         return RetainedClosureResumption(unavailable=True, discussion_unavailable=True, reason=reason), True
-    result = _saved_review_service().resume_before_admission(_saved_review_request(github_client, repo_name, pr_data, head_sha, force, actions, processing_status, config))
-    if not result.stop_processing and result.retained_closure is None and retained is not None and retained.discussion_revalidation_thread_ids and retained.ordinary_correction is None:
+    if retained is not None and retained.discussion_revalidation_thread_ids and retained.ordinary_correction is None:
         return RetainedClosureResumption(revalidate=True, discussion_changed=True, revalidate_thread_ids=tuple(retained.discussion_revalidation_thread_ids), reason="an unfinished discussion reassessment remains"), False
+    result = _saved_review_service().resume_before_admission(_saved_review_request(github_client, repo_name, pr_data, head_sha, force, actions, processing_status, config))
     return result.retained_closure, result.stop_processing
+
+
+def _saved_correction_discussion_changes(github_client: Any, repo_name: str, pr_number: int, retained: RetainedDecision, head_sha: str, base_sha: str) -> Tuple[str, ...]:
+    """Select resolved owned correction inputs, never infer closure from resolution.
+
+    Older ordinary corrections may predate a per-thread disposition. Give their
+    exact canonical roots one independent assessment; a current bound disposition
+    (including STILL_VALID) prevents repeated review of unchanged evidence.
+    """
+    if retained.ordinary_correction is None or retained.publication != PUBLICATION_CONFIRMED:
+        return ()
+    from .pr_finding_reconciliation import UnrecordedOrdinaryObservationError, ordinary_observation_owners
+
+    snapshot = CanonicalPRBlockerLedger().get_snapshot("https://api.github.com", repo_name, pr_number, require_retained_state=True)
+    result = retained.ordinary_correction.restore()
+    blocker_ids = set(retained.blocker_ids)
+    if result.findings or result.open_test_oracle_gaps:
+        try:
+            blocker_ids.update(ordinary_observation_owners(snapshot, repo_name, pr_number, retained.head_sha, retained.base_sha, result, include_closed=True))
+        except UnrecordedOrdinaryObservationError:
+            # Let the existing publication/legacy exact-root recovery establish
+            # missing causal ownership. Ambiguous ownership still fails closed.
+            if not blocker_ids:
+                return ()
+    roots: Set[int] = set()
+    for blocker_id in blocker_ids:
+        blocker = snapshot.get_blocker(blocker_id)
+        if blocker is None:
+            raise DecisionRetentionError("Saved correction owner is unavailable")
+        if blocker in snapshot.get_open_blockers():
+            roots.update(blocker.get_root_comment_ids())
+    if not roots:
+        return ()
+    threads = github_client.get_pr_review_threads_strict(repo_name, pr_number)
+    if len({thread.id for thread in threads}) != len(threads):
+        raise ValueError("duplicate review-thread identity")
+    reviewer = resolve_reviewer_app_identity(repo_name)
+    login = github_client.get_authenticated_user_login()
+    if not isinstance(login, str) or not login.strip():
+        raise ValueError("controller identity is unavailable")
+    prior = {item.thread_id: item.discussion_evidence_digest for item in result.thread_dispositions}
+    selected = []
+    for thread in threads:
+        if not thread.comments or thread.comments[0].database_id not in roots:
+            continue
+        if not isinstance(thread.is_resolved, bool) or thread.comments_truncated:
+            raise ValueError("saved correction discussion is incomplete")
+        if not reviewer.matches_login(thread.comments[0].author_login):
+            raise ValueError("saved correction root is not authenticated")
+        if thread.is_resolved and ((retained.head_sha, retained.base_sha) != (head_sha, base_sha) or substantive_discussion_digest(thread, login) != prior.get(thread.id)):
+            selected.append(thread.id)
+    return tuple(sorted(selected))
 
 
 def _invalidate_retained_discussion_authority(repo_name: str, pr_number: int, thread_ids: Sequence[str], *, github_client: Any = None) -> None:
@@ -2526,6 +2583,19 @@ def _get_claimed_review_thread_state(
         has_blocking_unresolved=classification.blocking_unresolved_count > 0,
         authenticated_controller_login=authenticated_controller_login,
     )
+    if revalidate_resolved_thread_ids:
+        selected = set(revalidate_resolved_thread_ids)
+        reviewer_login = resolve_reviewer_app_identity(repo_name).login
+        rebound = _allow_older_head_adversarial_threads(
+            ClaimedReviewThreadGateState(blocking_unresolved=tuple(thread for thread in state.blocking_unresolved if thread.id in selected), authenticated_controller_login=authenticated_controller_login),
+            reviewer_login,
+            forced=True,
+        )
+        if rebound.blocking_unresolved:
+            return ClaimedReviewThreadGateState(lookup_error="Retained discussion cannot be authenticated completely")
+        recovered = tuple(replace(thread, revalidation_forced=False, revalidation_discussion=True) for thread in rebound.claimed)
+        state = replace(state, claimed=state.claimed + recovered, blocking_unresolved=tuple(thread for thread in state.blocking_unresolved if thread.id not in selected))
+        state = replace(state, has_blocking_unresolved=bool(state.blocking_unresolved))
     if config is not None and not _is_pr_adversarial_validation_enabled(config, repo_name):
         return _filter_unresolved_review_threads_for_disabled_validator(state, repo_name)
     return state
@@ -5976,6 +6046,11 @@ def _coordinate_pr_review(
                         _gate_resumption, gate_resume_stop = _resume_closure_before_admission(github_client, repo_name, pr_data, head_sha_for_gate, force_adversarial_validation, actions, processing_status, config)
                         if gate_resume_stop:
                             return actions
+                        if _gate_resumption is not None and _gate_resumption.discussion_changed:
+                            claimed_thread_state = _get_claimed_review_thread_state(github_client, repo_name, pr_number, config=config, revalidate_resolved_thread_ids=_gate_resumption.revalidate_thread_ids)
+                            if claimed_thread_state.lookup_error:
+                                _record_review_wait(repo_name, pr_number, head_sha_for_gate, actions, processing_status, claimed_thread_state.lookup_error)
+                                return actions
                         # A retained ordinary PASS whose closure was accepted completes its own
                         # outstanding publication/thread effects below; its accepted finding is
                         # closed, so no repair is replayed or requested for it.
@@ -6337,6 +6412,13 @@ def _coordinate_pr_review(
                     actions.append(f"Current discussion could not be collected for independent validation: {rebound.lookup_error}")
                     return actions
                 claimed_review_threads = rebound.claimed
+                _record_pr_stage(
+                    pr_number,
+                    "pr.adversarial-validation",
+                    f"pr#{pr_number} adversarial validation",
+                    Outcome.DEFERRED,
+                    {"effect": "saved-discussion-reassessment", "examined_head": head_sha, "saved_verdict": published_status, "requires_reassessment": True, "thread_ids": list(selected), "reason": resumption.reason},
+                )
             provenance_fingerprint = change_provenance_reply_fingerprint(claimed_review_threads)
             has_new_provenance_evidence = False
             saved_pass_has_unresolved_provenance = published_status == "PASS" and bool(provenance_fingerprint)

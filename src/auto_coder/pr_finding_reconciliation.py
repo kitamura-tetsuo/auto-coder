@@ -608,6 +608,8 @@ def _canonical_reference_error(
     snapshot: BlockerLedgerSnapshot,
     head_sha: str,
     base_sha: str,
+    *,
+    include_closed: bool = False,
 ) -> tuple[Optional[str], str]:
     observation = cand.finding_ref or cand.gap_ref
     if observation is None:
@@ -629,7 +631,7 @@ def _canonical_reference_error(
     if error:
         return None, error
     blocker = snapshot.get_blocker(reference.blocker_id)
-    if blocker is None or blocker not in snapshot.get_open_blockers() or correction_scope_fingerprint(blocker) != reference.scope_fingerprint:
+    if blocker is None or (not include_closed and blocker not in snapshot.get_open_blockers()) or correction_scope_fingerprint(blocker) != reference.scope_fingerprint:
         return None, "Canonical correction reference no longer identifies the supplied open accepted scope"
     if blocker.category != reference.category and {blocker.category, reference.category} != {"IMPLEMENTATION", "TEST_ORACLE"}:
         return None, "Canonical correction reference category no longer matches the supplied scope"
@@ -660,6 +662,8 @@ def ordinary_observation_owners(
     head_sha: str,
     base_sha: str,
     result: AdversarialValidationResult,
+    *,
+    include_closed: bool = False,
 ) -> tuple[str, ...]:
     """Read accepted ordinary ownership without reconciliation or ledger writes.
 
@@ -667,6 +671,8 @@ def ordinary_observation_owners(
     causal aliases have a distinct error so an authenticated legacy root can be
     resolved separately; ambiguous, closed or contradictory owners never acquire
     authority from a fallback. Root availability is checked by the handoff caller.
+    Input-only recovery may include closed owners to leave their lifecycle
+    recovery reachable; corrective handoff always requires open owners.
     """
     if snapshot.repository != repo_name or snapshot.pr_number != pr_number:
         raise AssociationAmbiguityError("Ordinary observation ownership belongs to another PR namespace")
@@ -674,7 +680,7 @@ def ordinary_observation_owners(
     missing = False
     open_ids = {blocker.blocker_id for blocker in snapshot.get_open_blockers()}
     for candidate in _ordinary_observation_candidates(result):
-        canonical_owner, error = _canonical_reference_error(candidate, result, snapshot, head_sha, base_sha)
+        canonical_owner, error = _canonical_reference_error(candidate, result, snapshot, head_sha, base_sha, include_closed=include_closed)
         if error:
             raise AssociationAmbiguityError(error)
         alias = _observation_alias(candidate, snapshot.api_origin, repo_name, pr_number, head_sha, base_sha, result.attempt_id)
@@ -685,7 +691,7 @@ def ordinary_observation_owners(
         if len(matches) != 1:
             raise AssociationAmbiguityError("Ordinary observation has ambiguous retained ownership")
         owner = matches[0].blocker_id
-        if owner not in open_ids:
+        if owner not in open_ids and not include_closed:
             raise AssociationAmbiguityError("Ordinary observation owner is no longer open")
         if canonical_owner is not None and canonical_owner != owner:
             raise AssociationAmbiguityError("Ordinary observation contradicts its retained canonical owner")
