@@ -53,6 +53,7 @@ def observe_uv_sync(
     target_role: str,
     target_source_sha: str,
     attempt_id: str,
+    execution_id: str,
     python_executable: Path,
     uv_version: str,
 ) -> Iterator[None]:
@@ -75,6 +76,7 @@ def observe_uv_sync(
             "target_role": target_role,
             "target_source_sha": target_source_sha,
             "attempt_id": attempt_id,
+            "execution_id": execution_id,
             "python_executable": str(python_executable),
             "uv_version": uv_version,
             "cache_namespace": os.environ.get("AUTO_CODER_DEPENDENCY_CACHE_NAMESPACE", "uncached"),

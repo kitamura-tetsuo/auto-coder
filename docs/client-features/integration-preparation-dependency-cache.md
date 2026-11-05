@@ -24,7 +24,10 @@ independent same-source staged-runtime case owns a freshly reset comparison
 namespace: its first installation is the identified cold populator and its second
 fresh destination is the warm sample, with no intervening writer. A retained
 comparison event joins exact source, lock, Python, uv, namespace, destination,
-and population-lineage fields and reports reusable downloads/builds separately
+population-lineage fields, and a per-execution correlation identifier shared only
+by that preparation's uv observation and completed timing spans. This prevents
+retained spans from an earlier run with the same human-readable invocation label
+from completing a newer partial measurement. The comparison reports reusable downloads/builds separately
 from the required `auto-coder` source build.
 Unrecognized output is reported as unavailable rather than inferred from elapsed
 time, and diagnostic failures never replace the installer result.

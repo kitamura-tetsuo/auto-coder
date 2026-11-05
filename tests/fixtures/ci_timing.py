@@ -197,6 +197,7 @@ def installer_span(
     target_role: str,
     target_source_sha: str,
     uv_version: str,
+    execution_id: str | None = None,
 ) -> Iterator[None]:
     """Observe an installer without allowing provenance reads to block it."""
 
@@ -215,6 +216,7 @@ def installer_span(
         target_source_sha=target_source_sha,
         lock_sha256=lock_sha256,
         uv_version=uv_version,
+        execution_id=execution_id,
     ):
         yield
 
@@ -286,7 +288,7 @@ def observe_dependency_cache_comparison(cold_role: str, warm_role: str) -> Depen
     timing = recorder()
     errors: list[str] = []
     records: dict[str, dict[str, object]] = {}
-    completed_spans: dict[str, set[str]] = {cold_role: set(), warm_role: set()}
+    completed_spans: dict[str, dict[str, set[str]]] = {cold_role: {}, warm_role: {}}
     if timing.directory is None:
         errors.append("timing is disabled")
     else:
@@ -328,8 +330,9 @@ def observe_dependency_cache_comparison(cold_role: str, warm_role: str) -> Depen
                     continue
                 role = event.get("target_role")
                 context = event.get("context")
-                if role in completed_spans and isinstance(context, dict) and context.get("invocation_id") == timing.context.invocation_id:
-                    completed_spans[str(role)].add(str(event.get("phase_label")))
+                execution_id = event.get("execution_id")
+                if role in completed_spans and isinstance(context, dict) and context.get("invocation_id") == timing.context.invocation_id and isinstance(execution_id, str) and execution_id:
+                    completed_spans[str(role)].setdefault(execution_id, set()).add(str(event.get("phase_label")))
     cold, warm = records.get(cold_role), records.get(warm_role)
     if cold is None or warm is None:
         errors.append("missing retained cold or warm uv work record")
@@ -346,7 +349,7 @@ def observe_dependency_cache_comparison(cold_role: str, warm_role: str) -> Depen
     cold_work, warm_work = reusable(cold), reusable(warm)
     if cold and warm:
         exact_fields = ("target_source_sha", "lock_sha256", "python_executable", "uv_version", "cache_namespace")
-        required_fields = (*exact_fields, "environment_path", "observation_id", "attempt_id", "timing_invocation_id")
+        required_fields = (*exact_fields, "environment_path", "observation_id", "attempt_id", "execution_id", "timing_invocation_id")
         if any(not cold.get(field) or not warm.get(field) for field in required_fields):
             errors.append("cold or warm exact-input/identity evidence is missing")
         if any(cold.get(field) != warm.get(field) for field in exact_fields):
@@ -356,7 +359,9 @@ def observe_dependency_cache_comparison(cold_role: str, warm_role: str) -> Depen
         if cold.get("outcome") != "completed" or warm.get("outcome") != "completed" or cold.get("returncode") != 0 or warm.get("returncode") != 0:
             errors.append("cold or warm uv work did not complete successfully")
         for role in (cold_role, warm_role):
-            if {"worker.prepare", "worker.installer"} - completed_spans[role]:
+            record = cold if role == cold_role else warm
+            execution_spans = completed_spans[role].get(str(record.get("execution_id")), set())
+            if {"worker.prepare", "worker.installer"} - execution_spans:
                 errors.append(f"missing completed prepare/installer spans for {role}")
         if cold.get("cache_condition") != "cold" or warm.get("cache_condition") != "warm":
             errors.append("cache conditions are not a cold-then-warm sequence")

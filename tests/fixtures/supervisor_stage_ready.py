@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 
@@ -32,10 +33,11 @@ def main() -> None:
     attempt_id = sys.argv[2] if len(sys.argv) == 3 else "supervisor-acceptance"
     timing = recorder()
     target_role = os.environ.get("AUTO_CODER_CI_TIMING_TARGET_ROLE", "supervisor-stage")
+    execution_id = str(uuid.uuid4())
     install = preparer._install
 
     def timed_install(checkout: Path, environment: Path) -> None:
-        with installer_span(timing, checkout, "worker.installer", target_role=target_role, target_source_sha=sys.argv[1], uv_version="0.7.22"):
+        with installer_span(timing, checkout, "worker.installer", target_role=target_role, target_source_sha=sys.argv[1], uv_version="0.7.22", execution_id=execution_id):
             install(checkout, environment)
 
     preparer._install = timed_install  # type: ignore[method-assign]
@@ -47,6 +49,7 @@ def main() -> None:
         target_role=target_role,
         target_source_sha=sys.argv[1],
         attempt_id=attempt_id,
+        execution_id=execution_id,
         python_executable=preparer.config.python_executable,
         uv_version=preparer.config.uv_version,
     ):
@@ -56,6 +59,7 @@ def main() -> None:
             target_source_sha=sys.argv[1],
             uv_version="0.7.22",
             cache_condition=os.environ.get("AUTO_CODER_DEPENDENCY_CACHE_CONDITION", "uncached"),
+            execution_id=execution_id,
         ):
             prepared = preparer.prepare(PrepareIntent(source_sha=sys.argv[1], attempt_id=attempt_id))
     mark_cache_population(

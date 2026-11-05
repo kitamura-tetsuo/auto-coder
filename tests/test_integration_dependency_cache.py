@@ -72,6 +72,7 @@ def test_observer_delegates_success_and_failure_without_changing_results(tmp_pat
         "target_role": "cold",
         "target_source_sha": "a" * 40,
         "attempt_id": "attempt",
+        "execution_id": "execution",
         "python_executable": Path(sys.executable),
         "uv_version": "0.7.22",
     }
@@ -104,6 +105,7 @@ def test_retained_records_establish_attributable_same_input_reduction(tmp_path: 
         "timing_invocation_id": ci_timing.recorder().context.invocation_id,
         "outcome": "completed",
         "returncode": 0,
+        "execution_id": "current-execution",
     }
     cold = {
         **common,
@@ -140,6 +142,7 @@ def test_retained_records_establish_attributable_same_input_reduction(tmp_path: 
                 phase_label=label,
                 target_role=role,
                 target_source_sha="a" * 40,
+                execution_id="current-execution",
                 outcome="completed",
             )
     comparison = ci_timing.observe_dependency_cache_comparison("cold", "warm")
@@ -173,6 +176,7 @@ def test_comparison_rejects_incomplete_or_unattributable_evidence(tmp_path: Path
         "timing_invocation_id": invocation,
         "outcome": "completed",
         "returncode": 0,
+        "execution_id": "current-execution",
         "packages": {"downloaded": ["anyio"], "built": ["auto-coder"]},
     }
     cold = {**common, "target_role": "cold", "cache_condition": "cold", "environment_path": "/cold", "observation_id": "cold", "attempt_id": "cold-attempt"}
@@ -196,9 +200,80 @@ def test_comparison_rejects_incomplete_or_unattributable_evidence(tmp_path: Path
         if mutation == "missing_spans" and role == "warm":
             continue
         for label in ("worker.prepare", "worker.installer"):
-            ci_timing.recorder().emit("span_end", phase_label=label, target_role=role, outcome="completed")
+            ci_timing.recorder().emit(
+                "span_end",
+                phase_label=label,
+                target_role=role,
+                target_source_sha="a" * 40,
+                execution_id="current-execution",
+                outcome="completed",
+            )
     (tmp_path / "dependency-work-cold.jsonl").write_text(json.dumps(cold) + "\n", encoding="utf-8")
     (tmp_path / "dependency-work-warm.jsonl").write_text(json.dumps(warm) + "\n", encoding="utf-8")
     comparison = ci_timing.observe_dependency_cache_comparison("cold", "warm")
     assert comparison.complete is False
     assert any(expected_error in error for error in comparison.errors)
+
+
+def test_comparison_rejects_old_same_label_spans_from_retained_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A prior execution cannot fill a current execution's missing timing evidence."""
+
+    monkeypatch.setenv("AUTO_CODER_CI_TIMING_DIR", str(tmp_path))
+    monkeypatch.setattr(ci_timing, "_RECORDER", None)
+    timing = ci_timing.recorder()
+    common = {
+        "parser_status": "recognized",
+        "target_source_sha": "a" * 40,
+        "lock_sha256": "b" * 64,
+        "python_executable": "/usr/bin/python3.12",
+        "uv_version": "0.7.22",
+        "cache_namespace": "comparison",
+        "timing_invocation_id": timing.context.invocation_id,
+        "execution_id": "current-execution",
+        "outcome": "completed",
+        "returncode": 0,
+    }
+    cold = {
+        **common,
+        "target_role": "cold",
+        "cache_condition": "cold",
+        "environment_path": "/cold",
+        "observation_id": "cold",
+        "attempt_id": "cold-attempt",
+        "packages": {"downloaded": ["anyio"], "built": ["auto-coder"]},
+    }
+    warm = {
+        **common,
+        "target_role": "warm",
+        "cache_condition": "warm",
+        "environment_path": "/warm",
+        "observation_id": "warm",
+        "attempt_id": "warm-attempt",
+        "packages": {"downloaded": [], "built": ["auto-coder"]},
+        "previous_population": {
+            "population_id": "population",
+            "target_role": "cold",
+            "attempt_id": "cold-attempt",
+            "source_sha": "a" * 40,
+            "lock_sha256": "b" * 64,
+            "outcome": "completed",
+        },
+    }
+    for role in ("cold", "warm"):
+        for label in ("worker.prepare", "worker.installer"):
+            timing.emit(
+                "span_end",
+                phase_label=label,
+                target_role=role,
+                target_source_sha="c" * 40,
+                execution_id="prior-execution",
+                outcome="completed",
+            )
+    (tmp_path / "dependency-work-cold.jsonl").write_text(json.dumps(cold) + "\n", encoding="utf-8")
+    (tmp_path / "dependency-work-warm.jsonl").write_text(json.dumps(warm) + "\n", encoding="utf-8")
+
+    comparison = ci_timing.observe_dependency_cache_comparison("cold", "warm")
+
+    assert comparison.complete is False
+    assert comparison.errors.count("missing completed prepare/installer spans for cold") == 1
+    assert comparison.errors.count("missing completed prepare/installer spans for warm") == 1
