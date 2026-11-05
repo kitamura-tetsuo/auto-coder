@@ -37,8 +37,11 @@ the shared directory), retaining fresh runtime destinations. Compare identical
 source, lock, Python, and uv inputs and the observed reusable dependency work;
 phase duration is contextual evidence only. Source-package builds and real
 lifecycle or heartbeat waits remain required work, so this optimization makes no
-minimum elapsed-time or speedup claim. With pinned uv 0.7.22, a local parser
-contract probe over this exact lock observed 26 completed reusable downloads in
-the cold fresh environment and zero in the warm fresh environment while rebuilding
-`auto-coder` in both; this establishes the output form consumed by the observer,
-not a substitute for the retained nested-Docker comparison produced by CI.
+minimum elapsed-time or speedup claim. In Supervisor Integration run
+`42031185285` for source `b17b6ffcb5d3cd481202cf9f26ccf7ac15e55a6d` and lock
+digest `4207d1ee5e471481cfc27a6abf5d8124d0f865dbb1151436f040505449d12764`,
+the retained real nested-Docker comparison recorded 26 completed reusable
+downloads for the cold fresh environment and zero for the warm fresh environment.
+Pinned uv 0.7.22 still prepared and installed each independent environment and
+rebuilt `auto-coder` from its checkout in both samples. This is evidence for those
+exact inputs, not a universal latency or speedup claim.
