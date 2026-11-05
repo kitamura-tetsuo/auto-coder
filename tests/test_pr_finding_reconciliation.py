@@ -1995,7 +1995,8 @@ def test_ordinary_owner_lookup_restores_finding_and_gap_without_roots_or_mutatio
 
 
 @pytest.mark.parametrize("mismatch", ["repository", "pr", "head", "base", "attempt", "evidence", "closed", "ambiguous"])
-def test_ordinary_owner_lookup_rejects_unbound_or_ambiguous_scope(ledger: CanonicalPRBlockerLedger, mismatch: str) -> None:
+@pytest.mark.parametrize("include_closed", [False, True])
+def test_ordinary_owner_lookup_rejects_unbound_or_ambiguous_scope(ledger: CanonicalPRBlockerLedger, mismatch: str, include_closed: bool) -> None:
     from dataclasses import replace
 
     owner, finding = _admit_incident(ledger)
@@ -2021,9 +2022,12 @@ def test_ordinary_owner_lookup_rejects_unbound_or_ambiguous_scope(ledger: Canoni
     else:
         duplicate = replace(blocker, blocker_id="blk_conflicting")
         snapshot = replace(snapshot, blockers=(blocker, duplicate), aliases=snapshot.aliases + tuple(replace(alias, blocker_id=duplicate.blocker_id) for alias in snapshot.aliases))
-    with pytest.raises(AssociationAmbiguityError) as exc:
-        ordinary_observation_owners(snapshot, repo, pr, head, base, result)
-    assert isinstance(exc.value, UnrecordedOrdinaryObservationError) == (mismatch in {"head", "base", "attempt", "evidence"})
+    if mismatch == "closed" and include_closed:
+        assert ordinary_observation_owners(snapshot, repo, pr, head, base, result, include_closed=True) == (owner,)
+    else:
+        with pytest.raises(AssociationAmbiguityError) as exc:
+            ordinary_observation_owners(snapshot, repo, pr, head, base, result, include_closed=include_closed)
+        assert isinstance(exc.value, UnrecordedOrdinaryObservationError) == (mismatch in {"head", "base", "attempt", "evidence"})
 
 
 def test_missing_ordinary_alias_does_not_mask_later_invalid_reference(ledger: CanonicalPRBlockerLedger) -> None:
@@ -2036,6 +2040,23 @@ def test_missing_ordinary_alias_does_not_mask_later_invalid_reference(ledger: Ca
         ordinary_observation_owners(snapshot, REPO, PR_NUMBER, "head", "base", result)
     assert not isinstance(exc.value, UnrecordedOrdinaryObservationError)
     assert ledger.get_snapshot(API_ORIGIN, REPO, PR_NUMBER) == snapshot
+
+
+def test_closed_canonical_observation_is_input_only_and_keeps_scope_validation(ledger: CanonicalPRBlockerLedger) -> None:
+    from dataclasses import replace
+
+    owner, finding = _admit_incident(ledger)
+    result = _reference_result(ledger, finding, owner)
+    reconciled = reconcile_pr_findings_before_publication(ledger, API_ORIGIN, REPO, PR_NUMBER, 5729, "head", "base", result, HistoricalRootParseResult(), attempt_id=result.attempt_id)
+    assert not reconciled.is_ambiguous
+    snapshot = reconciled.snapshot
+    snapshot = replace(snapshot, blockers=tuple(replace(blocker, disposition=BlockerDisposition.VERIFIED_CORRECTION) for blocker in snapshot.blockers))
+    with pytest.raises(AssociationAmbiguityError):
+        ordinary_observation_owners(snapshot, REPO, PR_NUMBER, "head", "base", result)
+    assert ordinary_observation_owners(snapshot, REPO, PR_NUMBER, "head", "base", result, include_closed=True) == (owner,)
+    finding.correction_scope_fingerprint = "contradictory-scope"
+    with pytest.raises(AssociationAmbiguityError):
+        ordinary_observation_owners(snapshot, REPO, PR_NUMBER, "head", "base", result, include_closed=True)
 
 
 @pytest.mark.parametrize("binding_field", ["correction_identity", "correction_scope_fingerprint", "correction_context_fingerprint"])

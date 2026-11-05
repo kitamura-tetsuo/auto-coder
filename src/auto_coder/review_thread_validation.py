@@ -656,6 +656,7 @@ class ClaimedReviewThread:
     claim_evidence: str = ""
     revalidation_after_head_change: bool = False
     revalidation_forced: bool = False
+    revalidation_discussion: bool = False
     revalidation_after_pass: bool = False
     blocker_ids: tuple[str, ...] = ()
     concern_ids: tuple[str, ...] = ()
@@ -836,6 +837,9 @@ def render_claimed_review_threads_section(claimed: Sequence[ClaimedReviewThread]
         elif thread.is_change_provenance:
             heading = "Change-provenance clarification"
             discussion_label = "Full thread discussion (chronological, includes the implementation-agent addressed claim and rationale):"
+        elif thread.revalidation_discussion:
+            heading = render_prompt("pr.review_thread_discussion_revalidation_heading", include_header=False)
+            discussion_label = render_prompt("pr.review_thread_discussion_revalidation_discussion", include_header=False)
         elif thread.revalidation_after_head_change:
             heading = "Older-head adversarial finding requiring revalidation"
             discussion_label = "Full thread discussion (chronological; no implementation-agent reply is required for this revalidation):"

@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import replace
+from unittest.mock import patch
 
 import pytest
 
@@ -12,6 +13,164 @@ from auto_coder.util.gh_cache import ReviewThreadComment
 from tests.test_accepted_finding_bridge import REPO, env  # noqa: F401
 from tests.test_adversarial_validator import _demonstrated_finding_with_anchor
 from tests.test_effective_decision_pr_flow import _repair_to, flow_env, make_flow, ordinary_response  # noqa: F401
+
+
+@pytest.mark.parametrize("next_status", ["STILL_VALID", "ADDRESSED", "OMITTED"])
+@pytest.mark.parametrize("strong", [False, True])
+@pytest.mark.parametrize("early_route", [False, True])
+def test_saved_correction_revalidates_resolved_reply_through_public_coordinator(flow_env, monkeypatch, next_status, strong, early_route):
+    from auto_coder.util.gh_cache import ReviewThread
+    from tests.test_effective_decision_pr_flow import ClosureScript
+
+    if not strong:
+        monkeypatch.setattr("auto_coder.pr_processor._two_tier_gate_inputs", lambda *args, **kwargs: None)
+    flow = make_flow(flow_env, monkeypatch, 7472, "cloud", saved_status=None, auto_status=True)
+    flow.production_thread_collection = True
+    flow.resolve_on_approve = True
+    if strong:
+        flow.accept_finding(gap=True)
+        _repair_to(flow, "ordinary-review-before-resolution")
+        flow.model_responses = [ordinary_response(flow.thread_id)]
+        flow.run(public_origin=True, closure=ClosureScript(status="STILL_VALID"))
+    else:
+        raw = json.loads(ordinary_response("unused", result="NEEDS_FIX"))
+        raw["thread_dispositions"] = []
+        raw["requirement_coverage"][0]["status"] = "VIOLATED"
+        finding = _demonstrated_finding_with_anchor(40)
+        finding["requirement_id"] = "#2401/REQ-001"
+        raw["findings"] = [finding]
+        flow.model_responses = [json.dumps(raw)]
+        flow.run(public_origin=True)
+        root = [root for group in flow.router.review_roots.values() for root in group][0]
+        flow.root_id, flow.root_body = root["id"], root["body"]
+        flow.thread_id = f"PRRT_new_{flow.root_id}"
+    before = flow.retained()
+    assert before.ordinary_correction is not None and before.requires_handoff
+    assert before.blocker_ids
+    assert before.discussion_revalidation_thread_ids == []
+    assert before.status == ("NEEDS_TESTS" if strong else "NEEDS_FIX")
+    flow.thread_resolved = True
+    reply = "Existing execution evidence independently demonstrates this exact requirement; later changes preserve its producer."
+    flow.thread_replies.append(ReviewThreadComment(database_id=flow.root_id + 1, author_id=702, author_login="implementation-agent[bot]", body=reply, in_reply_to_id=flow.root_id))
+    flow.env = flow.env.reconstructed()
+    if early_route:
+        flow.extra_threads = (ReviewThread(id="other-root", is_resolved=False, comments=[ReviewThreadComment(database_id=12000, author_id=4765828, author_login="auto-coder-reviewer[bot]", body="### Auto-Coder adversarial finding\nA separate remaining concern")]),)
+    calls, handoffs = flow.model_calls, flow.handoffs
+    payload = json.loads(ordinary_response(flow.thread_id, status=next_status if next_status != "OMITTED" else "STILL_VALID", evidence="tests/test_state.py independently verifies the current invariant"))
+    if next_status == "OMITTED":
+        payload["thread_dispositions"] = []
+    flow.model_responses = [json.dumps(payload)]
+    script = ClosureScript(status="FIXED" if next_status == "ADDRESSED" else "STILL_VALID") if strong else None
+    with patch("auto_coder.pr_processor._record_pr_stage") as stages:
+        actions = flow.run(public_origin=True, closure=script)
+    assert flow.model_calls == calls + 1, actions
+    assert reply in flow.validation_sections[-1]
+    assert flow.thread_id in flow.validation_sections[-1]
+    assert "explicit --force" not in flow.validation_sections[-1]
+    evidence = [call.args[4] for call in stages.call_args_list if call.args[4].get("effect") == "saved-discussion-reassessment"]
+    assert evidence and flow.thread_id in evidence[-1]["thread_ids"]
+    assert flow.handoffs == handoffs
+    if next_status != "ADDRESSED":
+        assert flow.merge.call_count == 0
+    snapshot = flow.env.ledger.get_snapshot("https://api.github.com", REPO, flow.pr, require_retained_state=True)
+    if next_status != "ADDRESSED":
+        assert all(blocker.disposition is BlockerDisposition.OPEN for blocker in snapshot.blockers)
+    else:
+        assert all(blocker.disposition is BlockerDisposition.VERIFIED_CORRECTION for blocker in snapshot.blockers)
+    flow.env = flow.env.reconstructed()
+    flow.extra_threads = ()  # The unrelated unresolved input is independently out of this recovery scope.
+    again = flow.run(public_origin=True, closure=script)
+    assert flow.model_calls == calls + 1, again
+    assert flow.handoffs == handoffs
+    if next_status == "STILL_VALID":
+        flow.thread_replies.append(ReviewThreadComment(database_id=flow.root_id + 100, author_login="reviewer[bot]", body="A new execution independently checks the remaining transition.", in_reply_to_id=flow.root_id))
+        flow.env = flow.env.reconstructed()
+        changed = flow.run(public_origin=True, closure=script)
+        assert flow.model_calls == calls + 2, changed
+        assert flow.merge.call_count == 0
+        _repair_to(flow, "same-discussion-new-head")
+        changed = flow.run(public_origin=True, closure=script)
+        assert flow.model_calls == calls + 3, changed
+        assert reply in flow.validation_sections[-1]
+        assert flow.merge.call_count == 0
+        flow.current_base = "d" * 40
+        flow.env = replace(flow.env, base=flow.current_base)
+        changed = flow.run(public_origin=True, closure=script)
+        assert flow.model_calls == calls + 4, changed
+        assert reply in flow.validation_sections[-1]
+        assert flow.merge.call_count == 0
+
+
+@pytest.mark.parametrize("observation", ["complete", "truncated", "foreign"])
+def test_saved_correction_resolved_before_first_handoff_recovers_exact_ordinary_owner(flow_env, monkeypatch, observation):
+    from auto_coder import pr_processor
+
+    monkeypatch.setattr(pr_processor, "_two_tier_gate_inputs", lambda *args, **kwargs: None)
+    flow = make_flow(flow_env, monkeypatch, 7473, "cloud", saved_status=None, auto_status=True)
+    flow.production_thread_collection = True
+    flow.resolve_on_approve = True
+    raw = json.loads(ordinary_response("unused", result="NEEDS_FIX"))
+    raw["thread_dispositions"] = []
+    raw["requirement_coverage"][0]["status"] = "VIOLATED"
+    finding = _demonstrated_finding_with_anchor(40)
+    finding["requirement_id"] = "#2401/REQ-001"
+    raw["findings"] = [finding]
+    flow.model_responses = [json.dumps(raw)]
+    compose = pr_processor._compose_actionable_feedback
+
+    def resolve_before_handoff(*args, **kwargs):
+        root = [root for group in flow.router.review_roots.values() for root in group][0]
+        flow.root_id, flow.root_body = root["id"], root["body"]
+        flow.thread_id = f"PRRT_new_{flow.root_id}"
+        flow.thread_resolved = True
+        return compose(*args, **kwargs)
+
+    with patch.object(pr_processor, "_compose_actionable_feedback", side_effect=resolve_before_handoff):
+        first = flow.run(public_origin=True)
+    retained = flow.retained()
+    assert retained.requires_handoff and retained.ordinary_correction is not None, first
+    assert retained.blocker_ids == []  # Failure happened before the first owner write.
+    assert flow.handoffs == 0 and flow.model_calls == 1
+    flow.thread_replies.append(ReviewThreadComment(database_id=flow.root_id + 1, author_login="implementation-agent[bot]", body="Exact execution evidence verifies the current requirement.", in_reply_to_id=flow.root_id))
+    original = flow.threads
+    if observation != "complete":
+
+        def observe():
+            threads = original()
+            if observation == "truncated":
+                return tuple(replace(thread, comments_truncated=True) for thread in threads)
+            return tuple(replace(thread, comments=[replace(thread.comments[0], author_login="foreign-user"), *thread.comments[1:]]) for thread in threads)
+
+        monkeypatch.setattr(flow, "threads", observe)
+    flow.env = flow.env.reconstructed()
+    flow.model_responses = [ordinary_response(flow.thread_id, status="ADDRESSED", evidence="tests/test_state.py independently verifies the corrected invariant")]
+    actions = flow.run(public_origin=True)
+    assert flow.model_calls == (2 if observation == "complete" else 1), actions
+    assert flow.handoffs == 0
+    snapshot = flow.env.ledger.get_snapshot("https://api.github.com", REPO, flow.pr, require_retained_state=True)
+    expected = BlockerDisposition.VERIFIED_CORRECTION if observation == "complete" else BlockerDisposition.OPEN
+    assert all(blocker.disposition is expected for blocker in snapshot.blockers)
+    if observation != "complete":
+        assert flow.merge.call_count == 0
+        assert flow.retained().ordinary_correction == retained.ordinary_correction
+
+
+def test_unpublished_saved_ordinary_correction_keeps_publication_recovery_reachable(flow_env, monkeypatch):
+    from tests.test_effective_decision_pr_flow import SimulatedCrash, _historical_root_with_current_violation, _reconstruct_flow_stores
+
+    flow, script, _ = _historical_root_with_current_violation(flow_env, monkeypatch, "cloud", "missing")
+    with patch("auto_coder.pr_processor._publish_effective_review", side_effect=SimulatedCrash):
+        with pytest.raises(SimulatedCrash):
+            flow.run(closure=script, public_origin=True)
+    retained = flow.retained()
+    assert retained.publication == "PENDING" and retained.ordinary_correction is not None
+    assert flow.reviews == [] and flow.handoffs == 0
+    _reconstruct_flow_stores(flow)
+    flow.model_responses = []
+    recovered = flow.run(closure=script, public_origin=True)
+    assert flow.model_calls == 1 and len(flow.reviews) == 1 and flow.handoffs == 1, recovered
+    assert flow.retained().publication == "CONFIRMED"
+    assert flow.merge.call_count == 0
 
 
 @pytest.mark.parametrize("next_status", ["STILL_VALID", "ADDRESSED"])
