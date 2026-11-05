@@ -33,7 +33,17 @@ def main() -> None:
                 install(checkout, environment)
 
         preparer._install = timed_install  # type: ignore[method-assign]
-        with observe_uv_sync(preparer.config.uv_executable, Path("/runtime/dependency-cache-observations.jsonl")):
+        observation_root = Path(os.environ.get("AUTO_CODER_CI_TIMING_DIR", "/runtime"))
+        observation = observation_root / f"dependency-work-{role}-smoke-{index}.jsonl"
+        with observe_uv_sync(
+            preparer.config.uv_executable,
+            observation,
+            target_role=role,
+            target_source_sha=revision,
+            attempt_id=f"smoke-{index}",
+            python_executable=preparer.config.python_executable,
+            uv_version=preparer.config.uv_version,
+        ):
             with timing.span(
                 "worker.prepare",
                 target_role=role,
@@ -42,7 +52,12 @@ def main() -> None:
                 cache_condition=os.environ.get("AUTO_CODER_DEPENDENCY_CACHE_CONDITION", "uncached"),
             ):
                 prepared = preparer.prepare(PrepareIntent(source_sha=revision, attempt_id=f"smoke-{index}"))
-        mark_cache_population(prepared.receipt.source_sha, prepared.receipt.lock_sha256)
+        mark_cache_population(
+            prepared.receipt.source_sha,
+            prepared.receipt.lock_sha256,
+            target_role=role,
+            attempt_id=f"smoke-{index}",
+        )
         receipt = prepared.receipt
         ready = Path(receipt.environment_path).parent / "READY.json"
         assert preparer.read_ready(ready) == receipt

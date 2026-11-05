@@ -14,11 +14,18 @@ test results. Every preparation therefore retains a fresh destination and the
 existing frozen, non-editable install and installed-provenance verification.
 Runtime and per-test cleanup remain separate from the job-owned cache lifetime.
 
-Preparation fixtures retain a bounded JSONL observation beside existing runtime
-diagnostics. Records label actual cold, warm, uncached, or fallback setup and
+Preparation fixtures retain a bounded JSONL observation in the mounted CI timing
+directory, which the integration job uploads with its existing diagnostics.
+Records label actual cold, warm, uncached, or fallback setup and
 allowlist uv's downloaded, built, and prepared summaries without retaining raw
 URLs, credentials, or arbitrary installer output. A completed preparation marker
-identifies which invocation populated the cache for a later warm invocation.
+identifies which invocation populated the cache for a later warm invocation. The
+independent same-source staged-runtime case owns a freshly reset comparison
+namespace: its first installation is the identified cold populator and its second
+fresh destination is the warm sample, with no intervening writer. A retained
+comparison event joins exact source, lock, Python, uv, namespace, destination,
+and population-lineage fields and reports reusable downloads/builds separately
+from the required `auto-coder` source build.
 Unrecognized output is reported as unavailable rather than inferred from elapsed
 time, and diagnostic failures never replace the installer result.
 
@@ -30,4 +37,8 @@ the shared directory), retaining fresh runtime destinations. Compare identical
 source, lock, Python, and uv inputs and the observed reusable dependency work;
 phase duration is contextual evidence only. Source-package builds and real
 lifecycle or heartbeat waits remain required work, so this optimization makes no
-minimum speedup claim.
+minimum elapsed-time or speedup claim. With pinned uv 0.7.22, a local parser
+contract probe over this exact lock observed 26 completed reusable downloads in
+the cold fresh environment and zero in the warm fresh environment while rebuilding
+`auto-coder` in both; this establishes the output form consumed by the observer,
+not a substitute for the retained nested-Docker comparison produced by CI.

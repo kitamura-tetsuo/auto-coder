@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.fixtures.ci_timing import docker_timing_arguments, observe_nested_install_evidence
+from tests.fixtures.ci_timing import docker_timing_arguments, observe_dependency_cache_comparison, observe_nested_install_evidence
 from tests.utils.integration_dependency_cache import dependency_cache_arguments
 
 pytestmark = pytest.mark.supervisor_integration
@@ -37,8 +37,8 @@ def _docker(*arguments: str, environment: dict[str, str] | None = None, timeout:
     return subprocess.run(["docker", *arguments], capture_output=True, text=True, check=check, timeout=timeout, env=environment)
 
 
-def _preparation_cache_arguments() -> tuple[str, ...]:
-    return dependency_cache_arguments().arguments
+def _preparation_cache_arguments(*, namespace: str | None = None, reset: bool = False) -> tuple[str, ...]:
+    return dependency_cache_arguments(namespace=namespace, reset=reset).arguments
 
 
 def _wait_for(predicate, *, timeout: float = 20.0):
@@ -599,7 +599,7 @@ def test_independently_prepared_staged_restart_preserves_held_intent(tmp_path: P
     first_attempt_path: Path | None = None
     held_first_attempt = runtime / "held-first-ready"
     try:
-        for attempt in ("held-staged-a", "held-staged-b"):
+        for index, attempt in enumerate(("held-staged-a", "held-staged-b")):
             try:
                 result = _docker(
                     "run",
@@ -618,7 +618,7 @@ def test_independently_prepared_staged_restart_preserves_held_intent(tmp_path: P
                     f"{runtime}:/runtime",
                     "-v",
                     f"{fixtures}:/fixtures:ro",
-                    *_preparation_cache_arguments(),
+                    *_preparation_cache_arguments(namespace="same-source-cold-warm", reset=index == 0),
                     *docker_timing_arguments(target_role=attempt),
                     "-e",
                     "HOME=/runtime/home",
@@ -646,6 +646,7 @@ def test_independently_prepared_staged_restart_preserves_held_intent(tmp_path: P
         if first_attempt_path is not None and held_first_attempt.exists():
             held_first_attempt.rename(first_attempt_path)
     original, destination = prepared
+    observe_dependency_cache_comparison("held-staged-a", "held-staged-b")
     assert original["source_sha"] == destination["source_sha"] == revision
     assert original["installed_runtime_id"] != destination["installed_runtime_id"]
     assert original["content_identity"] != destination["content_identity"]

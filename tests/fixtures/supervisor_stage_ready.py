@@ -39,8 +39,17 @@ def main() -> None:
             install(checkout, environment)
 
     preparer._install = timed_install  # type: ignore[method-assign]
-    observation = Path("/runtime/dependency-cache-observations.jsonl")
-    with observe_uv_sync(preparer.config.uv_executable, observation):
+    observation_root = Path(os.environ.get("AUTO_CODER_CI_TIMING_DIR", "/runtime"))
+    observation = observation_root / f"dependency-work-{target_role}-{attempt_id}.jsonl"
+    with observe_uv_sync(
+        preparer.config.uv_executable,
+        observation,
+        target_role=target_role,
+        target_source_sha=sys.argv[1],
+        attempt_id=attempt_id,
+        python_executable=preparer.config.python_executable,
+        uv_version=preparer.config.uv_version,
+    ):
         with timing.span(
             "worker.prepare",
             target_role=target_role,
@@ -49,7 +58,12 @@ def main() -> None:
             cache_condition=os.environ.get("AUTO_CODER_DEPENDENCY_CACHE_CONDITION", "uncached"),
         ):
             prepared = preparer.prepare(PrepareIntent(source_sha=sys.argv[1], attempt_id=attempt_id))
-    mark_cache_population(prepared.receipt.source_sha, prepared.receipt.lock_sha256)
+    mark_cache_population(
+        prepared.receipt.source_sha,
+        prepared.receipt.lock_sha256,
+        target_role=target_role,
+        attempt_id=attempt_id,
+    )
     ready_path = Path(prepared.receipt.environment_path).parent / "READY.json"
     assert preparer.read_ready(ready_path) == prepared.receipt
     print(json.dumps({"ready_path": str(ready_path), "receipt": asdict(prepared.receipt)}, sort_keys=True))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,7 +20,7 @@ class DependencyCacheArguments:
     host_directory: Path | None
 
 
-def dependency_cache_arguments() -> DependencyCacheArguments:
+def dependency_cache_arguments(*, namespace: str | None = None, reset: bool = False) -> DependencyCacheArguments:
     """Prepare a configured host cache, or explicitly retain uncached behavior."""
 
     configured = os.environ.get(CACHE_ENVIRONMENT_VARIABLE)
@@ -27,14 +28,19 @@ def dependency_cache_arguments() -> DependencyCacheArguments:
         result = DependencyCacheArguments((), "uncached", None)
         _record(result, None)
         return result
-    directory = Path(configured).expanduser().resolve()
+    unresolved = Path(configured).expanduser()
     try:
+        directory = unresolved.resolve()
+        if namespace:
+            directory /= namespace
+        if reset and directory.exists():
+            shutil.rmtree(directory)
         directory.mkdir(parents=True, exist_ok=True)
         if not directory.is_dir() or not os.access(directory, os.R_OK | os.W_OK | os.X_OK):
             raise OSError("cache path is not a writable directory")
         empty = next(directory.iterdir(), None) is None
-    except OSError as error:
-        result = DependencyCacheArguments((), "fallback", directory)
+    except (OSError, RuntimeError) as error:
+        result = DependencyCacheArguments((), "fallback", unresolved)
         _record(result, f"{type(error).__name__}: {error}")
         return result
     condition = "cold" if empty else "warm"
@@ -46,6 +52,8 @@ def dependency_cache_arguments() -> DependencyCacheArguments:
             f"UV_CACHE_DIR={CONTAINER_CACHE_DIRECTORY}",
             "-e",
             f"AUTO_CODER_DEPENDENCY_CACHE_CONDITION={condition}",
+            "-e",
+            f"AUTO_CODER_DEPENDENCY_CACHE_NAMESPACE={namespace or 'shared'}",
         ),
         condition,
         directory,

@@ -270,6 +270,85 @@ class NestedInstallEvidence:
     errors: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class DependencyCacheComparison:
+    complete: bool
+    cold_role: str
+    warm_role: str
+    reusable_cold_work: int | None
+    reusable_warm_work: int | None
+    errors: tuple[str, ...]
+
+
+def observe_dependency_cache_comparison(cold_role: str, warm_role: str) -> DependencyCacheComparison:
+    """Join retained real-uv records without making diagnostics readiness authority."""
+
+    timing = recorder()
+    errors: list[str] = []
+    records: dict[str, dict[str, object]] = {}
+    if timing.directory is None:
+        errors.append("timing is disabled")
+    else:
+        try:
+            paths = list(timing.directory.glob("dependency-work-*.jsonl"))
+        except OSError as error:
+            paths = []
+            errors.append(f"{type(error).__name__}: {error}")
+        for path in paths:
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError as error:
+                errors.append(f"{path.name}: {type(error).__name__}: {error}")
+                continue
+            for line in lines:
+                try:
+                    candidate = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(candidate, dict) and candidate.get("target_role") in {cold_role, warm_role}:
+                    records[str(candidate["target_role"])] = candidate
+    cold, warm = records.get(cold_role), records.get(warm_role)
+    if cold is None or warm is None:
+        errors.append("missing retained cold or warm uv work record")
+
+    def reusable(record: dict[str, object] | None) -> int | None:
+        if record is None or record.get("parser_status") != "recognized":
+            return None
+        packages = record.get("packages")
+        if not isinstance(packages, dict):
+            return None
+        names = [name for category in ("downloaded", "built") for name in packages.get(category, []) if isinstance(name, str)]
+        return sum(1 for name in names if name.replace("_", "-").lower() != "auto-coder")
+
+    cold_work, warm_work = reusable(cold), reusable(warm)
+    if cold and warm:
+        exact_fields = ("target_source_sha", "lock_sha256", "python_executable", "uv_version", "cache_namespace")
+        if any(cold.get(field) != warm.get(field) for field in exact_fields):
+            errors.append("cold and warm inputs do not match")
+        if cold.get("cache_condition") != "cold" or warm.get("cache_condition") != "warm":
+            errors.append("cache conditions are not a cold-then-warm sequence")
+        previous = warm.get("previous_population")
+        if not isinstance(previous, dict) or previous.get("target_role") != cold_role:
+            errors.append("warm lineage does not identify the completed cold preparation")
+        if cold.get("environment_path") == warm.get("environment_path"):
+            errors.append("cold and warm installation destinations are not independent")
+    if cold_work is None or warm_work is None:
+        errors.append("reusable dependency work is unavailable")
+    elif cold_work <= warm_work:
+        errors.append("warm preparation did not reduce observed reusable dependency work")
+    complete = not errors
+    timing.emit(
+        "dependency_cache_comparison",
+        cold_role=cold_role,
+        warm_role=warm_role,
+        complete=complete,
+        reusable_cold_work=cold_work,
+        reusable_warm_work=warm_work,
+        comparison_errors=errors,
+    )
+    return DependencyCacheComparison(complete, cold_role, warm_role, cold_work, warm_work, tuple(errors))
+
+
 def observe_nested_install_evidence(target_role: str, source_sha: str) -> NestedInstallEvidence:
     """Inspect nested evidence without making it an acceptance prerequisite."""
 
