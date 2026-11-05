@@ -5996,9 +5996,9 @@ def _coordinate_pr_review(
                                 actions.append(f"Cannot replay current-head adversarial feedback for PR #{pr_number}: {report_error or 'published report is unavailable'}")
                                 _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.FAILED, {"effect": "adversarial-feedback-replay", "examined_head": head_sha_for_gate, "reason": report_error or "published report is unavailable"})
                                 return actions
-                            repair_result, closure_accepted = _replay_saved_nonpass_review(github_client, repo_name, pr_data, head_sha_for_gate, report, gate_assessment.projection, config)
+                            repair_result, requires_reassessment = _replay_saved_nonpass_review(github_client, repo_name, pr_data, head_sha_for_gate, report, gate_assessment.projection, config)
                             actions.extend(repair_result)
-                            if closure_accepted:
+                            if requires_reassessment:
                                 saved_review_revalidation = True
                             else:
                                 replay_handoff, _ = classify_repair_handoff(repair_result)
@@ -6385,22 +6385,9 @@ def _coordinate_pr_review(
             if saved_review_revalidation and published_status:
                 actions.append(f"Re-deriving the effective decision for PR #{pr_number} at unchanged commit {head_sha[:8]}: the saved {published_status} review is not current clearance")
 
-            if published_status and not has_new_provenance_evidence and not exhaustion_retry_due and not saved_review_revalidation and (not force_adversarial_validation or published_status in ADVERSARIAL_REVIEW_BLOCKING_STATUSES):
-                # REQ-005/REQ-011: an authoritative same-head result is
-                # consumed without a new reviewer-backend invocation.
-                # Provenance for the producing review may be genuinely
-                # unavailable (legacy pre-instrumentation result).
-                reuse_target = PrAdversarialReviewTarget(repository=repo_name, pr_number=pr_number, head_sha=head_sha)
-                reuse_policy_identity = _pr_adversarial_policy_identity(config, thread_gate_enabled)
-                reuse_source_review_id = find_reusable_source_review_id(reuse_target, policy_identity=reuse_policy_identity)
-                record_reused(
-                    reuse_target,
-                    policy_identity=reuse_policy_identity,
-                    source_review_id=reuse_source_review_id,
-                    native_verdict=published_status,
-                    related_issue_membership=_pr_adversarial_linked_issue_membership(repo_name, pr_data, adversarial_eligibility.issue_numbers),
-                )
-                actions.append(f"Skipped adversarial validation for PR #{pr_number}: commit {head_sha[:8]} was already validated as {published_status}")
+            reuse_published_review = bool(published_status and not has_new_provenance_evidence and not exhaustion_retry_due and not saved_review_revalidation and (not force_adversarial_validation or published_status in ADVERSARIAL_REVIEW_BLOCKING_STATUSES))
+            if reuse_published_review:
+                assert published_status is not None
                 if published_status == "ERROR":
                     saved_validation_error = f"Adversarial validation previously failed for PR #{pr_number} at SHA {head_sha[:8]}"
                     actions.adversarial_validation_error = saved_validation_error
@@ -6434,22 +6421,49 @@ def _coordinate_pr_review(
                                     {"effect": "adversarial-feedback-replay", "reason": "repair allowance exhausted", "blocker_ids": list(exhaustion_info.exhausted_blocker_ids), "review_disposition": ReviewDisposition.CORRECTION_WAITING.value},
                                 )
                             else:
-                                feedback_actions, _closure_accepted = _replay_saved_nonpass_review(github_client, repo_name, pr_data, head_sha, published_report, reuse_assessment.projection, config)
+                                feedback_actions, requires_reassessment = _replay_saved_nonpass_review(github_client, repo_name, pr_data, head_sha, published_report, reuse_assessment.projection, config)
                                 actions.extend(feedback_actions)
-                                _record_pr_stage(
-                                    pr_number,
-                                    "pr.repair-delegation",
-                                    f"pr#{pr_number} repair delegation",
-                                    _adversarial_repair_outcome(feedback_actions, processing_status),
-                                    {"effect": "adversarial-feedback-replay", "examined_head": head_sha, "route_disposition": getattr(feedback_actions, "route_disposition", "CLOUD"), "local_phase": getattr(feedback_actions, "local_phase", "")},
-                                )
-                                if getattr(feedback_actions, "deferred", False) and processing_status is not None:
-                                    processing_status.error = None
-                                    processing_status.outcome = PRProcessingOutcome.DEFERRED
-                                if getattr(feedback_actions, "local_phase", "") in {"completed_no_change", "awaiting_validation"}:
-                                    _verify_pending_local_correction(github_client, repo_name, pr_data, config, actions, processing_status, retry_failed=force_adversarial_validation)
-                    return actions
-            else:
+                                if requires_reassessment:
+                                    saved_review_revalidation = True
+                                    _record_pr_stage(
+                                        pr_number,
+                                        "pr.adversarial-validation",
+                                        f"pr#{pr_number} adversarial validation",
+                                        Outcome.DEFERRED,
+                                        {"effect": "saved-review-reassessment", "examined_head": head_sha, "saved_verdict": published_status, "requires_reassessment": True},
+                                    )
+                                else:
+                                    _record_pr_stage(
+                                        pr_number,
+                                        "pr.repair-delegation",
+                                        f"pr#{pr_number} repair delegation",
+                                        _adversarial_repair_outcome(feedback_actions, processing_status),
+                                        {"effect": "adversarial-feedback-replay", "examined_head": head_sha, "route_disposition": getattr(feedback_actions, "route_disposition", "CLOUD"), "local_phase": getattr(feedback_actions, "local_phase", "")},
+                                    )
+                                    if getattr(feedback_actions, "deferred", False) and processing_status is not None:
+                                        processing_status.error = None
+                                        processing_status.outcome = PRProcessingOutcome.DEFERRED
+                                    if getattr(feedback_actions, "local_phase", "") in {"completed_no_change", "awaiting_validation"}:
+                                        _verify_pending_local_correction(github_client, repo_name, pr_data, config, actions, processing_status, retry_failed=force_adversarial_validation)
+                if not saved_review_revalidation:
+                    # REQ-005/REQ-011: an authoritative same-head result is
+                    # consumed without a new reviewer-backend invocation.
+                    # Provenance for the producing review may be genuinely
+                    # unavailable (legacy pre-instrumentation result).
+                    reuse_target = PrAdversarialReviewTarget(repository=repo_name, pr_number=pr_number, head_sha=head_sha)
+                    reuse_policy_identity = _pr_adversarial_policy_identity(config, thread_gate_enabled)
+                    reuse_source_review_id = find_reusable_source_review_id(reuse_target, policy_identity=reuse_policy_identity)
+                    record_reused(
+                        reuse_target,
+                        policy_identity=reuse_policy_identity,
+                        source_review_id=reuse_source_review_id,
+                        native_verdict=published_status,
+                        related_issue_membership=_pr_adversarial_linked_issue_membership(repo_name, pr_data, adversarial_eligibility.issue_numbers),
+                    )
+                    actions.append(f"Skipped adversarial validation for PR #{pr_number}: commit {head_sha[:8]} was already validated as {published_status}")
+                    if published_status != "PASS":
+                        return actions
+            if not reuse_published_review or saved_review_revalidation:
                 if force_adversarial_validation:
                     actions.append(f"Forcing a new adversarial-validation attempt for PR #{pr_number} at unchanged commit {head_sha[:8]}")
                 elif has_new_provenance_evidence:

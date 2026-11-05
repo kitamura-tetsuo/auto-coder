@@ -3289,3 +3289,24 @@ identity/effect and Deferred observations remain authoritative; an elapsed
 regular wait is only scan eligibility. Run `bash scripts/test.sh
 tests/test_issue_pending_wait_cadence.py` for the real protected-owner scan-delay
 regression, repeated-turn cadence and unchanged common-admission controls.
+
+### Saved non-pass review reassessment (issue #2759)
+
+The ordinary saved-result consumer now honors the real replay service's
+`requires_reassessment` signal. It emits `pr.adversarial-validation` / `Deferred`
+with `effect=saved-review-reassessment`, `requires_reassessment=true`,
+`examined_head`, and `saved_verdict` before revisiting existing current-target
+admission. This event is neither correction delivery nor review completion: no
+`pr.repair-delegation` delivery or reused-review audit is emitted for this
+transition. The resulting independent review or actual admission refusal retains
+its existing authority and trace. The early unresolved-thread route is unchanged.
+The dashboard's existing stage and fact rendering needs no schema change.
+
+Run `bash scripts/test.sh tests/test_saved_review_reassessment_pr_flow.py
+ tests/test_replay_saved_nonpass_attached_threads.py` for public-entry regressions
+through the real replay service, both saved verdicts, reconstructed legacy state,
+a blocking independent result governing the next processing pass, actionable
+feedback controls, early-route reassessment and scheduler refusal. The regressions
+assert reviewer attempts, review publication transport, absent stale repair,
+closure/merge boundaries, and reassessment trace facts separately from delivery.
+See [saved PR review resumption](client-features/saved-pr-review-resumption.md).
