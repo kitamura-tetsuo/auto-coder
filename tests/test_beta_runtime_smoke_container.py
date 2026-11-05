@@ -43,7 +43,7 @@ from tests.test_management_beta_deploy_container import _argument, _await_stage,
 from tests.test_management_mcp import _issue, real_boundary
 from tests.test_management_runtime_mcp import _call
 from tests.test_management_worker_lifecycle import GitEvidenceBoundary
-from tests.test_supervisor_container_integration import _container_facts, _docker, _image, _inspect_worker, _wait_for
+from tests.test_supervisor_container_integration import _container_facts, _docker, _image, _inspect_worker, _preparation_cache_arguments, _wait_for
 
 pytestmark = pytest.mark.supervisor_integration
 
@@ -266,6 +266,7 @@ def test_local_smoke_uses_installed_worker_real_progress_and_original_journal(re
         f"{runtime}:/runtime",
         "-v",
         f"{fixtures}:/fixtures:ro",
+        *_preparation_cache_arguments(),
         *docker_timing_arguments(),
         "-e",
         "HOME=/runtime/home",

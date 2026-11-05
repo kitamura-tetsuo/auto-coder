@@ -9,6 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from ci_timing import installer_span, recorder
+from integration_dependency_observation import mark_cache_population, observe_uv_sync
 
 from auto_coder.worker_versions import PrepareIntent, WorkerVersionConfig, WorkerVersionPreparer
 
@@ -38,13 +39,17 @@ def main() -> None:
             install(checkout, environment)
 
     preparer._install = timed_install  # type: ignore[method-assign]
-    with timing.span(
-        "worker.prepare",
-        target_role=target_role,
-        target_source_sha=sys.argv[1],
-        uv_version="0.7.22",
-    ):
-        prepared = preparer.prepare(PrepareIntent(source_sha=sys.argv[1], attempt_id=attempt_id))
+    observation = Path("/runtime/dependency-cache-observations.jsonl")
+    with observe_uv_sync(preparer.config.uv_executable, observation):
+        with timing.span(
+            "worker.prepare",
+            target_role=target_role,
+            target_source_sha=sys.argv[1],
+            uv_version="0.7.22",
+            cache_condition=os.environ.get("AUTO_CODER_DEPENDENCY_CACHE_CONDITION", "uncached"),
+        ):
+            prepared = preparer.prepare(PrepareIntent(source_sha=sys.argv[1], attempt_id=attempt_id))
+    mark_cache_population(prepared.receipt.source_sha, prepared.receipt.lock_sha256)
     ready_path = Path(prepared.receipt.environment_path).parent / "READY.json"
     assert preparer.read_ready(ready_path) == prepared.receipt
     print(json.dumps({"ready_path": str(ready_path), "receipt": asdict(prepared.receipt)}, sort_keys=True))

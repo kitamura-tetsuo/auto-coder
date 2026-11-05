@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
 
 from ci_timing import installer_span, recorder
+from integration_dependency_observation import mark_cache_population, observe_uv_sync
 from loguru import logger
 
 from auto_coder.worker_versions import PrepareIntent, WorkerVersionConfig, WorkerVersionPreparer
@@ -31,13 +33,16 @@ def main() -> None:
                 install(checkout, environment)
 
         preparer._install = timed_install  # type: ignore[method-assign]
-        with timing.span(
-            "worker.prepare",
-            target_role=role,
-            target_source_sha=revision,
-            uv_version="0.7.22",
-        ):
-            prepared = preparer.prepare(PrepareIntent(source_sha=revision, attempt_id=f"smoke-{index}"))
+        with observe_uv_sync(preparer.config.uv_executable, Path("/runtime/dependency-cache-observations.jsonl")):
+            with timing.span(
+                "worker.prepare",
+                target_role=role,
+                target_source_sha=revision,
+                uv_version="0.7.22",
+                cache_condition=os.environ.get("AUTO_CODER_DEPENDENCY_CACHE_CONDITION", "uncached"),
+            ):
+                prepared = preparer.prepare(PrepareIntent(source_sha=revision, attempt_id=f"smoke-{index}"))
+        mark_cache_population(prepared.receipt.source_sha, prepared.receipt.lock_sha256)
         receipt = prepared.receipt
         ready = Path(receipt.environment_path).parent / "READY.json"
         assert preparer.read_ready(ready) == receipt

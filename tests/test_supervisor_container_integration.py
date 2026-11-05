@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures.ci_timing import docker_timing_arguments, observe_nested_install_evidence
+from tests.utils.integration_dependency_cache import dependency_cache_arguments
 
 pytestmark = pytest.mark.supervisor_integration
 
@@ -34,6 +35,10 @@ def _image() -> str:
 
 def _docker(*arguments: str, environment: dict[str, str] | None = None, timeout: int = 30, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["docker", *arguments], capture_output=True, text=True, check=check, timeout=timeout, env=environment)
+
+
+def _preparation_cache_arguments() -> tuple[str, ...]:
+    return dependency_cache_arguments().arguments
 
 
 def _wait_for(predicate, *, timeout: float = 20.0):
@@ -285,6 +290,7 @@ def test_real_process_issues_bootstrap_and_staged_ready_binding(tmp_path: Path, 
             f"{runtime}:/runtime",
             "-v",
             f"{fixtures}:/fixtures:ro",
+            *_preparation_cache_arguments(),
             *docker_timing_arguments(target_role="bootstrap-stage"),
             "-e",
             "HOME=/runtime/home",
@@ -612,6 +618,7 @@ def test_independently_prepared_staged_restart_preserves_held_intent(tmp_path: P
                     f"{runtime}:/runtime",
                     "-v",
                     f"{fixtures}:/fixtures:ro",
+                    *_preparation_cache_arguments(),
                     *docker_timing_arguments(target_role=attempt),
                     "-e",
                     "HOME=/runtime/home",
