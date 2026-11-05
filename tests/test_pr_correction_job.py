@@ -9,6 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.durable_repair_allowance import RepairAllowanceLedger
@@ -76,7 +78,8 @@ def test_offer_is_durable_and_replay_does_not_consume_another_generation(tmp_pat
     assert repairs.get(request).local_job_id == first.job_id  # type: ignore[union-attr]
 
 
-def test_adapter_revalidates_exact_head_route_and_allowance_before_entry(tmp_path: Path) -> None:
+@pytest.mark.parametrize("marker_count", [0, 1, 2])
+def test_adapter_revalidates_exact_head_route_and_allowance_before_entry(tmp_path: Path, marker_count: int) -> None:
     github = MagicMock()
     github.get_pull_request_routing_metadata_strict.return_value = PullRequestRoutingMetadata("https://api.github.com", "owner/repo", 42, "open", "<!-- auto-coder:local-llm -->", "owner/repo", "repair", "head-1")
     thread = ReviewThread(id="thread-1", comments=[ReviewThreadComment(database_id=1, body="fix")])
@@ -102,6 +105,14 @@ def test_adapter_revalidates_exact_head_route_and_allowance_before_entry(tmp_pat
     ):
         assert adapter.authorize_provider_entry(job) is True
         executor_factory.assert_called_once_with("codex", request)
+        from auto_coder.review_adjudication import Decision, render_decision
+        from auto_coder.review_feedback_marker import REVIEW_GUIDANCE_MARKER
+
+        envelope = render_decision(Decision("decision", "context", "a" * 40, "digest", "UPHOLD", "FIX", (), "bounded correction", "chatgpt-assisted"))
+        thread.comments[0].body = envelope + ("\n" + REVIEW_GUIDANCE_MARKER) * marker_count
+        assert adapter.authorize_provider_entry(job) is False
+        executor_factory.assert_called_once_with("codex", request)
+        thread.comments[0].body = "fix"
         github.get_pull_request_routing_metadata_strict.return_value = PullRequestRoutingMetadata("https://api.github.com", "owner/repo", 42, "open", "<!-- auto-coder:local-llm -->", "owner/repo", "repair", "head-2")
         assert adapter.authorize_provider_entry(job) is False
         github.get_pull_request_routing_metadata_strict.return_value = route.evidence

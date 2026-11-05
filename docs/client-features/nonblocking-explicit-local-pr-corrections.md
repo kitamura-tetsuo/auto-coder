@@ -26,6 +26,12 @@ processing cannot dispatch the same attempt again. Runner instances restrict
 both invocation and downstream notification to registered job kinds,
 preserving the separate Issue implementation owner.
 
+The final entry and recovery authority checks also exclude adjudication
+envelopes after normalizing terminal review-guidance role markers, including
+repeated annotations. Changing the body of an already selected native comment
+into such an envelope cannot retain ordinary correction authority merely because
+its comment ID is unchanged. The adjudication owner remains independent.
+
 Execution continues through the existing detached exact-head correction path,
 including invocation-time allowance charging, commit/push lease protection,
 publication recovery, `CANNOT_FIX`, no-change, and awaiting-validation states.

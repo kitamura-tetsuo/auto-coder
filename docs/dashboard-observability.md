@@ -3328,3 +3328,29 @@ resolved replies without claim markers, current independent dispositions,
 omitted-disposition false success, unchanged-evidence reuse, and retained merge
 safeguards. These controlled transport regressions verify production routing and
 trace facts; they do not claim production deployment or runtime progress.
+
+## Shared-account review guidance delivery
+
+The generic cloud `pr.repair-delegation` stage now reports `DEFERRED` for a poll
+whose actionable feedback already has delivery receipts, instead of implying a
+fresh `ACCEPTED_HANDOFF`. A new explicit same-account guidance reply uses the
+existing native comment delivery identity and can emit one accepted handoff;
+unchanged polls remain deferred. There are no new trace fields, stage IDs or
+renderer changes. The unresolved-thread merge gate remains authoritative.
+
+Run `bash scripts/test.sh tests/test_codex_cloud_pr_review_flow.py`.
+`test_shared_account_guidance_reaches_production_gate_once` enters
+`_take_pr_actions` and the real repair delegate with retained PR receipts, marked
+and unmarked implementation acknowledgments, explicit new guidance and repeated
+polls. It asserts the stage sequence DEFERRED, DEFERRED, ACCEPTED_HANDOFF,
+DEFERRED, one provider send, and absent resolution/merge effects. The
+parameterized uncertain-receipt test also covers shared-account guidance without
+allowing a duplicate send after both receipt writes fail. The role declaration
+and its legacy limitation are documented in
+[Provider-aware unresolved review repair](client-features/provider-aware-unresolved-review-repair.md).
+
+The shared-account production regression also covers an operator annotation of
+an existing unmarked native reply: the unmarked poll is deferred, adding the
+role marker to that same comment permits one handoff, and subsequent wording
+edits and repeated polls are deferred with unchanged receipt identity. This
+adds no new processing origin or trace field and performs no live annotation.
