@@ -193,3 +193,18 @@ Trace events use the `pr.ordinary-closure` stage and expose the head, backend,
 publication result, and the acceptance/defer reason.
 
 Model JSON responses use `result` for both Strong and ordinary closure decisions. Internal typed and durable verdict attributes retain their existing representation. Explicit requirement references always use `#<issue>/REQ-NNN` across ordinary coverage and Strong findings, including single-Issue contracts; original Issue declarations and text remain unchanged.
+
+`tests/test_strong_audit_origins.py` connects the explicit
+`AutomationEngine.process_single(..., explicit_only=True, force=True)` origin
+and the durable invalidation worker to the actual PR processor, repository
+configuration files, provider-shaped account parser, quota selector, strong
+resolver, detached Git worktrees and cycle/effect stores. Controlled clocks
+cover the 30-minute successor and earlier/exact reserve boundary, including
+queue normalization to a strictly future wake and retention of the exact cycle
+deadline. Two-controller barriers exercise both stale selected waits and live
+strong ownership; write faults before and after admission persistence exercise
+reconstruction without erasing a wait or duplicating execution. Only external
+GitHub, usage and reviewer transports and time/fault barriers are substituted.
+These regressions change no processing origin, trace event, routing or dashboard
+schema; existing `pr.strong-audit` and `pr.two-tier-review-effect` emissions and
+redacted diagnostics remain the production observability contract.
