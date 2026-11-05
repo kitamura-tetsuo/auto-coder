@@ -7,12 +7,88 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from scripts.summarize_ci_timing import summarize
 
 import tests.fixtures.ci_timing as ci_timing
 from tests.fixtures.ci_timing import TimingRecorder, installer_span
+
+
+@pytest.mark.parametrize("diagnostics", ["disabled", "enabled", "unavailable"])
+@pytest.mark.parametrize("outcome", ["return", "predicate-error", "timeout", "interrupt"])
+def test_management_operation_transition_observes_original_wait_without_changing_outcome(tmp_path: Path, monkeypatch, diagnostics: str, outcome: str) -> None:
+    from tests import test_management_self_update_integration as harness
+
+    output = tmp_path / "timing"
+    monkeypatch.delenv("AUTO_CODER_CI_TIMING_DIR", raising=False)
+    if diagnostics == "unavailable":
+        output.write_text("occupied", encoding="utf-8")
+    timing = TimingRecorder(output if diagnostics != "disabled" else None)
+    monkeypatch.setattr(harness, "recorder", lambda: timing)
+    returned = object()
+    original_error = RuntimeError("original predicate failure") if outcome == "predicate-error" else KeyboardInterrupt("original interrupt")
+
+    def execute(wait, observed: bool):
+        now = 0.0
+        calls = 0
+        sleeps = []
+        cleanup = []
+
+        def sleep(interval):
+            nonlocal now
+            sleeps.append(interval)
+            now += interval
+
+        def predicate():
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                if outcome == "return":
+                    return returned
+                if outcome != "timeout":
+                    raise original_error
+            return None
+
+        monkeypatch.setattr(harness, "time", SimpleNamespace(monotonic=lambda: now, sleep=sleep))
+        result = error = None
+        try:
+            arguments = {"timeout": 0.5, "interval": 0.25, "description": "original transition"}
+            if observed:
+                arguments["operation_id"] = "operation-fixture"
+            result = wait(predicate, **arguments)
+        except BaseException as caught:
+            error = caught
+        finally:
+            cleanup.append("original cleanup")
+        return result, error, calls, sleeps, cleanup
+
+    original = execute(harness._wait, False)
+    observed = execute(harness._wait_operation_transition, True)
+    assert original[0] is observed[0]
+    assert original[2:] == observed[2:] == (2, [0.25, 0.25] if outcome == "timeout" else [0.25], ["original cleanup"])
+    if outcome == "return":
+        assert observed[0] is returned and original[1] is observed[1] is None
+    elif outcome == "timeout":
+        assert type(original[1]) is type(observed[1]) is AssertionError
+        assert str(original[1]) == str(observed[1]) == "timed out waiting for original transition"
+    else:
+        assert original[1] is observed[1] is original_error
+
+    if diagnostics == "enabled":
+        spans = summarize(output)["nested_harness_spans"]
+        assert len(spans) == 1
+        assert spans[0]["phase_label"] == "management.operation_wait"
+        assert spans[0]["wait_boundary"] == "original transition"
+        assert spans[0]["operation_id"] == "operation-fixture"
+        assert spans[0]["outcome"] == ("completed" if outcome == "return" else "interrupted" if outcome == "interrupt" else "exception")
+        assert spans[0]["elapsed_ms"] >= 0
+    elif diagnostics == "unavailable":
+        assert timing.last_error is not None
+        assert output.read_text(encoding="utf-8") == "occupied"
+    else:
+        assert timing.last_error is None and not output.exists()
 
 
 def test_nested_and_repeated_spans_keep_distinct_identity(tmp_path: Path) -> None:

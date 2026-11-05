@@ -31,3 +31,19 @@ authorize READY or publication, or replace the test process exit status. A
 diagnostic write or summary failure likewise cannot replace the original test
 result. The reviewed PR shard weights in `tests/data/pr-test-durations.json`
 remain independently maintained and are not updated by this facility.
+
+The AS-001 management self-update/reconnect case also records its custom
+operation-transition waits as `management.operation_wait` spans. Each has a
+distinct span identity and a bounded `wait_boundary` label; the operation ID
+is recorded once admission has supplied it and remains unavailable during the
+admission wait. The wrapper delegates to the original `_wait` with the same
+predicate, timeout, interval, return value and exception behavior. These records
+do not add a diagnostic-completeness assertion to that integration test.
+
+For focused real-run inspection, enable timing and run
+`bash scripts/test.sh tests/test_management_self_update_integration.py::test_real_self_update_drains_reconnects_twice_and_replays_original_operation`.
+Inspect its native setup/call/teardown outcomes together with preparation,
+installer, startup/readiness, operation-wait and cleanup records. A successful
+different management case cannot supply missing wait attribution for this named
+case. Retain the executed checkout and installed fixture-source identities when
+reporting that evidence; a diagnostic span is not an acceptance receipt.
