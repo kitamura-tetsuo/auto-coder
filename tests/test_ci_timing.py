@@ -464,3 +464,186 @@ def test_enabled_and_disabled_preserve_same_failure_and_cleanup(tmp_path: Path) 
         )
         outcomes.append((result.returncode, "same original failure" in result.stdout, cleanup.read_text(encoding="utf-8")))
     assert outcomes == [(1, True, "done"), (1, True, "done")]
+
+
+def test_diagnostic_sinks_preserve_application_ownership(tmp_path: Path, capsys) -> None:
+    application: list[str] = []
+    sink = ci_timing.logger.add(lambda message: application.append(str(message)))
+    timing = TimingRecorder(tmp_path)
+    try:
+        assert timing.emit("probe", phase_label="owned-boundary")
+        ci_timing.logger.info("application-still-owned")
+        assert any("application-still-owned" in message for message in application)
+        assert "owned-boundary" in capsys.readouterr().out
+        diagnostic = next(tmp_path.glob("diagnostics-*.log")).read_text()
+        assert "owned-boundary" in diagnostic
+        assert "ci_timing.py:_log_diagnostic:" in diagnostic
+        assert "application-still-owned" not in diagnostic
+        assert "\x1b[" not in diagnostic
+        assert timing.last_error is None
+    finally:
+        ci_timing.logger.remove(sink)
+
+
+@pytest.mark.parametrize("original_failure", [False, True])
+def test_real_pytest_cleanup_preserves_diagnostics_across_cases(tmp_path: Path, original_failure: bool) -> None:
+    result, report = _pytest_subprocess(
+        tmp_path,
+        "from tests.conftest import _cleanup_loguru_handlers\n"
+        "from tests.fixtures.ci_timing import recorder\n"
+        "def test_first():\n"
+        "    with recorder().span('before-real-cleanup'): pass\n"
+        f"    assert {not original_failure!r}, 'original first-case failure'\n"
+        "def test_second():\n"
+        "    with recorder().span('after-real-cleanup'): pass\n",
+    )
+    assert result.returncode == int(original_failure), result.stdout + result.stderr
+    if original_failure:
+        assert "original first-case failure" in result.stdout
+    logs = "".join(path.read_text() for path in (tmp_path / "timing").glob("diagnostics-*.log"))
+    assert "before-real-cleanup" in logs
+    assert "after-real-cleanup" in logs
+    phases = report["native_pytest_phases"]
+    assert [(phase["pytest_phase"], phase["outcome"]) for phase in phases] == [
+        ("setup", "passed"),
+        ("call", "failed" if original_failure else "passed"),
+        ("teardown", "passed"),
+        ("setup", "passed"),
+        ("call", "passed"),
+        ("teardown", "passed"),
+    ]
+
+
+@pytest.mark.parametrize("broken", ["stdout", "file", "both"])
+@pytest.mark.parametrize("outcome", ["return", "exception", "interrupt"])
+def test_diagnostic_channel_failures_preserve_original_outcome(tmp_path: Path, monkeypatch, capfd, broken: str, outcome: str) -> None:
+    timing = TimingRecorder(tmp_path)
+    original_add = ci_timing.logger.add
+    original = RuntimeError("original operation") if outcome == "exception" else KeyboardInterrupt("original interruption")
+    cleanup = []
+
+    def add(destination, **options):
+        if (destination is sys.stdout and broken in ("stdout", "both")) or (isinstance(destination, Path) and broken in ("file", "both")):
+            raise OSError("channel unavailable")
+        return original_add(destination, **options)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(ci_timing.logger, "add", add)
+        try:
+            if outcome == "return":
+                with timing.span("original-boundary"):
+                    result = "original return"
+                assert result == "original return"
+            else:
+                with pytest.raises(type(original)) as raised:
+                    with timing.span("original-boundary"):
+                        raise original
+                assert raised.value is original
+        finally:
+            cleanup.append("original cleanup")
+    assert cleanup == ["original cleanup"]
+    assert timing.last_error is not None and "channel unavailable" in timing.last_error
+    assert "CI timing diagnostic unavailable" in capfd.readouterr().err
+    if broken == "stdout":
+        assert "CI timing diagnostic unavailable" in next(tmp_path.glob("diagnostics-*.log")).read_text()
+
+
+@pytest.mark.parametrize("verify", [False, True])
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_stage_helper_preserves_sole_or_final_json_protocol(tmp_path: Path, monkeypatch, capsys, verify: bool, unavailable: bool) -> None:
+    import json
+    import runpy
+
+    import auto_coder.worker_versions as versions
+
+    @dataclasses.dataclass
+    class Receipt:
+        environment_path: str
+
+    receipt = Receipt(str(tmp_path / "environment"))
+    calls = []
+
+    class Preparer:
+        def __init__(self, config):
+            pass
+
+        def _install(self, checkout, environment):
+            calls.append("install")
+
+        def read_ready(self, path):
+            calls.append("read")
+            return receipt
+
+        def prepare(self, intent):
+            self._install(tmp_path, tmp_path / "environment")
+            calls.append("prepare")
+            return SimpleNamespace(receipt=receipt)
+
+    output = tmp_path / "timing"
+    if unavailable:
+        output.write_text("occupied")
+    monkeypatch.setenv("AUTO_CODER_CI_TIMING_DIR", str(output))
+    monkeypatch.setattr(ci_timing, "_RECORDER", None)
+    monkeypatch.setitem(sys.modules, "ci_timing", ci_timing)
+    monkeypatch.setattr(versions, "WorkerVersionPreparer", Preparer)
+    monkeypatch.setattr(sys, "argv", ["stage", "--verify", "READY.json"] if verify else ["stage", "a" * 40])
+    helper = runpy.run_path(str(Path(__file__).parent / "fixtures" / "supervisor_stage_ready.py"))
+    helper["main"]()
+    lines = capsys.readouterr().out.splitlines()
+    if verify:
+        assert len(lines) == 1
+        assert json.loads(lines[0]) == dataclasses.asdict(receipt)
+        assert calls == ["read"]
+        assert ci_timing._RECORDER is None
+    else:
+        assert json.loads(lines[-1]) == {"ready_path": str(tmp_path / "READY.json"), "receipt": dataclasses.asdict(receipt)}
+        assert calls == ["install", "prepare", "read"]
+        assert any("CI timing" in line for line in lines[:-1])
+
+
+@pytest.mark.parametrize("outcome", ["return", "exception", "interrupt"])
+@pytest.mark.parametrize("channel", ["stdout", "file"])
+def test_delivery_failure_preserves_other_channels_and_original_outcome(tmp_path: Path, monkeypatch, capfd, outcome: str, channel: str) -> None:
+    class BrokenStdout:
+        def write(self, message):
+            raise OSError("channel write failed")
+
+        def flush(self):
+            pass
+
+    timing = TimingRecorder(tmp_path)
+    original = RuntimeError("original operation") if outcome == "exception" else KeyboardInterrupt("original interruption")
+    cleanup = []
+    original_add = ci_timing.logger.add
+
+    def add(destination, **options):
+        if isinstance(destination, Path):
+            options.pop("rotation")
+            options.pop("encoding")
+            destination = BrokenStdout()
+        return original_add(destination, **options)
+
+    with monkeypatch.context() as scoped:
+        if channel == "stdout":
+            scoped.setattr(ci_timing.sys, "stdout", BrokenStdout())
+        else:
+            scoped.setattr(ci_timing.logger, "add", add)
+        try:
+            if outcome == "return":
+                with timing.span("write-failure-boundary"):
+                    result = "original return"
+                assert result == "original return"
+            else:
+                with pytest.raises(type(original)) as raised:
+                    with timing.span("write-failure-boundary"):
+                        raise original
+                assert raised.value is original
+        finally:
+            cleanup.append("original cleanup")
+    assert cleanup == ["original cleanup"]
+    assert timing.last_error is not None and "channel write failed" in timing.last_error
+    output = capfd.readouterr()
+    diagnostic = next(tmp_path.glob("diagnostics-*.log")).read_text() if channel == "stdout" else output.out
+    assert "write-failure-boundary" in diagnostic
+    assert "CI timing diagnostic unavailable" in diagnostic
+    assert "CI timing diagnostic unavailable" in output.err

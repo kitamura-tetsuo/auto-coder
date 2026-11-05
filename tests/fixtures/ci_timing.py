@@ -78,29 +78,46 @@ class TimingRecorder:
     def enabled(self) -> bool:
         return self.path is not None
 
-    def _report_error(self) -> None:
-        """Emit one protocol-safe warning without taking ownership of sinks."""
+    def _log_diagnostic(self, message: str, *, warning: bool = False) -> None:
+        """Own only synchronous, per-message sinks, surviving external cleanup."""
 
+        if self.directory is None:
+            return
+        token = str(uuid.uuid4())
+        failures: list[str] = []
+        destinations = [(sys.stdout, True), (self.directory / f"diagnostics-{self.context.invocation_id}-{self.context.process_id}.log", False)]
+        if warning:
+            destinations.append((sys.__stderr__, True))
+        for destination, console in destinations:
+            sink_id: int | None = None
+            try:
+                options = {} if console else {"rotation": "10 MB", "encoding": "utf-8"}
+                sink_id = logger.add(
+                    destination,
+                    format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level}</level> | {file}:{function}:{line} | {message}",
+                    filter=lambda record: record["extra"].get("ci_timing_message") == token,
+                    colorize=console,
+                    enqueue=False,
+                    catch=False,
+                    **options,
+                )
+                logger.bind(ci_timing_message=token).log("WARNING" if warning else "INFO", message)
+            except Exception as error:
+                failures.append(f"{type(error).__name__}: {error}")
+            finally:
+                if sink_id is not None:
+                    try:
+                        logger.remove(sink_id)
+                    except Exception as error:
+                        failures.append(f"{type(error).__name__}: {error}")
+        if failures and self.last_error is None:
+            self.last_error = f"diagnostic logging unavailable: {failures[0]}"
+
+    def _report_error(self) -> None:
         if self._error_reported or self.last_error is None:
             return
-        sink_id: int | None = None
-        try:
-            sink_id = logger.add(
-                sys.__stderr__,
-                format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | {file}:{function}:{line} | {message}",
-                filter=lambda record: bool(record["extra"].get("ci_timing_direct")),
-                catch=True,
-            )
-            logger.bind(ci_timing_direct=True).warning("CI timing diagnostic unavailable: {}", self.last_error)
-        except (OSError, ValueError):
-            pass
-        finally:
-            if sink_id is not None:
-                try:
-                    logger.remove(sink_id)
-                except ValueError:
-                    pass
-            self._error_reported = True
+        self._error_reported = True
+        self._log_diagnostic(f"CI timing diagnostic unavailable: {self.last_error}", warning=True)
 
     def emit(self, event_kind: str, **values: object) -> bool:
         if self.path is None:
@@ -116,6 +133,9 @@ class TimingRecorder:
             with self.path.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(event, sort_keys=True, default=str) + "\n")
                 stream.flush()
+            if event_kind not in {"span_start", "pytest_phase_start", "pytest_phase_boundary"}:
+                self._log_diagnostic(f"CI timing {event_kind}: {values.get('phase_label', values.get('pytest_phase', 'event'))}")
+            self._report_error()
             return True
         except (OSError, TypeError, ValueError) as error:
             self.last_error = f"{type(error).__name__}: {error}"

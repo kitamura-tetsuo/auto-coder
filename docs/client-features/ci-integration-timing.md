@@ -47,3 +47,13 @@ installer, startup/readiness, operation-wait and cleanup records. A successful
 different management case cannot supply missing wait attribution for this named
 case. Retain the executed checkout and installed fixture-source identities when
 reporting that evidence; a diagnostic span is not an acceptance receipt.
+
+Enabled recorders also deliver bounded human-readable diagnostics to colored
+stdout and a separate rotating `diagnostics-*.log` file. Each synchronous emission
+owns filtered temporary sinks and removes only those sinks. Pytest's sink cleanup
+between cases therefore cannot silently disable later timing logs, and unrelated
+application records are not copied into the diagnostic file. Channel failures
+remain best effort, retain the original outcome, and produce a bounded warning
+through surviving channels. Disabled recording remains silent. Helper verification
+returns before recorder creation, and preparation completes its diagnostic output
+before printing its final JSON result.
