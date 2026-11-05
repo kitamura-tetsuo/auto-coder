@@ -268,7 +268,7 @@ def wait_until(predicate, timeout: float = 5) -> None:  # type: ignore[no-untype
         time.sleep(0.01)
 
 
-def test_selected_local_origin_runs_through_runner_and_persists_exact_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+def test_selected_local_origin_runs_through_runner_and_persists_exact_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands, _use_real_sleep, sparse_thread_switches) -> None:
     """The production selection seam must connect admission to durable execution."""
     from auto_coder import pr_processor
 
