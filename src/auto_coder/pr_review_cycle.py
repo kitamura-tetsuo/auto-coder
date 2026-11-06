@@ -665,6 +665,22 @@ class PrReviewCycleRepository:
             if changed:
                 pr_state["completion"] = None
                 pr_state["accepted_closure_id"] = ""
+                retained_deadline = float(pr_state.get("retry_not_before", 0.0))
+                retained_reason = str(pr_state.get("attempt_error_reason", ""))
+                if isinstance(previous, dict) and (retained_deadline > 0.0 or retained_reason):
+                    history = pr_state.setdefault("wait_history", [])
+                    if isinstance(history, list):
+                        history.append(
+                            {
+                                "reason": retained_reason,
+                                "retry_not_before": retained_deadline,
+                                "superseded_at": time.time(),
+                                "superseded_by": "current-target-change",
+                                "superseding_observation": "ordinary PASS established a new H/B/M",
+                            }
+                        )
+                    pr_state["retry_not_before"] = 0.0
+                    pr_state["attempt_error_reason"] = ""
                 active = pr_state.get("active_claim")
                 if isinstance(active, dict) and (active.get("head_sha"), active.get("base_sha"), active.get("contract_identity")) != (provenance.head_sha, provenance.base_sha, contract.identity):
                     pr_state["active_claim"] = None

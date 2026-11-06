@@ -823,6 +823,14 @@ def test_stale_exhaustion_restores_selected_wait_without_history(
     assert restored.retry_not_before == 100.0
     assert restored.wait_history == ()
 
+    inputs.gate.ordinary_pass(25, "new-head", base, inputs.contract)
+    current = inputs.gate.state.snapshot(25)
+    assert current.retry_not_before == 0.0
+    assert current.attempt_error_reason == ""
+    assert len(current.wait_history) == 1
+    assert current.wait_history[0].reason == "surplus reserve denied"
+    assert current.wait_history[0].superseded_by == "current-target-change"
+
 
 def test_redacted_gate_diagnostic_exposes_superseded_wait_and_new_outcome(
     tmp_path: Path,
