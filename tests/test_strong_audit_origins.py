@@ -238,6 +238,35 @@ def test_automatic_pending_dispatch_rechecks_unchanged_usage_before_reset(scenar
     assert s.history()[0]["retry_not_before"] == first.retry_not_before
 
 
+def test_explicit_origin_restores_selected_wait_when_target_changes_during_usage(
+    scenario,
+    monkeypatch,
+):
+    s = scenario
+    s.explicit()
+    selected = s.snapshot()
+    assert selected.retry_not_before > s.clock
+    observations = len(s.observations)
+
+    def account(method, **kwargs):
+        result = s.account(method, **kwargs)
+        if len(s.observations) > observations:
+            s.pr["head"] = {**s.pr["head"], "sha": "new-head"}
+            s.pr["updated_at"] = "2027-01-15T08:01:00Z"
+        return result
+
+    monkeypatch.setattr("auto_coder.codex_usage_checker.read_account_data", account)
+    result = s.explicit(force=True)
+
+    assert result["target_outcome"] == "deferred", result
+    assert not s.reviews
+    restored = s.snapshot()
+    assert restored.active_claim is None
+    assert restored.attempt_error_reason == selected.attempt_error_reason
+    assert restored.retry_not_before == selected.retry_not_before
+    assert s.history() == []
+
+
 @pytest.mark.parametrize("origin", ["explicit", "automatic"])
 @pytest.mark.parametrize("refusal", ["zero", "unavailable"])
 def test_origin_refuses_fresh_zero_or_disabled_route(scenario, origin, refusal):

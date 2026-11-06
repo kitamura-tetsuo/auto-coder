@@ -821,6 +821,35 @@ class PrReviewCycleRepository:
                 self._bump(pr_state)
                 self._write(state)
 
+    def reject_stale_claim(self, pr_number: int, claim_id: str) -> None:
+        """Release a stale claim while restoring the wait it selected.
+
+        A target observation that became stale never consumed the selected wait,
+        so it must not replace that wait with an availability result observed for
+        the old target or leave a supersession record behind.
+        """
+        with self.serialized_transition(), self._locked():
+            state = self._read()
+            prs = state["prs"]
+            assert isinstance(prs, dict)
+            pr_state = prs.get(self._pr_key(pr_number))
+            if not isinstance(pr_state, dict):
+                return
+            active_claim = pr_state.get("active_claim")
+            if not isinstance(active_claim, dict) or active_claim.get("claim_id") != claim_id:
+                return
+            history = pr_state.get("wait_history", [])
+            if isinstance(history, list) and history and isinstance(history[-1], dict) and not history[-1].get("superseding_observation"):
+                selected_wait = history.pop()
+                pr_state["attempt_error_reason"] = str(selected_wait.get("reason", ""))
+                pr_state["retry_not_before"] = float(selected_wait.get("retry_not_before", 0.0))
+            else:
+                pr_state["attempt_error_reason"] = ""
+                pr_state["retry_not_before"] = 0.0
+            pr_state["active_claim"] = None
+            self._bump(pr_state)
+            self._write(state)
+
     def record_strong_result(
         self,
         pr_number: int,

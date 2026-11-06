@@ -753,6 +753,7 @@ def test_fresh_availability_cannot_invoke_after_external_target_changes(
         yield str(repository)
 
     changed = TwoTierGateInputs(inputs.gate, inputs.contract, inputs.policy, "new-head", base)
+    observations = iter(((inputs, "original-token"), (changed, "reopened-token")))
     with (
         patch("auto_coder.pr_processor.isolated_pr_head_worktree", worktree),
         patch(
@@ -765,7 +766,7 @@ def test_fresh_availability_cannot_invoke_after_external_target_changes(
             "owner/repo",
             23,
             inputs,
-            current_target=lambda: (changed, "reopened-token"),
+            current_target=lambda: next(observations),
             expected_lifecycle_token="original-token",
         )
 
@@ -774,7 +775,53 @@ def test_fresh_availability_cannot_invoke_after_external_target_changes(
     reviewer.assert_not_called()
     snapshot = inputs.gate.state.snapshot(23)
     assert snapshot.active_claim is None
-    assert snapshot.attempt_error_reason == reason
+    assert snapshot.attempt_error_reason == ""
+
+
+def test_stale_exhaustion_restores_selected_wait_without_history(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repository, base, head = _repository(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    inputs = _inputs(tmp_path, base, head)
+    inputs.gate.ordinary_pass(25, head, base, inputs.contract)
+    original = inputs.gate.state.claim_strong_audit(25, RoundProvenance(head, base), inputs.contract, inputs.policy)
+    inputs.gate.state.abandon_claim(25, original.claim_id, "surplus reserve denied", 100.0)
+    selected = inputs.gate.state.snapshot(25)
+    changed = TwoTierGateInputs(inputs.gate, inputs.contract, inputs.policy, "new-head", base)
+    observations = iter(((inputs, "original-token"), (changed, "reopened-token")))
+
+    @contextlib.contextmanager
+    def worktree(*args, **kwargs):
+        yield str(repository)
+
+    with (
+        patch("auto_coder.pr_review_cycle.time.time", return_value=101.0),
+        patch("auto_coder.pr_processor.isolated_pr_head_worktree", worktree),
+        patch(
+            "auto_coder.cli_helpers.resolve_adversarial_validation_availability",
+            return_value=AdversarialValidationAvailability(exhausted=True, retry_not_before_epoch=9999.0),
+        ),
+        patch("auto_coder.pr_processor.execute_review") as reviewer,
+    ):
+        accepted, reason = _execute_pending_strong_audit(
+            "owner/repo",
+            25,
+            inputs,
+            expected_version=selected.transition_version,
+            current_target=lambda: next(observations),
+            expected_lifecycle_token="original-token",
+        )
+
+    assert accepted is False
+    assert reason == "strong-audit target changed during fresh availability evaluation"
+    reviewer.assert_not_called()
+    restored = inputs.gate.state.snapshot(25)
+    assert restored.active_claim is None
+    assert restored.attempt_error_reason == "surplus reserve denied"
+    assert restored.retry_not_before == 100.0
+    assert restored.wait_history == ()
 
 
 def test_redacted_gate_diagnostic_exposes_superseded_wait_and_new_outcome(

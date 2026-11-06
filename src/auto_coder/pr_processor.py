@@ -384,6 +384,32 @@ def _execute_pending_strong_audit(
     expected_lifecycle_token: str = "",
 ) -> Tuple[bool, str]:
     """Claim, execute, and durably accept one production strong-audit round."""
+    expected_identity = (
+        inputs.head_sha,
+        inputs.base_sha,
+        inputs.contract.identity,
+        inputs.policy.identity,
+        expected_lifecycle_token,
+    )
+
+    def observe_current_target() -> bool:
+        if current_target is None:
+            return True
+        refreshed, lifecycle_token = current_target()
+        return (
+            refreshed.head_sha,
+            refreshed.base_sha,
+            refreshed.contract.identity,
+            refreshed.policy.identity,
+            lifecycle_token,
+        ) == expected_identity
+
+    try:
+        if not observe_current_target():
+            return False, "strong-audit target changed before admission"
+    except Exception as exc:
+        return False, f"strong-audit target could not be confirmed before admission: {exc}"
+
     provenance = RoundProvenance(inputs.head_sha, inputs.base_sha)
     try:
         claim = inputs.gate.state.claim_strong_audit(
@@ -408,6 +434,15 @@ def _execute_pending_strong_audit(
             from .cli_helpers import resolve_adversarial_validation_availability
 
             availability = resolve_adversarial_validation_availability("strong_pr", execution_cwd=worktree)
+            try:
+                target_is_current = observe_current_target()
+            except Exception:
+                inputs.gate.state.reject_stale_claim(pr_number, claim.claim_id)
+                raise
+            if not target_is_current:
+                reason = "strong-audit target changed during fresh availability evaluation"
+                inputs.gate.state.reject_stale_claim(pr_number, claim.claim_id)
+                return False, reason
             if availability.backend_manager is None:
                 reason = "strong reviewer route is EXHAUSTED" if availability.exhausted else "strong reviewer route is UNAVAILABLE"
                 inputs.gate.state.abandon_claim(
@@ -417,27 +452,6 @@ def _execute_pending_strong_audit(
                     retry_not_before=availability.retry_not_before_epoch or 0.0,
                 )
                 return False, reason
-
-            if current_target is not None:
-                refreshed, lifecycle_token = current_target()
-                expected_identity = (
-                    inputs.head_sha,
-                    inputs.base_sha,
-                    inputs.contract.identity,
-                    inputs.policy.identity,
-                    expected_lifecycle_token,
-                )
-                current_identity = (
-                    refreshed.head_sha,
-                    refreshed.base_sha,
-                    refreshed.contract.identity,
-                    refreshed.policy.identity,
-                    lifecycle_token,
-                )
-                if current_identity != expected_identity:
-                    reason = "strong-audit target changed during fresh availability evaluation"
-                    inputs.gate.state.abandon_claim(pr_number, claim.claim_id, reason)
-                    return False, reason
 
             _ensure_review_base_commit(worktree, inputs.base_sha)
             diff = CommandExecutor.run_command(
