@@ -1,5 +1,15 @@
 # Dashboard LLM review history
 
+Cloud unresolved-review receipt waits expose a fixed `reason` and the evaluated
+snapshot's `head_sha` in the existing repair-delegation detail facts. Reasons
+distinguish unclassified same-author discussion, already-delivered actionable
+feedback and unconfirmed delivery receipts. Unclassified discussion can be an
+acknowledgment; it is not inferred reviewer guidance or a provider-liveness
+signal. Existing public diagnostic projection preserves these two safe facts
+without exporting reply prose, author logins or private receipt content. See
+[Provider-aware unresolved review repair](provider-aware-unresolved-review-repair.md)
+for exact reason values and their limits. Outcomes and delivery gates are unchanged.
+
 An explicit retry of failed scoped local verification appears in the existing
 repair-delegation stage with `explicit_retry_requested`; the published report
 identifies its attempt number. Earlier failed reports remain history. A retry

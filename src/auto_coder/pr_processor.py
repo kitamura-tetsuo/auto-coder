@@ -175,7 +175,7 @@ from .review_capture.pr_adversarial_audit import (
     record_effect,
     record_reused,
 )
-from .review_feedback_marker import is_adjudication_feedback, reply_requests_review_correction
+from .review_feedback_marker import is_adjudication_feedback, reply_claims_review_addressed, reply_requests_review_correction
 from .review_thread_closure_receipt import ClosureReceipt, closure_receipt_lock, observe_closure_receipt, put_receipt
 from .review_thread_validation import (
     ClaimedReviewThread,
@@ -2312,8 +2312,9 @@ class CIRepairSubmission:
 class CloudReviewRepairResult(list[str]):
     """Actions plus fresh delivery confirmation or an explicit processing wait."""
 
-    def __init__(self, values: Sequence[str] = (), delivered: bool = False, deferred: bool = False, retry_not_before: Optional[float] = None, route_disposition: str = "CLOUD", local_phase: str = "", wait_reason: str = "") -> None:
+    def __init__(self, values: Sequence[str] = (), delivered: bool = False, deferred: bool = False, retry_not_before: Optional[float] = None, route_disposition: str = "CLOUD", local_phase: str = "", wait_reason: str = "", diagnostic_reason: str = "") -> None:
         super().__init__(values)
+        self.diagnostic_reason = diagnostic_reason
         self.wait_reason = wait_reason
         self.delivered = delivered
         self.deferred = deferred
@@ -6148,7 +6149,7 @@ def _coordinate_pr_review(
                         "pr.repair-delegation",
                         f"pr#{pr_number} repair delegation",
                         Outcome.ACCEPTED_HANDOFF if repair_result.delivered else (Outcome.DEFERRED if repair_result.deferred else Outcome.FAILED),
-                        {"effect": "review-thread-repair", "thread_count": len(repair_threads), "route_disposition": repair_result.route_disposition, "local_phase": repair_result.local_phase},
+                        {"effect": "review-thread-repair", "thread_count": len(repair_threads), "route_disposition": repair_result.route_disposition, "local_phase": repair_result.local_phase, "reason": repair_result.diagnostic_reason, "head_sha": str(pr_data.get("head", {}).get("sha") or "")},
                     )
                     if repair_result.local_phase in {"completed_no_change", "awaiting_validation"} and adv_enabled:
                         _verify_pending_local_correction(github_client, repo_name, pr_data, config, actions, processing_status, retry_failed=force_adversarial_validation)
@@ -10158,12 +10159,27 @@ def _delegate_cloud_review_thread_repair(
         pending = [(thread, comment, identity) for thread, comment, identity in findings if identity not in delivered]
     if not pending:
         logger.info(f"All actionable review feedback for PR #{pr_number} was already delegated")
-        return CloudReviewRepairResult([f"{provider_label} review repair was already requested for PR #{pr_number} for all current actionable feedback"], deferred=True)
+        # Observation only: ordinary implementer replies can be acknowledgments
+        # or guidance. Never infer their role, expose their prose, or override
+        # an existing confirmed/pending delivery identity for this diagnostic.
+        has_unclassified_reply = any(
+            index > 0
+            and implementer_login
+            and is_same_github_login(comment.author_login, implementer_login)
+            and not reply_claims_review_addressed(comment.body)
+            and not reply_requests_review_correction(comment.body)
+            and not is_adjudication_feedback(comment.body)
+            and _review_feedback_identity(prefix, thread, index) not in delivered | indeterminate
+            for thread in unresolved_threads
+            for index, comment in enumerate(thread.comments)
+        )
+        reason = "unclassified_same_author_reply" if has_unclassified_reply else "actionable_feedback_already_delivered"
+        return CloudReviewRepairResult([f"{provider_label} review repair was already requested for PR #{pr_number} for all current actionable feedback"], deferred=True, diagnostic_reason=reason)
 
     blocked = [(thread, comment, identity) for thread, comment, identity in pending if identity in indeterminate]
     pending = [(thread, comment, identity) for thread, comment, identity in pending if identity not in indeterminate]
     if not pending:
-        return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: a prior follow-up has unconfirmed durable receipt status; duplicate delivery was suppressed"], wait_reason=WAIT_INDETERMINATE)
+        return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: a prior follow-up has unconfirmed durable receipt status; duplicate delivery was suppressed"], wait_reason=WAIT_INDETERMINATE, diagnostic_reason="unconfirmed_delivery_receipt")
 
     pending_identities = {identity for _thread, _comment, identity in pending}
     work_identity = hashlib.sha256("\n".join(sorted(pending_identities)).encode()).hexdigest()

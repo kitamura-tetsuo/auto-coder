@@ -652,3 +652,84 @@ def test_shared_account_guidance_reaches_production_gate_once(tmp_path, root_aut
     merge.assert_not_called()
     client.resolve_review_thread.assert_not_called()
     client.reply_to_review_thread.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "reply_kind, receipt, expected_reason, expected_outcome, sends",
+    [
+        ("ordinary", "none", "unclassified_same_author_reply", "deferred", 0),
+        ("ordinary", "delivered", "actionable_feedback_already_delivered", "deferred", 0),
+        ("ordinary", "pending", "actionable_feedback_already_delivered", "deferred", 0),
+        ("addressed", "none", "actionable_feedback_already_delivered", "deferred", 0),
+        ("addressed_guidance", "none", "actionable_feedback_already_delivered", "deferred", 0),
+        ("third_party", "none", "", "accepted_handoff", 1),
+        ("third_party", "delivered", "actionable_feedback_already_delivered", "deferred", 0),
+        ("third_party", "pending", "unconfirmed_delivery_receipt", "failed", 0),
+        ("guidance", "delivered", "actionable_feedback_already_delivered", "deferred", 0),
+        ("guidance", "pending", "unconfirmed_delivery_receipt", "failed", 0),
+        ("adjudication", "none", "actionable_feedback_already_delivered", "deferred", 0),
+    ],
+)
+def test_review_delivery_reason_reaches_public_projection_without_changing_effects(tmp_path, monkeypatch, reply_kind, receipt, expected_reason, expected_outcome, sends):
+    """Real gate/delegate/trace/projection, controlled GitHub and provider I/O."""
+    from auto_coder.execution_trace import TraceCollector, get_trace_collector
+    from auto_coder.pr_processor import _record_review_feedback_state
+    from auto_coder.public_api import project_event
+    from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER, REVIEW_GUIDANCE_MARKER
+
+    private_prose = "Private discussion payload ghp_" + "a" * 30
+    body = private_prose
+    if reply_kind in {"addressed", "addressed_guidance"}:
+        body += "\n" + REVIEW_ADDRESSED_MARKER
+    if reply_kind in {"guidance", "addressed_guidance"}:
+        body += "\n" + REVIEW_GUIDANCE_MARKER
+    if reply_kind == "adjudication":
+        body = '<!-- auto-coder-review-adjudication:v1 -->\n```json\n{"private": "' + private_prose + '"}\n```\n' + REVIEW_GUIDANCE_MARKER
+    thread = _thread(body)
+    thread.comments[1].author_login = "another-reviewer" if reply_kind == "third_party" else "MAINTAINER"
+    prefix = "owner/repo#5262:codex-cloud:task_e_review5262:"
+    root_identity = _review_feedback_identity(prefix, thread, 0)
+    reply_identity = _review_feedback_identity(prefix, thread, 1)
+    state_path = tmp_path / "repairs.json"
+    delivered = {root_identity, reply_identity} if receipt == "delivered" else {root_identity}
+    pending = {reply_identity} if receipt == "pending" else set()
+    _record_review_feedback_state(state_path, delivered, pending)
+    before = state_path.read_bytes()
+    client = _github_client()
+    client.get_authenticated_user_login.return_value = "controller"
+    config = AutomationConfig()
+    config.AUTO_MERGE = True
+    state = ClaimedReviewThreadGateState(unresolved=(thread,), blocking_unresolved=(thread,), has_blocking_unresolved=True)
+    monkeypatch.setattr(TraceCollector, "_instance", None)
+    collector = get_trace_collector()
+    status = ProcessedPRResult(pr_data=_pr_data())
+    with (
+        patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
+        patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+        patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+        patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
+        patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=state),
+        patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=True) as send,
+        patch("auto_coder.pr_processor._merge_pr") as merge,
+        collector.start_execution("owner/repo", "pr", 5262, origin="worker"),
+    ):
+        _take_pr_actions(client, "owner/repo", _pr_data(), config, status)
+    event = next(event for event in collector.get_snapshot().events if event.stage_id == "pr.repair-delegation")
+    assert event.facts["reason"] == expected_reason
+    assert event.facts["head_sha"] == "head-1"
+    assert event.outcome == expected_outcome
+    public = project_event(event, "owner/repo")
+    assert public is not None
+    assert public.facts == {"reason": expected_reason, "head_sha": "head-1"}
+    assert (public.item_type, public.item_number, public.outcome) == ("pr", 5262, expected_outcome)
+    assert private_prose not in json.dumps(public.facts)
+    assert send.call_count == sends
+    if sends == 0:
+        assert state_path.read_bytes() == before
+        client.add_comment_to_pr.assert_not_called()
+    else:
+        assert private_prose in send.call_args.args[1]
+    assert status.outcome is (PRProcessingOutcome.FAILED if expected_outcome == "failed" else PRProcessingOutcome.DEFERRED)
+    merge.assert_not_called()
+    client.resolve_review_thread.assert_not_called()
+    client.reply_to_review_thread.assert_not_called()

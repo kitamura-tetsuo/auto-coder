@@ -61,3 +61,23 @@ Ordinary independent adjudication and closure gates still apply.
 A poll finding only prior delivery receipts is deferred while the unresolved
 thread remains blocked. It does not claim a fresh accepted handoff. Receipts
 prove prior delegation, not current implementation progress or completed repair.
+
+The existing `pr.repair-delegation` trace includes `head_sha` from the evaluated
+PR snapshot and a fixed `reason` for receipt-only waits:
+`unclassified_same_author_reply` means an excluded non-root same-author reply
+has neither a recognized guidance declaration nor an addressed claim or
+adjudication envelope, and its native identity has no confirmed or pending
+delivery record. This is an observation of ambiguous discussion, not a claim
+that the reply is actionable or caused a stall; ordinary acknowledgments can
+produce it too. `actionable_feedback_already_delivered` means all selected
+feedback has confirmed receipts and no such unrecorded reply was observed.
+`unconfirmed_delivery_receipt` identifies the existing duplicate-suppression
+failure when selected feedback has only pending receipts. The diagnostic does
+not classify authors, annotate comments, resend work, or change wait outcomes.
+
+These fixed reasons and the evaluated head pass through the existing public
+diagnostic fact allowlist and dashboard detail renderer. No comment prose,
+author login, task identity, receipt content or new API is added. The snapshot
+head is not a new authoritative head lookup, and no reason establishes provider
+liveness, completed repair, safe replay, or permission to merge. Private retained
+review/publication evidence remains the separate scope of #2753.
