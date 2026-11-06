@@ -5135,7 +5135,7 @@ def _get_legacy_adversarial_validation_comment(
     """
     marker = adversarial_validation_comment_marker(head_sha)
     try:
-        comments = github_client.get_pr_comments(repo_name, pr_number)
+        comments = github_client.get_pr_comments_strict(repo_name, pr_number)
     except Exception as e:
         logger.error(f"Failed to read legacy adversarial validation comments for PR #{pr_number}: {e}")
         return None, str(e)
@@ -5227,8 +5227,9 @@ def _get_published_adversarial_validation_status(
 
 # The two verdicts that carry material specification violations requiring
 # corrective changes (event=REQUEST_CHANGES in github_app_reviewer.publish).
-# ERROR/BLOCKED/INCONCLUSIVE are validator-side non-results that must be
-# retried rather than waited on (REQ-003), so they are deliberately excluded.
+# ERROR/BLOCKED/INCONCLUSIVE are validator-side non-results, not actionable
+# corrective verdicts. Saved same-head results still require a supported
+# revalidation trigger; exclusion here never makes them self-retrying.
 ADVERSARIAL_REVIEW_BLOCKING_STATUSES = frozenset({"NEEDS_FIX", "NEEDS_TESTS"})
 
 
@@ -6044,7 +6045,15 @@ def _coordinate_pr_review(
                 gate_eligibility = _get_adversarial_validation_eligibility(github_client, repo_name, pr_data)
                 if head_sha_for_gate and gate_eligibility.is_applicable and not gate_eligibility.lookup_error:
                     current_status, current_status_error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, head_sha_for_gate)
-                    if not current_status_error:
+                    if current_status_error:
+                        actions.append(f"Could not check prior adversarial validation for PR #{pr_number}: {current_status_error}; review-thread processing not started")
+                        actions.record_disposition(ReviewDisposition.OPERATIONAL_FAILURE)
+                        if processing_status is not None:
+                            processing_status.error = current_status_error
+                            processing_status.outcome = PRProcessingOutcome.FAILED
+                        _record_pr_stage(pr_number, "pr.review-thread-gate", f"pr#{pr_number} review-thread gate", Outcome.FAILED, {"examined_head": head_sha_for_gate, "phase": "saved-result-lookup", "reason": current_status_error})
+                        return actions
+                    else:
                         _gate_resumption, gate_resume_stop = _resume_closure_before_admission(github_client, repo_name, pr_data, head_sha_for_gate, force_adversarial_validation, actions, processing_status, config)
                         if gate_resume_stop:
                             return actions
@@ -6252,7 +6261,10 @@ def _coordinate_pr_review(
                     processing_status.error = exhaustion_retry_error
                     processing_status.outcome = PRProcessingOutcome.FAILED
                 return actions
-            if adv_review_count >= max_adv_reviews and not provenance_fingerprint and not force_adversarial_validation and not revalidating_older_head_threads and not saved_review_revalidation and not exhaustion_retry_due:
+            # An applicable saved ERROR must reach the normal same-head
+            # trigger/reuse decision below. A review-count limit cannot turn
+            # that non-result into merge clearance (#2770/REQ-001).
+            if adv_review_count >= max_adv_reviews and saved_status != "ERROR" and not provenance_fingerprint and not force_adversarial_validation and not revalidating_older_head_threads and not saved_review_revalidation and not exhaustion_retry_due:
                 exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
                 if exhaustion_info and exhaustion_info.is_exhausted:
                     actions.append(f"Automatic merge disabled for PR #{pr_number}: repair allowance exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}")
@@ -6289,6 +6301,8 @@ def _coordinate_pr_review(
                     actions.append(f"Retrying adversarial validation for PR #{pr_number} beyond the review limit: prior backend quota/usage exhaustion is due for automatic retry")
                 elif adv_review_count >= max_adv_reviews and saved_review_revalidation:
                     actions.append(f"Revalidating PR #{pr_number} beyond the review limit because the saved review requires independent closure")
+                elif adv_review_count >= max_adv_reviews and saved_status == "ERROR" and not provenance_fingerprint:
+                    actions.append(f"Checking the saved ERROR for PR #{pr_number} despite the review limit; the limit does not authorize merge")
                 elif adv_review_count >= max_adv_reviews:
                     actions.append(f"Revalidating PR #{pr_number} beyond the review limit because new change-provenance evidence was supplied")
                 should_run_validation = True
@@ -6473,11 +6487,19 @@ def _coordinate_pr_review(
             if reuse_published_review:
                 assert published_status is not None
                 if published_status == "ERROR":
-                    saved_validation_error = f"Adversarial validation previously failed for PR #{pr_number} at SHA {head_sha[:8]}"
-                    actions.adversarial_validation_error = saved_validation_error
+                    # Reusing a durable error completes this evaluation, not a
+                    # new failed execution. Keep the verdict merge-blocking
+                    # without creating an operational failure retry obligation.
+                    actions.append(f"Saved adversarial-validation ERROR for PR #{pr_number} at SHA {head_sha[:8]} awaits a supported revalidation trigger")
+                    _record_pr_stage(
+                        pr_number,
+                        "pr.adversarial-validation",
+                        f"pr#{pr_number} adversarial validation",
+                        Outcome.DEFERRED,
+                        {"effect": "saved-validation-wait", "examined_head": head_sha, "saved_verdict": published_status, "reason": "saved_error_requires_revalidation_trigger"},
+                    )
                     if processing_status is not None:
-                        processing_status.error = saved_validation_error
-                        processing_status.outcome = PRProcessingOutcome.FAILED
+                        processing_status.outcome = PRProcessingOutcome.DEFERRED
                 if published_status != "PASS":
                     actions.append(f"Adversarial validation remains non-pass for PR #{pr_number}: {published_status}")
                     if published_status in {"NEEDS_FIX", "NEEDS_TESTS"}:

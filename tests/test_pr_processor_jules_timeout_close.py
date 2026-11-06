@@ -892,6 +892,7 @@ class TestGetCandidatesResumesOnRecoveredCI:
         github_client.get_pr_review_threads_strict.return_value = []
         github_client.get_pr_reviews_strict.return_value = []
         github_client.get_pr_comments.return_value = []
+        github_client.get_pr_comments_strict.return_value = []
         config = AutomationConfig()
         pr_data = _jules_pr_data(hours_old=1)
         pr_data["draft"] = False
