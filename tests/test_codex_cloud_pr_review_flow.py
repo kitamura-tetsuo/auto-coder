@@ -660,6 +660,8 @@ def test_shared_account_guidance_reaches_production_gate_once(tmp_path, root_aut
         ("ordinary", "none", "unclassified_same_author_reply", "deferred", 0),
         ("ordinary", "delivered", "actionable_feedback_already_delivered", "deferred", 0),
         ("ordinary", "pending", "actionable_feedback_already_delivered", "deferred", 0),
+        ("ordinary", "remote_trusted", "actionable_feedback_already_delivered", "deferred", 0),
+        ("ordinary", "remote_untrusted", "unclassified_same_author_reply", "deferred", 0),
         ("addressed", "none", "actionable_feedback_already_delivered", "deferred", 0),
         ("addressed_guidance", "none", "actionable_feedback_already_delivered", "deferred", 0),
         ("third_party", "none", "", "accepted_handoff", 1),
@@ -673,7 +675,7 @@ def test_shared_account_guidance_reaches_production_gate_once(tmp_path, root_aut
 def test_review_delivery_reason_reaches_public_projection_without_changing_effects(tmp_path, monkeypatch, reply_kind, receipt, expected_reason, expected_outcome, sends):
     """Real gate/delegate/trace/projection, controlled GitHub and provider I/O."""
     from auto_coder.execution_trace import TraceCollector, get_trace_collector
-    from auto_coder.pr_processor import _record_review_feedback_state
+    from auto_coder.pr_processor import _reconcile_codex_review_feedback, _record_review_feedback_state
     from auto_coder.public_api import project_event
     from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER, REVIEW_GUIDANCE_MARKER
 
@@ -693,10 +695,22 @@ def test_review_delivery_reason_reaches_public_projection_without_changing_effec
     state_path = tmp_path / "repairs.json"
     delivered = {root_identity, reply_identity} if receipt == "delivered" else {root_identity}
     pending = {reply_identity} if receipt == "pending" else set()
-    _record_review_feedback_state(state_path, delivered, pending)
-    before = state_path.read_bytes()
+    remote_only = receipt in {"remote_trusted", "remote_untrusted"}
+    if not remote_only:
+        _record_review_feedback_state(state_path, delivered, pending)
+    before = state_path.read_bytes() if state_path.exists() else None
     client = _github_client()
     client.get_authenticated_user_login.return_value = "controller"
+    if remote_only:
+        # Same native ID after a delivered guidance comment loses its marker;
+        # replacement workers can recover receipts without a local state file.
+        thread.comments[1].body += "\n" + REVIEW_GUIDANCE_MARKER
+        assert _review_feedback_identity(prefix, thread, 1) == reply_identity
+        thread.comments[1].body = body
+        client.get_pr_comments.return_value = [
+            {"user": {"login": "controller"}, "body": _cloud_review_feedback_markers([root_identity])},
+            {"user": {"login": "CoNtRoLlEr" if receipt == "remote_trusted" else "untrusted"}, "body": _cloud_review_feedback_markers([reply_identity])},
+        ]
     config = AutomationConfig()
     config.AUTO_MERGE = True
     state = ClaimedReviewThreadGateState(unresolved=(thread,), blocking_unresolved=(thread,), has_blocking_unresolved=True)
@@ -710,6 +724,7 @@ def test_review_delivery_reason_reaches_public_projection_without_changing_effec
         patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
         patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=state),
         patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=True) as send,
+        patch("auto_coder.pr_processor._reconcile_codex_review_feedback", wraps=_reconcile_codex_review_feedback) as reconcile,
         patch("auto_coder.pr_processor._merge_pr") as merge,
         collector.start_execution("owner/repo", "pr", 5262, origin="worker"),
     ):
@@ -725,10 +740,13 @@ def test_review_delivery_reason_reaches_public_projection_without_changing_effec
     assert private_prose not in json.dumps(public.facts)
     assert send.call_count == sends
     if sends == 0:
-        assert state_path.read_bytes() == before
+        assert (state_path.read_bytes() if state_path.exists() else None) == before
         client.add_comment_to_pr.assert_not_called()
     else:
         assert private_prose in send.call_args.args[1]
+    if remote_only:
+        assert not state_path.exists()
+        assert reconcile.call_args.args[3] == []
     assert status.outcome is (PRProcessingOutcome.FAILED if expected_outcome == "failed" else PRProcessingOutcome.DEFERRED)
     merge.assert_not_called()
     client.resolve_review_thread.assert_not_called()

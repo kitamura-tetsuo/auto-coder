@@ -10,6 +10,11 @@ without exporting reply prose, author logins or private receipt content. See
 [Provider-aware unresolved review repair](provider-aware-unresolved-review-repair.md)
 for exact reason values and their limits. Outcomes and delivery gates are unchanged.
 
+The classification includes authenticated PR-side receipt evidence for excluded
+native reply IDs after loss of local state or removal of a guidance marker.
+Untrusted receipt authors do not establish delivery. This observation neither
+adds actionable feedback nor reconstructs persisted delivery state.
+
 An explicit retry of failed scoped local verification appears in the existing
 repair-delegation stage with `explicit_retry_requested`; the published report
 identifies its attempt number. Earlier failed reports remain history. A retry

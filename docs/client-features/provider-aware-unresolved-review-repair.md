@@ -75,6 +75,16 @@ feedback has confirmed receipts and no such unrecorded reply was observed.
 failure when selected feedback has only pending receipts. The diagnostic does
 not classify authors, annotate comments, resend work, or change wait outcomes.
 
+Confirmed native identities include authenticated PR-side receipts for excluded
+diagnostic candidates, even when a replacement worker has no local receipt file
+and an earlier guidance reply has lost its marker. Those receipts are read-only
+diagnostic evidence, separate from selected actionable identities: they do not
+enter provider reconciliation or newly persisted receipt state. A receipt from
+another account cannot establish confirmation. The production gate/public
+projection regressions exercise trusted and untrusted receipt authors with an
+absent local file, unchanged deferred outcomes, no file creation and no sends
+or GitHub mutations.
+
 These fixed reasons and the evaluated head pass through the existing public
 diagnostic fact allowlist and dashboard detail renderer. No comment prose,
 author login, task identity, receipt content or new API is added. The snapshot

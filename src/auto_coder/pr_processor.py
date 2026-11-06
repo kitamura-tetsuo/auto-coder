@@ -10143,10 +10143,20 @@ def _delegate_cloud_review_thread_repair(
         # authorized or not.
         if (index == 0 or not implementer_login or not is_same_github_login(comment.author_login, implementer_login) or reply_requests_review_correction(comment.body)) and not is_adjudication_feedback(comment.body)
     ]
+    diagnostic_candidates = {
+        _review_feedback_identity(prefix, thread, index)
+        for thread in unresolved_threads
+        for index, comment in enumerate(thread.comments)
+        if index > 0 and implementer_login and is_same_github_login(comment.author_login, implementer_login) and not reply_claims_review_addressed(comment.body) and not reply_requests_review_correction(comment.body) and not is_adjudication_feedback(comment.body)
+    }
+    selected_identities = {identity for _thread, _comment, identity in findings}
     with _cloud_review_delivery_lock:
         try:
             delivered = _load_delivered_review_feedback(state_path)
-            delivered.update(_load_pr_delivered_review_feedback(github_client, repo_name, pr_number, [identity for _thread, _comment, identity in findings]))
+            remote_delivered = _load_pr_delivered_review_feedback(github_client, repo_name, pr_number, sorted(selected_identities | diagnostic_candidates))
+            # Excluded receipts are diagnostic evidence only: never reconcile
+            # or persist these identities through the actionable delivery state.
+            delivered.update(remote_delivered & selected_identities)
             reconciled = _reconcile_codex_review_feedback(client, provider, task_id, [identity for _thread, _comment, identity in findings if identity not in delivered])
             if reconciled:
                 delivered.update(reconciled)
@@ -10162,17 +10172,7 @@ def _delegate_cloud_review_thread_repair(
         # Observation only: ordinary implementer replies can be acknowledgments
         # or guidance. Never infer their role, expose their prose, or override
         # an existing confirmed/pending delivery identity for this diagnostic.
-        has_unclassified_reply = any(
-            index > 0
-            and implementer_login
-            and is_same_github_login(comment.author_login, implementer_login)
-            and not reply_claims_review_addressed(comment.body)
-            and not reply_requests_review_correction(comment.body)
-            and not is_adjudication_feedback(comment.body)
-            and _review_feedback_identity(prefix, thread, index) not in delivered | indeterminate
-            for thread in unresolved_threads
-            for index, comment in enumerate(thread.comments)
-        )
+        has_unclassified_reply = bool(diagnostic_candidates - delivered - indeterminate - remote_delivered)
         reason = "unclassified_same_author_reply" if has_unclassified_reply else "actionable_feedback_already_delivered"
         return CloudReviewRepairResult([f"{provider_label} review repair was already requested for PR #{pr_number} for all current actionable feedback"], deferred=True, diagnostic_reason=reason)
 
