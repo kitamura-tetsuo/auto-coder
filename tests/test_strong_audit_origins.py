@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from auto_coder.adversarial_validator import AdversarialValidationResult
+from auto_coder.adversarial_validator import AdversarialValidationResult, format_adversarial_validation_comment
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.durable_repair_allowance import RepairAllowanceLedger
@@ -45,6 +45,7 @@ class OriginScenario:
         self.used = 80.0
         self.observations = []
         self.reviews = []
+        self.native_reviews = []
         self.timeline = []
         self.repository, self.base, self.head = _repository(root)
         _git(self.repository, "remote", "add", "origin", str(self.repository))
@@ -94,8 +95,9 @@ class OriginScenario:
             monkeypatch.setattr(self.github, method, lambda *a, **kw: dict(self.issue))
         monkeypatch.setattr(self.github, "get_issue_details", lambda issue: issue)
         monkeypatch.setattr(self.github, "get_pr_diff", lambda *a, **kw: "diff --git a/contract.txt b/contract.txt\n-base\n+head\n")
-        for method in ("get_pr_review_threads_strict", "get_pr_reviews_strict", "get_issue_comments_strict", "get_pr_comments_strict", "get_pr_comments"):
+        for method in ("get_pr_review_threads_strict", "get_issue_comments_strict", "get_pr_comments_strict", "get_pr_comments"):
             monkeypatch.setattr(self.github, method, lambda *a, **kw: [])
+        monkeypatch.setattr(self.github, "get_pr_reviews_strict", lambda *a, **kw: list(self.native_reviews))
         monkeypatch.setattr(self.github, "try_add_labels", lambda *a, **kw: True)
         monkeypatch.setattr(self.github, "remove_labels", lambda *a, **kw: None)
         monkeypatch.setattr(self.github, "get_pull_request_head_sha_strict", lambda *a, **kw: self.head)
@@ -145,6 +147,13 @@ enabled = {str(enabled).lower()}
 
     def publish_ordinary(self, *args, **kwargs):
         self.pr["updated_at"] = datetime.fromtimestamp(self.clock, timezone.utc).isoformat()
+        self.native_reviews.append(
+            {
+                "id": len(self.native_reviews) + 1,
+                "body": format_adversarial_validation_comment(args[3], args[2]),
+                "user": {"login": "auto-coder-reviewer[bot]"},
+            }
+        )
         return ReviewPublicationResult(True, "APPROVE", "")
 
     def engine(self):
@@ -294,6 +303,58 @@ def test_due_dispatch_retains_wake_when_opening_lookup_fails(scenario, monkeypat
     publication_wake = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100))
     assert publication_wake is not None
     assert publication_wake.retry_not_before == s.clock + 60
+
+
+def test_predeadline_opening_failure_preserves_selected_wake(scenario, monkeypatch):
+    """A first daemon wake cannot postpone an earlier cycle deadline."""
+    s = scenario
+    s.explicit()
+    selected = s.snapshot()
+    assert selected.retry_not_before > s.clock
+    engine = s.engine()
+    s.clock = selected.retry_not_before - 10
+
+    def unavailable_timeline(*args, **kwargs):
+        raise RuntimeError("controlled timeline outage")
+
+    monkeypatch.setattr(s.github, "get_issue_timeline_strict", unavailable_timeline)
+    s.dispatch(engine, invalidate=True)
+
+    successor = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100))
+    assert successor is not None
+    assert successor.retry_not_before == selected.retry_not_before
+    assert s.snapshot().retry_not_before == selected.retry_not_before
+    assert not s.reviews
+
+
+def test_cached_pass_from_prior_opening_requires_current_ordinary_pass(scenario):
+    """An authentic saved O1 review cannot authorize O2 strong admission."""
+    s = scenario
+    first = s.explicit()
+    assert not first["errors"], first
+    selected = s.snapshot()
+    assert selected.ordinary_pass_opening_token == "created:2026-11-01T00:00:00Z"
+    assert s.native_reviews
+    s.configure("burst")
+    s.clock = selected.retry_not_before + 0.000001
+    s.timeline.append(
+        {
+            "event": "reopened",
+            "id": 8765,
+            "created_at": "2027-01-15T08:00:00Z",
+        }
+    )
+
+    result = s.explicit()
+
+    # Cached O1 authority is rejected; a genuine ordinary invocation in O2 is
+    # required before fresh eligible quota may admit the strong reviewer.
+    assert not result["errors"], result
+    assert len(s.native_reviews) == 2
+    assert len(s.reviews) == 1
+    current = s.snapshot()
+    assert current.ordinary_pass_opening_token == "reopened:8765"
+    assert current.accepted_strong_round is not None
 
 
 def test_explicit_origin_restores_selected_wait_when_target_changes_during_usage(

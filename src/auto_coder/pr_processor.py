@@ -6465,6 +6465,18 @@ def _coordinate_pr_review(
                 _record_review_wait(repo_name, pr_number, head_sha, actions, processing_status, reuse_assessment.reason)
                 return actions
             saved_review_revalidation = saved_review_revalidation or reuse_assessment.action == SAVED_REVIEW_REVALIDATE
+            if published_status == "PASS" and not saved_review_revalidation:
+                # A same-head native review is not enough to prove ordinary
+                # convergence after a close/reopen.  The durable ordinary PASS
+                # records the opening in which that published result was
+                # produced; never relabel it with the opening of this later
+                # evaluation.  Missing provenance is likewise non-authorizing.
+                cached_inputs = _two_tier_gate_inputs(github_client, repo_name, pr_data)
+                if cached_inputs is not None:
+                    cached_opening = cached_inputs.gate.state.snapshot(pr_number).ordinary_pass_opening_token
+                    if not cached_opening or not ordinary_opening_token or cached_opening != ordinary_opening_token:
+                        saved_review_revalidation = True
+                        actions.append(f"Revalidating PR #{pr_number} at unchanged commit {head_sha[:8]}: " "the saved ordinary PASS is not bound to the current PR opening")
             if published_status in ADVERSARIAL_REVIEW_BLOCKING_STATUSES and not saved_review_revalidation and reuse_assessment.projection is not None and outstanding_records(reuse_assessment.projection):
                 completion_marker = _corrective_completion_marker(repo_name, pr_data, head_sha, github_client)
                 if completion_marker and _closure_review_due(repo_name, pr_number, head_sha, reuse_assessment.projection, completion_marker):
@@ -7215,7 +7227,13 @@ def _coordinate_pr_review(
                         # never reconsidered.  Use the existing non-quota retry
                         # bound without changing or consuming the selected wait.
                         actions.quota_deferred = True
-                        actions.retry_not_before = time.time() + 60.0
+                        now = time.time()
+                        retained_deadline = preliminary_snapshot.retry_not_before
+                        # An applicable selected wait already has authoritative
+                        # scheduling evidence.  A transient opening lookup must
+                        # not postpone that earlier wake; use the 60-second
+                        # non-quota fallback only after it is due or absent.
+                        actions.retry_not_before = retained_deadline if retained_deadline > now else now + 60.0
                         if processing_status is not None:
                             processing_status.outcome = PRProcessingOutcome.DEFERRED
                             processing_status.retry_not_before = actions.retry_not_before
