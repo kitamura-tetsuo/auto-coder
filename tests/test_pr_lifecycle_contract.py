@@ -814,7 +814,13 @@ def test_green_ci_retains_durable_strong_review_gate(tmp_path, monkeypatch, stro
     contract = ContractSnapshot(("#2501",), "Issue #2501 REQ-003: Retain independent review gates.")
     policy = StrongPolicyIdentity("strong-review", "model=controlled", "v1")
     inputs = TwoTierGateInputs(gate, contract, policy, H1, "base-1")
-    gate.ordinary_pass(PR_NUMBER, H1, "base-1", contract)
+    gate.ordinary_pass(
+        PR_NUMBER,
+        H1,
+        "base-1",
+        contract,
+        opening_token="created:2026-11-01T00:00:00Z",
+    )
 
     if strong_state == "accepted-finding":
         claim = cycle.claim_strong_audit(PR_NUMBER, RoundProvenance(H1, "base-1"), contract, policy)
