@@ -618,6 +618,7 @@ def test_due_production_recheck_preserves_prior_wait_across_restart(
             "retry_not_before": 100.0,
             "superseded_at": 101.0,
             "superseded_by": "automatic-due-recheck",
+            "superseding_observation": "accepted PASS" if eligible else "strong reviewer route is EXHAUSTED",
         }
     ]
     recovered = _inputs(tmp_path, base, head).gate.state.snapshot(20)
@@ -734,3 +735,70 @@ def test_loaded_burst_force_recovers_recorded_surplus_wait_through_real_resolver
     assert history[0]["reason"] == "strong reviewer route is EXHAUSTED"
     assert history[0]["retry_not_before"] == retained.retry_not_before
     assert history[0]["superseded_by"] == "explicit-operator-recheck"
+    assert history[0]["superseding_observation"] == "accepted PASS"
+
+
+def test_fresh_availability_cannot_invoke_after_external_target_changes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repository, base, head = _repository(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    inputs = _inputs(tmp_path, base, head)
+    inputs.gate.ordinary_pass(23, head, base, inputs.contract)
+    manager = MagicMock()
+
+    @contextlib.contextmanager
+    def worktree(*args, **kwargs):
+        yield str(repository)
+
+    changed = TwoTierGateInputs(inputs.gate, inputs.contract, inputs.policy, "new-head", base)
+    with (
+        patch("auto_coder.pr_processor.isolated_pr_head_worktree", worktree),
+        patch(
+            "auto_coder.cli_helpers.resolve_adversarial_validation_availability",
+            return_value=AdversarialValidationAvailability(backend_manager=manager),
+        ),
+        patch("auto_coder.pr_processor.execute_review") as reviewer,
+    ):
+        accepted, reason = _execute_pending_strong_audit(
+            "owner/repo",
+            23,
+            inputs,
+            current_target=lambda: (changed, "reopened-token"),
+            expected_lifecycle_token="original-token",
+        )
+
+    assert accepted is False
+    assert reason == "strong-audit target changed during fresh availability evaluation"
+    reviewer.assert_not_called()
+    snapshot = inputs.gate.state.snapshot(23)
+    assert snapshot.active_claim is None
+    assert snapshot.attempt_error_reason == reason
+
+
+def test_redacted_gate_diagnostic_exposes_superseded_wait_and_new_outcome(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    inputs = _inputs(tmp_path, "base", "head")
+    inputs.gate.ordinary_pass(24, "head", "base", inputs.contract)
+    first = inputs.gate.state.claim_strong_audit(24, RoundProvenance("head", "base"), inputs.contract, inputs.policy)
+    inputs.gate.state.abandon_claim(24, first.claim_id, "surplus reserve denied", 100.0)
+
+    with patch("auto_coder.pr_review_cycle.time.time", return_value=101.0):
+        second = inputs.gate.state.claim_strong_audit(
+            24,
+            RoundProvenance("head", "base"),
+            inputs.contract,
+            inputs.policy,
+        )
+    inputs.gate.state.abandon_claim(24, second.claim_id, "strong route unavailable", 160.0)
+
+    diagnostic = inputs.gate.diagnostic(24, current_head_sha="head", backend="strong")
+    assert diagnostic.latest_outcome == "strong route unavailable"
+    assert len(diagnostic.superseded_waits) == 1
+    wait = diagnostic.superseded_waits[0]
+    assert (wait.reason, wait.retry_not_before) == ("surplus reserve denied", 100.0)
+    assert wait.superseding_observation == "strong route unavailable"

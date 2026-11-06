@@ -18,6 +18,7 @@ from .pr_review_cycle import (
     PrReviewCycleRepository,
     RoundProvenance,
     StrongPolicyIdentity,
+    SupersededWait,
 )
 
 
@@ -30,6 +31,8 @@ class TwoTierGateDiagnostic:
     waiting_reason: str
     outstanding_finding_ids: Tuple[str, ...]
     completion_basis: str
+    superseded_waits: Tuple[SupersededWait, ...]
+    latest_outcome: str
 
 
 class TwoTierPrGate:
@@ -124,4 +127,6 @@ class TwoTierPrGate:
             waiting_reason=snapshot.waiting_reason,
             outstanding_finding_ids=tuple(item.finding_id for item in snapshot.open_findings),
             completion_basis=completion.basis if completion else "",
+            superseded_waits=snapshot.wait_history,
+            latest_outcome=snapshot.attempt_error_reason or (strong_round.verdict if strong_round else ""),
         )

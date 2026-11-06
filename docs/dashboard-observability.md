@@ -609,9 +609,11 @@ the production strong-audit origin. The quota-strategy correction changes only
 whether the existing `pr.strong-audit` stage proceeds or records its existing
 EXHAUSTED deferral; it adds no trace field, stage, schema, or dashboard renderer.
 Surplus-reserve rechecks likewise reuse the durable deadline, waiting reason,
-and existing `pr.strong-audit` DEFERRED projection. Explicit forced rechecks
-retain the superseded wait in cycle history while automatic rechecks only move
-the existing deadline, so no event or dashboard schema changes are required.
+and existing `pr.strong-audit` DEFERRED projection. Explicit forced and due
+automatic rechecks retain the superseded wait in cycle history. Existing stage
+facts expose a redacted `superseded_waits` projection (prior reason, deadline,
+recheck origin, and fresh observation) and `latest_outcome`; raw provider
+payloads and credential-bearing state remain private.
 
 Codex execution-safety errors now preserve up to 2,000 redacted characters of
 the executor diagnostic. The existing `pr.strong-audit` DEFERRED reason and

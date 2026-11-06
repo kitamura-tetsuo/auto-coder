@@ -380,6 +380,8 @@ def _execute_pending_strong_audit(
     *,
     allow_retry_override: bool = False,
     expected_version: Optional[int] = None,
+    current_target: Optional[Callable[[], Tuple[TwoTierGateInputs, str]]] = None,
+    expected_lifecycle_token: str = "",
 ) -> Tuple[bool, str]:
     """Claim, execute, and durably accept one production strong-audit round."""
     provenance = RoundProvenance(inputs.head_sha, inputs.base_sha)
@@ -415,6 +417,27 @@ def _execute_pending_strong_audit(
                     retry_not_before=availability.retry_not_before_epoch or 0.0,
                 )
                 return False, reason
+
+            if current_target is not None:
+                refreshed, lifecycle_token = current_target()
+                expected_identity = (
+                    inputs.head_sha,
+                    inputs.base_sha,
+                    inputs.contract.identity,
+                    inputs.policy.identity,
+                    expected_lifecycle_token,
+                )
+                current_identity = (
+                    refreshed.head_sha,
+                    refreshed.base_sha,
+                    refreshed.contract.identity,
+                    refreshed.policy.identity,
+                    lifecycle_token,
+                )
+                if current_identity != expected_identity:
+                    reason = "strong-audit target changed during fresh availability evaluation"
+                    inputs.gate.state.abandon_claim(pr_number, claim.claim_id, reason)
+                    return False, reason
 
             _ensure_review_base_commit(worktree, inputs.base_sha)
             diff = CommandExecutor.run_command(
@@ -584,6 +607,8 @@ def _strict_pull_request_target(github_client: Any, repo_name: str, pr_number: i
     base = metadata.get("base")
     if not (isinstance(head, dict) and isinstance(head.get("sha"), str) and head["sha"] and isinstance(base, dict) and isinstance(base.get("sha"), str) and base["sha"]):
         raise RuntimeError(f"GitHub did not return the current head and base identity for PR #{pr_number}")
+    if metadata.get("state") != "open":
+        raise RuntimeError(f"PR #{pr_number} is no longer open")
     return metadata
 
 
@@ -7149,12 +7174,23 @@ def _coordinate_pr_review(
                 stage_id = "pr.ordinary-closure"
                 stage_label = f"pr#{pr_number} ordinary closure"
             else:
+                initial_lifecycle_token = str(pr_data.get("updated_at") or pr_data.get("updatedAt") or "")
+
+                def current_strong_target() -> Tuple[TwoTierGateInputs, str]:
+                    metadata = _strict_pull_request_target(github_client, repo_name, pr_number)
+                    refreshed = _two_tier_gate_inputs(github_client, repo_name, metadata)
+                    if refreshed is None:
+                        raise RuntimeError("the strong tier is no longer configured")
+                    return refreshed, str(metadata.get("updated_at") or metadata.get("updatedAt") or "")
+
                 accepted, reason = _execute_pending_strong_audit(
                     repo_name,
                     pr_number,
                     two_tier_inputs,
                     allow_retry_override=force_adversarial_validation,
                     expected_version=pending_snapshot.transition_version,
+                    current_target=current_strong_target,
+                    expected_lifecycle_token=initial_lifecycle_token,
                 )
                 reviewer_backend = two_tier_inputs.policy.strong_route
                 stage_id = "pr.strong-audit"
@@ -7187,6 +7223,16 @@ def _coordinate_pr_review(
                 current_head_sha=two_tier_inputs.head_sha,
                 backend=two_tier_inputs.policy.strong_route,
             )
+            superseded_waits = [
+                {
+                    "reason": redact_string(item.reason),
+                    "retry_not_before": item.retry_not_before,
+                    "superseded_at": item.superseded_at,
+                    "superseded_by": item.superseded_by,
+                    "superseding_observation": redact_string(item.superseding_observation),
+                }
+                for item in strong_diagnostic.superseded_waits
+            ]
             actions.append(f"Two-tier review for PR #{pr_number}: {reason} " f"(phase={strong_diagnostic.phase}, head={two_tier_inputs.head_sha[:8]}, " f"contract={two_tier_inputs.contract.identity[:12]}, " f"policy={two_tier_inputs.policy.identity[:12]})")
             actions.append(f"Two-tier review effect for PR #{pr_number}: {publication_reason}")
             _record_pr_stage(
@@ -7202,6 +7248,8 @@ def _coordinate_pr_review(
                     "contract_identity": two_tier_inputs.contract.identity,
                     "policy_identity": two_tier_inputs.policy.identity,
                     "reason": reason,
+                    "latest_outcome": redact_string(strong_diagnostic.latest_outcome),
+                    "superseded_waits": superseded_waits,
                     "finding_revision": pending_snapshot.finding_set_revision,
                     "finding_ids": [item.finding_id for item in pending_snapshot.open_findings],
                 },

@@ -215,6 +215,17 @@ class ActiveClaim:
 
 
 @dataclass(frozen=True)
+class SupersededWait:
+    """Redacted-safe audit evidence for a consumed strong-audit wait."""
+
+    reason: str
+    retry_not_before: float
+    superseded_at: float
+    superseded_by: str
+    superseding_observation: str
+
+
+@dataclass(frozen=True)
 class FindingDisposition:
     """Caller-supplied disposition for one outstanding finding."""
 
@@ -251,6 +262,7 @@ class PrReviewCycleSnapshot:
     requires_new_strong_round: bool
     strong_rounds: Tuple[StrongAuditRound, ...] = field(default_factory=tuple)
     closures: Tuple[ClosureCertification, ...] = field(default_factory=tuple)
+    wait_history: Tuple[SupersededWait, ...] = field(default_factory=tuple)
 
 
 class PrReviewCycleRepository:
@@ -522,7 +534,24 @@ class PrReviewCycleRepository:
             requires_new_strong_round=requires_new_strong_round,
             strong_rounds=tuple(all_rounds),
             closures=tuple(self._closure_from_raw(raw) for raw in raw_pr.get("closures", []) or [] if isinstance(raw, dict)),
+            wait_history=tuple(
+                SupersededWait(
+                    reason=str(raw.get("reason", "")),
+                    retry_not_before=float(raw.get("retry_not_before", 0.0)),
+                    superseded_at=float(raw.get("superseded_at", 0.0)),
+                    superseded_by=str(raw.get("superseded_by", "")),
+                    superseding_observation=str(raw.get("superseding_observation", "")),
+                )
+                for raw in raw_pr.get("wait_history", []) or []
+                if isinstance(raw, dict)
+            ),
         )
+
+    @staticmethod
+    def _record_superseding_observation(pr_state: dict, observation: str) -> None:
+        history = pr_state.get("wait_history", [])
+        if isinstance(history, list) and history and isinstance(history[-1], dict) and not history[-1].get("superseding_observation"):
+            history[-1]["superseding_observation"] = observation
 
     @staticmethod
     def _compute_phase(
@@ -691,6 +720,7 @@ class PrReviewCycleRepository:
                             "retry_not_before": retained_deadline,
                             "superseded_at": now,
                             "superseded_by": "explicit-operator-recheck" if allow_retry_override and retained_deadline > now else "automatic-due-recheck",
+                            "superseding_observation": "",
                         }
                     )
 
@@ -784,6 +814,7 @@ class PrReviewCycleRepository:
                 return
             active_claim = pr_state.get("active_claim")
             if isinstance(active_claim, dict) and active_claim.get("claim_id") == claim_id:
+                self._record_superseding_observation(pr_state, reason)
                 pr_state["active_claim"] = None
                 pr_state["attempt_error_reason"] = reason
                 pr_state["retry_not_before"] = retry_not_before
@@ -831,6 +862,7 @@ class PrReviewCycleRepository:
                 raise ValueError("A FINDINGS verdict requires at least one finding")
             if verdict == VERDICT_PASS and findings:
                 raise ValueError("A PASS verdict cannot carry findings")
+            self._record_superseding_observation(pr_state, f"accepted {verdict}")
             finding_ids = [finding.finding_id for finding in findings]
             if len(finding_ids) != len(set(finding_ids)):
                 raise ValueError("Finding IDs must be unique within a result")
