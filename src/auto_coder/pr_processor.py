@@ -6215,9 +6215,10 @@ def _coordinate_pr_review(
         # produced.  Capturing this after publication would allow a same-head
         # close/reopen in that interval to relabel the old result as current.
         try:
-            pre_ordinary_strong_inputs = _two_tier_gate_inputs(github_client, repo_name, pr_data)
+            pre_ordinary_target = _strict_pull_request_target(github_client, repo_name, pr_number)
+            pre_ordinary_strong_inputs = _two_tier_gate_inputs(github_client, repo_name, pre_ordinary_target)
             if pre_ordinary_strong_inputs is not None:
-                ordinary_opening_token = _pr_open_incarnation_token(github_client, repo_name, pr_number, pr_data)
+                ordinary_opening_token = _pr_open_incarnation_token(github_client, repo_name, pr_number, pre_ordinary_target)
         except Exception as exc:
             ordinary_opening_error = str(exc)
 
