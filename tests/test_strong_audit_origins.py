@@ -204,7 +204,15 @@ def test_explicit_origin_loaded_burst_recovers_surplus_wait(scenario):
     assert accepted.ordinary_pass_head_sha == previous.ordinary_pass_head_sha
     assert accepted.completion is None
     assert accepted.pending_effect == "STRONG_PUBLICATION"
-    assert s.history() == [{"reason": previous.waiting_reason, "retry_not_before": previous.retry_not_before, "superseded_at": s.clock, "superseded_by": "explicit-operator-recheck"}]
+    assert s.history() == [
+        {
+            "reason": previous.waiting_reason,
+            "retry_not_before": previous.retry_not_before,
+            "superseded_at": s.clock,
+            "superseded_by": "explicit-operator-recheck",
+            "superseding_observation": "accepted PASS",
+        }
+    ]
     assert inputs.gate.state.snapshot(101) == unrelated
     assert allowances.get_snapshot("https://api.github.com", "owner/repo", 100) == ledger_before
 
@@ -275,7 +283,15 @@ def test_automatic_successor_bound_restart_and_duplicate_suppression(scenario):
     second = s.snapshot()
     assert second.retry_not_before == s.clock + 1800
     assert not s.reviews
-    assert s.history() == [{"reason": first.waiting_reason, "retry_not_before": first.retry_not_before, "superseded_at": s.clock, "superseded_by": "automatic-due-recheck"}]
+    assert s.history() == [
+        {
+            "reason": first.waiting_reason,
+            "retry_not_before": first.retry_not_before,
+            "superseded_at": s.clock,
+            "superseded_by": "automatic-due-recheck",
+            "superseding_observation": "strong reviewer route is EXHAUSTED",
+        }
+    ]
     count = len(s.observations)
     s.clock += 10
     s.dispatch(engine, invalidate=True)
