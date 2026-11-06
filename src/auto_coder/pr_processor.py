@@ -140,7 +140,7 @@ from .pr_repair_guard import (
     check_pr_repair_exhaustion,
     publish_exhaustion_comment_deduped,
 )
-from .pr_review_cycle import PHASE_ORDINARY_CLOSURE, VERDICT_FINDINGS, VERDICT_PASS, ClaimContendedError, ContractSnapshot, Finding
+from .pr_review_cycle import PHASE_ORDINARY_CLOSURE, PHASE_STRONG_PENDING, VERDICT_FINDINGS, VERDICT_PASS, ClaimContendedError, ContractSnapshot, Finding
 from .pr_review_cycle import FindingDisposition as DurableFindingDisposition
 from .pr_review_cycle import NotApplicableError, RoundProvenance, StaleTransitionError, StrongAuditRound, StrongPolicyIdentity
 from .pr_review_effects import CONFIRMED, REJECTED, UNCERTAIN, AcceptedReviewPayload, EffectAttempt, EffectOperation, ReviewEffectExecutor, ReviewEffectRepository
@@ -6477,14 +6477,13 @@ def _coordinate_pr_review(
                 if cached_inputs is not None:
                     cached_snapshot = cached_inputs.gate.state.snapshot(pr_number)
                     cached_opening = cached_snapshot.ordinary_pass_opening_token
-                    # This correction is specific to consumption of a retained
-                    # quota wait. Other saved-PASS lifecycles (accepted closure,
-                    # publication recovery, and a newly created pending audit)
-                    # have their own authority fences and must not be converted
-                    # into a new ordinary invocation merely because an older
-                    # record predates opening-token persistence.
-                    retained_quota_wait = cached_snapshot.retry_not_before > 0 and cached_snapshot.accepted_strong_round is None and not cached_snapshot.pending_effect
-                    if retained_quota_wait and (not cached_opening or not ordinary_opening_token or cached_opening != ordinary_opening_token):
+                    # Scheduling may live only in the durable invalidation queue
+                    # after a non-quota refusal, so a positive cycle deadline is
+                    # not a reliable marker for unaccepted strong work. Protect
+                    # every such admission while leaving accepted closure and
+                    # publication effects on their independent resumption path.
+                    unaccepted_strong_work = cached_snapshot.phase == PHASE_STRONG_PENDING and cached_snapshot.accepted_strong_round is None and not cached_snapshot.pending_effect
+                    if unaccepted_strong_work and (not cached_opening or not ordinary_opening_token or cached_opening != ordinary_opening_token):
                         saved_review_revalidation = True
                         actions.append(f"Revalidating PR #{pr_number} at unchanged commit {head_sha[:8]}: " "the saved ordinary PASS is not bound to the current PR opening")
             if published_status in ADVERSARIAL_REVIEW_BLOCKING_STATUSES and not saved_review_revalidation and reuse_assessment.projection is not None and outstanding_records(reuse_assessment.projection):
@@ -7207,8 +7206,8 @@ def _coordinate_pr_review(
             )
             needs_strong_admission = preliminary_completion is None and not preliminary_snapshot.pending_effect and not (preliminary_snapshot.phase == PHASE_ORDINARY_CLOSURE and preliminary_snapshot.open_findings)
             initial_lifecycle_token = ordinary_opening_token
-            retained_quota_wait = preliminary_snapshot.retry_not_before > 0 and preliminary_snapshot.accepted_strong_round is None and not preliminary_snapshot.pending_effect
-            if needs_strong_admission and retained_quota_wait and not fresh_ordinary_result and not ordinary_opening_error and initial_lifecycle_token and (not preliminary_snapshot.ordinary_pass_opening_token or preliminary_snapshot.ordinary_pass_opening_token != initial_lifecycle_token):
+            unaccepted_strong_work = preliminary_snapshot.phase == PHASE_STRONG_PENDING and preliminary_snapshot.accepted_strong_round is None and not preliminary_snapshot.pending_effect
+            if needs_strong_admission and unaccepted_strong_work and not fresh_ordinary_result and not ordinary_opening_error and initial_lifecycle_token and (not preliminary_snapshot.ordinary_pass_opening_token or preliminary_snapshot.ordinary_pass_opening_token != initial_lifecycle_token):
                 reason = "the retained ordinary PASS does not apply to the current PR opening"
                 actions.append(f"Skipping merge for PR #{pr_number}: {reason}")
                 actions.quota_deferred = True

@@ -407,6 +407,56 @@ def test_review_limit_allows_same_opening_cached_pass(scenario):
     assert s.snapshot().accepted_strong_round is not None
 
 
+@pytest.mark.parametrize("max_reviews", [1, None])
+def test_zero_deadline_successor_requires_current_opening_pass(scenario, max_reviews):
+    """A queue-only retry cannot relabel O1 convergence after a reopen."""
+    s = scenario
+    engine = s.engine(max_reviews=max_reviews)
+    first = s.explicit(engine)
+    assert not first["errors"], first
+    selected = s.snapshot()
+    assert selected.retry_not_before > s.clock
+    assert selected.ordinary_pass_opening_token == "created:2026-11-01T00:00:00Z"
+
+    # A real automatic recheck observes non-quota unavailability. The cycle
+    # deadline becomes zero while the daemon retains the bounded successor.
+    s.configure("surplus", enabled=False)
+    s.clock = selected.retry_not_before + 0.000001
+    s.dispatch(engine, invalidate=True)
+    unavailable = s.snapshot()
+    assert unavailable.retry_not_before == 0
+    successor = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100))
+    assert successor is not None
+    assert successor.retry_not_before == s.clock + 60
+
+    s.timeline.append(
+        {
+            "event": "reopened",
+            "id": 8767,
+            "created_at": "2027-01-15T08:00:00Z",
+        }
+    )
+    s.configure("burst")
+    s.clock = successor.retry_not_before
+    s.dispatch(engine)
+
+    current = s.snapshot()
+    if max_reviews == 1:
+        # The configured limit prevents a new ordinary result, so the prior
+        # opening remains historical and cannot admit strong work.
+        assert len(s.native_reviews) == 1
+        assert not s.reviews
+        assert current.ordinary_pass_opening_token == selected.ordinary_pass_opening_token
+        assert current.accepted_strong_round is None
+    else:
+        # The uncapped path establishes genuine O2 convergence before strong
+        # availability is allowed to admit one review.
+        assert len(s.native_reviews) == 2
+        assert len(s.reviews) == 1
+        assert current.ordinary_pass_opening_token == "reopened:8767"
+        assert current.accepted_strong_round is not None
+
+
 def test_changed_route_does_not_reuse_old_provider_deadline(scenario, monkeypatch):
     """A Codex reset is not a scheduling oracle for a current Muse route."""
     s = scenario
