@@ -626,6 +626,22 @@ def _strict_pull_request_target(github_client: Any, repo_name: str, pr_number: i
     return metadata
 
 
+def _pr_open_incarnation_token(github_client: Any, repo_name: str, pr_number: int, metadata: Dict[str, Any]) -> str:
+    """Return stable evidence for the current opening, excluding ordinary activity."""
+    timeline = github_client.get_issue_timeline_strict(repo_name, pr_number)
+    reopened = [event for event in timeline if isinstance(event, dict) and event.get("event") == "reopened"]
+    if reopened:
+        latest = reopened[-1]
+        identity = latest.get("id") or latest.get("node_id") or latest.get("created_at")
+        if not identity:
+            raise RuntimeError("the latest PR reopen event has no stable identity")
+        return f"reopened:{identity}"
+    created_at = metadata.get("created_at") or metadata.get("createdAt")
+    if not created_at:
+        raise RuntimeError("the PR opening identity is unavailable")
+    return f"created:{created_at}"
+
+
 class _OrdinaryDiscussionChanged(RuntimeError):
     """Complete current discussion differs from the producing ordinary input."""
 
@@ -7188,27 +7204,36 @@ def _coordinate_pr_review(
                 stage_id = "pr.ordinary-closure"
                 stage_label = f"pr#{pr_number} ordinary closure"
             else:
-                initial_lifecycle_token = str(pr_data.get("updated_at") or pr_data.get("updatedAt") or "")
 
                 def current_strong_target() -> Tuple[TwoTierGateInputs, str]:
                     metadata = _strict_pull_request_target(github_client, repo_name, pr_number)
                     refreshed = _two_tier_gate_inputs(github_client, repo_name, metadata)
                     if refreshed is None:
                         raise RuntimeError("the strong tier is no longer configured")
-                    return refreshed, str(metadata.get("updated_at") or metadata.get("updatedAt") or "")
+                    return refreshed, _pr_open_incarnation_token(github_client, repo_name, pr_number, metadata)
 
-                accepted, reason = _execute_pending_strong_audit(
-                    repo_name,
-                    pr_number,
-                    two_tier_inputs,
-                    allow_retry_override=force_adversarial_validation,
-                    expected_version=pending_snapshot.transition_version,
-                    current_target=current_strong_target,
-                    expected_lifecycle_token=initial_lifecycle_token,
-                )
-                reviewer_backend = two_tier_inputs.policy.strong_route
-                stage_id = "pr.strong-audit"
-                stage_label = f"pr#{pr_number} strong audit"
+                try:
+                    _current_inputs, initial_lifecycle_token = current_strong_target()
+                except Exception as exc:
+                    accepted = False
+                    reason = f"strong-audit target could not be confirmed before admission: {exc}"
+                    reviewer_backend = two_tier_inputs.policy.strong_route
+                    stage_id = "pr.strong-audit"
+                    stage_label = f"pr#{pr_number} strong audit"
+                else:
+                    accepted, reason = _execute_pending_strong_audit(
+                        repo_name,
+                        pr_number,
+                        two_tier_inputs,
+                        allow_retry_override=force_adversarial_validation,
+                        expected_version=pending_snapshot.transition_version,
+                        current_target=current_strong_target,
+                        expected_lifecycle_token=initial_lifecycle_token,
+                    )
+                    reviewer_backend = two_tier_inputs.policy.strong_route
+                    stage_id = "pr.strong-audit"
+                    stage_label = f"pr#{pr_number} strong audit"
+
                 # A competing controller can complete the exact target
                 # after our preliminary snapshot but before durable
                 # claim admission. Observe that fenced rejection as

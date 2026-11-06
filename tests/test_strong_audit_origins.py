@@ -45,6 +45,7 @@ class OriginScenario:
         self.used = 80.0
         self.observations = []
         self.reviews = []
+        self.timeline = []
         self.repository, self.base, self.head = _repository(root)
         _git(self.repository, "remote", "add", "origin", str(self.repository))
         _git(self.repository, "update-ref", "refs/pull/100/head", self.head)
@@ -71,6 +72,8 @@ class OriginScenario:
             "title": "Quota recovery",
             "body": "Fixes #99",
             "state": "open",
+            "created_at": "2026-11-01T00:00:00Z",
+            "updated_at": "2026-11-01T00:00:00Z",
             "labels": [],
             "user": {"login": "owner", "id": 1},
             "mergeable": True,
@@ -85,6 +88,7 @@ class OriginScenario:
         monkeypatch.setattr(self.github, "_read_issue_resource", lambda _repo, _number, relation="", **kw: ([] if relation != "parent" else None) if relation else dict(self.issue))
         for method in ("get_pull_request", "get_pull_request_metadata_strict"):
             monkeypatch.setattr(self.github, method, lambda *a, **kw: dict(self.pr))
+        monkeypatch.setattr(self.github, "get_issue_timeline_strict", lambda *a, **kw: list(self.timeline))
         monkeypatch.setattr(self.github, "get_pr_details", lambda pr: pr)
         for method in ("get_issue", "get_issue_strict"):
             monkeypatch.setattr(self.github, method, lambda *a, **kw: dict(self.issue))
@@ -99,7 +103,7 @@ class OriginScenario:
         monkeypatch.setattr("auto_coder.util.github_action.get_ghapi_client", lambda *a, **kw: api)
         monkeypatch.setattr(usage_module, "read_account_data", self.account)
         monkeypatch.setattr("auto_coder.pr_processor.run_adversarial_validation", lambda *a, **kw: AdversarialValidationResult(result="PASS", summary="Current ordinary contract verified"))
-        monkeypatch.setattr("auto_coder.pr_processor.publish_adversarial_review", lambda *a, **kw: ReviewPublicationResult(True, "APPROVE", ""))
+        monkeypatch.setattr("auto_coder.pr_processor.publish_adversarial_review", self.publish_ordinary)
         monkeypatch.setattr("auto_coder.pr_processor.execute_review", self.review)
 
     def configure(self, strategy, enabled=True):
@@ -138,6 +142,10 @@ enabled = {str(enabled).lower()}
             reviewer_provenance="strong/codex/gpt-5",
             verdict="PASS",
         )
+
+    def publish_ordinary(self, *args, **kwargs):
+        self.pr["updated_at"] = datetime.fromtimestamp(self.clock, timezone.utc).isoformat()
+        return ReviewPublicationResult(True, "APPROVE", "")
 
     def engine(self):
         config = AutomationConfig(repo_name="owner/repo")
@@ -198,6 +206,7 @@ def test_explicit_origin_loaded_burst_recovers_surplus_wait(scenario):
     s.configure("burst")
     result = s.explicit(force=True)
     assert len(s.reviews) == 1, result
+    assert s.pr["updated_at"] != s.pr["created_at"]
     accepted = s.snapshot()
     assert accepted.accepted_strong_round.policy_identity == inputs.policy.identity
     assert accepted.open_epoch == previous.open_epoch
@@ -251,8 +260,13 @@ def test_explicit_origin_restores_selected_wait_when_target_changes_during_usage
     def account(method, **kwargs):
         result = s.account(method, **kwargs)
         if len(s.observations) > observations:
-            s.pr["head"] = {**s.pr["head"], "sha": "new-head"}
-            s.pr["updated_at"] = "2027-01-15T08:01:00Z"
+            s.timeline.append(
+                {
+                    "event": "reopened",
+                    "id": 1234,
+                    "created_at": "2027-01-15T08:01:00Z",
+                }
+            )
         return result
 
     monkeypatch.setattr("auto_coder.codex_usage_checker.read_account_data", account)

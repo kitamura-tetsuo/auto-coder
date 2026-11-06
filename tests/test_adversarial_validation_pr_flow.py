@@ -1493,6 +1493,12 @@ class TestAdversarialValidationPRFlow:
             }
         ]
         client.get_pull_request.return_value = pr_data
+        client.get_pull_request_metadata_strict.return_value = {
+            **pr_data,
+            "state": "open",
+            "created_at": "2026-11-01T00:00:00Z",
+        }
+        client.get_issue_timeline_strict.return_value = []
         mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         strong = BackendConfig(name="codex", model="strong-model")
         llm_config = MagicMock()
