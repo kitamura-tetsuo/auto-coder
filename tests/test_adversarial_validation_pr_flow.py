@@ -2286,7 +2286,7 @@ class TestAdversarialValidationPRFlow:
     @patch("auto_coder.pr_processor.run_adversarial_validation")
     @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
     @patch("auto_coder.pr_processor._merge_pr")
-    def test_same_sha_with_published_error_retains_structured_failure(
+    def test_same_sha_with_published_error_waits_without_new_failure(
         self,
         mock_merge_pr,
         mock_worktree,
@@ -2323,10 +2323,12 @@ class TestAdversarialValidationPRFlow:
         mock_run_validation.assert_not_called()
         mock_worktree.assert_not_called()
         mock_merge_pr.assert_not_called()
-        assert actions.adversarial_validation_error == "Adversarial validation previously failed for PR #100 at SHA abc12345"
+        assert actions.adversarial_validation_error is None
+        assert any("awaits a supported revalidation trigger" in action for action in actions)
         assert any("already validated as ERROR" in action for action in actions)
-        assert status.error == "Adversarial validation previously failed for PR #100 at SHA abc12345"
-        assert status.outcome is PRProcessingOutcome.FAILED
+        assert status.error is None
+        assert status.outcome is PRProcessingOutcome.DEFERRED
+        assert status.retry_not_before is None
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})

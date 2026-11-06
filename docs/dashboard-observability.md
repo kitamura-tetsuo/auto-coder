@@ -1,5 +1,20 @@
 # Dashboard observability verification
 
+Reusing a saved same-head adversarial-validation `ERROR` emits a deferred
+`pr.adversarial-validation` stage result with `effect=saved-validation-wait`,
+`saved_verdict=ERROR`, `examined_head`, and
+`reason=saved_error_requires_revalidation_trigger`. This is an observed review
+wait, not a new reviewer execution or successful PR completion. The worker's
+existing Deferred log and trace retain the action diagnostic; the invalidation
+evaluation is acknowledged without manufacturing `worker.failure-backoff`.
+The existing detail evidence renderer shows the wait and its facts without a
+new schema or renderer branch. Run `bash scripts/test.sh
+tests/test_automation_engine.py -k 'saved_adversarial_error or adversarial_validation_execution_failure or published_validation_status_failure'`
+for explicit/worker origins, real saved-report lookup, durable acknowledgement
+and reconstruction, repeated external invalidation, no merge/revalidation, and
+the production-to-view evidence rows. New execution and saved-result read failures
+remain failed; see [structured PR outcomes](client-features/structured-pr-processing-outcomes.md).
+
 Issue pending-work own settlement retains an unfinished obligation rather than
 claiming implementation progress. The scheduler preserves the already armed
 regular wait; an independent wake changes scan timing only. No stage outcome or

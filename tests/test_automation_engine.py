@@ -1703,15 +1703,32 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         assert result["prs_processed"][0]["outcome"] == "failed"
         assert any("ERROR: Adversarial validation failed for PR #92" in action for action in result["prs_processed"][0]["actions_taken"])
 
-    def test_process_single_propagates_saved_adversarial_error(self, mock_github_client):
-        """A saved ERROR verdict must remain a structured processing failure."""
+    @pytest.mark.parametrize("origin", ["explicit", "worker"])
+    @pytest.mark.parametrize("saved_source", ["native-review", "legacy-comment"])
+    def test_saved_adversarial_error_waits_without_operational_retry(self, mock_github_client, tmp_path, monkeypatch, origin, saved_source):
+        """A saved ERROR blocks merge without creating another failed execution."""
+        from auto_coder.adversarial_validator import AdversarialValidationResult, format_adversarial_validation_comment
+        from auto_coder.dashboard_detail import evidence_rows
+        from auto_coder.entity_invalidation import DurableInvalidationQueue, EntityIdentity
+        from auto_coder.execution_trace import TraceCollector, get_trace_collector
         from auto_coder.pr_processor import AdversarialValidationEligibility, ClaimedReviewThreadGateState, CodexReviewState
 
+        monkeypatch.setattr(TraceCollector, "_instance", None)
+        database = tmp_path / "invalidations.sqlite3"
+        monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(database))
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
         engine = AutomationEngine(mock_github_client, config=config)
-        pr_data = {"number": 93, "title": "PR", "body": "Fixes #99", "labels": [], "head": {"ref": "feature-test", "sha": "abc123456789"}, "mergeable": True}
+        head_sha = "abc123456789" + "0" * 28
+        pr_data = {"number": 93, "title": "PR", "body": "Fixes #99", "labels": [], "head": {"ref": "feature-test", "sha": head_sha}, "mergeable": True, "state": "open"}
+        saved_report = format_adversarial_validation_comment(AdversarialValidationResult(result="ERROR", summary="Malformed validator review anchor", diagnostic_category="schema_error"), head_sha)
+        saved_reviews = [{"body": saved_report, "user": {"login": "auto-coder-reviewer[bot]"}}] if saved_source == "native-review" else []
+        saved_comments = [{"body": saved_report}] if saved_source == "legacy-comment" else []
+        mock_github_client.get_pr_reviews_strict.return_value = saved_reviews
+        mock_github_client.get_pr_comments.return_value = saved_comments
+        mock_github_client.get_pr_review_threads_strict.return_value = []
+        mock_github_client.get_pull_request_metadata_strict.return_value = pr_data
         candidate = Candidate(type="pr", data=pr_data, priority=1)
         open_result = Mock(closed=False)
         label_context = MagicMock()
@@ -1737,16 +1754,51 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
                 return_value=AdversarialValidationEligibility(issue_numbers=(99,)),
             ),
             patch("auto_coder.pr_processor._get_codex_review_state", return_value=CodexReviewState()),
-            patch("auto_coder.pr_processor._get_published_adversarial_validation_status", return_value=("ERROR", None)),
             patch("auto_coder.pr_processor.run_adversarial_validation") as mock_run_validation,
+            patch("auto_coder.pr_processor._merge_pr") as merge,
         ):
-            result = engine.process_single("owner/repo", "pr", 93)
+            if origin == "explicit":
+                result = engine.process_single("owner/repo", "pr", 93)
+                assert result["errors"] == []
+                assert result["prs_processed"][0]["outcome"] == "deferred"
+                assert any("already validated as ERROR" in action for action in result["prs_processed"][0]["actions_taken"])
+            else:
 
-        saved_error = "Adversarial validation previously failed for PR #93 at SHA abc12345"
+                async def scenario():
+                    await engine.invalidate_entity("owner/repo", "pr", 93)
+                    worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+                    try:
+                        await asyncio.wait_for(engine.queue.join(), timeout=5)
+                        assert engine.invalidations.pending_count("owner/repo") == 0
+                        identity = EntityIdentity("owner/repo", "pr", 93)
+                        assert engine.invalidations.get_deferred(identity) is None
+                        assert engine.invalidations.claim("owner/repo") is None
+                        # A new external invalidation still reevaluates the saved
+                        # verdict; it does not start a reviewer or failure timer.
+                        await engine.invalidate_entity("owner/repo", "pr", 93)
+                        await asyncio.wait_for(engine.queue.join(), timeout=5)
+                        assert engine.invalidations.pending_count("owner/repo") == 0
+                    finally:
+                        worker.cancel()
+                        await asyncio.gather(worker, return_exceptions=True)
+
+                asyncio.run(scenario())
+                recovered = DurableInvalidationQueue(database)
+                recovered.recover("owner/repo")
+                assert recovered.pending_count("owner/repo") == 0
+                assert recovered.claim("owner/repo") is None
+
         mock_run_validation.assert_not_called()
-        assert result["errors"] == [f"Error processing pr #93: {saved_error}"]
-        assert result["prs_processed"][0]["outcome"] == "failed"
-        assert any("already validated as ERROR" in action for action in result["prs_processed"][0]["actions_taken"])
+        merge.assert_not_called()
+        assert mock_github_client.get_pr_reviews_strict.return_value == saved_reviews
+        assert mock_github_client.get_pr_comments.return_value == saved_comments
+        events = get_trace_collector().get_snapshot(repository="owner/repo", item_type="pr", item_number=93).events
+        waits = [event for event in events if event.stage_id == "pr.adversarial-validation" and event.facts.get("effect") == "saved-validation-wait"]
+        assert len(waits) == (2 if origin == "worker" else 1)
+        assert all(event.outcome == "deferred" and event.facts["saved_verdict"] == "ERROR" and event.facts["examined_head"] == head_sha for event in waits)
+        rows = evidence_rows(waits)
+        assert all(row["outcome"] == "deferred" and "saved_error_requires_revalidation_trigger" in row["facts"] for row in rows)
+        assert not any(event.stage_id == "worker.failure-backoff" for event in events)
 
     # Note: _process_issues and _process_pull_requests are now functions in issue_processor.py and pr_processor.py
     # These tests are covered by test_issue_processor.py and test_pr_processor.py

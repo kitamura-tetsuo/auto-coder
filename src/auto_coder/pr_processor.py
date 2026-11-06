@@ -5226,8 +5226,9 @@ def _get_published_adversarial_validation_status(
 
 # The two verdicts that carry material specification violations requiring
 # corrective changes (event=REQUEST_CHANGES in github_app_reviewer.publish).
-# ERROR/BLOCKED/INCONCLUSIVE are validator-side non-results that must be
-# retried rather than waited on (REQ-003), so they are deliberately excluded.
+# ERROR/BLOCKED/INCONCLUSIVE are validator-side non-results, not actionable
+# corrective verdicts. Saved same-head results still require a supported
+# revalidation trigger; exclusion here never makes them self-retrying.
 ADVERSARIAL_REVIEW_BLOCKING_STATUSES = frozenset({"NEEDS_FIX", "NEEDS_TESTS"})
 
 
@@ -6472,11 +6473,19 @@ def _coordinate_pr_review(
             if reuse_published_review:
                 assert published_status is not None
                 if published_status == "ERROR":
-                    saved_validation_error = f"Adversarial validation previously failed for PR #{pr_number} at SHA {head_sha[:8]}"
-                    actions.adversarial_validation_error = saved_validation_error
+                    # Reusing a durable error completes this evaluation, not a
+                    # new failed execution. Keep the verdict merge-blocking
+                    # without creating an operational failure retry obligation.
+                    actions.append(f"Saved adversarial-validation ERROR for PR #{pr_number} at SHA {head_sha[:8]} awaits a supported revalidation trigger")
+                    _record_pr_stage(
+                        pr_number,
+                        "pr.adversarial-validation",
+                        f"pr#{pr_number} adversarial validation",
+                        Outcome.DEFERRED,
+                        {"effect": "saved-validation-wait", "examined_head": head_sha, "saved_verdict": published_status, "reason": "saved_error_requires_revalidation_trigger"},
+                    )
                     if processing_status is not None:
-                        processing_status.error = saved_validation_error
-                        processing_status.outcome = PRProcessingOutcome.FAILED
+                        processing_status.outcome = PRProcessingOutcome.DEFERRED
                 if published_status != "PASS":
                     actions.append(f"Adversarial validation remains non-pass for PR #{pr_number}: {published_status}")
                     if published_status in {"NEEDS_FIX", "NEEDS_TESTS"}:
