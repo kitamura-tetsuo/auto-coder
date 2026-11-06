@@ -6473,8 +6473,16 @@ def _coordinate_pr_review(
                 # evaluation.  Missing provenance is likewise non-authorizing.
                 cached_inputs = _two_tier_gate_inputs(github_client, repo_name, pr_data)
                 if cached_inputs is not None:
-                    cached_opening = cached_inputs.gate.state.snapshot(pr_number).ordinary_pass_opening_token
-                    if not cached_opening or not ordinary_opening_token or cached_opening != ordinary_opening_token:
+                    cached_snapshot = cached_inputs.gate.state.snapshot(pr_number)
+                    cached_opening = cached_snapshot.ordinary_pass_opening_token
+                    # This correction is specific to consumption of a retained
+                    # quota wait. Other saved-PASS lifecycles (accepted closure,
+                    # publication recovery, and a newly created pending audit)
+                    # have their own authority fences and must not be converted
+                    # into a new ordinary invocation merely because an older
+                    # record predates opening-token persistence.
+                    retained_quota_wait = cached_snapshot.retry_not_before > 0 and cached_snapshot.accepted_strong_round is None and not cached_snapshot.pending_effect
+                    if retained_quota_wait and (not cached_opening or not ordinary_opening_token or cached_opening != ordinary_opening_token):
                         saved_review_revalidation = True
                         actions.append(f"Revalidating PR #{pr_number} at unchanged commit {head_sha[:8]}: " "the saved ordinary PASS is not bound to the current PR opening")
             if published_status in ADVERSARIAL_REVIEW_BLOCKING_STATUSES and not saved_review_revalidation and reuse_assessment.projection is not None and outstanding_records(reuse_assessment.projection):
