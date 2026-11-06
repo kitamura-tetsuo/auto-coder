@@ -847,6 +847,12 @@ def test_green_ci_retains_durable_strong_review_gate(tmp_path, monkeypatch, stro
     client.get_pr_review_threads_strict.return_value = []
     client.get_pr_comments.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS"), H1)}]
     client.get_pull_request.return_value = {"head": {"sha": H1}, "base": {"sha": "base-1"}}
+    client.get_pull_request_metadata_strict.return_value = {
+        **pr_data,
+        "state": "open",
+        "created_at": "2026-11-01T00:00:00Z",
+    }
+    client.get_issue_timeline_strict.return_value = []
     green = _snapshot(ObservationAvailability.KNOWN, CIConclusion.SUCCESS)
 
     with (
