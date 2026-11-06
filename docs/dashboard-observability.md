@@ -3354,3 +3354,31 @@ an existing unmarked native reply: the unmarked poll is deferred, adding the
 role marker to that same comment permits one handoff, and subsequent wording
 edits and repeated polls are deferred with unchanged receipt identity. This
 adds no new processing origin or trace field and performs no live annotation.
+
+Receipt-only review delivery diagnostics now populate the existing `reason` and
+`head_sha` facts on `pr.repair-delegation`. Fixed reasons distinguish
+`unclassified_same_author_reply`, `actionable_feedback_already_delivered`, and
+`unconfirmed_delivery_receipt`; the head is the evaluated PR snapshot. An
+unclassified reply can be an ordinary acknowledgment and is not automatically
+actionable. Delivery selection, receipt reservations, outcomes and merge gates
+are unchanged. The public API already allowlists both facts and the dashboard
+already renders stage facts, so no API schema or renderer change is needed.
+No prose, author login or provider task/receipt content is exported.
+
+`tests/test_codex_cloud_pr_review_flow.py::test_review_delivery_reason_reaches_public_projection_without_changing_effects`
+drives the real PR gate, delegate, trace collector and public event projection
+over controlled GitHub/provider I/O. It checks ordinary same-author replies,
+addressed claims (including contradictory guidance), third-party reviews,
+adjudication envelopes, confirmed/pending native identities, fixed public facts,
+unchanged receipt bytes and zero sends/mutations for waits. Fresh third-party
+feedback remains a positive one-send control. This is controlled integration
+evidence, not a claim of live recovery or private retained-store diagnostics.
+
+The same regression now covers an absent local receipt file with authenticated
+PR-side receipts for both the root and an excluded same-author reply whose
+guidance marker was removed without changing its native ID. It expects
+`actionable_feedback_already_delivered`, the evaluated head and the unchanged
+deferred outcome; a foreign-author reply receipt instead leaves the diagnostic
+unclassified. Both cases prove no receipt-file creation, no reconciliation of
+excluded IDs, no send and no GitHub mutation. The public fact allowlist and
+renderer remain unchanged.
