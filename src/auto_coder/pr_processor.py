@@ -419,6 +419,7 @@ def _execute_pending_strong_audit(
             inputs.policy,
             expected_version=expected_version,
             allow_retry_override=allow_retry_override,
+            expected_opening_token=expected_lifecycle_token,
         )
     except ClaimContendedError:
         return False, "another controller owns the live strong-audit claim"
@@ -7152,11 +7153,38 @@ def _coordinate_pr_review(
             )
             return actions
         if two_tier_inputs is not None:
+
+            def current_strong_target() -> Tuple[TwoTierGateInputs, str]:
+                metadata = _strict_pull_request_target(github_client, repo_name, pr_number)
+                refreshed = _two_tier_gate_inputs(github_client, repo_name, metadata)
+                if refreshed is None:
+                    raise RuntimeError("the strong tier is no longer configured")
+                return refreshed, _pr_open_incarnation_token(github_client, repo_name, pr_number, metadata)
+
+            try:
+                opening_inputs, initial_lifecycle_token = current_strong_target()
+            except Exception as exc:
+                actions.append(f"Skipping merge for PR #{pr_number}: strong-audit opening could not be confirmed: {exc}")
+                return actions
+            if (
+                opening_inputs.head_sha,
+                opening_inputs.base_sha,
+                opening_inputs.contract.identity,
+                opening_inputs.policy.identity,
+            ) != (
+                two_tier_inputs.head_sha,
+                two_tier_inputs.base_sha,
+                two_tier_inputs.contract.identity,
+                two_tier_inputs.policy.identity,
+            ):
+                actions.append(f"Skipping merge for PR #{pr_number}: strong-audit target changed before ordinary convergence")
+                return actions
             two_tier_inputs.gate.ordinary_pass(
                 pr_number,
                 two_tier_inputs.head_sha,
                 two_tier_inputs.base_sha,
                 two_tier_inputs.contract,
+                opening_token=initial_lifecycle_token,
             )
             closure_resumption = _resume_retained_closure(repo_name, pr_number, two_tier_inputs.head_sha, two_tier_inputs, github_client)
             pending_snapshot = two_tier_inputs.gate.state.snapshot(pr_number)
@@ -7205,15 +7233,10 @@ def _coordinate_pr_review(
                 stage_label = f"pr#{pr_number} ordinary closure"
             else:
 
-                def current_strong_target() -> Tuple[TwoTierGateInputs, str]:
-                    metadata = _strict_pull_request_target(github_client, repo_name, pr_number)
-                    refreshed = _two_tier_gate_inputs(github_client, repo_name, metadata)
-                    if refreshed is None:
-                        raise RuntimeError("the strong tier is no longer configured")
-                    return refreshed, _pr_open_incarnation_token(github_client, repo_name, pr_number, metadata)
-
                 try:
-                    _current_inputs, initial_lifecycle_token = current_strong_target()
+                    _current_inputs, current_lifecycle_token = current_strong_target()
+                    if current_lifecycle_token != initial_lifecycle_token:
+                        raise RuntimeError("the PR open incarnation changed after ordinary convergence")
                 except Exception as exc:
                     accepted = False
                     reason = f"strong-audit target could not be confirmed before admission: {exc}"

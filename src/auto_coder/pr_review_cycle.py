@@ -249,6 +249,7 @@ class PrReviewCycleSnapshot:
     ordinary_pass_head_sha: str
     ordinary_pass_base_sha: str
     ordinary_pass_contract_identity: str
+    ordinary_pass_opening_token: str
     accepted_strong_round: Optional[StrongAuditRound]
     active_claim: Optional[ActiveClaim]
     findings: Tuple[Finding, ...]
@@ -484,11 +485,12 @@ class PrReviewCycleRepository:
                 accepted_round = parsed_round
 
         ordinary_pass = raw_pr.get("ordinary_pass")
-        ordinary_head = ordinary_base = ordinary_contract = ""
+        ordinary_head = ordinary_base = ordinary_contract = ordinary_opening_token = ""
         if isinstance(ordinary_pass, dict):
             ordinary_head = str(ordinary_pass.get("head_sha", ""))
             ordinary_base = str(ordinary_pass.get("base_sha", ""))
             ordinary_contract = str(ordinary_pass.get("contract_identity", ""))
+            ordinary_opening_token = str(ordinary_pass.get("opening_token", ""))
 
         active_claim = self._active_claim_from_raw(raw_pr.get("active_claim"))
         accepted_closure = None
@@ -521,6 +523,7 @@ class PrReviewCycleRepository:
             ordinary_pass_head_sha=ordinary_head,
             ordinary_pass_base_sha=ordinary_base,
             ordinary_pass_contract_identity=ordinary_contract,
+            ordinary_pass_opening_token=ordinary_opening_token,
             accepted_strong_round=accepted_round,
             active_claim=active_claim,
             findings=all_findings,
@@ -644,6 +647,7 @@ class PrReviewCycleRepository:
         provenance: RoundProvenance,
         contract: ContractSnapshot,
         expected_version: Optional[int] = None,
+        opening_token: str = "",
     ) -> PrReviewCycleSnapshot:
         """Record an applicable ordinary PASS for the given H/B/M.
 
@@ -690,6 +694,7 @@ class PrReviewCycleRepository:
                 "contract_identity": contract.identity,
                 "contract_snapshot": {"issue_ids": list(contract.issue_ids), "requirements_text": contract.requirements_text},
                 "open_epoch": pr_state.get("open_epoch", 0),
+                "opening_token": opening_token,
                 "recorded_at": time.time(),
             }
             self._bump(pr_state)
@@ -704,6 +709,7 @@ class PrReviewCycleRepository:
         policy: StrongPolicyIdentity,
         expected_version: Optional[int] = None,
         allow_retry_override: bool = False,
+        expected_opening_token: str = "",
     ) -> ActiveClaim:
         """Atomically claim the strong-audit phase for exactly one H/B/M/P.
 
@@ -767,6 +773,8 @@ class PrReviewCycleRepository:
                 raise NotApplicableError("No applicable ordinary PASS recorded")
             if ordinary_pass.get("head_sha") != provenance.head_sha or ordinary_pass.get("base_sha") != provenance.base_sha or ordinary_pass.get("contract_identity") != contract.identity:
                 raise NotApplicableError("Ordinary PASS does not apply to the requested H/B/M")
+            if expected_opening_token and ordinary_pass.get("opening_token") != expected_opening_token:
+                raise NotApplicableError("Ordinary PASS does not apply to the current PR opening")
 
             existing_raw = pr_state.get("active_claim")
             if isinstance(existing_raw, dict) and existing_raw.get("phase") == CLAIM_STRONG_AUDIT:

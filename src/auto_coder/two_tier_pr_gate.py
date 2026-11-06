@@ -60,11 +60,13 @@ class TwoTierPrGate:
         head_sha: str,
         base_sha: str,
         contract: ContractSnapshot,
+        opening_token: str = "",
     ) -> None:
         self.state.record_ordinary_pass(
             pr_number,
             RoundProvenance(head_sha=head_sha, base_sha=base_sha),
             contract,
+            opening_token=opening_token,
         )
 
     def authorize_merge(

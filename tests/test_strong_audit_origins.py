@@ -23,6 +23,7 @@ from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.llm_backend_config import active_repo_context
 from auto_coder.pr_processor import _two_tier_gate_inputs
 from auto_coder.pr_review_execution import ReviewExecutionResult
+from auto_coder.two_tier_pr_gate import TwoTierPrGate
 from auto_coder.util.gh_cache import GitHubClient
 from tests.ci_observation_fakes import _Actions, _Checks
 from tests.test_strong_audit_producer import _git, _repository
@@ -278,6 +279,43 @@ def test_explicit_origin_restores_selected_wait_when_target_changes_during_usage
     assert restored.active_claim is None
     assert restored.attempt_error_reason == selected.attempt_error_reason
     assert restored.retry_not_before == selected.retry_not_before
+    assert s.history() == []
+
+
+def test_explicit_origin_rejects_reopen_after_selected_ordinary_pass(scenario, monkeypatch):
+    """A same-head reopen cannot inherit convergence from the prior opening."""
+    s = scenario
+    s.explicit()
+    selected = s.snapshot()
+    s.configure("burst")
+    original = TwoTierPrGate.ordinary_pass
+    reopened = False
+
+    def ordinary_pass(*args, **kwargs):
+        nonlocal reopened
+        result = original(*args, **kwargs)
+        if not reopened:
+            reopened = True
+            s.timeline.append(
+                {
+                    "event": "reopened",
+                    "id": 4321,
+                    "created_at": "2027-01-15T08:00:00Z",
+                }
+            )
+        return result
+
+    monkeypatch.setattr(TwoTierPrGate, "ordinary_pass", ordinary_pass)
+    result = s.explicit(force=True)
+
+    assert result["target_outcome"] == "deferred", result
+    assert not s.reviews
+    current = s.snapshot()
+    assert current.accepted_strong_round is None
+    assert current.active_claim is None
+    assert current.retry_not_before == selected.retry_not_before
+    assert current.attempt_error_reason == selected.attempt_error_reason
+    assert current.ordinary_pass_opening_token == "created:2026-11-01T00:00:00Z"
     assert s.history() == []
 
 
