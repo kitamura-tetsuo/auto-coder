@@ -773,7 +773,7 @@ class PrReviewCycleRepository:
                 raise NotApplicableError("No applicable ordinary PASS recorded")
             if ordinary_pass.get("head_sha") != provenance.head_sha or ordinary_pass.get("base_sha") != provenance.base_sha or ordinary_pass.get("contract_identity") != contract.identity:
                 raise NotApplicableError("Ordinary PASS does not apply to the requested H/B/M")
-            if expected_opening_token and ordinary_pass.get("opening_token") != expected_opening_token:
+            if expected_opening_token and ordinary_pass.get("opening_token") and ordinary_pass.get("opening_token") != expected_opening_token:
                 raise NotApplicableError("Ordinary PASS does not apply to the current PR opening")
 
             existing_raw = pr_state.get("active_claim")

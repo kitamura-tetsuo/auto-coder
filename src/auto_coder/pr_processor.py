@@ -7161,24 +7161,47 @@ def _coordinate_pr_review(
                     raise RuntimeError("the strong tier is no longer configured")
                 return refreshed, _pr_open_incarnation_token(github_client, repo_name, pr_number, metadata)
 
-            try:
-                opening_inputs, initial_lifecycle_token = current_strong_target()
-            except Exception as exc:
-                actions.append(f"Skipping merge for PR #{pr_number}: strong-audit opening could not be confirmed: {exc}")
-                return actions
-            if (
-                opening_inputs.head_sha,
-                opening_inputs.base_sha,
-                opening_inputs.contract.identity,
-                opening_inputs.policy.identity,
-            ) != (
-                two_tier_inputs.head_sha,
-                two_tier_inputs.base_sha,
-                two_tier_inputs.contract.identity,
-                two_tier_inputs.policy.identity,
-            ):
-                actions.append(f"Skipping merge for PR #{pr_number}: strong-audit target changed before ordinary convergence")
-                return actions
+            preliminary_snapshot = two_tier_inputs.gate.state.snapshot(pr_number)
+            preliminary_completion = two_tier_inputs.gate.reusable_completion(
+                pr_number,
+                current_head_sha=two_tier_inputs.head_sha,
+                current_base_sha=two_tier_inputs.base_sha,
+                current_contract=two_tier_inputs.contract,
+                current_policy=two_tier_inputs.policy,
+            )
+            needs_strong_admission = preliminary_completion is None and not preliminary_snapshot.pending_effect and not (preliminary_snapshot.phase == PHASE_ORDINARY_CLOSURE and preliminary_snapshot.open_findings)
+            initial_lifecycle_token = ""
+            if needs_strong_admission:
+                try:
+                    opening_inputs, initial_lifecycle_token = current_strong_target()
+                except Exception as exc:
+                    # A competing controller may have completed this exact target
+                    # after the preliminary read. Reobserve durable authority before
+                    # treating missing opening evidence as an admission failure.
+                    preliminary_completion = two_tier_inputs.gate.reusable_completion(
+                        pr_number,
+                        current_head_sha=two_tier_inputs.head_sha,
+                        current_base_sha=two_tier_inputs.base_sha,
+                        current_contract=two_tier_inputs.contract,
+                        current_policy=two_tier_inputs.policy,
+                    )
+                    if preliminary_completion is None:
+                        actions.append(f"Skipping merge for PR #{pr_number}: strong-audit opening could not be confirmed: {exc}")
+                        return actions
+                    opening_inputs = two_tier_inputs
+                if (
+                    opening_inputs.head_sha,
+                    opening_inputs.base_sha,
+                    opening_inputs.contract.identity,
+                    opening_inputs.policy.identity,
+                ) != (
+                    two_tier_inputs.head_sha,
+                    two_tier_inputs.base_sha,
+                    two_tier_inputs.contract.identity,
+                    two_tier_inputs.policy.identity,
+                ):
+                    actions.append(f"Skipping merge for PR #{pr_number}: strong-audit target changed before ordinary convergence")
+                    return actions
             two_tier_inputs.gate.ordinary_pass(
                 pr_number,
                 two_tier_inputs.head_sha,
