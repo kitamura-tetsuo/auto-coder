@@ -792,6 +792,7 @@ def _empty_snapshot(repo_name: str, pr_number: int) -> PrReviewCycleSnapshot:
         accepted_closure=None,
         retry_not_before=0.0,
         attempt_error_reason="",
+        wait_policy_identity="",
         pending_effect="",
         requires_new_strong_round=False,
     )

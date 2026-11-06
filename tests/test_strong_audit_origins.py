@@ -108,15 +108,16 @@ class OriginScenario:
         monkeypatch.setattr("auto_coder.pr_processor.publish_adversarial_review", self.publish_ordinary)
         monkeypatch.setattr("auto_coder.pr_processor.execute_review", self.review)
 
-    def configure(self, strategy, enabled=True):
+    def configure(self, strategy, enabled=True, backend_type="codex"):
+        backend_name = f"{backend_type}-reviewer"
         self.config_file.write_text(
             f"""[quota_selection]
 strategy = "{strategy}"
 [backend_strong_pr_adversarial_validation]
-order = ["codex-reviewer"]
-default = "codex-reviewer"
-[backends.codex-reviewer]
-backend_type = "codex"
+order = ["{backend_name}"]
+default = "{backend_name}"
+[backends.{backend_name}]
+backend_type = "{backend_type}"
 model = "gpt-5"
 enabled = {str(enabled).lower()}
 """
@@ -156,10 +157,11 @@ enabled = {str(enabled).lower()}
         )
         return ReviewPublicationResult(True, "APPROVE", "")
 
-    def engine(self):
+    def engine(self, max_reviews=None):
         config = AutomationConfig(repo_name="owner/repo")
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
+        config.MAX_ADVERSARIAL_VALIDATIONS = max_reviews
         return AutomationEngine(self.github, config)
 
     def explicit(self, engine=None, force=False):
@@ -311,6 +313,9 @@ def test_predeadline_opening_failure_preserves_selected_wake(scenario, monkeypat
     s.explicit()
     selected = s.snapshot()
     assert selected.retry_not_before > s.clock
+    with active_repo_context("owner/repo"):
+        current_policy = _two_tier_gate_inputs(s.github, "owner/repo", s.pr).policy
+    assert selected.wait_policy_identity == current_policy.identity
     engine = s.engine()
     s.clock = selected.retry_not_before - 10
 
@@ -355,6 +360,79 @@ def test_cached_pass_from_prior_opening_requires_current_ordinary_pass(scenario)
     current = s.snapshot()
     assert current.ordinary_pass_opening_token == "reopened:8765"
     assert current.accepted_strong_round is not None
+
+
+def test_review_limit_cannot_relabel_cached_pass_for_reopened_pr(scenario):
+    """The count shortcut cannot turn an O1 PASS into O2 convergence."""
+    s = scenario
+    engine = s.engine(max_reviews=1)
+    first = s.explicit(engine)
+    assert not first["errors"], first
+    selected = s.snapshot()
+    assert selected.ordinary_pass_opening_token == "created:2026-11-01T00:00:00Z"
+    assert len(s.native_reviews) == 1
+    s.configure("burst")
+    s.clock = selected.retry_not_before + 0.000001
+    s.timeline.append(
+        {
+            "event": "reopened",
+            "id": 8766,
+            "created_at": "2027-01-15T08:00:00Z",
+        }
+    )
+
+    s.dispatch(engine, invalidate=True)
+
+    current = s.snapshot()
+    assert not s.reviews
+    assert len(s.native_reviews) == 1
+    assert current.ordinary_pass_opening_token == selected.ordinary_pass_opening_token
+    assert current.retry_not_before == selected.retry_not_before
+    assert current.accepted_strong_round is None
+
+
+def test_review_limit_allows_same_opening_cached_pass(scenario):
+    """A proven same-opening PASS remains reusable at the configured limit."""
+    s = scenario
+    engine = s.engine(max_reviews=1)
+    s.explicit(engine)
+    selected = s.snapshot()
+    s.configure("burst")
+    s.clock = selected.retry_not_before + 0.000001
+
+    s.dispatch(engine, invalidate=True)
+
+    assert len(s.native_reviews) == 1
+    assert len(s.reviews) == 1
+    assert s.snapshot().accepted_strong_round is not None
+
+
+def test_changed_route_does_not_reuse_old_provider_deadline(scenario, monkeypatch):
+    """A Codex reset is not a scheduling oracle for a current Muse route."""
+    s = scenario
+    s.used = 100.0
+    s.explicit()
+    selected = s.snapshot()
+    assert selected.retry_not_before == s.reset
+    s.configure("surplus", backend_type="muse")
+    engine = s.engine()
+    timeline_calls = 0
+
+    def fail_second_timeline(*args, **kwargs):
+        nonlocal timeline_calls
+        timeline_calls += 1
+        if timeline_calls == 2:
+            raise RuntimeError("controlled final opening outage")
+        return list(s.timeline)
+
+    monkeypatch.setattr(s.github, "get_issue_timeline_strict", fail_second_timeline)
+    s.dispatch(engine, invalidate=True)
+
+    successor = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100))
+    assert successor is not None
+    assert successor.retry_not_before == s.clock + 60
+    assert s.snapshot().retry_not_before == selected.retry_not_before
+    assert not s.reviews
 
 
 def test_explicit_origin_restores_selected_wait_when_target_changes_during_usage(

@@ -259,6 +259,7 @@ class PrReviewCycleSnapshot:
     accepted_closure: Optional[ClosureCertification]
     retry_not_before: float
     attempt_error_reason: str
+    wait_policy_identity: str
     pending_effect: str
     requires_new_strong_round: bool
     strong_rounds: Tuple[StrongAuditRound, ...] = field(default_factory=tuple)
@@ -348,6 +349,7 @@ class PrReviewCycleRepository:
             "accepted_closure_id": "",
             "retry_not_before": 0.0,
             "attempt_error_reason": "",
+            "wait_policy_identity": "",
             "wait_history": [],
         }
 
@@ -533,6 +535,7 @@ class PrReviewCycleRepository:
             accepted_closure=accepted_closure,
             retry_not_before=float(raw_pr.get("retry_not_before", 0.0)),
             attempt_error_reason=str(raw_pr.get("attempt_error_reason", "")),
+            wait_policy_identity=str(raw_pr.get("wait_policy_identity", "")),
             pending_effect=pending_effect,
             requires_new_strong_round=requires_new_strong_round,
             strong_rounds=tuple(all_rounds),
@@ -685,6 +688,7 @@ class PrReviewCycleRepository:
                         )
                     pr_state["retry_not_before"] = 0.0
                     pr_state["attempt_error_reason"] = ""
+                    pr_state["wait_policy_identity"] = ""
                 active = pr_state.get("active_claim")
                 if isinstance(active, dict) and (active.get("head_sha"), active.get("base_sha"), active.get("contract_identity")) != (provenance.head_sha, provenance.base_sha, contract.identity):
                     pr_state["active_claim"] = None
@@ -842,6 +846,7 @@ class PrReviewCycleRepository:
                 pr_state["active_claim"] = None
                 pr_state["attempt_error_reason"] = reason
                 pr_state["retry_not_before"] = retry_not_before
+                pr_state["wait_policy_identity"] = str(active_claim.get("policy_identity", ""))
                 self._bump(pr_state)
                 self._write(state)
 

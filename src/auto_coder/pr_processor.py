@@ -339,6 +339,7 @@ def _two_tier_gate_inputs(
     model_options = {
         "route": route,
         "default": llm_config.get_strong_pr_adversarial_validation_default_backend(),
+        "backend_type": getattr(strong, "backend_type", None),
         "model": getattr(strong, "model", None),
         "options": getattr(strong, "options", None),
     }
@@ -6210,6 +6211,7 @@ def _coordinate_pr_review(
 
     ordinary_opening_token = ""
     ordinary_opening_error = ""
+    fresh_ordinary_result = False
     if adversarial_validation_enabled and adversarial_validation_applicable:
         # Bind any ordinary result to the opening in which its authority is
         # produced.  Capturing this after publication would allow a same-head
@@ -6670,6 +6672,7 @@ def _coordinate_pr_review(
                                     refresh_ci_status=lambda: _refresh_adversarial_ci_status(repo_name, pr_data, config, github_client),
                                     closure_input=closure_input,
                                 )
+                                fresh_ordinary_result = True
                 except Exception as e:
                     exception_preview = redact_string(str(e))[:2000]
                     logger.error(f"Adversarial validation execution failed for PR #{pr_number} " f"({type(e).__name__}): {exception_preview}")
@@ -7204,6 +7207,27 @@ def _coordinate_pr_review(
             )
             needs_strong_admission = preliminary_completion is None and not preliminary_snapshot.pending_effect and not (preliminary_snapshot.phase == PHASE_ORDINARY_CLOSURE and preliminary_snapshot.open_findings)
             initial_lifecycle_token = ordinary_opening_token
+            retained_quota_wait = preliminary_snapshot.retry_not_before > 0 and preliminary_snapshot.accepted_strong_round is None and not preliminary_snapshot.pending_effect
+            if needs_strong_admission and retained_quota_wait and not fresh_ordinary_result and not ordinary_opening_error and initial_lifecycle_token and (not preliminary_snapshot.ordinary_pass_opening_token or preliminary_snapshot.ordinary_pass_opening_token != initial_lifecycle_token):
+                reason = "the retained ordinary PASS does not apply to the current PR opening"
+                actions.append(f"Skipping merge for PR #{pr_number}: {reason}")
+                actions.quota_deferred = True
+                actions.retry_not_before = time.time() + 60.0
+                if processing_status is not None:
+                    processing_status.outcome = PRProcessingOutcome.DEFERRED
+                    processing_status.retry_not_before = actions.retry_not_before
+                _record_pr_stage(
+                    pr_number,
+                    "pr.strong-audit-gate",
+                    f"pr#{pr_number} strong-audit gate",
+                    Outcome.DEFERRED,
+                    {
+                        "reason": reason,
+                        "phase": "ordinary-opening-applicability",
+                        "retry_not_before": actions.retry_not_before,
+                    },
+                )
+                return actions
             if needs_strong_admission:
                 try:
                     if ordinary_opening_error:
@@ -7241,7 +7265,8 @@ def _coordinate_pr_review(
                         # scheduling evidence.  A transient opening lookup must
                         # not postpone that earlier wake; use the 60-second
                         # non-quota fallback only after it is due or absent.
-                        actions.retry_not_before = retained_deadline if retained_deadline > now else now + 60.0
+                        deadline_applies = bool(preliminary_snapshot.wait_policy_identity) and preliminary_snapshot.wait_policy_identity == two_tier_inputs.policy.identity
+                        actions.retry_not_before = retained_deadline if deadline_applies and retained_deadline > now else now + 60.0
                         if processing_status is not None:
                             processing_status.outcome = PRProcessingOutcome.DEFERRED
                             processing_status.retry_not_before = actions.retry_not_before
