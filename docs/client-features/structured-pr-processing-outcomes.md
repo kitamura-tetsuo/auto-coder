@@ -50,6 +50,12 @@ evaluation through its existing operational-failure backoff rather than
 acknowledging it. A successful read with unresolved provenance still defers
 normally without requesting a code repair.
 
+The required legacy fallback uses `get_pr_comments_strict`, which performs a
+fresh read and preserves failures below the public comment reader. A failed
+REST read cannot be interpreted as an empty legacy history. An authenticated
+matching native review remains authoritative without requiring that fallback;
+ordinary informational `get_pr_comments` reads retain their best-effort behavior.
+
 Reaching `MAX_ADVERSARIAL_VALIDATIONS` does not bypass this saved-error wait.
 An applicable same-head `ERROR` still enters the ordinary trigger/reuse decision
 before the review-limit shortcut can grant merge eligibility. Force and eligible

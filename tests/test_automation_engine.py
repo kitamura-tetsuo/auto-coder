@@ -1735,6 +1735,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         saved_history = json.dumps([saved_reviews, saved_comments], sort_keys=True)
         mock_github_client.get_pr_reviews_strict.return_value = saved_reviews
         mock_github_client.get_pr_comments.return_value = saved_comments
+        mock_github_client.get_pr_comments_strict.return_value = saved_comments
         mock_github_client.get_pr_review_threads_strict.return_value = []
         mock_github_client.get_pull_request_metadata_strict.return_value = pr_data
         mock_github_client.get_pull_request.return_value = pr_data
@@ -1816,7 +1817,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         assert not any(event.stage_id == "worker.failure-backoff" for event in events)
 
     @pytest.mark.parametrize("origin", ["explicit", "worker"])
-    @pytest.mark.parametrize("failure_kind", ["identity", "native-review", "legacy-comment", "successful-read"])
+    @pytest.mark.parametrize("failure_kind", ["identity", "native-review", "legacy-comment", "successful-read", "successful-legacy", "legacy-saved-error", "native-precedence"])
     def test_early_saved_review_lookup_failure_cannot_become_provenance_wait(self, tmp_path, monkeypatch, origin, failure_kind):
         """Actual saved-result lookup errors retain operational responsibility."""
         from auto_coder.adversarial_validator import CHANGE_PROVENANCE_CLARIFICATION_MARKER, AdversarialValidationResult, format_adversarial_validation_comment
@@ -1828,7 +1829,8 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         monkeypatch.setattr(TraceCollector, "_instance", None)
         database = tmp_path / "invalidations.sqlite3"
         monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(database))
-        failed = failure_kind != "successful-read"
+        failed = failure_kind in {"identity", "native-review", "legacy-comment"}
+        legacy_source = failure_kind in {"legacy-comment", "successful-legacy", "legacy-saved-error"}
         diagnostic = f"Authoritative saved-review {failure_kind} unavailable"
         config = AutomationConfig()
         config.AUTO_MERGE = True
@@ -1856,17 +1858,18 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         github.get_direct_sub_issues_strict = Mock(return_value=[])
         github.get_issue_hierarchy_generation_strict = Mock(return_value="generation-1")
         github.get_authenticated_user_login = Mock(return_value="controller")
-        github.get_pr_review_threads_strict = Mock(return_value=[thread])
+        github.get_pr_review_threads_strict = Mock(return_value=[] if failure_kind == "legacy-saved-error" else [thread])
         saved_report = format_adversarial_validation_comment(AdversarialValidationResult(result="ERROR", summary="Previously recorded validator error"), head_sha)
-        github.get_pr_reviews_strict = Mock(return_value=[] if failure_kind == "legacy-comment" else [{"body": saved_report, "user": {"login": "auto-coder-reviewer[bot]"}}])
-        github.get_pr_comments = Mock(return_value=[])
-        github.get_pr_comments_strict = Mock(return_value=[])
+        github.get_pr_reviews_strict = Mock(return_value=[] if legacy_source else [{"body": saved_report, "user": {"login": "auto-coder-reviewer[bot]"}}])
+        # Keep both public PR/Issue comment readers intact. Fail below the
+        # non-strict reader's exception-to-empty boundary, as REST can do.
+        github._get_issue_comments = Mock(return_value=[{"body": saved_report}] if legacy_source else [])
         if failure_kind == "identity":
             monkeypatch.setattr("auto_coder.pr_processor.resolve_reviewer_app_identity", Mock(side_effect=PermissionError(diagnostic)))
         elif failure_kind == "native-review":
             github.get_pr_reviews_strict.side_effect = OSError(diagnostic)
-        elif failure_kind == "legacy-comment":
-            github.get_pr_comments.side_effect = OSError(diagnostic)
+        elif failure_kind in {"legacy-comment", "native-precedence"}:
+            github._get_issue_comments.side_effect = OSError(diagnostic)
         engine = AutomationEngine(github, config=config)
         candidate = Candidate(type="pr", data=pr_data, priority=1)
         engine._check_and_handle_closed_branch = Mock(return_value=True)
@@ -1943,9 +1946,13 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             github.get_pr_reviews_strict.assert_not_called()
         else:
             github.get_pr_reviews_strict.assert_called()
+        if legacy_source:
+            github._get_issue_comments.assert_called_with("owner/repo", 94, fresh=True)
+        else:
+            github._get_issue_comments.assert_not_called()
         if failure_kind == "legacy-comment":
-            github.get_pr_comments.assert_called()
-        assert any("Awaiting implementer provenance clarification" in action for action in actions) is (not failed)
+            assert github.get_pr_comments("owner/repo", 94) == [], "informational comments must retain their existing best-effort behavior"
+        assert any("Awaiting implementer provenance clarification" in action for action in actions) is (not failed and failure_kind != "legacy-saved-error")
         events = get_trace_collector().get_snapshot(repository="owner/repo", item_type="pr", item_number=94).events
         failures = [event for event in events if event.stage_id == "pr.review-thread-gate" and event.outcome == "failed"]
         assert len(failures) == (1 if failed else 0)
@@ -1954,6 +1961,13 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             assert failures[0].facts["examined_head"] == head_sha
             assert failures[0].facts["phase"] == "saved-result-lookup"
             assert evidence_rows(failures)[0]["outcome"] == "failed"
+        waits = [event for event in events if event.stage_id == "pr.adversarial-validation" and event.facts.get("effect") == "saved-validation-wait"]
+        assert len(waits) == (1 if failure_kind == "legacy-saved-error" else 0)
+        if waits:
+            assert waits[0].outcome == "deferred"
+            assert waits[0].facts["examined_head"] == head_sha
+            assert waits[0].facts["saved_verdict"] == "ERROR"
+            assert waits[0].facts["reason"] == "saved_error_requires_revalidation_trigger"
         backoffs = [event for event in events if event.stage_id == "worker.failure-backoff" and event.kind == "stage-result"]
         assert len(backoffs) == (1 if failed and origin == "worker" else 0)
         if backoffs:

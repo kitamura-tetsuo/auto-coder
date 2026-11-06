@@ -34,6 +34,13 @@ retry. Run `bash scripts/test.sh tests/test_automation_engine.py -k
 early_saved_review_lookup` for actual early lookup/classification through explicit
 and durable-worker origins, original diagnostics, reconstructed retry ownership,
 no reviewer/merge/provider send, and successful-read provenance-wait controls.
+The legacy failure cases leave the real public PR/Issue comment methods intact
+and inject failure below them at `_get_issue_comments`, covering the former
+exception-to-empty boundary. Controls retain native authority without a legacy
+read, successful legacy saved-ERROR reuse, and successful native/legacy
+provenance waits; informational comment reads still return an empty list on a
+read failure. `tests/test_gh_cache_issue_comments.py` additionally exercises the
+real REST edge and strict-reader failure propagation.
 
 Issue pending-work own settlement retains an unfinished obligation rather than
 claiming implementation progress. The scheduler preserves the already armed

@@ -5134,7 +5134,7 @@ def _get_legacy_adversarial_validation_comment(
     """
     marker = adversarial_validation_comment_marker(head_sha)
     try:
-        comments = github_client.get_pr_comments(repo_name, pr_number)
+        comments = github_client.get_pr_comments_strict(repo_name, pr_number)
     except Exception as e:
         logger.error(f"Failed to read legacy adversarial validation comments for PR #{pr_number}: {e}")
         return None, str(e)

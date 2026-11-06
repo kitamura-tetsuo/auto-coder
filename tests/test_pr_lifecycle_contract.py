@@ -845,7 +845,7 @@ def test_green_ci_retains_durable_strong_review_gate(tmp_path, monkeypatch, stro
     }
     client = MagicMock(token="controlled-token")
     client.get_pr_review_threads_strict.return_value = []
-    client.get_pr_comments.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS"), H1)}]
+    client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS"), H1)}]
     client.get_pull_request.return_value = {"head": {"sha": H1}, "base": {"sha": "base-1"}}
     green = _snapshot(ObservationAvailability.KNOWN, CIConclusion.SUCCESS)
 
@@ -965,7 +965,7 @@ def test_final_attempt_admission_serializes_newer_and_current_work(tmp_path, reg
     pr_data = {"number": PR_NUMBER, "body": "Fixes #99", "labels": [], "head": {"ref": "feature", "sha": H1}}
     client = MagicMock()
     client.get_pr_review_threads_strict.return_value = []
-    client.get_pr_comments.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS"), H1)}]
+    client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS"), H1)}]
     client.get_pull_request.return_value = {"head": {"sha": H1}}
     result = AdversarialValidationResult(result="PASS", summary="current gates passed")
 
