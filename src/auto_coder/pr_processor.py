@@ -6252,7 +6252,10 @@ def _coordinate_pr_review(
                     processing_status.error = exhaustion_retry_error
                     processing_status.outcome = PRProcessingOutcome.FAILED
                 return actions
-            if adv_review_count >= max_adv_reviews and not provenance_fingerprint and not force_adversarial_validation and not revalidating_older_head_threads and not saved_review_revalidation and not exhaustion_retry_due:
+            # An applicable saved ERROR must reach the normal same-head
+            # trigger/reuse decision below. A review-count limit cannot turn
+            # that non-result into merge clearance (#2770/REQ-001).
+            if adv_review_count >= max_adv_reviews and saved_status != "ERROR" and not provenance_fingerprint and not force_adversarial_validation and not revalidating_older_head_threads and not saved_review_revalidation and not exhaustion_retry_due:
                 exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
                 if exhaustion_info and exhaustion_info.is_exhausted:
                     actions.append(f"Automatic merge disabled for PR #{pr_number}: repair allowance exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}")
@@ -6289,6 +6292,8 @@ def _coordinate_pr_review(
                     actions.append(f"Retrying adversarial validation for PR #{pr_number} beyond the review limit: prior backend quota/usage exhaustion is due for automatic retry")
                 elif adv_review_count >= max_adv_reviews and saved_review_revalidation:
                     actions.append(f"Revalidating PR #{pr_number} beyond the review limit because the saved review requires independent closure")
+                elif adv_review_count >= max_adv_reviews and saved_status == "ERROR" and not provenance_fingerprint:
+                    actions.append(f"Checking the saved ERROR for PR #{pr_number} despite the review limit; the limit does not authorize merge")
                 elif adv_review_count >= max_adv_reviews:
                     actions.append(f"Revalidating PR #{pr_number} beyond the review limit because new change-provenance evidence was supplied")
                 should_run_validation = True

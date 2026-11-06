@@ -3650,6 +3650,7 @@ class TestMaxAdversarialValidationsGating:
     @patch("auto_coder.pr_processor.run_adversarial_validation")
     @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
     @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    @pytest.mark.parametrize("old_verdict", ["NEEDS_FIX", "ERROR"])
     def test_max_adversarial_validations_not_reached_executes_validation(
         self,
         mock_merge_pr,
@@ -3659,6 +3660,7 @@ class TestMaxAdversarialValidationsGating:
         mock_checks,
         mock_mergeable,
         mock_exit_in_progress,
+        old_verdict,
     ):
         mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
@@ -3672,7 +3674,7 @@ class TestMaxAdversarialValidationsGating:
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
         client.get_pr_comments.return_value = [
-            {"body": "<!-- auto-coder-adversarial-validation:v4:oldsha1 -->\n## ❌ Auto-Coder adversarial validation: NEEDS_FIX"},
+            {"body": f"<!-- auto-coder-adversarial-validation:v4:oldsha1 -->\n## ❌ Auto-Coder adversarial validation: {old_verdict}"},
         ]
         client.get_pull_request.return_value = {"head": {"sha": head_sha}}
 
@@ -3974,7 +3976,8 @@ class TestClaimedReviewThreadValidationFlow:
         assert thread.is_resolved is False
 
     @pytest.mark.parametrize("app_identity_login", ["auto-coder-reviewer", "auto-coder-reviewer[bot]"])
-    def test_forced_revalidation_reaches_validation_despite_same_head_error_and_unresolved_thread(self, app_identity_login):
+    @pytest.mark.parametrize("review_cap", [None, 1], ids=["unlimited", "reached-cap"])
+    def test_forced_revalidation_reaches_validation_despite_same_head_error_and_unresolved_thread(self, app_identity_login, review_cap):
         """Issue #2106 AS-001: explicit --force reaches a fresh current-head
         adversarial-validation attempt even though the current head already
         published ERROR and an authentic finding thread from that head
@@ -4029,6 +4032,7 @@ class TestClaimedReviewThreadValidationFlow:
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
+        config.MAX_ADVERSARIAL_VALIDATIONS = review_cap
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature", "sha": head_sha}}
         client.get_pull_request_metadata_strict = MagicMock(return_value={**pr_data, "user": {"login": "developer"}, "state": "open"})
 
@@ -4430,7 +4434,9 @@ class TestClaimedReviewThreadValidationFlow:
         assert rationale in published_body
         assert evidence in published_body
 
-    def test_new_provenance_reply_revalidates_and_passes_same_sha(self):
+    @pytest.mark.parametrize("saved_verdict", ["INCONCLUSIVE", "ERROR"])
+    @pytest.mark.parametrize("review_cap", [None, 1], ids=["unlimited", "reached-cap"])
+    def test_new_provenance_reply_revalidates_and_passes_same_sha(self, saved_verdict, review_cap):
         from auto_coder.adversarial_validator import ReviewThreadDisposition
         from auto_coder.pr_processor import ClaimedReviewThreadGateState
         from auto_coder.review_thread_validation import ClaimedReviewThread
@@ -4459,10 +4465,12 @@ class TestClaimedReviewThreadValidationFlow:
         )
         client = MagicMock()
         client.get_pr_comments.return_value = []
+        client.get_pr_reviews_strict.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result=saved_verdict, summary="Prior result without this reply"), head_sha), "user": {"login": "auto-coder-reviewer[bot]"}}]
         client.get_issue.return_value = {"number": 99, "title": "Contract", "body": "Required behavior"}
         client.get_pull_request.return_value = {"head": {"sha": head_sha}}
         config = AutomationConfig()
         config.AUTO_MERGE = True
+        config.MAX_ADVERSARIAL_VALIDATIONS = review_cap
         pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": head_sha}}
 
         with (
@@ -4470,8 +4478,6 @@ class TestClaimedReviewThreadValidationFlow:
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
             patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
             patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState(claimed=(claimed,))),
-            patch("auto_coder.pr_processor._get_published_adversarial_validation_status", return_value=("INCONCLUSIVE", None)),
-            patch("auto_coder.pr_processor._get_published_adversarial_validation_comment", return_value=("prior review without this reply", None)),
             patch("auto_coder.pr_processor.run_adversarial_validation", return_value=validation) as run_validation,
             patch("auto_coder.pr_processor.publish_adversarial_review", return_value=ReviewPublicationResult(True, "APPROVE", "")) as publish,
             patch("auto_coder.pr_processor.resolve_addressed_review_threads", return_value=["provenance-1"]),

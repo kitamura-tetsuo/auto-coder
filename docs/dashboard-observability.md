@@ -11,8 +11,16 @@ The existing detail evidence renderer shows the wait and its facts without a
 new schema or renderer branch. Run `bash scripts/test.sh
 tests/test_automation_engine.py -k 'saved_adversarial_error or adversarial_validation_execution_failure or published_validation_status_failure'`
 for explicit/worker origins, real saved-report lookup, durable acknowledgement
-and reconstruction, repeated external invalidation, no merge/revalidation, and
-the production-to-view evidence rows. New execution and saved-result read failures
+and reconstruction, repeated external invalidation, unchanged report/attempt
+history, no merge/revalidation/timer, and the production-to-view evidence rows.
+The native-review/legacy-comment matrix covers both unlimited validation and
+`MAX_ADVERSARIAL_VALIDATIONS=1` already reached, with no optional strong tier.
+At the reached cap the same exact deferred facts must appear; a skipped-limit
+event is not a replacement for the saved-error wait. Run `bash scripts/test.sh
+tests/test_adversarial_validation_pr_flow.py tests/test_invalidation_failure_backoff.py
+tests/test_pr_lifecycle_contract.py` for the aggregate review-limit, forced,
+changed-head, changed-provenance, exhaustion, queue and merge-boundary controls.
+New execution and saved-result read failures
 remain failed; see [structured PR outcomes](client-features/structured-pr-processing-outcomes.md).
 
 Issue pending-work own settlement retains an unfinished obligation rather than

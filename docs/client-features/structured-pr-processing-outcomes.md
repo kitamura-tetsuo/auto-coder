@@ -43,6 +43,13 @@ supported explicit revalidation trigger is required to run validation again;
 the saved `ERROR` never authorizes merge. A newly executed validation error or a
 failure to read the authoritative saved result remains a processing failure.
 
+Reaching `MAX_ADVERSARIAL_VALIDATIONS` does not bypass this saved-error wait.
+An applicable same-head `ERROR` still enters the ordinary trigger/reuse decision
+before the review-limit shortcut can grant merge eligibility. Force and eligible
+changed-provenance evidence retain their existing revalidation semantics; an old
+head's `ERROR` does not become an applicable current-head verdict. Other
+review-limit policies remain unchanged.
+
 The `pr.adversarial-validation` stage records this wait as `deferred` with
 `effect=saved-validation-wait`, the exact `examined_head`, `saved_verdict=ERROR`,
 and `reason=saved_error_requires_revalidation_trigger`. The worker also reports

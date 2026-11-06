@@ -1705,8 +1705,10 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
 
     @pytest.mark.parametrize("origin", ["explicit", "worker"])
     @pytest.mark.parametrize("saved_source", ["native-review", "legacy-comment"])
-    def test_saved_adversarial_error_waits_without_operational_retry(self, mock_github_client, tmp_path, monkeypatch, origin, saved_source):
+    @pytest.mark.parametrize("review_cap", [None, 1], ids=["unlimited", "reached-cap"])
+    def test_saved_adversarial_error_waits_without_operational_retry(self, mock_github_client, tmp_path, monkeypatch, origin, saved_source, review_cap):
         """A saved ERROR blocks merge without creating another failed execution."""
+        from auto_coder.adversarial_validation_attempts import AdversarialValidationAttemptRepository
         from auto_coder.adversarial_validator import AdversarialValidationResult, format_adversarial_validation_comment
         from auto_coder.dashboard_detail import evidence_rows
         from auto_coder.entity_invalidation import DurableInvalidationQueue, EntityIdentity
@@ -1719,20 +1721,28 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
+        config.MAX_ADVERSARIAL_VALIDATIONS = review_cap
         engine = AutomationEngine(mock_github_client, config=config)
         head_sha = "abc123456789" + "0" * 28
         pr_data = {"number": 93, "title": "PR", "body": "Fixes #99", "labels": [], "head": {"ref": "feature-test", "sha": head_sha}, "mergeable": True, "state": "open"}
-        saved_report = format_adversarial_validation_comment(AdversarialValidationResult(result="ERROR", summary="Malformed validator review anchor", diagnostic_category="schema_error"), head_sha)
+        attempts = AdversarialValidationAttemptRepository("owner/repo")
+        saved_attempt = attempts.start(93, head_sha)
+        attempts.finish(saved_attempt.attempt_id, "ERROR")
+        attempt_history = attempts.storage_path.read_bytes()
+        saved_report = format_adversarial_validation_comment(AdversarialValidationResult(result="ERROR", summary="Malformed validator review anchor", diagnostic_category="schema_error", attempt_id=saved_attempt.attempt_id, attempt_sequence=saved_attempt.sequence), head_sha)
         saved_reviews = [{"body": saved_report, "user": {"login": "auto-coder-reviewer[bot]"}}] if saved_source == "native-review" else []
         saved_comments = [{"body": saved_report}] if saved_source == "legacy-comment" else []
+        saved_history = json.dumps([saved_reviews, saved_comments], sort_keys=True)
         mock_github_client.get_pr_reviews_strict.return_value = saved_reviews
         mock_github_client.get_pr_comments.return_value = saved_comments
         mock_github_client.get_pr_review_threads_strict.return_value = []
         mock_github_client.get_pull_request_metadata_strict.return_value = pr_data
+        mock_github_client.get_pull_request.return_value = pr_data
+        mock_github_client.get_pull_request_head_sha_strict.return_value = head_sha
         candidate = Candidate(type="pr", data=pr_data, priority=1)
         open_result = Mock(closed=False)
         label_context = MagicMock()
-        label_context.__enter__.return_value = True
+        label_context.__enter__.return_value = Mock()
         engine._check_and_handle_closed_branch = Mock(return_value=True)
         engine._create_candidate_from_single = Mock(return_value=candidate)
 
@@ -1754,8 +1764,9 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
                 return_value=AdversarialValidationEligibility(issue_numbers=(99,)),
             ),
             patch("auto_coder.pr_processor._get_codex_review_state", return_value=CodexReviewState()),
+            patch("auto_coder.pr_processor._two_tier_gate_inputs", return_value=None),
             patch("auto_coder.pr_processor.run_adversarial_validation") as mock_run_validation,
-            patch("auto_coder.pr_processor._merge_pr") as merge,
+            patch("auto_coder.pr_processor._merge_pr", return_value=True) as merge,
         ):
             if origin == "explicit":
                 result = engine.process_single("owner/repo", "pr", 93)
@@ -1772,6 +1783,10 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
                         assert engine.invalidations.pending_count("owner/repo") == 0
                         identity = EntityIdentity("owner/repo", "pr", 93)
                         assert engine.invalidations.get_deferred(identity) is None
+                        assert engine.invalidations.claim("owner/repo") is None
+                        engine.invalidations = DurableInvalidationQueue(database)
+                        engine.invalidations.recover("owner/repo")
+                        assert engine.invalidations.pending_count("owner/repo") == 0
                         assert engine.invalidations.claim("owner/repo") is None
                         # A new external invalidation still reevaluates the saved
                         # verdict; it does not start a reviewer or failure timer.
@@ -1790,12 +1805,12 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
 
         mock_run_validation.assert_not_called()
         merge.assert_not_called()
-        assert mock_github_client.get_pr_reviews_strict.return_value == saved_reviews
-        assert mock_github_client.get_pr_comments.return_value == saved_comments
+        assert attempts.storage_path.read_bytes() == attempt_history
+        assert json.dumps([mock_github_client.get_pr_reviews_strict.return_value, mock_github_client.get_pr_comments.return_value], sort_keys=True) == saved_history
         events = get_trace_collector().get_snapshot(repository="owner/repo", item_type="pr", item_number=93).events
         waits = [event for event in events if event.stage_id == "pr.adversarial-validation" and event.facts.get("effect") == "saved-validation-wait"]
         assert len(waits) == (2 if origin == "worker" else 1)
-        assert all(event.outcome == "deferred" and event.facts["saved_verdict"] == "ERROR" and event.facts["examined_head"] == head_sha for event in waits)
+        assert all(event.outcome == "deferred" and event.facts["saved_verdict"] == "ERROR" and event.facts["examined_head"] == head_sha and event.facts["reason"] == "saved_error_requires_revalidation_trigger" for event in waits)
         rows = evidence_rows(waits)
         assert all(row["outcome"] == "deferred" and "saved_error_requires_revalidation_trigger" in row["facts"] for row in rows)
         assert not any(event.stage_id == "worker.failure-backoff" for event in events)
