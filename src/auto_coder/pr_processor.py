@@ -7186,7 +7186,31 @@ def _coordinate_pr_review(
                         current_policy=two_tier_inputs.policy,
                     )
                     if preliminary_completion is None:
-                        actions.append(f"Skipping merge for PR #{pr_number}: strong-audit opening could not be confirmed: {exc}")
+                        reason = f"strong-audit opening could not be confirmed: {exc}"
+                        actions.append(f"Skipping merge for PR #{pr_number}: {reason}")
+                        # Opening evidence is an availability prerequisite, not
+                        # completion of the pending audit.  In particular, a due
+                        # durable invalidation must retain a bounded successor when
+                        # the timeline transport fails transiently; otherwise the
+                        # worker acknowledges its only wake and the saved cycle is
+                        # never reconsidered.  Use the existing non-quota retry
+                        # bound without changing or consuming the selected wait.
+                        actions.quota_deferred = True
+                        actions.retry_not_before = time.time() + 60.0
+                        if processing_status is not None:
+                            processing_status.outcome = PRProcessingOutcome.DEFERRED
+                            processing_status.retry_not_before = actions.retry_not_before
+                        _record_pr_stage(
+                            pr_number,
+                            "pr.strong-audit-gate",
+                            f"pr#{pr_number} strong-audit gate",
+                            Outcome.DEFERRED,
+                            {
+                                "reason": reason,
+                                "phase": "opening-resolution",
+                                "retry_not_before": actions.retry_not_before,
+                            },
+                        )
                         return actions
                     opening_inputs = two_tier_inputs
                 if (

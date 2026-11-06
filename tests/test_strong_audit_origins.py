@@ -248,6 +248,55 @@ def test_automatic_pending_dispatch_rechecks_unchanged_usage_before_reset(scenar
     assert s.history()[0]["retry_not_before"] == first.retry_not_before
 
 
+def test_due_dispatch_retains_wake_when_opening_lookup_fails(scenario, monkeypatch):
+    """A transient opening read cannot acknowledge the daemon's only wake."""
+    s = scenario
+    engine = s.engine()
+    s.dispatch(engine, invalidate=True)
+    selected = s.snapshot()
+    assert selected.retry_not_before == math.nextafter(s.clock + 600, math.inf)
+    assert engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100)) is not None
+
+    s.clock = selected.retry_not_before
+    timeline_calls = 0
+
+    def unavailable_timeline(*args, **kwargs):
+        nonlocal timeline_calls
+        timeline_calls += 1
+        raise RuntimeError("controlled timeline outage")
+
+    monkeypatch.setattr(s.github, "get_issue_timeline_strict", unavailable_timeline)
+    s.dispatch(engine)
+
+    assert timeline_calls == 1
+    assert not s.reviews
+    preserved = s.snapshot()
+    assert preserved.retry_not_before == selected.retry_not_before
+    assert preserved.attempt_error_reason == selected.attempt_error_reason
+    assert preserved.active_claim is None
+    assert s.history() == []
+    successor = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100))
+    assert successor is not None
+    assert successor.retry_not_before == s.clock + 60
+
+    monkeypatch.setattr(
+        s.github,
+        "get_issue_timeline_strict",
+        lambda *args, **kwargs: list(s.timeline),
+    )
+    s.clock = successor.retry_not_before
+    s.dispatch(engine)
+
+    assert len(s.reviews) == 1
+    assert s.observations[-1] == (s.clock, 80.0)
+    accepted = s.snapshot()
+    assert accepted.accepted_strong_round is not None
+    assert accepted.pending_effect == "STRONG_PUBLICATION"
+    publication_wake = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100))
+    assert publication_wake is not None
+    assert publication_wake.retry_not_before == s.clock + 60
+
+
 def test_explicit_origin_restores_selected_wait_when_target_changes_during_usage(
     scenario,
     monkeypatch,
