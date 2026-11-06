@@ -23,6 +23,18 @@ changed-head, changed-provenance, exhaustion, queue and merge-boundary controls.
 New execution and saved-result read failures
 remain failed; see [structured PR outcomes](client-features/structured-pr-processing-outcomes.md).
 
+The early unresolved-thread gate emits a failed `pr.review-thread-gate` result
+with `phase=saved-result-lookup`, exact `examined_head` and the original `reason`
+when reviewer-App identity resolution, native-review reading, or required legacy
+fallback reading fails. It returns before ordinary provenance waiting or repair
+delegation. The durable worker records its existing `worker.failure-backoff`
+obligation instead of acknowledging the failed evaluation. The generic dashboard
+evidence rows preserve the failed lookup separately from the deferred operational
+retry. Run `bash scripts/test.sh tests/test_automation_engine.py -k
+early_saved_review_lookup` for actual early lookup/classification through explicit
+and durable-worker origins, original diagnostics, reconstructed retry ownership,
+no reviewer/merge/provider send, and successful-read provenance-wait controls.
+
 Issue pending-work own settlement retains an unfinished obligation rather than
 claiming implementation progress. The scheduler preserves the already armed
 regular wait; an independent wake changes scan timing only. No stage outcome or

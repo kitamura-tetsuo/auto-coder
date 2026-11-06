@@ -41,7 +41,14 @@ an `operational_processing_failure` backoff or a timed validation retry. New
 external invalidations still reevaluate current evidence. A changed head or another
 supported explicit revalidation trigger is required to run validation again;
 the saved `ERROR` never authorizes merge. A newly executed validation error or a
-failure to read the authoritative saved result remains a processing failure.
+failure to resolve the reviewer App identity or read the authoritative saved
+result remains a processing failure. This also applies to the early unresolved
+review-thread gate: an identity, native-review or required legacy-fallback read
+failure preserves its original diagnostic and returns failed before ordinary
+provenance waiting or repair delegation. The worker retains that unfinished
+evaluation through its existing operational-failure backoff rather than
+acknowledging it. A successful read with unresolved provenance still defers
+normally without requesting a code repair.
 
 Reaching `MAX_ADVERSARIAL_VALIDATIONS` does not bypass this saved-error wait.
 An applicable same-head `ERROR` still enters the ordinary trigger/reuse decision

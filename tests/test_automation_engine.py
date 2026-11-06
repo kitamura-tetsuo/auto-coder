@@ -1815,6 +1815,151 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         assert all(row["outcome"] == "deferred" and "saved_error_requires_revalidation_trigger" in row["facts"] for row in rows)
         assert not any(event.stage_id == "worker.failure-backoff" for event in events)
 
+    @pytest.mark.parametrize("origin", ["explicit", "worker"])
+    @pytest.mark.parametrize("failure_kind", ["identity", "native-review", "legacy-comment", "successful-read"])
+    def test_early_saved_review_lookup_failure_cannot_become_provenance_wait(self, tmp_path, monkeypatch, origin, failure_kind):
+        """Actual saved-result lookup errors retain operational responsibility."""
+        from auto_coder.adversarial_validator import CHANGE_PROVENANCE_CLARIFICATION_MARKER, AdversarialValidationResult, format_adversarial_validation_comment
+        from auto_coder.dashboard_detail import evidence_rows
+        from auto_coder.entity_invalidation import DurableInvalidationQueue, EntityIdentity
+        from auto_coder.execution_trace import TraceCollector, get_trace_collector
+        from auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
+
+        monkeypatch.setattr(TraceCollector, "_instance", None)
+        database = tmp_path / "invalidations.sqlite3"
+        monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(database))
+        failed = failure_kind != "successful-read"
+        diagnostic = f"Authoritative saved-review {failure_kind} unavailable"
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        head_sha = "e" * 40
+        pr_data = {"number": 94, "title": "PR", "body": "Fixes #99", "labels": [], "head": {"ref": "feature-test", "sha": head_sha}, "mergeable": True, "state": "open", "user": {"login": "developer", "id": 2}}
+        issue = {"number": 99, "title": "Contract", "body": "## Requirements\nREQ-001: Preserve the gate.", "state": "open", "labels": []}
+        thread = ReviewThread(
+            id="pending-provenance",
+            is_resolved=False,
+            comments_truncated=False,
+            comments=[
+                ReviewThreadComment(database_id=101, author_login="auto-coder-reviewer[bot]", author_id=101, body=f"{CHANGE_PROVENANCE_CLARIFICATION_MARKER}\nExplain the lockfile change."),
+                ReviewThreadComment(database_id=102, author_login="developer", author_id=2, body="I will investigate."),
+            ],
+        )
+        github = GitHubClient("test-token")
+        github.get_pull_request_metadata_strict = Mock(return_value=pr_data)
+        github.get_pull_request = Mock(return_value=pr_data)
+        github.get_pull_request_head_sha_strict = Mock(return_value=head_sha)
+        github.get_issue = Mock(return_value=issue)
+        github.get_issue_strict = Mock(return_value=issue)
+        github.get_issue_dispatch_snapshot_strict = Mock(return_value=issue)
+        github.get_parent_issue_number_strict = Mock(return_value=None)
+        github.get_direct_sub_issues_strict = Mock(return_value=[])
+        github.get_issue_hierarchy_generation_strict = Mock(return_value="generation-1")
+        github.get_authenticated_user_login = Mock(return_value="controller")
+        github.get_pr_review_threads_strict = Mock(return_value=[thread])
+        saved_report = format_adversarial_validation_comment(AdversarialValidationResult(result="ERROR", summary="Previously recorded validator error"), head_sha)
+        github.get_pr_reviews_strict = Mock(return_value=[] if failure_kind == "legacy-comment" else [{"body": saved_report, "user": {"login": "auto-coder-reviewer[bot]"}}])
+        github.get_pr_comments = Mock(return_value=[])
+        github.get_pr_comments_strict = Mock(return_value=[])
+        if failure_kind == "identity":
+            monkeypatch.setattr("auto_coder.pr_processor.resolve_reviewer_app_identity", Mock(side_effect=PermissionError(diagnostic)))
+        elif failure_kind == "native-review":
+            github.get_pr_reviews_strict.side_effect = OSError(diagnostic)
+        elif failure_kind == "legacy-comment":
+            github.get_pr_comments.side_effect = OSError(diagnostic)
+        engine = AutomationEngine(github, config=config)
+        candidate = Candidate(type="pr", data=pr_data, priority=1)
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=candidate)
+        label_context = MagicMock()
+        label_context.__enter__.return_value = Mock()
+        completions = Mock(wraps=engine.invalidations.complete_with_outcome)
+        monkeypatch.setattr(engine.invalidations, "complete_with_outcome", completions)
+        worker_results = []
+        process_candidate = engine._process_single_candidate
+
+        def observe_candidate(*args, **kwargs):
+            result = process_candidate(*args, **kwargs)
+            worker_results.append(result)
+            return result
+
+        monkeypatch.setattr(engine, "_process_single_candidate", observe_candidate)
+        with (
+            patch("auto_coder.label_manager.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor._close_empty_pr", return_value=Mock(closed=False)),
+            patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=Mock(closed=False)),
+            patch("auto_coder.pr_processor._should_skip_waiting_for_jules", return_value=False),
+            patch("auto_coder.pr_processor._link_jules_pr_to_issue", return_value=True),
+            patch("auto_coder.pr_processor._link_codex_cloud_pr_to_issue"),
+            patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
+            patch("auto_coder.pr_processor.get_pr_review_allowlist_from_config", return_value=[101]),
+            patch("auto_coder.pr_processor._two_tier_gate_inputs", return_value=None),
+            patch("auto_coder.pr_processor.run_adversarial_validation") as reviewer,
+            patch("auto_coder.pr_processor._merge_pr") as merge,
+            patch("auto_coder.pr_processor._delegate_cloud_review_thread_repair") as provider,
+        ):
+            if origin == "explicit":
+                result = engine.process_single("owner/repo", "pr", 94)
+                assert result["errors"] == ([f"Error processing pr #94: {diagnostic}"] if failed else [])
+                assert result["prs_processed"][0]["outcome"] == ("failed" if failed else "deferred")
+                actions = result["prs_processed"][0]["actions_taken"]
+            else:
+
+                async def scenario():
+                    await engine.invalidate_entity("owner/repo", "pr", 94)
+                    worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+                    try:
+                        await asyncio.wait_for(engine.queue.join(), timeout=5)
+                    finally:
+                        worker.cancel()
+                        await asyncio.gather(worker, return_exceptions=True)
+
+                asyncio.run(scenario())
+                assert len(worker_results) == 1
+                assert worker_results[0].outcome is (PRProcessingOutcome.FAILED if failed else PRProcessingOutcome.DEFERRED)
+                assert worker_results[0].error == (diagnostic if failed else None)
+                actions = worker_results[0].actions
+                assert completions.call_count == (0 if failed else 1)
+                recovered = DurableInvalidationQueue(database)
+                recovered.recover("owner/repo")
+                assert recovered.pending_count("owner/repo") == (1 if failed else 0)
+                assert recovered.claim("owner/repo") is None
+                retained = recovered.get_deferred(EntityIdentity("owner/repo", "pr", 94))
+                if failed:
+                    assert retained is not None and retained.reason == "operational_processing_failure"
+                    assert retained.retry_not_before > time.time()
+                else:
+                    assert retained is None
+
+        reviewer.assert_not_called()
+        merge.assert_not_called()
+        provider.assert_not_called()
+        github.get_pr_review_threads_strict.assert_called()
+        if failure_kind == "identity":
+            github.get_pr_reviews_strict.assert_not_called()
+        else:
+            github.get_pr_reviews_strict.assert_called()
+        if failure_kind == "legacy-comment":
+            github.get_pr_comments.assert_called()
+        assert any("Awaiting implementer provenance clarification" in action for action in actions) is (not failed)
+        events = get_trace_collector().get_snapshot(repository="owner/repo", item_type="pr", item_number=94).events
+        failures = [event for event in events if event.stage_id == "pr.review-thread-gate" and event.outcome == "failed"]
+        assert len(failures) == (1 if failed else 0)
+        if failed:
+            assert failures[0].facts["reason"] == diagnostic
+            assert failures[0].facts["examined_head"] == head_sha
+            assert failures[0].facts["phase"] == "saved-result-lookup"
+            assert evidence_rows(failures)[0]["outcome"] == "failed"
+        backoffs = [event for event in events if event.stage_id == "worker.failure-backoff" and event.kind == "stage-result"]
+        assert len(backoffs) == (1 if failed and origin == "worker" else 0)
+        if backoffs:
+            assert backoffs[0].outcome == "deferred"
+            assert backoffs[0].facts["reason"] == "operational_processing_failure"
+
     # Note: _process_issues and _process_pull_requests are now functions in issue_processor.py and pr_processor.py
     # These tests are covered by test_issue_processor.py and test_pr_processor.py
 

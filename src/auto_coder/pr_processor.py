@@ -6044,7 +6044,15 @@ def _coordinate_pr_review(
                 gate_eligibility = _get_adversarial_validation_eligibility(github_client, repo_name, pr_data)
                 if head_sha_for_gate and gate_eligibility.is_applicable and not gate_eligibility.lookup_error:
                     current_status, current_status_error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, head_sha_for_gate)
-                    if not current_status_error:
+                    if current_status_error:
+                        actions.append(f"Could not check prior adversarial validation for PR #{pr_number}: {current_status_error}; review-thread processing not started")
+                        actions.record_disposition(ReviewDisposition.OPERATIONAL_FAILURE)
+                        if processing_status is not None:
+                            processing_status.error = current_status_error
+                            processing_status.outcome = PRProcessingOutcome.FAILED
+                        _record_pr_stage(pr_number, "pr.review-thread-gate", f"pr#{pr_number} review-thread gate", Outcome.FAILED, {"examined_head": head_sha_for_gate, "phase": "saved-result-lookup", "reason": current_status_error})
+                        return actions
+                    else:
                         _gate_resumption, gate_resume_stop = _resume_closure_before_admission(github_client, repo_name, pr_data, head_sha_for_gate, force_adversarial_validation, actions, processing_status, config)
                         if gate_resume_stop:
                             return actions
