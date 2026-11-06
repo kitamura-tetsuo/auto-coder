@@ -6208,7 +6208,19 @@ def _coordinate_pr_review(
                 if claimed_review_threads:
                     actions.append(f"PR #{pr_number} has {len(claimed_review_threads)} claimed-addressed review thread(s) pending independent validation")
 
+    ordinary_opening_token = ""
+    ordinary_opening_error = ""
     if adversarial_validation_enabled and adversarial_validation_applicable:
+        # Bind any ordinary result to the opening in which its authority is
+        # produced.  Capturing this after publication would allow a same-head
+        # close/reopen in that interval to relabel the old result as current.
+        try:
+            pre_ordinary_strong_inputs = _two_tier_gate_inputs(github_client, repo_name, pr_data)
+            if pre_ordinary_strong_inputs is not None:
+                ordinary_opening_token = _pr_open_incarnation_token(github_client, repo_name, pr_number, pr_data)
+        except Exception as exc:
+            ordinary_opening_error = str(exc)
+
         max_adv_reviews = config.MAX_ADVERSARIAL_VALIDATIONS if config.MAX_ADVERSARIAL_VALIDATIONS is not None else config.MAX_ADVERSARIAL_REVIEWS
         if max_adv_reviews is not None and max_adv_reviews >= 0:
             try:
@@ -7170,10 +7182,16 @@ def _coordinate_pr_review(
                 current_policy=two_tier_inputs.policy,
             )
             needs_strong_admission = preliminary_completion is None and not preliminary_snapshot.pending_effect and not (preliminary_snapshot.phase == PHASE_ORDINARY_CLOSURE and preliminary_snapshot.open_findings)
-            initial_lifecycle_token = ""
+            initial_lifecycle_token = ordinary_opening_token
             if needs_strong_admission:
                 try:
-                    opening_inputs, initial_lifecycle_token = current_strong_target()
+                    if ordinary_opening_error:
+                        raise RuntimeError(ordinary_opening_error)
+                    if not initial_lifecycle_token:
+                        raise RuntimeError("the ordinary result has no verified PR opening identity")
+                    opening_inputs, current_lifecycle_token = current_strong_target()
+                    if current_lifecycle_token != initial_lifecycle_token:
+                        raise RuntimeError("the PR open incarnation changed after ordinary authority was captured")
                 except Exception as exc:
                     # A competing controller may have completed this exact target
                     # after the preliminary read. Reobserve durable authority before
