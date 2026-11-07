@@ -420,3 +420,48 @@ def test_partial_attempt_frozen_lock_failure_and_cross_runtime_receipt_are_rejec
     assert frozen.value.failure in {PreparationFailure.INCOMPATIBLE_DEPENDENCIES, PreparationFailure.UNAVAILABLE}
     assert not list((tmp_path / "failed-versions").glob("revisions/*/*/READY.json"))
     assert prepared.receipt.installed_runtime_id
+
+
+def test_ready_readback_rejects_checkout_provenance_module(tmp_path: Path, _use_real_commands: None) -> None:
+    repo, sha, uv, uv_version = _create_production_fixture(tmp_path)
+    config = WorkerVersionConfig(repo, tmp_path / "versions", Path(sys.executable), uv, uv_version)
+    preparer = WorkerVersionPreparer(config)
+    receipt = preparer.prepare(PrepareIntent(sha, "origin-check")).receipt
+    interpreter = Path(receipt.interpreter_path)
+    ready = next(config.version_root.glob("revisions/*/origin-check/READY.json"))
+    original_ready = ready.read_bytes()
+    assert preparer.read_ready(ready) == receipt
+    site_packages = Path(_command([str(interpreter), "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"]))
+    installed_package = site_packages / "auto_coder"
+    checkout_package = ready.parent / "source" / "src" / "auto_coder"
+    # Keep matching provenance, distribution metadata, and the installed package
+    # entry point. Only the actual provenance module originates in the checkout.
+    shutil.copy2(installed_package / "build_provenance.json", checkout_package)
+    (installed_package / "build_provenance.py").unlink()
+    (installed_package / "build_provenance.py").symlink_to(checkout_package / "build_provenance.py")
+    observation = json.loads(_command([str(interpreter), "-I", "-m", "auto_coder.build_provenance"]))
+    assert observation["source_revision"]["value"] == receipt.source_sha
+    assert observation["distribution_version"]["value"] == receipt.distribution_version
+    observed_module = Path(_command([str(interpreter), "-I", "-c", "from pathlib import Path; import auto_coder.build_provenance as p; print(Path(p.__file__).resolve())"]))
+    assert observed_module == checkout_package / "build_provenance.py"
+    with pytest.raises(WorkerVersionError) as caught:
+        WorkerVersionPreparer(config).read_ready(ready)
+    assert caught.value.failure is PreparationFailure.VERIFICATION_MISMATCH
+    assert ready.read_bytes() == original_ready
+
+
+def test_ready_origin_probe_and_provenance_use_different_import_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands: None) -> None:
+    repo, sha, uv, uv_version = _create_production_fixture(tmp_path)
+    config = WorkerVersionConfig(repo, tmp_path / "versions", Path(sys.executable), uv, uv_version)
+    preparer = WorkerVersionPreparer(config)
+    receipt = preparer.prepare(PrepareIntent(sha, "cwd-origin")).receipt
+    ready = next(config.version_root.glob("revisions/*/cwd-origin/READY.json"))
+    interpreter = Path(receipt.interpreter_path)
+    installed_package = Path(_command([str(interpreter), "-I", "-c", "from pathlib import Path; import auto_coder; print(Path(auto_coder.__file__).parent)"]))
+    checkout_package = ready.parent / "source" / "src" / "auto_coder"
+    shutil.copy2(installed_package / "build_provenance.json", checkout_package)
+    monkeypatch.chdir(checkout_package.parent)
+    assert Path(_command([str(interpreter), "-c", "from pathlib import Path; import auto_coder.build_provenance as p; print(Path(p.__file__).resolve())"])) == checkout_package / "build_provenance.py"
+    with pytest.raises(WorkerVersionError) as caught:
+        preparer.read_ready(ready)
+    assert caught.value.failure is PreparationFailure.VERIFICATION_MISMATCH

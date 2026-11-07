@@ -36,3 +36,10 @@ modify a release reference. Activation and bounded retention cleanup belong to a
 later authorized lifecycle component. Recovery is limited to verified reuse of an
 unchanged READY attempt; partial, corrupt, conflicting, or unverifiable attempts are
 reported without repair in place.
+
+READY readback verifies both the imported package and the provenance module's
+resolved origins within the recorded environment in the same interpreter that
+produces the provenance observation. A provenance-module symlink to the source
+checkout or a checkout package selected by the working directory cannot pass
+through a separate isolated origin probe and then supply the accepted observation.
+Such origin mismatches use the existing `VERIFICATION_MISMATCH` failure path.
