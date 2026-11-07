@@ -57,7 +57,9 @@ class _SourceService(GitEvidenceBoundary):
         self.refs.clear()
         self.executions.clear()
         self.repository = root
-        subprocess.run(["git", "clone", "--bare", str(source), str(root)], check=True, capture_output=True, text=True)
+        # Import source commits, never the checkout's live beta/tested tags.
+        # The fixture publishes its own proof and selection refs below.
+        subprocess.run(["git", "clone", "--bare", "--no-tags", str(source), str(root)], check=True, capture_output=True, text=True)
         self.read_only_mutations: list[tuple[str, str]] = []
         self.fail_reads = False
 
