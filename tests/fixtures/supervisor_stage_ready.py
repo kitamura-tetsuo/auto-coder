@@ -33,7 +33,7 @@ def main() -> None:
     attempt_id = sys.argv[2] if len(sys.argv) == 3 else "supervisor-acceptance"
     timing = recorder()
     target_role = os.environ.get("AUTO_CODER_CI_TIMING_TARGET_ROLE", "supervisor-stage")
-    execution_id = str(uuid.uuid4())
+    execution_id = os.environ.get("AUTO_CODER_DEPENDENCY_EXECUTION_ID") or str(uuid.uuid4())
     install = preparer._install
 
     def timed_install(checkout: Path, environment: Path) -> None:

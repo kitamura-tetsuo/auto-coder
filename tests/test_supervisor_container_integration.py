@@ -598,6 +598,7 @@ def test_independently_prepared_staged_restart_preserves_held_intent(tmp_path: P
     prepared = []
     first_attempt_path: Path | None = None
     held_first_attempt = runtime / "held-first-ready"
+    execution_ids = {role: str(uuid.uuid4()) for role in ("held-staged-a", "held-staged-b")}
     try:
         for index, attempt in enumerate(("held-staged-a", "held-staged-b")):
             try:
@@ -619,6 +620,8 @@ def test_independently_prepared_staged_restart_preserves_held_intent(tmp_path: P
                     "-v",
                     f"{fixtures}:/fixtures:ro",
                     *_preparation_cache_arguments(namespace="same-source-cold-warm", reset=index == 0),
+                    "-e",
+                    f"AUTO_CODER_DEPENDENCY_EXECUTION_ID={execution_ids[attempt]}",
                     *docker_timing_arguments(target_role=attempt),
                     "-e",
                     "HOME=/runtime/home",
@@ -646,7 +649,7 @@ def test_independently_prepared_staged_restart_preserves_held_intent(tmp_path: P
         if first_attempt_path is not None and held_first_attempt.exists():
             held_first_attempt.rename(first_attempt_path)
     original, destination = prepared
-    observe_dependency_cache_comparison("held-staged-a", "held-staged-b")
+    observe_dependency_cache_comparison("held-staged-a", "held-staged-b", cold_execution_id=execution_ids["held-staged-a"], warm_execution_id=execution_ids["held-staged-b"])
     assert original["source_sha"] == destination["source_sha"] == revision
     assert original["installed_runtime_id"] != destination["installed_runtime_id"]
     assert original["content_identity"] != destination["content_identity"]

@@ -282,12 +282,13 @@ class DependencyCacheComparison:
     errors: tuple[str, ...]
 
 
-def observe_dependency_cache_comparison(cold_role: str, warm_role: str) -> DependencyCacheComparison:
+def observe_dependency_cache_comparison(cold_role: str, warm_role: str, *, cold_execution_id: str, warm_execution_id: str) -> DependencyCacheComparison:
     """Join retained real-uv records without making diagnostics readiness authority."""
 
     timing = recorder()
     errors: list[str] = []
     records: dict[str, dict[str, object]] = {}
+    expected_executions = {cold_role: cold_execution_id, warm_role: warm_execution_id}
     completed_spans: dict[str, dict[str, set[str]]] = {cold_role: {}, warm_role: {}}
     if timing.directory is None:
         errors.append("timing is disabled")
@@ -308,7 +309,7 @@ def observe_dependency_cache_comparison(cold_role: str, warm_role: str) -> Depen
                     candidate = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if isinstance(candidate, dict) and candidate.get("target_role") in {cold_role, warm_role}:
+                if isinstance(candidate, dict) and candidate.get("target_role") in expected_executions and candidate.get("execution_id") and candidate.get("execution_id") == expected_executions[str(candidate["target_role"])]:
                     records[str(candidate["target_role"])] = candidate
         try:
             timing_paths = list(timing.directory.glob("timing-*.jsonl"))
@@ -388,6 +389,8 @@ def observe_dependency_cache_comparison(cold_role: str, warm_role: str) -> Depen
         cold_role=cold_role,
         warm_role=warm_role,
         complete=complete,
+        cold_execution_id=cold_execution_id,
+        warm_execution_id=warm_execution_id,
         reusable_cold_work=cold_work,
         reusable_warm_work=warm_work,
         comparison_errors=errors,

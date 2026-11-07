@@ -27,7 +27,10 @@ comparison event joins exact source, lock, Python, uv, namespace, destination,
 population-lineage fields, and a per-execution correlation identifier shared only
 by that preparation's uv observation and completed timing spans. This prevents
 retained spans from an earlier run with the same human-readable invocation label
-from completing a newer partial measurement. The comparison reports reusable downloads/builds separately
+from completing a newer partial measurement. The host creates each expected execution
+identifier before launching preparation and supplies it to both the fixture and
+comparison consumer. A retained complete pair cannot fill missing current work
+records when current diagnostic writes fail. The comparison reports reusable downloads/builds separately
 from the required `auto-coder` source build.
 Unrecognized output is reported as unavailable rather than inferred from elapsed
 time, and diagnostic failures never replace the installer result.

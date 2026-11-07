@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures import ci_timing
-from tests.fixtures.integration_dependency_observation import observe_uv_sync
+from tests.fixtures.integration_dependency_observation import _write, observe_uv_sync
 from tests.utils.integration_dependency_cache import CONTAINER_CACHE_DIRECTORY, dependency_cache_arguments
 
 
@@ -145,12 +145,33 @@ def test_retained_records_establish_attributable_same_input_reduction(tmp_path: 
                 execution_id="current-execution",
                 outcome="completed",
             )
-    comparison = ci_timing.observe_dependency_cache_comparison("cold", "warm")
+    comparison = ci_timing.observe_dependency_cache_comparison("cold", "warm", cold_execution_id="current-execution", warm_execution_id="current-execution")
     assert comparison.complete is True
     assert comparison.reusable_cold_work == 2
     assert comparison.reusable_warm_work == 0
     retained = "\n".join(path.read_text(encoding="utf-8") for path in tmp_path.glob("timing-*.jsonl"))
     assert '"event_kind": "dependency_cache_comparison"' in retained
+
+    # Retain a fully consistent prior pair, then fail actual current appends.
+    paths = [tmp_path / f"dependency-work-{role}.jsonl" for role in ("cold", "warm")]
+    previous = [path.read_bytes() for path in paths]
+    original_open = Path.open
+
+    def deny_current_append(path: Path, mode: str = "r", *args: object, **kwargs: object):
+        if path in paths and mode == "a":
+            raise PermissionError("current measurement append denied")
+        return original_open(path, mode, *args, **kwargs)
+
+    with monkeypatch.context() as denied:
+        denied.setattr(Path, "open", deny_current_append)
+        for path, record in zip(paths, (cold, warm)):
+            _write(path, {**record, "execution_id": "new-execution"})
+    assert [path.read_bytes() for path in paths] == previous
+    missing = ci_timing.observe_dependency_cache_comparison("cold", "warm", cold_execution_id="new-execution", warm_execution_id="new-execution")
+    assert missing.complete is False
+    assert "missing retained cold or warm uv work record" in missing.errors
+    assert missing.reusable_cold_work is None
+    assert missing.reusable_warm_work is None
 
 
 @pytest.mark.parametrize(
@@ -210,7 +231,7 @@ def test_comparison_rejects_incomplete_or_unattributable_evidence(tmp_path: Path
             )
     (tmp_path / "dependency-work-cold.jsonl").write_text(json.dumps(cold) + "\n", encoding="utf-8")
     (tmp_path / "dependency-work-warm.jsonl").write_text(json.dumps(warm) + "\n", encoding="utf-8")
-    comparison = ci_timing.observe_dependency_cache_comparison("cold", "warm")
+    comparison = ci_timing.observe_dependency_cache_comparison("cold", "warm", cold_execution_id="current-execution", warm_execution_id="current-execution")
     assert comparison.complete is False
     assert any(expected_error in error for error in comparison.errors)
 
@@ -272,7 +293,7 @@ def test_comparison_rejects_old_same_label_spans_from_retained_run(tmp_path: Pat
     (tmp_path / "dependency-work-cold.jsonl").write_text(json.dumps(cold) + "\n", encoding="utf-8")
     (tmp_path / "dependency-work-warm.jsonl").write_text(json.dumps(warm) + "\n", encoding="utf-8")
 
-    comparison = ci_timing.observe_dependency_cache_comparison("cold", "warm")
+    comparison = ci_timing.observe_dependency_cache_comparison("cold", "warm", cold_execution_id="current-execution", warm_execution_id="current-execution")
 
     assert comparison.complete is False
     assert comparison.errors.count("missing completed prepare/installer spans for cold") == 1
