@@ -11,7 +11,7 @@ from unittest.mock import Mock
 
 import pytest
 
-pytest_plugins = ["tests.pytest_fault_diagnostics"]
+pytest_plugins = ["tests.pytest_fault_diagnostics", "tests.ci_timing_plugin"]
 
 # Ensure 'src' directory is on sys.path so 'auto_coder' package is importable everywhere
 _repo_root = Path(__file__).resolve().parents[1]
@@ -228,6 +228,7 @@ def mock_github_client(mock_github_token):
     """Mock GitHub client for testing."""
     client = Mock()
     client.token = mock_github_token
+    client.get_pr_comments_strict.return_value = []
     # Set get_open_prs_json to return an empty list by default to prevent iteration errors
     client.get_open_prs_json.return_value = []
     # Set get_open_issues to return an empty list by default to prevent iteration errors

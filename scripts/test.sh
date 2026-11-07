@@ -1,6 +1,15 @@
 #!/bin/bash
 set -Eeuo pipefail
 
+# The PR workflow runs the repository-wide quality gate in its dedicated job.
+# Only this explicit leading mode omits that duplicate work; CI environment
+# variables alone deliberately retain the normal, complete test entry point.
+CI_TESTS_ONLY=0
+if [ "${1:-}" = "--ci-tests-only" ]; then
+    CI_TESTS_ONLY=1
+    shift
+fi
+
 # -----------------------------------------------------------------------------
 # Environment detection and setup
 # -----------------------------------------------------------------------------
@@ -35,7 +44,11 @@ if [ "${AM_I_AUTOCODER_CONTAINER:-false}" = "true" ] && [ "${INSIDE_TARGET_EXECU
         fi
 
         # Execute this script inside the target container
-        docker exec -e INSIDE_TARGET_EXECUTION=true "$TARGET_CONTAINER" ./scripts/test.sh "$@"
+        FORWARDED_ARGS=("$@")
+        if [ "$CI_TESTS_ONLY" -eq 1 ]; then
+            FORWARDED_ARGS=(--ci-tests-only "${FORWARDED_ARGS[@]}")
+        fi
+        docker exec -e INSIDE_TARGET_EXECUTION=true "$TARGET_CONTAINER" ./scripts/test.sh "${FORWARDED_ARGS[@]}"
         exit $?
     else
         echo "[WARN] AM_I_AUTOCODER_CONTAINER is true but REPO_NAME is not set. Running locally."
@@ -186,6 +199,7 @@ fi
 # Code quality checks (matching .pre-commit-config.yaml)
 # -----------------------------------------------------------------------------
 echo ""
+if [ "$CI_TESTS_ONLY" -eq 0 ]; then
 echo "Installing code quality tools..."
 
 # Install code quality tools
@@ -234,6 +248,9 @@ $RUN mypy --config-file pyproject.toml -p auto_coder
 
 echo "[OK] All code quality checks passed!"
 echo ""
+else
+  echo "[INFO] Explicit CI test-only mode: quality checks run in the PR quality job."
+fi
 
 # -----------------------------------------------------------------------------
 # Test execution via log collector

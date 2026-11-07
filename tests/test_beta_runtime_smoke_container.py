@@ -38,11 +38,12 @@ from auto_coder.management.worker_lifecycle import LIFECYCLE_ACTIONS, WorkerLife
 from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkClient
 from auto_coder.tested_source_refs import serialize_record
 from auto_coder.util.gh_cache import GitDataResponse, GitHubGitDataClient
+from tests.fixtures.ci_timing import docker_timing_arguments, observe_nested_install_evidence, recorder
 from tests.test_management_beta_deploy_container import _argument, _await_stage, _result
 from tests.test_management_mcp import _issue, real_boundary
 from tests.test_management_runtime_mcp import _call
 from tests.test_management_worker_lifecycle import GitEvidenceBoundary
-from tests.test_supervisor_container_integration import _container_facts, _docker, _image, _inspect_worker, _wait_for
+from tests.test_supervisor_container_integration import _container_facts, _docker, _image, _inspect_worker, _preparation_cache_arguments, _wait_for
 
 pytestmark = pytest.mark.supervisor_integration
 
@@ -60,6 +61,11 @@ class _SourceService(GitEvidenceBoundary):
         # Import source commits, never the checkout's live beta/tested tags.
         # The fixture publishes its own proof and selection refs below.
         subprocess.run(["git", "clone", "--bare", "--no-tags", str(source), str(root)], check=True, capture_output=True, text=True)
+        # Keep the main-branch cleanup as a defensive check in case a future
+        # transport starts importing tags despite the clone boundary.
+        inherited = self._git("for-each-ref", "--format=%(refname)", "refs/tags/auto-coder-beta-*")
+        for ref in inherited.splitlines():
+            self._git("update-ref", "-d", ref)
         self.read_only_mutations: list[tuple[str, str]] = []
         self.fail_reads = False
 
@@ -106,6 +112,32 @@ class _SourceService(GitEvidenceBoundary):
             self._git("update-ref", ref, str(payload["sha"]))
             return GitDataResponse(200)
         return super().request(method, path, payload)
+
+
+def test_source_service_does_not_inherit_checkout_beta_selection_refs(tmp_path: Path, _use_real_commands: None) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "fixture"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "fixture@example.com"], cwd=source, check=True)
+    (source / "tracked").write_text("source", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "source"], cwd=source, check=True)
+    for name in ("auto-coder-beta-current", "auto-coder-beta-selection-r77"):
+        subprocess.run(["git", "tag", name], cwd=source, check=True)
+
+    service = _SourceService(source, tmp_path / "source.git")
+
+    for name in ("auto-coder-beta-current", "auto-coder-beta-selection-r77"):
+        assert (
+            subprocess.run(
+                ["git", f"--git-dir={service.repository}", "rev-parse", "--verify", f"refs/tags/{name}"],
+                capture_output=True,
+                text=True,
+            ).returncode
+            != 0
+        )
+    assert service._git("rev-parse", "HEAD") == subprocess.run(["git", "rev-parse", "HEAD"], cwd=source, check=True, capture_output=True, text=True).stdout.strip()
 
 
 @contextmanager
@@ -220,7 +252,8 @@ def _finish(producer: BetaRuntimeSmokeProducer, operation_id: str, *, timeout: f
         assert observed.state.value not in {"CONFLICT", "UNAVAILABLE"}, observed
         return observed if observed.state.value == "COMPLETE" else None
 
-    return _wait_for(completed, timeout=timeout)
+    with recorder().span("beta_smoke.progress_observation", operation_id=operation_id, configured_timeout_seconds=timeout):
+        return _wait_for(completed, timeout=timeout)
 
 
 def _host_path(root: Path, path: str) -> Path:
@@ -266,6 +299,8 @@ def test_local_smoke_uses_installed_worker_real_progress_and_original_journal(re
         f"{runtime}:/runtime",
         "-v",
         f"{fixtures}:/fixtures:ro",
+        *_preparation_cache_arguments(),
+        *docker_timing_arguments(),
         "-e",
         "HOME=/runtime/home",
         "--entrypoint",
@@ -276,6 +311,8 @@ def test_local_smoke_uses_installed_worker_real_progress_and_original_journal(re
         timeout=1200,
     )
     installations = json.loads(staged.stdout.strip().splitlines()[-1])
+    for role, revision in zip(("source-a", "source-b", "source-a-alternate"), (revisions[0], revisions[1], revisions[0])):
+        observe_nested_install_evidence(role, revision)
     ready_a, ready_b, alternate = [item["receipt"] for item in installations]
     assert all(item["installed"]["editable"] is False for item in installations)
     assert ready_a["source_sha"] == alternate["source_sha"] != ready_b["source_sha"]
@@ -470,13 +507,14 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
     short = BetaRuntimeSmokeProducer(journal, client, reader, SmokeProfile(total_seconds=8, interval_seconds=1))
     assert short.advance(stuck.operation_id).state.value == "IN_PROGRESS"
     diagnostics = []
-    until = time.monotonic() + 15
-    while time.monotonic() < until:
-        diagnostics.append(client.diagnostics("status").result_code)
-        observed = short.advance(stuck.operation_id)
-        if observed.state.value == "COMPLETE":
-            break
-        time.sleep(0.3)
+    with recorder().span("beta_smoke.blocked_progress_observation", operation_id=stuck.operation_id, configured_window_seconds=8):
+        until = time.monotonic() + 15
+        while time.monotonic() < until:
+            diagnostics.append(client.diagnostics("status").result_code)
+            observed = short.advance(stuck.operation_id)
+            if observed.state.value == "COMPLETE":
+                break
+            time.sleep(0.3)
     blocked = result(observed, "BLOCKED")
     assert diagnostics and all(code == "OK" for code in diagnostics)
     assert blocked["reason"] == "original_deadline_without_progress"

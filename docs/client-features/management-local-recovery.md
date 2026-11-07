@@ -67,7 +67,9 @@ client calls `auto_coder_whoami` with that ID. The Supervisor separately checks
 the fixed endpoint's unauthenticated challenge and consumes the fresh
 launch-bound readback described in `management-authenticated-readback.md`.
 The OAuth caller only demonstrates application usability; it cannot admit,
-select, stop or launch a process. A missing response, expired observation,
+select, stop or launch a process. The Supervisor revalidates the proof's grant
+against the protected OAuth store, so a revoked or expired grant cannot complete
+recovery. A missing response, expired observation,
 failed bind or unavailable proof never supplies readiness or authorizes retry.
 While a recovery is claimed, launched or unresolved, the Supervisor holds
 physical self-update effects; it resumes them only after a successful recovery.

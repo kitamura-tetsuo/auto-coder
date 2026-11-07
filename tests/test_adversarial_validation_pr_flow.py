@@ -291,7 +291,7 @@ class TestCodexReviewState:
     def test_completed_summary_is_authoritative_without_reaction(self):
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [codex_review_summary("✅ **Completed**")]
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [codex_review_summary("✅ **Completed**")]
 
         state = _get_codex_review_state(client, "owner/repo", 100)
 
@@ -302,7 +302,7 @@ class TestCodexReviewState:
     def test_summary_without_completed_status_is_still_running(self):
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [codex_review_summary("👀 **In progress**")]
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [codex_review_summary("👀 **In progress**")]
 
         state = _get_codex_review_state(client, "owner/repo", 100)
 
@@ -315,7 +315,7 @@ class TestCodexReviewState:
         client.get_pr_review_threads_strict.return_value = []
         comment = codex_review_summary("✅ **Completed**")
         comment["user"] = {"login": "someone-else"}
-        client.get_pr_comments.return_value = [comment]
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [comment]
 
         state = _get_codex_review_state(client, "owner/repo", 100)
 
@@ -564,7 +564,7 @@ class TestAdversarialValidationPRComment:
     def test_reads_published_status_for_exact_head_sha(self, status):
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [
             {
                 "body": format_adversarial_validation_comment(
                     AdversarialValidationResult(result=status, summary="Saved result"),
@@ -586,7 +586,7 @@ class TestAdversarialValidationPRComment:
     def test_legacy_unversioned_result_does_not_suppress_revalidation(self):
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [
             {
                 "body": "\n".join(
                     [
@@ -612,7 +612,7 @@ class TestAdversarialValidationPRComment:
     def test_prior_status_lookup_failure_is_fail_closed(self):
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.side_effect = RuntimeError("API unavailable")
+        client.get_pr_comments_strict.side_effect = RuntimeError("API unavailable")
 
         saved_status, error = _get_published_adversarial_validation_status(
             client,
@@ -634,13 +634,14 @@ class TestAdversarialValidationPRComment:
             }
         ]
         # A stale/legacy comment for the same SHA must not be consulted once a native review exists.
-        client.get_pr_comments.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="NEEDS_FIX", summary="Stale"), "abc123")}]
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="NEEDS_FIX", summary="Stale"), "abc123")}]
 
         saved_status, error = _get_published_adversarial_validation_status(client, "owner/repo", 100, "abc123")
 
         assert saved_status == "PASS"
         assert error is None
         client.get_pr_comments.assert_not_called()
+        client.get_pr_comments_strict.assert_not_called()
 
 
 class TestAdversarialValidationCodexFeedback:
@@ -1345,7 +1346,7 @@ class TestAdversarialValidationCodexFeedback:
     def test_delivery_marker_does_not_replace_actionable_feedback_identity(self):
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [{"body": adversarial_validation_codex_feedback_marker("head123") + "\nDelivered"}]
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [{"body": adversarial_validation_codex_feedback_marker("head123") + "\nDelivered"}]
         pr_data = {
             "number": 100,
             "body": "https://chatgpt.com/codex/tasks/task_e_abc123",
@@ -1393,7 +1394,7 @@ class TestAdversarialValidationCodexFeedback:
             patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client),
         ):
             _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", first, client, [first])
-            client.get_pr_comments.return_value = [{"body": adversarial_validation_codex_feedback_marker("head123") + "\nDelivered"}]
+            client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [{"body": adversarial_validation_codex_feedback_marker("head123") + "\nDelivered"}]
             client.get_pr_review_threads_strict.return_value = [first_thread, second_thread]
             _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", second, client, [second])
             actions = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", second, client, [second])
@@ -1434,7 +1435,7 @@ class TestAdversarialValidationCodexFeedback:
         ):
             _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", finding, client, [finding])
             durable_receipt = client.add_comment_to_pr.call_args.args[2]
-            client.get_pr_comments.return_value = [{"body": durable_receipt, "user": {"login": "auto-coder-bot"}}]
+            client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [{"body": durable_receipt, "user": {"login": "auto-coder-bot"}}]
             actions = _delegate_cloud_review_thread_repair("owner/repo", pr_data, client, (thread,))
 
         cloud_client.send_followup.assert_called_once()
@@ -1484,7 +1485,7 @@ class TestAdversarialValidationPRFlow:
         client = MagicMock()
         client.get_issue.return_value = issue
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [
             {
                 "body": format_adversarial_validation_comment(
                     AdversarialValidationResult(result="PASS", summary="Ordinary review passed"),
@@ -1639,7 +1640,7 @@ class TestAdversarialValidationPRFlow:
         head_sha = "abc123456789" + "0" * 28
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [
             {
                 "body": format_adversarial_validation_comment(
                     AdversarialValidationResult(result="PASS", summary="Previously verified"),
@@ -1686,7 +1687,7 @@ class TestAdversarialValidationPRFlow:
         head_sha = "abc123456789" + "0" * 28
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS"), head_sha)}] if saved_pass else []
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS"), head_sha)}] if saved_pass else []
         client.get_pull_request.return_value = {"head": {"sha": head_sha}}
         config = AutomationConfig()
         config.AUTO_MERGE = True
@@ -1746,7 +1747,7 @@ class TestAdversarialValidationPRFlow:
         prior_body = format_adversarial_validation_comment(AdversarialValidationResult(result="PASS", summary="Historical"), head_sha)
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [{"body": prior_body}]
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [{"body": prior_body}]
         client.get_pull_request.return_value = {"head": {"sha": head_sha}}
         config = AutomationConfig()
         config.AUTO_MERGE = True
@@ -1829,7 +1830,7 @@ class TestAdversarialValidationPRFlow:
         future_retry = time.time() + 3600
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [
             {
                 "body": format_adversarial_validation_comment(
                     AdversarialValidationResult(result="EXHAUSTED", summary="Every backend is quota exhausted", retry_not_before_epoch=future_retry),
@@ -1882,7 +1883,7 @@ class TestAdversarialValidationPRFlow:
 
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [
             {
                 "body": format_adversarial_validation_comment(
                     AdversarialValidationResult(result="EXHAUSTED", summary="Every backend is quota exhausted", retry_not_before_epoch=past_retry),
@@ -1936,7 +1937,7 @@ class TestAdversarialValidationPRFlow:
 
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [
             {
                 "body": format_adversarial_validation_comment(
                     AdversarialValidationResult(result="EXHAUSTED", summary="Every backend is quota exhausted", retry_not_before_epoch=past_retry),
@@ -2276,7 +2277,7 @@ class TestAdversarialValidationPRFlow:
         )
         saved_result.attempt_id = "0123456789abcdef"
         saved_result.attempt_sequence = 7
-        client.get_pr_comments.return_value = [{"body": format_adversarial_validation_comment(saved_result, head_sha)}]
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [{"body": format_adversarial_validation_comment(saved_result, head_sha)}]
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
@@ -2312,7 +2313,7 @@ class TestAdversarialValidationPRFlow:
     @patch("auto_coder.pr_processor.run_adversarial_validation")
     @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
     @patch("auto_coder.pr_processor._merge_pr")
-    def test_same_sha_with_published_error_retains_structured_failure(
+    def test_same_sha_with_published_error_waits_without_new_failure(
         self,
         mock_merge_pr,
         mock_worktree,
@@ -2326,7 +2327,7 @@ class TestAdversarialValidationPRFlow:
         head_sha = "abc123456789" + "0" * 28
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [
             {
                 "body": format_adversarial_validation_comment(
                     AdversarialValidationResult(
@@ -2349,10 +2350,12 @@ class TestAdversarialValidationPRFlow:
         mock_run_validation.assert_not_called()
         mock_worktree.assert_not_called()
         mock_merge_pr.assert_not_called()
-        assert actions.adversarial_validation_error == "Adversarial validation previously failed for PR #100 at SHA abc12345"
+        assert actions.adversarial_validation_error is None
+        assert any("awaits a supported revalidation trigger" in action for action in actions)
         assert any("already validated as ERROR" in action for action in actions)
-        assert status.error == "Adversarial validation previously failed for PR #100 at SHA abc12345"
-        assert status.outcome is PRProcessingOutcome.FAILED
+        assert status.error is None
+        assert status.outcome is PRProcessingOutcome.DEFERRED
+        assert status.retry_not_before is None
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
@@ -3076,7 +3079,7 @@ class TestAdversarialValidationPRFlow:
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "current2"}}
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [codex_review_summary("👀 **In progress**")]
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [codex_review_summary("👀 **In progress**")]
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
@@ -3187,7 +3190,7 @@ class TestAdversarialValidationPRFlow:
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
         client.get_issue.return_value = {"number": 99, "title": "Specification"}
-        client.get_pr_comments.return_value = [codex_review_summary("✅ **Completed**")]
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [codex_review_summary("✅ **Completed**")]
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
@@ -3223,7 +3226,7 @@ class TestAdversarialValidationPRFlow:
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": current_sha}}
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [codex_review_summary("✅ **Completed**", reviewed_sha="old-head-h1")]
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [codex_review_summary("✅ **Completed**", reviewed_sha="old-head-h1")]
         client.get_pull_request.return_value = {"head": {"sha": current_sha}}
         config = AutomationConfig()
         config.AUTO_MERGE = True
@@ -3284,7 +3287,7 @@ class TestAdversarialValidationPRFlow:
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [codex_review_summary("✅ **Completed**", reviewed_sha="old-head-h1")]
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [codex_review_summary("✅ **Completed**", reviewed_sha="old-head-h1")]
         client.get_pull_request.return_value = {"head": {"sha": head_sha}}
         config = AutomationConfig()
         config.AUTO_MERGE = True
@@ -3356,7 +3359,7 @@ class TestAdversarialValidationPRFlow:
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature", "sha": "current-head"}}
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [codex_review_summary("✅ **Completed**", reviewed_sha="old-head")]
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [codex_review_summary("✅ **Completed**", reviewed_sha="old-head")]
 
         def head_read(*args, **kwargs):
             fence_active_ci_observations("accepted workflow_run in_progress delivery")
@@ -3446,7 +3449,7 @@ class TestAdversarialValidationPRFlow:
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature", "sha": "current-head"}}
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [codex_review_summary("✅ **Completed**", reviewed_sha="old-head")]
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [codex_review_summary("✅ **Completed**", reviewed_sha="old-head")]
         client.get_pull_request.return_value = {"head": {"sha": "current-head"}}
         config = AutomationConfig()
         config.AUTO_MERGE = True
@@ -3646,7 +3649,7 @@ class TestMaxAdversarialValidationsGating:
         head_sha = "newcommit1234"
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [
             {"body": "<!-- auto-coder-adversarial-validation:v4:oldsha1 -->\n## ❌ Auto-Coder adversarial validation: NEEDS_FIX"},
             {"body": "<!-- auto-coder-adversarial-validation:v4:oldsha2 -->\n## ❌ Auto-Coder adversarial validation: NEEDS_FIX"},
         ]
@@ -3674,6 +3677,7 @@ class TestMaxAdversarialValidationsGating:
     @patch("auto_coder.pr_processor.run_adversarial_validation")
     @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
     @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    @pytest.mark.parametrize("old_verdict", ["NEEDS_FIX", "ERROR"])
     def test_max_adversarial_validations_not_reached_executes_validation(
         self,
         mock_merge_pr,
@@ -3683,6 +3687,7 @@ class TestMaxAdversarialValidationsGating:
         mock_checks,
         mock_mergeable,
         mock_exit_in_progress,
+        old_verdict,
     ):
         mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
@@ -3695,8 +3700,8 @@ class TestMaxAdversarialValidationsGating:
         head_sha = "newcommit1234"
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [
-            {"body": "<!-- auto-coder-adversarial-validation:v4:oldsha1 -->\n## ❌ Auto-Coder adversarial validation: NEEDS_FIX"},
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [
+            {"body": f"<!-- auto-coder-adversarial-validation:v4:oldsha1 -->\n## ❌ Auto-Coder adversarial validation: {old_verdict}"},
         ]
         client.get_pull_request.return_value = {"head": {"sha": head_sha}}
 
@@ -3736,7 +3741,7 @@ class TestMaxAdversarialValidationsGating:
         head_sha = "abc123456789" + "0" * 28
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [
             {"body": f"<!-- auto-coder-adversarial-validation:v4:{head_sha} -->\n## ❌ Auto-Coder adversarial validation: NEEDS_FIX"},
         ]
         client.get_pull_request.return_value = {"head": {"sha": head_sha}}
@@ -3998,7 +4003,8 @@ class TestClaimedReviewThreadValidationFlow:
         assert thread.is_resolved is False
 
     @pytest.mark.parametrize("app_identity_login", ["auto-coder-reviewer", "auto-coder-reviewer[bot]"])
-    def test_forced_revalidation_reaches_validation_despite_same_head_error_and_unresolved_thread(self, app_identity_login):
+    @pytest.mark.parametrize("review_cap", [None, 1], ids=["unlimited", "reached-cap"])
+    def test_forced_revalidation_reaches_validation_despite_same_head_error_and_unresolved_thread(self, app_identity_login, review_cap):
         """Issue #2106 AS-001: explicit --force reaches a fresh current-head
         adversarial-validation attempt even though the current head already
         published ERROR and an authentic finding thread from that head
@@ -4053,6 +4059,7 @@ class TestClaimedReviewThreadValidationFlow:
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
+        config.MAX_ADVERSARIAL_VALIDATIONS = review_cap
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature", "sha": head_sha}}
         client.get_pull_request_metadata_strict = MagicMock(return_value={**pr_data, "user": {"login": "developer"}, "state": "open"})
 
@@ -4454,7 +4461,9 @@ class TestClaimedReviewThreadValidationFlow:
         assert rationale in published_body
         assert evidence in published_body
 
-    def test_new_provenance_reply_revalidates_and_passes_same_sha(self):
+    @pytest.mark.parametrize("saved_verdict", ["INCONCLUSIVE", "ERROR"])
+    @pytest.mark.parametrize("review_cap", [None, 1], ids=["unlimited", "reached-cap"])
+    def test_new_provenance_reply_revalidates_and_passes_same_sha(self, saved_verdict, review_cap):
         from auto_coder.adversarial_validator import ReviewThreadDisposition
         from auto_coder.pr_processor import ClaimedReviewThreadGateState
         from auto_coder.review_thread_validation import ClaimedReviewThread
@@ -4483,10 +4492,12 @@ class TestClaimedReviewThreadValidationFlow:
         )
         client = MagicMock()
         client.get_pr_comments.return_value = []
+        client.get_pr_reviews_strict.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result=saved_verdict, summary="Prior result without this reply"), head_sha), "user": {"login": "auto-coder-reviewer[bot]"}}]
         client.get_issue.return_value = {"number": 99, "title": "Contract", "body": "Required behavior"}
         client.get_pull_request.return_value = {"head": {"sha": head_sha}}
         config = AutomationConfig()
         config.AUTO_MERGE = True
+        config.MAX_ADVERSARIAL_VALIDATIONS = review_cap
         pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": head_sha}}
 
         with (
@@ -4494,8 +4505,6 @@ class TestClaimedReviewThreadValidationFlow:
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
             patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=True, ids=[1])),
             patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState(claimed=(claimed,))),
-            patch("auto_coder.pr_processor._get_published_adversarial_validation_status", return_value=("INCONCLUSIVE", None)),
-            patch("auto_coder.pr_processor._get_published_adversarial_validation_comment", return_value=("prior review without this reply", None)),
             patch("auto_coder.pr_processor.run_adversarial_validation", return_value=validation) as run_validation,
             patch("auto_coder.pr_processor.publish_adversarial_review", return_value=ReviewPublicationResult(True, "APPROVE", "")) as publish,
             patch("auto_coder.pr_processor.resolve_addressed_review_threads", return_value=["provenance-1"]),

@@ -22,6 +22,7 @@ from .local_review_repair import (
     recover_confirmed_local_review_repair,
 )
 from .muse_background_observation import bind_muse_job_observation
+from .review_feedback_marker import is_adjudication_feedback
 
 ExecutorFactory = Callable[[str, LocalReviewRepairRequest], Callable[[LocalReviewRepairRequest, str], str]]
 
@@ -167,7 +168,6 @@ class PRCorrectionJobAdapter:
             _revalidate_local_review_repair_route,
             _review_feedback_identity,
             _select_review_repair_route,
-            is_adjudication_envelope,
             is_change_provenance_thread,
         )
 
@@ -190,7 +190,7 @@ class PRCorrectionJobAdapter:
                 default=-1,
             )
             for index, comment in enumerate(thread.comments):
-                if index <= addressed_through or is_adjudication_envelope(comment.body):
+                if index <= addressed_through or is_adjudication_feedback(comment.body):
                     continue
                 actionable.add(_review_feedback_identity(f"{request.repository}#{request.pr_number}:local:", thread, index))
         if not set(request.feedback_identities) <= actionable:

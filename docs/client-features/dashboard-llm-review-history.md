@@ -1,5 +1,20 @@
 # Dashboard LLM review history
 
+Cloud unresolved-review receipt waits expose a fixed `reason` and the evaluated
+snapshot's `head_sha` in the existing repair-delegation detail facts. Reasons
+distinguish unclassified same-author discussion, already-delivered actionable
+feedback and unconfirmed delivery receipts. Unclassified discussion can be an
+acknowledgment; it is not inferred reviewer guidance or a provider-liveness
+signal. Existing public diagnostic projection preserves these two safe facts
+without exporting reply prose, author logins or private receipt content. See
+[Provider-aware unresolved review repair](provider-aware-unresolved-review-repair.md)
+for exact reason values and their limits. Outcomes and delivery gates are unchanged.
+
+The classification includes authenticated PR-side receipt evidence for excluded
+native reply IDs after loss of local state or removal of a guidance marker.
+Untrusted receipt authors do not establish delivery. This observation neither
+adds actionable feedback nor reconstructs persisted delivery state.
+
 An explicit retry of failed scoped local verification appears in the existing
 repair-delegation stage with `explicit_retry_requested`; the published report
 identifies its attempt number. Earlier failed reports remain history. A retry
@@ -215,3 +230,10 @@ handoff is `ACCEPTED_HANDOFF`; unavailable publication, identity or repair route
 is `DEFERRED`. `ordinary_reviewer_admitted=false` indicates that no ordinary
 reviewer was admitted to rediscover the unchanged Strong findings. Correction
 completion subsequently uses the existing ordinary validation/closure history.
+
+For generic cloud review-thread repair, `pr.repair-delegation` reports
+`ACCEPTED_HANDOFF` only after a newly accepted delivery with a durable receipt.
+An unchanged poll with only prior receipts reports `DEFERRED`, preserving the
+unresolved-thread gate. An explicit same-account guidance reply can produce one
+new handoff; its repeated polls are deferred. The existing trace schema and
+renderer remain unchanged; neither state establishes implementation completion.

@@ -33,6 +33,41 @@ human-readable action diagnostics and are also added to the top-level errors, so
 single-item completion output cannot report a false success. Expected states such
 as red CI, merge gates, and cloud-task waits remain deferred rather than failures.
 
+Reusing an authoritative saved adversarial-validation `ERROR` for the same head
+is also deferred: that evaluation observed an existing merge blocker; it did not
+execute and fail validation again. The saved verdict and review history remain
+unchanged. The worker acknowledges that invalidation evaluation without creating
+an `operational_processing_failure` backoff or a timed validation retry. New
+external invalidations still reevaluate current evidence. A changed head or another
+supported explicit revalidation trigger is required to run validation again;
+the saved `ERROR` never authorizes merge. A newly executed validation error or a
+failure to resolve the reviewer App identity or read the authoritative saved
+result remains a processing failure. This also applies to the early unresolved
+review-thread gate: an identity, native-review or required legacy-fallback read
+failure preserves its original diagnostic and returns failed before ordinary
+provenance waiting or repair delegation. The worker retains that unfinished
+evaluation through its existing operational-failure backoff rather than
+acknowledging it. A successful read with unresolved provenance still defers
+normally without requesting a code repair.
+
+The required legacy fallback uses `get_pr_comments_strict`, which performs a
+fresh read and preserves failures below the public comment reader. A failed
+REST read cannot be interpreted as an empty legacy history. An authenticated
+matching native review remains authoritative without requiring that fallback;
+ordinary informational `get_pr_comments` reads retain their best-effort behavior.
+
+Reaching `MAX_ADVERSARIAL_VALIDATIONS` does not bypass this saved-error wait.
+An applicable same-head `ERROR` still enters the ordinary trigger/reuse decision
+before the review-limit shortcut can grant merge eligibility. Force and eligible
+changed-provenance evidence retain their existing revalidation semantics; an old
+head's `ERROR` does not become an applicable current-head verdict. Other
+review-limit policies remain unchanged.
+
+The `pr.adversarial-validation` stage records this wait as `deferred` with
+`effect=saved-validation-wait`, the exact `examined_head`, `saved_verdict=ERROR`,
+and `reason=saved_error_requires_revalidation_trigger`. The worker also reports
+deferred processing, preserving the distinction from successful PR completion.
+
 The durable worker logs deferred PR processing explicitly, with the action
 diagnostics that explain the wait. Its `Worker` trace carries `outcome=deferred`
 and those actions; a deferred repair is never logged as successfully processed.
