@@ -132,6 +132,18 @@ class ProxyReconnect:
         value = json.loads(raw)
         if not isinstance(value, dict) or set(value) != {"binding", "manager", "phase"} or value["binding"] != asdict(self.binding) or value["phase"] not in {"stop_unknown", "stopped", "start_unknown", "done"} or not isinstance(value["manager"], dict):
             raise ValueError("proxy journal identity differs")
+        manager = value["manager"]
+        if (
+            set(manager) != {"id", "pid", "started", "namespace"}
+            or manager["id"] != self.binding.manager_id
+            or type(manager["pid"]) is not int
+            or manager["pid"] <= 0
+            or not isinstance(manager["started"], str)
+            or not 0 < len(manager["started"]) <= 128
+            or not isinstance(manager["namespace"], str)
+            or re.fullmatch(r"net:\[[0-9]+\]", manager["namespace"]) is None
+        ):
+            raise ValueError("proxy journal manager lifetime differs")
         return value
 
     def _write(self, manager: dict[str, object], phase: str) -> None:
@@ -151,7 +163,7 @@ class ProxyReconnect:
 
     def _manager(self) -> dict[str, object]:
         value = self.driver.inspect(self.binding.manager_id)
-        if value["image"] != self.binding.manager_image or value["running"] is not True:
+        if value["id"] != self.binding.manager_id or value["image"] != self.binding.manager_image or value["running"] is not True:
             raise ValueError("manager unavailable or changed")
         namespace = self.driver.namespace(self._pid(value))
         again = self.driver.inspect(self.binding.manager_id)
@@ -187,10 +199,13 @@ class ProxyReconnect:
     def reconcile(self) -> str:
         """Trusted-local operator observes an uncertain effect; never replay it."""
         prior = self._read()
-        if prior is None or prior["phase"] not in {"stop_unknown", "start_unknown"}:
+        if prior is None or prior["phase"] not in {"stop_unknown", "start_unknown", "stopped"}:
             return "NEEDS_ATTENTION"
         manager, proxy = self._manager(), self._proxy()
-        if prior["manager"] != manager:
+        observed_attachment = prior["phase"] == "stopped" and prior["manager"] != manager
+        if prior["manager"] != manager and not observed_attachment:
+            return "NEEDS_ATTENTION"
+        if prior["phase"] == "stopped" and not observed_attachment:
             return "NEEDS_ATTENTION"
         namespace: str | None = None
         if prior["phase"] == "stop_unknown":
@@ -215,7 +230,8 @@ class ProxyReconnect:
     def _proxy(self) -> dict[str, object]:
         value = self.driver.inspect(self.binding.proxy_id)
         if (
-            value["image"] != self.binding.proxy_image
+            value["id"] != self.binding.proxy_id
+            or value["image"] != self.binding.proxy_image
             or value["network"] != "container:" + self.binding.manager_id
             or value["entrypoint"] != ["caddy"]
             or value["command"] != ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

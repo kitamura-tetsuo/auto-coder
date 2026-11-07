@@ -190,3 +190,114 @@ def test_persistent_watchers_contend_on_one_host_lock(tmp_path: Path) -> None:
     finally:
         first.terminate()
         first.wait(timeout=10)
+
+
+def stopped_old_attachment(tmp_path: Path) -> tuple[ProxyReconnect, Driver]:
+    controller, driver = fixture(tmp_path)
+    controller._write(controller._manager(), "stopped")
+    driver.manager.update(pid=11, started="two")
+    driver.namespaces[11] = "net:[3]"
+    driver.proxy.update(pid=21, started="two")
+    driver.namespaces[21] = "net:[3]"
+    return controller, driver
+
+
+def test_explicit_stopped_successor_observation_preserves_prior_without_effect(tmp_path: Path) -> None:
+    controller, driver = stopped_old_attachment(tmp_path)
+    prior = controller._read()
+    assert controller.tick() == "NEEDS_ATTENTION"
+    assert controller.reconcile() == "ATTACHMENT_OBSERVED"
+    saved = controller._read()
+    assert saved is not None and saved["phase"] == "done" and saved["manager"] == controller._manager()
+    records = list(tmp_path.glob("proxy-resolution-*.json"))
+    assert len(records) == 1 and json.loads(records[0].read_text())["prior"] == prior
+    assert controller.tick() == "ATTACHED"
+    assert controller.reconcile() == "NEEDS_ATTENTION"
+    assert len(list(tmp_path.glob("proxy-resolution-*.json"))) == 1 and driver.effects == []
+
+
+@pytest.mark.parametrize("fault", ["namespace", "stopped", "image", "config", "identity", "same_lifetime", "unknown"])
+def test_stopped_successor_refuses_mismatched_evidence(tmp_path: Path, fault: str) -> None:
+    controller, driver = stopped_old_attachment(tmp_path)
+    if fault == "namespace":
+        driver.namespaces[21] = "net:[4]"
+    elif fault == "stopped":
+        driver.proxy.update(running=False, pid=0)
+    elif fault == "image":
+        driver.proxy["image"] = "sha256:" + "f" * 64
+    elif fault == "config":
+        driver.config = "f" * 64
+    elif fault == "identity":
+        driver.manager["id"] = "f" * 64
+    elif fault == "same_lifetime":
+        controller._write(controller._manager(), "stopped")
+    else:
+        controller._write({"id": driver.binding.manager_id, "pid": 10, "started": "one", "namespace": "net:[2]"}, "start_unknown")
+    prior = controller._read()
+    if fault in {"image", "config", "identity"}:
+        with pytest.raises(ValueError):
+            controller.reconcile()
+    else:
+        assert controller.reconcile() == "NEEDS_ATTENTION"
+    assert controller._read() == prior and driver.effects == []
+    assert not list(tmp_path.glob("proxy-resolution-*.json"))
+
+
+def test_stopped_successor_interrupted_resolution_retries_without_effect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    controller, driver = stopped_old_attachment(tmp_path)
+    prior = controller._read()
+    original = controller._write
+
+    def crash(_manager: dict[str, object], _phase: str) -> None:
+        raise RuntimeError("simulated interruption")
+
+    monkeypatch.setattr(controller, "_write", crash)
+    with pytest.raises(RuntimeError):
+        controller.reconcile()
+    assert controller._read() == prior
+    monkeypatch.setattr(controller, "_write", original)
+    assert controller.reconcile() == "ATTACHMENT_OBSERVED"
+    assert len(list(tmp_path.glob("proxy-resolution-*.json"))) == 1 and driver.effects == []
+
+
+@pytest.mark.parametrize("fault", ["manager_race", "proxy_race", "journal_race", "resolution_conflict"])
+def test_stopped_successor_resolution_conflicts_fail_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str) -> None:
+    controller, driver = stopped_old_attachment(tmp_path)
+    prior = controller._read()
+    original = controller._record_resolution
+
+    def change(*args: object) -> None:
+        original(*args)  # type: ignore[arg-type]
+        if fault == "manager_race":
+            driver.manager["started"] = "third"
+        elif fault == "proxy_race":
+            driver.proxy["started"] = "third"
+        elif fault == "journal_race":
+            controller._write(controller._manager(), "start_unknown")
+
+    if fault == "resolution_conflict":
+        original(prior, controller._manager(), driver.proxy, "net:[3]")  # type: ignore[arg-type]
+        record = next(tmp_path.glob("proxy-resolution-*.json"))
+        record.write_text("{}")
+        with pytest.raises(ValueError, match="resolution differs"):
+            controller.reconcile()
+    else:
+        monkeypatch.setattr(controller, "_record_resolution", change)
+        assert controller.reconcile() == "NEEDS_ATTENTION"
+    if fault != "journal_race":
+        assert controller._read() == prior
+    assert driver.effects == []
+
+
+@pytest.mark.parametrize("key,value", [("id", "f" * 64), ("pid", True), ("pid", 0), ("started", ""), ("namespace", "wrong"), ("extra", "unrecognized")])
+def test_corrupt_saved_manager_lifetime_refuses(tmp_path: Path, key: str, value: object) -> None:
+    controller, driver = stopped_old_attachment(tmp_path)
+    path = tmp_path / "proxy-reconnect.json"
+    raw = json.loads(path.read_text())
+    raw["manager"][key] = value
+    path.write_text(json.dumps(raw))
+    original = path.read_bytes()
+    with pytest.raises(ValueError, match="manager lifetime"):
+        controller.reconcile()
+    assert path.read_bytes() == original and driver.effects == []
+    assert not list(tmp_path.glob("proxy-resolution-*.json"))

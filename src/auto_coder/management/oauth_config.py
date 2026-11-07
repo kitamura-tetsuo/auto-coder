@@ -123,9 +123,18 @@ class ManagementSettings:
 def load_management_settings(path: Path) -> ManagementSettings:
     """Load management YAML without accepting request-derived authority values."""
 
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    from .source_evidence_config import load_extension
+
+    original = path.read_bytes()
+    raw = yaml.safe_load(original)
     if not isinstance(raw, dict):
         raise ValueError("management configuration must be a mapping")
+    extension = load_extension(path, original)
+    if extension is not None:
+        if "source_repository" in raw or "source_evidence_token_file" in raw:
+            raise ValueError("inline and extension source evidence configuration conflict")
+        raw["source_repository"], token_file = extension
+        raw["source_evidence_token_file"] = str(token_file)
 
     def required_string(name: str) -> str:
         value = raw.get(name)
