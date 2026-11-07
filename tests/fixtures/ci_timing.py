@@ -197,6 +197,7 @@ def installer_span(
     target_role: str,
     target_source_sha: str,
     uv_version: str,
+    execution_id: str | None = None,
 ) -> Iterator[None]:
     """Observe an installer without allowing provenance reads to block it."""
 
@@ -215,6 +216,7 @@ def installer_span(
         target_source_sha=target_source_sha,
         lock_sha256=lock_sha256,
         uv_version=uv_version,
+        execution_id=execution_id,
     ):
         yield
 
@@ -268,6 +270,132 @@ class NestedInstallEvidence:
     complete: bool
     labels: tuple[str, ...]
     errors: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DependencyCacheComparison:
+    complete: bool
+    cold_role: str
+    warm_role: str
+    reusable_cold_work: int | None
+    reusable_warm_work: int | None
+    errors: tuple[str, ...]
+
+
+def observe_dependency_cache_comparison(cold_role: str, warm_role: str, *, cold_execution_id: str, warm_execution_id: str) -> DependencyCacheComparison:
+    """Join retained real-uv records without making diagnostics readiness authority."""
+
+    timing = recorder()
+    errors: list[str] = []
+    records: dict[str, dict[str, object]] = {}
+    expected_executions = {cold_role: cold_execution_id, warm_role: warm_execution_id}
+    completed_spans: dict[str, dict[str, set[str]]] = {cold_role: {}, warm_role: {}}
+    if timing.directory is None:
+        errors.append("timing is disabled")
+    else:
+        try:
+            paths = list(timing.directory.glob("dependency-work-*.jsonl"))
+        except OSError as error:
+            paths = []
+            errors.append(f"{type(error).__name__}: {error}")
+        for path in paths:
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError as error:
+                errors.append(f"{path.name}: {type(error).__name__}: {error}")
+                continue
+            for line in lines:
+                try:
+                    candidate = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(candidate, dict) and candidate.get("target_role") in expected_executions and candidate.get("execution_id") and candidate.get("execution_id") == expected_executions[str(candidate["target_role"])]:
+                    records[str(candidate["target_role"])] = candidate
+        try:
+            timing_paths = list(timing.directory.glob("timing-*.jsonl"))
+        except OSError as error:
+            timing_paths = []
+            errors.append(f"timing spans: {type(error).__name__}: {error}")
+        for path in timing_paths:
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError as error:
+                errors.append(f"{path.name}: {type(error).__name__}: {error}")
+                continue
+            for line in lines:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict) or event.get("event_kind") != "span_end" or event.get("outcome") != "completed":
+                    continue
+                role = event.get("target_role")
+                context = event.get("context")
+                execution_id = event.get("execution_id")
+                if role in completed_spans and isinstance(context, dict) and context.get("invocation_id") == timing.context.invocation_id and isinstance(execution_id, str) and execution_id:
+                    completed_spans[str(role)].setdefault(execution_id, set()).add(str(event.get("phase_label")))
+    cold, warm = records.get(cold_role), records.get(warm_role)
+    if cold is None or warm is None:
+        errors.append("missing retained cold or warm uv work record")
+
+    def reusable(record: dict[str, object] | None) -> int | None:
+        if record is None or record.get("parser_status") != "recognized":
+            return None
+        packages = record.get("packages")
+        if not isinstance(packages, dict):
+            return None
+        names = [name for category in ("downloaded", "built") for name in packages.get(category, []) if isinstance(name, str)]
+        return sum(1 for name in names if name.replace("_", "-").lower() != "auto-coder")
+
+    cold_work, warm_work = reusable(cold), reusable(warm)
+    if cold and warm:
+        exact_fields = ("target_source_sha", "lock_sha256", "python_executable", "uv_version", "cache_namespace")
+        required_fields = (*exact_fields, "environment_path", "observation_id", "attempt_id", "execution_id", "timing_invocation_id")
+        if any(not cold.get(field) or not warm.get(field) for field in required_fields):
+            errors.append("cold or warm exact-input/identity evidence is missing")
+        if any(cold.get(field) != warm.get(field) for field in exact_fields):
+            errors.append("cold and warm inputs do not match")
+        if cold.get("timing_invocation_id") != timing.context.invocation_id or warm.get("timing_invocation_id") != timing.context.invocation_id:
+            errors.append("cold or warm record belongs to a different timing invocation")
+        if cold.get("outcome") != "completed" or warm.get("outcome") != "completed" or cold.get("returncode") != 0 or warm.get("returncode") != 0:
+            errors.append("cold or warm uv work did not complete successfully")
+        for role in (cold_role, warm_role):
+            record = cold if role == cold_role else warm
+            execution_spans = completed_spans[role].get(str(record.get("execution_id")), set())
+            if {"worker.prepare", "worker.installer"} - execution_spans:
+                errors.append(f"missing completed prepare/installer spans for {role}")
+        if cold.get("cache_condition") != "cold" or warm.get("cache_condition") != "warm":
+            errors.append("cache conditions are not a cold-then-warm sequence")
+        previous = warm.get("previous_population")
+        if (
+            not isinstance(previous, dict)
+            or previous.get("target_role") != cold_role
+            or previous.get("attempt_id") != cold.get("attempt_id")
+            or previous.get("source_sha") != cold.get("target_source_sha")
+            or previous.get("lock_sha256") != cold.get("lock_sha256")
+            or previous.get("outcome") != "completed"
+            or not previous.get("population_id")
+        ):
+            errors.append("warm lineage does not identify the completed cold preparation")
+        if cold.get("environment_path") == warm.get("environment_path"):
+            errors.append("cold and warm installation destinations are not independent")
+    if cold_work is None or warm_work is None:
+        errors.append("reusable dependency work is unavailable")
+    elif cold_work <= warm_work:
+        errors.append("warm preparation did not reduce observed reusable dependency work")
+    complete = not errors
+    timing.emit(
+        "dependency_cache_comparison",
+        cold_role=cold_role,
+        warm_role=warm_role,
+        complete=complete,
+        cold_execution_id=cold_execution_id,
+        warm_execution_id=warm_execution_id,
+        reusable_cold_work=cold_work,
+        reusable_warm_work=warm_work,
+        comparison_errors=errors,
+    )
+    return DependencyCacheComparison(complete, cold_role, warm_role, cold_work, warm_work, tuple(errors))
 
 
 def observe_nested_install_evidence(target_role: str, source_sha: str) -> NestedInstallEvidence:

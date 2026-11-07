@@ -561,13 +561,15 @@ def test_stage_helper_preserves_sole_or_final_json_protocol(tmp_path: Path, monk
     @dataclasses.dataclass
     class Receipt:
         environment_path: str
+        source_sha: str = "a" * 40
+        lock_sha256: str = "b" * 64
 
     receipt = Receipt(str(tmp_path / "environment"))
     calls = []
 
     class Preparer:
         def __init__(self, config):
-            pass
+            self.config = config
 
         def _install(self, checkout, environment):
             calls.append("install")
@@ -587,6 +589,7 @@ def test_stage_helper_preserves_sole_or_final_json_protocol(tmp_path: Path, monk
     monkeypatch.setenv("AUTO_CODER_CI_TIMING_DIR", str(output))
     monkeypatch.setattr(ci_timing, "_RECORDER", None)
     monkeypatch.setitem(sys.modules, "ci_timing", ci_timing)
+    monkeypatch.syspath_prepend(str(Path(__file__).parent / "fixtures"))
     monkeypatch.setattr(versions, "WorkerVersionPreparer", Preparer)
     monkeypatch.setattr(sys, "argv", ["stage", "--verify", "READY.json"] if verify else ["stage", "a" * 40])
     helper = runpy.run_path(str(Path(__file__).parent / "fixtures" / "supervisor_stage_ready.py"))
