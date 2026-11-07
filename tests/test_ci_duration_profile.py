@@ -278,6 +278,17 @@ def test_corrupt_history_and_atomic_output_failure_preserve_original_files(tmp_p
     assert original.read_bytes() == before
     assert "invalid JSON" in " ".join(snapshot["reasons"])
 
+    oversized = _records(files)
+    for record in oversized:
+        if record["event_kind"] == "pytest_phase_report" and record["pytest_phase"] == "call":
+            record["native_duration_ms"] = 10**400
+    invalid_file = tmp_path / "oversized.jsonl"
+    invalid_file.write_text("\n".join(json.dumps(record, sort_keys=True) for record in oversized) + "\n", encoding="utf-8")
+    oversized_profile = _run_ok(context, tmp_path / "oversized-profile.json", batches=[_batch(tmp_path, [invalid_file], name="oversized")], previous=[original])
+    assert oversized_profile["status"] == "partial"
+    assert oversized_profile["nodes"] == baseline["nodes"]
+    assert "finite nonnegative" in " ".join(oversized_profile["reasons"])
+
     occupied = tmp_path / "occupied"
     occupied.write_text("a file, not a directory", encoding="utf-8")
     failing = _cli(context, occupied / "profile.json", previous=[original])

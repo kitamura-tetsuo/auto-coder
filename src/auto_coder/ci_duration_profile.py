@@ -71,9 +71,15 @@ def _optional_string(value: object, field: str) -> str | None:
 
 
 def _number(value: object, field: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) or value < 0:
+    if isinstance(value, bool) or not isinstance(value, (float, int)):
         raise ProfileInputError(f"{field} must be a finite nonnegative number")
-    return float(value)
+    try:
+        number = float(value)
+    except (OverflowError, ValueError) as error:
+        raise ProfileInputError(f"{field} must be a finite nonnegative number") from error
+    if not math.isfinite(number) or number < 0:
+        raise ProfileInputError(f"{field} must be a finite nonnegative number")
+    return number
 
 
 def _timestamp(value: object, field: str) -> datetime:
