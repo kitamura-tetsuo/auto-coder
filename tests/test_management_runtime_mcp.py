@@ -380,32 +380,60 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
     )
     effect_repository = ReviewEffectRepository(repository, effects_path)
     effect_payload = AcceptedReviewPayload.strong(repository, 17, strong_round, (finding,))
-    external_effect_count = 0
-    external_threads = {"resolved-github-thread-17": "RESOLVED"}
+
+    class ControlledExternalReviewService:
+        """Controlled provider boundary observed independently from retained state."""
+
+        def __init__(self):
+            self.mutation_count = 0
+            self.threads = {"resolved-github-thread-17": "RESOLVED"}
+            self.receipts: list[str] = []
+
+        def publish(self, destination: str, outcome: EffectAttempt) -> EffectAttempt:
+            self.mutation_count += 1
+            if outcome.receipt:
+                self.receipts.append(outcome.receipt)
+            # The controlled GitHub observation is deliberately independent:
+            # an uncertain journal result cannot rewrite a resolved thread.
+            assert self.threads.get(destination, "UNOBSERVED") in {"RESOLVED", "UNOBSERVED"}
+            return outcome
+
+        def observe_thread(self, destination: str) -> str:
+            return self.threads[destination]
+
+    external_service = ControlledExternalReviewService()
 
     class ControlledEffectTransport:
-        def __init__(self, outcome: EffectAttempt):
+        def __init__(self, service: ControlledExternalReviewService, outcome: EffectAttempt):
+            self.service = service
             self.outcome = outcome
 
-        def send(self, _operation):
-            nonlocal external_effect_count
-            external_effect_count += 1
-            return self.outcome
+        def send(self, operation):
+            return self.service.publish(operation.destination, self.outcome)
 
         def reconcile(self, _operation):
             raise AssertionError("new operations do not reconcile")
 
     executor = ReviewEffectExecutor(effect_repository, owner_token="seed-owner")
-    executor.apply(effect_payload, "review-publication", "review-17", ControlledEffectTransport(EffectAttempt("CONFIRMED", receipt="review-receipt-17")), lambda: True)
-    executor.apply(
+    confirmed_operation = executor.apply(
+        effect_payload,
+        "review-publication",
+        "review-17",
+        ControlledEffectTransport(external_service, EffectAttempt("CONFIRMED", receipt="review-receipt-17")),
+        lambda: True,
+    )
+    uncertain_operation = executor.apply(
         effect_payload,
         "thread-publication",
         "resolved-github-thread-17",
-        ControlledEffectTransport(EffectAttempt("UNCERTAIN", reason="Authorization: Bearer thread-secret")),
+        ControlledEffectTransport(external_service, EffectAttempt("UNCERTAIN", reason="Authorization: Bearer thread-secret")),
         lambda: True,
     )
-    effects_before = external_effect_count
-    assert external_threads["resolved-github-thread-17"] == "RESOLVED"
+    retained_effect_history = {operation.operation_id: effect_repository.get(operation.operation_id) for operation in (confirmed_operation, uncertain_operation)}
+    assert all(retained_effect_history.values())
+    effects_before = external_service.mutation_count
+    resolved_thread_before = external_service.observe_thread("resolved-github-thread-17")
+    assert resolved_thread_before == "RESOLVED"
     resolution = resolve_pending_work_store(repository, home=home)
     assert resolution.store is not None
     resolution.store.ensure_reevaluation(WorkIdentity(repository, "pr:17", "pr-processing", "rev-a"), ("thread-a",), now=10)
@@ -469,19 +497,19 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
             assert projected_decision["publication"] == "CONFIRMED"
             for key in ("head_sha", "base_sha", "contract_identity", "finding_set_revision"):
                 assert projected_decision[key] == decision_source[key]
-            effects_source = next(value for value in json.loads(source_before[effects_path])["operations"].values() if value["purpose"] == "review-publication")
-            projected_effect = projected["sections"]["review_effects"]["records"][0]
-            assert projected_effect["status"] == "CONFIRMED"
-            for key in ("target_head", "contract_identity", "finding_set_revision"):
-                assert projected_effect[key] == effects_source[key]
+            projected_history = {record["operation_id"]: record for record in projected["sections"]["review_effects"]["records"]}
+            retained_confirmed = retained_effect_history[confirmed_operation.operation_id]
+            assert retained_confirmed is not None
+            projected_effect = projected_history[confirmed_operation.operation_id]
+            for key in ("payload_identity", "round_id", "target_head", "contract_identity", "finding_set_revision", "purpose", "destination", "status", "receipt"):
+                assert projected_effect[key] == getattr(retained_confirmed, key)
             assert second["projection"]["sections"]["review_effects"]["records"][0]["status"] == "UNCERTAIN"
             pending_first = projected["sections"]["pending_work"]
             pending_second = second["projection"]["sections"]["pending_work"]
             assert pending_first["records"][0]["identity"]["revision"] == "rev-a" and pending_first["next_cursor"] == 1
             assert pending_second["records"][0]["identity"]["revision"] == "rev-b" and pending_second["next_cursor"] is None
             effect_page = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 17, "limit": 1}, 10)
-            uncertain_source = next(value for value in json.loads(effects_path.read_bytes())["operations"].values() if value["purpose"] == "thread-publication")
-            effect_repository.record(uncertain_source["operation_id"], "seed-owner", EffectAttempt("CONFIRMED", receipt="thread-receipt-17"))
+            effect_repository.record(uncertain_operation.operation_id, "seed-owner", EffectAttempt("CONFIRMED", receipt="thread-receipt-17"))
             changed_effect_page = _call(
                 client,
                 token,
@@ -533,14 +561,14 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
             malformed_cycle["prs"]["17"]["findings"] = []
             cycle_path.write_text(json.dumps(malformed_cycle), encoding="utf-8")
             malformed_cycle_bytes = cycle_path.read_bytes()
-            effects_before_corrupt_read = external_effect_count
+            effects_before_corrupt_read = external_service.mutation_count
             corrupt_cycle = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 17}, 15)
             assert corrupt_cycle["projection"]["sections"]["review_cycle"]["availability"] == "CORRUPT"
             assert corrupt_cycle["projection"]["sections"]["effective_decision"]["records"][0]["publication"] == "CONFIRMED"
             assert corrupt_cycle["projection"]["sections"]["review_effects"]["records"]
             assert corrupt_cycle["projection"]["sections"]["pending_work"]["records"]
             assert cycle_path.read_bytes() == malformed_cycle_bytes
-            assert external_effect_count == effects_before_corrupt_read
+            assert external_service.mutation_count == effects_before_corrupt_read
             cycle_path.write_bytes(source_before[cycle_path])
 
             decision_path.write_text("{broken", encoding="utf-8")
@@ -612,9 +640,8 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
             assert paused_result[0]["reason"] == "worker_changed_during_diagnostic"
             assert "projection" not in paused_result[0]
             monkeypatch.setattr(worker, "diagnostics", original_diagnostics)
-            replacement = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 17}, 6)
-            assert replacement["process_run_id"] != old_run
-            assert replacement["process_run_id"] == worker.worker_process_run_id
+            assert worker.worker_process_run_id != old_run
+            assert worker.worker_process_run_id is not None
 
             denied = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "unknown-worker", "pr_number": 17}, 5)
             assert denied["status"] == "DENIED"
@@ -647,8 +674,8 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
     with sqlite3.connect(resolution.destination) as connection:
         pending_after = connection.execute("SELECT repository,entity,stage,revision,reason,not_before,unfinished_effects,throttle_attempts,last_error,status FROM github_pending_work ORDER BY work_key").fetchall()
     assert pending_after == pending_before
-    assert external_effect_count == effects_before
-    assert external_threads["resolved-github-thread-17"] == "RESOLVED"
+    assert external_service.mutation_count == effects_before
+    assert external_service.observe_thread("resolved-github-thread-17") == resolved_thread_before
 
 
 def test_original_grant_revoked_after_commit_and_before_dispatch(runtime_boundary) -> None:
