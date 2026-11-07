@@ -148,7 +148,7 @@ class Chain:
             "initial_runtime": "bootstrap",
             "runtimes": [runtime],
             "restart_after_clean_shutdown": True,
-            "crash_budget": 0,
+            "crash_budget": 1 if prior is None else 0,
         }
         captured = None
         proxy = None

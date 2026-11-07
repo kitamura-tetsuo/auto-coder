@@ -151,3 +151,22 @@ ports, so an actual `BlockingIOError`, rather than a port bind collision, is the
 refusal oracle. These cases do not access the optional deployed-proxy fixture or
 perform a production cutover. Their implementation/collection is not evidence of
 a successful container run; require their exact-head CI results before activation.
+
+
+The immutable supervisor reopens provenance-validated retained evidence in its
+own authority check before each forward handoff effect, both SUBMITTED-to-stop
+and STOPPED-to-candidate-start. It checks management keys using each predecessor's
+original manager namespace. Losing the evidence after child dispatch cannot
+permit a queued forward stop/start. If the original child was already stopped,
+the existing single exact-original-runtime safety return remains available;
+this is not permission to resend the candidate or release an unresolved lane.
+
+Successful archived-instance reconstruction verifies all retained journal
+contents and reacquires every ancestor and direct-prior fence even when
+`restart_after_clean_shutdown` is omitted or false. That flag still controls
+only automatic clean child restart. Invalid or incomplete evidence and partial
+lock acquisition fail before supervisor publication; acquired descriptors are
+released on failed reconstruction. The existing uncertain-first-launch fence
+retention behavior is unchanged. Component regressions use real original grants,
+policy and A/B/C SQLite plus explicit physical-adapter/mount controls; they do
+not substitute for the dedicated container CI cases.

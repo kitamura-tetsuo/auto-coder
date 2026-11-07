@@ -687,7 +687,7 @@ class ManagementBootstrapSupervisor:
             try:
                 if read_fresh_status(self.config.state_root)["status"] != "succeeded":
                     raise ValueError("fresh initialization has not succeeded")
-                if self.config.restart_after_clean_shutdown:
+                if self.config.restart_after_clean_shutdown or self.config.archived_exclusions:
                     # The retained prior owner must remain fenced across every
                     # successor lifetime, not just the one-shot first launch.
                     import auto_coder
@@ -706,7 +706,16 @@ class ManagementBootstrapSupervisor:
                         raise ValueError("fresh reconstruction runtime differs")
                     verify_initialization_inputs(intent, bootstrap_config=self.bootstrap_config_path, management_config=Path(runtime.arguments[3]), executable=runtime.executable, application_root=Path(auto_coder.__file__).resolve(strict=True).parent)
                     self._acquire_prior_fences(intent)
-            except (OSError, ValueError, TypeError, KeyError):
+                    if self.config.archived_exclusions:
+                        from .oauth_config import load_management_settings
+                        from .retained_startup import retained_from_fresh_intent
+
+                        exclusion_evidence = retained_from_fresh_intent(load_management_settings(Path(runtime.arguments[3])))
+                        if exclusion_evidence is None:
+                            raise ValueError("fresh reconstruction exclusion evidence unavailable")
+                        with exclusion_evidence:
+                            exclusion_evidence.read()
+            except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
                 self._release_prior_fences()
                 logger.error("Fresh initialization is unresolved; refusing supervisor reconstruction")
                 return 1
