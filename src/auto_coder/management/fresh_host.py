@@ -96,12 +96,14 @@ def main() -> None:
     claim.add_argument("--evidence-file", required=True, type=Path)
     claim.add_argument("--prior-lock", required=True, type=Path)
     claim.add_argument("--prior-network-fd", required=True, type=int)
+    claim.add_argument("--bootstrap-config", type=Path)
     guard = commands.add_parser("guard")
     guard.add_argument("--state-root", required=True, type=Path)
     guard.add_argument("--evidence-file", required=True, type=Path)
     guard.add_argument("--prior-lock", required=True, type=Path)
     guard.add_argument("--guard-dir", required=True, type=Path)
     guard.add_argument("--prior-network-fd", required=True, type=int)
+    guard.add_argument("--bootstrap-config", type=Path)
     args = parser.parse_args()
     try:
         if args.command == "capture":
@@ -136,6 +138,10 @@ def main() -> None:
                 or (management.owner_lock_device, management.owner_lock_inode) != (intent.owner_lock_device, intent.owner_lock_inode)
             ):
                 raise ValueError("fresh intent conflicts with prior evidence")
+            from .exclusion_host import validate_successor
+
+            if validate_successor(management, intent, args.bootstrap_config):
+                raise ValueError("inherited exclusions require the continuous exclusion_cutover session")
             assert_retained_oauth_mount(management, intent)
             assert_prior_network_pin(args.prior_network_fd, management.net_namespace)
             fence = acquire_prior_owner_fence(args.prior_lock, expected_device=intent.owner_lock_device, expected_inode=intent.owner_lock_inode)
@@ -152,9 +158,13 @@ def main() -> None:
             management, proxy, digest = _evidence(args.evidence_file)
             if digest != intent.prior_evidence_sha256:
                 raise ValueError("prior evidence differs from fresh intent")
+            from .exclusion_host import validate_successor
+
+            if validate_successor(management, intent, args.bootstrap_config):
+                raise ValueError("inherited exclusions require the continuous exclusion_cutover session")
             fence = acquire_prior_owner_fence(args.prior_lock, expected_device=intent.owner_lock_device, expected_inode=intent.owner_lock_inode)
             try:
-                serve_one_fresh_grant(args.guard_dir / "fresh-guard.sock", intent, management, proxy, fence, args.prior_network_fd)
+                serve_one_fresh_grant(args.guard_dir / "fresh-guard.sock", intent, management, proxy, fence, args.prior_network_fd, bootstrap_config=args.bootstrap_config)
             finally:
                 os.close(fence)
     except (OSError, ValueError, TypeError, KeyError, HostObservationUnavailable) as exc:

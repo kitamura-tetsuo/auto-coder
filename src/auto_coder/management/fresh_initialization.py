@@ -360,9 +360,9 @@ def _validate_fresh_claim(claim: dict[str, object], intent: FreshInitializationI
         raise ValueError("fresh claim is inconsistent")
 
 
-def read_fresh_status(state_root: Path) -> dict[str, object]:
+def read_fresh_status(state_root: Path, *, host: bool = False) -> dict[str, object]:
     """Read local initialization state without creating or repairing files."""
-    intent, digest = load_fresh_initialization(state_root)
+    intent, digest = load_fresh_initialization(state_root, host=host)
     claim_path = state_root / "fresh-launch-claimed.json"
     launch_path = state_root / "fresh-launched.json"
     outcome_path = state_root / "fresh-outcome.json"

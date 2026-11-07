@@ -597,6 +597,8 @@ class SelfUpdateHandoffConsumer:
             bootstrap_path = settings.bootstrap_config_path
             if bootstrap_path is None or settings.operating_policy_path is None:
                 return HandoffPhase.UNAVAILABLE, "configured original authority paths are unavailable; no stop was sent"
+            if self.config.archived_exclusions and bootstrap_path != self.supervisor.bootstrap_config_path:
+                return HandoffPhase.UNAVAILABLE, "configured bootstrap conflicts with the owning supervisor; no stop was sent"
             journal_root = settings.operation_state_root or settings.state_root
             if journal_root != self.config.journal_root or settings.state_root != self.config.oauth_root:
                 return HandoffPhase.UNAVAILABLE, "configured retained operator-state roots conflict; no stop was sent"
@@ -613,6 +615,19 @@ class SelfUpdateHandoffConsumer:
                 return HandoffPhase.DENIED, "original authority issuer or resource conflicts with fixed configuration; no stop was sent"
             if revision != handoff.policy_revision or {p.name: p.value for p in record.intent.parameters}.get("source_sha") != handoff.candidate.source_sha:
                 return HandoffPhase.DENIED, "handoff changed immutable original intent; no stop was sent"
+            # The durable handoff outlives the child dispatch guard. Reopen
+            # sealed retained evidence at each forward stop/start boundary.
+            from .retained_journal import RetainedGuardedOperationStore
+            from .retained_startup import retained_from_fresh_intent
+
+            authority = getattr(self.supervisor, "source_authority", None)
+            retained = retained_from_fresh_intent(settings, source_authority=authority, serving_process=False)
+            if self.config.archived_exclusions and retained is None:
+                return HandoffPhase.UNAVAILABLE, "sealed ancestor evidence is unavailable; no stop was sent"
+            if retained is not None:
+                with retained:
+                    if retained.management_request(record.intent.idempotency_key, handoff.candidate.source_sha, record.authority) is not None or not RetainedGuardedOperationStore(journal_root, retained).effect_permitted(record):
+                        return HandoffPhase.UNAVAILABLE, "retained management evidence is unavailable or excludes the effect; no stop was sent"
             policy = _current_policy(settings.operating_policy_path, bootstrap_path, intent)
             if policy.outcome is ManagementUpdateOutcome.UNAVAILABLE:
                 return HandoffPhase.UNAVAILABLE, "current management policy is unavailable; no stop was sent"
