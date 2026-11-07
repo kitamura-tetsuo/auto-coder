@@ -729,20 +729,26 @@ def _fit_logs(response: LogsResponse, response_budget: int | None = None) -> byt
     """Drop the oldest returned events until the body fits, keeping ascending order."""
     response_budget = MAX_RESPONSE_BYTES if response_budget is None else response_budget
     limits = response.response
-    returned = len(response.events)
-    while True:
+    selected = response.events
+
+    def render(drop: int) -> bytes:
+        response.events = selected[drop:]
         limits.returned_count = len(response.events)
         limits.truncated = limits.matching_count - limits.omitted_unrepresentable > limits.returned_count
         limits.incomplete = limits.truncated or limits.omitted_unrepresentable > 0
-        body = _dump(response)
-        if len(body) <= response_budget or not response.events:
-            return body
-        excess = len(body) - response_budget
-        drop = 1
-        if returned > 8:
-            average = max(1, len(body) // max(1, len(response.events)))
-            drop = max(1, min(len(response.events), excess // average))
-        del response.events[:drop]
+        return _dump(response)
+
+    body = render(0)
+    if len(body) <= response_budget or not selected:
+        return body
+    low, high = 1, len(selected)
+    while low < high:
+        drop = (low + high) // 2
+        if len(render(drop)) <= response_budget:
+            high = drop
+        else:
+            low = drop + 1
+    return render(low)
 
 
 def _fit_status(response: StatusResponse) -> bytes:
