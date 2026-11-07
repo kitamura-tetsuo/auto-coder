@@ -764,3 +764,90 @@ def test_two_beta_targets_deploy_independently_and_keep_distinct_journal_lanes(r
     assert original is not None
     assert restarted.state.management_runtime._record_client(original) is None
     assert changed_bridge.actions == []
+
+
+@pytest.mark.parametrize("unavailable_target", ("beta-worker", "beta-agent-table-worker"))
+def test_monitor_recovers_other_workers_after_one_beta_bridge_is_lost(real_boundary, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unavailable_target: str) -> None:
+    """Run the real monitor, dispatcher and lifecycle handlers on three lanes."""
+    base, _base_grants, identity, signed, _uids, state = real_boundary
+    origin = base.oauth.canonical_issuer
+    oauth = OAuthSettings(base.oauth.database_path, origin, base.oauth.firebase_project_id, (OAuthClient("alice-client", (origin + "/alice-callback",), allowed_scopes=(READ_SCOPE, DEPLOY_SCOPE)),), enabled_scopes=(READ_SCOPE, DEPLOY_SCOPE))
+    policy = tmp_path / "operator.yaml"
+    policy.write_text(
+        "profile: full\ntargets:\n  release-worker:\n    channel: release\n    repositories: [fixture/release]\n  beta-worker:\n    channel: beta\n    repositories: [fixture/beta]\n  beta-agent-table-worker:\n    channel: beta\n    repositories: [fixture/agent-table]\n",
+        encoding="utf-8",
+    )
+    settings = ManagementSettings(tmp_path, oauth, port=base.port, operating_policy_path=policy, operation_state_root=tmp_path / "journal")
+    bridges = {target_id: LifecycleBridge() for target_id in ("release-worker", "beta-worker", "beta-agent-table-worker")}
+    for target_id, channel, repository, address, secret in (
+        ("release-worker", "release", "fixture/release", "10.23.10.11", b"r" * 48),
+        ("beta-worker", "beta", "fixture/beta", "10.23.10.12", b"b" * 48),
+        ("beta-agent-table-worker", "beta", "fixture/agent-table", "10.23.10.13", b"a" * 48),
+    ):
+        bridge = bridges[target_id]
+        bridge.config = WorkerEndpointConfig(target_id, channel, repository, address, 17890, secret, target_id)
+        assert bridge.worker is not None
+        bridge.worker["process_run_id"] = f"{target_id}-original-run"
+
+    app = create_management_app(settings, OAuthGrantService(oauth, identity, clock=lambda: state["now"]), worker_clients=bridges)  # type: ignore[arg-type]
+    runtime = app.state.management_runtime
+
+    # Keep scheduling deterministic; the real poll enters the real dispatcher
+    # and WorkerLifecycle handler below. Neither is stubbed or replaced.
+    async def manual_monitor() -> None:
+        pass
+
+    monkeypatch.setattr(runtime, "start_monitor", manual_monitor)
+    with TestClient(app, base_url=origin) as http:
+        bearer = _issue(http, settings, signed, "alice", "alice-client", READ_SCOPE + " " + DEPLOY_SCOPE)["access_token"]
+        operation_ids: dict[str, str] = {}
+        for target_id, bridge in bridges.items():
+            response = _call(
+                http,
+                bearer,
+                "auto_coder_restart_worker",
+                {
+                    "target_id": target_id,
+                    "idempotency_key": "same-client-key",
+                    "expected_supervisor_generation": bridge.supervisor_generation,
+                    "expected_process_run_id": f"{target_id}-original-run",
+                    "expected_deployment_generation": "generation-old",
+                    "expected_runtime_id": "runtime-old",
+                },
+            )
+            assert isinstance(response.get("operation_id"), str), response
+            operation_ids[target_id] = str(response["operation_id"])
+            record = runtime.journal.get(operation_ids[target_id]).record
+            assert record is not None and record.intent.target.repository == bridge.config.repository
+            assert runtime.journal.lifecycle_snapshot(record.operation_id)[1]["stage"] == "DRAINING"  # type: ignore[index]
+
+        unavailable = bridges[unavailable_target]
+        unavailable.inspect_supervisor = lambda: WorkerNetworkResult(503, "UNAVAILABLE", None, "", "bridge-down")  # type: ignore[method-assign]
+        healthy_targets = set(bridges) - {unavailable_target}
+        assert http.portal is not None
+        for _ in range(18):
+            http.portal.call(runtime._poll_lifecycle_once)
+            if all(runtime.journal.get(operation_ids[target_id]).record.phase.value == "succeeded" for target_id in healthy_targets):  # type: ignore[union-attr]
+                break
+
+        for target_id, bridge in bridges.items():
+            operation_id = operation_ids[target_id]
+            record = runtime.journal.get(operation_id).record
+            assert record is not None
+            assert record.intent.target.repository == bridge.config.repository
+            projection = _call(http, bearer, "auto_coder_operation_get", {"target_id": target_id, "operation_id": operation_id})
+            assert projection["target_id"] == target_id and projection["repository"] == bridge.config.repository
+            observed = _call(http, bearer, "auto_coder_deployment_status", {"target_id": target_id})
+            if target_id == unavailable_target:
+                assert record.phase.value != "succeeded" and projection["status"] != "SUCCEEDED"
+                assert observed["status"] == "UNAVAILABLE" and observed["target_id"] == target_id
+                assert runtime.journal.lifecycle_snapshot(operation_id)[1]["stage"] == "DRAINING"  # type: ignore[index]
+                assert bridge.actions == [] and bridge.selected == "runtime-old"
+                assert bridge.worker is not None and bridge.worker["process_run_id"] == f"{target_id}-original-run"
+            else:
+                assert record.phase.value == "succeeded" and projection["status"] == "SUCCEEDED", projection
+                assert observed["status"] == "OK" and observed["target_id"] == target_id
+                assert [action for action, _ in bridge.actions] == ["REQUEST_GRACEFUL_STOP", "START"]
+                assert all(operation_id in step_id for _, step_id in bridge.actions)
+                assert bridge.selected == "runtime-old"
+                assert bridge.worker is not None and bridge.worker["process_run_id"] == "run-new"

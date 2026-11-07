@@ -146,7 +146,7 @@ def test_pre_registry_operations_pin_migration_time_bridge_across_restarts(tmp_p
     assert restarted._same_original_intent(admitted.record, OperationIntent(legacy.target, legacy.action, (*legacy.parameters, ActionParameter("worker_binding", next_config.binding_digest)), legacy.idempotency_key))
 
 
-def test_monitor_submits_each_independent_target_even_when_another_is_unavailable(tmp_path: Path) -> None:
+def test_monitor_enumerates_pending_operations_from_all_targets(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path, _configs())
     authority = _authority()
     admitted = []
