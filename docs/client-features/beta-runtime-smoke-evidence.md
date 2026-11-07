@@ -233,7 +233,13 @@ non-editable installations at two actual source revisions, actual locked READY
 receipts, and production heartbeat progression. Its external orchestrator
 owns isolated Docker fixtures and controlled fault injection; the producer
 receives only journal and read clients. The `Supervisor Integration Tests`
-workflow executes this boundary. A helper-only PASS or a skipped/unavailable
+workflow executes this boundary. Its disposable source service imports commits
+without importing checkout tags, so live beta pointers and prior tested/selection
+records cannot contaminate the fixture's independently published evidence.
+`tests/test_beta_runtime_smoke_source_fixture.py` checks this isolation with real
+Git and HTTP selection while preserving the original source tags. This fixture
+correction changes no production behavior or dashboard schema.
+A helper-only PASS or a skipped/unavailable
 container run does not establish its acceptance result.
 
 Focused local verification uses:

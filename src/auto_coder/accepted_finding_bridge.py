@@ -782,6 +782,7 @@ def _empty_snapshot(repo_name: str, pr_number: int) -> PrReviewCycleSnapshot:
         ordinary_pass_head_sha="",
         ordinary_pass_base_sha="",
         ordinary_pass_contract_identity="",
+        ordinary_pass_opening_token="",
         accepted_strong_round=None,
         active_claim=None,
         findings=(),
@@ -791,6 +792,7 @@ def _empty_snapshot(repo_name: str, pr_number: int) -> PrReviewCycleSnapshot:
         accepted_closure=None,
         retry_not_before=0.0,
         attempt_error_reason="",
+        wait_policy_identity="",
         pending_effect="",
         requires_new_strong_round=False,
     )

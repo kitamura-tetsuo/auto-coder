@@ -814,7 +814,13 @@ def test_green_ci_retains_durable_strong_review_gate(tmp_path, monkeypatch, stro
     contract = ContractSnapshot(("#2501",), "Issue #2501 REQ-003: Retain independent review gates.")
     policy = StrongPolicyIdentity("strong-review", "model=controlled", "v1")
     inputs = TwoTierGateInputs(gate, contract, policy, H1, "base-1")
-    gate.ordinary_pass(PR_NUMBER, H1, "base-1", contract)
+    gate.ordinary_pass(
+        PR_NUMBER,
+        H1,
+        "base-1",
+        contract,
+        opening_token="created:2026-11-01T00:00:00Z",
+    )
 
     if strong_state == "accepted-finding":
         claim = cycle.claim_strong_audit(PR_NUMBER, RoundProvenance(H1, "base-1"), contract, policy)
@@ -847,6 +853,12 @@ def test_green_ci_retains_durable_strong_review_gate(tmp_path, monkeypatch, stro
     client.get_pr_review_threads_strict.return_value = []
     client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS"), H1)}]
     client.get_pull_request.return_value = {"head": {"sha": H1}, "base": {"sha": "base-1"}}
+    client.get_pull_request_metadata_strict.return_value = {
+        **pr_data,
+        "state": "open",
+        "created_at": "2026-11-01T00:00:00Z",
+    }
+    client.get_issue_timeline_strict.return_value = []
     green = _snapshot(ObservationAvailability.KNOWN, CIConclusion.SUCCESS)
 
     with (

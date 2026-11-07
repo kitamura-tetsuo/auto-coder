@@ -1,3 +1,4 @@
+import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
@@ -623,6 +624,14 @@ def test_complete_evidence_payload_and_retry_metadata_survive_restart(tmp_path):
     assert recovered_deferred.retry_not_before == deadline
     with pytest.raises(NotApplicableError, match="deferred"):
         repo.claim_strong_audit(2, provenance, contract, _policy())
+
+    renewed = repo.claim_strong_audit(2, provenance, contract, _policy(), allow_retry_override=True)
+    assert renewed.head_sha == provenance.head_sha
+    raw = json.loads(path.read_text())
+    retained = raw["prs"]["2"]["wait_history"][-1]
+    assert retained["reason"] == "quota unavailable"
+    assert retained["retry_not_before"] == deadline
+    assert retained["superseded_by"] == "explicit-operator-recheck"
 
 
 def test_new_closure_finding_remains_open_after_restart(tmp_path):

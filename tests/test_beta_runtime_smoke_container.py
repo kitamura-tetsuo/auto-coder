@@ -62,11 +62,10 @@ class _SourceService(GitEvidenceBoundary):
         self.executions.clear()
         self.repository = root
         # Import source commits, not the checkout's live selection/evidence tags.
+        # The fixture publishes its own proof and selection refs below.
         subprocess.run(["git", "clone", "--bare", "--no-tags", str(source), str(root)], check=True, capture_output=True, text=True)
-        # A local checkout can contain production beta-selection tags fetched
-        # after this fixture was written.  The disposable service owns its
-        # selection history, so inherited mutable/history refs would make the
-        # first fixture selection appear to have been superseded already.
+        # Keep defensive cleanup in case a future transport imports tags
+        # despite the clone boundary.
         inherited = self._git("for-each-ref", "--format=%(refname)", "refs/tags/auto-coder-beta-*")
         for ref in inherited.splitlines():
             self._git("update-ref", "-d", ref)

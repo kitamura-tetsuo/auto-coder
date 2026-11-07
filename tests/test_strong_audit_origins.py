@@ -1,0 +1,1015 @@
+"""REQ-006/008: connected controller origins, real quota policy and durable stores.
+
+Only GitHub, account-usage and reviewer transports are scripted. Git commands,
+configuration loading, admission, dispatch, resolution and persistence stay real.
+"""
+
+import asyncio
+import json
+import math
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from auto_coder.adversarial_validator import AdversarialValidationResult, format_adversarial_validation_comment
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.automation_engine import AutomationEngine
+from auto_coder.durable_repair_allowance import RepairAllowanceLedger
+from auto_coder.entity_invalidation import EntityIdentity
+from auto_coder.github_app_reviewer import ReviewPublicationResult
+from auto_coder.llm_backend_config import active_repo_context
+from auto_coder.pr_processor import _two_tier_gate_inputs
+from auto_coder.pr_review_execution import ReviewExecutionResult
+from auto_coder.util.gh_cache import GitHubClient
+from tests.ci_observation_fakes import _Actions, _Checks
+from tests.test_strong_audit_producer import _git, _repository
+
+
+class OriginScenario:
+    def __init__(self, root, monkeypatch):
+        self.root = root
+        self.runner = asyncio.Runner()
+        # Keep real manager/client construction without requiring a host CLI.
+        # No model execution is allowed through this external probe transport.
+        cli_dir = root / "bin"
+        cli_dir.mkdir()
+        codex = cli_dir / "codex"
+        codex.write_text('#!/bin/sh\nif [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then\n  echo "codex fixture transport"\n  exit 0\nfi\necho "unexpected Codex execution" >&2\nexit 97\n')
+        codex.chmod(0o755)
+        monkeypatch.setenv("PATH", str(cli_dir) + os.pathsep + os.environ["PATH"])
+        self.clock = 1800000000.0
+        self.reset = self.clock + 4 * 86400 + 600
+        self.used = 80.0
+        self.observations = []
+        self.reviews = []
+        self.native_reviews = []
+        self.timeline = []
+        self.repository, self.base, self.head = _repository(root)
+        _git(self.repository, "remote", "add", "origin", str(self.repository))
+        _git(self.repository, "update-ref", "refs/pull/100/head", self.head)
+        monkeypatch.chdir(self.repository)
+        monkeypatch.setenv("HOME", str(root))
+        monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(root / "invalidations.sqlite3"))
+        for variable in ("AUTO_CODER_CONFIG_PATH", "AUTO_CODER_LLM_CONFIG_PATH"):
+            monkeypatch.delenv(variable, raising=False)
+        import auto_coder.codex_usage_checker as usage_module
+
+        class ClockDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.fromtimestamp(self.clock, tz or timezone.utc)
+
+        monkeypatch.setattr(usage_module, "datetime", ClockDateTime)
+        monkeypatch.setattr("auto_coder.quota_selector.datetime", ClockDateTime)
+        monkeypatch.setattr("time.time", lambda: self.clock)
+        self.config_file = root / ".auto-coder" / "owner" / "repo" / "llm_config.toml"
+        self.config_file.parent.mkdir(parents=True)
+        self.configure("surplus")
+        self.pr = {
+            "number": 100,
+            "title": "Quota recovery",
+            "body": "Fixes #99",
+            "state": "open",
+            "created_at": "2026-11-01T00:00:00Z",
+            "updated_at": "2026-11-01T00:00:00Z",
+            "labels": [],
+            "user": {"login": "owner", "id": 1},
+            "mergeable": True,
+            "head": {"ref": "feature", "sha": self.head},
+            "base": {"ref": "main", "sha": self.base},
+            "changed_files": 1,
+            "additions": 1,
+        }
+        self.issue = {"number": 99, "state": "open", "title": "Contract", "updated_at": "2026-11-01T00:00:00Z", "body": "## Requirements\nREQ-001: Preserve the gate.", "labels": []}
+        self.github = GitHubClient("test-token")
+        monkeypatch.setattr(GitHubClient, "_instance", self.github)
+        monkeypatch.setattr(self.github, "_read_issue_resource", lambda _repo, _number, relation="", **kw: ([] if relation != "parent" else None) if relation else dict(self.issue))
+        for method in ("get_pull_request", "get_pull_request_metadata_strict"):
+            monkeypatch.setattr(self.github, method, lambda *a, **kw: dict(self.pr))
+        monkeypatch.setattr(self.github, "get_issue_timeline_strict", lambda *a, **kw: list(self.timeline))
+        monkeypatch.setattr(self.github, "get_pr_details", lambda pr: pr)
+        for method in ("get_issue", "get_issue_strict"):
+            monkeypatch.setattr(self.github, method, lambda *a, **kw: dict(self.issue))
+        monkeypatch.setattr(self.github, "get_issue_details", lambda issue: issue)
+        monkeypatch.setattr(self.github, "get_pr_diff", lambda *a, **kw: "diff --git a/contract.txt b/contract.txt\n-base\n+head\n")
+        for method in ("get_pr_review_threads_strict", "get_issue_comments_strict", "get_pr_comments_strict", "get_pr_comments"):
+            monkeypatch.setattr(self.github, method, lambda *a, **kw: [])
+        monkeypatch.setattr(self.github, "get_pr_reviews_strict", lambda *a, **kw: list(self.native_reviews))
+        monkeypatch.setattr(self.github, "try_add_labels", lambda *a, **kw: True)
+        monkeypatch.setattr(self.github, "remove_labels", lambda *a, **kw: None)
+        monkeypatch.setattr(self.github, "get_pull_request_head_sha_strict", lambda *a, **kw: self.head)
+        api = SimpleNamespace(checks=_Checks("completed", "success", 1, False), actions=_Actions())
+        monkeypatch.setattr("auto_coder.util.github_action.get_ghapi_client", lambda *a, **kw: api)
+        monkeypatch.setattr(usage_module, "read_account_data", self.account)
+        monkeypatch.setattr("auto_coder.pr_processor.run_adversarial_validation", lambda *a, **kw: AdversarialValidationResult(result="PASS", summary="Current ordinary contract verified"))
+        monkeypatch.setattr("auto_coder.pr_processor.publish_adversarial_review", self.publish_ordinary)
+        monkeypatch.setattr("auto_coder.pr_processor.execute_review", self.review)
+
+    def configure(self, strategy, enabled=True, backend_type="codex"):
+        backend_name = f"{backend_type}-reviewer"
+        model = "muse-spark-1.3" if backend_type == "muse" else "gpt-5"
+        self.config_file.write_text(
+            f"""[quota_selection]
+strategy = "{strategy}"
+[backend_strong_pr_adversarial_validation]
+order = ["{backend_name}"]
+default = "{backend_name}"
+[backends.{backend_name}]
+backend_type = "{backend_type}"
+model = "{model}"
+enabled = {str(enabled).lower()}
+"""
+        )
+
+    def account(self, method, **kwargs):
+        self.observations.append((self.clock, self.used))
+        assert method == "account/rateLimits/read"
+        return {"rateLimits": {"primary": {"windowDurationMins": 10080, "usedPercent": self.used, "resetsAt": self.reset}}}
+
+    def review(self, review_input, manager, cwd):
+        assert self.observations[-1] == (self.clock, self.used)
+        assert _git(Path(cwd), "rev-parse", "HEAD") == self.head
+        assert Path(cwd) != self.repository
+        self.reviews.append(review_input)
+        return ReviewExecutionResult(
+            mode=review_input.mode,
+            round_id=review_input.round_id,
+            attempt_id=review_input.attempt_id,
+            head_sha=review_input.head_sha,
+            base_sha=review_input.base_sha,
+            contract_identity=review_input.contract.identity,
+            policy_identity=review_input.policy.identity,
+            finding_set_revision=0,
+            reviewer_provenance="strong/codex/gpt-5",
+            verdict="PASS",
+        )
+
+    def publish_ordinary(self, *args, **kwargs):
+        self.pr["updated_at"] = datetime.fromtimestamp(self.clock, timezone.utc).isoformat()
+        self.native_reviews.append(
+            {
+                "id": len(self.native_reviews) + 1,
+                "body": format_adversarial_validation_comment(args[3], args[2]),
+                "user": {"login": "auto-coder-reviewer[bot]"},
+            }
+        )
+        return ReviewPublicationResult(True, "APPROVE", "")
+
+    def engine(self, max_reviews=None):
+        config = AutomationConfig(repo_name="owner/repo")
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        config.MAX_ADVERSARIAL_VALIDATIONS = max_reviews
+        return AutomationEngine(self.github, config)
+
+    def explicit(self, engine=None, force=False):
+        return (engine or self.engine()).process_single("owner/repo", "pr", 100, explicit_only=True, force=force)
+
+    def dispatch(self, engine, *, invalidate=False):
+        async def run():
+            if invalidate:
+                await engine.invalidate_entity("owner/repo", "pr", 100)
+            else:
+                await engine._enqueue_pending_invalidations("owner/repo")
+            worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+            try:
+                await asyncio.wait_for(engine.queue.join(), timeout=10)
+            finally:
+                worker.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await worker
+
+        self.runner.run(run())
+
+    def history(self):
+        path = self.root / ".auto-coder" / "owner/repo" / "pr_review_cycle.json"
+        return json.loads(path.read_text())["prs"]["100"]["wait_history"]
+
+    def snapshot(self):
+        with active_repo_context("owner/repo"):
+            return _two_tier_gate_inputs(self.github, "owner/repo", self.pr).gate.state.snapshot(100)
+
+
+@pytest.fixture
+def scenario(tmp_path, monkeypatch, _use_real_commands):
+    instance = OriginScenario(tmp_path, monkeypatch)
+    try:
+        yield instance
+    finally:
+        instance.runner.close()
+
+
+def test_explicit_origin_loaded_burst_recovers_surplus_wait(scenario):
+    s = scenario
+    result = s.explicit()
+    assert not result["errors"], result
+    previous = s.snapshot()
+    assert previous.retry_not_before == math.nextafter(s.clock + 600, math.inf), result
+    assert not s.reviews
+    with active_repo_context("owner/repo"):
+        inputs = _two_tier_gate_inputs(s.github, "owner/repo", s.pr)
+    inputs.gate.ordinary_pass(101, s.head, s.base, inputs.contract)
+    unrelated = inputs.gate.state.snapshot(101)
+    allowances = RepairAllowanceLedger()
+    ledger_before = allowances.initialize_namespace("https://api.github.com", "owner/repo", 100)
+    s.configure("burst")
+    result = s.explicit(force=True)
+    assert len(s.reviews) == 1, result
+    assert s.pr["updated_at"] != s.pr["created_at"]
+    accepted = s.snapshot()
+    assert accepted.accepted_strong_round.policy_identity == inputs.policy.identity
+    assert accepted.open_epoch == previous.open_epoch
+    assert accepted.ordinary_pass_head_sha == previous.ordinary_pass_head_sha
+    assert accepted.completion is None
+    assert accepted.pending_effect == "STRONG_PUBLICATION"
+    assert s.history() == [
+        {
+            "reason": previous.waiting_reason,
+            "retry_not_before": previous.retry_not_before,
+            "superseded_at": s.clock,
+            "superseded_by": "explicit-operator-recheck",
+            "superseding_observation": "accepted PASS",
+        }
+    ]
+    assert inputs.gate.state.snapshot(101) == unrelated
+    assert allowances.get_snapshot("https://api.github.com", "owner/repo", 100) == ledger_before
+
+
+def test_automatic_pending_dispatch_rechecks_unchanged_usage_before_reset(scenario):
+    s = scenario
+    engine = s.engine()
+    s.dispatch(engine, invalidate=True)
+    first = s.snapshot()
+    assert first.retry_not_before == math.nextafter(s.clock + 600, math.inf)
+    assert not s.reviews
+    observed = len(s.observations)
+    s.clock += 100
+    s.dispatch(engine, invalidate=True)
+    assert s.snapshot().retry_not_before == first.retry_not_before
+    assert len(s.observations) == observed
+    assert s.history() == []
+    s.clock = first.retry_not_before + 0.000001
+    s.dispatch(engine)
+    assert len(s.reviews) == 1
+    assert s.clock < s.reset
+    assert s.observations[-1] == (s.clock, 80.0)
+    assert s.history()[0]["retry_not_before"] == first.retry_not_before
+
+
+def test_due_dispatch_retains_wake_when_opening_lookup_fails(scenario, monkeypatch):
+    """A transient opening read cannot acknowledge the daemon's only wake."""
+    s = scenario
+    engine = s.engine()
+    s.dispatch(engine, invalidate=True)
+    selected = s.snapshot()
+    assert selected.retry_not_before == math.nextafter(s.clock + 600, math.inf)
+    assert engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100)) is not None
+
+    s.clock = selected.retry_not_before
+    timeline_calls = 0
+
+    def unavailable_timeline(*args, **kwargs):
+        nonlocal timeline_calls
+        timeline_calls += 1
+        raise RuntimeError("controlled timeline outage")
+
+    monkeypatch.setattr(s.github, "get_issue_timeline_strict", unavailable_timeline)
+    s.dispatch(engine)
+
+    assert timeline_calls == 1
+    assert not s.reviews
+    preserved = s.snapshot()
+    assert preserved.retry_not_before == selected.retry_not_before
+    assert preserved.attempt_error_reason == selected.attempt_error_reason
+    assert preserved.active_claim is None
+    assert s.history() == []
+    successor = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100))
+    assert successor is not None
+    assert successor.retry_not_before == s.clock + 60
+
+    monkeypatch.setattr(
+        s.github,
+        "get_issue_timeline_strict",
+        lambda *args, **kwargs: list(s.timeline),
+    )
+    s.clock = successor.retry_not_before
+    s.dispatch(engine)
+
+    assert len(s.reviews) == 1
+    assert s.observations[-1] == (s.clock, 80.0)
+    accepted = s.snapshot()
+    assert accepted.accepted_strong_round is not None
+    assert accepted.pending_effect == "STRONG_PUBLICATION"
+    publication_wake = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100))
+    assert publication_wake is not None
+    assert publication_wake.retry_not_before == s.clock + 60
+
+
+def test_predeadline_opening_failure_preserves_selected_wake(scenario, monkeypatch):
+    """A first daemon wake cannot postpone an earlier cycle deadline."""
+    s = scenario
+    s.explicit()
+    selected = s.snapshot()
+    assert selected.retry_not_before > s.clock
+    with active_repo_context("owner/repo"):
+        current_policy = _two_tier_gate_inputs(s.github, "owner/repo", s.pr).policy
+    assert selected.wait_policy_identity == current_policy.identity
+    engine = s.engine()
+    s.clock = selected.retry_not_before - 10
+
+    def unavailable_timeline(*args, **kwargs):
+        raise RuntimeError("controlled timeline outage")
+
+    monkeypatch.setattr(s.github, "get_issue_timeline_strict", unavailable_timeline)
+    s.dispatch(engine, invalidate=True)
+
+    successor = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100))
+    assert successor is not None
+    assert successor.retry_not_before == selected.retry_not_before
+    assert s.snapshot().retry_not_before == selected.retry_not_before
+    assert not s.reviews
+
+
+def test_cached_pass_from_prior_opening_requires_current_ordinary_pass(scenario):
+    """An authentic saved O1 review cannot authorize O2 strong admission."""
+    s = scenario
+    first = s.explicit()
+    assert not first["errors"], first
+    selected = s.snapshot()
+    assert selected.ordinary_pass_opening_token == "created:2026-11-01T00:00:00Z"
+    assert s.native_reviews
+    s.configure("burst")
+    s.clock = selected.retry_not_before + 0.000001
+    s.timeline.append(
+        {
+            "event": "reopened",
+            "id": 8765,
+            "created_at": "2027-01-15T08:00:00Z",
+        }
+    )
+
+    result = s.explicit()
+
+    # Cached O1 authority is rejected; a genuine ordinary invocation in O2 is
+    # required before fresh eligible quota may admit the strong reviewer.
+    assert not result["errors"], result
+    assert len(s.native_reviews) == 2
+    assert len(s.reviews) == 1
+    current = s.snapshot()
+    assert current.ordinary_pass_opening_token == "reopened:8765"
+    assert current.accepted_strong_round is not None
+
+
+def test_review_limit_cannot_relabel_cached_pass_for_reopened_pr(scenario):
+    """The count shortcut cannot turn an O1 PASS into O2 convergence."""
+    s = scenario
+    engine = s.engine(max_reviews=1)
+    first = s.explicit(engine)
+    assert not first["errors"], first
+    selected = s.snapshot()
+    assert selected.ordinary_pass_opening_token == "created:2026-11-01T00:00:00Z"
+    assert len(s.native_reviews) == 1
+    s.configure("burst")
+    s.clock = selected.retry_not_before + 0.000001
+    s.timeline.append(
+        {
+            "event": "reopened",
+            "id": 8766,
+            "created_at": "2027-01-15T08:00:00Z",
+        }
+    )
+
+    s.dispatch(engine, invalidate=True)
+
+    current = s.snapshot()
+    assert not s.reviews
+    assert len(s.native_reviews) == 1
+    assert current.ordinary_pass_opening_token == selected.ordinary_pass_opening_token
+    assert current.retry_not_before == selected.retry_not_before
+    assert current.accepted_strong_round is None
+
+
+def test_review_limit_allows_same_opening_cached_pass(scenario):
+    """A proven same-opening PASS remains reusable at the configured limit."""
+    s = scenario
+    engine = s.engine(max_reviews=1)
+    s.explicit(engine)
+    selected = s.snapshot()
+    s.configure("burst")
+    s.clock = selected.retry_not_before + 0.000001
+
+    s.dispatch(engine, invalidate=True)
+
+    assert len(s.native_reviews) == 1
+    assert len(s.reviews) == 1
+    assert s.snapshot().accepted_strong_round is not None
+
+
+@pytest.mark.parametrize("max_reviews", [1, None])
+def test_zero_deadline_successor_requires_current_opening_pass(scenario, max_reviews):
+    """A queue-only retry cannot relabel O1 convergence after a reopen."""
+    s = scenario
+    engine = s.engine(max_reviews=max_reviews)
+    first = s.explicit(engine)
+    assert not first["errors"], first
+    selected = s.snapshot()
+    assert selected.retry_not_before > s.clock
+    assert selected.ordinary_pass_opening_token == "created:2026-11-01T00:00:00Z"
+
+    # A real automatic recheck observes non-quota unavailability. The cycle
+    # deadline becomes zero while the daemon retains the bounded successor.
+    s.configure("surplus", enabled=False)
+    s.clock = selected.retry_not_before + 0.000001
+    s.dispatch(engine, invalidate=True)
+    unavailable = s.snapshot()
+    assert unavailable.retry_not_before == 0
+    successor = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100))
+    assert successor is not None
+    assert successor.retry_not_before == s.clock + 60
+
+    s.timeline.append(
+        {
+            "event": "reopened",
+            "id": 8767,
+            "created_at": "2027-01-15T08:00:00Z",
+        }
+    )
+    s.configure("burst")
+    s.clock = successor.retry_not_before
+    s.dispatch(engine)
+
+    current = s.snapshot()
+    if max_reviews == 1:
+        # The configured limit prevents a new ordinary result, so the prior
+        # opening remains historical and cannot admit strong work.
+        assert len(s.native_reviews) == 1
+        assert not s.reviews
+        assert current.ordinary_pass_opening_token == selected.ordinary_pass_opening_token
+        assert current.accepted_strong_round is None
+    else:
+        # The uncapped path establishes genuine O2 convergence before strong
+        # availability is allowed to admit one review.
+        assert len(s.native_reviews) == 2
+        assert len(s.reviews) == 1
+        assert current.ordinary_pass_opening_token == "reopened:8767"
+        assert current.accepted_strong_round is not None
+
+
+def test_changed_route_does_not_reuse_old_provider_deadline(scenario, monkeypatch):
+    """A Codex reset is not a scheduling oracle for a current Muse route."""
+    s = scenario
+    s.used = 100.0
+    s.explicit()
+    selected = s.snapshot()
+    assert selected.retry_not_before == s.reset
+    s.configure("surplus", backend_type="muse")
+    engine = s.engine()
+    timeline_calls = 0
+
+    def fail_second_timeline(*args, **kwargs):
+        nonlocal timeline_calls
+        timeline_calls += 1
+        if timeline_calls == 2:
+            raise RuntimeError("controlled final opening outage")
+        return list(s.timeline)
+
+    monkeypatch.setattr(s.github, "get_issue_timeline_strict", fail_second_timeline)
+    s.dispatch(engine, invalidate=True)
+
+    successor = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100))
+    assert successor is not None
+    assert successor.retry_not_before == s.clock + 60
+    assert s.snapshot().retry_not_before == selected.retry_not_before
+    assert not s.reviews
+
+
+@pytest.mark.parametrize(
+    ("backend_type", "expected_retry"),
+    [("codex", "provider-reset"), ("muse", "bounded-successor")],
+)
+def test_post_convergence_opening_failure_uses_only_current_route_deadline(
+    scenario,
+    monkeypatch,
+    backend_type,
+    expected_retry,
+):
+    """The final opening fence cannot borrow another route's quota reset."""
+    s = scenario
+    s.used = 100.0
+    first = s.explicit()
+    assert not first["errors"], first
+    selected = s.snapshot()
+    assert selected.retry_not_before == s.reset
+    assert selected.wait_policy_identity
+
+    if backend_type == "muse":
+        muse = s.root / "bin" / "muse"
+        muse.write_text('#!/bin/sh\nif [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then\n' '  echo "muse fixture transport"\n  exit 0\nfi\n' 'echo "unexpected Muse execution" >&2\nexit 97\n')
+        muse.chmod(0o755)
+    s.configure("surplus", backend_type=backend_type)
+    engine = s.engine()
+    timeline_calls = 0
+
+    def fail_third_timeline(*args, **kwargs):
+        nonlocal timeline_calls
+        timeline_calls += 1
+        if timeline_calls == 3:
+            raise RuntimeError("controlled post-convergence opening outage")
+        return list(s.timeline)
+
+    monkeypatch.setattr(s.github, "get_issue_timeline_strict", fail_third_timeline)
+    s.dispatch(engine, invalidate=True)
+
+    assert timeline_calls == 3
+    assert not s.reviews
+    preserved = s.snapshot()
+    assert preserved.retry_not_before == selected.retry_not_before
+    assert preserved.wait_policy_identity == selected.wait_policy_identity
+    successor = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100))
+    assert successor is not None
+    if expected_retry == "provider-reset":
+        assert successor.retry_not_before == selected.retry_not_before
+        return
+
+    assert successor.retry_not_before == s.clock + 60
+
+    restored_timeline_calls = 0
+
+    def restored_timeline(*args, **kwargs):
+        nonlocal restored_timeline_calls
+        restored_timeline_calls += 1
+        return list(s.timeline)
+
+    monkeypatch.setattr(s.github, "get_issue_timeline_strict", restored_timeline)
+
+    def review_muse(review_input, manager, cwd):
+        assert manager is not None
+        s.reviews.append(review_input)
+        return ReviewExecutionResult(
+            mode=review_input.mode,
+            round_id=review_input.round_id,
+            attempt_id=review_input.attempt_id,
+            head_sha=review_input.head_sha,
+            base_sha=review_input.base_sha,
+            contract_identity=review_input.contract.identity,
+            policy_identity=review_input.policy.identity,
+            finding_set_revision=0,
+            reviewer_provenance="strong/muse/gpt-5",
+            verdict="PASS",
+        )
+
+    monkeypatch.setattr("auto_coder.pr_processor.execute_review", review_muse)
+    s.clock = successor.retry_not_before
+    resumed = s.explicit(force=True)
+
+    assert not resumed["errors"], resumed
+    assert restored_timeline_calls >= 3
+    assert len(s.reviews) == 1
+    assert s.snapshot().accepted_strong_round is not None
+
+
+def test_explicit_origin_restores_selected_wait_when_target_changes_during_usage(
+    scenario,
+    monkeypatch,
+):
+    s = scenario
+    s.explicit()
+    selected = s.snapshot()
+    assert selected.retry_not_before > s.clock
+    observations = len(s.observations)
+
+    def account(method, **kwargs):
+        result = s.account(method, **kwargs)
+        if len(s.observations) > observations:
+            s.timeline.append(
+                {
+                    "event": "reopened",
+                    "id": 1234,
+                    "created_at": "2027-01-15T08:01:00Z",
+                }
+            )
+        return result
+
+    monkeypatch.setattr("auto_coder.codex_usage_checker.read_account_data", account)
+    result = s.explicit(force=True)
+
+    assert result["target_outcome"] == "deferred", result
+    assert not s.reviews
+    restored = s.snapshot()
+    assert restored.active_claim is None
+    assert restored.attempt_error_reason == selected.attempt_error_reason
+    assert restored.retry_not_before == selected.retry_not_before
+    assert s.history() == []
+
+
+@pytest.mark.parametrize("change", ["head", "opening", "unknown", "newer-owner", "unchanged"])
+def test_automatic_origin_fences_claude_usage_processing_error(scenario, monkeypatch, change):
+    """A malformed external usage response must not consume a stale wait."""
+    import auto_coder.claude_usage_checker as claude_usage
+    from auto_coder.pr_review_cycle import PrReviewCycleRepository, RoundProvenance
+
+    s = scenario
+    s.configure("surplus", backend_type="claude")
+    monkeypatch.setattr(claude_usage, "resolve_claude_oauth_token", lambda token=None: "fixture-token")
+    monkeypatch.setattr(claude_usage, "_cached_quota", None)
+    monkeypatch.setattr(claude_usage, "_cached_quotas", {})
+    monkeypatch.setattr(claude_usage, "fetch_claude_usage_data", lambda **kwargs: {"seven_day": {"utilization": 100}})
+    s.explicit()
+    selected = s.snapshot()
+    assert selected.retry_not_before > s.clock
+    assert selected.attempt_error_reason == "strong reviewer route is EXHAUSTED"
+    history_before = s.history()
+    s.clock = selected.retry_not_before
+    engine = s.engine()
+    observed = []
+    newer = []
+
+    def malformed_usage(**kwargs):
+        observed.append(s.snapshot().active_claim)
+        assert observed[-1] is not None
+        if change in {"head", "newer-owner"}:
+            (s.repository / "contract.txt").write_text("new target\n")
+            _git(s.repository, "add", "contract.txt")
+            _git(s.repository, "commit", "-m", "Advance external target")
+            s.head = _git(s.repository, "rev-parse", "HEAD")
+            s.pr["head"] = {"ref": "feature", "sha": s.head}
+            _git(s.repository, "update-ref", "refs/pull/100/head", s.head)
+            if change == "newer-owner":
+                with active_repo_context("owner/repo"):
+                    inputs = _two_tier_gate_inputs(s.github, "owner/repo", s.pr)
+                    state = PrReviewCycleRepository("owner/repo")
+                    state.record_ordinary_pass(100, RoundProvenance(s.head, s.base), inputs.contract)
+                    state.claim_strong_audit(100, RoundProvenance(s.head, s.base), inputs.contract, inputs.policy)
+                    newer.append(state.snapshot(100))
+        elif change == "opening":
+            s.timeline.append({"event": "reopened", "id": 9876, "created_at": "2027-01-15T08:01:00Z"})
+        elif change == "unknown":
+
+            def unavailable_timeline(*args, **kwargs):
+                raise RuntimeError("controlled opening observation outage")
+
+            monkeypatch.setattr(s.github, "get_issue_timeline_strict", unavailable_timeline)
+        return {"seven_day": {"utilization": "invalid"}}
+
+    monkeypatch.setattr(claude_usage, "fetch_claude_usage_data", malformed_usage)
+    s.dispatch(engine, invalidate=True)
+    assert len(observed) == 1
+    assert not s.reviews
+    current = s.snapshot()
+    assert current.accepted_strong_round is None
+    successor = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100))
+    assert successor is not None
+    assert successor.retry_not_before == s.clock + (60 if change in {"newer-owner", "unchanged"} else 1)
+    if change == "newer-owner":
+        assert current == newer[0]
+    elif change == "unchanged":
+        assert current.active_claim is None
+        assert "invalid" in current.attempt_error_reason
+        assert current.retry_not_before == 0
+        assert len(s.history()) == len(history_before) + 1
+        assert "invalid" in s.history()[-1]["superseding_observation"]
+    else:
+        assert current.active_claim is None
+        assert current.attempt_error_reason == selected.attempt_error_reason
+        assert current.retry_not_before == selected.retry_not_before
+        assert s.history() == history_before
+        # A later current-context evaluation still needs a fresh eligible
+        # observation; the rejected error did not authorize this execution.
+        monkeypatch.setattr(s.github, "get_issue_timeline_strict", lambda *a, **kw: list(s.timeline))
+        s.configure("burst")
+        recovered = s.explicit(force=True)
+        assert len(s.reviews) == 1, recovered
+        assert s.reviews[0].head_sha == s.head
+        assert s.snapshot().ordinary_pass_opening_token == ("reopened:9876" if change == "opening" else "created:2026-11-01T00:00:00Z")
+
+
+def test_explicit_origin_rejects_reopen_after_selected_ordinary_pass(scenario, monkeypatch):
+    """A same-head reopen after publication cannot inherit prior convergence."""
+    s = scenario
+    s.explicit()
+    selected = s.snapshot()
+    s.configure("burst")
+    original = s.publish_ordinary
+    reopened = False
+
+    def publish_ordinary(*args, **kwargs):
+        nonlocal reopened
+        result = original(*args, **kwargs)
+        if not reopened:
+            reopened = True
+            s.timeline.append(
+                {
+                    "event": "reopened",
+                    "id": 4321,
+                    "created_at": "2027-01-15T08:00:00Z",
+                }
+            )
+        return result
+
+    monkeypatch.setattr("auto_coder.pr_processor.publish_adversarial_review", publish_ordinary)
+    result = s.explicit(force=True)
+
+    assert result["target_outcome"] == "deferred", result
+    assert not s.reviews
+    current = s.snapshot()
+    assert current.accepted_strong_round is None
+    assert current.active_claim is None
+    assert current.retry_not_before == selected.retry_not_before
+    assert current.attempt_error_reason == selected.attempt_error_reason
+    assert current.ordinary_pass_opening_token == "created:2026-11-01T00:00:00Z"
+    assert s.history() == []
+
+
+@pytest.mark.parametrize("origin", ["explicit", "automatic"])
+@pytest.mark.parametrize("refusal", ["zero", "unavailable"])
+def test_origin_refuses_fresh_zero_or_disabled_route(scenario, origin, refusal):
+    s = scenario
+    engine = s.engine()
+    if origin == "explicit":
+        s.explicit(engine)
+    else:
+        s.dispatch(engine, invalidate=True)
+    previous = s.snapshot()
+    if refusal == "zero":
+        s.used = 100.0
+    else:
+        s.configure("surplus", enabled=False)
+    s.clock = previous.retry_not_before + 1
+    if origin == "explicit":
+        result = s.explicit(engine, force=True)
+        assert result["target_outcome"] == "deferred", result
+    else:
+        s.dispatch(engine)
+    current = s.snapshot()
+    assert not s.reviews
+    assert current.accepted_strong_round is None
+    assert current.waiting_reason == f"strong reviewer route is {'EXHAUSTED' if refusal == 'zero' else 'UNAVAILABLE'}"
+    if refusal == "zero":
+        assert current.retry_not_before == s.reset
+    elif origin == "automatic":
+        assert engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100)).retry_not_before == s.clock + 60
+    assert s.history()[0]["retry_not_before"] == previous.retry_not_before
+
+
+def test_automatic_successor_bound_restart_and_duplicate_suppression(scenario):
+    s = scenario
+    s.reset = s.clock + 4.5 * 86400
+    engine = s.engine()
+    s.dispatch(engine, invalidate=True)
+    first = s.snapshot()
+    assert first.retry_not_before == s.clock + 1800
+    s.clock = first.retry_not_before
+    engine = s.engine()  # New controller; all obligations are loaded from disk.
+    engine.invalidations.recover("owner/repo")
+    s.dispatch(engine)
+    second = s.snapshot()
+    assert second.retry_not_before == s.clock + 1800
+    assert not s.reviews
+    assert s.history() == [
+        {
+            "reason": first.waiting_reason,
+            "retry_not_before": first.retry_not_before,
+            "superseded_at": s.clock,
+            "superseded_by": "automatic-due-recheck",
+            "superseding_observation": "strong reviewer route is EXHAUSTED",
+        }
+    ]
+    count = len(s.observations)
+    s.clock += 10
+    s.dispatch(engine, invalidate=True)
+    assert s.snapshot().retry_not_before == second.retry_not_before
+    assert len(s.observations) == count
+    assert len(s.history()) == 1
+
+
+def test_explicit_origin_preserves_accepted_unpublished_effect(scenario, monkeypatch):
+    from auto_coder.github_app_reviewer import GitHubAppReviewer
+
+    s = scenario
+    (s.root / ".auto-coder" / "config.toml").write_text('[github-app-auto-coder-reviewer]\napp_id = "1"\n')
+    sends = []
+    reconciliations = []
+
+    def send(_reviewer, repo, number, head, body, authorize, **kwargs):
+        assert authorize()
+        sends.append((repo, number, head, body))
+        return ReviewPublicationResult(False, "", "controlled uncertain response")
+
+    def reconcile(_reviewer, repo, number, head, body, **kwargs):
+        reconciliations.append((repo, number, head, body))
+        return ReviewPublicationResult(False, "", "controlled unavailable receipt lookup")
+
+    monkeypatch.setattr(GitHubAppReviewer, "publish_exact_pr_review", send)
+    monkeypatch.setattr(GitHubAppReviewer, "find_exact_pr_review", reconcile)
+    s.explicit()
+    s.configure("burst")
+    s.explicit(force=True)
+    accepted = s.snapshot()
+    assert len(s.reviews) == 1
+    assert accepted.pending_effect == "STRONG_PUBLICATION"
+    s.explicit(force=True)
+    recovered = s.snapshot()
+    assert len(sends) == 1
+    assert reconciliations and all(receipt == sends[0] for receipt in reconciliations)
+    effects = json.loads((s.root / ".auto-coder" / "owner/repo" / "pr_review_effects.json").read_text())
+    assert len(effects["operations"]) == 1
+    assert len(s.reviews) == 1
+    assert recovered.accepted_strong_round == accepted.accepted_strong_round
+    assert recovered.pending_effect == accepted.pending_effect
+    assert recovered.completion is None
+
+
+@pytest.mark.parametrize("after_commit", [False, True])
+def test_operator_admission_write_interruption_retains_discoverable_work(scenario, monkeypatch, after_commit):
+    from auto_coder.pr_review_cycle import PrReviewCycleRepository
+
+    s = scenario
+    engine = s.engine()
+    s.dispatch(engine, invalidate=True)
+    previous = s.snapshot()
+    original_write = PrReviewCycleRepository._write
+    interrupted = []
+
+    def write(repository, state):
+        if state["prs"]["100"]["active_claim"] and not interrupted:
+            interrupted.append(True)
+            if after_commit:
+                original_write(repository, state)
+            raise OSError("controlled admission persistence interruption")
+        return original_write(repository, state)
+
+    s.configure("burst")
+    with monkeypatch.context() as fault:
+        fault.setattr(PrReviewCycleRepository, "_write", write)
+        result = s.explicit(force=True)
+    assert interrupted == [True]
+    assert result["target_outcome"] == "deferred", result
+    assert "controlled admission persistence interruption" in " ".join(result["target_actions"])
+    assert not s.reviews
+    persisted = s.snapshot()
+    assert persisted.accepted_strong_round is None
+    restarted = s.engine()
+    restarted.invalidations.recover("owner/repo")
+    assert restarted.invalidations.pending_count("owner/repo") == 1
+    if after_commit:
+        assert persisted.active_claim is not None
+        assert s.history()[0]["retry_not_before"] == previous.retry_not_before
+    else:
+        assert persisted.retry_not_before == previous.retry_not_before
+        assert persisted.waiting_reason == previous.waiting_reason
+        assert s.history() == []
+    s.clock = previous.retry_not_before + 1
+    s.dispatch(restarted)
+    if after_commit:
+        assert not s.reviews  # A retained execution owner must never be reset.
+        assert s.snapshot().active_claim == persisted.active_claim
+        assert restarted.invalidations.pending_count("owner/repo") == 1
+    else:
+        assert len(s.reviews) == 1
+
+
+def test_overlapping_explicit_origins_reject_stale_selected_wait(scenario, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, current_thread
+
+    from auto_coder.pr_review_cycle import PrReviewCycleRepository
+
+    s = scenario
+    s.explicit()
+    s.configure("burst")
+    captured = Event()
+    release = Event()
+    original_claim = PrReviewCycleRepository.claim_strong_audit
+    first_thread = []
+
+    def claim(repository, *args, **kwargs):
+        if current_thread().name == first_thread[0]:
+            captured.set()
+            assert release.wait(10), "competing controller did not finish its refusal"
+        return original_claim(repository, *args, **kwargs)
+
+    def first():
+        first_thread.append(current_thread().name)
+        return s.explicit(force=True)
+
+    monkeypatch.setattr(PrReviewCycleRepository, "claim_strong_audit", claim)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(first)
+        try:
+            assert captured.wait(10), "first controller never captured the selected wait"
+            s.used = 100.0
+            refused = s.explicit(force=True)
+            assert refused["target_outcome"] == "deferred", refused
+            newer = s.snapshot()
+            assert newer.retry_not_before == s.reset
+            count = len(s.observations)
+            history = s.history()
+            s.used = 80.0
+        finally:
+            release.set()
+        stale = future.result(timeout=10)
+    assert "wait changed before admission" in " ".join(stale["target_actions"]), stale
+    assert not s.reviews
+    assert len(s.observations) == count
+    assert s.snapshot().retry_not_before == newer.retry_not_before
+    assert s.history() == history
+
+
+def test_overlapping_explicit_origins_preserve_live_strong_owner(scenario, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    s = scenario
+    s.explicit()
+    s.configure("burst")
+    observing = Event()
+    release = Event()
+    original_account = s.account
+
+    def account(*args, **kwargs):
+        observing.set()
+        assert release.wait(10), "second controller did not contend with the live owner"
+        return original_account(*args, **kwargs)
+
+    monkeypatch.setattr("auto_coder.codex_usage_checker.read_account_data", account)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(s.explicit, force=True)
+        try:
+            assert observing.wait(10), "first controller never acquired its strong claim"
+            owner = s.snapshot().active_claim
+            assert owner is not None
+            competing = s.explicit(force=True)
+            assert "owns the live strong-audit claim" in " ".join(competing["target_actions"]), competing
+            assert s.snapshot().active_claim == owner
+            assert not s.reviews
+        finally:
+            release.set()
+        result = future.result(timeout=10)
+    assert len(s.reviews) == 1, result
+    assert s.snapshot().accepted_strong_round is not None
+
+
+def test_automatic_exact_four_day_boundary_has_future_queue_wake(scenario):
+    s = scenario
+    s.reset = s.clock + 4 * 86400
+    engine = s.engine()
+    s.dispatch(engine, invalidate=True)
+    selected = s.snapshot()
+    assert selected.retry_not_before == math.nextafter(s.clock, math.inf)
+    queued = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100))
+    assert queued.retry_not_before == s.clock + 1
+    count = len(s.observations)
+    s.dispatch(engine, invalidate=True)
+    assert not s.reviews
+    assert len(s.observations) == count
+    assert s.history() == []
+    s.clock = queued.retry_not_before
+    s.dispatch(engine)
+    assert len(s.reviews) == 1
+    assert s.history()[0]["retry_not_before"] == selected.retry_not_before
+    assert s.history()[0]["retry_not_before"] != queued.retry_not_before
+
+
+def test_overlapping_automatic_dispatches_cannot_duplicate_strong_execution(scenario, monkeypatch):
+    from threading import Event
+
+    s = scenario
+    first, second = s.engine(), s.engine()
+    s.dispatch(first, invalidate=True)
+    s.clock = s.snapshot().retry_not_before + 1
+    observing, release = Event(), Event()
+    original_account = s.account
+
+    def account(*args, **kwargs):
+        observing.set()
+        assert release.wait(10), "competing automatic intake did not finish"
+        return original_account(*args, **kwargs)
+
+    monkeypatch.setattr("auto_coder.codex_usage_checker.read_account_data", account)
+
+    async def overlap():
+        await first._enqueue_pending_invalidations("owner/repo")
+        worker = asyncio.create_task(first._worker_loop("owner/repo", 0))
+        try:
+            assert await asyncio.to_thread(observing.wait, 10)
+            assert s.snapshot().active_claim is not None
+            await second.invalidate_entity("owner/repo", "pr", 100)
+            await second._enqueue_pending_invalidations("owner/repo")
+            assert second.queue.empty()
+            assert not s.reviews
+        finally:
+            release.set()
+            await asyncio.wait_for(first.queue.join(), timeout=10)
+            worker.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await worker
+
+    s.runner.run(overlap())
+    assert len(s.reviews) == 1
+    s.clock += 60
+    s.dispatch(second)
+    assert len(s.reviews) == 1
+    assert s.snapshot().accepted_strong_round is not None
