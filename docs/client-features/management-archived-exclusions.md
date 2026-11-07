@@ -204,9 +204,34 @@ The immutable supervisor reopens provenance-validated retained evidence in its
 own authority check before each forward handoff effect, both SUBMITTED-to-stop
 and STOPPED-to-candidate-start. It checks management keys using each predecessor's
 original manager namespace. Losing the evidence after child dispatch cannot
-permit a queued forward stop/start. If the original child was already stopped,
-the existing single exact-original-runtime safety return remains available;
-this is not permission to resend the candidate or release an unresolved lane.
+permit a queued forward stop/start. Complete ancestry evidence and continuously
+held current-owner EX plus every prior/archived SH fence are also prerequisites
+for any physical child start, including the exact-original-runtime safety return
+and operator recovery. Each physical launch reopens the sealed, read-only evidence
+while retaining those existing fences; a new reader must not conceal a lost
+persistent fence. Missing, corrupt, incomplete or nonterminal archived evidence
+after drain leaves the child stopped and the durable handoff in NEEDS_ATTENTION:
+neither candidate nor original is launched, and the unresolved lane is retained.
+The STOPPED gate is repeated after the forward authority scan, so evidence loss
+during that scan cannot claim the restore lane before the physical launch guard.
+Candidate launch reuses the final held reader for exclusion-key checks, then
+rechecks the original policy, grant and current journal immediately before Popen.
+The current row must still be RECONCILING at the exact revision sealed by the
+handoff's effect generation; a later row is not accepted as a new baseline.
+It performs no further ancestor scan after that authority check. Revocation during
+the final scan prevents candidate creation; a valid-ancestry exact-original safety
+return still uses its separate one-attempt contract.
+
+Forward policy or grant revocation is a different refusal. With complete ancestry
+and continuous owner fencing still proven, the existing one-time, exact-original
+safety return remains available without renewing the candidate's authority.
+Evidence loss during a later recovery attempt also prevents launch; it does not
+reset a consumed attempt. Preserve the unresolved receipts and original databases
+for inspection and restore the required evidence through the supported deployment
+procedure before an explicit recovery assessment. Do not edit the handoff, reset
+claims, reacquire fences to hide a gap, or automatically resend an operation.
+These owner-side refusals remain private handoff/child observations; they do not
+change dashboard trace schemas or emit secrets into dashboard events.
 
 Fresh first launch also reopens the sealed direct-prior and archived evidence
 after consuming the host grant and immediately before its child start boundary.

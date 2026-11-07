@@ -221,7 +221,9 @@ class RecoveryConsumer:
                 environment.update({"AUTO_CODER_MANAGEMENT_RUNTIME_ID": runtime.reference, "AUTO_CODER_MANAGEMENT_RECEIPT_ID": runtime.source_receipt})
             if runtime.drain_ack is not None:
                 environment["AUTO_CODER_DRAIN_RECEIPT"] = str(runtime.drain_ack)
-            process = subprocess.Popen([str(runtime.executable), *runtime.arguments], env=environment, start_new_session=False)
+            with self.supervisor._exclusion_evidence():
+                process = subprocess.Popen([str(runtime.executable), *runtime.arguments], env=environment, start_new_session=False)
+                self.supervisor._children[process.pid] = process
             start_token = self.supervisor._start_token(process.pid)
             if not start_token:
                 self._set(intent.request_id, "claimed", "unknown", "launched process lifetime unavailable")

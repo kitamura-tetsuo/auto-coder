@@ -6,6 +6,7 @@ points. They do not claim to be Docker or physical process replacement tests.
 
 import fcntl
 import sqlite3
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace as N
@@ -23,8 +24,32 @@ from tests.test_management_self_update_supervisor import _handoff
 
 
 @pytest.mark.parametrize("moment", ["before-stop", "before-forward-start"])
-@pytest.mark.parametrize("fault", ["valid", "missing", "corrupt", "incomplete", "active", "key-collision", "direct-key-collision", "grant-during-read", "policy-during-read", "journal-during-read", "missing-factory", "redirected-bootstrap"])
-def test_durable_forward_effect_rechecks_real_ancestors(boundary, tmp_path: Path, monkeypatch, moment, fault):
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "valid",
+        "missing",
+        "corrupt",
+        "incomplete",
+        "active",
+        "key-collision",
+        "direct-key-collision",
+        "grant-during-read",
+        "policy-during-read",
+        "journal-during-read",
+        "missing-factory",
+        "redirected-bootstrap",
+        "late-missing",
+        "late-corrupt",
+        "late-incomplete",
+        "late-active",
+        "grant-last-read",
+        "policy-last-read",
+        "journal-last-read",
+        "key-last-read",
+    ],
+)
+def test_durable_forward_effect_rechecks_real_ancestors(boundary, tmp_path: Path, monkeypatch, moment, fault, _callback_enabled=True):
     grants, _, policy, bootstrap, *_, identity = boundary
     current, operation, _token, accepted = _accepted_record(boundary, tmp_path)
     sent = current.begin_effect(operation, 0, owner_attempt_id="manager", attempt_id="attempt", correlation_identity="correlation").record
@@ -41,7 +66,16 @@ def test_durable_forward_effect_rechecks_real_ancestors(boundary, tmp_path: Path
         calls["stop"].append(args)
         return Observation(ResultStatus.STOPPED, stopped)
 
-    def start(*args):
+    callback_checks = []
+
+    def start(*args, **kwargs):
+        assert set(kwargs) == {"forward_authority"}
+        assert callable(kwargs["forward_authority"])
+        with retained(settings, source_authority=None, serving_process=False) as evidence:
+            allowed = kwargs["forward_authority"](evidence) if _callback_enabled else True
+            callback_checks.append(allowed)
+            if not allowed:
+                return Observation(ResultStatus.UNKNOWN, stopped)
         calls["start"].append(args)
         return Observation(ResultStatus.UNKNOWN, stopped)
 
@@ -53,6 +87,7 @@ def test_durable_forward_effect_rechecks_real_ancestors(boundary, tmp_path: Path
         config=config,
         bootstrap_config_path=bootstrap,
         incarnation=handoff.expected_supervisor,
+        source_authority=None,
         inspect=lambda: Observation(ResultStatus.OBSERVED_RUNNING, handoff.expected_child),
         reconcile=lambda: Observation(ResultStatus.STOPPED, stopped),
         request_graceful_stop=stop,
@@ -60,6 +95,15 @@ def test_durable_forward_effect_rechecks_real_ancestors(boundary, tmp_path: Path
         restore_stopped_original=restore,
         _identity=ManagementBootstrapSupervisor._identity,
     )
+
+    def exclusion_settings():
+        # Container provenance is controlled, but a redirected owner is refused.
+        if settings.bootstrap_config_path != supervisor.bootstrap_config_path:
+            raise ValueError("configured bootstrap differs from owning supervisor")
+        return settings
+
+    supervisor._exclusion_settings = exclusion_settings
+    supervisor._exclusion_evidence = lambda: ManagementBootstrapSupervisor._exclusion_evidence(supervisor)
     consumer = SelfUpdateHandoffConsumer(supervisor)
     consumer.store.submit(handoff)
     # Keep real original grant and policy checks; substitute only transport/clock
@@ -75,18 +119,47 @@ def test_durable_forward_effect_rechecks_real_ancestors(boundary, tmp_path: Path
     db = a / "management-operations.sqlite3"
 
     armed = [False]
+    armed_reads = [0]
 
     def retained(_settings, **purpose):
         assert purpose == {"source_authority": None, "serving_process": False}
         if armed[0]:
+            armed_reads[0] += 1
+            if moment == "before-forward-start" and (fault in {"grant-during-read", "policy-during-read", "journal-during-read"} or fault.startswith("late-")) and armed_reads[0] == 1:
+                # Preserve the original fault location inside authority scan,
+                # after the new independent ancestor-only prelaunch gate.
+                return reader(b, "manager-b", archives=(reader(a, "manager-a"),))
+            if moment == "before-forward-start" and fault.endswith("-last-read") and armed_reads[0] < 4:
+                return reader(b, "manager-b", archives=(reader(a, "manager-a"),))
             armed[0] = False
+            if fault == "key-last-read":
+                prior = ManagementOperationStore(a)
+                intent = replace(sent.intent, target=replace(sent.intent.target, instance_id="manager-a"))
+                collision = prior.admit(intent, sent.authority).record
+                assert collision is not None
+                assert prior.transition(collision.operation_id, 0, OperationPhase.FAILED, evidence=EffectReceipt(collision.operation_id, "synthetic-no-effect", 1, "no_effect_sent")).record is not None
+                with closing(sqlite3.connect(db)) as connection:
+                    assert connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone() == (0, 0, 0)
+                original_bytes.update({path: path.read_bytes() if path.exists() else None for path in prior_paths})
+            if fault.startswith("late-"):
+                if fault == "late-missing":
+                    db.rename(a / "preserved-original.sqlite3")
+                elif fault == "late-active":
+                    generation(a, "manager-a-extra", active=True, management=True)
+                else:
+                    with closing(sqlite3.connect(db)) as connection:
+                        with connection:
+                            connection.execute("DELETE FROM operation_history" if fault == "late-incomplete" else "UPDATE metadata SET value='unsupported' WHERE key='schema_version'")
+                        assert connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone() == (0, 0, 0)
+                # The synthetic fault itself is excluded from the read-only oracle.
+                original_bytes.update({path: path.read_bytes() if path.exists() else None for path in prior_paths})
             if fault == "missing-factory":
                 return None
-            if fault == "grant-during-read":
+            if fault in {"grant-during-read", "grant-last-read"}:
                 grants.revoke("client", _token.refresh_token)
-            elif fault == "policy-during-read":
+            elif fault in {"policy-during-read", "policy-last-read"}:
                 _policy(policy, enabled=False)
-            elif fault == "journal-during-read":
+            elif fault in {"journal-during-read", "journal-last-read"}:
                 assert current.transition(operation, sent.revision, OperationPhase.NEEDS_ATTENTION, safe_error_category="synthetic-evidence-change").record is not None
         return reader(b, "manager-b", archives=(reader(a, "manager-a"),))
 
@@ -125,8 +198,17 @@ def test_durable_forward_effect_rechecks_real_ancestors(boundary, tmp_path: Path
         assert len(calls["start"]) == (moment == "before-forward-start")
     elif moment == "before-stop":
         assert calls == {"stop": [], "start": [], "restore": []}
-        expected = HandoffPhase.DENIED if fault in {"grant-during-read", "policy-during-read"} else HandoffPhase.UNAVAILABLE
+        expected = HandoffPhase.DENIED if fault in {"grant-during-read", "policy-during-read", "grant-last-read", "policy-last-read"} else HandoffPhase.UNAVAILABLE
         assert consumer.store.read(operation).phase is expected
+    elif fault.endswith("-last-read"):
+        assert len(calls["stop"]) == 1
+        assert calls["start"] == [], "candidate was dispatched without final authority"
+        assert callback_checks == [False]
+        assert consumer.store.read(operation).phase is HandoffPhase.NEEDS_ATTENTION
+    elif fault in {"missing", "corrupt", "incomplete", "active", "missing-factory", "redirected-bootstrap"} or fault.startswith("late-"):
+        assert len(calls["stop"]) == 1 and calls["start"] == []
+        assert calls["restore"] == []
+        assert consumer.store.read(operation).phase is HandoffPhase.NEEDS_ATTENTION
     else:
         assert len(calls["stop"]) == 1 and calls["start"] == []
         assert calls["restore"] == [(operation + ":restore", handoff.attempt_id, supervisor._identity(stopped), previous.management_runtime_id)]
@@ -134,12 +216,18 @@ def test_durable_forward_effect_rechecks_real_ancestors(boundary, tmp_path: Path
     if fault != "valid":
         consumer.tick()
         assert calls == before_calls  # no retry or second safety return
-    if fault == "journal-during-read":
+    if fault in {"journal-during-read", "journal-last-read"}:
         assert current.get(operation).record.phase is OperationPhase.NEEDS_ATTENTION
         assert current.get(operation).record.revision == before_current.revision + 1
     else:
         assert current.get(operation).record == before_current
     assert {path: path.read_bytes() if path.exists() else None for path in prior_paths} == original_bytes
+
+
+@pytest.mark.parametrize("fault", ["grant-last-read", "policy-last-read", "journal-last-read", "key-last-read"])
+def test_ignoring_final_authority_callback_exposes_real_last_scan_fault(boundary, tmp_path, monkeypatch, fault):
+    with pytest.raises(AssertionError, match="candidate was dispatched without final authority"):
+        test_durable_forward_effect_rechecks_real_ancestors(boundary, tmp_path, monkeypatch, "before-forward-start", fault, _callback_enabled=False)
 
 
 @pytest.mark.parametrize("restart", [False, None, True])

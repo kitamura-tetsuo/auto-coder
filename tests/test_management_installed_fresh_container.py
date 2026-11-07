@@ -347,17 +347,18 @@ def test_installed_initial_abc_real_handoff(installed_chain, boundary):
                 assert not effects
                 assert (chain.oauth / "fixture-launch-history").read_bytes() == launches
             else:
-                assert sum(action == "RESTORE_PREVIOUS" for action, _ in effects) == 1
-                assert terminal.phase in {HandoffPhase.PROCESS_RESTORED, HandoffPhase.NEEDS_ATTENTION}
-                # The restore may itself refuse serving without ancestor proof;
-                # the durable one-attempt effect must never become a retry.
-                observed = wait_for(lambda: observed_launches()[len(original_launches) :], "actual exact-original CLI entry")
-                assert len(observed) == 1 and observed[0]["runtime"] == current["management_runtime_id"]
-                assert observed[0]["revision"] == "installed-initial"
-                assert chain.child(c)["recovery_used"]
-                first = (chain.oauth / "fixture-launch-history").read_bytes()
+                assert not any(action == "RESTORE_PREVIOUS" for action, _ in effects)
+                assert terminal.phase is HandoffPhase.NEEDS_ATTENTION
+                stopped = chain.child(c)
+                assert stopped["phase"] == "stopped"
+                assert not stopped["recovery_used"]
+                assert observed_launches() == original_launches
+                assert (chain.oauth / "fixture-launch-history").read_bytes() == launches
                 time.sleep(1)
-                assert (chain.oauth / "fixture-launch-history").read_bytes() == first
+                assert store.read(operation) == terminal
+                assert chain.child(c) == stopped
+                assert observed_launches() == original_launches
+                assert (chain.oauth / "fixture-launch-history").read_bytes() == launches
     finally:
         if saved is not None:
             saved.with_suffix(".preserved").rename(saved)
