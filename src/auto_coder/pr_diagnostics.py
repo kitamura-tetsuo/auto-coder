@@ -100,9 +100,64 @@ def project_pr_diagnostics(repository: str, pr_number: int, *, limit: int = 50, 
                 "accepted_strong_round_id": raw.get("accepted_strong_round_id"),
                 "accepted_closure_id": raw.get("accepted_closure_id"),
                 "pending_effect": raw.get("pending_effect"),
-                "active_claim": None if not isinstance(claim, dict) else {key: claim.get(key) for key in ("claim_id", "kind", "round_id", "head_sha", "base_sha", "contract_identity", "policy_identity", "claimed_at")},
-                "rounds": [{key: item.get(key) for key in ("round_id", "sequence", "head_sha", "base_sha", "contract_identity", "policy_identity", "finding_set_revision", "publication_status", "publication_receipt", "accepted_at")} for item in rounds if isinstance(item, dict)],
-                "closures": [{key: item.get(key) for key in ("closure_id", "round_id", "head_sha", "base_sha", "contract_identity", "policy_identity", "finding_set_revision", "publication_status", "publication_receipt", "accepted_at")} for item in closures if isinstance(item, dict)],
+                "active_claim": (
+                    None
+                    if not isinstance(claim, dict)
+                    else {
+                        key: claim.get(key)
+                        for key in (
+                            "claim_id",
+                            "phase",
+                            "head_sha",
+                            "base_sha",
+                            "contract_identity",
+                            "policy_identity",
+                            "based_on_version",
+                            "open_epoch",
+                            "claimed_at",
+                        )
+                    }
+                ),
+                "rounds": [
+                    {
+                        key: item.get(key)
+                        for key in (
+                            "round_id",
+                            "sequence",
+                            "claim_id",
+                            "open_epoch",
+                            "head_sha",
+                            "base_sha",
+                            "contract_identity",
+                            "policy_identity",
+                            "finding_set_revision",
+                            "publication_status",
+                            "publication_receipt",
+                            "accepted_at",
+                        )
+                    }
+                    for item in rounds
+                    if isinstance(item, dict)
+                ],
+                "closures": [
+                    {
+                        key: item.get(key)
+                        for key in (
+                            "closure_id",
+                            "references_round_id",
+                            "head_sha",
+                            "base_sha",
+                            "contract_identity",
+                            "policy_identity",
+                            "finding_set_revision",
+                            "publication_status",
+                            "publication_receipt",
+                            "accepted_at",
+                        )
+                    }
+                    for item in closures
+                    if isinstance(item, dict)
+                ],
             }
         ]
 

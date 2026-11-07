@@ -25,6 +25,16 @@ from auto_coder.management.oauth_config import ManagementSettings, OAuthClient, 
 from auto_coder.management.oauth_grants import OAuthGrantService
 from auto_coder.management.operations import ActionParameter, AdmissionStatus, ManagedTarget, OperationIntent, OperationPhase
 from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkResult
+from auto_coder.pr_review_cycle import (
+    FIXED,
+    VERDICT_FINDINGS,
+    ContractSnapshot,
+    Finding,
+    FindingDisposition,
+    PrReviewCycleRepository,
+    RoundProvenance,
+    StrongPolicyIdentity,
+)
 from auto_coder.runtime_locks import ensure_lock_directory, lock_path
 from auto_coder.worker_network_protocol import MAX_RESPONSE_BYTES
 from tests.test_management_mcp import _issue, _mcp, real_boundary
@@ -295,7 +305,43 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
     cycle_path = retained / "pr_review_cycle.json"
     decision_path = retained / "effective_review_decisions.json"
     effects_path = retained / "pr_review_effects.json"
-    cycle_path.write_text(json.dumps({"prs": {"17": {"pr_number": 17, "open_epoch": 4, "transition_version": 9, "finding_set_revision": 7, "active_claim": {"claim_id": "claim-17", "round_id": "round-17"}, "strong_rounds": [], "closures": []}}}), encoding="utf-8")
+    cycle_repository = PrReviewCycleRepository(repository, cycle_path)
+    contract = ContractSnapshot(("2753",), "REQ-002: retain review-cycle correlation")
+    policy = StrongPolicyIdentity("backend_strong_pr_adversarial_validation", "model=fixture", "v1")
+    original = RoundProvenance("a" * 40, "b" * 40)
+    cycle_repository.record_ordinary_pass(17, original, contract)
+    claim = cycle_repository.claim_strong_audit(17, original, contract, policy)
+    finding = Finding(
+        finding_id="finding-17",
+        origin_round_id=claim.claim_id,
+        requirement_ids=("REQ-002",),
+        requirement_texts=("REQ-002: retain review-cycle correlation",),
+        counterexample="Given retained evidence, correlation is requested",
+        expected_behavior="The producer identities remain visible",
+        actual_behavior="The identities are absent",
+        evidence="producer fixture",
+        affected_boundary="review cycle projection",
+        focused_regression_scenario="Compare producer records with the MCP response",
+    )
+    strong_round = cycle_repository.record_strong_result(17, claim.claim_id, VERDICT_FINDINGS, "fixture/reviewer", (finding,))
+    cycle_repository.acknowledge_publication(17, strong_round.round_id)
+    repaired = RoundProvenance("c" * 40, "b" * 40)
+    cycle_repository.record_ordinary_pass(17, repaired, contract)
+    closed = cycle_repository.certify_closure(
+        17,
+        repaired,
+        contract,
+        policy,
+        strong_round.round_id,
+        strong_round.finding_set_revision,
+        (FindingDisposition(finding.finding_id, FIXED, "Focused regression now preserves correlation", repaired.head_sha),),
+        True,
+        "Only the diagnosed boundary changed",
+    )
+    assert closed.accepted_closure is not None
+    active_provenance = RoundProvenance("d" * 40, "b" * 40)
+    cycle_repository.record_ordinary_pass(18, active_provenance, contract)
+    active_claim = cycle_repository.claim_strong_audit(18, active_provenance, contract, policy)
     decision_path.write_text(
         json.dumps({"17": {"pr_number": 17, "head_sha": "a" * 40, "base_sha": "b" * 40, "attempt_id": "attempt-17", "attempt_sequence": 5, "publication": "CONFIRMED", "handoff": "WAITING", "wait_reason": "Bearer decision-secret at /private/path", "updated_at": 100.0}}), encoding="utf-8"
     )
@@ -384,7 +430,11 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
             assert first["status"] == "UNAVAILABLE" and first["binding_status"] == "UNAVAILABLE"
             assert first["process_run_id"] == worker.worker_process_run_id
             projected = first["projection"]
-            assert projected["sections"]["review_cycle"]["records"][0]["active_claim"]["claim_id"] == "claim-17"
+            cycle = projected["sections"]["review_cycle"]["records"][0]
+            assert cycle["rounds"][0]["claim_id"] == claim.claim_id
+            assert cycle["rounds"][0]["open_epoch"] == strong_round.open_epoch
+            assert cycle["closures"][0]["references_round_id"] == strong_round.round_id
+            assert cycle["closures"][0]["closure_id"] == closed.accepted_closure.closure_id
             assert projected["sections"]["effective_decision"]["records"][0]["publication"] == "CONFIRMED"
             assert projected["sections"]["review_effects"]["records"][0]["status"] == "CONFIRMED"
             assert second["projection"]["sections"]["review_effects"]["records"][0]["status"] == "UNCERTAIN"
@@ -394,6 +444,13 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
             assert pending_second["records"][0]["identity"]["revision"] == "rev-b" and pending_second["next_cursor"] is None
             encoded = json.dumps((first, second))
             assert "other-pr" not in encoded and "owner-must-not-leak" not in encoded and "thread-secret" not in encoded and "/private/path" not in encoded
+
+            active = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 18}, 7)
+            active_projected = active["projection"]["sections"]["review_cycle"]["records"][0]["active_claim"]
+            assert active_projected["claim_id"] == active_claim.claim_id
+            assert active_projected["phase"] == active_claim.phase
+            assert active_projected["open_epoch"] == active_claim.open_epoch
+            assert "owner_id" not in active_projected
 
             decision_path.write_text("{broken", encoding="utf-8")
             corrupt = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 17}, 3)
@@ -449,9 +506,24 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
         if worker_pid is not None:
             (supervisor_root / "fixture-release").write_text("release")
             try:
-                supervisor.apply({"operation_id": "stop-mcp-pr-diagnostic-worker", "operation": "REQUEST_GRACEFUL_STOP", "expected_process_run_id": worker.worker_process_run_id, "expected_deployment_generation": worker.worker_deployment_generation})
-            except Exception:
-                pass
+                supervisor.apply(
+                    {
+                        "operation_id": "stop-mcp-pr-diagnostic-worker",
+                        "operation": "REQUEST_GRACEFUL_STOP",
+                        "expected_process_run_id": worker.worker_process_run_id,
+                        "expected_generation": worker.worker_deployment_generation,
+                    }
+                )
+            finally:
+                for _ in range(100):
+                    if supervisor.inspect()["status"] == "STOPPED":
+                        break
+                    threading.Event().wait(0.05)
+                else:
+                    try:
+                        os.kill(worker_pid, 15)
+                    except ProcessLookupError:
+                        pass
         listener.close()
 
     decision_path.write_bytes(source_before[decision_path])
