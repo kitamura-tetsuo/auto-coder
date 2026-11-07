@@ -19,6 +19,16 @@ from pathlib import Path
 _ID = re.compile(r"[0-9a-f]{64}\Z")
 
 
+def _unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Reject ambiguous persisted evidence instead of retaining the last key."""
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate proxy journal key")
+        result[key] = value
+    return result
+
+
 @dataclass(frozen=True)
 class ProxyBinding:
     manager_id: str
@@ -129,7 +139,7 @@ class ProxyReconnect:
             raw = stream.read(8193)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600 or len(raw) > 8192:
             raise ValueError("proxy journal unavailable")
-        value = json.loads(raw)
+        value = json.loads(raw, object_pairs_hook=_unique_pairs)
         if not isinstance(value, dict) or set(value) != {"binding", "manager", "phase"} or value["binding"] != asdict(self.binding) or value["phase"] not in {"stop_unknown", "stopped", "start_unknown", "done"} or not isinstance(value["manager"], dict):
             raise ValueError("proxy journal identity differs")
         manager = value["manager"]

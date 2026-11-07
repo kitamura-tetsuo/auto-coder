@@ -301,3 +301,29 @@ def test_corrupt_saved_manager_lifetime_refuses(tmp_path: Path, key: str, value:
         controller.reconcile()
     assert path.read_bytes() == original and driver.effects == []
     assert not list(tmp_path.glob("proxy-resolution-*.json"))
+
+
+@pytest.mark.parametrize("duplicate", ["phase", "manager", "binding", "manager_pid", "binding_manager_id"])
+def test_duplicate_journal_keys_preserve_ambiguous_evidence(tmp_path: Path, duplicate: str) -> None:
+    controller, driver = stopped_old_attachment(tmp_path)
+    path = tmp_path / "proxy-reconnect.json"
+    raw = path.read_text()
+    if duplicate == "phase":
+        raw = raw.replace('"phase":"stopped"', '"phase":"start_unknown","phase":"stopped"')
+    elif duplicate == "manager":
+        raw = raw[:-1] + ', "manager": ' + json.dumps(controller._manager()) + "}"
+    elif duplicate == "binding":
+        raw = raw[:-1] + ', "binding": ' + json.dumps(asdict(driver.binding)) + "}"
+    elif duplicate == "manager_pid":
+        raw = raw.replace('"pid":10', '"pid":0,"pid":10')
+    else:
+        raw = raw.replace('"manager_id":"' + driver.binding.manager_id + '"', '"manager_id":"' + "f" * 64 + '","manager_id":"' + driver.binding.manager_id + '"')
+    assert raw != path.read_text()
+    path.write_text(raw)
+    prior = path.read_bytes()
+    with pytest.raises(ValueError, match="duplicate proxy journal key"):
+        controller.reconcile()
+    with pytest.raises(ValueError, match="duplicate proxy journal key"):
+        controller.tick()
+    assert path.read_bytes() == prior and driver.effects == []
+    assert not list(tmp_path.glob("proxy-resolution-*.json"))
