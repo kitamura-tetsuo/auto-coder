@@ -239,6 +239,8 @@ records cannot contaminate the fixture's independently published evidence.
 Six separate pytest cases each acquire their **own** temporary management,
 journal, worker runtime, workspace, trust, Git/HTTP source and Docker processes.
 They do not share a prior case's PASS, installed runtime, journal or selection.
+Their enclosing temporary root is removed after owned Docker log capture and
+process/network cleanup, including when staging or assertions fail.
 The two real source revisions and independent same-SHA alternative READY are
 installed within each case; only immutable dependency/image caches may be reused.
 Case-specific Docker logs are written under

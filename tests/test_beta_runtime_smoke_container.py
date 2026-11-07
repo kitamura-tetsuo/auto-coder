@@ -14,6 +14,7 @@ import os
 import random
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -483,8 +484,11 @@ def _cleanup_smoke_docker(worker_name: str, github_name: str, network: str, scen
 
 @pytest.fixture
 def smoke_system(real_boundary, tmp_path: Path, request: pytest.FixtureRequest, _use_real_commands: None, _use_real_sleep: None) -> Iterator[_SmokeSystem]:
-    with _smoke_system(real_boundary, tmp_path, request.node.name) as system:
-        yield system
+    # The owned directory closes even if staging fails before Docker starts.
+    # Keep the real_boundary OAuth fixture outside this per-scenario root.
+    with tempfile.TemporaryDirectory(prefix="smoke-", dir=tmp_path) as case_root:
+        with _smoke_system(real_boundary, Path(case_root), request.node.name) as system:
+            yield system
 
 
 @pytest.mark.timeout(1800)
