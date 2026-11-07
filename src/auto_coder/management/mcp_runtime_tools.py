@@ -89,21 +89,25 @@ class ManagementRuntime:
     ) -> None:
         self.settings = settings
         self.grants = grants
-        self.clients = clients
+        self.clients = {client.config.target_id or client.config.instance_id: client for client in clients.values()}
+        if len(self.clients) != len(clients):
+            raise ValueError("duplicate configured worker target")
+        clients = self.clients
+        self._startup_bindings = {target_id: client.config.binding_digest for target_id, client in clients.items()}
         self.retained_journal = retained_journal
         self.journal = RetainedGuardedOperationStore(settings.operation_state_root or settings.state_root, retained_journal) if retained_journal is not None else ManagementOperationStore(settings.operation_state_root or settings.state_root)
         self.dispatcher = ManagementOperationDispatcher(self.journal, effect_guard=self.retained_effect_permitted)
         self.dispatcher.register(REEVALUATE_ACTION, OperationHandler(self._forward_reevaluation, self._reconcile_reevaluation))
         self.self_update = ManagementSelfUpdateHandler(settings, grants, self.journal, self_update_source_authority)
         self.dispatcher.register(ManagementUpdateAction.SELF_UPDATE.value, OperationHandler(self.self_update.forward, self.self_update.reconcile))
-        self._worker_locks = {channel: threading.RLock() for channel in clients}
+        self._worker_locks = {target_id: threading.RLock() for target_id in clients}
         self.lifecycle = WorkerLifecycle(self)
         for action in sorted(LIFECYCLE_ACTIONS):
             self.dispatcher.register(action, OperationHandler(self.lifecycle.process, self.lifecycle.process))
         self.beta_acceptance: BetaAcceptanceHandler | None = None
-        beta_client = clients.get("beta")
+        beta_clients = {target_id: client for target_id, client in clients.items() if client.config.channel == "beta"}
         repository = settings.source_repository
-        if beta_client is not None and repository is not None:
+        if beta_clients and repository is not None:
             source = beta_acceptance_source
             publisher = beta_acceptance_publisher
             if source is None or publisher is None:
@@ -113,7 +117,7 @@ class ManagementRuntime:
                 git = GitHubGitDataClient(token, repository)
                 source = source or BetaEvidenceReader(git, repository)
                 publisher = publisher or SourceAcceptancePublisher(git, repository)
-            producer = BetaRuntimeSmokeProducer(self.journal, beta_client, source, beta_acceptance_profile or SmokeProfile())
+            producer = BetaRuntimeSmokeProducer(self.journal, beta_clients, source, beta_acceptance_profile or SmokeProfile())
             self.beta_acceptance = BetaAcceptanceHandler(self, producer, publisher)
             self.dispatcher.register(BETA_ACCEPTANCE_ACTION, OperationHandler(self.beta_acceptance.forward, self.beta_acceptance.reconcile))
         self._lifecycle_monitor: asyncio.Task[None] | None = None
@@ -128,6 +132,11 @@ class ManagementRuntime:
             decision = self.retained_journal.admission(intent, authority)
             if decision is None:
                 return None
+            if decision.status is AdmissionStatus.CONFLICT and decision.record is not None and self._same_original_intent(decision.record, intent):
+                # A two-channel journal has no bridge fingerprint. On the
+                # unchanged original target, its exact original request can
+                # still be read back without creating another operation.
+                decision = type(decision)(AdmissionStatus.REPLAY, decision.record)
             if decision.status is not AdmissionStatus.REPLAY or decision.record is None:
                 return self._response(decision.status.value.upper(), "retained_journal_" + decision.status.value, operation_id=decision.record.operation_id if decision.record else None)
             evidence = self.retained_journal.owned_evidence(decision.record.operation_id, intent.target, target_id, authority)
@@ -207,6 +216,17 @@ class ManagementRuntime:
     def _response(status: str, reason: str, **fields: object) -> dict[str, object]:
         return {"status": status, "reason": reason, **fields}
 
+    @staticmethod
+    def _same_original_intent(record: OperationRecord, requested: OperationIntent) -> bool:
+        if record.intent_fingerprint == requested.fingerprint():
+            return True
+        original_names = {parameter.name for parameter in record.intent.parameters}
+        new_parameters = tuple(parameter for parameter in requested.parameters if parameter.name != "worker_binding")
+        if "worker_binding" in original_names or len(new_parameters) == len(requested.parameters):
+            return False
+        legacy = OperationIntent(requested.target, requested.action, new_parameters, requested.idempotency_key, requested.expected_incarnation, requested.expected_artifact)
+        return record.intent_fingerprint == legacy.fingerprint()
+
     acceptance_action_class = ActionClass.DEPLOYMENT
 
     @staticmethod
@@ -231,18 +251,40 @@ class ManagementRuntime:
         target = next((item for item in loaded.policy.targets if item.target_id == target_id), None)
         if target is None:
             return self._response("DENIED", "target_unknown")
-        client = self.clients.get(target.channel.value)
+        client = self.clients.get(target_id)
         if client is None:
             return self._response("UNAVAILABLE", "supervisor_bridge_unconfigured")
         config = client.config
-        # A policy alias may only address the one immutable operator-provisioned
-        # instance and repository; multiple repository choices are not an MCP API.
+        # Policy target IDs select one exact configured endpoint; neither the
+        # policy's channel nor its repository can select a substitute client.
         if len(target.repositories) != 1 or target.repositories[0] != config.repository or target.channel.value != config.channel:
             return self._response("DENIED", "target_configuration_mismatch")
         decision = evaluate_snapshot(loaded.policy, PolicyIntent(target_id, config.repository, action, TargetChannel(config.channel)))
         if decision.outcome is not DecisionOutcome.ALLOWED:
             return self._response(decision.outcome.value, decision.reason_code.value)
         return ResolvedWorker(target_id, client, loaded.revision)
+
+    def _record_client(self, record: OperationRecord) -> tuple[str, WorkerNetworkClient] | None:
+        """Recover only the original physical worker, including its secret."""
+        params = self._params(record)
+        target_id = params.get("target_id")
+        if not isinstance(target_id, str):
+            return None
+        client = self.clients.get(target_id)
+        if client is None:
+            return None
+        config = client.config
+        if record.intent.target != ManagedTarget(config.instance_id, config.channel, config.repository):
+            return None
+        binding = params.get("worker_binding")
+        # Existing two-channel journals had no binding digest. Their immutable
+        # Supervisor instance/repository/channel and signed receipt remain the
+        # migration identity; all newly accepted operations pin the full bridge.
+        if binding is not None and binding != config.binding_digest:
+            return None
+        if binding is None and not self.journal.pin_legacy_worker_binding(record.operation_id, self._startup_bindings[target_id]):
+            return None
+        return target_id, client
 
     @staticmethod
     def _runtime_binding(data: dict[str, object], observation: dict[str, object], supervisor: dict[str, object]) -> tuple[str, dict[str, object] | None]:
@@ -284,25 +326,26 @@ class ManagementRuntime:
 
     def _observe(self, resolved: ResolvedWorker) -> dict[str, object]:
         client = resolved.client
-        with self._worker_locks[client.config.channel]:
+        with self._worker_locks[resolved.target_id]:
             supervisor_result = client.inspect_supervisor()
             supervisor = supervisor_result.data
             if supervisor_result.result_code != "OK" or not isinstance(supervisor, dict) or supervisor.get("supervisor_incarnation") != supervisor_result.supervisor_generation:
-                return self._response("UNAVAILABLE", "supervisor_observation_unavailable")
+                return self._response("UNAVAILABLE", "supervisor_observation_unavailable", target_id=resolved.target_id, instance_id=client.config.instance_id, repository=client.config.repository, channel=client.config.channel)
             if supervisor.get("alive") is not True or supervisor.get("status") != "RUNNING":
-                return self._response("UNAVAILABLE", "worker_not_running", supervisor_status=supervisor.get("status"))
+                return self._response("UNAVAILABLE", "worker_not_running", target_id=resolved.target_id, instance_id=client.config.instance_id, repository=client.config.repository, channel=client.config.channel, supervisor_status=supervisor.get("status"))
             observation_result = client.observe_worker(uuid.uuid4().hex)
             data = observation_result.data
             if observation_result.result_code != "OK" or not isinstance(data, dict) or observation_result.supervisor_generation != supervisor_result.supervisor_generation:
-                return self._response("UNAVAILABLE", "worker_observation_unavailable")
+                return self._response("UNAVAILABLE", "worker_observation_unavailable", target_id=resolved.target_id, instance_id=client.config.instance_id, repository=client.config.repository, channel=client.config.channel)
             observation = data.get("observation")
             worker = supervisor.get("worker")
             if not isinstance(observation, dict) or not isinstance(worker, dict) or observation.get("process_run_id") != worker.get("process_run_id") or observation.get("deployment_generation") != worker.get("deployment_generation"):
-                return self._response("CONFLICT", "worker_incarnation_mismatch")
+                return self._response("CONFLICT", "worker_incarnation_mismatch", target_id=resolved.target_id, instance_id=client.config.instance_id, repository=client.config.repository, channel=client.config.channel)
             binding_status, binding = self._runtime_binding(data, observation, supervisor)
             return self._response(
                 "OK" if binding_status == "VERIFIED" else binding_status,
                 "verified_worker_observation" if binding_status == "VERIFIED" else "runtime_binding_" + binding_status.lower(),
+                target_id=resolved.target_id,
                 supervisor_generation=supervisor_result.supervisor_generation,
                 instance_id=client.config.instance_id,
                 repository=client.config.repository,
@@ -317,14 +360,15 @@ class ManagementRuntime:
         resolved = self._resolve(target_id, ActionClass.INSPECT)
         if not isinstance(resolved, ResolvedWorker):
             return resolved
-        with self._worker_locks[resolved.client.config.channel]:
+        identity = {"target_id": target_id, "instance_id": resolved.target.instance_id, "channel": resolved.target.channel, "repository": resolved.target.repository}
+        with self._worker_locks[resolved.target_id]:
             observed = self._observe(resolved)
             observation = observed.get("observation")
             if not isinstance(observation, dict):
                 return observed
             result = resolved.client.diagnostics(kind, params)
             if result.supervisor_generation != observed["supervisor_generation"]:
-                return self._response("CONFLICT", "supervisor_changed_during_diagnostic")
+                return self._response("CONFLICT", "supervisor_changed_during_diagnostic", **identity)
             # A worker may be replaced while the private diagnostic request is in
             # flight even though the long-lived Supervisor incarnation is stable.
             # Re-observe the authoritative process identity before presenting the
@@ -339,21 +383,21 @@ class ManagementRuntime:
                 or after_worker.get("process_run_id") != observation.get("process_run_id")
                 or after_worker.get("deployment_generation") != observation.get("deployment_generation")
             ):
-                return self._response("CONFLICT", "worker_changed_during_diagnostic")
+                return self._response("CONFLICT", "worker_changed_during_diagnostic", **identity)
             if result.result_code not in {"OK", "ACCEPTED"}:
-                return self._response(result.result_code, "worker_diagnostic_" + result.result_code.lower(), projection=result.data)
+                return self._response(result.result_code, "worker_diagnostic_" + result.result_code.lower(), projection=result.data, **identity)
             if kind == "consumer-identity":
                 if observed["binding_status"] == "CONFLICT":
-                    return self._response("CONFLICT", "runtime_binding_conflict")
+                    return self._response("CONFLICT", "runtime_binding_conflict", **identity)
                 projection = result.data
                 if not isinstance(projection, dict) or projection.get("status") not in {"OK", "CONFLICT", "UNAVAILABLE"}:
-                    return self._response("UNAVAILABLE", "invalid_consumer_identity")
+                    return self._response("UNAVAILABLE", "invalid_consumer_identity", **identity)
                 status = str(projection["status"])
                 if status == "OK":
                     hashes = projection.get("sha256")
                     names = {"requirement_contract.py", "specification_analyzer.py", "specification_validation_lifecycle.py", "issue_review_service.py", "prompts.yaml"}
                     if projection.get("origin") != "worker_package_disk_sha256" or not isinstance(projection.get("semantics"), str) or not isinstance(hashes, dict) or set(hashes) != names or any(not isinstance(value, str) or not _SHA.fullmatch(value) for value in hashes.values()):
-                        return self._response("UNAVAILABLE", "invalid_consumer_identity")
+                        return self._response("UNAVAILABLE", "invalid_consumer_identity", **identity)
                 return self._response(
                     status,
                     "worker_consumer_identity",
@@ -372,6 +416,7 @@ class ManagementRuntime:
             return self._response(
                 str(observed["status"]),
                 "worker_diagnostic" if observed["status"] == "OK" else str(observed["reason"]),
+                target_id=target_id,
                 instance_id=resolved.target.instance_id,
                 channel=resolved.target.channel,
                 repository=resolved.target.repository,
@@ -449,6 +494,7 @@ class ManagementRuntime:
             "status": "accepted_for_reevaluation" if record.intent.action == REEVALUATE_ACTION and record.phase is OperationPhase.SUCCEEDED and record.effect.state is EffectState.CONFIRMED else record.phase.value.upper(),
             "operation_id": record.operation_id,
             "target": asdict(record.intent.target),
+            "target_id": ManagementRuntime._params(record).get("target_id"),
             "action": record.intent.action,
             "phase": record.phase.value,
             "effect_state": record.effect.state.value,
@@ -465,11 +511,8 @@ class ManagementRuntime:
         if lookup.status is ReadStatus.UNAVAILABLE:
             return self._response("UNAVAILABLE", "journal_unavailable")
         record = lookup.record
-        physical = self.clients.get(record.intent.target.channel) if record is not None else None
         if (
             record is None
-            or physical is None
-            or record.intent.target != ManagedTarget(physical.config.instance_id, physical.config.channel, physical.config.repository)
             or self._params(record).get("target_id") != target_id
             or (record.authority.project_id, record.authority.uid, record.authority.oauth_client_id, record.authority.issuer, record.authority.resource) != (grant.principal.project_id, grant.principal.uid, grant.client_id, self.settings.oauth.canonical_issuer, grant.resource)
         ):
@@ -564,14 +607,15 @@ class ManagementRuntime:
         resolved = self._resolve(target_id, ActionClass.INSPECT)
         if not isinstance(resolved, ResolvedWorker):
             return resolved
-        with self._worker_locks[resolved.client.config.channel]:
+        with self._worker_locks[resolved.target_id]:
             result = resolved.client.inspect_supervisor()
             if result.result_code != "OK" or not isinstance(result.data, dict):
-                return self._response("UNAVAILABLE", "supervisor_status_unavailable")
+                return self._response("UNAVAILABLE", "supervisor_status_unavailable", target_id=target_id, instance_id=resolved.target.instance_id, channel=resolved.target.channel, repository=resolved.target.repository)
             data = result.data
             output = self._response(
                 "OK",
                 "supervisor_observed",
+                target_id=target_id,
                 instance_id=resolved.target.instance_id,
                 channel=resolved.target.channel,
                 repository=resolved.target.repository,
@@ -630,6 +674,7 @@ class ManagementRuntime:
             BETA_ACCEPTANCE_ACTION,
             (
                 ActionParameter("target_id", target_id),
+                ActionParameter("worker_binding", resolved.client.config.binding_digest),
                 ActionParameter("source_sha", selected_git_sha),
                 ActionParameter("deployment_operation_id", deployment_operation_id),
                 ActionParameter("supervisor_generation", supervisor_generation),
@@ -644,7 +689,7 @@ class ManagementRuntime:
         if old.status is ReadStatus.UNAVAILABLE:
             return self._response("UNAVAILABLE", "journal_unavailable")
         if old.record is not None:
-            if old.record.intent_fingerprint != intent.fingerprint():
+            if not self._same_original_intent(old.record, intent):
                 return self._response("CONFLICT", "idempotency_key_conflict", operation_id=old.record.operation_id)
             updated = await self.dispatcher.submit(old.record.operation_id)
             return self._project_beta_acceptance(updated or old.record)
@@ -703,7 +748,7 @@ class ManagementRuntime:
         intent = OperationIntent(
             resolved.target,
             REEVALUATE_ACTION,
-            (ActionParameter("target_id", target_id), ActionParameter("target_type", target_type), ActionParameter("number", number)),
+            (ActionParameter("target_id", target_id), ActionParameter("worker_binding", resolved.client.config.binding_digest), ActionParameter("target_type", target_type), ActionParameter("number", number)),
             idempotency_key,
             expected_process_run_id,
             expected_deployment_generation,
@@ -716,7 +761,7 @@ class ManagementRuntime:
         if old.status is ReadStatus.UNAVAILABLE:
             return self._response("UNAVAILABLE", "journal_unavailable")
         if old.record is not None:
-            if old.record.intent_fingerprint != intent.fingerprint():
+            if not self._same_original_intent(old.record, intent):
                 return self._response("CONFLICT", "idempotency_key_conflict", operation_id=old.record.operation_id)
             # Replays retain the original immutable authority. They may observe
             # an already-sent receipt, but never substitute a refreshed grant.
@@ -743,10 +788,10 @@ class ManagementRuntime:
         if record.intent.action != REEVALUATE_ACTION or not _IDENTITY.fullmatch(record.intent.expected_incarnation) or not _IDENTITY.fullmatch(record.intent.expected_artifact):
             return None
         params = self._params(record)
-        if set(params) != {"target_id", "target_type", "number"} or not isinstance(params["target_id"], str) or params["target_type"] not in {"issue", "pr"} or type(params["number"]) is not int or params["number"] <= 0:
+        if set(params) not in ({"target_id", "target_type", "number"}, {"target_id", "target_type", "number", "worker_binding"}) or not isinstance(params["target_id"], str) or params["target_type"] not in {"issue", "pr"} or type(params["number"]) is not int or params["number"] <= 0:
             return None
         resolved = self._resolve(params["target_id"], ActionClass.WORKER_CONTROL)
-        return resolved if isinstance(resolved, ResolvedWorker) and resolved.target == record.intent.target else None
+        return resolved if isinstance(resolved, ResolvedWorker) and resolved.target == record.intent.target and self._record_client(record) is not None else None
 
     def _policy_refusal(self, record: OperationRecord) -> str | None:
         params = self._params(record)
@@ -754,7 +799,7 @@ class ManagementRuntime:
         if not isinstance(target_id, str):
             return "recorded_target_invalid"
         outcome = self._resolve(target_id, ActionClass.WORKER_CONTROL)
-        if isinstance(outcome, ResolvedWorker) and outcome.target == record.intent.target:
+        if isinstance(outcome, ResolvedWorker) and outcome.target == record.intent.target and self._record_client(record) is not None:
             return None
         if isinstance(outcome, dict) and outcome.get("status") == "UNAVAILABLE":
             return "current_policy_unavailable"
@@ -781,7 +826,7 @@ class ManagementRuntime:
         resolved = self._recorded_target(record)
         if resolved is None:
             return self._hold(record, "recorded_target_invalid")
-        with self._worker_locks[resolved.client.config.channel]:
+        with self._worker_locks[resolved.target_id]:
             observed = self._observe(resolved)
             if not self._ready_to_reevaluate(observed, record.intent.expected_incarnation, record.intent.expected_artifact):
                 return self._hold(record, "worker_not_ready_or_generation_mismatch")
@@ -869,10 +914,11 @@ class ManagementRuntime:
             return record
         # Reconciliation is tied to the immutable physical endpoint recorded
         # before send. It requires no fresh mutation or policy authority.
-        client = self.clients.get(record.intent.target.channel)
-        if client is None or record.intent.target != ManagedTarget(client.config.instance_id, client.config.channel, client.config.repository):
+        bound = self._record_client(record)
+        if bound is None:
             return record
-        with self._worker_locks[client.config.channel]:
+        target_id, client = bound
+        with self._worker_locks[target_id]:
             if client.inspect_supervisor().result_code != "OK":
                 return record
             response = client.read_reevaluation(record.operation_id)

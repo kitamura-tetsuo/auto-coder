@@ -1,4 +1,4 @@
-"""Disposable two-channel authenticated private Docker-network regression."""
+"""Disposable three-target authenticated private Docker-network regression."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def _wait_for(predicate, *, deadline_seconds: float = 60.0):
     raise AssertionError(f"private network fixture did not settle: {last}")
 
 
-def test_two_channel_manager_restart_peer_isolation_and_lost_response(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None) -> None:
+def test_three_target_manager_restart_peer_isolation_and_lost_response(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None) -> None:
     image = os.environ.get("AUTOCODER_SUPERVISOR_IMAGE")
     if not image:
         if os.environ.get("AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION") == "1":
@@ -46,9 +46,9 @@ def test_two_channel_manager_restart_peer_isolation_and_lost_response(tmp_path: 
         pytest.skip("provide AUTOCODER_SUPERVISOR_IMAGE for disposable Docker fixture")
 
     root = tmp_path / "network"
-    for path in ("release", "beta", "release-workspace", "beta-workspace", "release/home", "beta/home"):
+    for path in ("release", "beta", "agent-table", "release-workspace", "beta-workspace", "agent-table-workspace", "release/home", "beta/home", "agent-table/home"):
         (root / path).mkdir(parents=True)
-    for name in ("release-secret", "beta-secret"):
+    for name in ("release-secret", "beta-secret", "agent-table-secret"):
         (root / name).write_bytes(base64.b64encode(os.urandom(48)) + b"\n")
     octet = random.SystemRandom().randrange(64, 239)
     environment = dict(os.environ)
@@ -61,6 +61,7 @@ def test_two_channel_manager_restart_peer_isolation_and_lost_response(tmp_path: 
         SUPERVISOR_BRIDGE_SUBNET=f"10.252.{octet}.0/24",
         SUPERVISOR_RELEASE_IP=f"10.252.{octet}.11",
         SUPERVISOR_BETA_IP=f"10.252.{octet}.12",
+        SUPERVISOR_AGENT_TABLE_IP=f"10.252.{octet}.13",
     )
     project = "worker-private-" + uuid.uuid4().hex[:12]
     compose = ("compose", "--project-name", project, "-f", str(_COMPOSE))
@@ -79,8 +80,9 @@ def test_two_channel_manager_restart_peer_isolation_and_lost_response(tmp_path: 
         manager = compose_call("ps", "-q", "manager")
         release = compose_call("ps", "-q", "release")
         beta = compose_call("ps", "-q", "beta")
-        assert manager and release and beta and len({manager, release, beta}) == 3
-        for container in (manager, release, beta):
+        agent_table = compose_call("ps", "-q", "beta-agent-table")
+        assert manager and release and beta and agent_table and len({manager, release, beta, agent_table}) == 4
+        for container in (manager, release, beta, agent_table):
             metadata = json.loads(_docker("inspect", container))[0]
             assert metadata["HostConfig"]["Privileged"] is False
             assert metadata["Mounts"] and all("docker.sock" not in item["Destination"] for item in metadata["Mounts"])
@@ -96,8 +98,12 @@ def test_two_channel_manager_restart_peer_isolation_and_lost_response(tmp_path: 
 
         release_seen = _wait_for(lambda: observe("release"))
         beta_seen = _wait_for(lambda: observe("beta"))
+        agent_table_seen = _wait_for(lambda: observe("beta-agent-table"))
         assert release_seen["observation"]["repository"] == "fixture/release"
         assert beta_seen["observation"]["repository"] == "fixture/beta"
+        assert agent_table_seen["observation"]["repository"] == "fixture/agent-table"
+        assert agent_table_seen["observation"]["channel"] == beta_seen["observation"]["channel"] == "beta"
+        assert agent_table_seen["observation"]["process_run_id"] != beta_seen["observation"]["process_run_id"]
         assert release_seen["observation"]["process_run_id"] != beta_seen["observation"]["process_run_id"]
         assert beta_seen["observation"]["nonce"].startswith("fixture-request-")
 
@@ -110,6 +116,8 @@ def test_two_channel_manager_restart_peer_isolation_and_lost_response(tmp_path: 
         assert beta_runtime["status"] == release_runtime["status"] == "UNAVAILABLE"
         assert beta_runtime["observation"]["process_run_id"] == beta_seen["observation"]["process_run_id"]
         assert release_runtime["observation"]["process_run_id"] == release_seen["observation"]["process_run_id"]
+        agent_table_runtime = manager_call(manager, "runtime-observe", "beta-agent-table")
+        assert agent_table_runtime["observation"]["process_run_id"] == agent_table_seen["observation"]["process_run_id"]
 
         assert manager_call(manager, "auth-attacks", "release")["statuses"] == [200, 401, 401, 401]
         swapped_responses = manager_call(manager, "cross-request-swap", "release")
@@ -135,6 +143,7 @@ def test_two_channel_manager_restart_peer_isolation_and_lost_response(tmp_path: 
             assert health["data"]["worker"]["binding_status"] != "VERIFIED"
             assert manager_call(manager, "read-operation", "release", "slow-unrecorded")["result_code"] == "NOT_FOUND"
             assert observe("beta") is not None
+            assert observe("beta-agent-table") is not None
         finally:
             held_uds.unlink(missing_ok=True)
         after_slow = _wait_for(lambda: observe("release"))
@@ -145,6 +154,24 @@ def test_two_channel_manager_restart_peer_isolation_and_lost_response(tmp_path: 
         stale = manager_call(manager, "stale-stop", "beta", "replaced-supervisor-incarnation")
         assert stale["http_status"] == 409
         assert observe("beta") is not None
+        assert observe("beta-agent-table") is not None
+
+        # A second beta Supervisor has a separate persisted operation ledger.
+        # Reconstruct the manager while Agent Table drains and Outliner runs.
+        manager_call(manager, "drop-stop", "beta-agent-table", "agent-table-held-stop")
+        _wait_for(lambda: (root / "agent-table" / "fixture-draining").exists())
+        assert observe("beta") is not None
+        compose_call("restart", "manager")
+        manager = compose_call("ps", "-q", "manager")
+        agent_held = manager_call(manager, "read-operation", "beta-agent-table", "agent-table-held-stop")
+        assert agent_held["result_code"] == "DRAINING"
+        assert agent_held["data"]["operation_id"] == "agent-table-held-stop"
+        assert observe("beta") is not None
+        assert observe("release") is not None
+        (root / "agent-table" / "fixture-release").write_text("release")
+        agent_done = _wait_for(lambda: (result if result["result_code"] == "STOPPED" else None) if (result := manager_call(manager, "read-operation", "beta-agent-table", "agent-table-held-stop")) else None)
+        assert agent_done["data"]["status"] == "STOPPED"
+        assert observe("beta") is not None
 
         manager_call(manager, "drop-stop", "beta", "beta-held-stop")
         _wait_for(lambda: (root / "beta" / "fixture-draining").exists())
@@ -154,6 +181,7 @@ def test_two_channel_manager_restart_peer_isolation_and_lost_response(tmp_path: 
         assert held["result_code"] == "DRAINING"
         assert held["data"]["operation_id"] == "beta-held-stop"
         assert observe("release") is not None
+        assert observe("beta-agent-table") is not None
         (root / "beta" / "fixture-release").write_text("release")
         done = _wait_for(lambda: (result if result["result_code"] == "STOPPED" else None) if (result := manager_call(manager, "read-operation", "beta", "beta-held-stop")) else None)
         assert done["data"]["status"] == "STOPPED"
@@ -162,5 +190,6 @@ def test_two_channel_manager_restart_peer_isolation_and_lost_response(tmp_path: 
         assert stopped["data"]["status"] == "STOPPED"
         assert manager_call(manager, "observe", "beta")["result_code"] == "UNAVAILABLE"
         assert observe("release") is not None
+        assert observe("beta-agent-table") is not None
     finally:
         compose_call("down", "--remove-orphans", timeout=90)

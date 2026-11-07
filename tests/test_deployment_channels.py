@@ -406,20 +406,36 @@ def test_compose_channels_use_disjoint_private_storage_and_artifacts():
     compose = yaml.safe_load((Path(__file__).parents[1] / "compose.channels.yml").read_text(encoding="utf-8"))
     release = compose["services"]["release"]
     beta = compose["services"]["beta"]
+    agent_table = compose["services"]["beta-agent-table"]
 
     assert release["environment"]["AUTO_CODER_CHANNEL"] == "release"
     assert beta["environment"]["AUTO_CODER_CHANNEL"] == "beta"
+    assert agent_table["environment"]["AUTO_CODER_CHANNEL"] == "beta"
     assert release["image"] == "${AUTO_CODER_IMAGE}@${RELEASE_DIGEST}"
     assert beta["image"] == "${AUTO_CODER_IMAGE}@${BETA_DIGEST}"
+    assert agent_table["image"].startswith("${AUTO_CODER_IMAGE}@${BETA_AGENT_TABLE_DIGEST:")
     assert release["environment"]["HOME"] == beta["environment"]["HOME"] == "/runtime/home"
     assert release["environment"]["AUTO_CODER_RUNTIME_ROOT"] == beta["environment"]["AUTO_CODER_RUNTIME_ROOT"] == "/runtime"
     assert release["environment"]["AUTO_CODER_SUPERVISOR_INSTANCE_ID"] == "release-worker"
     assert beta["environment"]["AUTO_CODER_SUPERVISOR_INSTANCE_ID"] == "beta-worker"
+    assert agent_table["environment"]["AUTO_CODER_SUPERVISOR_INSTANCE_ID"] == "beta-agent-table-worker"
+    assert agent_table["environment"]["AUTO_CODER_REPOSITORY"] == "kitamura-tetsuo/agent-table"
     assert release["environment"]["AUTO_CODER_REPOSITORY"] == "${RELEASE_REPOSITORY}"
     assert beta["environment"]["AUTO_CODER_REPOSITORY"] == "${BETA_REPOSITORY}"
 
     release_private = {mount.split(":", 1)[0] for mount in release["volumes"] if not mount.endswith(":/routing") and not mount.startswith("/sys/fs/cgroup:")}
     beta_private = {mount.split(":", 1)[0] for mount in beta["volumes"] if not mount.endswith(":/routing") and not mount.startswith("/sys/fs/cgroup:")}
+    agent_table_private = {mount.split(":", 1)[0] for mount in agent_table["volumes"] if not mount.endswith(":/routing") and not mount.startswith("/sys/fs/cgroup:")}
     assert release_private == {"./runtime/release", "./runtime/workspaces/release"}
     assert beta_private == {"./runtime/beta", "./runtime/workspaces/beta"}
     assert release_private.isdisjoint(beta_private)
+    assert agent_table_private == {"./runtime/beta-agent-table", "./runtime/workspaces/beta-agent-table"}
+    assert agent_table_private.isdisjoint(release_private | beta_private)
+    assert agent_table["environment"]["XDG_CACHE_HOME"] == beta["environment"]["XDG_CACHE_HOME"] == "/runtime/cache"
+    assert agent_table["secrets"] == ["beta_agent_table_worker_bridge"]
+
+    manager = yaml.safe_load((Path(__file__).parents[1] / "compose.management.yml").read_text(encoding="utf-8"))["services"]["management"]
+    registry = manager["environment"]["AUTO_CODER_WORKER_REGISTRY"]
+    assert registry.count('"target_id"') == 3
+    assert all('"target_id":"' + target + '"' in registry for target in ("release-worker", "beta-worker", "beta-agent-table-worker"))
+    assert {"release_worker_bridge", "beta_worker_bridge", "beta_agent_table_worker_bridge"} <= set(manager["secrets"])

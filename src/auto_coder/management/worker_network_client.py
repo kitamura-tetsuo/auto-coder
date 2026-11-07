@@ -6,6 +6,7 @@ credentials are never accepted here or forwarded to the worker container.
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import http.client
 import ipaddress
@@ -28,6 +29,10 @@ from auto_coder.worker_network_protocol import (
 )
 
 _BRIDGE_IDENTITY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}\Z")
+_TARGET_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+_REGISTRY_ENV = "AUTO_CODER_WORKER_REGISTRY"
+_WORKER_FIELDS = frozenset({"target_id", "supervisor_instance_id", "channel", "repository", "bridge_address", "bridge_port", "bridge_secret_file"})
+_LEGACY_FIELDS = frozenset(f"AUTO_CODER_{channel}_{field}" for channel in ("BETA", "RELEASE") for field in ("SUPERVISOR_INSTANCE_ID", "REPOSITORY", "BRIDGE_ADDRESS", "BRIDGE_PORT", "BRIDGE_SECRET_FILE"))
 
 
 @dataclass(frozen=True)
@@ -38,41 +43,116 @@ class WorkerEndpointConfig:
     address: str
     port: int
     secret: bytes
+    target_id: str = ""
+    secret_file: Path | None = None
+
+    @property
+    def binding_digest(self) -> str:
+        """Non-secret persistent identity of the exact configured bridge."""
+        identity = (
+            self.target_id or self.instance_id,
+            self.instance_id,
+            self.channel,
+            self.repository,
+            self.address,
+            self.port,
+            str(self.secret_file) if self.secret_file is not None else "",
+            hashlib.sha256(self.secret).hexdigest(),
+        )
+        return hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
 
     @classmethod
-    def environment(cls, channel: str) -> "WorkerEndpointConfig":
-        """Use only trusted manager deployment variables, never MCP arguments."""
-        if channel not in {"beta", "release"}:
-            raise ValueError("unsupported worker channel")
-        prefix = f"AUTO_CODER_{channel.upper()}_"
-        required = ("SUPERVISOR_INSTANCE_ID", "REPOSITORY", "BRIDGE_ADDRESS", "BRIDGE_PORT", "BRIDGE_SECRET_FILE")
-        values = {name: os.environ.get(prefix + name, "") for name in required}
-        if not all(values.values()) or not values["BRIDGE_PORT"].isdecimal():
-            raise ValueError("worker network endpoint is not fully configured")
-        address = ipaddress.ip_address(values["BRIDGE_ADDRESS"])
-        port = int(values["BRIDGE_PORT"])
-        if address.version != 4 or not address.is_private or address.is_loopback or address.is_link_local or address.is_unspecified or not 1024 <= port <= 65535:
+    def environment(cls, target_id: str) -> "WorkerEndpointConfig":
+        """Resolve one exact target from the trusted, validated registry."""
+        return configured_worker_registry()[target_id]
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate worker registry field")
+        result[key] = value
+    return result
+
+
+def configured_worker_registry() -> dict[str, WorkerEndpointConfig]:
+    """Validate the entire trusted target registry before enabling any bridge."""
+    raw = os.environ.get(_REGISTRY_ENV)
+    if raw is None:
+        return {}
+    if not raw or len(raw.encode("utf-8")) > 65536:
+        raise ValueError("worker registry is empty or too large")
+    try:
+        document = json.loads(raw, object_pairs_hook=_unique_json_object)
+    except ValueError as exc:
+        if str(exc) == "duplicate worker registry field":
+            raise
+        raise ValueError("invalid worker registry JSON") from exc
+    except TypeError as exc:
+        raise ValueError("invalid worker registry JSON") from exc
+    if not isinstance(document, dict) or set(document) != {"workers"} or not isinstance(document["workers"], list) or not document["workers"]:
+        raise ValueError("worker registry must contain a nonempty workers list")
+    registry: dict[str, WorkerEndpointConfig] = {}
+    instances: set[str] = set()
+    endpoints: set[tuple[str, int]] = set()
+    repositories: set[str] = set()
+    secret_paths: set[Path] = set()
+    secrets: set[bytes] = set()
+    for entry in document["workers"]:
+        if not isinstance(entry, dict) or set(entry) != _WORKER_FIELDS:
+            raise ValueError("worker registry entry is incomplete or has unknown fields")
+        target_id = entry["target_id"]
+        instance = entry["supervisor_instance_id"]
+        channel = entry["channel"]
+        repository = entry["repository"]
+        port = entry["bridge_port"]
+        path_value = entry["bridge_secret_file"]
+        if (
+            not isinstance(target_id, str)
+            or _TARGET_ID.fullmatch(target_id) is None
+            or not isinstance(instance, str)
+            or _BRIDGE_IDENTITY.fullmatch(instance) is None
+            or not isinstance(channel, str)
+            or channel not in {"beta", "release"}
+            or not isinstance(repository, str)
+            or repository.count("/") != 1
+            or _BRIDGE_IDENTITY.fullmatch(repository) is None
+            or type(port) is not int
+            or not 1024 <= port <= 65535
+            or not isinstance(path_value, str)
+            or not Path(path_value).is_absolute()
+        ):
+            raise ValueError("worker registry identity, channel or port is invalid")
+        try:
+            address = ipaddress.ip_address(entry["bridge_address"])
+        except (ValueError, TypeError) as exc:
+            raise ValueError("worker network endpoint must be a fixed private Docker IPv4 address and port") from exc
+        if address.version != 4 or not address.is_private or address.is_loopback or address.is_link_local or address.is_unspecified:
             raise ValueError("worker network endpoint must be a fixed private Docker IPv4 address and port")
-        if "/" not in values["REPOSITORY"] or not _BRIDGE_IDENTITY.fullmatch(values["REPOSITORY"]) or not _BRIDGE_IDENTITY.fullmatch(values["SUPERVISOR_INSTANCE_ID"]):
-            raise ValueError("worker network identity is invalid")
-        return cls(values["SUPERVISOR_INSTANCE_ID"], channel, values["REPOSITORY"], str(address), port, load_machine_secret(Path(values["BRIDGE_SECRET_FILE"])))
-
-
-_ENDPOINT_FIELDS = ("SUPERVISOR_INSTANCE_ID", "REPOSITORY", "BRIDGE_ADDRESS", "BRIDGE_PORT", "BRIDGE_SECRET_FILE")
+        endpoint = (str(address), port)
+        secret_path = Path(path_value)
+        if target_id in registry or instance in instances or endpoint in endpoints or repository in repositories or secret_path in secret_paths:
+            raise ValueError("worker registry requires distinct targets, instances, endpoints, repositories and credentials")
+        secret = load_machine_secret(secret_path)
+        if secret in secrets:
+            raise ValueError("worker registry requires distinct machine credentials")
+        registry[target_id] = WorkerEndpointConfig(instance, channel, repository, str(address), port, secret, target_id, secret_path)
+        instances.add(instance)
+        endpoints.add(endpoint)
+        repositories.add(repository)
+        secret_paths.add(secret_path)
+        secrets.add(secret)
+    return registry
 
 
 def configured_worker_bridge_environment() -> dict[str, str]:
-    """Capture one complete, operator-provisioned two-channel configuration."""
-    names = (f"AUTO_CODER_{channel}_{field}" for channel in ("RELEASE", "BETA") for field in _ENDPOINT_FIELDS)
-    present = {name: os.environ[name] for name in names if name in os.environ}
-    if not present:
-        return {}
-    if len(present) != 2 * len(_ENDPOINT_FIELDS) or not all(present.values()):
-        raise ValueError("both worker network channels require complete configuration")
-    release, beta = (WorkerEndpointConfig.environment(channel) for channel in ("release", "beta"))
-    if release.secret == beta.secret or (release.address, release.port) == (beta.address, beta.port) or release.instance_id == beta.instance_id:
-        raise ValueError("worker network channels must have distinct credentials, endpoints and instances")
-    return present
+    """Capture the complete registry for a restarted management child."""
+    legacy = _LEGACY_FIELDS.intersection(os.environ)
+    if legacy:
+        raise ValueError("legacy channel bridge configuration must be migrated to the worker registry")
+    registry = configured_worker_registry()
+    return {_REGISTRY_ENV: os.environ[_REGISTRY_ENV]} if registry else {}
 
 
 @dataclass(frozen=True)

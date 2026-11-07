@@ -8,19 +8,16 @@ services:
     stop_grace_period: 30m
     environment:
       PYTHONUNBUFFERED: "1"
-      AUTO_CODER_RELEASE_SUPERVISOR_INSTANCE_ID: release-worker
-      AUTO_CODER_RELEASE_REPOSITORY: ${RELEASE_REPOSITORY:?Release repository is required}
-      AUTO_CODER_RELEASE_BRIDGE_ADDRESS: ${RELEASE_WORKER_BRIDGE_ADDRESS:?Release private address is required}
-      AUTO_CODER_RELEASE_BRIDGE_PORT: ${RELEASE_WORKER_BRIDGE_PORT:?Release private port is required}
-      AUTO_CODER_RELEASE_BRIDGE_SECRET_FILE: /run/secrets/release_worker_bridge
-      AUTO_CODER_BETA_SUPERVISOR_INSTANCE_ID: beta-worker
-      AUTO_CODER_BETA_REPOSITORY: ${BETA_REPOSITORY:?Beta repository is required}
-      AUTO_CODER_BETA_BRIDGE_ADDRESS: ${BETA_WORKER_BRIDGE_ADDRESS:?Beta private address is required}
-      AUTO_CODER_BETA_BRIDGE_PORT: ${BETA_WORKER_BRIDGE_PORT:?Beta private port is required}
-      AUTO_CODER_BETA_BRIDGE_SECRET_FILE: /run/secrets/beta_worker_bridge
+      AUTO_CODER_WORKER_REGISTRY: >-
+        {"workers":[
+          {"target_id":"release-worker","supervisor_instance_id":"release-worker","channel":"release","repository":"${RELEASE_REPOSITORY:?Release repository is required}","bridge_address":"${RELEASE_WORKER_BRIDGE_ADDRESS:?Release private address is required}","bridge_port":${RELEASE_WORKER_BRIDGE_PORT:?Release private port is required},"bridge_secret_file":"/run/secrets/release_worker_bridge"},
+          {"target_id":"beta-worker","supervisor_instance_id":"beta-worker","channel":"beta","repository":"${BETA_REPOSITORY:?Beta repository is required}","bridge_address":"${BETA_WORKER_BRIDGE_ADDRESS:?Beta private address is required}","bridge_port":${BETA_WORKER_BRIDGE_PORT:?Beta private port is required},"bridge_secret_file":"/run/secrets/beta_worker_bridge"},
+          {"target_id":"beta-agent-table-worker","supervisor_instance_id":"beta-agent-table-worker","channel":"beta","repository":"kitamura-tetsuo/agent-table","bridge_address":"${BETA_AGENT_TABLE_WORKER_BRIDGE_ADDRESS:?Agent Table private address is required}","bridge_port":${BETA_AGENT_TABLE_WORKER_BRIDGE_PORT:?Agent Table private port is required},"bridge_secret_file":"/run/secrets/beta_agent_table_worker_bridge"}
+        ]}
     secrets:
       - release_worker_bridge
       - beta_worker_bridge
+      - beta_agent_table_worker_bridge
       - source_evidence_read
     networks:
       default: {}
@@ -41,6 +38,8 @@ secrets:
     file: ${RELEASE_WORKER_BRIDGE_SECRET_FILE:?Release credential file is required}
   beta_worker_bridge:
     file: ${BETA_WORKER_BRIDGE_SECRET_FILE:?Beta credential file is required}
+  beta_agent_table_worker_bridge:
+    file: ${BETA_AGENT_TABLE_WORKER_BRIDGE_SECRET_FILE:?Agent Table credential file is required}
   source_evidence_read:
     file: ${AUTO_CODER_SOURCE_EVIDENCE_TOKEN_FILE:?Read-only source-evidence credential file is required}
 

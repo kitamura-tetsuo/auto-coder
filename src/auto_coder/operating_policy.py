@@ -196,6 +196,7 @@ def _parse_policy(document: object) -> OperatingPolicy:
     if not isinstance(target_values, dict) or not target_values:
         raise ValueError("targets must be a non-empty mapping")
     targets: list[PolicyTarget] = []
+    owned_repositories: set[str] = set()
     for target_id, value in target_values.items():
         if not isinstance(target_id, str) or not target_id.strip() or not isinstance(value, dict):
             raise ValueError("invalid target")
@@ -210,6 +211,9 @@ def _parse_policy(document: object) -> OperatingPolicy:
             raise ValueError("repositories must be non-empty owner/name strings")
         if len(set(repositories)) != len(repositories):
             raise ValueError("repositories must be unique")
+        if owned_repositories.intersection(repositories):
+            raise ValueError("each active worker target must have distinct repository ownership")
+        owned_repositories.update(repositories)
         targets.append(PolicyTarget(target_id, channel, tuple(sorted(repositories))))
     management = None
     if "management_self_update" in document:

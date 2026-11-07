@@ -56,7 +56,7 @@ def _await_stage(app, operation_id: str, expected: str, *, timeout: float = 120)
     except AssertionError as error:
         snapshot = _result(app, operation_id)
         try:
-            live = app.state.management_runtime.clients["beta"].observe_worker()
+            live = app.state.management_runtime.clients["beta-worker"].observe_worker()
             worker = live.data.get("observation") if isinstance(live.data, dict) else None
             producer = {"result_code": live.result_code, "worker": worker}
         except (OSError, RuntimeError, ValueError) as observation_error:

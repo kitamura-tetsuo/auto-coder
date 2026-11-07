@@ -789,7 +789,14 @@ def test_diagnostic_does_not_join_observation_from_replaced_supervisor(runtime_b
     with TestClient(_application(runtime_boundary), base_url=settings.oauth.canonical_issuer) as client:
         token = _issue(client, settings, signed, "alice", "alice-client", READ_SCOPE)["access_token"]
         result = _call(client, token, "auto_coder_logs", {"target_id": "beta-worker"})
-        assert result == {"status": "CONFLICT", "reason": "supervisor_changed_during_diagnostic"}
+        assert result == {
+            "status": "CONFLICT",
+            "reason": "supervisor_changed_during_diagnostic",
+            "target_id": "beta-worker",
+            "instance_id": "beta-worker",
+            "channel": "beta",
+            "repository": "fixture/beta",
+        }
 
 
 def test_unknown_external_effect_holds_lane_across_new_keys_and_restart(runtime_boundary) -> None:

@@ -51,10 +51,11 @@ targets:
 Use the exact `RELEASE_REPOSITORY` and `BETA_REPOSITORY` provisioned in Compose,
 not the example names. Each logical target must name **one** configured channel
 and its **one** exact repository. The physical instance IDs, endpoint addresses,
-ports and independent machine credentials come only from validated
-`AUTO_CODER_{BETA,RELEASE}_*` operator environment settings specified in
-`management-worker-private-network.md`; no MCP argument selects them. Both
-Supervisor bridges must be provisioned together on the private Docker network.
+ports and independent machine credentials come only from the validated
+`AUTO_CODER_WORKER_REGISTRY` described in
+[`management-multi-worker-registry.md`](management-multi-worker-registry.md);
+no MCP argument selects them. All configured Supervisor bridges must be
+provisioned on the private Docker network.
 The OAuth access bearer is never forwarded to a Supervisor. The policy's
 `observe`/`beta`/`full` profile is reread for each new action and immediately
 before the first unsent worker effect. A later downgrade does not authorize a

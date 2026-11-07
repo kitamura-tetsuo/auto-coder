@@ -176,16 +176,16 @@ def _actual_runtime_observation(channel: str) -> dict[str, object]:
 
     with tempfile.TemporaryDirectory(prefix="supervisor-management-") as temp:
         root = Path(temp)
-        config = WorkerEndpointConfig.environment(channel)
+        config = WorkerEndpointConfig.environment(channel + "-worker")
         policy = root / "operator-policy.yaml"
         policy.write_text(
-            f"profile: full\ntargets:\n  {channel}-worker:\n    channel: {channel}\n    repositories: [{json.dumps(config.repository)}]\n",
+            f"profile: full\ntargets:\n  {channel}-worker:\n    channel: {config.channel}\n    repositories: [{json.dumps(config.repository)}]\n",
             encoding="utf-8",
         )
         oauth = OAuthSettings(root / "oauth.sqlite3", "http://127.0.0.1:17881", "fixture-project", (OAuthClient("fixture-client", ("http://127.0.0.1:17882/callback",)),))
         settings = ManagementSettings(root, oauth, local_development=True, operating_policy_path=policy)
         identity = FirebaseOperatorIdentity(IdentityConfig("fixture-project", root / "allowed_uids.json"))
-        clients = {channel: WorkerNetworkClient(config)}
+        clients = {channel + "-worker": WorkerNetworkClient(config)}
         runtime = ManagementRuntime(settings, OAuthGrantService(oauth, identity), clients)
         target = runtime._resolve(channel + "-worker", ActionClass.INSPECT)
         assert isinstance(target, ResolvedWorker)
@@ -197,9 +197,9 @@ def main() -> None:
     if command == "runtime-observe":
         print(json.dumps(_actual_runtime_observation(channel), sort_keys=True))
         return
-    config = WorkerEndpointConfig.environment(channel)
+    config = WorkerEndpointConfig.environment(channel + "-worker")
     if command == "swapped-target":
-        peer = WorkerEndpointConfig.environment("release" if channel == "beta" else "beta")
+        peer = WorkerEndpointConfig.environment("release-worker" if channel != "release" else "beta-worker")
         config = replace(config, address=peer.address)
     client = WorkerNetworkClient(config)
     inspected = client.inspect_supervisor()

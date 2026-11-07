@@ -172,9 +172,9 @@ class BetaRuntimeSmokeProducer:
     process_run_id; its expected artifact is the installed_runtime_id.
     """
 
-    def __init__(self, journal: ManagementOperationStore, client: WorkerNetworkClient, source: BetaEvidenceReader, profile: SmokeProfile | None, *, clock: Callable[[], float] = time.time) -> None:
+    def __init__(self, journal: ManagementOperationStore, client: WorkerNetworkClient | dict[str, WorkerNetworkClient], source: BetaEvidenceReader, profile: SmokeProfile | None, *, clock: Callable[[], float] = time.time) -> None:
         self.journal = journal
-        self.client = client
+        self.clients = client if isinstance(client, dict) else {client.config.target_id or client.config.instance_id: client}
         self.source = source
         self.profile = profile
         self.clock = clock
@@ -186,6 +186,16 @@ class BetaRuntimeSmokeProducer:
         except (OSError, RuntimeError, ValueError, TypeError, OverflowError):
             return None
 
+    def _client_for_record(self, record: OperationRecord) -> WorkerNetworkClient | None:
+        params = {item.name: item.value for item in record.intent.parameters}
+        target_id = params.get("target_id")
+        if target_id is not None:
+            return self.clients.get(target_id) if isinstance(target_id, str) else None
+        # Old smoke records predate target_id parameters. Match their immutable
+        # full physical identity, never the shared beta channel alone.
+        matches = [client for client in self.clients.values() if record.intent.target == ManagedTarget(client.config.instance_id, client.config.channel, client.config.repository)]
+        return matches[0] if len(matches) == 1 else None
+
     def _operation(self, operation_id: str) -> OperationRecord | SmokeObservation:
         result = self.journal.get(operation_id)
         if result.status is ReadStatus.UNAVAILABLE:
@@ -193,11 +203,14 @@ class BetaRuntimeSmokeProducer:
         if result.status is not ReadStatus.FOUND or result.record is None:
             return SmokeObservation(SmokeState.NOT_FOUND, operation_id, "operation_not_found")
         record = result.record
-        config = self.client.config
         params = {item.name: item.value for item in record.intent.parameters}
+        client = self._client_for_record(record)
+        config = client.config if client is not None else None
         if (
-            config.channel != "beta"
+            config is None
+            or config.channel != "beta"
             or record.intent.target != ManagedTarget(config.instance_id, config.channel, config.repository)
+            or (params.get("worker_binding") is not None and params["worker_binding"] != config.binding_digest)
             or record.intent.action != ACTION
             or record.intent.fingerprint() != record.intent_fingerprint
             or not isinstance(params.get("source_sha"), str)
@@ -207,7 +220,7 @@ class BetaRuntimeSmokeProducer:
             or record.intent.expected_incarnation == "-"
             or not record.intent.expected_artifact
             or record.intent.expected_artifact in {"-", "bootstrap"}
-            or set(params) - {"source_sha", "deployment_operation_id", "supervisor_generation", "deployment_generation", "target_id"}
+            or set(params) - {"source_sha", "deployment_operation_id", "supervisor_generation", "deployment_generation", "target_id", "worker_binding"}
         ):
             return SmokeObservation(SmokeState.CONFLICT, operation_id, "acceptance_binding_invalid")
         return record
@@ -369,7 +382,10 @@ class BetaRuntimeSmokeProducer:
 
     def _worker(self, record: OperationRecord, captured: dict[str, object] | None) -> _WorkerRead:
         params = self._params(record)
-        response = self.client.inspect_supervisor()
+        client = self._client_for_record(record)
+        if client is None:
+            return _WorkerRead(LocalResult.BLOCKED, "original_worker_binding_unavailable", {}, {"checks": []})
+        response = client.inspect_supervisor()
         supervisor = response.data
         sample: dict[str, object] = {"supervisor_request_id": response.request_id, "checks": []}
         checks = sample["checks"]
@@ -403,7 +419,7 @@ class BetaRuntimeSmokeProducer:
         if supervisor.get("alive") is not True or supervisor.get("status") != "RUNNING" or any(actual[key] is None for key in expected):
             return stop(LocalResult.BLOCKED, "worker_lifecycle_unavailable")
         nonce = uuid.uuid4().hex
-        result = self.client.observe_worker(nonce)
+        result = client.observe_worker(nonce)
         data = result.data
         observed = _mapping(data.get("observation")) if isinstance(data, dict) else {}
         if result.result_code != "OK" or not isinstance(data, dict) or result.supervisor_generation != response.supervisor_generation:
