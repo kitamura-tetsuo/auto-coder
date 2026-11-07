@@ -140,9 +140,9 @@ from .pr_repair_guard import (
     check_pr_repair_exhaustion,
     publish_exhaustion_comment_deduped,
 )
-from .pr_review_cycle import PHASE_ORDINARY_CLOSURE, VERDICT_FINDINGS, VERDICT_PASS, ClaimContendedError, ContractSnapshot, Finding
+from .pr_review_cycle import PHASE_ORDINARY_CLOSURE, PHASE_STRONG_PENDING, VERDICT_FINDINGS, VERDICT_PASS, ClaimContendedError, ContractSnapshot, Finding
 from .pr_review_cycle import FindingDisposition as DurableFindingDisposition
-from .pr_review_cycle import NotApplicableError, RoundProvenance, StrongAuditRound, StrongPolicyIdentity
+from .pr_review_cycle import NotApplicableError, RoundProvenance, StaleTransitionError, StrongAuditRound, StrongPolicyIdentity
 from .pr_review_effects import CONFIRMED, REJECTED, UNCERTAIN, AcceptedReviewPayload, EffectAttempt, EffectOperation, ReviewEffectExecutor, ReviewEffectRepository
 from .pr_review_execution import ReviewExecutionInput, ReviewMode, execute_review
 from .pr_review_resumption import (
@@ -340,6 +340,7 @@ def _two_tier_gate_inputs(
     model_options = {
         "route": route,
         "default": llm_config.get_strong_pr_adversarial_validation_default_backend(),
+        "backend_type": getattr(strong, "backend_type", None),
         "model": getattr(strong, "model", None),
         "options": getattr(strong, "options", None),
     }
@@ -374,21 +375,85 @@ def _ensure_review_base_commit(worktree: str, base_sha: str) -> None:
         raise RuntimeError(f"reviewed base {base_sha} verification failed (exit={verified.returncode}): {diagnostic}")
 
 
-def _execute_pending_strong_audit(repo_name: str, pr_number: int, inputs: TwoTierGateInputs) -> Tuple[bool, str]:
+def _execute_pending_strong_audit(
+    repo_name: str,
+    pr_number: int,
+    inputs: TwoTierGateInputs,
+    *,
+    allow_retry_override: bool = False,
+    expected_version: Optional[int] = None,
+    current_target: Optional[Callable[[], Tuple[TwoTierGateInputs, str]]] = None,
+    expected_lifecycle_token: str = "",
+) -> Tuple[bool, str]:
     """Claim, execute, and durably accept one production strong-audit round."""
+    expected_identity = (
+        inputs.head_sha,
+        inputs.base_sha,
+        inputs.contract.identity,
+        inputs.policy.identity,
+        expected_lifecycle_token,
+    )
+
+    def observe_current_target() -> bool:
+        if current_target is None:
+            return True
+        refreshed, lifecycle_token = current_target()
+        return (
+            refreshed.head_sha,
+            refreshed.base_sha,
+            refreshed.contract.identity,
+            refreshed.policy.identity,
+            lifecycle_token,
+        ) == expected_identity
+
+    try:
+        if not observe_current_target():
+            return False, "strong-audit target changed before admission"
+    except Exception as exc:
+        return False, f"strong-audit target could not be confirmed before admission: {exc}"
+
     provenance = RoundProvenance(inputs.head_sha, inputs.base_sha)
     try:
-        claim = inputs.gate.state.claim_strong_audit(pr_number, provenance, inputs.contract, inputs.policy)
+        claim = inputs.gate.state.claim_strong_audit(
+            pr_number,
+            provenance,
+            inputs.contract,
+            inputs.policy,
+            expected_version=expected_version,
+            allow_retry_override=allow_retry_override,
+            expected_opening_token=expected_lifecycle_token,
+        )
     except ClaimContendedError:
         return False, "another controller owns the live strong-audit claim"
     except NotApplicableError as exc:
         return False, str(exc)
+    except StaleTransitionError as exc:
+        return False, f"strong-audit wait changed before admission: {exc}"
+    except Exception as exc:
+        return False, f"strong-audit admission persistence failed: {exc}"
 
     try:
         with isolated_pr_head_worktree(repo_name, pr_number, inputs.head_sha) as worktree:
             from .cli_helpers import resolve_adversarial_validation_availability
 
-            availability = resolve_adversarial_validation_availability("strong_pr", execution_cwd=worktree)
+            availability_error: Optional[Exception] = None
+            try:
+                availability = resolve_adversarial_validation_availability("strong_pr", execution_cwd=worktree)
+            except Exception as exc:
+                # An error is still an observation of the captured target. Do
+                # not consume its selected wait until applicability is checked.
+                availability_error = exc
+            try:
+                target_is_current = observe_current_target()
+            except Exception:
+                inputs.gate.state.reject_stale_claim(pr_number, claim.claim_id)
+                raise
+            if not target_is_current:
+                reason = "strong-audit target changed during fresh availability evaluation"
+                inputs.gate.state.reject_stale_claim(pr_number, claim.claim_id)
+                return False, reason
+            if availability_error is not None:
+                raise availability_error
             if availability.backend_manager is None:
                 reason = "strong reviewer route is EXHAUSTED" if availability.exhausted else "strong reviewer route is UNAVAILABLE"
                 inputs.gate.state.abandon_claim(
@@ -567,7 +632,25 @@ def _strict_pull_request_target(github_client: Any, repo_name: str, pr_number: i
     base = metadata.get("base")
     if not (isinstance(head, dict) and isinstance(head.get("sha"), str) and head["sha"] and isinstance(base, dict) and isinstance(base.get("sha"), str) and base["sha"]):
         raise RuntimeError(f"GitHub did not return the current head and base identity for PR #{pr_number}")
+    if metadata.get("state") != "open":
+        raise RuntimeError(f"PR #{pr_number} is no longer open")
     return metadata
+
+
+def _pr_open_incarnation_token(github_client: Any, repo_name: str, pr_number: int, metadata: Dict[str, Any]) -> str:
+    """Return stable evidence for the current opening, excluding ordinary activity."""
+    timeline = github_client.get_issue_timeline_strict(repo_name, pr_number)
+    reopened = [event for event in timeline if isinstance(event, dict) and event.get("event") == "reopened"]
+    if reopened:
+        latest = reopened[-1]
+        identity = latest.get("id") or latest.get("node_id") or latest.get("created_at")
+        if not identity:
+            raise RuntimeError("the latest PR reopen event has no stable identity")
+        return f"reopened:{identity}"
+    created_at = metadata.get("created_at") or metadata.get("createdAt")
+    if not created_at:
+        raise RuntimeError("the PR opening identity is unavailable")
+    return f"created:{created_at}"
 
 
 class _OrdinaryDiscussionChanged(RuntimeError):
@@ -6220,7 +6303,21 @@ def _coordinate_pr_review(
                 if claimed_review_threads:
                     actions.append(f"PR #{pr_number} has {len(claimed_review_threads)} claimed-addressed review thread(s) pending independent validation")
 
+    ordinary_opening_token = ""
+    ordinary_opening_error = ""
+    fresh_ordinary_result = False
     if adversarial_validation_enabled and adversarial_validation_applicable:
+        # Bind any ordinary result to the opening in which its authority is
+        # produced.  Capturing this after publication would allow a same-head
+        # close/reopen in that interval to relabel the old result as current.
+        try:
+            pre_ordinary_target = _strict_pull_request_target(github_client, repo_name, pr_number)
+            pre_ordinary_strong_inputs = _two_tier_gate_inputs(github_client, repo_name, pre_ordinary_target)
+            if pre_ordinary_strong_inputs is not None:
+                ordinary_opening_token = _pr_open_incarnation_token(github_client, repo_name, pr_number, pre_ordinary_target)
+        except Exception as exc:
+            ordinary_opening_error = str(exc)
+
         max_adv_reviews = config.MAX_ADVERSARIAL_VALIDATIONS if config.MAX_ADVERSARIAL_VALIDATIONS is not None else config.MAX_ADVERSARIAL_REVIEWS
         if max_adv_reviews is not None and max_adv_reviews >= 0:
             try:
@@ -6476,6 +6573,25 @@ def _coordinate_pr_review(
                 _record_review_wait(repo_name, pr_number, head_sha, actions, processing_status, reuse_assessment.reason)
                 return actions
             saved_review_revalidation = saved_review_revalidation or reuse_assessment.action == SAVED_REVIEW_REVALIDATE
+            if published_status == "PASS" and not saved_review_revalidation:
+                # A same-head native review is not enough to prove ordinary
+                # convergence after a close/reopen.  The durable ordinary PASS
+                # records the opening in which that published result was
+                # produced; never relabel it with the opening of this later
+                # evaluation.  Missing provenance is likewise non-authorizing.
+                cached_inputs = _two_tier_gate_inputs(github_client, repo_name, pr_data)
+                if cached_inputs is not None:
+                    cached_snapshot = cached_inputs.gate.state.snapshot(pr_number)
+                    cached_opening = cached_snapshot.ordinary_pass_opening_token
+                    # Scheduling may live only in the durable invalidation queue
+                    # after a non-quota refusal, so a positive cycle deadline is
+                    # not a reliable marker for unaccepted strong work. Protect
+                    # every such admission while leaving accepted closure and
+                    # publication effects on their independent resumption path.
+                    unaccepted_strong_work = cached_snapshot.phase == PHASE_STRONG_PENDING and cached_snapshot.accepted_strong_round is None and not cached_snapshot.pending_effect
+                    if unaccepted_strong_work and (not cached_opening or not ordinary_opening_token or cached_opening != ordinary_opening_token):
+                        saved_review_revalidation = True
+                        actions.append(f"Revalidating PR #{pr_number} at unchanged commit {head_sha[:8]}: " "the saved ordinary PASS is not bound to the current PR opening")
             if published_status in ADVERSARIAL_REVIEW_BLOCKING_STATUSES and not saved_review_revalidation and reuse_assessment.projection is not None and outstanding_records(reuse_assessment.projection):
                 completion_marker = _corrective_completion_marker(repo_name, pr_data, head_sha, github_client)
                 if completion_marker and _closure_review_due(repo_name, pr_number, head_sha, reuse_assessment.projection, completion_marker):
@@ -6683,6 +6799,7 @@ def _coordinate_pr_review(
                                     refresh_ci_status=lambda: _refresh_adversarial_ci_status(repo_name, pr_data, config, github_client),
                                     closure_input=closure_input,
                                 )
+                                fresh_ordinary_result = True
                 except Exception as e:
                     exception_preview = redact_string(str(e))[:2000]
                     logger.error(f"Adversarial validation execution failed for PR #{pr_number} " f"({type(e).__name__}): {exception_preview}")
@@ -7199,11 +7316,119 @@ def _coordinate_pr_review(
             )
             return actions
         if two_tier_inputs is not None:
+
+            def current_strong_target() -> Tuple[TwoTierGateInputs, str]:
+                metadata = _strict_pull_request_target(github_client, repo_name, pr_number)
+                refreshed = _two_tier_gate_inputs(github_client, repo_name, metadata)
+                if refreshed is None:
+                    raise RuntimeError("the strong tier is no longer configured")
+                return refreshed, _pr_open_incarnation_token(github_client, repo_name, pr_number, metadata)
+
+            preliminary_snapshot = two_tier_inputs.gate.state.snapshot(pr_number)
+            preliminary_completion = two_tier_inputs.gate.reusable_completion(
+                pr_number,
+                current_head_sha=two_tier_inputs.head_sha,
+                current_base_sha=two_tier_inputs.base_sha,
+                current_contract=two_tier_inputs.contract,
+                current_policy=two_tier_inputs.policy,
+            )
+            needs_strong_admission = preliminary_completion is None and not preliminary_snapshot.pending_effect and not (preliminary_snapshot.phase == PHASE_ORDINARY_CLOSURE and preliminary_snapshot.open_findings)
+            initial_lifecycle_token = ordinary_opening_token
+            unaccepted_strong_work = preliminary_snapshot.phase == PHASE_STRONG_PENDING and preliminary_snapshot.accepted_strong_round is None and not preliminary_snapshot.pending_effect
+            if needs_strong_admission and unaccepted_strong_work and not fresh_ordinary_result and not ordinary_opening_error and initial_lifecycle_token and (not preliminary_snapshot.ordinary_pass_opening_token or preliminary_snapshot.ordinary_pass_opening_token != initial_lifecycle_token):
+                reason = "the retained ordinary PASS does not apply to the current PR opening"
+                actions.append(f"Skipping merge for PR #{pr_number}: {reason}")
+                actions.quota_deferred = True
+                actions.retry_not_before = time.time() + 60.0
+                if processing_status is not None:
+                    processing_status.outcome = PRProcessingOutcome.DEFERRED
+                    processing_status.retry_not_before = actions.retry_not_before
+                _record_pr_stage(
+                    pr_number,
+                    "pr.strong-audit-gate",
+                    f"pr#{pr_number} strong-audit gate",
+                    Outcome.DEFERRED,
+                    {
+                        "reason": reason,
+                        "phase": "ordinary-opening-applicability",
+                        "retry_not_before": actions.retry_not_before,
+                    },
+                )
+                return actions
+            if needs_strong_admission:
+                try:
+                    if ordinary_opening_error:
+                        raise RuntimeError(ordinary_opening_error)
+                    if not initial_lifecycle_token:
+                        raise RuntimeError("the ordinary result has no verified PR opening identity")
+                    opening_inputs, current_lifecycle_token = current_strong_target()
+                    if current_lifecycle_token != initial_lifecycle_token:
+                        raise RuntimeError("the PR open incarnation changed after ordinary authority was captured")
+                except Exception as exc:
+                    # A competing controller may have completed this exact target
+                    # after the preliminary read. Reobserve durable authority before
+                    # treating missing opening evidence as an admission failure.
+                    preliminary_completion = two_tier_inputs.gate.reusable_completion(
+                        pr_number,
+                        current_head_sha=two_tier_inputs.head_sha,
+                        current_base_sha=two_tier_inputs.base_sha,
+                        current_contract=two_tier_inputs.contract,
+                        current_policy=two_tier_inputs.policy,
+                    )
+                    if preliminary_completion is None:
+                        reason = f"strong-audit opening could not be confirmed: {exc}"
+                        actions.append(f"Skipping merge for PR #{pr_number}: {reason}")
+                        # Opening evidence is an availability prerequisite, not
+                        # completion of the pending audit.  In particular, a due
+                        # durable invalidation must retain a bounded successor when
+                        # the timeline transport fails transiently; otherwise the
+                        # worker acknowledges its only wake and the saved cycle is
+                        # never reconsidered.  Use the existing non-quota retry
+                        # bound without changing or consuming the selected wait.
+                        actions.quota_deferred = True
+                        now = time.time()
+                        retained_deadline = preliminary_snapshot.retry_not_before
+                        # An applicable selected wait already has authoritative
+                        # scheduling evidence.  A transient opening lookup must
+                        # not postpone that earlier wake; use the 60-second
+                        # non-quota fallback only after it is due or absent.
+                        deadline_applies = bool(preliminary_snapshot.wait_policy_identity) and preliminary_snapshot.wait_policy_identity == two_tier_inputs.policy.identity
+                        actions.retry_not_before = retained_deadline if deadline_applies and retained_deadline > now else now + 60.0
+                        if processing_status is not None:
+                            processing_status.outcome = PRProcessingOutcome.DEFERRED
+                            processing_status.retry_not_before = actions.retry_not_before
+                        _record_pr_stage(
+                            pr_number,
+                            "pr.strong-audit-gate",
+                            f"pr#{pr_number} strong-audit gate",
+                            Outcome.DEFERRED,
+                            {
+                                "reason": reason,
+                                "phase": "opening-resolution",
+                                "retry_not_before": actions.retry_not_before,
+                            },
+                        )
+                        return actions
+                    opening_inputs = two_tier_inputs
+                if (
+                    opening_inputs.head_sha,
+                    opening_inputs.base_sha,
+                    opening_inputs.contract.identity,
+                    opening_inputs.policy.identity,
+                ) != (
+                    two_tier_inputs.head_sha,
+                    two_tier_inputs.base_sha,
+                    two_tier_inputs.contract.identity,
+                    two_tier_inputs.policy.identity,
+                ):
+                    actions.append(f"Skipping merge for PR #{pr_number}: strong-audit target changed before ordinary convergence")
+                    return actions
             two_tier_inputs.gate.ordinary_pass(
                 pr_number,
                 two_tier_inputs.head_sha,
                 two_tier_inputs.base_sha,
                 two_tier_inputs.contract,
+                opening_token=initial_lifecycle_token,
             )
             closure_resumption = _resume_retained_closure(repo_name, pr_number, two_tier_inputs.head_sha, two_tier_inputs, github_client)
             pending_snapshot = two_tier_inputs.gate.state.snapshot(pr_number)
@@ -7251,10 +7476,31 @@ def _coordinate_pr_review(
                 stage_id = "pr.ordinary-closure"
                 stage_label = f"pr#{pr_number} ordinary closure"
             else:
-                accepted, reason = _execute_pending_strong_audit(repo_name, pr_number, two_tier_inputs)
-                reviewer_backend = two_tier_inputs.policy.strong_route
-                stage_id = "pr.strong-audit"
-                stage_label = f"pr#{pr_number} strong audit"
+
+                try:
+                    _current_inputs, current_lifecycle_token = current_strong_target()
+                    if current_lifecycle_token != initial_lifecycle_token:
+                        raise RuntimeError("the PR open incarnation changed after ordinary convergence")
+                except Exception as exc:
+                    accepted = False
+                    reason = f"strong-audit target could not be confirmed before admission: {exc}"
+                    reviewer_backend = two_tier_inputs.policy.strong_route
+                    stage_id = "pr.strong-audit"
+                    stage_label = f"pr#{pr_number} strong audit"
+                else:
+                    accepted, reason = _execute_pending_strong_audit(
+                        repo_name,
+                        pr_number,
+                        two_tier_inputs,
+                        allow_retry_override=force_adversarial_validation,
+                        expected_version=pending_snapshot.transition_version,
+                        current_target=current_strong_target,
+                        expected_lifecycle_token=initial_lifecycle_token,
+                    )
+                    reviewer_backend = two_tier_inputs.policy.strong_route
+                    stage_id = "pr.strong-audit"
+                    stage_label = f"pr#{pr_number} strong audit"
+
                 # A competing controller can complete the exact target
                 # after our preliminary snapshot but before durable
                 # claim admission. Observe that fenced rejection as
@@ -7283,6 +7529,16 @@ def _coordinate_pr_review(
                 current_head_sha=two_tier_inputs.head_sha,
                 backend=two_tier_inputs.policy.strong_route,
             )
+            superseded_waits = [
+                {
+                    "reason": redact_string(item.reason),
+                    "retry_not_before": item.retry_not_before,
+                    "superseded_at": item.superseded_at,
+                    "superseded_by": item.superseded_by,
+                    "superseding_observation": redact_string(item.superseding_observation),
+                }
+                for item in strong_diagnostic.superseded_waits
+            ]
             actions.append(f"Two-tier review for PR #{pr_number}: {reason} " f"(phase={strong_diagnostic.phase}, head={two_tier_inputs.head_sha[:8]}, " f"contract={two_tier_inputs.contract.identity[:12]}, " f"policy={two_tier_inputs.policy.identity[:12]})")
             actions.append(f"Two-tier review effect for PR #{pr_number}: {publication_reason}")
             _record_pr_stage(
@@ -7298,6 +7554,8 @@ def _coordinate_pr_review(
                     "contract_identity": two_tier_inputs.contract.identity,
                     "policy_identity": two_tier_inputs.policy.identity,
                     "reason": reason,
+                    "latest_outcome": redact_string(strong_diagnostic.latest_outcome),
+                    "superseded_waits": superseded_waits,
                     "finding_revision": pending_snapshot.finding_set_revision,
                     "finding_ids": [item.finding_id for item in pending_snapshot.open_findings],
                 },
@@ -7332,7 +7590,10 @@ def _coordinate_pr_review(
                 # pending effects receive a bounded retry so progress
                 # does not require a new webhook, commit, or restart.
                 actions.quota_deferred = True
-                actions.retry_not_before = pending_snapshot.retry_not_before or (time.time() + 60.0)
+                current_pending_snapshot = two_tier_inputs.gate.state.snapshot(pr_number)
+                retained_deadline = current_pending_snapshot.retry_not_before
+                deadline_applies = bool(current_pending_snapshot.wait_policy_identity) and current_pending_snapshot.wait_policy_identity == two_tier_inputs.policy.identity
+                actions.retry_not_before = retained_deadline if retained_deadline and deadline_applies else (time.time() + 60.0)
                 if processing_status is not None:
                     processing_status.outcome = PRProcessingOutcome.DEFERRED
                     processing_status.retry_not_before = actions.retry_not_before

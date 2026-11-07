@@ -215,6 +215,17 @@ class ActiveClaim:
 
 
 @dataclass(frozen=True)
+class SupersededWait:
+    """Redacted-safe audit evidence for a consumed strong-audit wait."""
+
+    reason: str
+    retry_not_before: float
+    superseded_at: float
+    superseded_by: str
+    superseding_observation: str
+
+
+@dataclass(frozen=True)
 class FindingDisposition:
     """Caller-supplied disposition for one outstanding finding."""
 
@@ -238,6 +249,7 @@ class PrReviewCycleSnapshot:
     ordinary_pass_head_sha: str
     ordinary_pass_base_sha: str
     ordinary_pass_contract_identity: str
+    ordinary_pass_opening_token: str
     accepted_strong_round: Optional[StrongAuditRound]
     active_claim: Optional[ActiveClaim]
     findings: Tuple[Finding, ...]
@@ -247,10 +259,12 @@ class PrReviewCycleSnapshot:
     accepted_closure: Optional[ClosureCertification]
     retry_not_before: float
     attempt_error_reason: str
+    wait_policy_identity: str
     pending_effect: str
     requires_new_strong_round: bool
     strong_rounds: Tuple[StrongAuditRound, ...] = field(default_factory=tuple)
     closures: Tuple[ClosureCertification, ...] = field(default_factory=tuple)
+    wait_history: Tuple[SupersededWait, ...] = field(default_factory=tuple)
 
 
 class PrReviewCycleRepository:
@@ -335,6 +349,8 @@ class PrReviewCycleRepository:
             "accepted_closure_id": "",
             "retry_not_before": 0.0,
             "attempt_error_reason": "",
+            "wait_policy_identity": "",
+            "wait_history": [],
         }
 
     # -- (de)serialization --------------------------------------------------
@@ -471,11 +487,12 @@ class PrReviewCycleRepository:
                 accepted_round = parsed_round
 
         ordinary_pass = raw_pr.get("ordinary_pass")
-        ordinary_head = ordinary_base = ordinary_contract = ""
+        ordinary_head = ordinary_base = ordinary_contract = ordinary_opening_token = ""
         if isinstance(ordinary_pass, dict):
             ordinary_head = str(ordinary_pass.get("head_sha", ""))
             ordinary_base = str(ordinary_pass.get("base_sha", ""))
             ordinary_contract = str(ordinary_pass.get("contract_identity", ""))
+            ordinary_opening_token = str(ordinary_pass.get("opening_token", ""))
 
         active_claim = self._active_claim_from_raw(raw_pr.get("active_claim"))
         accepted_closure = None
@@ -508,6 +525,7 @@ class PrReviewCycleRepository:
             ordinary_pass_head_sha=ordinary_head,
             ordinary_pass_base_sha=ordinary_base,
             ordinary_pass_contract_identity=ordinary_contract,
+            ordinary_pass_opening_token=ordinary_opening_token,
             accepted_strong_round=accepted_round,
             active_claim=active_claim,
             findings=all_findings,
@@ -517,11 +535,29 @@ class PrReviewCycleRepository:
             accepted_closure=accepted_closure,
             retry_not_before=float(raw_pr.get("retry_not_before", 0.0)),
             attempt_error_reason=str(raw_pr.get("attempt_error_reason", "")),
+            wait_policy_identity=str(raw_pr.get("wait_policy_identity", "")),
             pending_effect=pending_effect,
             requires_new_strong_round=requires_new_strong_round,
             strong_rounds=tuple(all_rounds),
             closures=tuple(self._closure_from_raw(raw) for raw in raw_pr.get("closures", []) or [] if isinstance(raw, dict)),
+            wait_history=tuple(
+                SupersededWait(
+                    reason=str(raw.get("reason", "")),
+                    retry_not_before=float(raw.get("retry_not_before", 0.0)),
+                    superseded_at=float(raw.get("superseded_at", 0.0)),
+                    superseded_by=str(raw.get("superseded_by", "")),
+                    superseding_observation=str(raw.get("superseding_observation", "")),
+                )
+                for raw in raw_pr.get("wait_history", []) or []
+                if isinstance(raw, dict)
+            ),
         )
+
+    @staticmethod
+    def _record_superseding_observation(pr_state: dict, observation: str) -> None:
+        history = pr_state.get("wait_history", [])
+        if isinstance(history, list) and history and isinstance(history[-1], dict) and not history[-1].get("superseding_observation"):
+            history[-1]["superseding_observation"] = observation
 
     @staticmethod
     def _compute_phase(
@@ -614,6 +650,7 @@ class PrReviewCycleRepository:
         provenance: RoundProvenance,
         contract: ContractSnapshot,
         expected_version: Optional[int] = None,
+        opening_token: str = "",
     ) -> PrReviewCycleSnapshot:
         """Record an applicable ordinary PASS for the given H/B/M.
 
@@ -635,6 +672,23 @@ class PrReviewCycleRepository:
             if changed:
                 pr_state["completion"] = None
                 pr_state["accepted_closure_id"] = ""
+                retained_deadline = float(pr_state.get("retry_not_before", 0.0))
+                retained_reason = str(pr_state.get("attempt_error_reason", ""))
+                if isinstance(previous, dict) and (retained_deadline > 0.0 or retained_reason):
+                    history = pr_state.setdefault("wait_history", [])
+                    if isinstance(history, list):
+                        history.append(
+                            {
+                                "reason": retained_reason,
+                                "retry_not_before": retained_deadline,
+                                "superseded_at": time.time(),
+                                "superseded_by": "current-target-change",
+                                "superseding_observation": "ordinary PASS established a new H/B/M",
+                            }
+                        )
+                    pr_state["retry_not_before"] = 0.0
+                    pr_state["attempt_error_reason"] = ""
+                    pr_state["wait_policy_identity"] = ""
                 active = pr_state.get("active_claim")
                 if isinstance(active, dict) and (active.get("head_sha"), active.get("base_sha"), active.get("contract_identity")) != (provenance.head_sha, provenance.base_sha, contract.identity):
                     pr_state["active_claim"] = None
@@ -644,6 +698,7 @@ class PrReviewCycleRepository:
                 "contract_identity": contract.identity,
                 "contract_snapshot": {"issue_ids": list(contract.issue_ids), "requirements_text": contract.requirements_text},
                 "open_epoch": pr_state.get("open_epoch", 0),
+                "opening_token": opening_token,
                 "recorded_at": time.time(),
             }
             self._bump(pr_state)
@@ -657,6 +712,8 @@ class PrReviewCycleRepository:
         contract: ContractSnapshot,
         policy: StrongPolicyIdentity,
         expected_version: Optional[int] = None,
+        allow_retry_override: bool = False,
+        expected_opening_token: str = "",
     ) -> ActiveClaim:
         """Atomically claim the strong-audit phase for exactly one H/B/M/P.
 
@@ -675,8 +732,23 @@ class PrReviewCycleRepository:
             self._check_version(pr_state, expected_version)
             if pr_state.get("closed"):
                 raise NotApplicableError("Cannot claim a strong audit for a closed PR")
-            if float(pr_state.get("retry_not_before", 0.0)) > time.time():
+            retained_deadline = float(pr_state.get("retry_not_before", 0.0))
+            now = time.time()
+            if retained_deadline > now and not allow_retry_override:
                 raise NotApplicableError("Strong-audit retry is deferred")
+            retained_reason = str(pr_state.get("attempt_error_reason", ""))
+            if retained_deadline > 0.0 or retained_reason:
+                history = pr_state.setdefault("wait_history", [])
+                if isinstance(history, list):
+                    history.append(
+                        {
+                            "reason": retained_reason,
+                            "retry_not_before": retained_deadline,
+                            "superseded_at": now,
+                            "superseded_by": "explicit-operator-recheck" if allow_retry_override and retained_deadline > now else "automatic-due-recheck",
+                            "superseding_observation": "",
+                        }
+                    )
 
             # This check belongs inside the serialized read/validate/write
             # transition. A caller may have observed pending work immediately
@@ -705,6 +777,8 @@ class PrReviewCycleRepository:
                 raise NotApplicableError("No applicable ordinary PASS recorded")
             if ordinary_pass.get("head_sha") != provenance.head_sha or ordinary_pass.get("base_sha") != provenance.base_sha or ordinary_pass.get("contract_identity") != contract.identity:
                 raise NotApplicableError("Ordinary PASS does not apply to the requested H/B/M")
+            if expected_opening_token and ordinary_pass.get("opening_token") and ordinary_pass.get("opening_token") != expected_opening_token:
+                raise NotApplicableError("Ordinary PASS does not apply to the current PR opening")
 
             existing_raw = pr_state.get("active_claim")
             if isinstance(existing_raw, dict) and existing_raw.get("phase") == CLAIM_STRONG_AUDIT:
@@ -768,11 +842,42 @@ class PrReviewCycleRepository:
                 return
             active_claim = pr_state.get("active_claim")
             if isinstance(active_claim, dict) and active_claim.get("claim_id") == claim_id:
+                self._record_superseding_observation(pr_state, reason)
                 pr_state["active_claim"] = None
                 pr_state["attempt_error_reason"] = reason
                 pr_state["retry_not_before"] = retry_not_before
+                pr_state["wait_policy_identity"] = str(active_claim.get("policy_identity", ""))
                 self._bump(pr_state)
                 self._write(state)
+
+    def reject_stale_claim(self, pr_number: int, claim_id: str) -> None:
+        """Release a stale claim while restoring the wait it selected.
+
+        A target observation that became stale never consumed the selected wait,
+        so it must not replace that wait with an availability result observed for
+        the old target or leave a supersession record behind.
+        """
+        with self.serialized_transition(), self._locked():
+            state = self._read()
+            prs = state["prs"]
+            assert isinstance(prs, dict)
+            pr_state = prs.get(self._pr_key(pr_number))
+            if not isinstance(pr_state, dict):
+                return
+            active_claim = pr_state.get("active_claim")
+            if not isinstance(active_claim, dict) or active_claim.get("claim_id") != claim_id:
+                return
+            history = pr_state.get("wait_history", [])
+            if isinstance(history, list) and history and isinstance(history[-1], dict) and not history[-1].get("superseding_observation"):
+                selected_wait = history.pop()
+                pr_state["attempt_error_reason"] = str(selected_wait.get("reason", ""))
+                pr_state["retry_not_before"] = float(selected_wait.get("retry_not_before", 0.0))
+            else:
+                pr_state["attempt_error_reason"] = ""
+                pr_state["retry_not_before"] = 0.0
+            pr_state["active_claim"] = None
+            self._bump(pr_state)
+            self._write(state)
 
     def record_strong_result(
         self,
@@ -815,6 +920,7 @@ class PrReviewCycleRepository:
                 raise ValueError("A FINDINGS verdict requires at least one finding")
             if verdict == VERDICT_PASS and findings:
                 raise ValueError("A PASS verdict cannot carry findings")
+            self._record_superseding_observation(pr_state, f"accepted {verdict}")
             finding_ids = [finding.finding_id for finding in findings]
             if len(finding_ids) != len(set(finding_ids)):
                 raise ValueError("Finding IDs must be unique within a result")

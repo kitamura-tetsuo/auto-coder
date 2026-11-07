@@ -3,6 +3,7 @@
 import hashlib
 import json
 import time
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from threading import Event, Thread
 from types import SimpleNamespace
@@ -51,6 +52,7 @@ from auto_coder.pr_processor import (
 )
 from auto_coder.util.gh_cache import GitHubClient, ReviewThread, ReviewThreadComment
 from auto_coder.util.github_action import GitHubActionsStatusResult
+from auto_coder.utils import CommandResult
 from tests.ci_observation_fakes import authoritative_ci_status
 from tests.test_review_thread_closure_receipt import BASE, HEAD, PR_NUMBER, REPOSITORY, THREAD_ID
 from tests.test_review_thread_closure_receipt import receipt_scenario as receipt_scenario
@@ -1492,6 +1494,12 @@ class TestAdversarialValidationPRFlow:
             }
         ]
         client.get_pull_request.return_value = pr_data
+        client.get_pull_request_metadata_strict.return_value = {
+            **pr_data,
+            "state": "open",
+            "created_at": "2026-11-01T00:00:00Z",
+        }
+        client.get_issue_timeline_strict.return_value = []
         mock_checks.side_effect = authoritative_ci_status(success=True, ids=[1])
         strong = BackendConfig(name="codex", model="strong-model")
         llm_config = MagicMock()
@@ -1513,14 +1521,30 @@ class TestAdversarialValidationPRFlow:
             patch("auto_coder.pr_processor.get_detailed_checks_from_history") as detailed_checks,
             patch("auto_coder.pr_processor._send_codex_cloud_error_feedback") as cloud_feedback,
             patch("auto_coder.pr_processor._send_jules_error_feedback") as jules_feedback,
-            patch("auto_coder.pr_processor.CommandExecutor.run_command") as checkout_or_local_repair,
+            patch("auto_coder.pr_processor.isolated_pr_head_worktree", return_value=nullcontext(str(tmp_path))),
+            patch(
+                "auto_coder.pr_processor.CommandExecutor.run_command",
+                return_value=CommandResult(True, head_sha + "\n", "", 0),
+            ) as checkout_or_local_repair,
+            patch(
+                "auto_coder.pr_processor.run_adversarial_validation",
+                return_value=AdversarialValidationResult(result="PASS", summary="Forced ordinary review passed"),
+            ),
             patch(
                 "auto_coder.pr_processor._execute_pending_strong_audit",
                 return_value=(False, strong_reason),
             ) as strong_producer,
         ):
             with collector.start_execution("owner/repo", "pr", 100, origin="worker"):
-                actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, processing_status)
+                actions = _handle_pr_merge(
+                    client,
+                    "owner/repo",
+                    pr_data,
+                    config,
+                    {},
+                    processing_status,
+                    force_adversarial_validation=True,
+                )
 
         mock_merge_pr.assert_not_called()
         assert processing_status.outcome is PRProcessingOutcome.DEFERRED
@@ -1539,6 +1563,8 @@ class TestAdversarialValidationPRFlow:
             _mounted_detail(mock_ui, "pr", 100)
         assert any(strong_reason in str(call) for call in mock_ui.table.call_args_list)
         strong_producer.assert_called_once()
+        assert strong_producer.call_args.kwargs["allow_retry_override"] is True
+        assert isinstance(strong_producer.call_args.kwargs["expected_version"], int)
         assert all("GitHub Actions checks failed" not in action for action in actions)
         detailed_checks.assert_not_called()
         cloud_feedback.assert_not_called()

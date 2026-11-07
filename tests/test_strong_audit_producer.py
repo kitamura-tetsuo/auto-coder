@@ -1,13 +1,16 @@
 import contextlib
+import json
+import math
 import subprocess
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from auto_coder.cli_helpers import AdversarialValidationAvailability
-from auto_coder.codex_usage_checker import CodexWeeklyUsage
+from auto_coder.cli_helpers import AdversarialValidationAvailability, resolve_adversarial_validation_availability
+from auto_coder.codex_usage_checker import CodexWeeklyUsage, parse_codex_weekly_usage
 from auto_coder.exceptions import LocalWriterSettlementError
 from auto_coder.llm_backend_config import LLMBackendConfiguration
 from auto_coder.pr_processor import TwoTierGateInputs, _execute_pending_strong_audit
@@ -453,4 +456,404 @@ def test_configured_strategy_retains_true_strong_exhaustion(
     transport.assert_not_called()
     snapshot = inputs.gate.state.snapshot(pr_number)
     assert snapshot.waiting_reason == "strong reviewer route is EXHAUSTED"
-    assert snapshot.retry_not_before == pytest.approx(usage.reset_at.timestamp())
+    if strategy == "surplus":
+        assert time.time() < snapshot.retry_not_before <= time.time() + 1800.0
+    else:
+        assert snapshot.retry_not_before == pytest.approx(usage.reset_at.timestamp())
+
+
+def test_stale_explicit_recheck_cannot_supersede_newer_wait_or_invoke(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    inputs = _inputs(tmp_path, "base", "head")
+    inputs.gate.ordinary_pass(18, "head", "base", inputs.contract)
+    selected = inputs.gate.state.snapshot(18)
+    competing = inputs.gate.state.claim_strong_audit(18, RoundProvenance("head", "base"), inputs.contract, inputs.policy)
+    newer_deadline = time.time() + 900.0
+    inputs.gate.state.abandon_claim(18, competing.claim_id, "newer quota refusal", newer_deadline)
+
+    with patch("auto_coder.cli_helpers.resolve_adversarial_validation_availability") as resolver:
+        accepted, reason = _execute_pending_strong_audit(
+            "owner/repo",
+            18,
+            inputs,
+            allow_retry_override=True,
+            expected_version=selected.transition_version,
+        )
+
+    assert accepted is False
+    assert "wait changed before admission" in reason
+    resolver.assert_not_called()
+    retained = inputs.gate.state.snapshot(18)
+    assert retained.waiting_reason == "newer quota refusal"
+    assert retained.retry_not_before == newer_deadline
+
+
+def test_surplus_exact_boundary_schedules_strictly_future_recheck_from_parsed_usage() -> None:
+    now = 2_000_000_000.0
+    payload = {
+        "rateLimits": {
+            "primary": {"windowDurationMins": 10080, "usedPercent": 80.0, "resetsAt": now + 4 * 86400},
+        }
+    }
+    usage = parse_codex_weekly_usage(payload, now=datetime.fromtimestamp(now, tz=timezone.utc))
+
+    with (
+        patch("auto_coder.cli_helpers.time.time", return_value=now),
+        patch("auto_coder.cli_helpers.get_llm_config", return_value=_strong_codex_config("surplus")),
+        patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage),
+    ):
+        availability = resolve_adversarial_validation_availability("strong_pr")
+
+    assert availability.exhausted is True
+    assert availability.retry_not_before_epoch == math.nextafter(now, math.inf)
+
+
+def test_surplus_earlier_boundary_preempts_thirty_minute_recheck() -> None:
+    now = 2_000_000_000.0
+    boundary_delay = 600.0
+    payload = {
+        "rateLimits": {
+            "primary": {
+                "windowDurationMins": 10080,
+                "usedPercent": 80.0,
+                "resetsAt": now + 4 * 86400 + boundary_delay,
+            },
+        }
+    }
+    usage = parse_codex_weekly_usage(payload, now=datetime.fromtimestamp(now, tz=timezone.utc))
+
+    with (
+        patch("auto_coder.cli_helpers.time.time", return_value=now),
+        patch("auto_coder.cli_helpers.get_llm_config", return_value=_strong_codex_config("surplus")),
+        patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage),
+    ):
+        availability = resolve_adversarial_validation_availability("strong_pr")
+
+    assert availability.exhausted is True
+    assert availability.retry_not_before_epoch == math.nextafter(now + boundary_delay, math.inf)
+
+
+def test_parsed_unchanged_twenty_percent_becomes_eligible_below_four_days() -> None:
+    now = datetime(2033, 5, 18, tzinfo=timezone.utc)
+    payload = {
+        "rateLimits": {
+            "primary": {"windowDurationMins": 10080, "usedPercent": 80.0, "resetsAt": (now + timedelta(days=4) - timedelta(microseconds=1)).timestamp()},
+        }
+    }
+    usage = parse_codex_weekly_usage(payload, now=now)
+    manager = MagicMock()
+
+    with (
+        patch("auto_coder.cli_helpers.get_llm_config", return_value=_strong_codex_config("surplus")),
+        patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage),
+        patch("auto_coder.cli_helpers.build_backend_manager", return_value=manager),
+    ):
+        availability = resolve_adversarial_validation_availability("strong_pr")
+
+    assert usage.minimum_remaining_percent == 20.0
+    assert availability.backend_manager is manager
+    assert availability.exhausted is False
+
+
+@pytest.mark.parametrize("eligible", [False, True])
+def test_due_production_recheck_preserves_prior_wait_across_restart(
+    tmp_path: Path,
+    monkeypatch,
+    eligible: bool,
+) -> None:
+    repository, base, head = _repository(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    inputs = _inputs(tmp_path, base, head)
+    inputs.gate.ordinary_pass(20, head, base, inputs.contract)
+    initial = inputs.gate.state.claim_strong_audit(20, RoundProvenance(head, base), inputs.contract, inputs.policy)
+    inputs.gate.state.abandon_claim(20, initial.claim_id, "surplus reserve denied", retry_not_before=100.0)
+    selected = inputs.gate.state.snapshot(20)
+    manager = MagicMock() if eligible else None
+
+    @contextlib.contextmanager
+    def worktree(*args, **kwargs):
+        yield str(repository)
+
+    def review_result(review_input, backend_manager, execution_cwd):
+        assert backend_manager is manager
+        return ReviewExecutionResult(
+            mode=ReviewMode.STRONG_AUDIT,
+            round_id=review_input.round_id,
+            attempt_id=review_input.attempt_id,
+            head_sha=head,
+            base_sha=base,
+            contract_identity=inputs.contract.identity,
+            policy_identity=inputs.policy.identity,
+            finding_set_revision=0,
+            reviewer_provenance="strong/codex/model",
+            verdict=VERDICT_PASS,
+        )
+
+    availability = AdversarialValidationAvailability(
+        backend_manager=manager,
+        exhausted=not eligible,
+        retry_not_before_epoch=None if eligible else 200.0,
+    )
+    with (
+        patch("auto_coder.pr_review_cycle.time.time", return_value=101.0),
+        patch("auto_coder.pr_processor.isolated_pr_head_worktree", worktree),
+        patch("auto_coder.cli_helpers.resolve_adversarial_validation_availability", return_value=availability),
+        patch("auto_coder.pr_processor.execute_review", side_effect=review_result) as reviewer,
+    ):
+        accepted, _reason = _execute_pending_strong_audit(
+            "owner/repo",
+            20,
+            inputs,
+            expected_version=selected.transition_version,
+        )
+
+    assert accepted is eligible
+    assert reviewer.call_count == int(eligible)
+    state_path = tmp_path / ".auto-coder" / "owner/repo" / "pr_review_cycle.json"
+    persisted = json.loads(state_path.read_text())
+    history = persisted["prs"]["20"]["wait_history"]
+    assert history == [
+        {
+            "reason": "surplus reserve denied",
+            "retry_not_before": 100.0,
+            "superseded_at": 101.0,
+            "superseded_by": "automatic-due-recheck",
+            "superseding_observation": "accepted PASS" if eligible else "strong reviewer route is EXHAUSTED",
+        }
+    ]
+    recovered = _inputs(tmp_path, base, head).gate.state.snapshot(20)
+    if eligible:
+        assert recovered.accepted_strong_round is not None
+    else:
+        assert recovered.waiting_reason == "strong reviewer route is EXHAUSTED"
+        assert recovered.retry_not_before == 200.0
+
+
+def test_due_recheck_persistence_interruption_retains_original_wait(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    inputs = _inputs(tmp_path, "base", "head")
+    inputs.gate.ordinary_pass(21, "head", "base", inputs.contract)
+    initial = inputs.gate.state.claim_strong_audit(21, RoundProvenance("head", "base"), inputs.contract, inputs.policy)
+    inputs.gate.state.abandon_claim(21, initial.claim_id, "surplus reserve denied", retry_not_before=100.0)
+    selected = inputs.gate.state.snapshot(21)
+
+    with (
+        patch("auto_coder.pr_review_cycle.time.time", return_value=101.0),
+        patch.object(inputs.gate.state, "_write", side_effect=OSError("simulated persistence interruption")),
+        patch("auto_coder.cli_helpers.resolve_adversarial_validation_availability") as resolver,
+    ):
+        accepted, reason = _execute_pending_strong_audit(
+            "owner/repo",
+            21,
+            inputs,
+            expected_version=selected.transition_version,
+        )
+
+    assert accepted is False
+    assert reason == "strong-audit admission persistence failed: simulated persistence interruption"
+    resolver.assert_not_called()
+    recovered = _inputs(tmp_path, "base", "head").gate.state.snapshot(21)
+    assert recovered.waiting_reason == "surplus reserve denied"
+    assert recovered.retry_not_before == 100.0
+
+
+def test_loaded_burst_force_recovers_recorded_surplus_wait_through_real_resolver(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repository, base, head = _repository(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    inputs = _inputs(tmp_path, base, head)
+    inputs.gate.ordinary_pass(22, head, base, inputs.contract)
+    observation = datetime.now(timezone.utc)
+    payload = {
+        "rateLimits": {
+            "primary": {
+                "windowDurationMins": 10080,
+                "usedPercent": 80.0,
+                "resetsAt": (observation + timedelta(days=4)).timestamp(),
+            },
+        }
+    }
+    usage = parse_codex_weekly_usage(payload, now=observation)
+    manager = MagicMock()
+
+    @contextlib.contextmanager
+    def worktree(*args, **kwargs):
+        yield str(repository)
+
+    def review_result(review_input, backend_manager, execution_cwd):
+        assert backend_manager is manager
+        return ReviewExecutionResult(
+            mode=ReviewMode.STRONG_AUDIT,
+            round_id=review_input.round_id,
+            attempt_id=review_input.attempt_id,
+            head_sha=head,
+            base_sha=base,
+            contract_identity=inputs.contract.identity,
+            policy_identity=inputs.policy.identity,
+            finding_set_revision=0,
+            reviewer_provenance="strong/codex/model",
+            verdict=VERDICT_PASS,
+        )
+
+    with (
+        patch("auto_coder.pr_processor.isolated_pr_head_worktree", worktree),
+        patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage),
+        patch("auto_coder.cli_helpers.get_llm_config", return_value=_strong_codex_config("surplus")),
+        patch("auto_coder.cli_helpers.build_backend_manager", return_value=manager) as build_manager,
+        patch("auto_coder.pr_processor.execute_review", side_effect=review_result) as reviewer,
+    ):
+        denied, _reason = _execute_pending_strong_audit("owner/repo", 22, inputs)
+
+    assert denied is False
+    reviewer.assert_not_called()
+    build_manager.assert_not_called()
+    retained = inputs.gate.state.snapshot(22)
+    assert retained.retry_not_before > time.time()
+
+    with (
+        patch("auto_coder.pr_processor.isolated_pr_head_worktree", worktree),
+        patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage),
+        patch("auto_coder.cli_helpers.get_llm_config", return_value=_strong_codex_config("burst")),
+        patch("auto_coder.cli_helpers.build_backend_manager", return_value=manager),
+        patch("auto_coder.pr_processor.execute_review", side_effect=review_result) as reviewer,
+    ):
+        accepted, _reason = _execute_pending_strong_audit(
+            "owner/repo",
+            22,
+            inputs,
+            allow_retry_override=True,
+            expected_version=retained.transition_version,
+        )
+
+    assert accepted is True
+    reviewer.assert_called_once()
+    persisted = json.loads((tmp_path / ".auto-coder" / "owner/repo" / "pr_review_cycle.json").read_text())
+    history = persisted["prs"]["22"]["wait_history"]
+    assert len(history) == 1
+    assert history[0]["reason"] == "strong reviewer route is EXHAUSTED"
+    assert history[0]["retry_not_before"] == retained.retry_not_before
+    assert history[0]["superseded_by"] == "explicit-operator-recheck"
+    assert history[0]["superseding_observation"] == "accepted PASS"
+
+
+def test_fresh_availability_cannot_invoke_after_external_target_changes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repository, base, head = _repository(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    inputs = _inputs(tmp_path, base, head)
+    inputs.gate.ordinary_pass(23, head, base, inputs.contract)
+    manager = MagicMock()
+
+    @contextlib.contextmanager
+    def worktree(*args, **kwargs):
+        yield str(repository)
+
+    changed = TwoTierGateInputs(inputs.gate, inputs.contract, inputs.policy, "new-head", base)
+    observations = iter(((inputs, "original-token"), (changed, "reopened-token")))
+    with (
+        patch("auto_coder.pr_processor.isolated_pr_head_worktree", worktree),
+        patch(
+            "auto_coder.cli_helpers.resolve_adversarial_validation_availability",
+            return_value=AdversarialValidationAvailability(backend_manager=manager),
+        ),
+        patch("auto_coder.pr_processor.execute_review") as reviewer,
+    ):
+        accepted, reason = _execute_pending_strong_audit(
+            "owner/repo",
+            23,
+            inputs,
+            current_target=lambda: next(observations),
+            expected_lifecycle_token="original-token",
+        )
+
+    assert accepted is False
+    assert reason == "strong-audit target changed during fresh availability evaluation"
+    reviewer.assert_not_called()
+    snapshot = inputs.gate.state.snapshot(23)
+    assert snapshot.active_claim is None
+    assert snapshot.attempt_error_reason == ""
+
+
+def test_stale_exhaustion_restores_selected_wait_without_history(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repository, base, head = _repository(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    inputs = _inputs(tmp_path, base, head)
+    inputs.gate.ordinary_pass(25, head, base, inputs.contract)
+    original = inputs.gate.state.claim_strong_audit(25, RoundProvenance(head, base), inputs.contract, inputs.policy)
+    inputs.gate.state.abandon_claim(25, original.claim_id, "surplus reserve denied", 100.0)
+    selected = inputs.gate.state.snapshot(25)
+    changed = TwoTierGateInputs(inputs.gate, inputs.contract, inputs.policy, "new-head", base)
+    observations = iter(((inputs, "original-token"), (changed, "reopened-token")))
+
+    @contextlib.contextmanager
+    def worktree(*args, **kwargs):
+        yield str(repository)
+
+    with (
+        patch("auto_coder.pr_review_cycle.time.time", return_value=101.0),
+        patch("auto_coder.pr_processor.isolated_pr_head_worktree", worktree),
+        patch(
+            "auto_coder.cli_helpers.resolve_adversarial_validation_availability",
+            return_value=AdversarialValidationAvailability(exhausted=True, retry_not_before_epoch=9999.0),
+        ),
+        patch("auto_coder.pr_processor.execute_review") as reviewer,
+    ):
+        accepted, reason = _execute_pending_strong_audit(
+            "owner/repo",
+            25,
+            inputs,
+            expected_version=selected.transition_version,
+            current_target=lambda: next(observations),
+            expected_lifecycle_token="original-token",
+        )
+
+    assert accepted is False
+    assert reason == "strong-audit target changed during fresh availability evaluation"
+    reviewer.assert_not_called()
+    restored = inputs.gate.state.snapshot(25)
+    assert restored.active_claim is None
+    assert restored.attempt_error_reason == "surplus reserve denied"
+    assert restored.retry_not_before == 100.0
+    assert restored.wait_history == ()
+
+    inputs.gate.ordinary_pass(25, "new-head", base, inputs.contract)
+    current = inputs.gate.state.snapshot(25)
+    assert current.retry_not_before == 0.0
+    assert current.attempt_error_reason == ""
+    assert len(current.wait_history) == 1
+    assert current.wait_history[0].reason == "surplus reserve denied"
+    assert current.wait_history[0].superseded_by == "current-target-change"
+
+
+def test_redacted_gate_diagnostic_exposes_superseded_wait_and_new_outcome(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    inputs = _inputs(tmp_path, "base", "head")
+    inputs.gate.ordinary_pass(24, "head", "base", inputs.contract)
+    first = inputs.gate.state.claim_strong_audit(24, RoundProvenance("head", "base"), inputs.contract, inputs.policy)
+    inputs.gate.state.abandon_claim(24, first.claim_id, "surplus reserve denied", 100.0)
+
+    with patch("auto_coder.pr_review_cycle.time.time", return_value=101.0):
+        second = inputs.gate.state.claim_strong_audit(
+            24,
+            RoundProvenance("head", "base"),
+            inputs.contract,
+            inputs.policy,
+        )
+    inputs.gate.state.abandon_claim(24, second.claim_id, "strong route unavailable", 160.0)
+
+    diagnostic = inputs.gate.diagnostic(24, current_head_sha="head", backend="strong")
+    assert diagnostic.latest_outcome == "strong route unavailable"
+    assert len(diagnostic.superseded_waits) == 1
+    wait = diagnostic.superseded_waits[0]
+    assert (wait.reason, wait.retry_not_before) == ("surplus reserve denied", 100.0)
+    assert wait.superseding_observation == "strong route unavailable"
