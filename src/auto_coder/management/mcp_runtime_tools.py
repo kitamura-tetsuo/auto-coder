@@ -325,6 +325,21 @@ class ManagementRuntime:
             result = resolved.client.diagnostics(kind, params)
             if result.supervisor_generation != observed["supervisor_generation"]:
                 return self._response("CONFLICT", "supervisor_changed_during_diagnostic")
+            # A worker may be replaced while the private diagnostic request is in
+            # flight even though the long-lived Supervisor incarnation is stable.
+            # Re-observe the authoritative process identity before presenting the
+            # projection as belonging to the worker observed above.
+            after_result = resolved.client.inspect_supervisor()
+            after = after_result.data
+            after_worker = after.get("worker") if isinstance(after, dict) else None
+            if (
+                after_result.result_code != "OK"
+                or after_result.supervisor_generation != observed["supervisor_generation"]
+                or not isinstance(after_worker, dict)
+                or after_worker.get("process_run_id") != observation.get("process_run_id")
+                or after_worker.get("deployment_generation") != observation.get("deployment_generation")
+            ):
+                return self._response("CONFLICT", "worker_changed_during_diagnostic")
             if result.result_code not in {"OK", "ACCEPTED"}:
                 return self._response(result.result_code, "worker_diagnostic_" + result.result_code.lower(), projection=result.data)
             if kind == "consumer-identity":
@@ -364,6 +379,7 @@ class ManagementRuntime:
                 deployment_generation=observation["deployment_generation"],
                 supervisor_generation=observed["supervisor_generation"],
                 worker_observation=observation if kind == "status" else None,
+                artifact=observation.get("artifact"),
                 runtime_binding=observed["runtime_binding"],
                 binding_status=observed["binding_status"],
                 projection=result.data,

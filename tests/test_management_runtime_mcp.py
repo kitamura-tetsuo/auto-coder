@@ -343,7 +343,24 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
     cycle_repository.record_ordinary_pass(18, active_provenance, contract)
     active_claim = cycle_repository.claim_strong_audit(18, active_provenance, contract, policy)
     decision_path.write_text(
-        json.dumps({"17": {"pr_number": 17, "head_sha": "a" * 40, "base_sha": "b" * 40, "attempt_id": "attempt-17", "attempt_sequence": 5, "publication": "CONFIRMED", "handoff": "WAITING", "wait_reason": "Bearer decision-secret at /private/path", "updated_at": 100.0}}), encoding="utf-8"
+        json.dumps(
+            {
+                "17": {
+                    "pr_number": 17,
+                    "head_sha": "e" * 40,
+                    "base_sha": "f" * 40,
+                    "contract_identity": "decision-contract-17",
+                    "finding_set_revision": 11,
+                    "attempt_id": "attempt-17",
+                    "attempt_sequence": 5,
+                    "publication": "CONFIRMED",
+                    "handoff": "WAITING",
+                    "wait_reason": "Bearer decision-secret at /private/path",
+                    "updated_at": 100.0,
+                }
+            }
+        ),
+        encoding="utf-8",
     )
     effects_path.write_text(
         json.dumps(
@@ -429,14 +446,31 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
             second = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 17, "limit": 1, "cursor": 1}, 2)
             assert first["status"] == "UNAVAILABLE" and first["binding_status"] == "UNAVAILABLE"
             assert first["process_run_id"] == worker.worker_process_run_id
+            assert isinstance(first["artifact"], dict)
+            assert first["artifact"] != first["runtime_binding"]
             projected = first["projection"]
             cycle = projected["sections"]["review_cycle"]["records"][0]
+            cycle_source = json.loads(source_before[cycle_path])["prs"]["17"]
+            round_source = cycle_source["strong_rounds"][0]
+            closure_source = cycle_source["closures"][0]
             assert cycle["rounds"][0]["claim_id"] == claim.claim_id
             assert cycle["rounds"][0]["open_epoch"] == strong_round.open_epoch
+            for key in ("head_sha", "base_sha", "contract_identity", "finding_set_revision"):
+                assert cycle["rounds"][0][key] == round_source[key]
             assert cycle["closures"][0]["references_round_id"] == strong_round.round_id
             assert cycle["closures"][0]["closure_id"] == closed.accepted_closure.closure_id
-            assert projected["sections"]["effective_decision"]["records"][0]["publication"] == "CONFIRMED"
-            assert projected["sections"]["review_effects"]["records"][0]["status"] == "CONFIRMED"
+            for key in ("head_sha", "base_sha", "contract_identity", "finding_set_revision"):
+                assert cycle["closures"][0][key] == closure_source[key]
+            decision_source = json.loads(source_before[decision_path])["17"]
+            projected_decision = projected["sections"]["effective_decision"]["records"][0]
+            assert projected_decision["publication"] == "CONFIRMED"
+            for key in ("head_sha", "base_sha", "contract_identity", "finding_set_revision"):
+                assert projected_decision[key] == decision_source[key]
+            effects_source = json.loads(source_before[effects_path])["operations"]["review-confirmed"]
+            projected_effect = projected["sections"]["review_effects"]["records"][0]
+            assert projected_effect["status"] == "CONFIRMED"
+            for key in ("target_head", "contract_identity", "finding_set_revision"):
+                assert projected_effect[key] == effects_source[key]
             assert second["projection"]["sections"]["review_effects"]["records"][0]["status"] == "UNCERTAIN"
             pending_first = projected["sections"]["pending_work"]
             pending_second = second["projection"]["sections"]["pending_work"]
@@ -469,6 +503,24 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
 
             old_run = worker.worker_process_run_id
             assert old_run is not None and worker.worker_deployment_generation is not None
+            diagnostic_entered = threading.Event()
+            release_diagnostic = threading.Event()
+            paused_result: list[dict[str, object]] = []
+            original_diagnostics = worker.diagnostics
+
+            def pause_at_worker_boundary(kind: str, params: dict[str, str] | None = None) -> WorkerNetworkResult:
+                diagnostic_entered.set()
+                assert release_diagnostic.wait(10), "replacement did not release paused diagnostic"
+                return original_diagnostics(kind, params)
+
+            monkeypatch.setattr(worker, "diagnostics", pause_at_worker_boundary)
+
+            def call_while_replacing() -> None:
+                paused_result.append(_call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 17}, 8))
+
+            paused_thread = threading.Thread(target=call_while_replacing)
+            paused_thread.start()
+            assert diagnostic_entered.wait(10), "diagnostic did not reach the worker boundary"
             stopping = supervisor.apply(
                 {
                     "operation_id": "stop-old-mcp-pr-diagnostic-worker",
@@ -496,6 +548,13 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
                 threading.Event().wait(0.05)
             else:
                 pytest.fail("replacement private diagnostic worker did not become observable")
+            release_diagnostic.set()
+            paused_thread.join(10)
+            assert not paused_thread.is_alive()
+            assert paused_result[0]["status"] == "CONFLICT"
+            assert paused_result[0]["reason"] == "worker_changed_during_diagnostic"
+            assert "projection" not in paused_result[0]
+            monkeypatch.setattr(worker, "diagnostics", original_diagnostics)
             replacement = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 17}, 6)
             assert replacement["process_run_id"] != old_run
             assert replacement["process_run_id"] == worker.worker_process_run_id
