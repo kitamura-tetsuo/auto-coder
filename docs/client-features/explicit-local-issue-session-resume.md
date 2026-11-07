@@ -121,10 +121,26 @@ MSP transport. Each case asserts one session start, exact-session resumption,
 preserved partial edits, unchanged attempt/incarnation, and publication of both
 the original and continued edits to a real local Git remote.
 
-The descriptor-release regression verifies that all 64 fixture-owned reservations
-are below1024 and releases them at the actual production Popen boundary. It
-records the real parent pipe descriptors before duplication and requires each to
-be below1024; only then can the unchanged >=1024 production-write assertion
-prove the fixture correction. A saturated low-descriptor layout fails this
-bounded precondition instead of silently passing an unexercised release case.
-No unrelated descriptor is closed.
+The descriptor-release cases run the same selected test in a fresh isolated
+Python/pytest process with inherited descriptors closed. A busy source shard
+therefore cannot consume the low slots that this particular fixture must reserve.
+Ordinary and deliberately saturated parent layouts are both tested. The child
+still requires at least three fixture-owned reservations below1024, releases them
+at the actual production Popen boundary, proves the real pipes used those low
+slots, and duplicates them above1023 before the production write. A child with
+an invalid layout still fails; it is never skipped or treated as a pass.
+The parent requires exactly one successful, non-skipped JUnit case with the exact
+selected name, and does not inherit shard selectors, coverage output or timing
+destinations into the child. The child has a signal timeout to unwind its tests;
+an outer watchdog kills and reaps the isolated pytest process group if necessary.
+MSP hosts start separate sessions, so the child also records their test-case,
+PID and process-start identities in a private test manifest. Parent cleanup
+checks those identities before stopping any surviving host group, including
+after a child hard exit. A changed identity or a group whose departed leader
+cannot be verified fails closed rather than killing an unrelated process.
+An external kill before host registration is not covered by this manifest.
+Child cases are required as test results but are not merged into parent coverage.
+The high-descriptor cases without a low-slot requirement continue directly in
+the parent, including the saturated layout. Only fixture-owned reservations are
+closed. This test-only change does not alter invocation deadlines or production
+trace emissions.

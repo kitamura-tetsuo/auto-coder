@@ -7,6 +7,7 @@ import json
 import re
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -133,6 +134,16 @@ class _Call:
         assert not self.thread.is_alive()
 
 
+@contextmanager
+def _gated_call(manager, gate: Path):
+    call = _Call(manager)
+    try:
+        yield call
+    finally:
+        gate.write_text("go")
+        call.join()
+
+
 def _wait_for(condition: Callable[[], object], timeout: float = 15) -> object:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -213,19 +224,43 @@ def _heartbeats_in(text: str) -> list[dict]:
 
 def test_stderr_only_does_not_refresh_stdout_or_frame_activity(tmp_path, monkeypatch, _use_real_commands, sinks):
     _, log_file = sinks
-    manager, gate, seen = _gated(tmp_path, monkeypatch, "stderr")
-    call = _Call(manager)
-    _wait_for(lambda: seen.exists() and len([heartbeat for heartbeat in _heartbeats(log_file) if heartbeat["activity"]["stderr"]["bytes"] > 0]) >= 2)
-    first, second = [heartbeat for heartbeat in _heartbeats(log_file) if heartbeat["activity"]["stderr"]["bytes"] > 0][-2:]
-
-    assert second["activity"]["stderr"]["bytes"] > first["activity"]["stderr"]["bytes"] > 0
-    assert second["activity"]["stdout"]["bytes"] == first["activity"]["stdout"]["bytes"]
-    assert second["activity"]["frames"]["count"] == first["activity"]["frames"]["count"]
-    assert second["activity"]["frames"]["age_s"] > first["activity"]["frames"]["age_s"]
-    gate.write_text("go")
-    call.join()
-    assert call.result == "gated-answer"
+    manager, gate, seen = _gated(tmp_path, monkeypatch, "stderr", timeout=15)
+    with _gated_call(manager, gate) as call:
+        first = _wait_for(lambda: seen.exists() and next((h for h in _heartbeats(log_file) if h["activity"]["stderr"]["bytes"] > 0), None))
+        second = _wait_for(lambda: next((h for h in _heartbeats(log_file) if h["diagnostic_id"] == first["diagnostic_id"] and h["activity"]["stderr"]["bytes"] > first["activity"]["stderr"]["bytes"]), None))
+        assert second["activity"]["stderr"]["bytes"] > first["activity"]["stderr"]["bytes"] > 0
+        assert second["activity"]["stdout"]["bytes"] == first["activity"]["stdout"]["bytes"]
+        assert second["activity"]["frames"]["count"] == first["activity"]["frames"]["count"]
+        assert second["activity"]["frames"]["age_s"] > first["activity"]["frames"]["age_s"]
+    assert call.result == "gated-answer" and call.error is None and not call.thread.is_alive()
+    records = _records(log_file.read_text())
+    assert {record["diagnostic_id"] for record in records} == {first["diagnostic_id"]}
+    assert records[-1]["kind"] == "end"
     assert "SECRET-STDERR-SENTINEL" not in log_file.read_text()
+
+
+def test_failed_stderr_observation_releases_call_before_next_invocation(tmp_path, monkeypatch, _use_real_commands, sinks):
+    _, log_file = sinks
+    manager, gate, seen = _gated(tmp_path, monkeypatch, "stderr", timeout=15)
+    with pytest.raises(AssertionError, match="controlled observation failure"):
+        with _gated_call(manager, gate) as call:
+            _wait_for(lambda: seen.exists() and _heartbeats(log_file))
+            raise AssertionError("controlled observation failure")
+    assert gate.exists() and not call.thread.is_alive()
+    assert call.error is None and call.result == "gated-answer"
+    before = _records(log_file.read_text())
+    previous_id = before[-1]["diagnostic_id"]
+    assert before[-1]["kind"] == "end"
+    assert {record["diagnostic_id"] for record in before} == {previous_id}
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3", options=["--prompt-file=x"])})
+    with pytest.raises(RuntimeError):
+        _manager(config)._run_llm_cli("next")
+    after = _records(log_file.read_text())
+    assert after[: len(before)] == before
+    following = after[len(before) :]
+    assert [record["kind"] for record in following] == ["start", "phase", "end"]
+    assert len({record["diagnostic_id"] for record in following}) == 1
+    assert all(record["diagnostic_id"] != previous_id for record in following)
 
 
 def test_partial_stdout_counts_bytes_but_not_a_decoded_response_and_same_call_finishes(tmp_path, monkeypatch, _use_real_commands, sinks):
