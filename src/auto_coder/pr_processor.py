@@ -435,7 +435,13 @@ def _execute_pending_strong_audit(
         with isolated_pr_head_worktree(repo_name, pr_number, inputs.head_sha) as worktree:
             from .cli_helpers import resolve_adversarial_validation_availability
 
-            availability = resolve_adversarial_validation_availability("strong_pr", execution_cwd=worktree)
+            availability_error: Optional[Exception] = None
+            try:
+                availability = resolve_adversarial_validation_availability("strong_pr", execution_cwd=worktree)
+            except Exception as exc:
+                # An error is still an observation of the captured target. Do
+                # not consume its selected wait until applicability is checked.
+                availability_error = exc
             try:
                 target_is_current = observe_current_target()
             except Exception:
@@ -445,6 +451,8 @@ def _execute_pending_strong_audit(
                 reason = "strong-audit target changed during fresh availability evaluation"
                 inputs.gate.state.reject_stale_claim(pr_number, claim.claim_id)
                 return False, reason
+            if availability_error is not None:
+                raise availability_error
             if availability.backend_manager is None:
                 reason = "strong reviewer route is EXHAUSTED" if availability.exhausted else "strong reviewer route is UNAVAILABLE"
                 inputs.gate.state.abandon_claim(

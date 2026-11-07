@@ -519,6 +519,87 @@ def test_explicit_origin_restores_selected_wait_when_target_changes_during_usage
     assert s.history() == []
 
 
+@pytest.mark.parametrize("change", ["head", "opening", "unknown", "newer-owner", "unchanged"])
+def test_automatic_origin_fences_claude_usage_processing_error(scenario, monkeypatch, change):
+    """A malformed external usage response must not consume a stale wait."""
+    import auto_coder.claude_usage_checker as claude_usage
+    from auto_coder.pr_review_cycle import PrReviewCycleRepository, RoundProvenance
+
+    s = scenario
+    s.configure("surplus", backend_type="claude")
+    monkeypatch.setattr(claude_usage, "resolve_claude_oauth_token", lambda token=None: "fixture-token")
+    monkeypatch.setattr(claude_usage, "_cached_quota", None)
+    monkeypatch.setattr(claude_usage, "_cached_quotas", {})
+    monkeypatch.setattr(claude_usage, "fetch_claude_usage_data", lambda **kwargs: {"seven_day": {"utilization": 100}})
+    s.explicit()
+    selected = s.snapshot()
+    assert selected.retry_not_before > s.clock
+    assert selected.attempt_error_reason == "strong reviewer route is EXHAUSTED"
+    history_before = s.history()
+    s.clock = selected.retry_not_before
+    engine = s.engine()
+    observed = []
+    newer = []
+
+    def malformed_usage(**kwargs):
+        observed.append(s.snapshot().active_claim)
+        assert observed[-1] is not None
+        if change in {"head", "newer-owner"}:
+            (s.repository / "contract.txt").write_text("new target\n")
+            _git(s.repository, "add", "contract.txt")
+            _git(s.repository, "commit", "-m", "Advance external target")
+            s.head = _git(s.repository, "rev-parse", "HEAD")
+            s.pr["head"] = {"ref": "feature", "sha": s.head}
+            _git(s.repository, "update-ref", "refs/pull/100/head", s.head)
+            if change == "newer-owner":
+                with active_repo_context("owner/repo"):
+                    inputs = _two_tier_gate_inputs(s.github, "owner/repo", s.pr)
+                    state = PrReviewCycleRepository("owner/repo")
+                    state.record_ordinary_pass(100, RoundProvenance(s.head, s.base), inputs.contract)
+                    state.claim_strong_audit(100, RoundProvenance(s.head, s.base), inputs.contract, inputs.policy)
+                    newer.append(state.snapshot(100))
+        elif change == "opening":
+            s.timeline.append({"event": "reopened", "id": 9876, "created_at": "2027-01-15T08:01:00Z"})
+        elif change == "unknown":
+
+            def unavailable_timeline(*args, **kwargs):
+                raise RuntimeError("controlled opening observation outage")
+
+            monkeypatch.setattr(s.github, "get_issue_timeline_strict", unavailable_timeline)
+        return {"seven_day": {"utilization": "invalid"}}
+
+    monkeypatch.setattr(claude_usage, "fetch_claude_usage_data", malformed_usage)
+    s.dispatch(engine, invalidate=True)
+    assert len(observed) == 1
+    assert not s.reviews
+    current = s.snapshot()
+    assert current.accepted_strong_round is None
+    successor = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100))
+    assert successor is not None
+    assert successor.retry_not_before == s.clock + (60 if change in {"newer-owner", "unchanged"} else 1)
+    if change == "newer-owner":
+        assert current == newer[0]
+    elif change == "unchanged":
+        assert current.active_claim is None
+        assert "invalid" in current.attempt_error_reason
+        assert current.retry_not_before == 0
+        assert len(s.history()) == len(history_before) + 1
+        assert "invalid" in s.history()[-1]["superseding_observation"]
+    else:
+        assert current.active_claim is None
+        assert current.attempt_error_reason == selected.attempt_error_reason
+        assert current.retry_not_before == selected.retry_not_before
+        assert s.history() == history_before
+        # A later current-context evaluation still needs a fresh eligible
+        # observation; the rejected error did not authorize this execution.
+        monkeypatch.setattr(s.github, "get_issue_timeline_strict", lambda *a, **kw: list(s.timeline))
+        s.configure("burst")
+        recovered = s.explicit(force=True)
+        assert len(s.reviews) == 1, recovered
+        assert s.reviews[0].head_sha == s.head
+        assert s.snapshot().ordinary_pass_opening_token == ("reopened:9876" if change == "opening" else "created:2026-11-01T00:00:00Z")
+
+
 def test_explicit_origin_rejects_reopen_after_selected_ordinary_pass(scenario, monkeypatch):
     """A same-head reopen after publication cannot inherit prior convergence."""
     s = scenario

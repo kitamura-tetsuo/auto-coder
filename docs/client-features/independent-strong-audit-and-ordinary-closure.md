@@ -116,6 +116,13 @@ boundary. True exhaustion retains its provider-reset safeguard. An explicit
 single-PR forced run may supersede a retained future deadline, but it still
 performs fresh route resolution and every ordinary and strong applicability
 gate before reviewer execution; the superseded wait remains durable evidence.
+Usage-processing exceptions also require a fresh target/open-incarnation check
+before replacing that wait. A stale or unconfirmable target restores only the
+still-owned selected wait, without overwriting a newer controller. An error for
+a confirmed current target retains the existing non-complete diagnostic and
+bounded retry wake; it never admits a reviewer. This is observability-neutral:
+the existing pending outcome, wait reason/history and retry diagnostics retain
+their schema and production-to-dashboard path.
 
 When accepted strong findings survive into a later head, production processing
 does not run a separate closure-only reviewer. Instead, before the one ordinary
