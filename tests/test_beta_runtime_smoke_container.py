@@ -764,6 +764,9 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
     assert result(producer.advance(mismatch.operation_id), "BLOCKED")["reason"] == "deployment_selection_or_candidate_mismatch"
     _release_local_lane(journal, mismatch.operation_id)
 
+    # The explicit producer-fault cases run with lifecycle polling stopped.
+    # Resume it before sending another deployment through the real manager.
+    http.portal.call(service.start_monitor)
     latest = _call(http, bearer, "auto_coder_deploy_beta_source", _argument(client, revisions[0], "smoke-deploy-new-run"))
     new_run_deployment = str(latest["operation_id"])
     _await_stage(app, new_run_deployment, "SUCCEEDED", timeout=210)
