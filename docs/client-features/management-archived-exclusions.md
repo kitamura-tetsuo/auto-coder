@@ -170,3 +170,29 @@ released on failed reconstruction. The existing uncertain-first-launch fence
 retention behavior is unchanged. Component regressions use real original grants,
 policy and A/B/C SQLite plus explicit physical-adapter/mount controls; they do
 not substitute for the dedicated container CI cases.
+
+
+The archived-container fixture now uses only newly generated Caddyfiles with the
+pinned CI Caddy binary in a disposable bind-only fixture image; its SHA-256
+is verified before and after copying from the pinned image. No mount gate is
+relaxed for Caddy's optional default data volumes. Readiness is checked through the published proxy using
+both HTTP 401 and authenticated exact-child observations. Its positive case
+keeps the old Caddy namespace across C reconstruction, then starts the real
+watcher with a new private journal and verifies proxy lifetime/namespace change
+and restored authenticated HTTP. It never enables the deployed-proxy option.
+The same case reuses the disposable two-channel worker network. Signed actual
+observations pin both worker lifetimes. An opt-in fixture-only receiver counter
+records no headers or bodies; a harmless signed POST positive control establishes
+that it is live, and old worker keys must add zero POSTs before/after cutover and
+C reconstruction. These are CI execution requirements, not local execution claims.
+
+There is a separate eligibility constraint on a full archived-management
+self-update experiment: fresh initialization currently requires a source-script
+console runtime, while authenticated self-update requires the running runtime's
+installed READY receipt. The existing local recovery command restarts only the
+already selected runtime. A fixture must not invent a READY receipt or rewrite
+an initialization intent to bridge this gap. The real MCP source-profile test
+therefore verifies refusal before any handoff/process effect; it does not claim
+an A/B/C forward self-update fault-injection proof. Supporting that combined
+profile needs a separately designed verified promotion path and compatibility
+between immutable fresh provenance and subsequently installed child code.

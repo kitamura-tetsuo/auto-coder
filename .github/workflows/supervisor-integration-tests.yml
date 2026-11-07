@@ -121,6 +121,7 @@ jobs:
       UV_LOCKED: "1"
       AUTO_CODER_CI_TIMING_DIR: ${{ github.workspace }}/supervisor-integration-logs/timing
       AUTO_CODER_CI_TIMING_EXPECTED_INVOCATIONS: fresh-host
+      SUPERVISOR_REQUIRED_NODEIDS: '["tests/test_management_archived_cutover_container.py::test_real_second_cutover_preserves_all_owner_and_key_exclusions[complete]","tests/test_management_archived_cutover_container.py::test_real_second_cutover_preserves_all_owner_and_key_exclusions[host-interrupted]","tests/test_management_archived_cutover_container.py::test_real_second_cutover_preserves_all_owner_and_key_exclusions[omitted-ancestor]","tests/test_management_archived_cutover_container.py::test_real_second_cutover_preserves_all_owner_and_key_exclusions[stopped-prior]"]'
     steps:
       - *checkout
       - *python
@@ -155,6 +156,7 @@ jobs:
             "GITHUB_RUN_ID=$GITHUB_RUN_ID" \
             "GITHUB_RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT" \
             "GITHUB_JOB=$GITHUB_JOB" \
+            "SUPERVISOR_REQUIRED_NODEIDS=$SUPERVISOR_REQUIRED_NODEIDS" \
             "SUPERVISOR_RESULTS_PATH=$GITHUB_WORKSPACE/supervisor-integration-logs/fresh-host.json" \
             "$GITHUB_WORKSPACE/.venv/bin/python" -m pytest -p supervisor_ci_results -q -vv -o timeout=240 \
             tests/test_management_fresh_host_integration.py::test_real_docker_published_listener_is_owned_by_replacement \

@@ -12,6 +12,7 @@ import gc
 import hashlib
 import json
 import os
+import random
 import select
 import shutil
 import socket
@@ -19,6 +20,8 @@ import sqlite3
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -26,7 +29,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from auto_coder.management.action_scopes import DEPLOY_SCOPE, READ_SCOPE
+from auto_coder.management.action_scopes import DEPLOY_SCOPE, OPERATE_SCOPE, READ_SCOPE
 from auto_coder.management.exclusion_host import required_exclusions
 from auto_coder.management.fresh_host import _write_evidence
 from auto_coder.management.fresh_host_observation import capture_prior_container
@@ -59,12 +62,16 @@ class Generation:
 
 
 class Chain:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, with_workers: bool = False):
         self.root = root
         self.names: list[str] = []
         self.generations: list[Generation] = []
         self.processes: list[subprocess.Popen] = []
         self.fds: list[int] = []
+        self.worker_environment = None
+        self.worker_compose = None
+        self.worker_baseline = None
+        self.proxy_tag = "auto-coder-ancestor-caddy:" + uuid.uuid4().hex
         self.tag = "auto-coder-ancestor-test:" + uuid.uuid4().hex
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
@@ -80,11 +87,33 @@ class Chain:
         shutil.copytree(source, context / "auto_coder", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         _build_fixture_image(context, base, self.tag, owner_token_gap=False)
         self.image = self.docker("image", "inspect", self.tag, "--format", "{{.Id}}")
+        self.proxy_image = self.prepare_caddy_image()
+        if with_workers:
+            self.start_workers()
         probe = "from pathlib import Path;from auto_coder.management.fresh_initialization import application_tree_sha256;print(application_tree_sha256(Path('/opt/auto-coder/.venv/lib/python3.12/site-packages/auto_coder')))"
         self.application_digest = self.docker("run", "--rm", "--network", "none", "--entrypoint", "python", self.image, "-c", probe).splitlines()[-1]
 
+    def prepare_caddy_image(self) -> str:
+        """Use the real pinned Caddy binary with the supported bind-only profile."""
+        source = _resolve_fixture_base("caddy@sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489")
+        binary = self.root / "caddy"
+        donor = self.docker("create", "--network", "none", source)
+        target = None
+        try:
+            self.docker("cp", donor + ":/usr/bin/caddy", str(binary))
+            expected = self.docker("run", "--rm", "--network", "none", "--entrypoint", "sha256sum", source, "/usr/bin/caddy").split()[0]
+            assert hashlib.sha256(binary.read_bytes()).hexdigest() == expected
+            target = self.docker("create", "--network", "none", self.image)
+            self.docker("cp", str(binary), target + ":/usr/bin/caddy")
+            self.docker("commit", "--change", 'ENTRYPOINT ["caddy"]', target, self.proxy_tag)
+            image = self.docker("image", "inspect", self.proxy_tag, "--format", "{{.Id}}")
+            assert self.docker("run", "--rm", "--network", "none", "--entrypoint", "sha256sum", image, "/usr/bin/caddy").split()[0] == expected
+            return image
+        finally:
+            self.docker("rm", "-v", "-f", *([target] if target else []), donor)
+
     def authorize(self) -> None:
-        scopes = (READ_SCOPE, DEPLOY_SCOPE)
+        scopes = (READ_SCOPE, DEPLOY_SCOPE, OPERATE_SCOPE)
         client = OAuthClient("ancestor-client", (self.origin + "/callback",), allowed_scopes=scopes)
         settings = OAuthSettings(self.oauth / "oauth.sqlite3", self.origin, "ancestor-fixture", (client,), enabled_scopes=scopes)
         permitted = AdmissionResult(AdmissionStatus.PERMITTED, ReasonCode.PERMITTED, VerifiedPrincipal("ancestor-fixture", "operator", time.time() - 10))
@@ -155,12 +184,21 @@ class Chain:
         bindings = ()
         if prior is not None:
             captured = capture_prior_container(prior.container, self.image, expected_mounts=tuple((str(a), b, c) for a, b, c in prior.mounts), require_owner_lock=True, require_deployment_identity=True)
-            proxy_name = "ancestor-proxy-" + uuid.uuid4().hex[:16]
-            self.names.append(proxy_name)
-            prior.proxy = self.docker("run", "-d", "--name", proxy_name, "--network", "container:" + prior.container, "--entrypoint", "/bin/sleep", self.image, "600")
-            proxy = capture_prior_container(prior.proxy, self.image)
+            self.ensure_proxy(prior)
+            proxy = capture_prior_container(prior.proxy, self.proxy_image, expected_mounts=((str(prior.path("Caddyfile")), "/etc/caddy/Caddyfile", False),))
             bindings = required_exclusions(captured)
             config.update(fresh_guard_path="/management-initialization/fresh-guard.sock", fresh_prior_lock_path="/management-prior-owner.lock", archived_exclusions=[] if omit_archive else [asdict(item) for item in bindings])
+        if self.worker_environment is not None:
+            for channel in ("beta", "release"):
+                runtime["environment"].update(
+                    {
+                        f"AUTO_CODER_{channel.upper()}_SUPERVISOR_INSTANCE_ID": channel + "-worker",
+                        f"AUTO_CODER_{channel.upper()}_REPOSITORY": "fixture/" + channel,
+                        f"AUTO_CODER_{channel.upper()}_BRIDGE_ADDRESS": self.worker_environment[f"SUPERVISOR_{channel.upper()}_IP"],
+                        f"AUTO_CODER_{channel.upper()}_BRIDGE_PORT": "8843",
+                        f"AUTO_CODER_{channel.upper()}_BRIDGE_SECRET_FILE": "/run/secrets/" + channel + "_worker_bridge",
+                    }
+                )
         config_file = root / "bootstrap" / "config.json"
         config_file.write_text(json.dumps(config))
         config_file.chmod(0o600)
@@ -173,15 +211,20 @@ class Chain:
                     "bootstrap_config_path": "/bootstrap/config.json",
                     "public_origin": self.origin,
                     "firebase_project_id": "ancestor-fixture",
-                    "clients": [{"client_id": "ancestor-client", "redirect_uris": [self.origin + "/callback"], "allowed_scopes": [READ_SCOPE, DEPLOY_SCOPE]}],
-                    "enabled_scopes": [READ_SCOPE, DEPLOY_SCOPE],
+                    "clients": [{"client_id": "ancestor-client", "redirect_uris": [self.origin + "/callback"], "allowed_scopes": [READ_SCOPE, DEPLOY_SCOPE, OPERATE_SCOPE]}],
+                    "enabled_scopes": [READ_SCOPE, DEPLOY_SCOPE, OPERATE_SCOPE],
                     "bind_host": "127.0.0.1",
                     "port": 8081,
                     "local_development": True,
+                    **({"operating_policy_path": "/bootstrap/policy.yaml"} if self.worker_environment is not None else {}),
                 }
             )
         )
         mounts = [(root / "state", "/management-child-state", True), (root / "journal", "/management-operations", True), (self.oauth, "/management-oauth", True), (root / "bootstrap", "/bootstrap", False)]
+        if self.worker_environment is not None:
+            (root / "bootstrap" / "policy.yaml").write_text(yaml.safe_dump({"profile": "full", "targets": {channel + "-worker": {"channel": channel, "repositories": ["fixture/" + channel]} for channel in ("beta", "release")}}))
+            for channel in ("beta", "release"):
+                mounts.append((self.root / "workers" / (channel + "-secret"), "/run/secrets/" + channel + "_worker_bridge", False))
         if prior is not None:
             mounts += [(root / "guard", "/management-initialization", False), (prior.path("state") / ".supervisor-owner.lock", "/management-prior-owner.lock", False), (prior.path("journal"), "/management-prior-operations", False)]
             if not omit_archive:
@@ -190,6 +233,8 @@ class Chain:
         container_name = "ancestor-fixture-" + uuid.uuid4().hex[:16]
         self.names.append(container_name)
         args = ["create", "--name", container_name, "--read-only", "--publish", f"127.0.0.1:{self.port}:8080"]
+        if self.worker_environment is not None:
+            args += ["--network", self.worker_network]
         for source, target, writable in mounts:
             args += ["--mount", f"type=bind,src={source},dst={target}" + ("" if writable else ",readonly")]
         args += [self.image, "--config", "/bootstrap/config.json"]
@@ -278,24 +323,39 @@ class Chain:
         assert line, process.stderr.read() if process.stderr is not None else "missing host status"
         assert json.loads(line)["status"] == expected
 
-    def stop(self, generation: Generation) -> None:
-        self.docker("stop", "--time", "40", *([generation.proxy] if generation.proxy else []), generation.container, timeout=50)
+    def stop(self, generation: Generation, *, stop_proxy: bool = True) -> None:
+        self.docker("stop", "--time", "40", *([generation.proxy] if generation.proxy and stop_proxy else []), generation.container, timeout=50)
         self.checkpoint(generation.path("journal") / "management-operations.sqlite3")
 
-    def call(self, generation: Generation, tool: str, arguments: dict[str, object]):
-        code = (
-            "import json,sys,urllib.request; p=json.load(sys.stdin); "
-            "r=urllib.request.Request('http://127.0.0.1:8081/mcp',data=json.dumps(p['request']).encode(),"
-            "headers={'Content-Type':'application/json','Accept':'application/json, text/event-stream','Authorization':'Bearer '+p['token']});"
-            "print(urllib.request.urlopen(r,timeout=5).read().decode())"
+    def ensure_proxy(self, generation: Generation) -> None:
+        if generation.proxy is not None:
+            return
+        caddyfile = generation.path("Caddyfile")
+        caddyfile.write_text("http://127.0.0.1:8080 {\n reverse_proxy 127.0.0.1:8081 {\n header_up Host 127.0.0.1:8081\n }\n}\n")
+        caddyfile.chmod(0o600)
+        name = "ancestor-proxy-" + uuid.uuid4().hex[:16]
+        self.names.append(name)
+        generation.proxy = self.docker(
+            "run", "-d", "--name", name, "--network", "container:" + generation.container, "--mount", f"type=bind,src={caddyfile},dst=/etc/caddy/Caddyfile,readonly", "--entrypoint", "caddy", self.proxy_image, "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"
         )
+
+    def call(self, generation: Generation, tool: str, arguments: dict[str, object], *, authenticated: bool = True):
+        assert generation.proxy is not None
         request = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": arguments}}
-        result = subprocess.run(["docker", "exec", "--interactive", generation.container, "python", "-c", code], input=json.dumps({"request": request, "token": self.token}), capture_output=True, text=True, timeout=15)
-        if result.returncode:
-            raise ValueError("synthetic authenticated HTTP unavailable")
-        return json.loads(result.stdout)["result"]["structuredContent"]
+        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream", "Host": "127.0.0.1:8080"}
+        if authenticated:
+            headers["Authorization"] = "Bearer " + self.token
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(urllib.request.Request(f"http://127.0.0.1:{self.port}/mcp", data=json.dumps(request).encode(), headers=headers), timeout=5) as response:
+                return json.loads(response.read())["result"]["structuredContent"]
+        except urllib.error.HTTPError as error:
+            if not authenticated:
+                return {"http_status": error.code}
+            raise ValueError("synthetic authenticated proxy HTTP unavailable") from None
 
     def ready(self, generation: Generation, *, fresh: bool) -> None:
+        self.ensure_proxy(generation)
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             try:
@@ -307,10 +367,15 @@ class Chain:
                         time.sleep(0.1)
                         continue
                     observation = status["observation_id"]
+                if self.call(generation, "auto_coder_whoami", {}, authenticated=False)["http_status"] != 401:
+                    time.sleep(0.1)
+                    continue
                 result = self.call(generation, "auto_coder_whoami", {"observation_id": observation})
                 if result["uid"] == "operator" and (not fresh or status["status"] == "succeeded"):
+                    if self.worker_baseline is not None:
+                        self.assert_worker_reads(generation)
                     return
-            except (subprocess.CalledProcessError, ValueError, KeyError):
+            except (subprocess.CalledProcessError, ValueError, KeyError, urllib.error.URLError):
                 pass
             time.sleep(0.1)
         raise AssertionError("exact synthetic child readiness was not proven")
@@ -374,6 +439,121 @@ class Chain:
         assert result.returncode != 0 and "BlockingIOError" in result.stdout + result.stderr
         assert (generation.path("state") / "management-child.sqlite3").read_bytes() == before
 
+    def start_workers(self) -> None:
+        root = self.root / "workers"
+        for name in ("beta/home", "release/home", "beta-workspace", "release-workspace"):
+            (root / name).mkdir(parents=True)
+        for channel in ("beta", "release"):
+            secret = root / (channel + "-secret")
+            secret.write_bytes(base64.b64encode(os.urandom(48)) + b"\n")
+            secret.chmod(0o600)
+        fixtures = Path(__file__).parent / "fixtures"
+        octet = random.SystemRandom().randrange(64, 239)
+        self.worker_environment = dict(
+            os.environ,
+            AUTOCODER_SUPERVISOR_IMAGE=self.image,
+            SUPERVISOR_RUN_ROOT=str(root),
+            SUPERVISOR_FIXTURES_DIR=str(fixtures.resolve()),
+            SUPERVISOR_HOST_UID=str(os.getuid()),
+            SUPERVISOR_HOST_GID=str(os.getgid()),
+            SUPERVISOR_BRIDGE_SUBNET=f"10.252.{octet}.0/24",
+            SUPERVISOR_RELEASE_IP=f"10.252.{octet}.11",
+            SUPERVISOR_BETA_IP=f"10.252.{octet}.12",
+            SUPERVISOR_TEST_REQUEST_AUDIT="1",
+        )
+        self.worker_compose = ["docker", "compose", "--project-name", "ancestor-workers-" + uuid.uuid4().hex[:12], "-f", str(fixtures / "compose.supervisor-network.yml")]
+        self.compose("up", "-d", "--no-build")
+        self.worker_manager = self.compose("ps", "-q", "manager")
+        networks = json.loads(self.docker("inspect", self.worker_manager))[0]["NetworkSettings"]["Networks"]
+        assert len(networks) == 1
+        self.worker_network = next(iter(networks))
+        deadline = time.monotonic() + 60
+        while True:
+            try:
+                self.worker_baseline = self.workers()
+                break
+            except (subprocess.CalledProcessError, ValueError):
+                assert time.monotonic() < deadline, "actual fixture worker bridge unavailable"
+                time.sleep(0.1)
+        # Positive control proves the receiver audit sees actual incoming POSTs.
+        for channel in ("beta", "release"):
+            code = (
+                "import sys;from auto_coder.management.worker_network_client import WorkerNetworkClient,WorkerEndpointConfig;"
+                "c=WorkerNetworkClient(WorkerEndpointConfig.environment(sys.argv[1]));c.inspect_supervisor();"
+                "c._call('POST','/v1/fixture-audit-probe',{'operation_id':'fixture-audit-probe'});print('observed')"
+            )
+            self.docker("exec", self.worker_manager, "python", "-c", code, channel)
+        assert self.worker_posts() == {"beta": 1, "release": 1}
+
+    def compose(self, *args: str) -> str:
+        return subprocess.check_output([*self.worker_compose, *args], env=self.worker_environment, stderr=subprocess.STDOUT, text=True, timeout=90).strip()
+
+    def workers(self):
+        code = (
+            "import json,sys;from auto_coder.management.worker_network_client import WorkerNetworkClient,WorkerEndpointConfig;"
+            "c=WorkerNetworkClient(WorkerEndpointConfig.environment(sys.argv[1]));i=c.inspect_supervisor();w=c.observe_worker();"
+            "assert i.result_code=='OK' and w.result_code=='OK';o=w.data['observation'];"
+            "print(json.dumps({'supervisor':i.supervisor_generation,'run':o['process_run_id'],'deployment':o['deployment_generation']}))"
+        )
+        result = {}
+        for channel in ("beta", "release"):
+            observed = json.loads(self.docker("exec", self.worker_manager, "python", "-c", code, channel))
+            container = self.compose("ps", "-q", channel)
+            metadata = json.loads(self.docker("inspect", container))[0]
+            result[channel] = {**observed, "container": container, "started": metadata["State"]["StartedAt"]}
+        return result
+
+    def worker_posts(self):
+        return {channel: len((self.root / "workers" / channel / "fixture-posts").read_text().splitlines()) for channel in ("beta", "release")}
+
+    def seed_workers(self, generation: Generation):
+        records = {}
+        store = ManagementOperationStore(generation.path("journal"))
+        for channel, observed in self.worker_baseline.items():
+            intent = OperationIntent(
+                ManagedTarget(channel + "-worker", channel, "fixture/" + channel), "reevaluate_target", (ActionParameter("target_id", channel + "-worker"), ActionParameter("target_type", "issue"), ActionParameter("number", 2603)), "old-worker-" + channel, observed["run"], observed["deployment"]
+            )
+            record = store.admit(intent, self.authority).record
+            assert record is not None
+            assert store.transition(record.operation_id, 0, OperationPhase.FAILED, evidence=EffectReceipt(record.operation_id, "synthetic-no-effect", 1, "no_effect_sent")).record is not None
+            records[channel] = record
+        self.checkpoint(generation.path("journal") / "management-operations.sqlite3")
+        return records
+
+    def assert_worker_reads(self, generation: Generation) -> None:
+        for channel, expected in self.worker_baseline.items():
+            result = self.call(generation, "auto_coder_deployment_status", {"target_id": channel + "-worker"})
+            assert result["status"] == "OK" and result["alive"] is True
+            assert result["process_state"] == "RUNNING" and result["supervisor_generation"] == expected["supervisor"]
+            observed = result["worker_observation"]
+            assert observed["process_run_id"] == expected["run"]
+            assert observed["deployment_generation"] == expected["deployment"]
+            assert result["worker"]["process_run_id"] == expected["run"]
+            assert result["worker"]["deployment_generation"] == expected["deployment"]
+
+    def assert_workers(self, generation: Generation, records) -> None:
+        self.assert_worker_reads(generation)
+        assert self.workers() == self.worker_baseline
+        before = self.worker_posts()
+        for channel, record in records.items():
+            reply = self.call(
+                generation,
+                "auto_coder_reevaluate_target",
+                {"target_id": channel + "-worker", "target_type": "issue", "number": 2603, "idempotency_key": record.intent.idempotency_key, "expected_process_run_id": record.intent.expected_incarnation, "expected_deployment_generation": record.intent.expected_artifact},
+            )
+            assert reply["status"] == "CONFLICT" and reply.get("operation_id") is None
+        assert self.worker_posts() == before == {"beta": 1, "release": 1}
+        assert self.workers() == self.worker_baseline
+
+    def reconnect_proxy(self, generation: Generation) -> None:
+        root = generation.path("watcher")
+        root.mkdir(mode=0o700)
+        config = root / "config.json"
+        config.write_text(json.dumps({"state_root": str(root), "manager_id": generation.container, "manager_image": self.image, "proxy_id": generation.proxy, "proxy_image": self.proxy_image, "config_sha256": hashlib.sha256(generation.path("Caddyfile").read_bytes()).hexdigest()}))
+        config.chmod(0o600)
+        process = subprocess.Popen([sys.executable, "-m", "auto_coder.management.proxy_watch_cli", "--config", str(config)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.processes.append(process)
+
     def close(self) -> None:
         for process in self.processes:
             if process.poll() is None:
@@ -383,16 +563,18 @@ class Chain:
             os.close(fd)
         if self.names:
             subprocess.run(["docker", "rm", "-f", *self.names], capture_output=True, timeout=60)
-        subprocess.run(["docker", "image", "rm", self.tag], capture_output=True, timeout=30)
+        if self.worker_compose is not None:
+            self.compose("down", "--volumes", "--remove-orphans")
+        subprocess.run(["docker", "image", "rm", self.tag, self.proxy_tag], capture_output=True, timeout=30)
 
 
 @pytest.fixture
-def chain(tmp_path: Path):
+def chain(tmp_path: Path, request):
     if os.geteuid() != 0:
         pytest.skip("host root is required for disposable namespace and proxy evidence")
     fixture = Chain.__new__(Chain)
     try:
-        fixture.__init__(tmp_path)
+        fixture.__init__(tmp_path, with_workers=request.node.callspec.params["boundary"] == "complete")
         yield fixture
     finally:
         fixture.close()
@@ -417,6 +599,7 @@ def test_real_second_cutover_preserves_all_owner_and_key_exclusions(chain: Chain
     chain.authorize()
     chain.ready(a, fresh=False)
     old_a = chain.seed(a)
+    worker_records = chain.seed_workers(a) if chain.worker_baseline is not None else None
     b = chain.prepare("manager-b", a)
     chain.start_cutover(a, b)
     old_b = chain.seed(b)
@@ -453,6 +636,7 @@ def test_real_second_cutover_preserves_all_owner_and_key_exclusions(chain: Chain
     else:
         chain.start_cutover(b, c)
         original_b = chain.snapshot(b)
+        chain.assert_workers(c, worker_records)
         for previous in (a, b):
             chain.owner_refused(previous)
         for old in (old_a, old_b):
@@ -472,9 +656,20 @@ def test_real_second_cutover_preserves_all_owner_and_key_exclusions(chain: Chain
                 held.append(fd)
                 fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
             before = chain.child(c)
-            chain.stop(c)
+            proxy_before = json.loads(chain.docker("inspect", c.proxy))[0]
+            chain.stop(c, stop_proxy=False)
             chain.docker("start", c.container)
+            chain.reconnect_proxy(c)
             chain.ready(c, fresh=True)
+            proxy_after = json.loads(chain.docker("inspect", c.proxy))[0]
+            manager_after = json.loads(chain.docker("inspect", c.container))[0]
+            assert proxy_after["State"]["StartedAt"] != proxy_before["State"]["StartedAt"]
+            assert os.readlink(f"/proc/{proxy_after['State']['Pid']}/ns/net") == os.readlink(f"/proc/{manager_after['State']['Pid']}/ns/net")
+            until = time.monotonic() + 30
+            while not (c.path("watcher") / "proxy-reconnect.json").exists() or json.loads((c.path("watcher") / "proxy-reconnect.json").read_text())["phase"] != "done":
+                assert time.monotonic() < until, "proxy reattachment was not durably recorded"
+                time.sleep(0.1)
+            chain.assert_workers(c, worker_records)
             after = chain.child(c)
             assert after["child_generation"] == before["child_generation"] + 1
             assert after["supervisor_incarnation"] != before["supervisor_incarnation"]
