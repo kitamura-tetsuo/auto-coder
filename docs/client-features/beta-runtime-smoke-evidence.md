@@ -241,6 +241,14 @@ journal, worker runtime, workspace, trust, Git/HTTP source and Docker processes.
 They do not share a prior case's PASS, installed runtime, journal or selection.
 Their enclosing temporary root is removed after owned Docker log capture and
 process/network cleanup, including when staging or assertions fail.
+The attached staging installer has a unique named container registered for
+cleanup **before** `docker run` begins. Even if its CLI times out at the original
+1,200-second limit, teardown attempts available installer log capture, forcibly
+removes that exact container, and verifies it no longer exists before dropping
+the bind-mounted roots; an original timeout still propagates. The additional
+`test_staging_timeout_reaps_real_container_and_descendant` uses a real Docker
+container with a real child process and a short test-only caller timeout to
+regress this setup-failure path without altering the production stage deadline.
 The two real source revisions and independent same-SHA alternative READY are
 installed within each case; only immutable dependency/image caches may be reused.
 Case-specific Docker logs are written under

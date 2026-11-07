@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from auto_coder.beta_source_selection import BetaSourceSelector, MutationCertainty
-from tests.test_beta_runtime_smoke_container import _cleanup_smoke_docker, _SourceService
+from tests.test_beta_runtime_smoke_container import _cleanup_smoke_docker, _owned_staging, _SourceService
 
 
 @pytest.mark.parametrize("detached", [False, True])
@@ -71,3 +71,36 @@ def test_case_owned_docker_cleanup_preserves_failure_and_removes_every_owned_res
     assert ("rm", "-f", "github") in calls
     assert ("network", "rm", "network") in calls
     assert (tmp_path / "supervisor-integration-logs" / "smoke-case" / "github.log").read_text() == "fixture log\n"
+
+
+def test_staging_guard_owns_timeout_cleanup_before_temporary_roots_close(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import tests.test_beta_runtime_smoke_container as smoke
+
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    (tmp_path / "runtime").mkdir()
+    (tmp_path / "runtime" / "staging.log").write_text("installer progress\n")
+    calls: list[tuple[str, ...]] = []
+    exists = True
+
+    def docker(*arguments: str, check: bool = True, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+        nonlocal exists
+        calls.append(arguments)
+        if arguments[0] == "logs":
+            return subprocess.CompletedProcess(arguments, 0, stdout="real staging log\n", stderr="")
+        if arguments[:2] == ("rm", "-f"):
+            exists = False
+        if arguments[0] == "inspect":
+            return subprocess.CompletedProcess(arguments, 0 if exists else 1, stdout="", stderr="" if exists else "Error: No such object: stage")
+        return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(smoke, "_docker", docker)
+    with pytest.raises(subprocess.TimeoutExpired):
+        with _owned_staging("stage", "stage-timeout", tmp_path):
+            raise subprocess.TimeoutExpired(["docker", "run"], 8, output=b"captured CLI output\n")
+
+    assert not exists
+    assert calls == [("logs", "stage"), ("rm", "-f", "stage"), ("inspect", "stage")]
+    log_root = tmp_path / "supervisor-integration-logs" / "stage-timeout"
+    assert (log_root / "stage-container.log").read_text() == "real staging log\n"
+    assert (log_root / "stage-cli-timeout.log").read_text() == "captured CLI output\n"
+    assert (log_root / "stage-internal.log").read_text() == "installer progress\n"

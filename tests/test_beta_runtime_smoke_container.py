@@ -23,6 +23,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from textwrap import dedent
 from typing import Iterator
 
 import pytest
@@ -304,7 +305,7 @@ class _SmokeSystem:
 
 
 @contextmanager
-def _smoke_system(real_boundary, tmp_path: Path, scenario_id: str) -> Iterator[_SmokeSystem]:
+def _smoke_system(real_boundary, tmp_path: Path, scenario_id: str, stage_name: str) -> Iterator[_SmokeSystem]:
     """Provision and dispose independent real boundaries for one pytest case."""
     image = _image()
     source = Path(os.environ.get("GITHUB_WORKSPACE", str(Path(__file__).parents[1]))).resolve()
@@ -323,6 +324,8 @@ def _smoke_system(real_boundary, tmp_path: Path, scenario_id: str) -> Iterator[_
     staged = _docker(
         "run",
         "--rm",
+        "--name",
+        stage_name,
         "--network",
         "bridge",
         "--cap-drop",
@@ -488,13 +491,135 @@ def _cleanup_smoke_docker(worker_name: str, github_name: str, network: str, scen
         print(f"{scenario_id}: could not clean up {network}: {error}", file=sys.stderr)
 
 
+def _cleanup_staging_container(stage_name: str, scenario_id: str, case_root: Path) -> None:
+    """Collect available installer evidence and terminate its exact Docker owner."""
+    log_root = Path(os.environ.get("GITHUB_WORKSPACE", str(Path(__file__).parents[1]))) / "supervisor-integration-logs" / scenario_id
+    errors: list[str] = []
+    original_error = sys.exc_info()[1]
+    if isinstance(original_error, subprocess.TimeoutExpired):
+        # TimeoutExpired can retain bytes even when subprocess used text=True.
+        def output(value: str | bytes | None) -> str:
+            return value.decode(errors="replace") if isinstance(value, bytes) else value or ""
+
+        available = output(original_error.stdout) + output(original_error.stderr)
+        if available:
+            try:
+                log_root.mkdir(parents=True, exist_ok=True)
+                (log_root / "stage-cli-timeout.log").write_text(available, encoding="utf-8")
+            except OSError as error:
+                errors.append(f"could not retain staging CLI output: {error}")
+    try:
+        logs = _docker("logs", stage_name, check=False, timeout=20)
+        if logs.returncode == 0:
+            log_root.mkdir(parents=True, exist_ok=True)
+            (log_root / "stage-container.log").write_text(logs.stdout + logs.stderr, encoding="utf-8")
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"{scenario_id}: staging log unavailable: {error}", file=sys.stderr)
+    try:
+        internal_log = case_root / "runtime" / "staging.log"
+        if internal_log.is_file():
+            log_root.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(internal_log, log_root / "stage-internal.log")
+    except OSError as error:
+        errors.append(f"could not retain staging file log: {error}")
+    try:
+        _docker("rm", "-f", stage_name, check=False, timeout=30)
+    except (OSError, subprocess.SubprocessError) as error:
+        errors.append(f"could not remove staging container: {error}")
+    try:
+        inspected = _docker("inspect", stage_name, check=False, timeout=15)
+        if inspected.returncode == 0:
+            errors.append(f"staging container still exists: {stage_name}")
+        elif "No such object" not in inspected.stderr and "No such container" not in inspected.stderr:
+            errors.append(f"staging removal could not be verified: {inspected.stderr.strip()}")
+    except (OSError, subprocess.SubprocessError) as error:
+        errors.append(f"could not verify staging container removal: {error}")
+    if errors:
+        if sys.exc_info()[0] is None:
+            raise AssertionError("; ".join(errors))
+        print(f"{scenario_id}: staging cleanup issues: {'; '.join(errors)}", file=sys.stderr)
+
+
+@contextmanager
+def _owned_staging(stage_name: str, scenario_id: str, case_root: Path) -> Iterator[None]:
+    """Register the installer cleanup before starting the attached Docker CLI."""
+    try:
+        yield
+    finally:
+        _cleanup_staging_container(stage_name, scenario_id, case_root)
+
+
 @pytest.fixture
 def smoke_system(real_boundary, tmp_path: Path, request: pytest.FixtureRequest, _use_real_commands: None, _use_real_sleep: None) -> Iterator[_SmokeSystem]:
     # The owned directory closes even if staging fails before Docker starts.
     # Keep the real_boundary OAuth fixture outside this per-scenario root.
+    stage_name = "smoke-stage-" + uuid.uuid4().hex[:16]
     with tempfile.TemporaryDirectory(prefix="smoke-", dir=tmp_path) as case_root:
-        with _smoke_system(real_boundary, Path(case_root), request.node.name) as system:
-            yield system
+        with _owned_staging(stage_name, request.node.name, Path(case_root)):
+            with _smoke_system(real_boundary, Path(case_root), request.node.name, stage_name) as system:
+                yield system
+
+
+@pytest.mark.timeout(90)
+def test_staging_timeout_reaps_real_container_and_descendant(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None) -> None:
+    """A timed-out attached Docker CLI leaves no installer or owned child."""
+    image = _image()
+    stage_name = "smoke-stage-timeout-" + uuid.uuid4().hex[:12]
+    scenario_id = "staging-timeout-" + uuid.uuid4().hex[:12]
+    descendant = dedent(
+        """\
+        import pathlib
+        import time
+
+        pathlib.Path('/owned/descendant-started').write_text('started')
+        heartbeat = pathlib.Path('/owned/descendant-heartbeat')
+        n = 0
+        while True:
+            n += 1
+            heartbeat.write_text(str(n))
+            time.sleep(0.1)
+        """
+    )
+    program = "import pathlib, subprocess, sys, time; " "pathlib.Path('/owned/stage-started').write_text('started'); " f"subprocess.Popen([sys.executable, '-c', {descendant!r}]); " "print('real staging child entered', flush=True); time.sleep(45)"
+    with tempfile.TemporaryDirectory(prefix="stage-timeout-", dir=tmp_path) as case_root:
+        owned = Path(case_root)
+        with pytest.raises(subprocess.TimeoutExpired):
+            with _owned_staging(stage_name, scenario_id, owned):
+                _docker(
+                    "run",
+                    "--rm",
+                    "--name",
+                    stage_name,
+                    "--network",
+                    "none",
+                    "--cap-drop",
+                    "ALL",
+                    "--security-opt",
+                    "no-new-privileges:true",
+                    "--user",
+                    f"{os.getuid()}:{os.getgid()}",
+                    "-v",
+                    f"{owned}:/owned",
+                    "--entrypoint",
+                    "python",
+                    image,
+                    "-c",
+                    program,
+                    timeout=8,
+                )
+        assert (owned / "stage-started").read_text() == "started"
+        assert (owned / "descendant-started").read_text() == "started"
+        heartbeat = owned / "descendant-heartbeat"
+        before = heartbeat.read_text()
+        time.sleep(0.6)
+        assert heartbeat.read_text() == before
+        inspected = _docker("inspect", stage_name, check=False)
+        assert inspected.returncode != 0 and "No such object" in inspected.stderr
+        remaining = _docker("ps", "-a", "--filter", f"name=^/{stage_name}$", "--format", "{{.Names}}")
+        assert remaining.stdout.strip() == ""
+        log_root = Path(os.environ.get("GITHUB_WORKSPACE", str(Path(__file__).parents[1]))) / "supervisor-integration-logs" / scenario_id
+        retained = [path.read_text(encoding="utf-8") for path in (log_root / "stage-container.log", log_root / "stage-cli-timeout.log") if path.exists()]
+        assert retained and any("real staging child entered" in text for text in retained)
 
 
 @pytest.mark.timeout(1800)
