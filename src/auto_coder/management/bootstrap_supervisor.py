@@ -358,6 +358,8 @@ class ManagementBootstrapSupervisor:
         self._prior_owner_fence: int | None = None
         self._fresh_observer: FreshReadinessObserver | None = None
         self._fresh_launch_may_exist = False
+        self._owned_launch_unresolved = False
+        self._child_dispatch_in_progress = False
         self.store = BootstrapStore(config.state_root, config.instance_id)
         self.incarnation = incarnation or str(uuid.uuid4())
         self._lock = threading.RLock()
@@ -385,6 +387,18 @@ class ManagementBootstrapSupervisor:
             raise
         self._archived_owner_fences = archives
         self._prior_owner_fence = direct
+
+    def _spawn_owned_child(self, runtime: RuntimeSpec, environment: dict[str, str]) -> subprocess.Popen:
+        # Signal delivery can occur inside Popen after exec but before its
+        # handle is returned. Defer owner shutdown across that entire interval.
+        self._child_dispatch_in_progress = True
+        try:
+            child = subprocess.Popen([str(runtime.executable), *runtime.arguments], env=environment, start_new_session=False)
+            self._owned_launch_unresolved = True
+            self._children[child.pid] = child
+            return child
+        finally:
+            self._child_dispatch_in_progress = False
 
     def _exclusion_settings(self) -> ManagementSettings:
         from .exclusion_host import check_exclusion_peer
@@ -568,9 +582,7 @@ class ManagementBootstrapSupervisor:
                     # not before a potentially slow source/DB verification.
                     if forward_authority is not None and not forward_authority(retained):
                         raise _ForwardAuthorityRefused
-                    child = subprocess.Popen([str(runtime.executable), *runtime.arguments], env=environment, start_new_session=False)
-                    # Retain the handle before reader cleanup or durable writes.
-                    self._children[child.pid] = child
+                    child = self._spawn_owned_child(runtime, environment)
             except _ForwardAuthorityRefused:
                 failed = replace(prepared, phase=ChildPhase.NEEDS_ATTENTION, exit_cause="forward_authority_refused_before_launch")
                 self.store.save(failed)
@@ -595,6 +607,7 @@ class ManagementBootstrapSupervisor:
                 return self._finish(operation_id, ResultStatus.UNKNOWN, failed, "new child OS lifetime could not be observed")
             running = replace(prepared, phase=ChildPhase.RUNNING, pid=child.pid, start_token=token)
             self.store.save(running)
+            self._owned_launch_unresolved = False
             # A process which exits during the bounded startup observation is a
             # confirmed failed start, not stale external PID evidence.
             deadline = time.monotonic() + 0.1
@@ -762,39 +775,39 @@ class ManagementBootstrapSupervisor:
         if self.config.restart_after_clean_shutdown and threading.current_thread() is threading.main_thread():
             previous_handler = signal.getsignal(signal.SIGTERM)
             signal.signal(signal.SIGTERM, lambda _signum, _frame: setattr(self, "_container_shutdown_requested", True))
-        fresh_handlers = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)} if self.fresh_initialization and threading.current_thread() is threading.main_thread() else {}
+        launch_handlers = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)} if threading.current_thread() is threading.main_thread() else {}
 
-        def fresh_shutdown(signum, frame):
-            if self._fresh_launch_may_exist:
+        def launch_shutdown(signum, frame):
+            if self._child_dispatch_in_progress or self._fresh_launch_may_exist or self._owned_launch_unresolved:
                 self._container_shutdown_requested = True
                 return
-            prior = fresh_handlers[signal.Signals(signum)]
+            prior = launch_handlers[signal.Signals(signum)]
             if callable(prior):
                 prior(signum, frame)
             elif prior == signal.SIG_DFL:
                 signal.signal(signum, signal.SIG_DFL)
                 signal.raise_signal(signum)
 
-        for signum in fresh_handlers:
-            signal.signal(signum, fresh_shutdown)
+        for signum in launch_handlers:
+            signal.signal(signum, launch_shutdown)
         try:
             with (self.config.state_root / ".supervisor-owner.lock").open("a+b") as ownership:
                 fcntl.flock(ownership.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 try:
                     return self._run_owned()
                 finally:
-                    if self._fresh_launch_may_exist:
-                        self._preserve_uncertain_fresh_launch()
+                    if self._fresh_launch_may_exist or self._owned_launch_unresolved:
+                        self._preserve_unresolved_launch()
         finally:
-            for signum, handler in fresh_handlers.items():
+            for signum, handler in launch_handlers.items():
                 signal.signal(signum, handler)
             if previous_handler is not None:
                 signal.signal(signal.SIGTERM, previous_handler)
 
-    def _preserve_uncertain_fresh_launch(self) -> None:
+    def _preserve_unresolved_launch(self) -> None:
         """Keep the owner and all inherited fences until owned exits are proven."""
         try:
-            logger.error("Fresh launch remains unresolved; preserving owner fences without effects or retry")
+            logger.error("Management launch remains unresolved; preserving owner fences without effects or retry")
         except Exception:
             pass
         while True:
@@ -803,6 +816,7 @@ class ManagementBootstrapSupervisor:
                 if children and all(child.poll() is not None for child in children):
                     self._release_prior_fences()
                     self._fresh_launch_may_exist = False
+                    self._owned_launch_unresolved = False
                     return
             except (OSError, ValueError, ChildProcessError):
                 # Neither an empty handle set nor unavailable observation is
@@ -1124,8 +1138,7 @@ class ManagementBootstrapSupervisor:
             if runtime.drain_ack is not None:
                 environment["AUTO_CODER_DRAIN_RECEIPT"] = str(runtime.drain_ack)
             with self._exclusion_evidence():
-                child = subprocess.Popen([str(runtime.executable), *runtime.arguments], env=environment, start_new_session=False)
-                self._children[child.pid] = child
+                child = self._spawn_owned_child(runtime, environment)
         except ExclusionEvidenceUnavailable:
             return self._finish(operation_id, ResultStatus.NEEDS_ATTENTION, recovery, "ancestry evidence unavailable; previous runtime was not started")
         except OSError:
@@ -1157,6 +1170,7 @@ class ManagementBootstrapSupervisor:
             readiness="not_observed",
         )
         self.store.save(restored)
+        self._owned_launch_unresolved = False
         deadline = time.monotonic() + 0.1
         while time.monotonic() < deadline and child.poll() is None:
             time.sleep(0.01)

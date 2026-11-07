@@ -152,6 +152,28 @@ recovery plan. If no child handle can establish exit, obtain an explicit,
 verified containment/recovery plan before stopping this owner. Do not delete or
 rewrite the claim, intent, database or locks to manufacture a fresh attempt.
 
+The same owner-fence requirement applies after later candidate, exact-original
+restore and local-recovery Popen calls return a handle but before the exact child
+lifetime is durably recorded. A temporary retained reader owns separate SH file
+descriptors; its normal close does not release the supervisor's persistent EX or
+ancestor/direct-prior SH locks. If reader cleanup fails after Popen, the existing
+child is retained as unresolved, with no second launch or automatic kill. Normal
+owner shutdown keeps every owner-held fence until all owned child exits are
+positively observed, with either setting of `restart_after_clean_shutdown`.
+SIGTERM/SIGINT delivery is deferred throughout Popen and handle registration,
+including the interval after exec but before Popen returns. A failure before
+Popen still creates no child. Recording the exact running child
+lifetime ends this extra unresolved-launch guard; the ordinary drain protocol
+continues to own known-child shutdown.
+
+The normal-owner process regression exercises actual CLI/run/ledger/Popen and
+independent EX contenders across start, restore and local recovery, both signal
+requests, both restart settings and failures before/after temporary FD cleanup.
+Its already-initialized readiness and recovery-admission ports are controlled;
+it does not fabricate an initialization outcome receipt or claim Docker/MCP
+readiness conformance. Child exit releases the fences, while a live unknown child
+keeps them held without changing the unresolved record or sending another effect.
+
 This live-holder guarantee does not survive SIGKILL, a host crash or forced
 container teardown. Losing every holder still requires external containment
 and fresh ownership evidence; it is not a successful rollback. The synthetic
