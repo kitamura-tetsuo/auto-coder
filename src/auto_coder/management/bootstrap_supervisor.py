@@ -24,8 +24,11 @@ from loguru import logger
 
 from .archived_exclusions import ArchivedExclusion, acquire_exclusion_fences, parse_exclusions, unique_pairs
 from .bootstrap_store import BootstrapStore, ChildPhase, ChildRecord, EffectRecord
+from .fresh_runtime_binding import FreshRuntimeBinding, fresh_management_path, parse_fresh_runtime_binding, verify_installed_fresh_binding
 
 if TYPE_CHECKING:
+    from auto_coder.tested_source_refs import TestedSourcePublisher
+
     from .fresh_readiness import FreshReadinessObserver
 
 
@@ -186,6 +189,7 @@ class BootstrapConfig:
     fresh_prior_lock_path: Path | None = None
     restart_after_clean_shutdown: bool = False
     archived_exclusions: tuple[ArchivedExclusion, ...] = ()
+    fresh_runtime_binding: FreshRuntimeBinding | None = None
 
     @classmethod
     def read(cls, path: Path) -> "BootstrapConfig":
@@ -209,6 +213,7 @@ class BootstrapConfig:
             "fresh_prior_lock_path",
             "restart_after_clean_shutdown",
             "archived_exclusions",
+            "fresh_runtime_binding",
         }
         if set(raw) - allowed:
             raise ValueError("unknown bootstrap configuration field")
@@ -246,6 +251,7 @@ class BootstrapConfig:
             Path(raw["fresh_prior_lock_path"]) if raw.get("fresh_prior_lock_path") else None,
             raw.get("restart_after_clean_shutdown", False),
             parse_exclusions(raw.get("archived_exclusions", [])),
+            parse_fresh_runtime_binding(raw.get("fresh_runtime_binding")),
         )
         config.validate()
         return config
@@ -268,6 +274,19 @@ class BootstrapConfig:
             raise ValueError("invalid management self-update bootstrap profile")
         if (self.fresh_guard_path is None) != (self.fresh_prior_lock_path is None) or any(path is not None and not path.is_absolute() for path in (self.fresh_guard_path, self.fresh_prior_lock_path)):
             raise ValueError("fresh initialization paths must be paired and absolute")
+        if self.fresh_runtime_binding is not None:
+            self.fresh_runtime_binding.validate()
+            initial = next(item for item in self.runtimes if item.reference == self.initial_runtime)
+            if (
+                self.fresh_prior_lock_path is None
+                or self.management_version_root is None
+                or self.management_config is None
+                or initial.execution_kind != "management-installed"
+                or initial.ready_receipt != Path(self.fresh_runtime_binding.initial_ready_path)
+                or initial.source_receipt != self.fresh_runtime_binding.initial_ready_identity
+            ):
+                raise ValueError("installed fresh runtime binding is incomplete")
+            fresh_management_path(initial)
         if self.archived_exclusions:
             if self.fresh_prior_lock_path is None or self.instance_id in {item.instance_id for item in self.archived_exclusions}:
                 raise ValueError("excluded ancestors require a distinct fresh instance")
@@ -313,7 +332,7 @@ class Observation:
 class ManagementBootstrapSupervisor:
     """Own one child; all executable data comes from immutable local config."""
 
-    def __init__(self, config: BootstrapConfig, incarnation: str | None = None, bootstrap_config_path: Path | None = None, *, fresh_initialization: bool = False) -> None:
+    def __init__(self, config: BootstrapConfig, incarnation: str | None = None, bootstrap_config_path: Path | None = None, *, fresh_initialization: bool = False, source_authority: TestedSourcePublisher | None = None) -> None:
         config.validate()
         from .worker_network_client import configured_worker_bridge_environment
 
@@ -323,6 +342,7 @@ class ManagementBootstrapSupervisor:
         self.config = config
         self.bootstrap_config_path = bootstrap_config_path
         self.fresh_initialization = fresh_initialization
+        self.source_authority = source_authority
         self._container_shutdown_requested = False
         self._archived_owner_fences: tuple[int, ...] = ()
         self._prior_owner_fence: int | None = None
@@ -687,7 +707,7 @@ class ManagementBootstrapSupervisor:
             try:
                 if read_fresh_status(self.config.state_root)["status"] != "succeeded":
                     raise ValueError("fresh initialization has not succeeded")
-                if self.config.restart_after_clean_shutdown or self.config.archived_exclusions:
+                if self.config.restart_after_clean_shutdown or self.config.archived_exclusions or self.config.fresh_runtime_binding is not None:
                     # The retained prior owner must remain fenced across every
                     # successor lifetime, not just the one-shot first launch.
                     import auto_coder
@@ -702,15 +722,22 @@ class ManagementBootstrapSupervisor:
                         if path.is_symlink() or not path.is_dir() or (info.st_dev, info.st_ino) != (device, inode):
                             raise ValueError("fresh retained roots differ")
                     runtime = next((item for item in self.config.runtimes if item.reference == intent.runtime_reference), None)
-                    if self.bootstrap_config_path is None or auto_coder.__file__ is None or runtime is None or len(runtime.arguments) != 4 or runtime.arguments[:3] != ("management", "serve", "--config"):
+                    if self.bootstrap_config_path is None or auto_coder.__file__ is None or runtime is None:
                         raise ValueError("fresh reconstruction runtime differs")
-                    verify_initialization_inputs(intent, bootstrap_config=self.bootstrap_config_path, management_config=Path(runtime.arguments[3]), executable=runtime.executable, application_root=Path(auto_coder.__file__).resolve(strict=True).parent)
+                    if self.config.fresh_runtime_binding is not None:
+                        from .oauth_config import load_management_settings
+
+                        verify_installed_fresh_binding(self.config, self.bootstrap_config_path, intent, load_management_settings(fresh_management_path(runtime)), source_authority=self.source_authority, bootstrap_application=Path(auto_coder.__file__).resolve(strict=True).parent)
+                    else:
+                        if len(runtime.arguments) != 4 or runtime.arguments[:3] != ("management", "serve", "--config"):
+                            raise ValueError("fresh reconstruction runtime differs")
+                        verify_initialization_inputs(intent, bootstrap_config=self.bootstrap_config_path, management_config=Path(runtime.arguments[3]), executable=runtime.executable, application_root=Path(auto_coder.__file__).resolve(strict=True).parent)
                     self._acquire_prior_fences(intent)
                     if self.config.archived_exclusions:
                         from .oauth_config import load_management_settings
                         from .retained_startup import retained_from_fresh_intent
 
-                        exclusion_evidence = retained_from_fresh_intent(load_management_settings(Path(runtime.arguments[3])))
+                        exclusion_evidence = retained_from_fresh_intent(load_management_settings(fresh_management_path(runtime)), source_authority=self.source_authority, serving_process=False)
                         if exclusion_evidence is None:
                             raise ValueError("fresh reconstruction exclusion evidence unavailable")
                         with exclusion_evidence:
@@ -844,10 +871,11 @@ class ManagementBootstrapSupervisor:
             runtime = next((item for item in self.config.runtimes if item.reference == intent.runtime_reference), None)
             if runtime is None or runtime.receipt != "sha256:" + intent.executable_sha256 or not runtime.verify(initial=True):
                 raise ValueError("fresh initialization runtime differs")
-            if runtime.execution_kind != "source-script" or runtime.executable != Path("/opt/auto-coder/.venv/bin/auto-coder") or len(runtime.arguments) != 4 or runtime.arguments[:3] != ("management", "serve", "--config"):
-                raise ValueError("fresh management configuration is not fixed")
-            management_config = Path(runtime.arguments[3])
-            _verify_fresh_console_entrypoint(runtime)
+            if self.config.fresh_runtime_binding is None:
+                if runtime.execution_kind != "source-script" or runtime.executable != Path("/opt/auto-coder/.venv/bin/auto-coder") or len(runtime.arguments) != 4 or runtime.arguments[:3] != ("management", "serve", "--config"):
+                    raise ValueError("fresh management configuration is not fixed")
+                _verify_fresh_console_entrypoint(runtime)
+            management_config = fresh_management_path(runtime)
             settings = load_management_settings(management_config)
             if settings.bootstrap_config_path != self.bootstrap_config_path or settings.state_root != self.config.oauth_root or settings.operation_state_root != self.config.journal_root:
                 raise ValueError("fresh management configuration differs")
@@ -858,7 +886,10 @@ class ManagementBootstrapSupervisor:
             if endpoint.hostname != settings.bind_host or endpoint.port != settings.port or endpoint.path != "/mcp" or endpoint.query or endpoint.fragment:
                 raise ValueError("fresh management endpoint differs")
             application_root = Path(auto_coder.__file__).resolve(strict=True).parent
-            verify_initialization_inputs(intent, bootstrap_config=self.bootstrap_config_path, management_config=management_config, executable=runtime.executable, application_root=application_root)
+            if self.config.fresh_runtime_binding is not None:
+                verify_installed_fresh_binding(self.config, self.bootstrap_config_path, intent, settings, source_authority=self.source_authority, bootstrap_application=application_root)
+            else:
+                verify_initialization_inputs(intent, bootstrap_config=self.bootstrap_config_path, management_config=management_config, executable=runtime.executable, application_root=application_root)
             allowed = {"fresh-initialization.json", ".supervisor-owner.lock", "logs"}
             if any(item.name not in allowed or item.is_symlink() for item in self.config.state_root.iterdir()) or any(self.config.journal_root.iterdir()):
                 raise ValueError("fresh initialization state is not empty")
@@ -871,7 +902,10 @@ class ManagementBootstrapSupervisor:
             with closing(HandoffStore(self.config.state_root, self.config.instance_id)._connect()):
                 pass
             RecoveryMailbox(self.config.state_root, self.config.instance_id).initialize()
-            verify_initialization_inputs(intent, bootstrap_config=self.bootstrap_config_path, management_config=management_config, executable=runtime.executable, application_root=application_root)
+            if self.config.fresh_runtime_binding is not None:
+                verify_installed_fresh_binding(self.config, self.bootstrap_config_path, intent, settings, source_authority=self.source_authority, bootstrap_application=application_root)
+            else:
+                verify_initialization_inputs(intent, bootstrap_config=self.bootstrap_config_path, management_config=management_config, executable=runtime.executable, application_root=application_root)
             validate_retained_oauth(settings.oauth)
             if not runtime.verify(initial=True) or endpoint.port is None:
                 raise ValueError("fresh runtime verification failed")

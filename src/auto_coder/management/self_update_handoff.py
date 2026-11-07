@@ -620,7 +620,8 @@ class SelfUpdateHandoffConsumer:
             from .retained_journal import RetainedGuardedOperationStore
             from .retained_startup import retained_from_fresh_intent
 
-            retained = retained_from_fresh_intent(settings)
+            authority = getattr(self.supervisor, "source_authority", None)
+            retained = retained_from_fresh_intent(settings, source_authority=authority, serving_process=False)
             if self.config.archived_exclusions and retained is None:
                 return HandoffPhase.UNAVAILABLE, "sealed ancestor evidence is unavailable; no stop was sent"
             if retained is not None:

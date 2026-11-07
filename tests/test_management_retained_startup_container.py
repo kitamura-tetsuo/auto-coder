@@ -26,7 +26,7 @@ from pathlib import Path
 from types import SimpleNamespace as N
 import auto_coder.management.retained_startup as startup
 runtime=N(reference='bootstrap',executable=Path('/some/executable'))
-bootstrap=N(instance_id='new', state_root=Path('/state'), journal_root=Path('/new-operations'), oauth_root=Path('/oauth'), fresh_prior_lock_path=Path('/management-prior-owner.lock'), runtimes=(runtime,), archived_exclusions=())
+bootstrap=N(instance_id='new', state_root=Path('/state'), journal_root=Path('/new-operations'), oauth_root=Path('/oauth'), fresh_prior_lock_path=Path('/management-prior-owner.lock'), runtimes=(runtime,), archived_exclusions=(), fresh_runtime_binding=None)
 intent=N(new_instance='new', state_root='/state', journal_root='/new-operations', oauth_root='/oauth',
  runtime_reference='bootstrap', host_prior_journal_root='/old', prior_journal_root='/management-prior-operations',
  prior_journal_device=int(os.environ['DB_DEVICE']), prior_journal_inode=int(os.environ['DB_INODE']),

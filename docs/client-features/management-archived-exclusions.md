@@ -186,13 +186,83 @@ records no headers or bodies; a harmless signed POST positive control establishe
 that it is live, and old worker keys must add zero POSTs before/after cutover and
 C reconstruction. These are CI execution requirements, not local execution claims.
 
-There is a separate eligibility constraint on a full archived-management
-self-update experiment: fresh initialization currently requires a source-script
-console runtime, while authenticated self-update requires the running runtime's
-installed READY receipt. The existing local recovery command restarts only the
-already selected runtime. A fixture must not invent a READY receipt or rewrite
-an initialization intent to bridge this gap. The real MCP source-profile test
-therefore verifies refusal before any handoff/process effect; it does not claim
-an A/B/C forward self-update fault-injection proof. Supporting that combined
-profile needs a separately designed verified promotion path and compatibility
-between immutable fresh provenance and subsequently installed child code.
+Fresh source-script profiles retain their previous eligibility restriction: a
+source console wrapper is not an installed READY. There is no promotion command,
+receipt manufacture, or rewriting of an existing initialization intent.
+
+## Installed initial runtime binding (version 2)
+
+A newly provisioned fresh instance may instead select a real
+`management-installed` initial runtime. Its bootstrap configuration includes:
+
+```json
+"fresh_runtime_binding": {
+  "version": 2,
+  "bootstrap_application_root": "/opt/auto-coder/.venv/lib/python3.12/site-packages/auto_coder",
+  "initial_ready_path": "/management-versions/revisions/…/…/MANAGEMENT_READY.json",
+  "initial_ready_identity": "<64 lowercase hexadecimal characters>"
+}
+```
+
+This is a new configuration sealed *before* the existing one-shot host claim.
+The existing intent schema and bytes remain unchanged. Its bootstrap-config
+hash seals this versioned binding. Its application digest authenticates the
+original bootstrap package at the canonical read-only anchor; its executable
+digest authenticates the initial installed Python. The anchor must be disjoint
+from the version root and the active OAuth, journal and bootstrap-state roots.
+Unknown versions, additional fields and incomplete binding profiles fail closed.
+Missing/null binding retains the existing source-script behavior.
+
+Prepare the initial installed environment with the existing
+`ManagementVersionStager.prepare()` using the exact final management YAML,
+instance, configured Python/ABI and source authority. Prepare the candidate with
+the same procedure before activating it. Neither READY nor the initialization
+intent may be edited to claim a different source, instance or configuration.
+The fresh container may retain the existing read-only version mount: forward
+selects an already prepared candidate through `lookup()` and does not invoke an
+installer. Online preparation inside that read-only mount remains unavailable;
+this contract does not add a writable supporting mount or weaken host checks. A
+read-only container must also configure a private writable `TMPDIR` for the
+existing compatibility preflight, for example the bootstrap-created
+`/management-child-state/logs` inside its owner-only state root. This is part of
+the immutable initial runtime environment; do not add files/directories to an
+unclaimed empty state root to bypass the initialization checks.
+
+Before consuming the host grant, immediately before first launch, during fresh
+readiness observation, and during reconstruction, the owner reopens the original
+READY through the configured stager. This verifies the authoritative original
+source-test run, tag/lock, installed content, configured Python/ABI, instance and
+management configuration. The initial READY and immutable anchor must remain
+available even after subsequent child updates. Do not garbage-collect them.
+`LD_*` and Python code-hook variables are refused; only the documented isolated
+Python flags with value `1` are accepted. Protected credential file paths and
+fixed worker bridge configuration retain their existing contracts.
+
+The serving child's retained reader also authenticates the *currently selected*
+READY and live PID/start-token, generation, nonce, argv and environment. Its
+actual imported package must be inside that installed environment, which may
+legitimately differ from the original bootstrap package. A bounded startup wait
+permits the parent's Popen-to-RUNNING ledger publication, never a fallback to
+owner-only validation. Owner/effect readers explicitly request the distinct
+owner purpose. Disposable compatibility preflight removes bootstrap/live-state
+paths, as before; it cannot impersonate the selected child.
+
+Reconstruction reacquires every archive and direct-prior fence for v2 even when
+clean-child restart is disabled. False/omitted restart does not launch a child.
+Partial fence acquisition is rolled back; a possibly launched child retains its
+existing protection. P1 stop and forward-start checks still reopen all retained
+evidence. Loss after drain may make even the one exact-original runtime return
+unable to serve: that is not success and must not become an automatic retry.
+After a new operation admission, returning to an old instance is not a rollback
+procedure; retain the current state and recover forward or stop for inspection.
+
+The isolated fresh-host CI requires six installed A/B/C cases: successful update
+to different installed code plus reconstruction/Caddy reconnect; ancestor loss
+at real durable SUBMITTED and STOPPED boundaries; corrupt candidate READY;
+host interruption; unavailable original source evidence before first claim.
+All installations use the actual stager and disposable HTTP source/Firebase
+services. Their local source records describe the fixture checks actually run,
+not a claim that the public full-source workflow ran. Container execution is
+required evidence; collecting those tests or component tests alone is not a
+live-cutover GO decision. Preserve existing OAuth, original databases/intents,
+all fences, old-key suppression and worker lifetimes throughout verification.

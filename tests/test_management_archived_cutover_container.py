@@ -91,7 +91,7 @@ class Chain:
         if with_workers:
             self.start_workers()
         probe = "from pathlib import Path;from auto_coder.management.fresh_initialization import application_tree_sha256;print(application_tree_sha256(Path('/opt/auto-coder/.venv/lib/python3.12/site-packages/auto_coder')))"
-        self.application_digest = self.docker("run", "--rm", "--network", "none", "--entrypoint", "python", self.image, "-c", probe).splitlines()[-1]
+        self.application_digest = self.docker("run", "--rm", "--network", "none", "--read-only", "-e", "PYTHONDONTWRITEBYTECODE=1", "--entrypoint", "python", self.image, "-c", probe).splitlines()[-1]
 
     def prepare_caddy_image(self) -> str:
         """Use the real pinned Caddy binary with the supported bind-only profile."""
@@ -230,6 +230,8 @@ class Chain:
             if not omit_archive:
                 for item in bindings:
                     mounts += [(Path(item.host_journal_root), item.journal_root, False), (Path(item.host_fence), item.fence, False)]
+        self.configure_profile(name, root, config, runtime, management, mounts, fresh=prior is not None)
+        config_file.write_text(json.dumps(config))
         container_name = "ancestor-fixture-" + uuid.uuid4().hex[:16]
         self.names.append(container_name)
         args = ["create", "--name", container_name, "--read-only", "--publish", f"127.0.0.1:{self.port}:8080"]
@@ -261,9 +263,9 @@ class Chain:
                 hashlib.sha256(config_file.read_bytes()).hexdigest(),
                 hashlib.sha256(management.read_bytes()).hexdigest(),
                 self.image,
-                self.executable_digest,
+                str(config["runtimes"][0]["receipt"]).removeprefix("sha256:"),
                 self.application_digest,
-                "bootstrap",
+                str(config["initial_runtime"]),
                 "/management-child-state",
                 "/management-operations",
                 "/management-oauth",
@@ -287,6 +289,9 @@ class Chain:
             generation.intent.write_text(json.dumps(asdict(intent)))
             generation.intent.chmod(0o600)
         return generation
+
+    def configure_profile(self, name, root, config, runtime, management, mounts, *, fresh: bool) -> None:
+        """Default source profile; installed fixtures override trusted preparation."""
 
     def command(self, generation: Generation) -> list[str]:
         assert generation.intent is not None and generation.network_fd is not None and generation.prior_lock is not None

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from contextlib import ExitStack
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import auto_coder
 
@@ -13,8 +14,11 @@ from .fresh_initialization import load_fresh_initialization, verify_initializati
 from .oauth_config import ManagementSettings
 from .retained_journal import RetainedJournal
 
+if TYPE_CHECKING:
+    from auto_coder.tested_source_refs import TestedSourcePublisher
 
-def retained_from_fresh_intent(settings: ManagementSettings) -> RetainedJournal | None:
+
+def retained_from_fresh_intent(settings: ManagementSettings, *, source_authority: TestedSourcePublisher | None = None, serving_process: bool = True) -> RetainedJournal | None:
     """Fail closed on an incomplete selected retained-history deployment."""
     config_path = settings.bootstrap_config_path
     if config_path is None:
@@ -30,7 +34,12 @@ def retained_from_fresh_intent(settings: ManagementSettings) -> RetainedJournal 
     runtime = next((item for item in bootstrap.runtimes if item.reference == intent.runtime_reference), None)
     if runtime is None or auto_coder.__file__ is None or bootstrap.fresh_prior_lock_path != Path("/management-prior-owner.lock"):
         raise ValueError("fresh runtime or prior fence unavailable")
-    verify_initialization_inputs(intent, bootstrap_config=config_path, management_config=settings.config_path, executable=runtime.executable, application_root=Path(auto_coder.__file__).resolve(strict=True).parent)
+    if bootstrap.fresh_runtime_binding is not None:
+        from .fresh_runtime_binding import verify_installed_fresh_binding
+
+        verify_installed_fresh_binding(bootstrap, config_path, intent, settings, source_authority=source_authority, serving_process=serving_process)
+    else:
+        verify_initialization_inputs(intent, bootstrap_config=config_path, management_config=settings.config_path, executable=runtime.executable, application_root=Path(auto_coder.__file__).resolve(strict=True).parent)
     if not intent.host_prior_journal_root:
         if bootstrap.archived_exclusions:
             raise ValueError("exclusions require the direct prior journal")

@@ -33,7 +33,7 @@ def test_durable_forward_effect_rechecks_real_ancestors(boundary, tmp_path: Path
     previous = replace(source.previous, instance_id=INSTANCE)
     handoff = replace(source, expected_child=replace(source.expected_child, instance_id=INSTANCE), candidate=replace(source.candidate, instance_id=INSTANCE, source_sha="a" * 40), previous=previous, policy_revision=accepted.policy_revision, effect_generation=sent.effect.owner_generation)
     settings = N(bootstrap_config_path=bootstrap, operating_policy_path=policy, operation_state_root=tmp_path / "operations", state_root=grants.settings.database_path.parent, oauth=grants.settings)
-    config = N(instance_id=INSTANCE, state_root=tmp_path / "consumer", journal_root=settings.operation_state_root, oauth_root=settings.state_root, management_config=tmp_path / "management.yaml", archived_exclusions=())
+    config = N(instance_id=INSTANCE, state_root=tmp_path / "consumer", journal_root=settings.operation_state_root, oauth_root=settings.state_root, management_config=tmp_path / "management.yaml", archived_exclusions=(), fresh_runtime_binding=None)
     calls = {"stop": [], "start": [], "restore": []}
     stopped = replace(handoff.expected_child, effect_operation_id=operation + ":stop")
 
@@ -76,7 +76,8 @@ def test_durable_forward_effect_rechecks_real_ancestors(boundary, tmp_path: Path
 
     armed = [False]
 
-    def retained(_settings):
+    def retained(_settings, **purpose):
+        assert purpose == {"source_authority": None, "serving_process": False}
         if armed[0]:
             armed[0] = False
             if fault == "missing-factory":
@@ -177,7 +178,7 @@ def test_successful_reconstruction_holds_all_fences_before_publication(host_case
 
     monkeypatch.setattr("auto_coder.management.fresh_initialization.acquire_prior_owner_fence", mapped_fence)
     monkeypatch.setattr("auto_coder.management.oauth_config.load_management_settings", lambda _: N())
-    monkeypatch.setattr("auto_coder.management.retained_startup.retained_from_fresh_intent", lambda _: reader(case.b / "journal", "manager-b", archives=(reader(case.a, "manager-a"),)))
+    monkeypatch.setattr("auto_coder.management.retained_startup.retained_from_fresh_intent", lambda _, **purpose: reader(case.b / "journal", "manager-b", archives=(reader(case.a, "manager-a"),)))
     archive = case.a / "owner.lock"
     held = None
     if fault == "missing":

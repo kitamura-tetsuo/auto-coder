@@ -33,7 +33,7 @@ def create_management_app(
     clients: dict[str, WorkerNetworkClient] = worker_clients if worker_clients is not None else {}
     if worker_clients is None and configured_worker_bridge_environment():
         clients = {channel: WorkerNetworkClient(WorkerEndpointConfig.environment(channel)) for channel in ("beta", "release")}
-    owned_retained = retained_from_fresh_intent(settings) if retained_journal is None else None
+    owned_retained = retained_from_fresh_intent(settings, source_authority=self_update_source_authority, serving_process=True) if retained_journal is None else None
     selected_retained = retained_journal if retained_journal is not None else owned_retained
     runtime = ManagementRuntime(settings, grants, clients, self_update_source_authority=self_update_source_authority, retained_journal=selected_retained)
     mcp, resource = create_mcp_resource(settings, grants, (*tools, *runtime.tool_registrations()), identity_observer=runtime.observe_authenticated_identity)
