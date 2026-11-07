@@ -50,7 +50,7 @@ targets:
 
 Use `profile: beta` if release mutation is not authorized. Each policy target
 must exactly match one registry target's repository/channel; duplicate
-repository ownership invalidates the policy. Unknown targets and mismatched
+active repository ownership is rejected by the registry. Unknown targets and mismatched
 policies are denied without connecting to another worker. OAuth scopes,
 operating policy checks, graceful-stop restrictions and generation fences are
 unchanged.

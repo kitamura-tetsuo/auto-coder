@@ -16,7 +16,7 @@ from auto_coder.management.oauth_config import ManagementSettings, OAuthClient, 
 from auto_coder.management.oauth_grants import OAuthGrantService
 from auto_coder.management.operations import AcceptedAuthority, ActionParameter, AdmissionStatus, ManagedTarget, OperationIntent
 from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkClient, configured_worker_bridge_environment, configured_worker_registry
-from auto_coder.operating_policy import ActionClass, DecisionOutcome, load_operating_policy
+from auto_coder.operating_policy import ActionClass
 
 
 def _configs() -> dict[str, WorkerEndpointConfig]:
@@ -66,6 +66,9 @@ def test_registry_rejects_duplicate_json_and_duplicate_machine_key_bytes(tmp_pat
     monkeypatch.setenv("AUTO_CODER_WORKER_REGISTRY", json.dumps({"workers": [entries[0], entries[0]]}))
     with pytest.raises(ValueError, match="distinct"):
         configured_worker_registry()
+    monkeypatch.setenv("AUTO_CODER_WORKER_REGISTRY", json.dumps({"workers": [*entries[:2], {**entries[2], "repository": entries[1]["repository"]}]}))
+    with pytest.raises(ValueError, match="distinct"):
+        configured_worker_registry()
     secrets[2].write_bytes(secrets[1].read_bytes())
     monkeypatch.setenv("AUTO_CODER_WORKER_REGISTRY", json.dumps({"workers": entries}))
     with pytest.raises(ValueError, match="machine credentials"):
@@ -88,8 +91,8 @@ def test_exact_policy_target_lookup_and_duplicate_repository_claims(tmp_path: Pa
     assert policy is not None
     original = policy.read_text(encoding="utf-8")
     policy.write_text(original.replace("repositories: [fixture/agent-table]", "repositories: [fixture/outliner]"), encoding="utf-8")
-    assert load_operating_policy(policy).outcome is DecisionOutcome.UNAVAILABLE
-    assert runtime._resolve("beta-worker", ActionClass.INSPECT)["status"] == "UNAVAILABLE"  # type: ignore[index]
+    assert runtime._resolve("beta-agent-table-worker", ActionClass.INSPECT)["reason"] == "target_configuration_mismatch"  # type: ignore[index]
+    assert isinstance(runtime._resolve("beta-worker", ActionClass.INSPECT), ResolvedWorker)
     policy.write_text(original.replace("repositories: [fixture/agent-table]", "repositories: [fixture/unknown]"), encoding="utf-8")
     assert runtime._resolve("beta-agent-table-worker", ActionClass.INSPECT)["reason"] == "target_configuration_mismatch"  # type: ignore[index]
     assert isinstance(runtime._resolve("beta-worker", ActionClass.INSPECT), ResolvedWorker)
