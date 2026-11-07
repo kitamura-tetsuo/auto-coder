@@ -770,6 +770,9 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
     latest = _call(http, bearer, "auto_coder_deploy_beta_source", _argument(client, revisions[0], "smoke-deploy-new-run"))
     new_run_deployment = str(latest["operation_id"])
     _await_stage(app, new_run_deployment, "SUCCEEDED", timeout=210)
+    # Subsequent cases explicitly drive and settle acceptance operations.
+    # Stop polling again so it cannot continually stale their journal reads.
+    http.portal.call(service.stop_monitor)
     later = accept("later-successful-same-sha", deployment=new_run_deployment)
     later_capture = captured(later)
     assert later_capture["capture"]["source"]["tested_source_oid"] == first_capture["capture"]["source"]["tested_source_oid"]
