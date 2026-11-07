@@ -267,38 +267,32 @@ class WorkerVersionPreparer:
             raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "installed worker entry point is unavailable or failed") from exc
 
     def _observe(self, environment: Path) -> InstalledProvenance:
-        self._verify_installed_origin(environment)
-        output = self._run([str(environment / "bin" / "python"), "-m", "auto_coder.build_provenance"], output=True, env=self._safe_environment())
-        try:
-            value = json.loads(output)
-            source = value["source_revision"]
-            version = value["distribution_version"]
-            if not source["available"] or not version["available"]:
-                raise ValueError("unavailable installed identity")
-            return InstalledProvenance(source_revision=source["value"], distribution_version=version["value"])
-        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
-            raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "installed provenance response is invalid") from exc
-
-    def _verify_installed_origin(self, environment: Path) -> None:
+        # Bind origin checks to the modules that produce this exact observation,
+        # rather than probing a separate interpreter with different import flags.
         program = (
             "import importlib.metadata,json,pathlib,auto_coder; "
+            "from auto_coder import build_provenance; "
             "d=importlib.metadata.distribution('auto-coder'); "
             "u=json.loads(d.read_text('direct_url.json') or '{}'); "
             "print(json.dumps({'module':str(pathlib.Path(auto_coder.__file__).resolve()),"
+            "'provenance_module':str(pathlib.Path(build_provenance.__file__).resolve()),"
             "'distribution_root':str(pathlib.Path(d.locate_file('')).resolve()),"
-            "'editable':u.get('dir_info',{}).get('editable',False)}))"
+            "'editable':u.get('dir_info',{}).get('editable',False),"
+            "'provenance':build_provenance.observe_controller_artifact().to_dict()}))"
         )
         output = self._run(
-            [str(environment / "bin" / "python"), "-I", "-c", program],
+            [str(environment / "bin" / "python"), "-c", program],
             output=True,
             env=self._safe_environment(),
         )
         try:
             observed = json.loads(output)
             module = Path(observed["module"]).resolve(strict=True)
+            provenance_module = Path(observed["provenance_module"]).resolve(strict=True)
             distribution_root = Path(observed["distribution_root"]).resolve(strict=True)
             environment_root = environment.resolve(strict=True)
             module.relative_to(environment_root)
+            provenance_module.relative_to(environment_root)
             distribution_root.relative_to(environment_root)
             if observed["editable"] is not False:
                 raise ValueError("editable installation")
@@ -307,6 +301,15 @@ class WorkerVersionPreparer:
                 PreparationFailure.VERIFICATION_MISMATCH,
                 "installed package does not originate in its recorded non-editable environment",
             ) from exc
+        try:
+            value = observed["provenance"]
+            source = value["source_revision"]
+            version = value["distribution_version"]
+            if not source["available"] or not version["available"]:
+                raise ValueError("unavailable installed identity")
+            return InstalledProvenance(source_revision=source["value"], distribution_version=version["value"])
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            raise WorkerVersionError(PreparationFailure.VERIFICATION_MISMATCH, "installed provenance response is invalid") from exc
 
     def _validate_receipt(self, receipt: ReadyReceipt, attempt: Path) -> None:
         if (
