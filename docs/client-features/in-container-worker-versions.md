@@ -25,7 +25,10 @@ receipt binds the resolved commit, absolute environment and interpreter, SHA-256
 the lock bytes actually installed, runtime profile, attempt ID, installation time,
 installed observation, a stable opaque runtime ID, and a content identity over those
 bindings. Every read re-hashes the retained lock and invokes the installed runtime;
-directory existence or installer success alone is never readiness.
+it also verifies that the imported `auto_coder` module and its distribution root
+remain inside the recorded environment and that distribution metadata does not mark
+the installation editable. Directory existence, matching provenance values, or
+installer success alone is never readiness.
 
 Preparation deliberately does not select a channel, change an executable pointer,
 stop or start a worker, activate an environment, grant management authority, or

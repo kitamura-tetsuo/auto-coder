@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures.ci_timing import docker_timing_arguments, observe_dependency_cache_comparison, observe_nested_install_evidence
-from tests.utils.integration_dependency_cache import dependency_cache_arguments
+from tests.utils.integration_dependency_cache import dependency_cache_arguments, isolated_cache_namespace
 
 pytestmark = pytest.mark.supervisor_integration
 
@@ -37,8 +37,8 @@ def _docker(*arguments: str, environment: dict[str, str] | None = None, timeout:
     return subprocess.run(["docker", *arguments], capture_output=True, text=True, check=check, timeout=timeout, env=environment)
 
 
-def _preparation_cache_arguments(*, namespace: str | None = None, reset: bool = False) -> tuple[str, ...]:
-    return dependency_cache_arguments(namespace=namespace, reset=reset).arguments
+def _preparation_cache_arguments(*, namespace: str | None = None) -> tuple[str, ...]:
+    return dependency_cache_arguments(namespace=namespace).arguments
 
 
 def _wait_for(predicate, *, timeout: float = 20.0):
@@ -599,6 +599,7 @@ def test_independently_prepared_staged_restart_preserves_held_intent(tmp_path: P
     first_attempt_path: Path | None = None
     held_first_attempt = runtime / "held-first-ready"
     execution_ids = {role: str(uuid.uuid4()) for role in ("held-staged-a", "held-staged-b")}
+    comparison_cache_namespace = isolated_cache_namespace("same-source-cold-warm")
     try:
         for index, attempt in enumerate(("held-staged-a", "held-staged-b")):
             try:
@@ -619,7 +620,7 @@ def test_independently_prepared_staged_restart_preserves_held_intent(tmp_path: P
                     f"{runtime}:/runtime",
                     "-v",
                     f"{fixtures}:/fixtures:ro",
-                    *_preparation_cache_arguments(namespace="same-source-cold-warm", reset=index == 0),
+                    *_preparation_cache_arguments(namespace=comparison_cache_namespace),
                     "-e",
                     f"AUTO_CODER_DEPENDENCY_EXECUTION_ID={execution_ids[attempt]}",
                     *docker_timing_arguments(target_role=attempt),

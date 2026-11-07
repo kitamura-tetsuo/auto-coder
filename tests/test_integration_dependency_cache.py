@@ -9,7 +9,7 @@ import pytest
 
 from tests.fixtures import ci_timing
 from tests.fixtures.integration_dependency_observation import _write, observe_uv_sync
-from tests.utils.integration_dependency_cache import CONTAINER_CACHE_DIRECTORY, dependency_cache_arguments
+from tests.utils.integration_dependency_cache import CONTAINER_CACHE_DIRECTORY, dependency_cache_arguments, isolated_cache_namespace
 
 
 def test_cache_arguments_distinguish_cold_warm_and_uncached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -57,6 +57,26 @@ def test_unknown_user_cache_falls_back_before_container_launch(monkeypatch: pyte
     assert result.condition == "fallback"
     assert result.arguments == ()
     assert result.host_directory == Path(configured)
+
+
+def test_concurrent_comparisons_own_independent_cache_namespaces(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    shared = tmp_path / "runner-cache"
+    monkeypatch.setenv("AUTO_CODER_INTEGRATION_UV_CACHE_DIR", str(shared))
+    first_namespace = isolated_cache_namespace("same-source-cold-warm")
+    first = dependency_cache_arguments(namespace=first_namespace)
+    assert first.condition == "cold"
+    assert first.host_directory is not None
+    active_artifact = first.host_directory / "active-preparation-artifact"
+    active_artifact.write_text("in use", encoding="utf-8")
+
+    second_namespace = isolated_cache_namespace("same-source-cold-warm")
+    second = dependency_cache_arguments(namespace=second_namespace)
+
+    assert second.condition == "cold"
+    assert second.host_directory is not None
+    assert second_namespace != first_namespace
+    assert second.host_directory != first.host_directory
+    assert active_artifact.read_text(encoding="utf-8") == "in use"
 
 
 def test_observer_delegates_success_and_failure_without_changing_results(tmp_path: Path) -> None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-import shutil
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,6 +13,12 @@ CACHE_ENVIRONMENT_VARIABLE = "AUTO_CODER_INTEGRATION_UV_CACHE_DIR"
 CONTAINER_CACHE_DIRECTORY = "/dependency-cache/uv"
 
 
+def isolated_cache_namespace(prefix: str) -> str:
+    """Allocate a comparison-owned namespace without touching another owner."""
+
+    return f"{prefix}-{uuid.uuid4()}"
+
+
 @dataclass(frozen=True)
 class DependencyCacheArguments:
     arguments: tuple[str, ...]
@@ -20,7 +26,7 @@ class DependencyCacheArguments:
     host_directory: Path | None
 
 
-def dependency_cache_arguments(*, namespace: str | None = None, reset: bool = False) -> DependencyCacheArguments:
+def dependency_cache_arguments(*, namespace: str | None = None) -> DependencyCacheArguments:
     """Prepare a configured host cache, or explicitly retain uncached behavior."""
 
     configured = os.environ.get(CACHE_ENVIRONMENT_VARIABLE)
@@ -34,8 +40,6 @@ def dependency_cache_arguments(*, namespace: str | None = None, reset: bool = Fa
         directory = unresolved.resolve()
         if namespace:
             directory /= namespace
-        if reset and directory.exists():
-            shutil.rmtree(directory)
         directory.mkdir(parents=True, exist_ok=True)
         if not directory.is_dir() or not os.access(directory, os.R_OK | os.W_OK | os.X_OK):
             raise OSError("cache path is not a writable directory")

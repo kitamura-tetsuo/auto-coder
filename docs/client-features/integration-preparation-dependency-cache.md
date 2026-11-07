@@ -20,9 +20,11 @@ Records label actual cold, warm, uncached, or fallback setup and
 allowlist uv's downloaded, built, and prepared summaries without retaining raw
 URLs, credentials, or arbitrary installer output. A completed preparation marker
 identifies which invocation populated the cache for a later warm invocation. The
-independent same-source staged-runtime case owns a freshly reset comparison
+independent same-source staged-runtime case owns a newly allocated comparison
 namespace: its first installation is the identified cold populator and its second
-fresh destination is the warm sample, with no intervening writer. A retained
+fresh destination is the warm sample, with no intervening writer. The harness never
+resets a shared namespace, so concurrent comparisons cannot remove another active
+preparation's artifacts. A retained
 comparison event joins exact source, lock, Python, uv, namespace, destination,
 population-lineage fields, and a per-execution correlation identifier shared only
 by that preparation's uv observation and completed timing spans. This prevents
