@@ -529,6 +529,20 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
             assert bounded["projection"]["sections"]["effective_decision"]["availability"] == "COMPLETE"
             assert len(json.dumps(bounded["projection"]).encode()) < 256 * 1024
 
+            malformed_cycle = json.loads(source_before[cycle_path])
+            malformed_cycle["prs"]["17"]["findings"] = []
+            cycle_path.write_text(json.dumps(malformed_cycle), encoding="utf-8")
+            malformed_cycle_bytes = cycle_path.read_bytes()
+            effects_before_corrupt_read = external_effect_count
+            corrupt_cycle = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 17}, 15)
+            assert corrupt_cycle["projection"]["sections"]["review_cycle"]["availability"] == "CORRUPT"
+            assert corrupt_cycle["projection"]["sections"]["effective_decision"]["records"][0]["publication"] == "CONFIRMED"
+            assert corrupt_cycle["projection"]["sections"]["review_effects"]["records"]
+            assert corrupt_cycle["projection"]["sections"]["pending_work"]["records"]
+            assert cycle_path.read_bytes() == malformed_cycle_bytes
+            assert external_effect_count == effects_before_corrupt_read
+            cycle_path.write_bytes(source_before[cycle_path])
+
             decision_path.write_text("{broken", encoding="utf-8")
             corrupt = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 17}, 3)
             assert corrupt["projection"]["sections"]["effective_decision"]["availability"] == "CORRUPT"

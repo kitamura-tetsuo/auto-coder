@@ -74,7 +74,7 @@ def _json_section(path: Path, lock: Path, producer: str, select: Callable[[objec
         return _section(producer, availability, reason=reason, records=[])
     try:
         records = select(value)
-    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+    except (KeyError, TypeError, ValueError, AttributeError, AssertionError) as exc:
         return _section(producer, "CORRUPT", reason=_safe(type(exc).__name__), records=[])
     return _section(producer, "COMPLETE", observed_revision=path.stat().st_mtime_ns, records=records)
 
