@@ -3,9 +3,13 @@
 import json
 import os
 import re
+import signal
 import stat
 import subprocess
+import sys
+import tempfile
 import time
+import xml.etree.ElementTree as ET
 from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,6 +37,164 @@ from auto_coder.muse_client import MuseClient
 from .test_dashboard_observability import _assert_required_stage_visible, _mounted_detail
 from .test_issue_job_workspace import git, repository
 from .test_muse_msp import _host
+
+_FD_CASE = "AUTO_CODER_TEST_ISOLATED_MSP_FD_CASE"
+_FD_HOSTS = "AUTO_CODER_TEST_ISOLATED_MSP_HOSTS"
+
+
+@pytest.fixture(params=[False, True], ids=["ordinary-parent", "occupied-parent"])
+def msp_parent_descriptors(request):
+    """Own the pressure descriptors; never close unrelated caller descriptors."""
+    owned = []
+    try:
+        if request.param and os.environ.get(_FD_CASE) != request.node.nodeid:
+            while not owned or owned[-1] < 1024:
+                owned.append(os.open(os.devnull, os.O_RDONLY))
+        yield
+    finally:
+        for descriptor in owned:
+            os.close(descriptor)
+
+
+def _isolated_fd_resume_case(nodeid, tmp_path):
+    """Run the unchanged FD oracle with fresh low slots, even in a busy shard."""
+    environment = os.environ.copy()
+    for key in tuple(environment):
+        if key == "PYTEST_ADDOPTS" or key.startswith(("AUTO_CODER_CI_TIMING_", "COV_CORE_")) or key in {"COVERAGE_FILE", "COVERAGE_PROCESS_START"}:
+            environment.pop(key)
+    environment[_FD_CASE] = nodeid
+    hosts = tmp_path / "isolated-fd-hosts.jsonl"
+    environment[_FD_HOSTS] = str(hosts)
+    report = tmp_path / "isolated-fd-result.xml"
+    command = [sys.executable, "-I", "-m", "pytest", "-q", "-o", "addopts=", "--timeout=30", "--timeout-method=signal", f"--junitxml={report}", nodeid]
+    with subprocess.Popen(command, cwd=Path(__file__).resolve().parents[1], env=environment, close_fds=True, start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=90)
+        finally:
+            try:
+                if process.poll() is None:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.communicate(timeout=10)
+            finally:
+                _cleanup_isolated_fd_hosts(hosts, nodeid)
+        assert process.returncode == 0, (stdout + stderr)[-8000:]
+    cases = ET.parse(report).findall(".//testcase")
+    assert len(cases) == 1 and cases[0].get("name") == nodeid.split("::")[-1]
+    assert not any(cases[0].find(tag) is not None for tag in ("skipped", "failure", "error"))
+
+
+def _cleanup_isolated_fd_hosts(manifest, nodeid):
+    """Separate MSP sessions are not owned by the outer pytest process group."""
+    if not manifest.exists():
+        return
+    for line in manifest.read_text().splitlines():
+        record = json.loads(line)
+        assert set(record) == {"case", "pid", "started"} and record["case"] == nodeid
+        pid = record["pid"]
+        assert type(pid) is int and pid > 1 and isinstance(record["started"], str) and record["started"].isdigit()
+        try:
+            raw = Path(f"/proc/{pid}/stat").read_text()
+        except FileNotFoundError:
+            assert not MuseClient._process_group_exists(pid), "MSP group outlived its verifiable owner"
+            continue
+        fields = raw[raw.rfind(")") + 2 :].split()
+        assert fields[19] == record["started"] and int(fields[2]) == int(fields[3]) == pid, "MSP cleanup identity changed"
+        os.killpg(pid, signal.SIGKILL)
+        deadline = time.monotonic() + 5
+        while MuseClient._process_group_exists(pid) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not MuseClient._process_group_exists(pid)
+
+
+def _record_isolated_fd_host(process):
+    manifest = os.environ.get(_FD_HOSTS)
+    if manifest is None:
+        return
+    staging = None
+    try:
+        raw = Path(f"/proc/{process.pid}/stat").read_text()
+        fields = raw[raw.rfind(")") + 2 :].split()
+        assert int(fields[2]) == int(fields[3]) == process.pid
+        destination = Path(manifest)
+        previous = destination.read_text() if destination.exists() else ""
+        with tempfile.NamedTemporaryFile("w", dir=destination.parent, delete=False) as stream:
+            staging = Path(stream.name)
+            stream.write(previous + json.dumps({"case": os.environ[_FD_CASE], "pid": process.pid, "started": fields[19]}) + "\n")
+        staging.replace(destination)
+    except BaseException:
+        try:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        finally:
+            try:
+                process.wait(timeout=5)
+            finally:
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None:
+                        stream.close()
+        raise
+    finally:
+        if staging is not None:
+            staging.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize("failure", ["hard-exit", "watchdog", "changed-identity"])
+def test_isolated_fd_resume_cleanup_tracks_separate_host_sessions(tmp_path, _use_real_commands, _use_real_sleep, failure):
+    manifest = tmp_path / "hosts.jsonl"
+    case = "owned-disposable-case"
+    script = """
+import json, os, pathlib, subprocess, sys, time
+host = subprocess.Popen([sys.executable, '-I', '-c', 'import time; time.sleep(60)'],
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+raw = pathlib.Path(f'/proc/{host.pid}/stat').read_text()
+started = raw[raw.rfind(')') + 2:].split()[19]
+manifest = pathlib.Path(sys.argv[1])
+staging = manifest.with_suffix('.tmp')
+staging.write_text(json.dumps({'case': sys.argv[2], 'pid': host.pid, 'started': started}) + '\\n')
+staging.replace(manifest)
+if sys.argv[3] == 'watchdog':
+    time.sleep(60)
+os._exit(7)
+"""
+    original = None
+    with subprocess.Popen([sys.executable, "-I", "-c", script, str(manifest), case, failure], start_new_session=True, close_fds=True) as controller:
+        try:
+            deadline = time.monotonic() + 10
+            while not manifest.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert manifest.exists()
+            if failure == "watchdog":
+                with pytest.raises(subprocess.TimeoutExpired):
+                    controller.wait(timeout=0.1)
+                os.killpg(controller.pid, signal.SIGKILL)
+            controller.wait(timeout=10)
+            original = manifest.read_text()
+            record = json.loads(original)
+            assert MuseClient._process_group_exists(record["pid"])
+            if failure == "changed-identity":
+                manifest.write_text(json.dumps({**record, "started": str(int(record["started"]) + 1)}))
+                with pytest.raises(AssertionError, match="identity changed"):
+                    _cleanup_isolated_fd_hosts(manifest, case)
+                assert MuseClient._process_group_exists(record["pid"])
+                manifest.write_text(original)
+            _cleanup_isolated_fd_hosts(manifest, case)
+            assert not MuseClient._process_group_exists(record["pid"])
+            _cleanup_isolated_fd_hosts(manifest, case)
+        finally:
+            try:
+                if controller.poll() is None:
+                    os.killpg(controller.pid, signal.SIGKILL)
+                    controller.wait(timeout=10)
+            finally:
+                if original is not None:
+                    manifest.write_text(original)
+                _cleanup_isolated_fd_hosts(manifest, case)
 
 
 def retained_job(tmp_path, backend="muse"):
@@ -310,8 +472,12 @@ def _exercise_retained_resume(mock_ui, tmp_path, monkeypatch, refusal, reason, b
         ("MSP_RESUME_MODEL", "Muse MSP session omitted or uses an incompatible model", "muse-retained"),
     ],
 )
-def test_explicit_resume_with_high_msp_pipe_descriptors(mock_ui, tmp_path, monkeypatch, _use_real_commands, _use_real_sleep, refusal, reason, backend, release_low_descriptors):
+def test_explicit_resume_with_high_msp_pipe_descriptors(mock_ui, tmp_path, monkeypatch, _use_real_commands, _use_real_sleep, refusal, reason, backend, release_low_descriptors, msp_parent_descriptors, request):
     import fcntl
+
+    if release_low_descriptors and os.environ.get(_FD_CASE) != request.node.nodeid:
+        _isolated_fd_resume_case(request.node.nodeid, tmp_path)
+        return
 
     processes = []
     original_write = MuseClient._msp_write
@@ -329,6 +495,7 @@ def test_explicit_resume_with_high_msp_pipe_descriptors(mock_ui, tmp_path, monke
             assert len(reserved) >= 3 and max(reserved) < 1024
             release_reserved()
             process = original_popen(*launch_args, **launch_kwargs)
+            _record_isolated_fd_host(process)
             descriptors = tuple(getattr(process, name).fileno() for name in ("stdin", "stdout", "stderr"))
             released_pipe_descriptors.append(descriptors)
             # Establish the counterexample before the high-FD duplication:
