@@ -347,6 +347,7 @@ class ManagementBootstrapSupervisor:
         self._archived_owner_fences: tuple[int, ...] = ()
         self._prior_owner_fence: int | None = None
         self._fresh_observer: FreshReadinessObserver | None = None
+        self._fresh_launch_may_exist = False
         self.store = BootstrapStore(config.state_root, config.instance_id)
         self.incarnation = incarnation or str(uuid.uuid4())
         self._lock = threading.RLock()
@@ -490,6 +491,9 @@ class ManagementBootstrapSupervisor:
                 if runtime.drain_ack is not None:
                     environment["AUTO_CODER_DRAIN_RECEIPT"] = str(runtime.drain_ack)
                 child = subprocess.Popen([str(runtime.executable), *runtime.arguments], env=environment, start_new_session=False)
+                # Keep the actual owned handle even if lifetime observation or
+                # the next durable write fails after process creation.
+                self._children[child.pid] = child
             except OSError:
                 failed = replace(prepared, phase=ChildPhase.NEEDS_ATTENTION, exit_cause="launch_failed")
                 self.store.save(failed)
@@ -504,7 +508,6 @@ class ManagementBootstrapSupervisor:
                 failed = replace(prepared, phase=ChildPhase.NEEDS_ATTENTION, exit_cause="unobservable_launch")
                 self.store.save(failed)
                 return self._finish(operation_id, ResultStatus.UNKNOWN, failed, "new child OS lifetime could not be observed")
-            self._children[child.pid] = child
             running = replace(prepared, phase=ChildPhase.RUNNING, pid=child.pid, start_token=token)
             self.store.save(running)
             # A process which exits during the bounded startup observation is a
@@ -674,13 +677,53 @@ class ManagementBootstrapSupervisor:
         if self.config.restart_after_clean_shutdown and threading.current_thread() is threading.main_thread():
             previous_handler = signal.getsignal(signal.SIGTERM)
             signal.signal(signal.SIGTERM, lambda _signum, _frame: setattr(self, "_container_shutdown_requested", True))
+        fresh_handlers = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)} if self.fresh_initialization and threading.current_thread() is threading.main_thread() else {}
+
+        def fresh_shutdown(signum, frame):
+            if self._fresh_launch_may_exist:
+                self._container_shutdown_requested = True
+                return
+            prior = fresh_handlers[signal.Signals(signum)]
+            if callable(prior):
+                prior(signum, frame)
+            elif prior == signal.SIG_DFL:
+                signal.signal(signum, signal.SIG_DFL)
+                signal.raise_signal(signum)
+
+        for signum in fresh_handlers:
+            signal.signal(signum, fresh_shutdown)
         try:
             with (self.config.state_root / ".supervisor-owner.lock").open("a+b") as ownership:
                 fcntl.flock(ownership.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return self._run_owned()
+                try:
+                    return self._run_owned()
+                finally:
+                    if self._fresh_launch_may_exist:
+                        self._preserve_uncertain_fresh_launch()
         finally:
+            for signum, handler in fresh_handlers.items():
+                signal.signal(signum, handler)
             if previous_handler is not None:
                 signal.signal(signal.SIGTERM, previous_handler)
+
+    def _preserve_uncertain_fresh_launch(self) -> None:
+        """Keep the owner and all inherited fences until owned exits are proven."""
+        try:
+            logger.error("Fresh launch remains unresolved; preserving owner fences without effects or retry")
+        except Exception:
+            pass
+        while True:
+            try:
+                children = tuple(self._children.values())
+                if children and all(child.poll() is not None for child in children):
+                    self._release_prior_fences()
+                    self._fresh_launch_may_exist = False
+                    return
+            except (OSError, ValueError, ChildProcessError):
+                # Neither an empty handle set nor unavailable observation is
+                # evidence that a partially dispatched child never existed.
+                pass
+            time.sleep(0.2)
 
     def _run_owned(self) -> int:
         from .self_update_handoff import SelfUpdateHandoffConsumer
@@ -920,13 +963,17 @@ class ManagementBootstrapSupervisor:
                     raise ValueError("fresh first-launch retained evidence unavailable")
                 with evidence:
                     evidence.read()
+            if self._container_shutdown_requested:
+                raise ValueError("fresh launch was cancelled before dispatch")
             launch_may_exist = True
+            self._fresh_launch_may_exist = True
             result = self.start_selected("fresh-" + intent.request_id, str(uuid.uuid4()), intent.runtime_reference)
             if result.status is not ResultStatus.OBSERVED_RUNNING:
                 raise ValueError("fresh first launch is not confirmed")
             observation = record_fresh_launch(self.config.state_root, intent, incarnation=self.incarnation, child_identity=self._identity(result.record), verification_timeout=self.config.verification_timeout)
             self._fresh_observer = FreshReadinessObserver(self, intent, observation, settings.oauth.canonical_issuer, application_root)
             logger.info("Fresh management child launched request={} identity={}", intent.request_id, self._identity(result.record))
+            self._fresh_launch_may_exist = False
             return True
         except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
             if not launch_may_exist:

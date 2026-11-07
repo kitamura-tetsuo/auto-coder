@@ -79,7 +79,8 @@ def first_launch_case(tmp_path: Path, monkeypatch, request):
                 management_version_root=str(tmp_path / "versions"),
                 listener_url="http://127.0.0.1:8081/mcp",
                 initial_runtime="bootstrap",
-                runtimes=[dict(reference="bootstrap", receipt="sha256:" + executable_hash, executable=str(executable), arguments=["management", "serve", "--config", str(management)])],
+                restart_after_clean_shutdown=getattr(request, "param", None) == "clean-restart",
+                runtimes=[dict(reference="bootstrap", receipt="sha256:" + executable_hash, executable=str(executable), arguments=["management", "serve", "--config", str(management)], drain_ack=str(state / "drain.json") if getattr(request, "param", None) == "clean-restart" else None)],
                 fresh_guard_path=str(guard / "fresh-guard.sock"),
                 fresh_prior_lock_path=str(direct_lock),
                 archived_exclusions=[] if legacy else [asdict(archive)],
@@ -140,7 +141,7 @@ def first_launch_case(tmp_path: Path, monkeypatch, request):
     # run() normally holds this exclusive lock before entering first launch.
     own = (state / ".supervisor-owner.lock").open("w")
     fcntl.flock(own, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    case = N(a=a, b=b, state=state, operations=operations, oauth=oauth, intent=intent, supervisor=supervisor, grants=grants, listener_checks=listener_checks, paths=(config_path, management, executable, state / "fresh-initialization.json", oauth / "oauth.sqlite3"))
+    case = N(a=a, b=b, state=state, operations=operations, oauth=oauth, intent=intent, supervisor=supervisor, owner=own, grants=grants, listener_checks=listener_checks, paths=(config_path, management, executable, state / "fresh-initialization.json", oauth / "oauth.sqlite3"))
     try:
         yield case
     finally:

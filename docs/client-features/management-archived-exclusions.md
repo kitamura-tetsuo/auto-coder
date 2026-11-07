@@ -122,6 +122,46 @@ Loss of all holders is not claimed to preserve a kernel lock; a missing grant or
 unresolved claim prevents the successor's authorized launch. Re-observe exact
 processes before any recovery; do not blindly replay a cutover.
 
+### Uncertain first launch keeps its live owner
+
+After dispatch may have created a child, a missing launch acknowledgement,
+failed launch-record write or propagated exception must not end the supervisor
+CLI while that child can still run. The CLI retains its current exclusive owner
+lock and every ancestor/direct-prior shared lock, even after the host grant
+process has exited. This preservation path does not run readiness, handoff or
+recovery consumers, launch another child, stop an unverified child, or invent a
+successful record. The one-shot claim and original failure remain unchanged.
+
+The supervisor retains each actual Popen handle immediately after creation,
+before reading its process token or writing child state. Only positive exit
+observations for all those owned handles permit normal failure exit and fence
+cleanup. An empty handle set or unavailable observation is not absence proof:
+the owner keeps waiting. This intentionally includes a launch exception for
+which no authoritative child handle was returned. A refusal before dispatch,
+or an owned child already positively observed exited, can still clean up.
+
+SIGTERM and SIGINT requests during this uncertainty are deferred without
+signalling the child. Outside that interval, existing signal behavior remains.
+Keep this owner alive while inspecting `management fresh-status` and independently
+checking the exact OS lifetimes and kernel locks; display only the status where
+raw launch identities are unnecessary. A remaining `unknown` or `launched`
+status never authorizes replay. There is no automatic in-place retry or reset
+for this consumed claim. If an owned child exits, the CLI releases its fences
+and returns the original failure; preserve all records for a separately reviewed
+recovery plan. If no child handle can establish exit, obtain an explicit,
+verified containment/recovery plan before stopping this owner. Do not delete or
+rewrite the claim, intent, database or locks to manufacture a fresh attempt.
+
+This live-holder guarantee does not survive SIGKILL, a host crash or forced
+container teardown. Losing every holder still requires external containment
+and fresh ownership evidence; it is not a successful rollback. The synthetic
+process regressions run the actual CLI and start-selected path with a real
+wait-gate child, independent host holder and EX contenders. They control only
+container-path/mount observations, grant transport and runtime argv, and do not
+claim installed READY, Docker containment or application-readiness evidence.
+This change adds no management action or dashboard event schema; it preserves
+an unresolved startup before admission instead of reporting another outcome.
+
 ## Verification and rollback limits
 
 Verify protected HTTP 401, fresh exact-child authenticated readback, unchanged
