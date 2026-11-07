@@ -181,7 +181,7 @@ def test_three_target_manager_restart_peer_isolation_and_lost_response(tmp_path:
         assert held["result_code"] == "DRAINING"
         assert held["data"]["operation_id"] == "beta-held-stop"
         assert observe("release") is not None
-        assert observe("beta-agent-table") is not None
+        assert manager_call(manager, "observe", "beta-agent-table")["result_code"] == "UNAVAILABLE"
         (root / "beta" / "fixture-release").write_text("release")
         done = _wait_for(lambda: (result if result["result_code"] == "STOPPED" else None) if (result := manager_call(manager, "read-operation", "beta", "beta-held-stop")) else None)
         assert done["data"]["status"] == "STOPPED"
@@ -190,6 +190,6 @@ def test_three_target_manager_restart_peer_isolation_and_lost_response(tmp_path:
         assert stopped["data"]["status"] == "STOPPED"
         assert manager_call(manager, "observe", "beta")["result_code"] == "UNAVAILABLE"
         assert observe("release") is not None
-        assert observe("beta-agent-table") is not None
+        assert manager_call(manager, "observe", "beta-agent-table")["result_code"] == "UNAVAILABLE"
     finally:
         compose_call("down", "--remove-orphans", timeout=90)
