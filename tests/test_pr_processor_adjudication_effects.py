@@ -239,13 +239,18 @@ def test_edited_accepted_source_blocks_reliance_on_the_stale_decision() -> None:
     assert not any("task_e_adj1" in action for action in actions)
 
 
-def test_adjudication_envelope_reply_is_excluded_from_generic_cloud_feedback() -> None:
+@pytest.mark.parametrize("reply_author", ["human", "maintainer"])
+@pytest.mark.parametrize("marker_count", [0, 1, 2])
+def test_adjudication_envelope_reply_is_excluded_from_generic_cloud_feedback(reply_author, marker_count) -> None:
     decision = Decision(str(uuid.uuid4()), str(uuid.uuid4()), HEAD_SHA, "c" * 64, "UPHOLD", "FIX", (), "bounded correction", "chatgpt-assisted")
+    from auto_coder.review_feedback_marker import REVIEW_GUIDANCE_MARKER
+
+    envelope = render_decision(decision) + ("\n" + REVIEW_GUIDANCE_MARKER) * marker_count
     thread = ReviewThread(
         id="T2",
         comments=[
             ReviewThreadComment(20, "This misses the empty-input case", "bot", ROOT_AUTHOR_ID, "Bot", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
-            ReviewThreadComment(21, render_decision(decision), "human", ADJUDICATOR_ID, "User", "2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z", 20),
+            ReviewThreadComment(21, envelope, reply_author, ADJUDICATOR_ID, "User", "2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z", 20),
         ],
     )
     github_client = _github_client(thread)

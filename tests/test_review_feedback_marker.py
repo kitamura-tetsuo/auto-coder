@@ -1,5 +1,7 @@
 """Tests for the cloud implementation agent's review-thread addressed protocol (issue #1618)."""
 
+import pytest
+
 from auto_coder.prompt_loader import get_prompt_template, render_prompt
 from auto_coder.review_feedback_marker import (
     REVIEW_ADDRESSED_MARKER,
@@ -89,3 +91,35 @@ class TestPromptsRequireAddressWithoutResolve:
     def test_effective_rendered_prompt_for_non_jules_issue_dispatch(self):
         rendered = render_prompt("issue.action", is_jules=False, **ISSUE_ACTION_RENDER_KWARGS)
         self._assert_protocol_present(rendered)
+
+
+@pytest.mark.parametrize(
+    "body, expected",
+    [
+        ("Required recovery is still missing\n<!-- auto-coder-review-guidance:v1 -->", True),
+        ("Required recovery is still missing", False),
+        ("Implemented the focused fix", False),
+        ("Quoted `<!-- auto-coder-review-guidance:v1 -->`", False),
+        ("> <!-- auto-coder-review-guidance:v1 -->", False),
+        ("```\n<!-- auto-coder-review-guidance:v1 -->\n```", False),
+        ("Text\n<!-- auto-coder-review-guidance:v2 -->", False),
+        ("Text\n<!-- auto-coder-review-guidance:v1 -->\nMore text", False),
+        ("Fixed\n<!-- auto-coder-review-addressed:v1 -->\n<!-- auto-coder-review-guidance:v1 -->", False),
+        ("<!-- auto-coder-review-guidance:v1 -->\n<!-- auto-coder-review-guidance:v1 -->", False),
+        ("Required correction\n<!-- auto-coder-review-guidance:v1 -->\n<!-- auto-coder-review-guidance:v1 -->", True),
+        (None, False),
+    ],
+)
+def test_explicit_guidance_role(body, expected):
+    from auto_coder.review_feedback_marker import reply_requests_review_correction
+
+    assert reply_requests_review_correction(body) is expected
+
+
+@pytest.mark.parametrize("marker_count", [1, 2])
+def test_guidance_cannot_forward_an_adjudication_envelope(marker_count):
+    from auto_coder.review_adjudication import Decision, render_decision
+    from auto_coder.review_feedback_marker import REVIEW_GUIDANCE_MARKER, reply_requests_review_correction
+
+    envelope = render_decision(Decision("decision", "context", "a" * 40, "digest", "UPHOLD", "FIX", (), "Keep the correction", "chatgpt-assisted"))
+    assert reply_requests_review_correction(envelope + ("\n" + REVIEW_GUIDANCE_MARKER) * marker_count) is False

@@ -268,7 +268,7 @@ def wait_until(predicate, timeout: float = 5) -> None:  # type: ignore[no-untype
         time.sleep(0.01)
 
 
-def test_selected_local_origin_runs_through_runner_and_persists_exact_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+def test_selected_local_origin_runs_through_runner_and_persists_exact_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands, _use_real_sleep, sparse_thread_switches) -> None:
     """The production selection seam must connect admission to durable execution."""
     from auto_coder import pr_processor
 
@@ -524,7 +524,7 @@ def test_production_adapter_rechecks_allowance_at_final_entry(tmp_path: Path, _u
     assert editor_calls == 0
 
 
-def test_runner_rechecks_advanced_base_at_held_provider_entry(tmp_path: Path, _use_real_commands) -> None:
+def test_runner_rechecks_advanced_base_at_held_provider_entry(tmp_path: Path, _use_real_commands, _use_real_sleep, sparse_thread_switches) -> None:
     """A retained job must not edit after the live base advances in place."""
     root, head, base = history(tmp_path)
     store, claim, metadata, instance = adapter(tmp_path, root, head, base, lambda _prompt, _root: "unexpected")
@@ -577,7 +577,7 @@ def test_runner_rechecks_advanced_base_at_held_provider_entry(tmp_path: Path, _u
     runner.close()
 
 
-def test_reopened_runner_never_replays_unconfirmed_entered_editor(tmp_path: Path, _use_real_commands) -> None:
+def test_reopened_runner_never_replays_unconfirmed_entered_editor(tmp_path: Path, _use_real_commands, _use_real_sleep, sparse_thread_switches) -> None:
     """A crash after entry but before result persistence cannot become a fresh edit."""
     root, head, base = history(tmp_path)
     path = tmp_path / "jobs.sqlite3"

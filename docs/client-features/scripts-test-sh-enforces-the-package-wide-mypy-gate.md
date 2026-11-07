@@ -19,6 +19,13 @@ CI check-only vs. local auto-fix formatting behavior, and the collector's
 exactly-once invocation with the original argument vector and exit status
 are unchanged.
 
+The only quality-free path is the explicit leading `--ci-tests-only` mode used
+by ordinary PR shards, where the workflow's mandatory quality job owns those
+checks. The script consumes that option before collector argument forwarding;
+setting `CI` or `GITHUB_ACTIONS` alone does not enable it. Container forwarding
+preserves the explicit mode and the original test arguments. Direct invocations
+retain the complete quality gate by default.
+
 The GitHub cache bridge explicitly types its request-extension payload as
 `dict[str, object]`, matching its context variable under mypy 2.4.0's
 literal-key inference. It still forwards only present `timeout` and

@@ -115,8 +115,20 @@ authority. Supervisor logs go to colored-capable stdout and to rotating
 
 ## Isolated CI integration
 
-The `Supervisor Integration Tests` GitHub Actions workflow builds the checked-out
-production image and runs process/Unix-socket regressions plus network-disabled,
+The `Supervisor Integration Tests` GitHub Actions workflow runs four independent
+jobs for worker/bridge processes, authenticated management self-update, privileged
+fresh-host observations, and isolated Supervisor containers. The unchanged
+`Supervisor Integration Tests` aggregate check fails unless all four jobs succeed.
+Each job checks out the same workflow revision and installs Python 3.12, uv 0.7.22,
+and locked dependencies; the host and container jobs each build their own production
+image from that checkout. Per-group JUnit and JSON inventories are uploaded on success
+and failure under artifact names containing the run and producing-attempt identity.
+The inventories include the collected node IDs, terminal outcomes, checkout identity,
+and first/last pytest case-phase timestamps, so missing outcomes and mandatory skips
+fail closed and actual test overlap can be distinguished from runner queue or setup
+overlap.
+
+The container group runs network-disabled,
 capability-dropped disposable Docker containers. Each worker service's fixed
 Compose entrypoint makes the Supervisor PID 1 with no accessible Docker socket/CLI,
 while the image's default `auto-coder` entrypoint remains available to management
@@ -157,8 +169,14 @@ original accepted destination and start only one successor. Reconstruction and
 peer noninterference are separately exercised against the actual worker
 management bridge. No real GitHub issue is dispatched.
 
-The normal PR test shards exclude the `supervisor_integration` marker. To
-reproduce manually, build the checked-out image with
-`scripts/prepare_opencode_image.py`, export its tag as
-`AUTOCODER_SUPERVISOR_IMAGE`, and run
-`uv run pytest -m supervisor_integration tests/test_supervisor_container_integration.py`.
+The normal PR test shards exclude the `supervisor_integration` marker. To reproduce
+a group, copy its complete selector and environment from
+`.github/workflows/supervisor-integration-tests.yml`; do not replace a whole-file
+selector with a fixed node list. For the isolated-container group, build the checkout
+with `uv run python scripts/prepare_opencode_image.py --tag <tag>`, export that tag as
+`AUTOCODER_SUPERVISOR_IMAGE`, set `AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION=1`,
+and run the four documented container files with `-m supervisor_integration`.
+The fresh-host reproduction additionally requires Docker, Caddy's pinned image,
+`strace`, and its workflow command under the privileged host interpreter. Diagnose a
+failure from the matching group/run-attempt artifact; compare the inventory timestamps
+to demonstrate execution overlap while treating Actions queue time separately.

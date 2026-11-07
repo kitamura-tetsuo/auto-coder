@@ -24,3 +24,9 @@ Both clean and edited results use the shared PR repair manifest. It binds the
 execution incarnation, retained H/B identities, observed merge lineage, file
 identities, and completion source for a later independently authorized publisher.
 Focused real-Git coverage is in `tests/test_local_conflict_repair_job.py`.
+
+The real-runner regressions opt out of the suite's no-op sleep fixture. Their
+bounded five-second waits yield to worker threads and run under sparse Python
+thread switching, while retaining exact-manifest, stale-base refusal and
+no-replay assertions. This is test scheduling coverage; production runner,
+authorization, workspace and publication behavior are unchanged.

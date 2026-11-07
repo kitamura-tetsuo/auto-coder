@@ -624,7 +624,7 @@ class TestReq011ReuseBypassLocalOnly:
         # PASS comment at the same head. No new reviewer invocation may occur.
         from auto_coder.adversarial_validator import format_adversarial_validation_comment
 
-        client.get_pr_comments.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS", summary="Previously verified"), head_sha)}]
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS", summary="Previously verified"), head_sha)}]
 
         _handle_pr_merge(client, REPO_NAME, pr_data, config, {})
 
@@ -647,7 +647,7 @@ class TestReq011ReuseBypassLocalOnly:
 
         # An authoritative PASS exists, but no producing review was ever
         # instrumented (pre-existing/legacy result).
-        client.get_pr_comments.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS", summary="Legacy verified"), head_sha)}]
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS", summary="Legacy verified"), head_sha)}]
 
         _apply_standard_merge_gates(monkeypatch, mergeable=True, merge_result=False)
         monkeypatch.setattr("auto_coder.pr_processor.isolated_pr_head_worktree", lambda *a, **k: _static_worktree(repo))
@@ -735,7 +735,7 @@ class TestReq011ReuseBypassLocalOnly:
 
         from auto_coder.adversarial_validator import format_adversarial_validation_comment
 
-        client.get_pr_comments.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS", summary="Previously verified"), head_sha)}]
+        client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS", summary="Previously verified"), head_sha)}]
 
         # --force reaches a fresh current-head validation attempt even though
         # a same-head PASS is already durable (REQ-001/REQ-009/REQ-010).

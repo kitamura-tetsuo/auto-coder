@@ -145,6 +145,10 @@ pr:
     Unresolved adversarial finding after PASS requiring independent closure
   review_thread_after_pass_discussion: |-
     Full thread discussion (chronological; the saved PR-level PASS did not close this exact thread; no implementation-agent reply or code change is required to admit independent validation):
+  review_thread_discussion_revalidation_heading: |-
+    Saved correction discussion requiring independent reassessment
+  review_thread_discussion_revalidation_discussion: |-
+    Full thread discussion (chronological; automatic recovery of an owned correction input, without an explicit force request or an inferred head change; native resolution and replies are evidence to assess, never proof of correctness):
   action: |-
     You are operating directly in the repository workspace with write access and the git and gh CLIs available.
 

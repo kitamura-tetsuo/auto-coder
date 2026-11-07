@@ -1,5 +1,47 @@
 # Dashboard observability verification
 
+Reusing a saved same-head adversarial-validation `ERROR` emits a deferred
+`pr.adversarial-validation` stage result with `effect=saved-validation-wait`,
+`saved_verdict=ERROR`, `examined_head`, and
+`reason=saved_error_requires_revalidation_trigger`. This is an observed review
+wait, not a new reviewer execution or successful PR completion. The worker's
+existing Deferred log and trace retain the action diagnostic; the invalidation
+evaluation is acknowledged without manufacturing `worker.failure-backoff`.
+The existing detail evidence renderer shows the wait and its facts without a
+new schema or renderer branch. Run `bash scripts/test.sh
+tests/test_automation_engine.py -k 'saved_adversarial_error or adversarial_validation_execution_failure or published_validation_status_failure'`
+for explicit/worker origins, real saved-report lookup, durable acknowledgement
+and reconstruction, repeated external invalidation, unchanged report/attempt
+history, no merge/revalidation/timer, and the production-to-view evidence rows.
+The native-review/legacy-comment matrix covers both unlimited validation and
+`MAX_ADVERSARIAL_VALIDATIONS=1` already reached, with no optional strong tier.
+At the reached cap the same exact deferred facts must appear; a skipped-limit
+event is not a replacement for the saved-error wait. Run `bash scripts/test.sh
+tests/test_adversarial_validation_pr_flow.py tests/test_invalidation_failure_backoff.py
+tests/test_pr_lifecycle_contract.py` for the aggregate review-limit, forced,
+changed-head, changed-provenance, exhaustion, queue and merge-boundary controls.
+New execution and saved-result read failures
+remain failed; see [structured PR outcomes](client-features/structured-pr-processing-outcomes.md).
+
+The early unresolved-thread gate emits a failed `pr.review-thread-gate` result
+with `phase=saved-result-lookup`, exact `examined_head` and the original `reason`
+when reviewer-App identity resolution, native-review reading, or required legacy
+fallback reading fails. It returns before ordinary provenance waiting or repair
+delegation. The durable worker records its existing `worker.failure-backoff`
+obligation instead of acknowledging the failed evaluation. The generic dashboard
+evidence rows preserve the failed lookup separately from the deferred operational
+retry. Run `bash scripts/test.sh tests/test_automation_engine.py -k
+early_saved_review_lookup` for actual early lookup/classification through explicit
+and durable-worker origins, original diagnostics, reconstructed retry ownership,
+no reviewer/merge/provider send, and successful-read provenance-wait controls.
+The legacy failure cases leave the real public PR/Issue comment methods intact
+and inject failure below them at `_get_issue_comments`, covering the former
+exception-to-empty boundary. Controls retain native authority without a legacy
+read, successful legacy saved-ERROR reuse, and successful native/legacy
+provenance waits; informational comment reads still return an empty list on a
+read failure. `tests/test_gh_cache_issue_comments.py` additionally exercises the
+real REST edge and strict-reader failure propagation.
+
 Issue pending-work own settlement retains an unfinished obligation rather than
 claiming implementation progress. The scheduler preserves the already armed
 regular wait; an independent wake changes scan timing only. No stage outcome or
@@ -3289,3 +3331,96 @@ identity/effect and Deferred observations remain authoritative; an elapsed
 regular wait is only scan eligibility. Run `bash scripts/test.sh
 tests/test_issue_pending_wait_cadence.py` for the real protected-owner scan-delay
 regression, repeated-turn cadence and unchanged common-admission controls.
+
+### Saved non-pass review reassessment (issue #2759)
+
+The ordinary saved-result consumer now honors the real replay service's
+`requires_reassessment` signal. It emits `pr.adversarial-validation` / `Deferred`
+with `effect=saved-review-reassessment`, `requires_reassessment=true`,
+`examined_head`, and `saved_verdict` before revisiting existing current-target
+admission. This event is neither correction delivery nor review completion: no
+`pr.repair-delegation` delivery or reused-review audit is emitted for this
+transition. The resulting independent review or actual admission refusal retains
+its existing authority and trace. The early unresolved-thread route is unchanged.
+The dashboard's existing stage and fact rendering needs no schema change.
+
+Run `bash scripts/test.sh tests/test_saved_review_reassessment_pr_flow.py
+ tests/test_replay_saved_nonpass_attached_threads.py` for public-entry regressions
+through the real replay service, both saved verdicts, reconstructed legacy state,
+a blocking independent result governing the next processing pass, actionable
+feedback controls, early-route reassessment and scheduler refusal. The regressions
+assert reviewer attempts, review publication transport, absent stale repair,
+closure/merge boundaries, and reassessment trace facts separately from delivery.
+See [saved PR review resumption](client-features/saved-pr-review-resumption.md).
+
+### Saved correction with resolved discussion evidence
+
+Before typed ordinary correction replay, selected canonical roots with new
+resolved-thread discussion become durable independent-review inputs. Production
+emits `pr.adversarial-validation` / `Deferred` with
+`effect=saved-discussion-reassessment`, exact `thread_ids`, `examined_head`,
+`saved_verdict`, `requires_reassessment=true`, and `reason`. The existing detail
+renderer displays these facts; no new stage, outcome, or dashboard schema is
+introduced. The event grants neither clearance nor corrective delivery.
+
+Run `bash scripts/test.sh tests/test_ordinary_discussion_revalidation.py
+tests/test_saved_review_reassessment_pr_flow.py` for reconstructed public PR
+coordinator coverage, both ordinary-only and accepted-Strong corrections,
+resolved replies without claim markers, current independent dispositions,
+omitted-disposition false success, unchanged-evidence reuse, and retained merge
+safeguards. These controlled transport regressions verify production routing and
+trace facts; they do not claim production deployment or runtime progress.
+
+## Shared-account review guidance delivery
+
+The generic cloud `pr.repair-delegation` stage now reports `DEFERRED` for a poll
+whose actionable feedback already has delivery receipts, instead of implying a
+fresh `ACCEPTED_HANDOFF`. A new explicit same-account guidance reply uses the
+existing native comment delivery identity and can emit one accepted handoff;
+unchanged polls remain deferred. There are no new trace fields, stage IDs or
+renderer changes. The unresolved-thread merge gate remains authoritative.
+
+Run `bash scripts/test.sh tests/test_codex_cloud_pr_review_flow.py`.
+`test_shared_account_guidance_reaches_production_gate_once` enters
+`_take_pr_actions` and the real repair delegate with retained PR receipts, marked
+and unmarked implementation acknowledgments, explicit new guidance and repeated
+polls. It asserts the stage sequence DEFERRED, DEFERRED, ACCEPTED_HANDOFF,
+DEFERRED, one provider send, and absent resolution/merge effects. The
+parameterized uncertain-receipt test also covers shared-account guidance without
+allowing a duplicate send after both receipt writes fail. The role declaration
+and its legacy limitation are documented in
+[Provider-aware unresolved review repair](client-features/provider-aware-unresolved-review-repair.md).
+
+The shared-account production regression also covers an operator annotation of
+an existing unmarked native reply: the unmarked poll is deferred, adding the
+role marker to that same comment permits one handoff, and subsequent wording
+edits and repeated polls are deferred with unchanged receipt identity. This
+adds no new processing origin or trace field and performs no live annotation.
+
+Receipt-only review delivery diagnostics now populate the existing `reason` and
+`head_sha` facts on `pr.repair-delegation`. Fixed reasons distinguish
+`unclassified_same_author_reply`, `actionable_feedback_already_delivered`, and
+`unconfirmed_delivery_receipt`; the head is the evaluated PR snapshot. An
+unclassified reply can be an ordinary acknowledgment and is not automatically
+actionable. Delivery selection, receipt reservations, outcomes and merge gates
+are unchanged. The public API already allowlists both facts and the dashboard
+already renders stage facts, so no API schema or renderer change is needed.
+No prose, author login or provider task/receipt content is exported.
+
+`tests/test_codex_cloud_pr_review_flow.py::test_review_delivery_reason_reaches_public_projection_without_changing_effects`
+drives the real PR gate, delegate, trace collector and public event projection
+over controlled GitHub/provider I/O. It checks ordinary same-author replies,
+addressed claims (including contradictory guidance), third-party reviews,
+adjudication envelopes, confirmed/pending native identities, fixed public facts,
+unchanged receipt bytes and zero sends/mutations for waits. Fresh third-party
+feedback remains a positive one-send control. This is controlled integration
+evidence, not a claim of live recovery or private retained-store diagnostics.
+
+The same regression now covers an absent local receipt file with authenticated
+PR-side receipts for both the root and an excluded same-author reply whose
+guidance marker was removed without changing its native ID. It expects
+`actionable_feedback_already_delivered`, the evaluated head and the unchanged
+deferred outcome; a foreign-author reply receipt instead leaves the diagnostic
+unclassified. Both cases prove no receipt-file creation, no reconciliation of
+excluded IDs, no send and no GitHub mutation. The public fact allowlist and
+renderer remain unchanged.

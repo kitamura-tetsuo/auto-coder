@@ -41,6 +41,7 @@ from auto_coder.management.worker_lifecycle import LIFECYCLE_ACTIONS, WorkerLife
 from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkClient
 from auto_coder.tested_source_refs import serialize_record
 from auto_coder.util.gh_cache import GitDataResponse, GitHubGitDataClient
+from tests.fixtures.ci_timing import docker_timing_arguments, observe_nested_install_evidence, recorder
 from tests.test_management_beta_deploy_container import _argument, _await_stage, _result
 from tests.test_management_mcp import _issue, real_boundary
 from tests.test_management_runtime_mcp import _call
@@ -234,7 +235,8 @@ def _finish(producer: BetaRuntimeSmokeProducer, operation_id: str, *, timeout: f
         assert observed.state.value not in {"CONFLICT", "UNAVAILABLE"}, observed
         return observed if observed.state.value == "COMPLETE" else None
 
-    return _wait_for(completed, timeout=timeout)
+    with recorder().span("beta_smoke.progress_observation", operation_id=operation_id, configured_timeout_seconds=timeout):
+        return _wait_for(completed, timeout=timeout)
 
 
 def _host_path(root: Path, path: str) -> Path:
@@ -280,6 +282,7 @@ def test_local_smoke_uses_installed_worker_real_progress_and_original_journal(re
         f"{runtime}:/runtime",
         "-v",
         f"{fixtures}:/fixtures:ro",
+        *docker_timing_arguments(),
         "-e",
         "HOME=/runtime/home",
         "--entrypoint",
@@ -290,6 +293,8 @@ def test_local_smoke_uses_installed_worker_real_progress_and_original_journal(re
         timeout=1200,
     )
     installations = json.loads(staged.stdout.strip().splitlines()[-1])
+    for role, revision in zip(("source-a", "source-b", "source-a-alternate"), (revisions[0], revisions[1], revisions[0])):
+        observe_nested_install_evidence(role, revision)
     ready_a, ready_b, alternate = [item["receipt"] for item in installations]
     assert all(item["installed"]["editable"] is False for item in installations)
     assert ready_a["source_sha"] == alternate["source_sha"] != ready_b["source_sha"]
@@ -585,14 +590,15 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
     stuck = journal.get(started["operation_id"]).record
     original_window = journal.smoke_snapshot(stuck.operation_id)[1]["window"]
     diagnostics = []
-    until = time.monotonic() + 15
-    while time.monotonic() < until:
-        diagnostics.append(client.diagnostics("status").result_code)
-        read(stuck.operation_id)
-        observed = producer.read(stuck.operation_id)
-        if observed.state.value == "COMPLETE" and journal.get(stuck.operation_id).record.phase is OperationPhase.FAILED:
-            break
-        time.sleep(0.3)
+    with recorder().span("beta_smoke.blocked_progress_observation", operation_id=stuck.operation_id, configured_window_seconds=8):
+        until = time.monotonic() + 15
+        while time.monotonic() < until:
+            diagnostics.append(client.diagnostics("status").result_code)
+            read(stuck.operation_id)
+            observed = producer.read(stuck.operation_id)
+            if observed.state.value == "COMPLETE" and journal.get(stuck.operation_id).record.phase is OperationPhase.FAILED:
+                break
+            time.sleep(0.3)
     assert journal.smoke_snapshot(stuck.operation_id)[1]["window"] == original_window
     assert journal.get(stuck.operation_id).record.phase is OperationPhase.FAILED
     assert SourceAcceptancePublisher(remote, "owner/repo").read(stuck.operation_id) is None

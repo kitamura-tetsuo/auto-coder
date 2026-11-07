@@ -57,7 +57,7 @@ def test_comment_distinguishes_gap_and_disables_only_automatic_merge() -> None:
 
 def test_saved_gap_pass_remains_blocked_from_automatic_merge() -> None:
     client = MagicMock()
-    client.get_pr_comments.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS", specification_gaps=[gap()]), "abc123")}]
+    client.get_pr_comments.return_value = client.get_pr_comments_strict.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS", specification_gaps=[gap()]), "abc123")}]
 
     status, error = _get_published_adversarial_validation_status(client, "owner/repo", 12, "abc123")
 

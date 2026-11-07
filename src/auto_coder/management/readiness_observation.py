@@ -9,15 +9,16 @@ import os
 import shlex
 import shutil
 import sqlite3
-import sys
+import stat
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .action_scopes import READ_SCOPE, validate_scope_set
 from .bootstrap_store import ChildPhase, ChildRecord
 from .bootstrap_supervisor import BootstrapConfig, ManagementBootstrapSupervisor, RuntimeSpec
-from .oauth_config import ManagementSettings
+from .oauth_config import ManagementSettings, load_management_settings
 from .oauth_grants import AuthenticatedGrant
 from .self_update_handoff import HandoffStore, observe_supervisor, runtime_for_receipt
 
@@ -40,6 +41,7 @@ class ReadinessProof:
     client_id: str
     grant_id: str
     resource: str
+    scopes: str
     observed_at: float
 
 
@@ -105,11 +107,46 @@ def _live(config: BootstrapConfig) -> tuple[ChildRecord, RuntimeSpec] | None:
 
 def _connect(config: BootstrapConfig, *, readonly: bool = False) -> sqlite3.Connection:
     path = config.state_root / "management-readiness.sqlite3"
+    if path.is_symlink():
+        raise sqlite3.OperationalError("readiness store must not be a symlink")
+    if not path.exists() and not readonly:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        os.close(descriptor)
+    info = path.stat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        raise sqlite3.OperationalError("readiness store ownership or permissions are unsafe")
     if readonly:
-        return sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
+        return sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=2)
     connection = sqlite3.connect(path, timeout=2)
     connection.execute("CREATE TABLE IF NOT EXISTS proof (instance_id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
     return connection
+
+
+def _grant_is_current(settings: ManagementSettings, proof: ReadinessProof, scopes: tuple[str, ...], now: float) -> bool:
+    """Revalidate the proof's durable grant without initializing OAuth state."""
+    path = settings.oauth.database_path
+    if path.is_symlink() or not path.is_file():
+        return False
+    with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=2) as connection:
+        authority = connection.execute("SELECT issuer,resource,project FROM authority WHERE singleton=1").fetchone()
+        row = connection.execute(
+            "SELECT client_id,resource,scope,project,uid,expires,revoked FROM grants WHERE id=?",
+            (proof.grant_id,),
+        ).fetchone()
+    if row is None:
+        return False
+    grant_scopes = validate_scope_set(tuple(row[2].split()))
+    return (
+        authority == (settings.oauth.canonical_issuer, settings.oauth.resource, settings.oauth.firebase_project_id)
+        and (row[0], row[1], row[3], row[4]) == (proof.client_id, proof.resource, proof.project_id, proof.uid)
+        and row[2] == " ".join(grant_scopes)
+        and set(scopes) <= set(grant_scopes)
+        and isinstance(row[5], (int, float))
+        and not isinstance(row[5], bool)
+        and math.isfinite(row[5])
+        and row[5] > now
+        and row[6] is None
+    )
 
 
 def publish_authenticated_readback(settings: ManagementSettings, grant: AuthenticatedGrant, *, startup_reconciled: bool, observation_id: str) -> None:
@@ -118,6 +155,10 @@ def publish_authenticated_readback(settings: ManagementSettings, grant: Authenti
         return
     try:
         config = BootstrapConfig.read(settings.bootstrap_config_path)
+        client = settings.oauth.client(grant.client_id)
+        scopes = validate_scope_set(grant.scopes)
+        if grant.principal.project_id != settings.oauth.firebase_project_id or grant.resource != settings.oauth.resource or client is None or READ_SCOPE not in scopes or not set(scopes) <= set(client.allowed_scopes):
+            return
         endpoint = urlsplit(config.listener_url)
         if (
             config.oauth_root != settings.state_root
@@ -162,6 +203,7 @@ def publish_authenticated_readback(settings: ManagementSettings, grant: Authenti
             grant.client_id,
             grant.grant_id,
             grant.resource,
+            " ".join(scopes),
             time.time(),
         )
         if _live(config) != live:
@@ -200,12 +242,24 @@ def read_authenticated_readback(config: BootstrapConfig, *, observation_id: str,
             return None
         if not isinstance(proof.observed_at, (int, float)) or isinstance(proof.observed_at, bool) or not math.isfinite(proof.observed_at) or not observation_started_at <= proof.observed_at <= now:
             return None
-        if any(not isinstance(value, str) or not value or len(value) > 512 or "\x00" in value for value in (proof.application_path, proof.application_sha256, proof.management_config_path, proof.management_config_sha256, proof.project_id, proof.uid, proof.client_id, proof.grant_id, proof.resource)):
+        if any(
+            not isinstance(value, str) or not value or len(value) > 512 or "\x00" in value
+            for value in (proof.application_path, proof.application_sha256, proof.management_config_path, proof.management_config_sha256, proof.project_id, proof.uid, proof.client_id, proof.grant_id, proof.resource, proof.scopes)
+        ):
+            return None
+        scopes = validate_scope_set(tuple(proof.scopes.split()))
+        if READ_SCOPE not in scopes or proof.scopes != " ".join(scopes):
             return None
         management_config = Path(proof.management_config_path)
         if not management_config.is_absolute() or management_config.is_symlink() or (config.management_config is not None and management_config != config.management_config):
             return None
-        if hashlib.sha256(management_config.read_bytes()).hexdigest() != proof.management_config_sha256 or hashlib.sha256(Path(proof.application_path).read_bytes()).hexdigest() != proof.application_sha256 or _live(config) != live or time.time() > observation_ends_at:
+        if hashlib.sha256(management_config.read_bytes()).hexdigest() != proof.management_config_sha256:
+            return None
+        settings = load_management_settings(management_config)
+        client = settings.oauth.client(proof.client_id)
+        if proof.project_id != settings.oauth.firebase_project_id or proof.resource != settings.oauth.resource or client is None or not set(scopes) <= set(client.allowed_scopes) or not _grant_is_current(settings, proof, scopes, now):
+            return None
+        if hashlib.sha256(Path(proof.application_path).read_bytes()).hexdigest() != proof.application_sha256 or _live(config) != live or time.time() > observation_ends_at:
             return None
         return proof
     except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
