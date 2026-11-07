@@ -8,7 +8,7 @@ from auto_coder.management.beta_runtime_smoke import LocalResult, LocalSmokeEvid
 from auto_coder.management.mcp_runtime_tools import ManagementRuntime
 from auto_coder.management.operation_executor import ManagementOperationDispatcher, OperationHandler
 from auto_coder.management.operation_store import ManagementOperationStore
-from auto_coder.management.operations import AcceptedAuthority, EffectState, ManagedTarget, OperationIntent, OperationPhase
+from auto_coder.management.operations import AcceptedAuthority, EffectState, ManagedTarget, MutationResult, MutationStatus, OperationIntent, OperationPhase
 from auto_coder.management.source_acceptance import BetaAcceptanceHandler, SourceAcceptanceError, SourceAcceptancePublisher
 from auto_coder.util.gh_cache import GitDataResponse
 from tests.test_beta_runtime_smoke import _fixture
@@ -22,8 +22,10 @@ class Git:
         self.tag = None
         self.ref = None
         self.lose = lose_ref_response
+        self.calls = []
 
     def request(self, method, path, payload=None):
+        self.calls.append((method, path))
         if method == "POST" and path == "git/tags":
             self.tag = {**payload, "sha": OID}
             return GitDataResponse(201, {"sha": OID})
@@ -204,6 +206,57 @@ def test_reconcile_confirms_only_the_original_durable_local_evidence(tmp_path, p
     result = reconstructed.reconcile(held.record)
     assert (result.phase is OperationPhase.SUCCEEDED) is settles
     assert (result.effect.state is EffectState.CONFIRMED) is settles
+
+
+@pytest.mark.asyncio
+async def test_reconstruction_settles_an_already_confirmed_publication_without_republishing(tmp_path, monkeypatch):
+    """A crash between effect confirmation and SUCCEEDED resumes from the receipt."""
+    smoke = _fixture(tmp_path)
+    journal = smoke.journal
+    producer = smoke.producer()
+    assert producer.advance(smoke.operation.operation_id).state is SmokeState.IN_PROGRESS
+    smoke.next_heartbeat()
+    completed = producer.advance(smoke.operation.operation_id)
+    assert completed.state is SmokeState.COMPLETE
+    assert completed.evidence is not None and completed.evidence.local_result is LocalResult.PASS
+
+    git = Git()
+    publisher = SourceAcceptancePublisher(git, "owner/repo")
+    handler = BetaAcceptanceHandler(None, producer, publisher)
+    monkeypatch.setattr(handler, "_authority_refusal", lambda record: None)
+    transition = journal.transition
+
+    def interrupt_after_confirmation(operation_id, expected_revision, phase, **kwargs):
+        if phase is OperationPhase.SUCCEEDED:
+            return MutationResult(MutationStatus.UNAVAILABLE, detail="simulated process stop")
+        return transition(operation_id, expected_revision, phase, **kwargs)
+
+    monkeypatch.setattr(journal, "transition", interrupt_after_confirmation)
+    persisted = handler.forward(journal.get(smoke.operation.operation_id).record)
+    assert persisted.phase is OperationPhase.RECONCILING
+    assert persisted.effect.state is EffectState.CONFIRMED
+    assert persisted.effect.receipt is not None
+    assert json.loads(persisted.effect.receipt.safe_result)["status"] == "PASS_PUBLISHED"
+    writes = [call for call in git.calls if call[0] == "POST"]
+    worker_calls = list(smoke.worker.calls)
+
+    rebuilt_journal = ManagementOperationStore(tmp_path / "journal")
+    rebuilt_handler = BetaAcceptanceHandler(None, smoke.producer(journal=rebuilt_journal), publisher)
+    dispatcher = ManagementOperationDispatcher(rebuilt_journal)
+    dispatcher.register("run_beta_acceptance", OperationHandler(rebuilt_handler.forward, rebuilt_handler.reconcile))
+    await dispatcher.start()
+    try:
+        await dispatcher.drain()
+    finally:
+        await dispatcher.stop()
+
+    recovered = rebuilt_journal.get(smoke.operation.operation_id).record
+    assert recovered.phase is OperationPhase.SUCCEEDED
+    assert recovered.effect.state is EffectState.CONFIRMED
+    assert recovered.effect.receipt == persisted.effect.receipt
+    assert json.loads(recovered.effect.receipt.safe_result)["status"] == "PASS_PUBLISHED"
+    assert [call for call in git.calls if call[0] == "POST"] == writes
+    assert smoke.worker.calls == worker_calls
 
 
 @pytest.mark.asyncio

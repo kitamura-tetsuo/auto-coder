@@ -218,6 +218,23 @@ class BetaAcceptanceHandler:
         )
         return mutation.record or current
 
+    def _settle_confirmed(self, record: OperationRecord) -> OperationRecord:
+        """Finish a publication whose exact readback receipt is already durable."""
+        receipt = record.effect.receipt
+        if receipt is None or receipt.correlation_identity != record.effect.correlation_identity or receipt.observation_source != "github-source-acceptance-readback":
+            return record
+        try:
+            result = json.loads(receipt.safe_result)
+        except (TypeError, ValueError):
+            return record
+        if not isinstance(result, dict) or result.get("status") != "PASS_PUBLISHED":
+            return record
+        if result.get("tag_ref") != f"refs/tags/{tag_name(record.operation_id)}" or not isinstance(result.get("tag_object_oid"), str) or _OID.fullmatch(result["tag_object_oid"]) is None or not isinstance(result.get("direct_commit_sha"), str) or _SHA.fullmatch(result["direct_commit_sha"]) is None:
+            return record
+        journal = self.producer.journal
+        mutation = journal.resolve_needs_attention(record.operation_id, record.revision, OperationPhase.SUCCEEDED, evidence=receipt) if record.phase is OperationPhase.NEEDS_ATTENTION else journal.transition(record.operation_id, record.revision, OperationPhase.SUCCEEDED, evidence=receipt)
+        return mutation.record or record
+
     def forward(self, record: OperationRecord) -> OperationRecord:
         observation = self.producer.advance(record.operation_id)
         if observation.state is not SmokeState.COMPLETE or observation.evidence is None:
@@ -258,6 +275,8 @@ class BetaAcceptanceHandler:
         return self._complete(begun.record, published)
 
     def reconcile(self, record: OperationRecord) -> OperationRecord:
+        if record.effect.state is EffectState.CONFIRMED:
+            return self._settle_confirmed(record)
         if record.effect.state is not EffectState.SENT_UNKNOWN:
             return self.forward(record)
         try:
