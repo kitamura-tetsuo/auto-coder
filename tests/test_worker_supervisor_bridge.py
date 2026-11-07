@@ -19,7 +19,7 @@ from unittest.mock import patch
 import pytest
 
 from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkClient, configured_worker_bridge_environment
-from auto_coder.worker_network_protocol import load_machine_secret, request_mac
+from auto_coder.worker_network_protocol import MAX_RESPONSE_BYTES, load_machine_secret, request_mac
 from auto_coder.worker_supervisor import SupervisorConfig, WorkerSupervisor
 from auto_coder.worker_supervisor_bridge import SupervisorBridgeConfig, SupervisorBridgeServer, _BridgeHandler
 from auto_coder.worker_versions import InstalledProvenance, PreparedEnvironment, ReadyReceipt
@@ -172,6 +172,150 @@ def test_real_http_signature_replay_identity_and_wrong_generation(tmp_path: Path
         assert client._call("GET", "/v1/worker-operations/nonexistent").result_code == "UNKNOWN"
         assert client.inspect_supervisor().result_code == "OK"
     finally:
+        listener.close()
+
+
+def test_authenticated_log_envelope_budget_keeps_real_worker_page(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands: None, _use_real_sleep: None) -> None:
+    monkeypatch.setenv("AUTO_CODER_TEST_SEEDED_LOGS", "500")
+    monkeypatch.setenv("AUTO_CODER_TEST_OMITTED_LOGS", "3")
+    encoded_responses: list[bytes] = []
+    original_read = http.client.HTTPResponse.read
+
+    def record_encoded_response(response: http.client.HTTPResponse, amount: int | None = None) -> bytes:
+        raw = original_read(response, amount)
+        encoded_responses.append(raw)
+        return raw
+
+    monkeypatch.setattr(http.client.HTTPResponse, "read", record_encoded_response)
+    supervisor = _supervisor(tmp_path)
+    supervisor.config = replace(
+        supervisor.config,
+        instance_id="i" * 200,
+        repository="owner/" + "r" * 194,
+    )
+    listener, client = _bridge(supervisor, os.urandom(48))
+    worker_pid = None
+    try:
+        client.inspect_supervisor()
+        started = supervisor.apply({"operation_id": "start-budget-worker", "operation": "START"})
+        worker_pid = started["worker"]["pid"]
+        result = None
+        for _ in range(100):
+            candidate = client.diagnostics("logs", {"limit": "500"})
+            if candidate.result_code == "OK":
+                result = candidate
+                break
+            threading.Event().wait(0.05)
+        assert result is not None and result.http_status == 200 and result.data is not None
+        assert result.data["result"] == "events"
+        assert result.data["response"]["truncated"] is True
+        assert result.data["events"][-1]["sequence"] == 500
+        assert "fixture-secret" not in json.dumps(result.data)
+
+        # A one-record page is not over-fitted merely because the private
+        # transport reserves its envelope; it is the same newest source record.
+        small = client.diagnostics("logs", {"limit": "1"})
+        assert small.result_code == "OK" and small.data is not None
+        assert small.data["events"] == [result.data["events"][-1]]
+
+        run_id = result.data["process_run_id"]
+        pages = []
+        params = {"after_sequence": "0", "process_run_id": run_id, "limit": "500"}
+        while True:
+            page_result = client.diagnostics("logs", params)
+            assert page_result.result_code == "OK" and page_result.data is not None
+            page = page_result.data
+            pages.append(page)
+            if not page["has_more"]:
+                break
+            params = {"cursor": page["next_cursor"], "limit": "500"}
+        delivered = [event["sequence"] for page in pages for event in page["events"]]
+        assert delivered == list(range(1, 501))
+        assert pages[-1]["omissions"] == [{"reason": "identity_unrepresentable", "count": 3, "first_sequence": 501, "last_sequence": 503}]
+        assert pages[-1]["next_after_sequence"] == 503 and pages[-1]["has_more"] is False
+        for previous, following in zip(pages, pages[1:]):
+            assert previous["next_after_sequence"] == previous["events"][-1]["sequence"]
+            assert following["after_sequence"] == previous["next_after_sequence"]
+
+        omitted_result = client.diagnostics("logs", {"after_sequence": "500", "process_run_id": run_id, "limit": "1"})
+        assert omitted_result.result_code == "OK" and omitted_result.data is not None
+        assert omitted_result.data["result"] == "omitted_only" and omitted_result.data["events"] == []
+        assert omitted_result.data["omissions"] == pages[-1]["omissions"]
+        assert omitted_result.data["next_after_sequence"] == 503 and omitted_result.data["has_more"] is False
+
+        no_match = client.diagnostics("logs", {"item_type": "pr", "item_number": "999"})
+        assert no_match.result_code == "OK" and no_match.data is not None
+        assert no_match.data["result"] == "no_retained_match" and no_match.data["events"] == []
+        changed = client.diagnostics("logs", {"after_sequence": "0", "process_run_id": "stale-run"})
+        assert changed.http_status == 409 and changed.data is not None
+        assert changed.data["error"]["code"] == "process_run_changed"
+
+        # Reproduce the old source-only budgeting: the otherwise valid page is
+        # replaced by UNAVAILABLE once its unreserved envelope crosses the cap.
+        with patch.object(_BridgeHandler, "_response_data_budget", return_value=MAX_RESPONSE_BYTES):
+            prior_behavior = client.diagnostics("logs", {"limit": "500"})
+        assert prior_behavior.http_status == 503 and prior_behavior.result_code == "UNAVAILABLE"
+
+        invalid_signature = _raw(
+            client,
+            "/v1/diagnostics/logs?limit=1",
+            headers={
+                "X-AC-Worker-Process-Run-Id": client.worker_process_run_id or "",
+                "X-AC-Worker-Deployment-Generation": client.worker_deployment_generation or "",
+            },
+        )
+        assert invalid_signature[0] == 401
+
+        private_envelopes = []
+        for raw in encoded_responses:
+            try:
+                envelope = json.loads(raw)
+            except (TypeError, ValueError, UnicodeDecodeError):
+                continue
+            if isinstance(envelope, dict) and envelope.get("schema_version") == 1 and envelope.get("instance_id") == client.config.instance_id:
+                private_envelopes.append((raw, envelope))
+        successful = [(raw, envelope) for raw, envelope in private_envelopes if envelope.get("result_code") == "OK"]
+        assert successful and all(len(raw) <= MAX_RESPONSE_BYTES for raw, _ in successful)
+        assert any(envelope.get("data", {}).get("result") == "omitted_only" for _, envelope in successful)
+    finally:
+        if worker_pid is not None:
+            (tmp_path / "fixture-release").write_text("release")
+            try:
+                os.kill(worker_pid, 15)
+            except ProcessLookupError:
+                pass
+        listener.close()
+
+
+def test_private_incremental_retention_gap_remains_typed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands: None, _use_real_sleep: None) -> None:
+    monkeypatch.setenv("AUTO_CODER_TEST_SEEDED_LOGS", "4005")
+    monkeypatch.setenv("AUTO_CODER_TEST_SEEDED_LOG_SIZE", "1")
+    supervisor = _supervisor(tmp_path)
+    listener, client = _bridge(supervisor, os.urandom(48))
+    worker_pid = None
+    try:
+        client.inspect_supervisor()
+        started = supervisor.apply({"operation_id": "start-gap-worker", "operation": "START"})
+        worker_pid = started["worker"]["pid"]
+        recent = None
+        for _ in range(100):
+            candidate = client.diagnostics("logs", {"limit": "1"})
+            if candidate.result_code == "OK":
+                recent = candidate
+                break
+            threading.Event().wait(0.05)
+        assert recent is not None and recent.data is not None
+        gap = client.diagnostics("logs", {"after_sequence": "0", "process_run_id": recent.data["process_run_id"]})
+        assert gap.http_status == 409 and gap.result_code == "CONFLICT" and gap.data is not None
+        assert gap.data["error"]["code"] == "retention_gap"
+        assert "events" not in gap.data and "next_cursor" not in gap.data
+    finally:
+        if worker_pid is not None:
+            (tmp_path / "fixture-release").write_text("release")
+            try:
+                os.kill(worker_pid, 15)
+            except ProcessLookupError:
+                pass
         listener.close()
 
 

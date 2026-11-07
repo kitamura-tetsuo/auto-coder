@@ -638,8 +638,9 @@ def _omissions(consumed: Sequence[_Consumed]) -> List[Omission]:
     return list(found.values())
 
 
-def build_incremental_logs(repo_name: str, request: IncrementalRequest) -> "IncrementalLogsResponse | ErrorResponse | RetentionGapResponse":
+def build_incremental_logs(repo_name: str, request: IncrementalRequest, response_budget: int | None = None) -> "IncrementalLogsResponse | ErrorResponse | RetentionGapResponse":
     """Return the oldest unread representable prefix of a fixed ``(after, upper]`` interval."""
+    response_budget = MAX_RESPONSE_BYTES if response_budget is None else response_budget
     flt = request.filter
     snapshot = get_trace_collector().get_snapshot()
     retention = _checked_continuity(snapshot)
@@ -701,7 +702,7 @@ def build_incremental_logs(repo_name: str, request: IncrementalRequest) -> "Incr
         )
 
     def fits(prefix: int) -> bool:
-        return len(_dump(page(prefix))) <= MAX_RESPONSE_BYTES
+        return len(_dump(page(prefix))) <= response_budget
 
     while True:
         low, high = 0, len(consumed)
@@ -724,8 +725,9 @@ def _dump(payload: object) -> bytes:
     return json.dumps(dataclasses.asdict(payload), allow_nan=False, separators=(",", ":"), ensure_ascii=True).encode("utf-8")  # type: ignore[call-overload]
 
 
-def _fit_logs(response: LogsResponse) -> bytes:
+def _fit_logs(response: LogsResponse, response_budget: int | None = None) -> bytes:
     """Drop the oldest returned events until the body fits, keeping ascending order."""
+    response_budget = MAX_RESPONSE_BYTES if response_budget is None else response_budget
     limits = response.response
     returned = len(response.events)
     while True:
@@ -733,9 +735,9 @@ def _fit_logs(response: LogsResponse) -> bytes:
         limits.truncated = limits.matching_count - limits.omitted_unrepresentable > limits.returned_count
         limits.incomplete = limits.truncated or limits.omitted_unrepresentable > 0
         body = _dump(response)
-        if len(body) <= MAX_RESPONSE_BYTES or not response.events:
+        if len(body) <= response_budget or not response.events:
             return body
-        excess = len(body) - MAX_RESPONSE_BYTES
+        excess = len(body) - response_budget
         drop = 1
         if returned > 8:
             average = max(1, len(body) // max(1, len(response.events)))
@@ -768,8 +770,8 @@ def _dump_any(entries: list) -> bytes:
     return json.dumps([dataclasses.asdict(e) for e in entries], allow_nan=False).encode("utf-8")
 
 
-def _json_response(payload: object, status_code: int = 200) -> Response:
-    body = _fit_logs(payload) if isinstance(payload, LogsResponse) else _fit_status(payload) if isinstance(payload, StatusResponse) else _dump(payload)
+def _json_response(payload: object, status_code: int = 200, response_budget: int | None = None) -> Response:
+    body = _fit_logs(payload, response_budget) if isinstance(payload, LogsResponse) else _fit_status(payload) if isinstance(payload, StatusResponse) else _dump(payload)
     return Response(body, status_code=status_code, media_type="application/json", headers={"Cache-Control": "no-store"})
 
 
@@ -829,7 +831,14 @@ def public_api_enabled() -> bool:
     return os.environ.get(ENABLE_ENV_VAR) == "1"
 
 
-def init_public_api(app: FastAPI, engine: Any, repo_name: str, *, safe_failure_logging: bool = False) -> None:
+def init_public_api(
+    app: FastAPI,
+    engine: Any,
+    repo_name: str,
+    *,
+    safe_failure_logging: bool = False,
+    private_response_budget_token: str | None = None,
+) -> None:
     """Register the four read-only routes on ``app`` (GET only; other methods get 405)."""
     from .public_validation_attempts import (
         InvalidSelection,
@@ -887,6 +896,16 @@ def init_public_api(app: FastAPI, engine: Any, repo_name: str, *, safe_failure_l
 
     @app.get("/api/logs", include_in_schema=False)
     async def api_logs(request: Request) -> Response:
+        # The PID-owned Supervisor supplies this only on its private UDS hop so
+        # the source producer can reserve room for the authenticated envelope.
+        # Ordinary/public requests retain the documented 256 KiB page budget.
+        raw_budget = request.headers.get("Auto-Coder-Private-Response-Budget")
+        response_budget = MAX_RESPONSE_BYTES
+        if raw_budget is not None:
+            supplied_token = request.headers.get("Auto-Coder-Private-Response-Budget-Token")
+            if private_response_budget_token is None or supplied_token != private_response_budget_token or not raw_budget.isascii() or not raw_budget.isdecimal() or not 1 <= int(raw_budget) <= MAX_RESPONSE_BYTES:
+                return invalid()
+            response_budget = int(raw_budget)
         try:
             parsed = parse_log_request(request, repo_name)
         except InvalidRequest:
@@ -894,7 +913,7 @@ def init_public_api(app: FastAPI, engine: Any, repo_name: str, *, safe_failure_l
         try:
             result: object
             if isinstance(parsed, IncrementalRequest):
-                result = await asyncio.to_thread(build_incremental_logs, repo_name, parsed)
+                result = await asyncio.to_thread(build_incremental_logs, repo_name, parsed, response_budget)
             else:
                 result = await asyncio.to_thread(build_logs, repo_name, parsed)
         except InvalidRequest:
@@ -905,7 +924,7 @@ def init_public_api(app: FastAPI, engine: Any, repo_name: str, *, safe_failure_l
         if isinstance(result, (ErrorResponse, RetentionGapResponse)):
             return _json_response(result, 409)
         try:
-            return await asyncio.to_thread(_json_response, result)
+            return await asyncio.to_thread(_json_response, result, 200, response_budget)
         except Exception:
             log_failure("public API logs: projection failed")
             return error(503, "observation_unavailable", "Diagnostic events could not be projected.")

@@ -103,6 +103,16 @@ dead child is never a healthy worker observation. Diagnostics always come from
 the worker's existing source-projected, redacted and bounded UDS routes; the
 manager does not read worker files or synthesize missing history.
 
+Log pages have one complete private-response budget. The Supervisor reserves
+the compact authenticated-envelope bytes from the existing 256 KiB limit and
+asks the UDS producer to fit its source page into the remainder. Recent-tail
+pages still select the newest fitting events, while incremental pages keep the
+oldest unread fitting prefix and a checkpoint that cannot skip an event removed
+for envelope fitting. This private composition does not change the public
+`/api/logs` limit or the network client's bounded-response validation.
+The negotiation changes neither trace emission nor its schema, origins, or
+dashboard projection, so it is observability-neutral.
+
 `auto_coder_reevaluate_target` first checks the current `RUNNING`, reconciled,
 daemon-serving and invocation-open facts, and the exact expected run/generation.
 Before the first effect it checks the **original**, durable bearer acceptance
