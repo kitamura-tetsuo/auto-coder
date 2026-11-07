@@ -141,6 +141,27 @@ def test_real_uv_install_provenance_reconstruction_wrong_source_and_running_sent
         assert reconstructed.installed_runtime_id == receipt.installed_runtime_id
         assert reconstructed.content_identity == receipt.content_identity
 
+        site_packages = Path(
+            _command(
+                [
+                    str(interpreter),
+                    "-I",
+                    "-c",
+                    "import sysconfig; print(sysconfig.get_paths()['purelib'])",
+                ]
+            )
+        )
+        installed_package = site_packages / "auto_coder"
+        checkout_package = repo / "src" / "auto_coder"
+        shutil.copy2(installed_package / "build_provenance.json", checkout_package / "build_provenance.json")
+        redirect = site_packages / "redirect-auto-coder-to-checkout.pth"
+        redirect.write_text(f"import sys; sys.path.insert(0, {str(checkout_package.parent)!r})\n", encoding="utf-8")
+        assert Path(_command([str(interpreter), "-I", "-c", "import auto_coder; print(auto_coder.__file__)"])).is_relative_to(checkout_package)
+        with pytest.raises(WorkerVersionError) as redirected:
+            WorkerVersionPreparer(config).read_ready(next(root.glob("revisions/*/real-install/READY.json")))
+        assert redirected.value.failure is PreparationFailure.VERIFICATION_MISMATCH
+        redirect.unlink()
+
         wrong_sha = "f" * 40 if sha != "f" * 40 else "e" * 40
         subprocess.run([str(interpreter), "-m", "auto_coder.build_provenance", "embed"], check=True, env={**os.environ, "AUTO_CODER_SOURCE_REVISION": wrong_sha})
         with pytest.raises(WorkerVersionError) as mismatch:
