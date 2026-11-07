@@ -145,17 +145,18 @@ class WorkerManagementBridge:
         @self.app.get("/v1/pr-diagnostics", include_in_schema=False)
         async def pr_diagnostics(request: Request) -> Response:
             pairs = list(request.query_params.multi_items())
-            if len(pairs) != len({key for key, _ in pairs}) or not {key for key, _ in pairs} <= {"pr_number", "limit", "cursor"}:
+            if len(pairs) != len({key for key, _ in pairs}) or not {key for key, _ in pairs} <= {"pr_number", "limit", "cursor", "expected_revision"}:
                 return self._error("invalid_request", "Request is invalid.", 422)
             values = dict(pairs)
             try:
                 pr_number = int(values.get("pr_number", ""))
                 limit = int(values.get("limit", "50"))
                 cursor = int(values.get("cursor", "0"))
+                expected_revision = values.get("expected_revision")
                 if str(pr_number) != values.get("pr_number") or ("limit" in values and str(limit) != values["limit"]) or ("cursor" in values and str(cursor) != values["cursor"]):
                     raise ValueError("non-canonical integer")
                 projection = await asyncio.wait_for(
-                    asyncio.to_thread(project_pr_diagnostics, self.identity.repository, pr_number, limit=limit, cursor=cursor),
+                    asyncio.to_thread(project_pr_diagnostics, self.identity.repository, pr_number, limit=limit, cursor=cursor, expected_revision=expected_revision),
                     timeout=2.0,
                 )
                 encoded = json.dumps(projection, separators=(",", ":"), allow_nan=False).encode()

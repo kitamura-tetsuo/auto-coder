@@ -35,6 +35,7 @@ from auto_coder.pr_review_cycle import (
     RoundProvenance,
     StrongPolicyIdentity,
 )
+from auto_coder.pr_review_effects import AcceptedReviewPayload, EffectAttempt, ReviewEffectExecutor, ReviewEffectRepository
 from auto_coder.runtime_locks import ensure_lock_directory, lock_path
 from auto_coder.worker_network_protocol import MAX_RESPONSE_BYTES
 from tests.test_management_mcp import _issue, _mcp, real_boundary
@@ -342,6 +343,21 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
     active_provenance = RoundProvenance("d" * 40, "b" * 40)
     cycle_repository.record_ordinary_pass(18, active_provenance, contract)
     active_claim = cycle_repository.claim_strong_audit(18, active_provenance, contract, policy)
+    waiting_provenance = RoundProvenance("9" * 40, "8" * 40)
+    cycle_repository.record_ordinary_pass(19, waiting_provenance, contract)
+    waiting_claim = cycle_repository.claim_strong_audit(19, waiting_provenance, contract, policy)
+    waiting_finding = replace(finding, finding_id="finding-19", origin_round_id=waiting_claim.claim_id)
+    cycle_repository.record_strong_result(19, waiting_claim.claim_id, VERDICT_FINDINGS, "fixture/reviewer", (waiting_finding,))
+    waiting_snapshot = cycle_repository.snapshot(19)
+    assert waiting_snapshot.pending_effect and waiting_snapshot.waiting_reason
+    for sequence in range(300):
+        provenance = RoundProvenance(f"{sequence:040x}", "7" * 40)
+        cycle_repository.record_ordinary_pass(20, provenance, contract)
+        claim_for_page = cycle_repository.claim_strong_audit(20, provenance, contract, policy)
+        finding_for_page = replace(finding, finding_id=f"page-finding-{sequence}", origin_round_id=claim_for_page.claim_id)
+        round_for_page = cycle_repository.record_strong_result(20, claim_for_page.claim_id, VERDICT_FINDINGS, "fixture/reviewer", (finding_for_page,))
+        cycle_repository.acknowledge_publication(20, round_for_page.round_id)
+    assert cycle_path.stat().st_size > 256 * 1024
     decision_path.write_text(
         json.dumps(
             {
@@ -362,53 +378,34 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
         ),
         encoding="utf-8",
     )
-    effects_path.write_text(
-        json.dumps(
-            {
-                "operations": {
-                    "review-confirmed": {
-                        "operation_id": "review-confirmed",
-                        "payload_identity": "payload-review",
-                        "repository": repository,
-                        "pr_number": 17,
-                        "mode": "ORDINARY_CLOSURE",
-                        "round_id": "round-17",
-                        "target_head": "a" * 40,
-                        "contract_identity": "contract-17",
-                        "finding_set_revision": 7,
-                        "purpose": "review-publication",
-                        "destination": "review-17",
-                        "exact_payload": "must-not-leak",
-                        "status": "CONFIRMED",
-                        "owner_token": "owner-must-not-leak",
-                        "receipt": "review-receipt-17",
-                        "reason": "",
-                        "updated_at": 101.0,
-                    },
-                    "thread-uncertain": {
-                        "operation_id": "thread-uncertain",
-                        "payload_identity": "payload-thread",
-                        "repository": repository,
-                        "pr_number": 17,
-                        "mode": "ORDINARY_CLOSURE",
-                        "round_id": "round-17",
-                        "target_head": "a" * 40,
-                        "contract_identity": "contract-17",
-                        "finding_set_revision": 7,
-                        "purpose": "thread-publication",
-                        "destination": "resolved-github-thread-17",
-                        "exact_payload": "must-not-leak",
-                        "status": "UNCERTAIN",
-                        "owner_token": "owner-must-not-leak",
-                        "receipt": "",
-                        "reason": "Authorization: Bearer thread-secret",
-                        "updated_at": 102.0,
-                    },
-                }
-            }
-        ),
-        encoding="utf-8",
+    effect_repository = ReviewEffectRepository(repository, effects_path)
+    effect_payload = AcceptedReviewPayload.strong(repository, 17, strong_round, (finding,))
+    external_effect_count = 0
+    external_threads = {"resolved-github-thread-17": "RESOLVED"}
+
+    class ControlledEffectTransport:
+        def __init__(self, outcome: EffectAttempt):
+            self.outcome = outcome
+
+        def send(self, _operation):
+            nonlocal external_effect_count
+            external_effect_count += 1
+            return self.outcome
+
+        def reconcile(self, _operation):
+            raise AssertionError("new operations do not reconcile")
+
+    executor = ReviewEffectExecutor(effect_repository, owner_token="seed-owner")
+    executor.apply(effect_payload, "review-publication", "review-17", ControlledEffectTransport(EffectAttempt("CONFIRMED", receipt="review-receipt-17")), lambda: True)
+    executor.apply(
+        effect_payload,
+        "thread-publication",
+        "resolved-github-thread-17",
+        ControlledEffectTransport(EffectAttempt("UNCERTAIN", reason="Authorization: Bearer thread-secret")),
+        lambda: True,
     )
+    effects_before = external_effect_count
+    assert external_threads["resolved-github-thread-17"] == "RESOLVED"
     resolution = resolve_pending_work_store(repository, home=home)
     assert resolution.store is not None
     resolution.store.ensure_reevaluation(WorkIdentity(repository, "pr:17", "pr-processing", "rev-a"), ("thread-a",), now=10)
@@ -443,7 +440,13 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
             assert missing["projection"]["sections"]["pending_work"]["availability"] == "ABSENT"
             pending_backup.replace(resolution.destination)
             first = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 17, "limit": 1, "cursor": 0})
-            second = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 17, "limit": 1, "cursor": 1}, 2)
+            second = _call(
+                client,
+                token,
+                "auto_coder_pr_diagnostics",
+                {"target_id": "beta-worker", "pr_number": 17, "limit": 1, "cursor": 1, "expected_revision": first["projection"]["evidence_revision"]},
+                2,
+            )
             assert first["status"] == "UNAVAILABLE" and first["binding_status"] == "UNAVAILABLE"
             assert first["process_run_id"] == worker.worker_process_run_id
             assert isinstance(first["artifact"], dict)
@@ -466,7 +469,7 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
             assert projected_decision["publication"] == "CONFIRMED"
             for key in ("head_sha", "base_sha", "contract_identity", "finding_set_revision"):
                 assert projected_decision[key] == decision_source[key]
-            effects_source = json.loads(source_before[effects_path])["operations"]["review-confirmed"]
+            effects_source = next(value for value in json.loads(source_before[effects_path])["operations"].values() if value["purpose"] == "review-publication")
             projected_effect = projected["sections"]["review_effects"]["records"][0]
             assert projected_effect["status"] == "CONFIRMED"
             for key in ("target_head", "contract_identity", "finding_set_revision"):
@@ -476,6 +479,32 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
             pending_second = second["projection"]["sections"]["pending_work"]
             assert pending_first["records"][0]["identity"]["revision"] == "rev-a" and pending_first["next_cursor"] == 1
             assert pending_second["records"][0]["identity"]["revision"] == "rev-b" and pending_second["next_cursor"] is None
+            effect_page = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 17, "limit": 1}, 10)
+            uncertain_source = next(value for value in json.loads(effects_path.read_bytes())["operations"].values() if value["purpose"] == "thread-publication")
+            effect_repository.record(uncertain_source["operation_id"], "seed-owner", EffectAttempt("CONFIRMED", receipt="thread-receipt-17"))
+            changed_effect_page = _call(
+                client,
+                token,
+                "auto_coder_pr_diagnostics",
+                {"target_id": "beta-worker", "pr_number": 17, "limit": 1, "cursor": 1, "expected_revision": effect_page["projection"]["evidence_revision"]},
+                11,
+            )
+            assert changed_effect_page["projection"]["evidence_changed"] is True
+            assert changed_effect_page["projection"]["sections"]["review_effects"]["availability"] == "CONFLICT"
+            effects_path.write_bytes(source_before[effects_path])
+
+            pending_page = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 17, "limit": 1}, 12)
+            with sqlite3.connect(resolution.destination) as connection:
+                connection.execute("UPDATE github_pending_work SET updated_at=999 WHERE revision='rev-a'")
+            changed_pending_page = _call(
+                client,
+                token,
+                "auto_coder_pr_diagnostics",
+                {"target_id": "beta-worker", "pr_number": 17, "limit": 1, "cursor": 1, "expected_revision": pending_page["projection"]["evidence_revision"]},
+                13,
+            )
+            assert changed_pending_page["projection"]["evidence_changed"] is True
+            assert changed_pending_page["projection"]["sections"]["pending_work"]["availability"] == "CONFLICT"
             encoded = json.dumps((first, second))
             assert "other-pr" not in encoded and "owner-must-not-leak" not in encoded and "thread-secret" not in encoded and "/private/path" not in encoded
 
@@ -485,6 +514,20 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
             assert active_projected["phase"] == active_claim.phase
             assert active_projected["open_epoch"] == active_claim.open_epoch
             assert "owner_id" not in active_projected
+
+            waiting = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 19}, 9)
+            waiting_cycle = waiting["projection"]["sections"]["review_cycle"]["records"][0]
+            assert waiting_cycle["phase"] == waiting_snapshot.phase
+            assert waiting_cycle["waiting_reason"] == waiting_snapshot.waiting_reason
+            assert waiting_cycle["pending_effect"] == waiting_snapshot.pending_effect
+
+            bounded = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 20, "limit": 1}, 14)
+            bounded_cycle = bounded["projection"]["sections"]["review_cycle"]
+            assert len(bounded_cycle["records"][0]["rounds"]) == 1
+            assert bounded_cycle["records"][0]["rounds_truncated"] is True
+            assert bounded_cycle["records"][0]["rounds_next_cursor"] == 1
+            assert bounded["projection"]["sections"]["effective_decision"]["availability"] == "COMPLETE"
+            assert len(json.dumps(bounded["projection"]).encode()) < 256 * 1024
 
             decision_path.write_text("{broken", encoding="utf-8")
             corrupt = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 17}, 3)
@@ -590,6 +633,8 @@ def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_
     with sqlite3.connect(resolution.destination) as connection:
         pending_after = connection.execute("SELECT repository,entity,stage,revision,reason,not_before,unfinished_effects,throttle_attempts,last_error,status FROM github_pending_work ORDER BY work_key").fetchall()
     assert pending_after == pending_before
+    assert external_effect_count == effects_before
+    assert external_threads["resolved-github-thread-17"] == "RESOLVED"
 
 
 def test_original_grant_revoked_after_commit_and_before_dispatch(runtime_boundary) -> None:

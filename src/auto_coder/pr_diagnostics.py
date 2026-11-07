@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import time
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 from .github_pending_work import inspect_pending_work
+from .pr_review_cycle import PrReviewCycleRepository
 from .public_api import sanitize_text
 from .runtime_locks import lock_path
 
@@ -77,9 +79,26 @@ def _json_section(path: Path, lock: Path, producer: str, select: Callable[[objec
     return _section(producer, "COMPLETE", observed_revision=path.stat().st_mtime_ns, records=records)
 
 
-def project_pr_diagnostics(repository: str, pr_number: int, *, limit: int = 50, cursor: int = 0, home: Path | None = None) -> dict[str, object]:
+def project_pr_diagnostics(
+    repository: str,
+    pr_number: int,
+    *,
+    limit: int = 50,
+    cursor: int = 0,
+    expected_revision: str | None = None,
+    home: Path | None = None,
+) -> dict[str, object]:
     """Inspect existing stores only; this function has no mutation dependencies."""
-    if type(pr_number) is not int or not 0 < pr_number <= 999_999_999 or type(limit) is not int or not 1 <= limit <= MAX_RECORDS or type(cursor) is not int or cursor < 0:
+    if (
+        type(pr_number) is not int
+        or not 0 < pr_number <= 999_999_999
+        or type(limit) is not int
+        or not 1 <= limit <= MAX_RECORDS
+        or type(cursor) is not int
+        or cursor < 0
+        or (expected_revision is not None and (len(expected_revision) != 64 or any(character not in "0123456789abcdef" for character in expected_revision)))
+        or (cursor > 0 and expected_revision is None)
+    ):
         raise ValueError("invalid PR diagnostic selection")
     root = home or Path.home()
     store_root = root / ".auto-coder" / repository
@@ -91,6 +110,47 @@ def project_pr_diagnostics(repository: str, pr_number: int, *, limit: int = 50, 
         claim = raw.get("active_claim")
         rounds = raw.get("strong_rounds", [])
         closures = raw.get("closures", [])
+        snapshot = PrReviewCycleRepository(repository, store_root / "pr_review_cycle.json")._snapshot_from_raw(raw)
+        round_records = [
+            {
+                key: item.get(key)
+                for key in (
+                    "round_id",
+                    "sequence",
+                    "claim_id",
+                    "open_epoch",
+                    "head_sha",
+                    "base_sha",
+                    "contract_identity",
+                    "policy_identity",
+                    "finding_set_revision",
+                    "publication_status",
+                    "publication_receipt",
+                    "accepted_at",
+                )
+            }
+            for item in rounds
+            if isinstance(item, dict)
+        ]
+        closure_records = [
+            {
+                key: item.get(key)
+                for key in (
+                    "closure_id",
+                    "references_round_id",
+                    "head_sha",
+                    "base_sha",
+                    "contract_identity",
+                    "policy_identity",
+                    "finding_set_revision",
+                    "publication_status",
+                    "publication_receipt",
+                    "accepted_at",
+                )
+            }
+            for item in closures
+            if isinstance(item, dict)
+        ]
         return [
             {
                 "pr_number": pr_number,
@@ -99,7 +159,9 @@ def project_pr_diagnostics(repository: str, pr_number: int, *, limit: int = 50, 
                 "finding_set_revision": raw.get("finding_set_revision"),
                 "accepted_strong_round_id": raw.get("accepted_strong_round_id"),
                 "accepted_closure_id": raw.get("accepted_closure_id"),
-                "pending_effect": raw.get("pending_effect"),
+                "phase": snapshot.phase,
+                "waiting_reason": _safe(snapshot.waiting_reason),
+                "pending_effect": snapshot.pending_effect,
                 "active_claim": (
                     None
                     if not isinstance(claim, dict)
@@ -118,46 +180,12 @@ def project_pr_diagnostics(repository: str, pr_number: int, *, limit: int = 50, 
                         )
                     }
                 ),
-                "rounds": [
-                    {
-                        key: item.get(key)
-                        for key in (
-                            "round_id",
-                            "sequence",
-                            "claim_id",
-                            "open_epoch",
-                            "head_sha",
-                            "base_sha",
-                            "contract_identity",
-                            "policy_identity",
-                            "finding_set_revision",
-                            "publication_status",
-                            "publication_receipt",
-                            "accepted_at",
-                        )
-                    }
-                    for item in rounds
-                    if isinstance(item, dict)
-                ],
-                "closures": [
-                    {
-                        key: item.get(key)
-                        for key in (
-                            "closure_id",
-                            "references_round_id",
-                            "head_sha",
-                            "base_sha",
-                            "contract_identity",
-                            "policy_identity",
-                            "finding_set_revision",
-                            "publication_status",
-                            "publication_receipt",
-                            "accepted_at",
-                        )
-                    }
-                    for item in closures
-                    if isinstance(item, dict)
-                ],
+                "rounds": round_records[cursor : cursor + limit],
+                "rounds_truncated": cursor + min(limit, max(0, len(round_records) - cursor)) < len(round_records),
+                "rounds_next_cursor": cursor + limit if cursor + limit < len(round_records) else None,
+                "closures": closure_records[cursor : cursor + limit],
+                "closures_truncated": cursor + min(limit, max(0, len(closure_records) - cursor)) < len(closure_records),
+                "closures_next_cursor": cursor + limit if cursor + limit < len(closure_records) else None,
             }
         ]
 
@@ -208,11 +236,15 @@ def project_pr_diagnostics(repository: str, pr_number: int, *, limit: int = 50, 
     for name, (producer, path, purpose, selector) in files.items():
         section = _json_section(path, lock_path(repository, path, purpose), producer, selector)
         records = section.get("records", [])
-        if isinstance(records, list):
+        if isinstance(records, list) and name != "review_cycle":
             page = records[cursor : cursor + limit]
             section["records"] = page
             section["truncated"] = cursor + len(page) < len(records)
             section["next_cursor"] = cursor + len(page) if section["truncated"] else None
+        elif isinstance(records, list):
+            section["truncated"] = any(bool(record.get("rounds_truncated") or record.get("closures_truncated")) for record in records if isinstance(record, dict))
+            cursors = [record.get("rounds_next_cursor") or record.get("closures_next_cursor") for record in records if isinstance(record, dict)]
+            section["next_cursor"] = max((value for value in cursors if isinstance(value, int)), default=None)
         sections[name] = section
 
     inspection = inspect_pending_work(repository, home=root)
@@ -227,8 +259,14 @@ def project_pr_diagnostics(repository: str, pr_number: int, *, limit: int = 50, 
                 pending.append(raw)
     pending_page = pending[cursor : cursor + limit]
     pending_available = bool(inspection.views)
+    pending_observed_revision = None
+    if pending_available:
+        identities = []
+        for view in inspection.views:
+            identities.append((view.repository, view.state.value, [asdict(obligation) for obligation in view.obligations]))
+        pending_observed_revision = hashlib.sha256(json.dumps(identities, sort_keys=True).encode()).hexdigest()
     pending_truncated = cursor + len(pending_page) < len(pending)
-    sections["pending_work"] = _section(
+    pending_section = _section(
         "PendingWorkStore",
         "UNAVAILABLE" if inspection.errors else "COMPLETE" if pending_available else "ABSENT",
         reason="; ".join(_safe(error) for error in inspection.errors) or (None if pending_available else "store_not_present"),
@@ -236,4 +274,23 @@ def project_pr_diagnostics(repository: str, pr_number: int, *, limit: int = 50, 
         truncated=pending_truncated,
         next_cursor=cursor + len(pending_page) if pending_truncated else None,
     )
-    return {"schema_version": SCHEMA_VERSION, "pr_number": pr_number, "repository": repository, "selector": {"limit": limit, "cursor": cursor}, "sections": sections, "overall_readiness": None}
+    if pending_observed_revision is not None:
+        pending_section["observed_revision"] = pending_observed_revision
+    sections["pending_work"] = pending_section
+    revision_input = [(name, section.get("availability"), section.get("observed_revision")) for name, section in sorted(sections.items()) if isinstance(section, dict)]
+    evidence_revision = hashlib.sha256(json.dumps(revision_input, separators=(",", ":")).encode()).hexdigest()
+    changed = expected_revision is not None and expected_revision != evidence_revision
+    if changed:
+        for section_value in sections.values():
+            if isinstance(section_value, dict) and section_value.get("availability") == "COMPLETE":
+                section_value.update(availability="CONFLICT", reason="evidence_changed_since_cursor", records=[], truncated=False, next_cursor=None)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "pr_number": pr_number,
+        "repository": repository,
+        "selector": {"limit": limit, "cursor": cursor, "expected_revision": expected_revision},
+        "evidence_revision": evidence_revision,
+        "evidence_changed": changed,
+        "sections": sections,
+        "overall_readiness": None,
+    }

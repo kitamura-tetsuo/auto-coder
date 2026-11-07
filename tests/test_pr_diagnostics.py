@@ -14,7 +14,31 @@ def _seed(home: Path) -> dict[str, bytes]:
     root = home / ".auto-coder" / "owner/repo"
     root.mkdir(parents=True)
     documents = {
-        "pr_review_cycle.json": {"prs": {"17": {"pr_number": 17, "open_epoch": 2, "transition_version": 8, "finding_set_revision": 3, "active_claim": {"claim_id": "claim-1", "round_id": "round-1", "owner_token": "must-not-leak"}, "strong_rounds": [], "closures": []}}},
+        "pr_review_cycle.json": {
+            "prs": {
+                "17": {
+                    "pr_number": 17,
+                    "open_epoch": 2,
+                    "transition_version": 8,
+                    "finding_set_revision": 3,
+                    "active_claim": {
+                        "claim_id": "claim-1",
+                        "phase": "STRONG_AUDIT",
+                        "head_sha": "a" * 40,
+                        "base_sha": "b" * 40,
+                        "contract_identity": "contract-1",
+                        "policy_identity": "policy-1",
+                        "based_on_version": 7,
+                        "open_epoch": 2,
+                        "owner_token": "must-not-leak",
+                    },
+                    "strong_rounds": [],
+                    "closures": [],
+                    "findings": {},
+                    "closed": False,
+                }
+            }
+        },
         "effective_review_decisions.json": {"17": {"pr_number": 17, "head_sha": "a" * 40, "base_sha": "b" * 40, "attempt_id": "attempt-1", "attempt_sequence": 4, "publication": "CONFIRMED", "handoff": "WAITING", "wait_reason": "Bearer secret-token at /private/state", "updated_at": 123.0}},
         "pr_review_effects.json": {
             "operations": {
@@ -114,7 +138,8 @@ def test_private_route_pending_store_absence_exact_pr_filter_and_pagination(monk
     store.ensure_reevaluation(WorkIdentity("owner/repo", "pr:171", "pr-processing", "other"), ("must-not-join",), now=30)
 
     first = asyncio.run(read("/v1/pr-diagnostics?pr_number=17&limit=1&cursor=0"))["sections"]["pending_work"]
-    second = asyncio.run(read("/v1/pr-diagnostics?pr_number=17&limit=1&cursor=1"))["sections"]["pending_work"]
+    revision = asyncio.run(read("/v1/pr-diagnostics?pr_number=17&limit=1&cursor=0"))["evidence_revision"]
+    second = asyncio.run(read(f"/v1/pr-diagnostics?pr_number=17&limit=1&cursor=1&expected_revision={revision}"))["sections"]["pending_work"]
     no_match = asyncio.run(read("/v1/pr-diagnostics?pr_number=18"))["sections"]["pending_work"]
     assert first["availability"] == "COMPLETE" and first["records"][0]["identity"]["revision"] == "rev-a"
     assert first["truncated"] is True and first["next_cursor"] == 1

@@ -3,7 +3,8 @@
 `auto_coder_pr_diagnostics` is an authenticated, read-scoped management MCP
 tool for inspecting the retained processing evidence for one PR on one configured
 worker target. Its closed request schema is `target_id`, positive `pr_number`,
-optional `limit` (1–100), and optional numeric `cursor`. The target resolves
+optional `limit` (1–100), optional numeric `cursor`, and the first page's
+64-character `expected_revision` (required when `cursor` is nonzero). The target resolves
 through operating policy to the fixed instance, repository and channel; clients
 cannot supply a repository, path, URL, command, SQL statement, or store name.
 The projection is private and is not registered on the anonymous public
@@ -31,7 +32,13 @@ than being joined to a different record.
 Reads have bounded store sizes, record counts, response bytes, lock waits and
 deadlines. Free text is redacted before clipping. Pagination cursors remain
 bound to the authorized target and PR by the MCP request; changed source
-revisions are visible on subsequent pages. Raw owner tokens, accepted payloads,
+revisions are visible on subsequent pages. Each first page supplies an
+`evidence_revision`; if any producer changes before continuation, the response
+sets `evidence_changed` and reports affected complete sections as `CONFLICT`
+instead of silently shifting records. Review-cycle `rounds` and `closures` are
+bounded by the same selector and carry their own truncation and next-cursor
+fields, so a large cycle cannot discard independently available sections.
+Raw owner tokens, accepted payloads,
 credentials, filesystem paths, prompts and source contents are never returned.
 Private responses use `Cache-Control: no-store`.
 

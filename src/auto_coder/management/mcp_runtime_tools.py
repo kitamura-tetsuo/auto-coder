@@ -427,11 +427,14 @@ class ManagementRuntime:
         params = {key: str(value) for key, value in {"pr_number": pr_number, "attempt_id": attempt_id, "attempt_sequence": attempt_sequence}.items() if value is not None}
         return await asyncio.to_thread(self._diagnostic, target_id, "validation-attempts", params)
 
-    async def pr_diagnostics(self, target_id: str, pr_number: StrictInt, limit: StrictInt = 50, cursor: StrictInt = 0) -> dict[str, object]:
+    async def pr_diagnostics(self, target_id: str, pr_number: StrictInt, limit: StrictInt = 50, cursor: StrictInt = 0, expected_revision: str | None = None) -> dict[str, object]:
         """Return retained evidence for exactly one configured worker PR."""
-        if type(pr_number) is not int or not 0 < pr_number <= 999999999 or type(limit) is not int or not 1 <= limit <= 100 or type(cursor) is not int or not 0 <= cursor < 10**9:
+        if type(pr_number) is not int or not 0 < pr_number <= 999999999 or type(limit) is not int or not 1 <= limit <= 100 or type(cursor) is not int or not 0 <= cursor < 10**9 or (expected_revision is not None and not _SHA.fullmatch(expected_revision)) or (cursor > 0 and expected_revision is None):
             return self._response("INVALID_REQUEST", "invalid_pr_diagnostic_selection")
-        return await asyncio.to_thread(self._diagnostic, target_id, "pr-evidence", {"pr_number": str(pr_number), "limit": str(limit), "cursor": str(cursor)})
+        params = {"pr_number": str(pr_number), "limit": str(limit), "cursor": str(cursor)}
+        if expected_revision is not None:
+            params["expected_revision"] = expected_revision
+        return await asyncio.to_thread(self._diagnostic, target_id, "pr-evidence", params)
 
     @staticmethod
     def _journal_authority(grant: AuthenticatedGrant, original: GrantAuthority) -> AcceptedAuthority:

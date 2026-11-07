@@ -48,7 +48,7 @@ _DIAGNOSTIC_PARAMS = {
     "status": {"limit"},
     "logs": {"limit", "item_type", "item_number", "execution_id", "process_run_id", "after_sequence", "cursor"},
     "validation-attempts": {"pr_number", "attempt_id", "attempt_sequence"},
-    "pr-evidence": {"pr_number", "limit", "cursor"},
+    "pr-evidence": {"pr_number", "limit", "cursor", "expected_revision"},
 }
 
 
