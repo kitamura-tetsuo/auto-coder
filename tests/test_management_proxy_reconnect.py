@@ -1,5 +1,8 @@
 import json
+import multiprocessing
+import os
 import select
+import stat
 import subprocess
 import sys
 from dataclasses import asdict
@@ -202,6 +205,15 @@ def stopped_old_attachment(tmp_path: Path) -> tuple[ProxyReconnect, Driver]:
     return controller, driver
 
 
+def expected_stopped_attachment(driver: Driver) -> dict[str, object]:
+    return {
+        "prior": {"binding": asdict(driver.binding), "manager": {"id": driver.binding.manager_id, "pid": 10, "started": "one", "namespace": "net:[2]"}, "phase": "stopped"},
+        "manager": {"id": driver.binding.manager_id, "pid": 11, "started": "two", "namespace": "net:[3]"},
+        "proxy": dict(driver.proxy),
+        "proxy_namespace": "net:[3]",
+    }
+
+
 def test_explicit_stopped_successor_observation_preserves_prior_without_effect(tmp_path: Path) -> None:
     controller, driver = stopped_old_attachment(tmp_path)
     prior = controller._read()
@@ -210,9 +222,13 @@ def test_explicit_stopped_successor_observation_preserves_prior_without_effect(t
     saved = controller._read()
     assert saved is not None and saved["phase"] == "done" and saved["manager"] == controller._manager()
     records = list(tmp_path.glob("proxy-resolution-*.json"))
-    assert len(records) == 1 and json.loads(records[0].read_text())["prior"] == prior
+    expected = expected_stopped_attachment(driver)
+    assert expected["prior"] == prior
+    assert len(records) == 1 and json.loads(records[0].read_text()) == expected
+    archived = records[0].read_bytes()
     assert controller.tick() == "ATTACHED"
     assert controller.reconcile() == "NEEDS_ATTENTION"
+    assert records[0].read_bytes() == archived
     assert len(list(tmp_path.glob("proxy-resolution-*.json"))) == 1 and driver.effects == []
 
 
@@ -255,8 +271,14 @@ def test_stopped_successor_interrupted_resolution_retries_without_effect(tmp_pat
     with pytest.raises(RuntimeError):
         controller.reconcile()
     assert controller._read() == prior
+    record = next(tmp_path.glob("proxy-resolution-*.json"))
+    archived = record.read_bytes()
+    assert json.loads(archived) == expected_stopped_attachment(driver)
     monkeypatch.setattr(controller, "_write", original)
     assert controller.reconcile() == "ATTACHMENT_OBSERVED"
+    assert record.read_bytes() == archived
+    assert controller.reconcile() == "NEEDS_ATTENTION"
+    assert record.read_bytes() == archived
     assert len(list(tmp_path.glob("proxy-resolution-*.json"))) == 1 and driver.effects == []
 
 
@@ -327,3 +349,79 @@ def test_duplicate_journal_keys_preserve_ambiguous_evidence(tmp_path: Path, dupl
         controller.tick()
     assert path.read_bytes() == prior and driver.effects == []
     assert not list(tmp_path.glob("proxy-resolution-*.json"))
+
+
+@pytest.mark.parametrize("cut", ["created", "before_publish", "after_publish"])
+def test_archive_publication_interruption_allows_fresh_controller_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cut: str) -> None:
+    controller, driver = stopped_old_attachment(tmp_path)
+    original_journal = (tmp_path / "proxy-reconnect.json").read_bytes()
+    expected = expected_stopped_attachment(driver)
+    effect_marker = tmp_path / "unexpected-effect"
+
+    def interrupt() -> None:
+        original_open, original_link = os.open, os.link
+
+        def opened(path, *args, **kwargs):
+            descriptor = original_open(path, *args, **kwargs)
+            if cut == "created" and str(path).startswith(".proxy-resolution-stage-"):
+                os._exit(73)
+            return descriptor
+
+        def linked(*args, **kwargs):
+            if cut == "before_publish":
+                os._exit(73)
+            original_link(*args, **kwargs)
+            if cut == "after_publish":
+                os._exit(73)
+
+        def unexpected(*args):
+            effect_marker.write_text("unexpected effect")
+            raise AssertionError("reconcile must only observe")
+
+        os.open, os.link = opened, linked
+        driver.effect = unexpected
+        controller.reconcile()
+
+    process = multiprocessing.get_context("fork").Process(target=interrupt)
+    process.start()
+    try:
+        process.join(10)
+        assert process.exitcode == 73
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(10)
+    assert not effect_marker.exists()
+    assert (tmp_path / "proxy-reconnect.json").read_bytes() == original_journal
+    staged = list(tmp_path.glob(".proxy-resolution-stage-*"))
+    assert len(staged) == 1
+    records = list(tmp_path.glob("proxy-resolution-*.json"))
+    assert len(records) == (1 if cut == "after_publish" else 0)
+    if records:
+        assert json.loads(records[0].read_bytes()) == expected
+    synced = []
+    fsync = os.fsync
+
+    def synchronized(fd: int) -> None:
+        fsync(fd)
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            synced.append(True)
+
+    monkeypatch.setattr(os, "fsync", synchronized)
+    fresh = ProxyReconnect(tmp_path, driver.binding, driver)  # type: ignore[arg-type]
+    write = fresh._write
+
+    def durable_before_done(manager: dict[str, object], phase: str) -> None:
+        assert synced
+        final = list(tmp_path.glob("proxy-resolution-*.json"))
+        assert len(final) == 1 and json.loads(final[0].read_bytes()) == expected
+        write(manager, phase)
+
+    monkeypatch.setattr(fresh, "_write", durable_before_done)
+    assert fresh.reconcile() == "ATTACHMENT_OBSERVED"
+    records = list(tmp_path.glob("proxy-resolution-*.json"))
+    assert len(records) == 1 and json.loads(records[0].read_bytes()) == expected
+    archived = records[0].read_bytes()
+    assert fresh.reconcile() == "NEEDS_ATTENTION" and fresh.tick() == "ATTACHED"
+    assert records[0].read_bytes() == archived and driver.effects == []
+    assert not effect_marker.exists()

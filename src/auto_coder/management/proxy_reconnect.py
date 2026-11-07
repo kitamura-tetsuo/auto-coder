@@ -187,9 +187,17 @@ class ProxyReconnect:
         name = "proxy-resolution-" + hashlib.sha256(prior_bytes).hexdigest() + ".json"
         content = json.dumps({"prior": prior, "manager": manager, "proxy": proxy, "proxy_namespace": namespace}, sort_keys=True, separators=(",", ":")).encode()
         directory = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        staging = ".proxy-resolution-stage-" + os.urandom(16).hex()
+        created = False
         try:
+            descriptor = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+            created = True
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
             try:
-                descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+                os.link(staging, name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
             except FileExistsError:
                 descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
                 with os.fdopen(descriptor, "rb") as stream:
@@ -197,14 +205,14 @@ class ProxyReconnect:
                     stored = stream.read(16385)
                 if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600 or stored != content:
                     raise ValueError("existing proxy resolution differs")
-            else:
-                with os.fdopen(descriptor, "wb") as stream:
-                    stream.write(content)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.fsync(directory)
+            # Also synchronize an existing identical publication after interruption.
+            os.fsync(directory)
         finally:
-            os.close(directory)
+            try:
+                if created:
+                    os.unlink(staging, dir_fd=directory)
+            finally:
+                os.close(directory)
 
     def reconcile(self) -> str:
         """Trusted-local operator observes an uncertain effect; never replay it."""

@@ -166,3 +166,32 @@ def test_token_metadata_validation_does_not_read_contents(files: tuple[Path, Pat
 
     monkeypatch.setattr(os, "fdopen", no_credential_stream)
     assert load_management_settings(config).source_repository == REPOSITORY
+
+
+def test_unreadable_token_refuses_at_read_open_without_disclosure(files: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    from auto_coder.management.source_evidence_config import main
+
+    config, token = files
+    install(config, token)
+    original_open = os.open
+    attempts = []
+
+    def denied(path, flags, *args, **kwargs):
+        if path == token.name:
+            assert flags & os.O_NOFOLLOW and flags & os.O_NONBLOCK
+            attempts.append(path)
+            raise PermissionError("controlled unreadable token")
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", denied)
+    with pytest.raises(PermissionError, match="controlled unreadable token"):
+        prepare(config, REPOSITORY, token)
+    with pytest.raises(PermissionError, match="controlled unreadable token"):
+        load_management_settings(config)
+    monkeypatch.setattr(sys, "argv", ["source_evidence_config", "--config", str(config), "--repository", REPOSITORY, "--token-file", str(token)])
+    with pytest.raises(SystemExit) as exit_status:
+        main()
+    assert exit_status.value.code == 1 and attempts == [token.name] * 3
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == "source evidence configuration unavailable\n"
+    assert token.read_text() not in captured.out + captured.err

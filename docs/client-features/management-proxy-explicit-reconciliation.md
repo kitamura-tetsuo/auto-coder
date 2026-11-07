@@ -27,8 +27,10 @@ journal advances to `done` for the observed lifetime. No stop/start is dispatche
 `ATTACHED` output and independently check authenticated MCP. Namespace attachment
 alone is not application readiness or worker/source deployment proof.
 
-An interruption after the resolution record but before the journal transition
-can be retried with identical observations; conflicting existing evidence refuses.
+Resolution bytes are written and fsynced under a private staging name before
+atomic no-overwrite publication. Abandoned staging files cannot block a fresh
+retry. An interruption before publication or before the journal transition can
+be retried with identical observations; conflicting final evidence still refuses.
 Changed observations, wrong namespace, stopped proxy, unknown effects belonging
 to another lifetime and malformed records remain `NEEDS_ATTENTION` or unavailable.
 Do not replace their evidence. Existing same-lifetime uncertain-effect observation

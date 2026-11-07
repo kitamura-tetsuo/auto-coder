@@ -58,7 +58,7 @@ class _SourceService(GitEvidenceBoundary):
         self.refs.clear()
         self.executions.clear()
         self.repository = root
-        subprocess.run(["git", "clone", "--bare", str(source), str(root)], check=True, capture_output=True, text=True)
+        subprocess.run(["git", "clone", "--bare", "--no-tags", str(source), str(root)], check=True, capture_output=True, text=True)
         self.read_only_mutations: list[tuple[str, str]] = []
         self.fail_reads = False
 
