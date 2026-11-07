@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -63,15 +64,31 @@ def test_concurrent_comparisons_own_independent_cache_namespaces(tmp_path: Path,
     shared = tmp_path / "runner-cache"
     monkeypatch.setenv("AUTO_CODER_INTEGRATION_UV_CACHE_DIR", str(shared))
     first_namespace = isolated_cache_namespace("same-source-cold-warm")
-    first = dependency_cache_arguments(namespace=first_namespace)
-    assert first.condition == "cold"
-    assert first.host_directory is not None
-    active_artifact = first.host_directory / "active-preparation-artifact"
-    active_artifact.write_text("in use", encoding="utf-8")
+    first_started = threading.Event()
+    allow_first_to_finish = threading.Event()
+    first_result = []
+
+    def active_preparation() -> None:
+        first = dependency_cache_arguments(namespace=first_namespace)
+        assert first.host_directory is not None
+        active_artifact = first.host_directory / "active-preparation-artifact"
+        active_artifact.write_text("in use", encoding="utf-8")
+        first_result.append((first, active_artifact))
+        first_started.set()
+        assert allow_first_to_finish.wait(timeout=5)
+
+    thread = threading.Thread(target=active_preparation)
+    thread.start()
+    assert first_started.wait(timeout=5)
 
     second_namespace = isolated_cache_namespace("same-source-cold-warm")
     second = dependency_cache_arguments(namespace=second_namespace)
 
+    first, active_artifact = first_result[0]
+    allow_first_to_finish.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert first.condition == "cold"
     assert second.condition == "cold"
     assert second.host_directory is not None
     assert second_namespace != first_namespace
