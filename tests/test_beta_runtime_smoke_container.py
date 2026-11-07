@@ -63,7 +63,7 @@ class _SourceService(GitEvidenceBoundary):
         # after this fixture was written.  The disposable service owns its
         # selection history, so inherited mutable/history refs would make the
         # first fixture selection appear to have been superseded already.
-        inherited = self._git("for-each-ref", "--format=%(refname)", "refs/tags/auto-coder-beta-")
+        inherited = self._git("for-each-ref", "--format=%(refname)", "refs/tags/auto-coder-beta-*")
         for ref in inherited.splitlines():
             self._git("update-ref", "-d", ref)
         self.read_only_mutations: list[tuple[str, str]] = []
@@ -114,7 +114,7 @@ class _SourceService(GitEvidenceBoundary):
         return super().request(method, path, payload)
 
 
-def test_source_service_does_not_inherit_checkout_beta_selection_refs(tmp_path: Path) -> None:
+def test_source_service_does_not_inherit_checkout_beta_selection_refs(tmp_path: Path, _use_real_commands: None) -> None:
     source = tmp_path / "source"
     source.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=source, check=True)
@@ -128,7 +128,15 @@ def test_source_service_does_not_inherit_checkout_beta_selection_refs(tmp_path: 
 
     service = _SourceService(source, tmp_path / "source.git")
 
-    assert service._git("for-each-ref", "--format=%(refname)", "refs/tags/auto-coder-beta-") == ""
+    for name in ("auto-coder-beta-current", "auto-coder-beta-selection-r77"):
+        assert (
+            subprocess.run(
+                ["git", f"--git-dir={service.repository}", "rev-parse", "--verify", f"refs/tags/{name}"],
+                capture_output=True,
+                text=True,
+            ).returncode
+            != 0
+        )
     assert service._git("rev-parse", "HEAD") == subprocess.run(["git", "rev-parse", "HEAD"], cwd=source, check=True, capture_output=True, text=True).stdout.strip()
 
 
