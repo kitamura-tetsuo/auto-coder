@@ -793,9 +793,11 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
 
     remote.executions[(12, 2)] = (revisions[0], "2026-10-03T03:00:00Z")
     assert selecting.advance("r79", revisions[0]).certainty is MutationCertainty.CONFIRMED
+    http.portal.call(service.start_monitor)
     retry = _call(http, bearer, "auto_coder_deploy_beta_source", _argument(client, revisions[0], "smoke-deploy-retry"))
     retry_deployment = str(retry["operation_id"])
     _await_stage(app, retry_deployment, "SUCCEEDED", timeout=210)
+    http.portal.call(service.stop_monitor)
     accepted_retry = accept("successful-retry-original-proof", deployment=retry_deployment)
     retry_capture = captured(accepted_retry)
     assert (retry_capture["capture"]["source"]["selected_run_id"], retry_capture["capture"]["source"]["selected_run_attempt"]) == (12, 2)
@@ -827,9 +829,11 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
     # Deploy the second actual revision, then prove its own local window.
     remote.executions[(14, 1)] = (revisions[1], "2026-10-05T05:00:00Z")
     assert selecting.advance("r81", revisions[0]).certainty is MutationCertainty.CONFIRMED
+    http.portal.call(service.start_monitor)
     second = _call(http, bearer, "auto_coder_deploy_beta_source", _argument(client, revisions[1], "smoke-deploy-b"))
     second_deployment = str(second["operation_id"])
     _await_stage(app, second_deployment, "SUCCEEDED", timeout=210)
+    http.portal.call(service.stop_monitor)
     second_local = accept("second-installed-revision", deployment=second_deployment, sha=revisions[1])
     second_document = result(_finish(producer, second_local.operation_id), "PASS")
     assert second_document["source_sha"] == revisions[1]
@@ -849,9 +853,11 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
     assert SourceAcceptancePublisher(remote, "owner/repo").read(replacement.operation_id) is None
 
     # A genuine lifecycle predicate violation is FAIL, not unavailable evidence.
+    http.portal.call(service.start_monitor)
     refreshed = _call(http, bearer, "auto_coder_deploy_beta_source", _argument(client, revisions[1], "smoke-deploy-b-refreshed"))
     refreshed_id = str(refreshed["operation_id"])
     _await_stage(app, refreshed_id, "SUCCEEDED", timeout=210)
+    http.portal.call(service.stop_monitor)
     stopped = accept("worker-stopped-is-fail", deployment=refreshed_id, sha=revisions[1])
     captured(stopped)
     _stop_running_worker(client)
