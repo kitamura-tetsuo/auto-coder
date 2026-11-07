@@ -37,3 +37,9 @@ the same dispatcher lane without further run requests. The producer respects the
 persisted next-sample time and original deadline. Startup resumes that same
 window; read-only polling neither samples nor manufactures heartbeat progress.
 Publication uncertainty is reconciled from the original immutable result only.
+
+The production-origin regression imports real source commits into a disposable
+Git repository without inheriting checkout tags. Its beta selection, tested
+source proof, and acceptance refs must originate in the controlled fixture,
+not from a live repository's existing release state. The source checkout and
+its refs remain unchanged.
