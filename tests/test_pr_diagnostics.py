@@ -4,6 +4,7 @@ from pathlib import Path
 
 import httpx
 
+from auto_coder.github_pending_work import WorkIdentity, resolve_pending_work_store
 from auto_coder.pr_diagnostics import project_pr_diagnostics
 from auto_coder.worker_management_bridge import WorkerManagementBridge, configured_identity
 from tests.test_worker_management_bridge import ObservedEngine, configure
@@ -80,3 +81,44 @@ def test_private_route_distinguishes_no_match_and_rejects_forged_selector(monkey
         assert invalid.status_code == 422
 
     asyncio.run(scenario())
+
+
+def test_private_route_pending_store_absence_exact_pr_filter_and_pagination(monkeypatch, tmp_path: Path) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    identity = configured_identity("owner/repo")
+    assert identity is not None
+    bridge = WorkerManagementBridge(identity, ObservedEngine())
+
+    async def read(path: str) -> dict[str, object]:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=bridge.app), base_url="http://worker") as client:
+            response = await client.get(path)
+        assert response.status_code == 200
+        return response.json()
+
+    missing = asyncio.run(read("/v1/pr-diagnostics?pr_number=17"))
+    assert missing["sections"]["pending_work"] == {
+        "producer": "PendingWorkStore",
+        "availability": "ABSENT",
+        "reason": "store_not_present",
+        "records": [],
+        "truncated": False,
+        "next_cursor": None,
+    }
+
+    resolution = resolve_pending_work_store("owner/repo", home=tmp_path)
+    assert resolution.store is not None
+    store = resolution.store
+    store.ensure_reevaluation(WorkIdentity("owner/repo", "pr:17", "pr-processing", "rev-a"), ("thread-a",), now=10)
+    store.ensure_reevaluation(WorkIdentity("owner/repo", "pr:17", "pr-processing", "rev-b"), ("thread-b",), now=20)
+    store.ensure_reevaluation(WorkIdentity("owner/repo", "pr:171", "pr-processing", "other"), ("must-not-join",), now=30)
+
+    first = asyncio.run(read("/v1/pr-diagnostics?pr_number=17&limit=1&cursor=0"))["sections"]["pending_work"]
+    second = asyncio.run(read("/v1/pr-diagnostics?pr_number=17&limit=1&cursor=1"))["sections"]["pending_work"]
+    no_match = asyncio.run(read("/v1/pr-diagnostics?pr_number=18"))["sections"]["pending_work"]
+    assert first["availability"] == "COMPLETE" and first["records"][0]["identity"]["revision"] == "rev-a"
+    assert first["truncated"] is True and first["next_cursor"] == 1
+    assert second["records"][0]["identity"]["revision"] == "rev-b"
+    assert second["truncated"] is False and second["next_cursor"] is None
+    assert no_match["availability"] == "COMPLETE" and no_match["records"] == []
+    assert "must-not-join" not in json.dumps((first, second))

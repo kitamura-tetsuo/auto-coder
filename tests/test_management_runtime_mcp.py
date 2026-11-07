@@ -6,9 +6,11 @@ integration suite; this file exercises management consumption of its typed API.
 
 from __future__ import annotations
 
+import fcntl
 import http.client
 import json
 import os
+import sqlite3
 import threading
 import time
 from dataclasses import replace
@@ -16,12 +18,14 @@ from dataclasses import replace
 import pytest
 from starlette.testclient import TestClient
 
+from auto_coder.github_pending_work import WorkIdentity, resolve_pending_work_store
 from auto_coder.management.action_scopes import OPERATE_SCOPE, READ_SCOPE
 from auto_coder.management.app import create_management_app
 from auto_coder.management.oauth_config import ManagementSettings, OAuthClient, OAuthSettings
 from auto_coder.management.oauth_grants import OAuthGrantService
 from auto_coder.management.operations import ActionParameter, AdmissionStatus, ManagedTarget, OperationIntent, OperationPhase
 from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkResult
+from auto_coder.runtime_locks import ensure_lock_directory, lock_path
 from auto_coder.worker_network_protocol import MAX_RESPONSE_BYTES
 from tests.test_management_mcp import _issue, _mcp, real_boundary
 from tests.test_worker_supervisor_bridge import _bridge, _supervisor
@@ -278,6 +282,183 @@ def test_authenticated_logs_cross_real_private_transport_for_overflow_and_increm
             except ProcessLookupError:
                 pass
         listener.close()
+
+
+def test_authenticated_pr_diagnostics_cross_real_supervisor_worker_and_retained_stores(runtime_boundary, tmp_path, monkeypatch: pytest.MonkeyPatch, _use_real_commands: None, _use_real_sleep: None) -> None:
+    """Exercise MCP -> signed Supervisor HTTP -> worker UDS -> actual stores."""
+    settings, grants, signed, _policy, _beta, release = runtime_boundary
+    home = tmp_path / "worker-home"
+    monkeypatch.setenv("HOME", str(home))
+    repository = "fixture/beta"
+    retained = home / ".auto-coder" / repository
+    retained.mkdir(parents=True)
+    cycle_path = retained / "pr_review_cycle.json"
+    decision_path = retained / "effective_review_decisions.json"
+    effects_path = retained / "pr_review_effects.json"
+    cycle_path.write_text(json.dumps({"prs": {"17": {"pr_number": 17, "open_epoch": 4, "transition_version": 9, "finding_set_revision": 7, "active_claim": {"claim_id": "claim-17", "round_id": "round-17"}, "strong_rounds": [], "closures": []}}}), encoding="utf-8")
+    decision_path.write_text(
+        json.dumps({"17": {"pr_number": 17, "head_sha": "a" * 40, "base_sha": "b" * 40, "attempt_id": "attempt-17", "attempt_sequence": 5, "publication": "CONFIRMED", "handoff": "WAITING", "wait_reason": "Bearer decision-secret at /private/path", "updated_at": 100.0}}), encoding="utf-8"
+    )
+    effects_path.write_text(
+        json.dumps(
+            {
+                "operations": {
+                    "review-confirmed": {
+                        "operation_id": "review-confirmed",
+                        "payload_identity": "payload-review",
+                        "repository": repository,
+                        "pr_number": 17,
+                        "mode": "ORDINARY_CLOSURE",
+                        "round_id": "round-17",
+                        "target_head": "a" * 40,
+                        "contract_identity": "contract-17",
+                        "finding_set_revision": 7,
+                        "purpose": "review-publication",
+                        "destination": "review-17",
+                        "exact_payload": "must-not-leak",
+                        "status": "CONFIRMED",
+                        "owner_token": "owner-must-not-leak",
+                        "receipt": "review-receipt-17",
+                        "reason": "",
+                        "updated_at": 101.0,
+                    },
+                    "thread-uncertain": {
+                        "operation_id": "thread-uncertain",
+                        "payload_identity": "payload-thread",
+                        "repository": repository,
+                        "pr_number": 17,
+                        "mode": "ORDINARY_CLOSURE",
+                        "round_id": "round-17",
+                        "target_head": "a" * 40,
+                        "contract_identity": "contract-17",
+                        "finding_set_revision": 7,
+                        "purpose": "thread-publication",
+                        "destination": "resolved-github-thread-17",
+                        "exact_payload": "must-not-leak",
+                        "status": "UNCERTAIN",
+                        "owner_token": "owner-must-not-leak",
+                        "receipt": "",
+                        "reason": "Authorization: Bearer thread-secret",
+                        "updated_at": 102.0,
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    resolution = resolve_pending_work_store(repository, home=home)
+    assert resolution.store is not None
+    resolution.store.ensure_reevaluation(WorkIdentity(repository, "pr:17", "pr-processing", "rev-a"), ("thread-a",), now=10)
+    resolution.store.ensure_reevaluation(WorkIdentity(repository, "pr:17", "pr-processing", "rev-b"), ("thread-b",), now=20)
+    resolution.store.ensure_reevaluation(WorkIdentity(repository, "pr:171", "pr-processing", "other-pr"), ("foreign",), now=30)
+    source_before = {path: path.read_bytes() for path in (cycle_path, decision_path, effects_path)}
+    with sqlite3.connect(resolution.destination) as connection:
+        pending_before = connection.execute("SELECT repository,entity,stage,revision,reason,not_before,unfinished_effects,throttle_attempts,last_error,status FROM github_pending_work ORDER BY work_key").fetchall()
+
+    supervisor_root = tmp_path / "real-pr-worker"
+    monkeypatch.setenv("AUTO_CODER_RUNTIME_ROOT", str(supervisor_root))
+    supervisor = _supervisor(supervisor_root)
+    listener, worker = _bridge(supervisor, os.urandom(48))
+    worker_pid = None
+    try:
+        worker.inspect_supervisor()
+        started = supervisor.apply({"operation_id": "start-mcp-pr-diagnostic-worker", "operation": "START"})
+        worker_pid = started["worker"]["pid"]
+        for sequence in range(100):
+            if worker.observe_worker(f"pr-diagnostic-ready-{sequence}").result_code == "OK":
+                break
+            threading.Event().wait(0.05)
+        else:
+            pytest.fail("private diagnostic worker did not become observable")
+
+        app = create_management_app(settings, grants, worker_clients={"beta": worker, "release": release})
+        with TestClient(app, base_url=settings.oauth.canonical_issuer) as client:
+            token = _issue(client, settings, signed, "alice", "alice-client", READ_SCOPE)["access_token"]
+            pending_backup = resolution.destination.with_suffix(".saved")
+            resolution.destination.replace(pending_backup)
+            missing = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 17}, 1)
+            assert missing["projection"]["sections"]["pending_work"]["availability"] == "ABSENT"
+            pending_backup.replace(resolution.destination)
+            first = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 17, "limit": 1, "cursor": 0})
+            second = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 17, "limit": 1, "cursor": 1}, 2)
+            assert first["status"] == "UNAVAILABLE" and first["binding_status"] == "UNAVAILABLE"
+            assert first["process_run_id"] == worker.worker_process_run_id
+            projected = first["projection"]
+            assert projected["sections"]["review_cycle"]["records"][0]["active_claim"]["claim_id"] == "claim-17"
+            assert projected["sections"]["effective_decision"]["records"][0]["publication"] == "CONFIRMED"
+            assert projected["sections"]["review_effects"]["records"][0]["status"] == "CONFIRMED"
+            assert second["projection"]["sections"]["review_effects"]["records"][0]["status"] == "UNCERTAIN"
+            pending_first = projected["sections"]["pending_work"]
+            pending_second = second["projection"]["sections"]["pending_work"]
+            assert pending_first["records"][0]["identity"]["revision"] == "rev-a" and pending_first["next_cursor"] == 1
+            assert pending_second["records"][0]["identity"]["revision"] == "rev-b" and pending_second["next_cursor"] is None
+            encoded = json.dumps((first, second))
+            assert "other-pr" not in encoded and "owner-must-not-leak" not in encoded and "thread-secret" not in encoded and "/private/path" not in encoded
+
+            decision_path.write_text("{broken", encoding="utf-8")
+            corrupt = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 17}, 3)
+            assert corrupt["projection"]["sections"]["effective_decision"]["availability"] == "CORRUPT"
+            assert corrupt["projection"]["sections"]["review_effects"]["availability"] == "COMPLETE"
+
+            decision_path.write_bytes(source_before[decision_path])
+            effect_lock = lock_path(repository, effects_path, "pr-review-effects")
+            ensure_lock_directory(effect_lock)
+            with effect_lock.open("a+") as held:
+                fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+                contended = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 17}, 4)
+                fcntl.flock(held.fileno(), fcntl.LOCK_UN)
+            assert contended["projection"]["sections"]["review_effects"]["availability"] == "UNAVAILABLE"
+            assert contended["projection"]["sections"]["review_cycle"]["availability"] == "COMPLETE"
+
+            old_run = worker.worker_process_run_id
+            assert old_run is not None and worker.worker_deployment_generation is not None
+            stopping = supervisor.apply(
+                {
+                    "operation_id": "stop-old-mcp-pr-diagnostic-worker",
+                    "operation": "REQUEST_GRACEFUL_STOP",
+                    "expected_process_run_id": old_run,
+                    "expected_generation": worker.worker_deployment_generation,
+                }
+            )
+            assert stopping["status"] in {"DRAINING", "STOPPED"}
+            (supervisor_root / "fixture-release").write_text("release")
+            for _ in range(100):
+                if supervisor.inspect()["status"] == "STOPPED":
+                    break
+                threading.Event().wait(0.05)
+            else:
+                pytest.fail("old private diagnostic worker did not stop")
+            assert supervisor.read_operation("stop-old-mcp-pr-diagnostic-worker")["status"] == "STOPPED"
+            (supervisor_root / "fixture-release").unlink()
+            restarted = supervisor.apply({"operation_id": "restart-mcp-pr-diagnostic-worker", "operation": "START"})
+            worker_pid = restarted["worker"]["pid"]
+            assert worker.inspect_supervisor().result_code == "OK"
+            for sequence in range(100):
+                if worker.observe_worker(f"replacement-pr-diagnostic-ready-{sequence}").result_code == "OK":
+                    break
+                threading.Event().wait(0.05)
+            else:
+                pytest.fail("replacement private diagnostic worker did not become observable")
+            replacement = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "beta-worker", "pr_number": 17}, 6)
+            assert replacement["process_run_id"] != old_run
+            assert replacement["process_run_id"] == worker.worker_process_run_id
+
+            denied = _call(client, token, "auto_coder_pr_diagnostics", {"target_id": "unknown-worker", "pr_number": 17}, 5)
+            assert denied["status"] == "DENIED"
+    finally:
+        if worker_pid is not None:
+            (supervisor_root / "fixture-release").write_text("release")
+            try:
+                supervisor.apply({"operation_id": "stop-mcp-pr-diagnostic-worker", "operation": "REQUEST_GRACEFUL_STOP", "expected_process_run_id": worker.worker_process_run_id, "expected_deployment_generation": worker.worker_deployment_generation})
+            except Exception:
+                pass
+        listener.close()
+
+    decision_path.write_bytes(source_before[decision_path])
+    assert {path: path.read_bytes() for path in source_before} == source_before
+    with sqlite3.connect(resolution.destination) as connection:
+        pending_after = connection.execute("SELECT repository,entity,stage,revision,reason,not_before,unfinished_effects,throttle_attempts,last_error,status FROM github_pending_work ORDER BY work_key").fetchall()
+    assert pending_after == pending_before
 
 
 def test_original_grant_revoked_after_commit_and_before_dispatch(runtime_boundary) -> None:

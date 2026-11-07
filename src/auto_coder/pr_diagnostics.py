@@ -164,10 +164,20 @@ def project_pr_diagnostics(repository: str, pr_number: int, *, limit: int = 50, 
     for view in inspection.views:
         for obligation in view.obligations:
             identity = obligation.identity
-            if identity.entity in {f"pr:{pr_number}", f"pr#{pr_number}", str(pr_number)} or ("pr" in identity.stage.lower() and str(pr_number) in identity.entity):
+            if identity.entity in {f"pr:{pr_number}", f"pr#{pr_number}", str(pr_number)}:
                 raw = asdict(obligation)
                 raw["identity"] = asdict(identity)
                 raw["last_error"] = _safe(raw.get("last_error", ""))
                 pending.append(raw)
-    sections["pending_work"] = _section("PendingWorkStore", "UNAVAILABLE" if inspection.errors else "COMPLETE", reason="; ".join(_safe(error) for error in inspection.errors) or None, records=pending[:limit], truncated=len(pending) > limit, next_cursor=limit if len(pending) > limit else None)
+    pending_page = pending[cursor : cursor + limit]
+    pending_available = bool(inspection.views)
+    pending_truncated = cursor + len(pending_page) < len(pending)
+    sections["pending_work"] = _section(
+        "PendingWorkStore",
+        "UNAVAILABLE" if inspection.errors else "COMPLETE" if pending_available else "ABSENT",
+        reason="; ".join(_safe(error) for error in inspection.errors) or (None if pending_available else "store_not_present"),
+        records=pending_page,
+        truncated=pending_truncated,
+        next_cursor=cursor + len(pending_page) if pending_truncated else None,
+    )
     return {"schema_version": SCHEMA_VERSION, "pr_number": pr_number, "repository": repository, "selector": {"limit": limit, "cursor": cursor}, "sections": sections, "overall_readiness": None}
