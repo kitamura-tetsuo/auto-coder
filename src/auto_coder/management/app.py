@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from auto_coder.tested_source_refs import TestedSourcePublisher
 
+from .beta_runtime_smoke import SmokeProfile
 from .child_lifecycle import write_management_drain_receipt
 from .identity import FirebaseOperatorIdentity, IdentityConfig
 from .mcp_resource import ManagementTool, create_mcp_resource
@@ -15,6 +16,8 @@ from .oauth_grants import OAuthGrantService
 from .oauth_http import create_management_auth_app
 from .retained_journal import RetainedJournal
 from .retained_startup import retained_from_fresh_intent
+from .source_acceptance import SourceAcceptancePublisher
+from .source_evidence import BetaEvidenceReader
 from .worker_network_client import WorkerEndpointConfig, WorkerNetworkClient, configured_worker_bridge_environment
 
 
@@ -26,6 +29,9 @@ def create_management_app(
     worker_clients: dict[str, WorkerNetworkClient] | None = None,
     self_update_source_authority: TestedSourcePublisher | None = None,
     retained_journal: RetainedJournal | None = None,
+    beta_acceptance_source: BetaEvidenceReader | None = None,
+    beta_acceptance_publisher: SourceAcceptancePublisher | None = None,
+    beta_acceptance_profile: SmokeProfile | None = None,
 ) -> FastAPI:
     if grants is None:
         identity = FirebaseOperatorIdentity(IdentityConfig(settings.oauth.firebase_project_id, settings.state_root / "allowed_uids.json"))
@@ -35,7 +41,9 @@ def create_management_app(
         clients = {channel: WorkerNetworkClient(WorkerEndpointConfig.environment(channel)) for channel in ("beta", "release")}
     owned_retained = retained_from_fresh_intent(settings) if retained_journal is None else None
     selected_retained = retained_journal if retained_journal is not None else owned_retained
-    runtime = ManagementRuntime(settings, grants, clients, self_update_source_authority=self_update_source_authority, retained_journal=selected_retained)
+    runtime = ManagementRuntime(
+        settings, grants, clients, self_update_source_authority=self_update_source_authority, retained_journal=selected_retained, beta_acceptance_source=beta_acceptance_source, beta_acceptance_publisher=beta_acceptance_publisher, beta_acceptance_profile=beta_acceptance_profile
+    )
     mcp, resource = create_mcp_resource(settings, grants, (*tools, *runtime.tool_registrations()), identity_observer=runtime.observe_authenticated_identity)
 
     @asynccontextmanager
