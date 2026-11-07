@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 from auto_coder.automation_engine import EngineLifecycle
+from auto_coder.execution_trace import EventKind, get_trace_collector
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.worker_management_bridge import BridgeIdentity, WorkerManagementBridge
 
@@ -51,6 +52,19 @@ async def run() -> None:
 
         consumer_identity._PACKAGE = Path(test_package)
     bridge = WorkerManagementBridge(identity, engine)
+    collector = get_trace_collector()
+    seeded_logs = int(os.environ.get("AUTO_CODER_TEST_SEEDED_LOGS", "0"))
+    seeded_size = int(os.environ.get("AUTO_CODER_TEST_SEEDED_LOG_SIZE", "1900"))
+    for number in range(seeded_logs):
+        collector.record_event(
+            EventKind.STAGE_RESULT,
+            "private-envelope-budget",
+            "worker",
+            label=f"seeded-{number}-" + "x" * seeded_size,
+            facts={"reason": "Bearer fixture-secret https://example.invalid/" + "y" * seeded_size},
+        )
+    for _ in range(int(os.environ.get("AUTO_CODER_TEST_OMITTED_LOGS", "0"))):
+        collector.start_execution(identity.repository, "issue", 1, origin="x" * 300)
     # Hold an actual worker-produced UDS response, not a fabricated network
     # response, so the private Supervisor transport's timeout is exercised.
     original_observation = bridge._observation

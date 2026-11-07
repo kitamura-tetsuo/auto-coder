@@ -17,6 +17,7 @@ from auto_coder.automation_config import AutomationConfig
 from auto_coder.automation_engine import AutomationEngine, EngineLifecycle
 from auto_coder.build_provenance import ArtifactField, ControllerArtifactObservation
 from auto_coder.entity_invalidation import DurableInvalidationQueue, EntityIdentity, InvalidationDisposition
+from auto_coder.execution_trace import EventKind, TraceCollector, get_trace_collector
 from auto_coder.health_monitor import HealthMonitor, get_health_monitor
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.worker_management_bridge import (
@@ -51,6 +52,96 @@ def configure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setenv("AUTO_CODER_RUNTIME_ROOT", str(runtime))
     monkeypatch.setenv("AUTO_CODER_OWNERSHIP_FILE", str(ownership))
     return endpoint
+
+
+def test_private_log_budget_fits_recent_and_incremental_pages_without_skips(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    configure(monkeypatch, tmp_path)
+    TraceCollector._instance = None
+    collector = get_trace_collector()
+    for number in range(80):
+        collector.record_event(
+            EventKind.STAGE_RESULT,
+            "private-budget",
+            "worker",
+            label=f"event-{number}-" + "x" * 700,
+            facts={"reason": "Bearer secret-value https://example.invalid/" + "y" * 700},
+        )
+    identity = configured_identity("owner/repo")
+    assert identity is not None
+    bridge = WorkerManagementBridge(identity, ObservedEngine())
+    headers = {
+        "Auto-Coder-Private-Response-Budget": "4000",
+        "Auto-Coder-Private-Response-Budget-Token": identity.deployment_generation,
+    }
+
+    async def scenario() -> None:
+        transport = httpx.ASGITransport(app=bridge.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+            public = await client.get("/api/logs?limit=80")
+            recent = await client.get("/api/logs?limit=80", headers=headers)
+            rejected = await client.get(
+                "/api/logs?limit=80",
+                headers={**headers, "Auto-Coder-Private-Response-Budget-Token": "wrong-generation"},
+            )
+            pages = []
+            target = f"/api/logs?after_sequence=0&process_run_id={collector.process_run_id}&limit=80"
+            while target:
+                response = await client.get(target, headers=headers)
+                assert response.status_code == 200
+                assert len(response.content) <= 4000
+                page = response.json()
+                pages.append(page)
+                target = f"/api/logs?cursor={page['next_cursor']}&limit=80" if page["has_more"] else ""
+
+        assert len(public.content) > 4000
+        assert len(recent.content) <= 4000
+        assert rejected.status_code == 422
+        recent_body = recent.json()
+        assert recent_body["response"]["truncated"] is True
+        assert recent_body["events"][-1]["sequence"] == 80
+        assert "secret-value" not in recent.text and "example.invalid" not in recent.text
+        sequences = [event["sequence"] for page in pages for event in page["events"]]
+        assert sequences == list(range(1, 81))
+        for previous, following in zip(pages, pages[1:]):
+            assert previous["next_after_sequence"] == previous["events"][-1]["sequence"]
+            assert following["after_sequence"] == previous["next_after_sequence"]
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        TraceCollector._instance = None
+
+
+def test_private_recent_tail_drops_only_the_oldest_uneven_event(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    configure(monkeypatch, tmp_path)
+    TraceCollector._instance = None
+    collector = get_trace_collector()
+    collector.record_event(EventKind.STAGE_RESULT, "private-budget", "worker", label="oldest-" + "x" * 1900)
+    for number in range(2, 11):
+        collector.record_event(EventKind.STAGE_RESULT, "private-budget", "worker", label=f"newer-{number}-" + "y" * 100)
+    identity = configured_identity("owner/repo")
+    assert identity is not None
+    bridge = WorkerManagementBridge(identity, ObservedEngine())
+
+    async def scenario() -> None:
+        transport = httpx.ASGITransport(app=bridge.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://worker") as client:
+            full = await client.get("/api/logs?limit=10")
+            budget = len(full.content) - 1500
+            response = await client.get(
+                "/api/logs?limit=10",
+                headers={
+                    "Auto-Coder-Private-Response-Budget": str(budget),
+                    "Auto-Coder-Private-Response-Budget-Token": identity.deployment_generation,
+                },
+            )
+        assert response.status_code == 200 and len(response.content) <= budget
+        assert [event["sequence"] for event in response.json()["events"]] == list(range(2, 11))
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        TraceCollector._instance = None
 
 
 def test_unset_management_socket_preserves_default(monkeypatch: pytest.MonkeyPatch) -> None:

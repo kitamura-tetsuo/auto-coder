@@ -190,6 +190,7 @@ class _BridgeHandler(BaseHTTPRequestHandler):
             request_id, generation = self._authenticate(method, body)
             if request_id is None:
                 return
+            self._request_id = request_id
             status, code, data = self._dispatch(method, body)
             self._send(status, code, data, request_id=request_id, generation=generation)
         except (OSError, ValueError, TypeError) as error:
@@ -277,6 +278,22 @@ class _BridgeHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def _response_data_budget(self, request_id: str, generation: str) -> int:
+        """Reserve the exact compact-JSON bytes used by the private envelope."""
+        payload = {
+            "schema_version": 1,
+            "instance_id": self.server.bridge_config.instance_id,
+            "channel": self.server.bridge_config.channel,
+            "repository": self.server.bridge_config.repository,
+            "supervisor_generation": generation,
+            "request_id": request_id,
+            "result_code": "OK",
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "data": None,
+        }
+        envelope_with_null = json.dumps(payload, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        return MAX_RESPONSE_BYTES - (len(envelope_with_null) - len(b"null"))
+
     def _dispatch(self, method: str, body: bytes) -> tuple[int, str, object]:
         supervisor = self.server.supervisor
         parsed = urlsplit(self.path)
@@ -303,7 +320,14 @@ class _BridgeHandler(BaseHTTPRequestHandler):
             if kind not in _DIAGNOSTIC_PARAMS or not all(key in _DIAGNOSTIC_PARAMS[kind] for key, _ in pairs):
                 return 422, "UNSUPPORTED", None
             upstream_path = "/v1/consumer-identity" if kind == "consumer-identity" else "/api/" + kind
-            upstream = self._worker_request("GET", upstream_path + ("?" + parsed.query if parsed.query else ""))
+            headers = None
+            if kind == "logs":
+                budget = self._response_data_budget(self._request_id, self.server.supervisor.incarnation)
+                headers = {
+                    "Auto-Coder-Private-Response-Budget": str(budget),
+                    "Auto-Coder-Private-Response-Budget-Token": self._expected_worker_generation,
+                }
+            upstream = self._worker_request("GET", upstream_path + ("?" + parsed.query if parsed.query else ""), headers=headers)
             if kind == "consumer-identity" and not self._current_worker_matches(self._expected_worker_run, self._expected_worker_generation):
                 return 409, "CONFLICT", None
             return self._translate_upstream(upstream)
@@ -410,12 +434,12 @@ class _BridgeHandler(BaseHTTPRequestHandler):
             return expected_runtime_id == selected
         return True
 
-    def _worker_request(self, method: str, target: str, body: bytes = b"") -> tuple[int, dict[str, Any]] | None:
+    def _worker_request(self, method: str, target: str, body: bytes = b"", headers: dict[str, str] | None = None) -> tuple[int, dict[str, Any]] | None:
         snapshot = self.server.supervisor.inspect()
         worker = snapshot.get("worker")
         if not snapshot.get("alive") or not isinstance(worker, dict) or worker.get("process_run_id") != self._expected_worker_run or worker.get("deployment_generation") != self._expected_worker_generation:
             return None
-        return self.server.supervisor.worker_http(worker, method, target, body)
+        return self.server.supervisor.worker_http(worker, method, target, body, headers)
 
     @staticmethod
     def _translate_upstream(upstream: tuple[int, dict[str, Any]] | None) -> tuple[int, str, object]:

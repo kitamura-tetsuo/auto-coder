@@ -193,7 +193,13 @@ class WorkerManagementBridge:
 
         # This registers only the existing inert projections.  The public
         # application's opt-in flag and route set are not consulted or changed.
-        init_public_api(self.app, self.engine, self.identity.repository, safe_failure_logging=True)
+        init_public_api(
+            self.app,
+            self.engine,
+            self.identity.repository,
+            safe_failure_logging=True,
+            private_response_budget_token=self.identity.deployment_generation,
+        )
 
     @staticmethod
     def _error(code: str, message: str, status: int) -> JSONResponse:

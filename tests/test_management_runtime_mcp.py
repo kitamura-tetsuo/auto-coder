@@ -6,6 +6,10 @@ integration suite; this file exercises management consumption of its typed API.
 
 from __future__ import annotations
 
+import http.client
+import json
+import os
+import threading
 import time
 from dataclasses import replace
 
@@ -18,7 +22,9 @@ from auto_coder.management.oauth_config import ManagementSettings, OAuthClient, 
 from auto_coder.management.oauth_grants import OAuthGrantService
 from auto_coder.management.operations import ActionParameter, AdmissionStatus, ManagedTarget, OperationIntent, OperationPhase
 from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkResult
+from auto_coder.worker_network_protocol import MAX_RESPONSE_BYTES
 from tests.test_management_mcp import _issue, _mcp, real_boundary
+from tests.test_worker_supervisor_bridge import _bridge, _supervisor
 
 
 class FixedWorkerBoundary:
@@ -196,6 +202,82 @@ def test_real_oauth_http_tool_scopes_policy_and_idempotent_journal(runtime_bound
         assert denied["status"] == "DENIED" and beta.send_calls == 2
         # A replay of an already accepted intent remains read-only after a downgrade.
         assert _call(client, operate_token, "auto_coder_reevaluate_target", _request(beta), 8) == first
+
+
+def test_authenticated_logs_cross_real_private_transport_for_overflow_and_incremental_pages(runtime_boundary, tmp_path, monkeypatch: pytest.MonkeyPatch, _use_real_commands: None, _use_real_sleep: None) -> None:
+    settings, grants, signed, _policy, _beta, release = runtime_boundary
+    monkeypatch.setenv("AUTO_CODER_TEST_SEEDED_LOGS", "500")
+    encoded_responses: list[bytes] = []
+    original_read = http.client.HTTPResponse.read
+
+    def record_encoded_response(response: http.client.HTTPResponse, amount: int | None = None) -> bytes:
+        raw = original_read(response, amount)
+        encoded_responses.append(raw)
+        return raw
+
+    monkeypatch.setattr(http.client.HTTPResponse, "read", record_encoded_response)
+    supervisor = _supervisor(tmp_path / "real-worker")
+    listener, worker = _bridge(supervisor, os.urandom(48))
+    worker_pid = None
+    try:
+        worker.inspect_supervisor()
+        started = supervisor.apply({"operation_id": "start-mcp-budget-worker", "operation": "START"})
+        worker_pid = started["worker"]["pid"]
+        for _ in range(100):
+            if worker.observe_worker("mcp-budget-ready").result_code == "OK":
+                break
+            threading.Event().wait(0.05)
+        else:
+            pytest.fail("collector-backed worker did not become observable")
+
+        app = create_management_app(settings, grants, worker_clients={"beta": worker, "release": release})
+        with TestClient(app, base_url=settings.oauth.canonical_issuer) as client:
+            token = _issue(client, settings, signed, "alice", "alice-client", READ_SCOPE)["access_token"]
+            recent = _call(client, token, "auto_coder_logs", {"target_id": "beta-worker", "limit": 500})
+            assert recent["status"] == "UNAVAILABLE" and recent["binding_status"] == "UNAVAILABLE"
+            assert recent["runtime_binding"] is None
+            projection = recent["projection"]
+            assert projection["result"] == "events" and projection["events"][-1]["sequence"] == 500
+
+            delivered = []
+            previous_after = 0
+            arguments: dict[str, object] = {
+                "target_id": "beta-worker",
+                "limit": 500,
+                "after_sequence": 0,
+                "process_run_id": projection["process_run_id"],
+            }
+            while True:
+                result = _call(client, token, "auto_coder_logs", arguments)
+                assert result["status"] == "UNAVAILABLE" and result["binding_status"] == "UNAVAILABLE"
+                page = result["projection"]
+                assert page["after_sequence"] == previous_after
+                delivered.extend(event["sequence"] for event in page["events"])
+                if not page["has_more"]:
+                    assert page["next_after_sequence"] == 500 and page["next_cursor"] is None
+                    break
+                assert page["next_after_sequence"] == page["events"][-1]["sequence"]
+                previous_after = page["next_after_sequence"]
+                arguments = {"target_id": "beta-worker", "limit": 500, "cursor": page["next_cursor"]}
+            assert delivered == list(range(1, 501))
+
+        envelopes = []
+        for raw in encoded_responses:
+            try:
+                value = json.loads(raw)
+            except (TypeError, ValueError, UnicodeDecodeError):
+                continue
+            if isinstance(value, dict) and value.get("instance_id") == worker.config.instance_id and value.get("result_code") == "OK":
+                envelopes.append(raw)
+        assert envelopes and all(len(raw) <= MAX_RESPONSE_BYTES for raw in envelopes)
+    finally:
+        if worker_pid is not None:
+            (tmp_path / "real-worker" / "fixture-release").write_text("release")
+            try:
+                os.kill(worker_pid, 15)
+            except ProcessLookupError:
+                pass
+        listener.close()
 
 
 def test_original_grant_revoked_after_commit_and_before_dispatch(runtime_boundary) -> None:
