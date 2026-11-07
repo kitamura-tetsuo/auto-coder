@@ -764,15 +764,26 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
     assert result(producer.advance(mismatch.operation_id), "BLOCKED")["reason"] == "deployment_selection_or_candidate_mismatch"
     _release_local_lane(journal, mismatch.operation_id)
 
+    def deploy_while_monitored(source_sha: str, idempotency_key: str) -> str:
+        """Run every later deployment with its service-owned continuation active."""
+        http.portal.call(service.start_monitor)
+        try:
+            admitted = _call(
+                http,
+                bearer,
+                "auto_coder_deploy_beta_source",
+                _argument(client, source_sha, idempotency_key),
+            )
+            operation_id = str(admitted["operation_id"])
+            _await_stage(app, operation_id, "SUCCEEDED", timeout=210)
+            return operation_id
+        finally:
+            # Direct producer and authority-fault cases need stable journal reads.
+            http.portal.call(service.stop_monitor)
+
     # The explicit producer-fault cases run with lifecycle polling stopped.
-    # Resume it before sending another deployment through the real manager.
-    http.portal.call(service.start_monitor)
-    latest = _call(http, bearer, "auto_coder_deploy_beta_source", _argument(client, revisions[0], "smoke-deploy-new-run"))
-    new_run_deployment = str(latest["operation_id"])
-    _await_stage(app, new_run_deployment, "SUCCEEDED", timeout=210)
-    # Subsequent cases explicitly drive and settle acceptance operations.
-    # Stop polling again so it cannot continually stale their journal reads.
-    http.portal.call(service.stop_monitor)
+    # Resume it while sending each later deployment through the real manager.
+    new_run_deployment = deploy_while_monitored(revisions[0], "smoke-deploy-new-run")
     later = accept("later-successful-same-sha", deployment=new_run_deployment)
     later_capture = captured(later)
     assert later_capture["capture"]["source"]["tested_source_oid"] == first_capture["capture"]["source"]["tested_source_oid"]
@@ -793,11 +804,7 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
 
     remote.executions[(12, 2)] = (revisions[0], "2026-10-03T03:00:00Z")
     assert selecting.advance("r79", revisions[0]).certainty is MutationCertainty.CONFIRMED
-    http.portal.call(service.start_monitor)
-    retry = _call(http, bearer, "auto_coder_deploy_beta_source", _argument(client, revisions[0], "smoke-deploy-retry"))
-    retry_deployment = str(retry["operation_id"])
-    _await_stage(app, retry_deployment, "SUCCEEDED", timeout=210)
-    http.portal.call(service.stop_monitor)
+    retry_deployment = deploy_while_monitored(revisions[0], "smoke-deploy-retry")
     accepted_retry = accept("successful-retry-original-proof", deployment=retry_deployment)
     retry_capture = captured(accepted_retry)
     assert (retry_capture["capture"]["source"]["selected_run_id"], retry_capture["capture"]["source"]["selected_run_attempt"]) == (12, 2)
@@ -829,11 +836,7 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
     # Deploy the second actual revision, then prove its own local window.
     remote.executions[(14, 1)] = (revisions[1], "2026-10-05T05:00:00Z")
     assert selecting.advance("r81", revisions[0]).certainty is MutationCertainty.CONFIRMED
-    http.portal.call(service.start_monitor)
-    second = _call(http, bearer, "auto_coder_deploy_beta_source", _argument(client, revisions[1], "smoke-deploy-b"))
-    second_deployment = str(second["operation_id"])
-    _await_stage(app, second_deployment, "SUCCEEDED", timeout=210)
-    http.portal.call(service.stop_monitor)
+    second_deployment = deploy_while_monitored(revisions[1], "smoke-deploy-b")
     second_local = accept("second-installed-revision", deployment=second_deployment, sha=revisions[1])
     second_document = result(_finish(producer, second_local.operation_id), "PASS")
     assert second_document["source_sha"] == revisions[1]
@@ -853,11 +856,7 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
     assert SourceAcceptancePublisher(remote, "owner/repo").read(replacement.operation_id) is None
 
     # A genuine lifecycle predicate violation is FAIL, not unavailable evidence.
-    http.portal.call(service.start_monitor)
-    refreshed = _call(http, bearer, "auto_coder_deploy_beta_source", _argument(client, revisions[1], "smoke-deploy-b-refreshed"))
-    refreshed_id = str(refreshed["operation_id"])
-    _await_stage(app, refreshed_id, "SUCCEEDED", timeout=210)
-    http.portal.call(service.stop_monitor)
+    refreshed_id = deploy_while_monitored(revisions[1], "smoke-deploy-b-refreshed")
     stopped = accept("worker-stopped-is-fail", deployment=refreshed_id, sha=revisions[1])
     captured(stopped)
     _stop_running_worker(client)
