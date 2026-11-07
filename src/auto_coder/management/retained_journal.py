@@ -252,18 +252,28 @@ class RetainedGuardedOperationStore(ManagementOperationStore):
         super().__init__(state_root)
         self.retained = retained
 
+    def _retained_admission(self, intent: OperationIntent, authority: AcceptedAuthority) -> AdmissionResult | None:
+        if intent.target.channel == "management":
+            previous_management = self.retained.management_lane()
+            if previous_management is not None:
+                return AdmissionResult(AdmissionStatus.BUSY, previous_management, "retained management operation")
+            # The successor's instance is not an old management key namespace.
+            # Apply the same original-instance lookup before admission and
+            # dispatch, including rows accepted before this guard existed.
+            source = str(next((part.value for part in intent.parameters if part.name == "source_sha"), ""))
+            previous = self.retained.management_request(intent.idempotency_key, source, authority)
+            if previous is not None:
+                return previous
+        return self.retained.admission(intent, authority)
+
     def admit(self, intent: OperationIntent, authority: AcceptedAuthority, *, lifecycle_snapshot: dict[str, object] | None = None) -> AdmissionResult:
         try:
-            if intent.target.channel == "management":
-                previous_management = self.retained.management_lane()
-                if previous_management is not None:
-                    return AdmissionResult(AdmissionStatus.BUSY, previous_management, "retained management operation")
-            previous = self.retained.admission(intent, authority)
+            previous = self._retained_admission(intent, authority)
             if previous is not None:
                 # Never return a retained replay as an admitted current row:
                 # the normal dispatcher would try to execute that old ID.
                 status = AdmissionStatus.CONFLICT if previous.status is AdmissionStatus.CONFLICT else AdmissionStatus.BUSY
-                return AdmissionResult(status, previous.record, "retained operation")
+                return AdmissionResult(status, previous.record, previous.detail or "retained operation")
         except Exception:
             return AdmissionResult(AdmissionStatus.UNAVAILABLE, detail="retained journal unavailable")
         return super().admit(intent, authority, lifecycle_snapshot=lifecycle_snapshot)
@@ -271,8 +281,6 @@ class RetainedGuardedOperationStore(ManagementOperationStore):
     def effect_permitted(self, record: OperationRecord) -> bool:
         """Revalidate at dispatch; no prior row may be executed by this store."""
         try:
-            if record.intent.target.channel == "management" and self.retained.management_lane() is not None:
-                return False
-            return self.retained.admission(record.intent, record.authority) is None
+            return self._retained_admission(record.intent, record.authority) is None
         except Exception:
             return False

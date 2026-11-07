@@ -63,6 +63,13 @@ admitted before a later evidence loss. Public queries retain direct-prior
 behavior; older archive IDs return no old history. A record being terminal does
 not remove its duplicate-suppression obligation.
 
+Both guarded-store admission and dispatch of already accepted management rows
+use each retained generation's original instance namespace. A matching old key
+therefore blocks candidate compatibility execution and durable handoff creation,
+not only the later physical-stop consumer. Actor and OAuth client separation
+remain part of the key namespace; unrelated keys can still proceed. Worker
+targets continue to use their original worker namespace without retargeting.
+
 ## Continuous host session and successor proof
 
 Deploying this code is a separate approved immutable bootstrap deployment. It
