@@ -33,7 +33,7 @@ from tests.test_beta_source_selection import selector
 from tests.test_management_mcp import _issue, real_boundary
 from tests.test_management_runtime_mcp import _call
 from tests.test_management_worker_lifecycle import GitEvidenceBoundary
-from tests.test_supervisor_container_integration import _container_facts, _docker, _image, _inspect_worker, _wait_for, _worker_observation
+from tests.test_supervisor_container_integration import _container_facts, _docker, _image, _inspect_worker, _preparation_cache_arguments, _wait_for, _worker_observation
 
 pytestmark = [
     pytest.mark.supervisor_integration,
@@ -145,6 +145,7 @@ def test_authenticated_beta_source_installs_real_version_and_reconciles_after_lo
         f"{runtime}:/runtime",
         "-v",
         f"{fixtures}:/fixtures:ro",
+        *_preparation_cache_arguments(),
         *docker_timing_arguments(target_role="management-beta-stage"),
         "-e",
         "HOME=/runtime/home",
