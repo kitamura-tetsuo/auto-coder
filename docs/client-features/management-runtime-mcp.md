@@ -43,13 +43,17 @@ targets:
   beta-worker:
     channel: beta
     repositories: [example/beta-repo]
+  beta-agent-table-worker:
+    channel: beta
+    repositories: [example/agent-table-repo]
   release-worker:
     channel: release
     repositories: [example/release-repo]
 ```
 
-Use the exact `RELEASE_REPOSITORY` and `BETA_REPOSITORY` provisioned in Compose,
-not the example names. Each logical target must name **one** configured channel
+Use the exact `RELEASE_REPOSITORY`, `BETA_REPOSITORY`, and
+`kitamura-tetsuo/agent-table` provisioned in Compose, not the example names.
+Each logical target must name **one** configured channel
 and its **one** exact repository. The physical instance IDs, endpoint addresses,
 ports and independent machine credentials come only from the validated
 `AUTO_CODER_WORKER_REGISTRY` described in

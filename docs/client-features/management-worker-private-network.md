@@ -51,7 +51,7 @@ only in the trusted management container and supplies the validated
 receive only their own key. See
 [`management-multi-worker-registry.md`](management-multi-worker-registry.md)
 for the schema and migration. No service publishes the Supervisor port on the host (`ports:` and
-Docker socket mounts are absent from both worker services), and the manager's
+Docker socket mounts are absent from all worker services), and the manager's
 existing loopback-host-published MCP port is unchanged. Bootstrap refuses a
 partially specified, public/loopback or nonlocal bind, missing credential,
 invalid channel/repository, or unconfigured trusted source root **before** it
