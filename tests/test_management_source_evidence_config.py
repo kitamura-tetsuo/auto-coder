@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from auto_coder.management.oauth_config import load_management_settings
 from auto_coder.management.source_evidence_config import REPOSITORY, extension_path, load_extension, prepare
@@ -52,6 +53,62 @@ def test_extension_preserves_immutable_yaml_and_retained_state(files: tuple[Path
     assert config.read_bytes() == original
     assert {path: path.read_bytes() for path in retained} == before
     assert hashlib.sha256(original).hexdigest() == json.loads(extension_path(config).read_text())["management_config_sha256"]
+
+
+@pytest.mark.parametrize("field", ["source_repository", "source_evidence_token_file"])
+def test_partial_legacy_inline_pair_refuses_instead_of_disabling_reader(files: tuple[Path, Path], field: str) -> None:
+    config, token = files
+    raw = yaml.safe_load(config.read_text())
+    raw[field] = REPOSITORY if field == "source_repository" else str(token)
+    config.write_text(yaml.safe_dump(raw))
+    original = config.read_bytes()
+    with pytest.raises(ValueError):
+        load_management_settings(config)
+    assert config.read_bytes() == original and not extension_path(config).exists()
+
+
+def test_complete_legacy_inline_pair_and_absent_optional_pair_remain_supported(files: tuple[Path, Path]) -> None:
+    config, token = files
+    baseline = load_management_settings(config)
+    assert baseline.source_repository is baseline.source_evidence_token_file is None
+    raw = yaml.safe_load(config.read_text())
+    raw.update(source_repository=REPOSITORY, source_evidence_token_file=str(token))
+    config.write_text(yaml.safe_dump(raw))
+    original = config.read_bytes()
+    settings = load_management_settings(config)
+    assert settings.source_repository == REPOSITORY and settings.source_evidence_token_file == token
+    assert WorkerLifecycle(SimpleNamespace(settings=settings))._source() is not None
+    assert settings.state_root == baseline.state_root and settings.oauth == baseline.oauth
+    assert config.read_bytes() == original and not extension_path(config).exists()
+
+
+@pytest.mark.parametrize("field", ["source_repository", "source_evidence_token_file"])
+@pytest.mark.parametrize("invalid", [None, "", "   ", False, 7])
+def test_malformed_legacy_pair_refuses_without_credential_disclosure(files: tuple[Path, Path], field: str, invalid) -> None:
+    config, token = files
+    raw = yaml.safe_load(config.read_text())
+    raw.update(source_repository=REPOSITORY, source_evidence_token_file=str(token))
+    raw[field] = invalid
+    config.write_text(yaml.safe_dump(raw))
+    original = config.read_bytes()
+    with pytest.raises(ValueError) as failure:
+        load_management_settings(config)
+    assert token.read_text() not in str(failure.value)
+    assert config.read_bytes() == original
+
+
+@pytest.mark.parametrize("field", ["source_repository", "source_evidence_token_file"])
+@pytest.mark.parametrize("null", [False, True])
+def test_extension_conflicts_with_either_inline_field_including_null(files: tuple[Path, Path], field: str, null: bool) -> None:
+    config, token = files
+    raw = yaml.safe_load(config.read_text())
+    raw[field] = None if null else REPOSITORY if field == "source_repository" else str(token)
+    config.write_text(yaml.safe_dump(raw))
+    extension = install(config, token)
+    original = config.read_bytes(), extension.read_bytes()
+    with pytest.raises(ValueError, match="conflict"):
+        load_management_settings(config)
+    assert (config.read_bytes(), extension.read_bytes()) == original
 
 
 @pytest.mark.parametrize("mutation", ["repository", "path", "extra", "missing", "version", "boolean", "hash", "duplicate", "malformed"])

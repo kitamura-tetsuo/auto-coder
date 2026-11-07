@@ -220,7 +220,10 @@ class ProxyReconnect:
         if prior is None or prior["phase"] not in {"stop_unknown", "start_unknown", "stopped"}:
             return "NEEDS_ATTENTION"
         manager, proxy = self._manager(), self._proxy()
-        observed_attachment = prior["phase"] == "stopped" and prior["manager"] != manager
+        prior_manager = prior["manager"]
+        if not isinstance(prior_manager, dict):
+            return "NEEDS_ATTENTION"
+        observed_attachment = prior["phase"] == "stopped" and any(prior_manager[field] != manager[field] for field in ("id", "pid", "started"))
         if prior["manager"] != manager and not observed_attachment:
             return "NEEDS_ATTENTION"
         if prior["phase"] == "stopped" and not observed_attachment:

@@ -232,6 +232,41 @@ def test_explicit_stopped_successor_observation_preserves_prior_without_effect(t
     assert len(list(tmp_path.glob("proxy-resolution-*.json"))) == 1 and driver.effects == []
 
 
+@pytest.mark.parametrize("phase", ["stopped", "stop_unknown", "start_unknown"])
+def test_namespace_change_alone_is_not_a_new_manager_lifetime(tmp_path: Path, phase: str) -> None:
+    controller, driver = fixture(tmp_path)
+    controller._write(controller._manager(), phase)
+    original = (tmp_path / "proxy-reconnect.json").read_bytes()
+    # Keep the exact ID/PID/start; only the observed namespace and matching
+    # proxy attachment change. No new process lifetime has been established.
+    driver.namespaces[10] = driver.namespaces[20] = "net:[3]"
+    assert controller.reconcile() == "NEEDS_ATTENTION"
+    assert controller.tick() == "NEEDS_ATTENTION"
+    assert (tmp_path / "proxy-reconnect.json").read_bytes() == original
+    assert not list(tmp_path.glob("proxy-resolution-*.json"))
+    assert driver.effects == []
+
+
+@pytest.mark.parametrize("pid,started,namespace", [(11, "two", "net:[3]"), (10, "two", "net:[3]"), (11, "two", "net:[2]")])
+def test_explicit_reconciliation_accepts_true_new_lifetime_including_pid_reuse(tmp_path: Path, pid: int, started: str, namespace: str) -> None:
+    controller, driver = fixture(tmp_path)
+    controller._write(controller._manager(), "stopped")
+    original = json.loads((tmp_path / "proxy-reconnect.json").read_text())
+    driver.manager.update(pid=pid, started=started)
+    driver.namespaces[pid] = driver.namespaces[20] = namespace
+    assert controller.reconcile() == "ATTACHMENT_OBSERVED"
+    records = list(tmp_path.glob("proxy-resolution-*.json"))
+    assert len(records) == 1
+    resolved = json.loads(records[0].read_text())
+    assert resolved["prior"] == original
+    assert resolved["manager"] == {"id": driver.binding.manager_id, "pid": pid, "started": started, "namespace": namespace}
+    assert resolved["proxy_namespace"] == namespace
+    archived = records[0].read_bytes()
+    assert controller.tick() == "ATTACHED"
+    assert controller.reconcile() == "NEEDS_ATTENTION"
+    assert records[0].read_bytes() == archived and driver.effects == []
+
+
 @pytest.mark.parametrize("fault", ["namespace", "stopped", "image", "config", "identity", "same_lifetime", "unknown"])
 def test_stopped_successor_refuses_mismatched_evidence(tmp_path: Path, fault: str) -> None:
     controller, driver = stopped_old_attachment(tmp_path)
