@@ -7471,7 +7471,9 @@ def _coordinate_pr_review(
                 # does not require a new webhook, commit, or restart.
                 actions.quota_deferred = True
                 current_pending_snapshot = two_tier_inputs.gate.state.snapshot(pr_number)
-                actions.retry_not_before = current_pending_snapshot.retry_not_before or (time.time() + 60.0)
+                retained_deadline = current_pending_snapshot.retry_not_before
+                deadline_applies = bool(current_pending_snapshot.wait_policy_identity) and current_pending_snapshot.wait_policy_identity == two_tier_inputs.policy.identity
+                actions.retry_not_before = retained_deadline if retained_deadline and deadline_applies else (time.time() + 60.0)
                 if processing_status is not None:
                     processing_status.outcome = PRProcessingOutcome.DEFERRED
                     processing_status.retry_not_before = actions.retry_not_before

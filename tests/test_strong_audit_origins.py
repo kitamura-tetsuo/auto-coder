@@ -110,6 +110,7 @@ class OriginScenario:
 
     def configure(self, strategy, enabled=True, backend_type="codex"):
         backend_name = f"{backend_type}-reviewer"
+        model = "muse-spark-1.3" if backend_type == "muse" else "gpt-5"
         self.config_file.write_text(
             f"""[quota_selection]
 strategy = "{strategy}"
@@ -118,7 +119,7 @@ order = ["{backend_name}"]
 default = "{backend_name}"
 [backends.{backend_name}]
 backend_type = "{backend_type}"
-model = "gpt-5"
+model = "{model}"
 enabled = {str(enabled).lower()}
 """
         )
@@ -483,6 +484,91 @@ def test_changed_route_does_not_reuse_old_provider_deadline(scenario, monkeypatc
     assert successor.retry_not_before == s.clock + 60
     assert s.snapshot().retry_not_before == selected.retry_not_before
     assert not s.reviews
+
+
+@pytest.mark.parametrize(
+    ("backend_type", "expected_retry"),
+    [("codex", "provider-reset"), ("muse", "bounded-successor")],
+)
+def test_post_convergence_opening_failure_uses_only_current_route_deadline(
+    scenario,
+    monkeypatch,
+    backend_type,
+    expected_retry,
+):
+    """The final opening fence cannot borrow another route's quota reset."""
+    s = scenario
+    s.used = 100.0
+    first = s.explicit()
+    assert not first["errors"], first
+    selected = s.snapshot()
+    assert selected.retry_not_before == s.reset
+    assert selected.wait_policy_identity
+
+    if backend_type == "muse":
+        muse = s.root / "bin" / "muse"
+        muse.write_text('#!/bin/sh\nif [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then\n' '  echo "muse fixture transport"\n  exit 0\nfi\n' 'echo "unexpected Muse execution" >&2\nexit 97\n')
+        muse.chmod(0o755)
+    s.configure("surplus", backend_type=backend_type)
+    engine = s.engine()
+    timeline_calls = 0
+
+    def fail_third_timeline(*args, **kwargs):
+        nonlocal timeline_calls
+        timeline_calls += 1
+        if timeline_calls == 3:
+            raise RuntimeError("controlled post-convergence opening outage")
+        return list(s.timeline)
+
+    monkeypatch.setattr(s.github, "get_issue_timeline_strict", fail_third_timeline)
+    s.dispatch(engine, invalidate=True)
+
+    assert timeline_calls == 3
+    assert not s.reviews
+    preserved = s.snapshot()
+    assert preserved.retry_not_before == selected.retry_not_before
+    assert preserved.wait_policy_identity == selected.wait_policy_identity
+    successor = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100))
+    assert successor is not None
+    if expected_retry == "provider-reset":
+        assert successor.retry_not_before == selected.retry_not_before
+        return
+
+    assert successor.retry_not_before == s.clock + 60
+
+    restored_timeline_calls = 0
+
+    def restored_timeline(*args, **kwargs):
+        nonlocal restored_timeline_calls
+        restored_timeline_calls += 1
+        return list(s.timeline)
+
+    monkeypatch.setattr(s.github, "get_issue_timeline_strict", restored_timeline)
+
+    def review_muse(review_input, manager, cwd):
+        assert manager is not None
+        s.reviews.append(review_input)
+        return ReviewExecutionResult(
+            mode=review_input.mode,
+            round_id=review_input.round_id,
+            attempt_id=review_input.attempt_id,
+            head_sha=review_input.head_sha,
+            base_sha=review_input.base_sha,
+            contract_identity=review_input.contract.identity,
+            policy_identity=review_input.policy.identity,
+            finding_set_revision=0,
+            reviewer_provenance="strong/muse/gpt-5",
+            verdict="PASS",
+        )
+
+    monkeypatch.setattr("auto_coder.pr_processor.execute_review", review_muse)
+    s.clock = successor.retry_not_before
+    resumed = s.explicit(force=True)
+
+    assert not resumed["errors"], resumed
+    assert restored_timeline_calls >= 3
+    assert len(s.reviews) == 1
+    assert s.snapshot().accepted_strong_round is not None
 
 
 def test_explicit_origin_restores_selected_wait_when_target_changes_during_usage(
