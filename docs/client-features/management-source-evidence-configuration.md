@@ -23,6 +23,9 @@ environment variable, alternate repository, executable, URL, OAuth property,
 policy or journal path can be supplied. Both settings are required together.
 An extension conflicts with either inline source setting, including an explicit
 null. Without an extension the existing inline configuration remains supported.
+Inline settings must also be a complete pair of non-empty strings; an omitted,
+null or empty half refuses settings load instead of silently disabling the
+reader. Remove both inline keys to leave source evidence unconfigured.
 Deleting an extension disables this optional path on the next load; it never
 creates default credentials or enables unauthenticated source deployment.
 

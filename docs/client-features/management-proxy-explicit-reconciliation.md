@@ -22,6 +22,10 @@ current process lifetime and namespace observations must match. The proxy must
 already be running in the new manager's namespace. A `stopped` old lifetime is
 then preserved in an immutable `proxy-resolution-<prior-digest>.json` before the
 journal advances to `done` for the observed lifetime. No stop/start is dispatched.
+The manager ID/PID/start tuple establishes its process lifetime. A namespace
+change alone with the same tuple is refused, even if the proxy already shares
+that namespace. A reused PID with a genuinely different start remains a new
+lifetime, subject to all the other binding and repeated-observation checks.
 
 `ATTACHMENT_OBSERVED` permits restarting the same watcher controller. Verify its
 `ATTACHED` output and independently check authenticated MCP. Namespace attachment

@@ -142,6 +142,10 @@ def load_management_settings(path: Path) -> ManagementSettings:
             raise ValueError(f"{name} must be a non-empty string")
         return value
 
+    if "source_repository" in raw or "source_evidence_token_file" in raw:
+        required_string("source_repository")
+        required_string("source_evidence_token_file")
+
     state_root = Path(required_string("state_root")).expanduser().resolve()
     clients_raw = raw["clients"]
     if not isinstance(clients_raw, list):

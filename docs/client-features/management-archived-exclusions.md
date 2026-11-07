@@ -168,6 +168,14 @@ permit a queued forward stop/start. If the original child was already stopped,
 the existing single exact-original-runtime safety return remains available;
 this is not permission to resend the candidate or release an unresolved lane.
 
+Fresh first launch also reopens the sealed direct-prior and archived evidence
+after consuming the host grant and immediately before its child start boundary.
+The owner-purpose reader validates the original namespace, read-only mounts,
+database/fence identities and complete retained evidence; a held lock or an
+earlier host check alone is insufficient. Missing or invalid evidence refuses
+launch without erasing the durable first-launch claim or authorizing a retry.
+The existing possibly-launched-child fence protection remains unchanged.
+
 Successful archived-instance reconstruction verifies all retained journal
 contents and reacquires every ancestor and direct-prior fence even when
 `restart_after_clean_shutdown` is omitted or false. That flag still controls

@@ -910,6 +910,16 @@ class ManagementBootstrapSupervisor:
             if not runtime.verify(initial=True) or endpoint.port is None:
                 raise ValueError("fresh runtime verification failed")
             assert_host_listener_absent(endpoint.port)
+            if intent.host_prior_journal_root or self.config.archived_exclusions:
+                from .retained_startup import retained_from_fresh_intent
+
+                # A grant and held fences cannot prove that retained journal
+                # evidence remains available after the host delivered it.
+                evidence = retained_from_fresh_intent(settings, source_authority=self.source_authority, serving_process=False)
+                if evidence is None:
+                    raise ValueError("fresh first-launch retained evidence unavailable")
+                with evidence:
+                    evidence.read()
             launch_may_exist = True
             result = self.start_selected("fresh-" + intent.request_id, str(uuid.uuid4()), intent.runtime_reference)
             if result.status is not ResultStatus.OBSERVED_RUNNING:
