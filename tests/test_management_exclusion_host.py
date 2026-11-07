@@ -324,3 +324,38 @@ def test_fresh_command_requires_successful_sealed_provenance(host_case, split):
     with pytest.raises(ValueError, match="unresolved"):
         inherited_support(case.mounts)
     assert not _supported_prior_command(entry, fresh)
+
+
+@pytest.mark.parametrize("outcome", ["succeeded", "unknown"])
+def test_stopped_predecessor_reopens_fresh_provenance_before_command_check(host_case, monkeypatch, outcome):
+    from auto_coder.management import fresh_host_observation as observation
+
+    case = host_case
+    case.prior.validate = lambda: None
+    case.prior.engine_id = "component-engine"
+    monkeypatch.setattr(observation, "_engine_id", lambda: case.prior.engine_id)
+    case.values[15] = ["python", "-m", "auto_coder.management.bootstrap_supervisor"]
+    case.values[16] = ["--config", "/bootstrap/config.json", "--fresh-initialization"]
+    checked = []
+    original = observation._supported_prior_command
+
+    class CommandBoundary(Exception):
+        pass
+
+    def command(entry, args, *, initialized_fresh=False):
+        checked.append(original(entry, args, initialized_fresh=initialized_fresh))
+        raise CommandBoundary()
+
+    monkeypatch.setattr(observation, "_supported_prior_command", command)
+    path = case.b / "state" / "fresh-outcome.json"
+    raw = json.loads(path.read_text())
+    raw["status"] = outcome
+    write(path, raw)
+    if outcome == "succeeded":
+        with pytest.raises(CommandBoundary):
+            observation.assert_prior_container_stopped(case.prior)
+        assert checked == [True]
+    else:
+        with pytest.raises(observation.HostObservationUnavailable, match="stopped prior inherited provenance unavailable"):
+            observation.assert_prior_container_stopped(case.prior)
+        assert checked == []

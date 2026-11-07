@@ -283,3 +283,33 @@ challenge or authenticated proof. The uploaded diagnostic artifact includes
 bounded operational state and filtered errors, excluding request headers/bodies
 and credential strings. These observations diagnose a failed boundary; they do
 not relax readiness or replace actual passing mandatory container cases.
+
+
+Management publication and worker transport use separate fixture links. Workers
+remain only on the canonical internal network. Each management generation uses
+the normal bridge for its exact loopback-published Caddy port and also joins the
+private worker network before starting. An internal-only endpoint is not a
+Docker gateway endpoint for programming published ports; host reachability of
+an internal bridge address does not imply a published port was installed.
+The fixture checks actual `NetworkSettings.Ports`, and retains the existing
+kernel listener, exact target IP, namespace and owner validation.
+
+The stopped-predecessor recheck repeats successful sealed fresh provenance
+verification before accepting its immutable final initialization flag, just as
+the running capture does. It does not assume the prior command changed merely
+because the same supported flag is still present after shutdown.
+
+Sanitized diagnostics record connection exception type/errno, actual port
+publication, listener addresses and management/proxy namespace identities.
+They also emit a bounded safe summary to normal test output. Only the new
+sanitized artifact directory/file is handed back to the invoking uploader's
+ownership, retaining modes 0700/0600. Protected state, OAuth, journals and secret
+permissions are never changed. Raw headers/bodies and credential strings are
+excluded before publication; root-only runtime files are never uploaded.
+
+The fixture networking choice follows Docker's gateway/external-connectivity
+contract, rather than assuming requested PortBindings imply active forwarding:
+[bridge Join](https://github.com/moby/moby/blob/v28.5.2/libnetwork/drivers/bridge/bridge_linux.go)
+and [gateway selection](https://github.com/moby/moby/blob/v28.5.2/libnetwork/default_gateway.go).
+The exact older CI URLError errno was not retained; subsequent runs must prove
+actual mapping, Caddy challenge and authenticated child readback independently.

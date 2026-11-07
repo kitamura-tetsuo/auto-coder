@@ -343,8 +343,16 @@ def assert_prior_container_stopped(prior: PriorContainer) -> None:
     if prior.instance_id:
         mounts = values[11]
         expected_source = str(Path(prior.bootstrap_source).parent)
+        from .exclusion_host import inherited_support
+
+        try:
+            if not isinstance(mounts, list):
+                raise ValueError("prior mounts unavailable")
+            initialized_fresh = "/management-initialization" in inherited_support(mounts)[1]
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise HostObservationUnavailable("stopped prior inherited provenance unavailable") from exc
         if (
-            not _supported_prior_command(values[15], values[16])
+            not _supported_prior_command(values[15], values[16], initialized_fresh=initialized_fresh)
             or values[17] != {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(prior.published_port)}]}
             or Path(prior.bootstrap_source).name != "config.json"
             or not isinstance(mounts, list)

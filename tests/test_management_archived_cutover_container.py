@@ -71,6 +71,50 @@ def diagnostic_log_lines(content: str, token: str = "") -> list[str]:
     return result
 
 
+def transport_failure(error: Exception) -> str:
+    """Classify connection failure without persisting URL, headers or secrets."""
+    if isinstance(error, urllib.error.HTTPError):
+        return "HTTPError status=" + str(error.code)
+    cause = error.reason if isinstance(error, urllib.error.URLError) else error
+    number = getattr(cause, "errno", None)
+    return type(error).__name__ + ":" + type(cause).__name__ + (" errno=" + str(number) if isinstance(number, int) else "")
+
+
+def publish_diagnostics(directory: Path, document: dict) -> None:
+    """Publish only sanitized observations to the invoking artifact owner.
+
+    State, journals, OAuth and secret mounts are never chmod/chowned or copied.
+    Keep the new artifact private; hand ownership back after the complete write.
+    """
+    parent = directory.parent.stat()
+    uid, gid = parent.st_uid, parent.st_gid
+    if os.geteuid() == 0 and os.environ.get("SUDO_UID", "").isdecimal() and os.environ.get("SUDO_GID", "").isdecimal():
+        uid, gid = int(os.environ["SUDO_UID"]), int(os.environ["SUDO_GID"])
+    directory.mkdir(mode=0o700)
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        target = os.open("observations.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=descriptor)
+        with os.fdopen(target, "w") as stream:
+            json.dump(document, stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+            current = os.fstat(stream.fileno())
+            if (current.st_uid, current.st_gid) != (uid, gid):
+                os.fchown(stream.fileno(), uid, gid)
+        current = os.fstat(descriptor)
+        if (current.st_uid, current.st_gid) != (uid, gid):
+            os.fchown(descriptor, uid, gid)
+    finally:
+        os.close(descriptor)
+    if os.geteuid() == 0 and uid != 0:
+        # The actual Actions uploader is not root. Prove only the sanitized
+        # artifact is readable under that identity, without forwarding env/data.
+        probe = "from pathlib import Path;import json,sys;assert isinstance(json.loads(Path(sys.argv[1]).read_text()),dict);print('uploader-read-confirmed')"
+        observed = subprocess.run([sys.executable, "-I", "-B", "-c", probe, str(directory / "observations.json")], user=uid, group=gid, extra_groups=[], cwd=directory.parent, env={"PATH": os.defpath}, capture_output=True, text=True, timeout=10, check=True)
+        assert observed.stdout.strip() == "uploader-read-confirmed"
+        print("cutover-uploader-read-confirmed uid=" + str(uid))
+
+
 def worker_compose_profile(fixtures: Path, subnet: str, gateway: str):
     """Keep canonical isolation/worker configuration; pin its host bridge IP."""
     import ipaddress
@@ -273,14 +317,20 @@ class Chain:
         container_name = "ancestor-fixture-" + uuid.uuid4().hex[:16]
         self.names.append(container_name)
         args = ["create", "--name", container_name, "--read-only", "--publish", f"127.0.0.1:{self.port}:8080"]
-        if self.worker_environment is not None:
-            args += ["--network", self.worker_network]
+        # Docker does not program published ports through an internal-only
+        # endpoint. Keep worker isolation, give only management a bridge ingress.
+        args += ["--network", "bridge"]
         for source, target, writable in mounts:
             args += ["--mount", f"type=bind,src={source},dst={target}" + ("" if writable else ",readonly")]
         args += [self.image, "--config", "/bootstrap/config.json"]
         if prior is not None:
             args += ["--fresh-initialization"]
-        generation = Generation(name, root, self.docker(*args), mounts)
+        container = self.docker(*args)
+        if self.worker_environment is not None:
+            self.docker("network", "connect", self.worker_network, container)
+            connected = json.loads(self.docker("inspect", "--format", "{{json .NetworkSettings.Networks}}", container))
+            assert set(connected) == {"bridge", self.worker_network}
+        generation = Generation(name, root, container, mounts)
         self.generations.append(generation)
         if captured is not None:
             generation.network_fd = os.open(f"/proc/{captured.pid}/ns/net", os.O_RDONLY)
@@ -373,6 +423,8 @@ class Chain:
     def ensure_proxy(self, generation: Generation) -> None:
         if generation.proxy is not None:
             return
+        actual = json.loads(self.docker("inspect", "--format", "{{json .NetworkSettings.Ports}}", generation.container))
+        assert actual == {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(self.port)}]}, "actual loopback Caddy port mapping unavailable"
         caddyfile = generation.path("Caddyfile")
         caddyfile.write_text("http://127.0.0.1:8080 {\n reverse_proxy 127.0.0.1:8081 {\n header_up Host 127.0.0.1:8081\n }\n}\n")
         caddyfile.chmod(0o600)
@@ -426,7 +478,7 @@ class Chain:
             except (subprocess.CalledProcessError, ValueError, KeyError, OSError, http.client.HTTPException) as error:
                 # Transport startup failures may retry, never count as proof.
                 # Keep only stage and exception type, not headers/credential data.
-                last = last.split(";", 1)[0] + "; " + type(error).__name__
+                last = last.split(";", 1)[0] + "; " + transport_failure(error)
             time.sleep(0.1)
         states = self.docker("inspect", "--format", "{{json .State.Status}} {{json .Config.Entrypoint}} {{json .Config.Cmd}}", generation.container, generation.proxy)
         raise AssertionError("exact synthetic child readiness was not proven; " + last + "; " + states)
@@ -615,8 +667,7 @@ class Chain:
         destination = os.environ.get("SUPERVISOR_RESULTS_PATH")
         if not destination:
             return
-        directory = Path(destination).parent / ("cutover-" + uuid.uuid4().hex)
-        directory.mkdir(mode=0o700, parents=True)
+        directory = Path(destination).parent / ("cutover-sanitized-" + uuid.uuid4().hex)
         document = {}
         if hasattr(self, "worker_network"):
             document["private_network"] = json.loads(self.docker("network", "inspect", "--format", "{{json .IPAM.Config}}", self.worker_network))
@@ -631,21 +682,33 @@ class Chain:
                 if container is None:
                     continue
                 facts = json.loads(self.docker("inspect", "--format", "{{json .State}}", container))
-                observations[kind] = {key: facts.get(key) for key in ("Status", "Running", "ExitCode", "Error")}
+                observations[kind] = {key: facts.get(key) for key in ("Status", "Running", "ExitCode")}
+                observations[kind]["ports"] = json.loads(self.docker("inspect", "--format", "{{json .NetworkSettings.Ports}}", container))
+                observations[kind]["network_mode"] = self.docker("inspect", "--format", "{{json .HostConfig.NetworkMode}}", container)
+                try:
+                    if facts.get("Pid"):
+                        observations[kind]["network_namespace"] = os.readlink(f"/proc/{facts['Pid']}/ns/net")
+                        listeners = []
+                        for table in ("tcp", "tcp6"):
+                            for line in Path(f"/proc/{facts['Pid']}/net/{table}").read_text().splitlines()[1:]:
+                                fields = line.split()
+                                if fields[3] == "0A" and int(fields[1].rsplit(":", 1)[1], 16) in (8080, 8081):
+                                    listeners.append(fields[1])
+                        observations[kind]["listeners"] = listeners
+                except (OSError, ValueError, IndexError) as error:
+                    observations[kind]["network_observation"] = type(error).__name__
                 logs = self.docker("logs", "--tail", "60", container)
                 observations[kind]["errors"] = diagnostic_log_lines(logs, getattr(self, "token", ""))
             document[generation.name] = observations
-        path = directory / "observations.json"
-        with path.open("x") as stream:
-            path.chmod(0o600)
-            json.dump(document, stream, indent=2)
+        publish_diagnostics(directory, document)
+        print("cutover-sanitized-observations " + json.dumps(document)[:16000])
 
     def close(self) -> None:
         try:
             self.save_diagnostics()
-        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError) as error:
             # Diagnostics cannot replace the test outcome or prevent cleanup.
-            pass
+            print("cutover-sanitized-diagnostics unavailable: " + type(error).__name__)
         for process in self.processes:
             if process.poll() is None:
                 process.terminate()
