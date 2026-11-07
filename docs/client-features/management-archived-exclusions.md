@@ -138,3 +138,16 @@ loss require separate operator-controlled verification; unit controls do not
 certify those operations. Existing host status/refusal output and typed
 CONFLICT/UNAVAILABLE responses are retained. No worker scheduler/provider or
 dashboard event schema changes are introduced.
+
+
+The dedicated `test_management_archived_cutover_container.py` cases run in the
+existing root `fresh-host` CI group with only disposable UUID-named containers,
+OAuth grants, database roots and image tags. They exercise the unpatched host
+session across A/B/C, old management-key refusal and non-projection, direct-prior
+replay, clean C reconstruction, preserved journal/intent bytes, and failures for
+missing ancestry, stopped predecessors and an interrupted host grant. Old-owner
+competitors use the real entrypoint and original state/config without published
+ports, so an actual `BlockingIOError`, rather than a port bind collision, is the
+refusal oracle. These cases do not access the optional deployed-proxy fixture or
+perform a production cutover. Their implementation/collection is not evidence of
+a successful container run; require their exact-head CI results before activation.
