@@ -325,6 +325,21 @@ class ManagementRuntime:
             result = resolved.client.diagnostics(kind, params)
             if result.supervisor_generation != observed["supervisor_generation"]:
                 return self._response("CONFLICT", "supervisor_changed_during_diagnostic")
+            # A worker may be replaced while the private diagnostic request is in
+            # flight even though the long-lived Supervisor incarnation is stable.
+            # Re-observe the authoritative process identity before presenting the
+            # projection as belonging to the worker observed above.
+            after_result = resolved.client.inspect_supervisor()
+            after = after_result.data
+            after_worker = after.get("worker") if isinstance(after, dict) else None
+            if (
+                after_result.result_code != "OK"
+                or after_result.supervisor_generation != observed["supervisor_generation"]
+                or not isinstance(after_worker, dict)
+                or after_worker.get("process_run_id") != observation.get("process_run_id")
+                or after_worker.get("deployment_generation") != observation.get("deployment_generation")
+            ):
+                return self._response("CONFLICT", "worker_changed_during_diagnostic")
             if result.result_code not in {"OK", "ACCEPTED"}:
                 return self._response(result.result_code, "worker_diagnostic_" + result.result_code.lower(), projection=result.data)
             if kind == "consumer-identity":
@@ -364,6 +379,7 @@ class ManagementRuntime:
                 deployment_generation=observation["deployment_generation"],
                 supervisor_generation=observed["supervisor_generation"],
                 worker_observation=observation if kind == "status" else None,
+                artifact=observation.get("artifact"),
                 runtime_binding=observed["runtime_binding"],
                 binding_status=observed["binding_status"],
                 projection=result.data,
@@ -410,6 +426,15 @@ class ManagementRuntime:
             return self._response("INVALID_REQUEST", "invalid_validation_selection")
         params = {key: str(value) for key, value in {"pr_number": pr_number, "attempt_id": attempt_id, "attempt_sequence": attempt_sequence}.items() if value is not None}
         return await asyncio.to_thread(self._diagnostic, target_id, "validation-attempts", params)
+
+    async def pr_diagnostics(self, target_id: str, pr_number: StrictInt, limit: StrictInt = 50, cursor: StrictInt = 0, expected_revision: str | None = None) -> dict[str, object]:
+        """Return retained evidence for exactly one configured worker PR."""
+        if type(pr_number) is not int or not 0 < pr_number <= 999999999 or type(limit) is not int or not 1 <= limit <= 100 or type(cursor) is not int or not 0 <= cursor < 10**9 or (expected_revision is not None and not _SHA.fullmatch(expected_revision)) or (cursor > 0 and expected_revision is None):
+            return self._response("INVALID_REQUEST", "invalid_pr_diagnostic_selection")
+        params = {"pr_number": str(pr_number), "limit": str(limit), "cursor": str(cursor)}
+        if expected_revision is not None:
+            params["expected_revision"] = expected_revision
+        return await asyncio.to_thread(self._diagnostic, target_id, "pr-evidence", params)
 
     @staticmethod
     def _journal_authority(grant: AuthenticatedGrant, original: GrantAuthority) -> AcceptedAuthority:
@@ -861,6 +886,7 @@ class ManagementRuntime:
             ManagementTool("auto_coder_status", self.status, (READ_SCOPE,), read),
             ManagementTool("auto_coder_logs", self.logs, (READ_SCOPE,), read),
             ManagementTool("auto_coder_validation_attempt", self.validation_attempt, (READ_SCOPE,), read),
+            ManagementTool("auto_coder_pr_diagnostics", self.pr_diagnostics, (READ_SCOPE,), read),
             ManagementTool("auto_coder_operation_get", self.operation_get, (READ_SCOPE,), read),
             ManagementTool("auto_coder_reevaluate_target", self.reevaluate_target, (READ_SCOPE, OPERATE_SCOPE), mutation),
             ManagementTool("auto_coder_update_management_service", self.update_management_service, (READ_SCOPE, DEPLOY_SCOPE), ToolAnnotations(readOnlyHint=False, idempotentHint=True, destructiveHint=True, openWorldHint=False), ("source_sha", "idempotency_key")),

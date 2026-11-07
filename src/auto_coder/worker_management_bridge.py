@@ -23,6 +23,7 @@ from .deployment_channel import validate_repository_ownership
 from .entity_invalidation import ReevaluationOperationConflict, ReevaluationReceipt
 from .health_monitor import get_health_monitor
 from .logger_config import get_logger
+from .pr_diagnostics import project_pr_diagnostics
 from .public_api import init_public_api, sanitize_text
 
 logger = get_logger(__name__)
@@ -140,6 +141,35 @@ class WorkerManagementBridge:
             if request.query_params:
                 return self._error("invalid_request", "Request is invalid.", 422)
             return JSONResponse(await asyncio.to_thread(self.consumer_identity.observe))
+
+        @self.app.get("/v1/pr-diagnostics", include_in_schema=False)
+        async def pr_diagnostics(request: Request) -> Response:
+            pairs = list(request.query_params.multi_items())
+            if len(pairs) != len({key for key, _ in pairs}) or not {key for key, _ in pairs} <= {"pr_number", "limit", "cursor", "expected_revision"}:
+                return self._error("invalid_request", "Request is invalid.", 422)
+            values = dict(pairs)
+            try:
+                pr_number = int(values.get("pr_number", ""))
+                limit = int(values.get("limit", "50"))
+                cursor = int(values.get("cursor", "0"))
+                expected_revision = values.get("expected_revision")
+                if str(pr_number) != values.get("pr_number") or ("limit" in values and str(limit) != values["limit"]) or ("cursor" in values and str(cursor) != values["cursor"]):
+                    raise ValueError("non-canonical integer")
+                projection = await asyncio.wait_for(
+                    asyncio.to_thread(project_pr_diagnostics, self.identity.repository, pr_number, limit=limit, cursor=cursor, expected_revision=expected_revision),
+                    timeout=2.0,
+                )
+                encoded = json.dumps(projection, separators=(",", ":"), allow_nan=False).encode()
+                if len(encoded) > MAX_DOCUMENT_BYTES:
+                    return self._error("response_too_large", "Diagnostic response exceeds its bound.", 503)
+                return Response(encoded, media_type="application/json")
+            except (ValueError, TypeError):
+                return self._error("invalid_request", "Request is invalid.", 422)
+            except (TimeoutError, asyncio.TimeoutError):
+                return self._error("diagnostic_unavailable", "Diagnostic read deadline expired.", 503)
+            except Exception as exc:
+                logger.error("Private PR diagnostic unavailable: {}", type(exc).__name__)
+                return self._error("diagnostic_unavailable", "Diagnostic evidence is unavailable.", 503)
 
         @self.app.post("/v1/reevaluations", include_in_schema=False)
         async def reevaluate(request: Request) -> Response:

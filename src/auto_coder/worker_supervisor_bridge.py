@@ -48,6 +48,7 @@ _DIAGNOSTIC_PARAMS = {
     "status": {"limit"},
     "logs": {"limit", "item_type", "item_number", "execution_id", "process_run_id", "after_sequence", "cursor"},
     "validation-attempts": {"pr_number", "attempt_id", "attempt_sequence"},
+    "pr-evidence": {"pr_number", "limit", "cursor", "expected_revision"},
 }
 
 
@@ -319,7 +320,7 @@ class _BridgeHandler(BaseHTTPRequestHandler):
             kind = path.removeprefix("/v1/diagnostics/")
             if kind not in _DIAGNOSTIC_PARAMS or not all(key in _DIAGNOSTIC_PARAMS[kind] for key, _ in pairs):
                 return 422, "UNSUPPORTED", None
-            upstream_path = "/v1/consumer-identity" if kind == "consumer-identity" else "/api/" + kind
+            upstream_path = "/v1/consumer-identity" if kind == "consumer-identity" else "/v1/pr-diagnostics" if kind == "pr-evidence" else "/api/" + kind
             headers = None
             if kind == "logs":
                 budget = self._response_data_budget(self._request_id, self.server.supervisor.incarnation)

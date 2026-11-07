@@ -136,6 +136,7 @@ class WorkerNetworkClient:
             "status": {"limit"},
             "logs": {"limit", "item_type", "item_number", "execution_id", "process_run_id", "after_sequence", "cursor"},
             "validation-attempts": {"pr_number", "attempt_id", "attempt_sequence"},
+            "pr-evidence": {"pr_number", "limit", "cursor", "expected_revision"},
         }
         if kind not in allowed or (params and (not params.keys() <= allowed[kind] or any(not isinstance(value, str) for value in params.values()))):
             raise ValueError("unsupported diagnostic projection")
