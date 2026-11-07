@@ -244,7 +244,8 @@ process/network cleanup, including when staging or assertions fail.
 The two real source revisions and independent same-SHA alternative READY are
 installed within each case; only immutable dependency/image caches may be reused.
 Case-specific Docker logs are written under
-`supervisor-integration-logs/<pytest-case-name>/`, alongside the normal native
+`supervisor-integration-logs/<pytest-case-name>/` (including staging output and
+the installer's file log), alongside the normal native
 JUnit setup/call/teardown and timing-recorder evidence.
 
 | Independent smoke case suffix | Original assertion family retained |

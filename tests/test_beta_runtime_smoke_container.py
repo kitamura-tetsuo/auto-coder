@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import random
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -347,6 +348,11 @@ def _smoke_system(real_boundary, tmp_path: Path, scenario_id: str) -> Iterator[_
         *revisions,
         timeout=1200,
     )
+    stage_logs = Path(os.environ.get("GITHUB_WORKSPACE", str(Path(__file__).parents[1]))) / "supervisor-integration-logs" / scenario_id
+    stage_logs.mkdir(parents=True, exist_ok=True)
+    (stage_logs / "stage.log").write_text(staged.stdout + staged.stderr, encoding="utf-8")
+    if (runtime / "staging.log").exists():
+        shutil.copyfile(runtime / "staging.log", stage_logs / "stage-internal.log")
     installations = json.loads(staged.stdout.strip().splitlines()[-1])
     for role, revision in zip(("source-a", "source-b", "source-a-alternate"), (revisions[0], revisions[1], revisions[0])):
         observe_nested_install_evidence(role, revision)
