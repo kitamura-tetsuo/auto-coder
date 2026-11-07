@@ -208,6 +208,10 @@ patterns, `Bearer`/`Basic` values, and HTTP(S) URLs are replaced with markers, a
 absolute POSIX/home/Windows filesystem paths in event labels and facts become
 `[REDACTED_PATH]` (identity fields are never rewritten).
 This is bounded hygiene for the exported fields, not universal secret discovery.
+The public route always uses this full 256 KiB source-page limit. When the same
+projection is reached through authenticated management transport, its private
+UDS hop uses an incarnation-bound internal budget so the source page plus the
+Supervisor envelope—not either document in isolation—fits that unchanged limit.
 
 ## Limitations and interpretation
 

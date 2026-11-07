@@ -153,7 +153,7 @@ class WorkerSupervisor:
         expected = {"schema_version": 1, "repository": self.config.repository, "channel": self.config.channel, "deployment_generation": worker.get("deployment_generation"), "process_run_id": worker.get("process_run_id"), "lifecycle_state": "stopped", "is_graceful_ready": True, "unsettled_count": 0}
         return all(value.get(key) == expected_value for key, expected_value in expected.items())
 
-    def worker_http(self, worker: dict[str, Any], method: str, target: str, body: bytes = b"") -> tuple[int, dict[str, Any]] | None:
+    def worker_http(self, worker: dict[str, Any], method: str, target: str, body: bytes = b"", headers: dict[str, str] | None = None) -> tuple[int, dict[str, Any]] | None:
         """Read one bounded response from the actual, PID-verified worker socket."""
         connection = _UnixHTTPConnection(self.worker_socket)
         try:
@@ -165,8 +165,10 @@ class WorkerSupervisor:
             peer_pid = struct.unpack("3i", connection.sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))[0]
             if peer_pid != worker["pid"]:
                 return None
-            headers = {"Content-Type": "application/json"} if method == "POST" else {}
-            connection.request(method, target, body=body if method == "POST" else None, headers=headers)
+            request_headers = dict(headers or {})
+            if method == "POST":
+                request_headers["Content-Type"] = "application/json"
+            connection.request(method, target, body=body if method == "POST" else None, headers=request_headers)
             response = connection.getresponse()
             raw = response.read(256 * 1024 + 1)
             if len(raw) > 256 * 1024:

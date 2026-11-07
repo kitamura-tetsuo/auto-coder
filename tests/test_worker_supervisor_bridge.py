@@ -175,6 +175,42 @@ def test_real_http_signature_replay_identity_and_wrong_generation(tmp_path: Path
         listener.close()
 
 
+def test_authenticated_log_envelope_budget_keeps_real_worker_page(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands: None, _use_real_sleep: None) -> None:
+    monkeypatch.setenv("AUTO_CODER_TEST_SEEDED_LOGS", "500")
+    supervisor = _supervisor(tmp_path)
+    supervisor.config = replace(
+        supervisor.config,
+        instance_id="i" * 200,
+        repository="owner/" + "r" * 194,
+    )
+    listener, client = _bridge(supervisor, os.urandom(48))
+    worker_pid = None
+    try:
+        client.inspect_supervisor()
+        started = supervisor.apply({"operation_id": "start-budget-worker", "operation": "START"})
+        worker_pid = started["worker"]["pid"]
+        result = None
+        for _ in range(100):
+            candidate = client.diagnostics("logs", {"limit": "500"})
+            if candidate.result_code == "OK":
+                result = candidate
+                break
+            threading.Event().wait(0.05)
+        assert result is not None and result.http_status == 200 and result.data is not None
+        assert result.data["result"] == "events"
+        assert result.data["response"]["truncated"] is True
+        assert result.data["events"][-1]["sequence"] == 500
+        assert "fixture-secret" not in json.dumps(result.data)
+    finally:
+        if worker_pid is not None:
+            (tmp_path / "fixture-release").write_text("release")
+            try:
+                os.kill(worker_pid, 15)
+            except ProcessLookupError:
+                pass
+        listener.close()
+
+
 def test_worker_lifecycle_live_uds_loss_recovery_and_stopped_observation(tmp_path: Path, _use_real_commands: None, _use_real_sleep: None) -> None:
     supervisor = _supervisor(tmp_path)
     listener, client = _bridge(supervisor, os.urandom(48))
