@@ -59,6 +59,13 @@ class _SourceService(GitEvidenceBoundary):
         self.executions.clear()
         self.repository = root
         subprocess.run(["git", "clone", "--bare", str(source), str(root)], check=True, capture_output=True, text=True)
+        # A local checkout can contain production beta-selection tags fetched
+        # after this fixture was written.  The disposable service owns its
+        # selection history, so inherited mutable/history refs would make the
+        # first fixture selection appear to have been superseded already.
+        inherited = self._git("for-each-ref", "--format=%(refname)", "refs/tags/auto-coder-beta-")
+        for ref in inherited.splitlines():
+            self._git("update-ref", "-d", ref)
         self.read_only_mutations: list[tuple[str, str]] = []
         self.fail_reads = False
 
@@ -105,6 +112,24 @@ class _SourceService(GitEvidenceBoundary):
             self._git("update-ref", ref, str(payload["sha"]))
             return GitDataResponse(200)
         return super().request(method, path, payload)
+
+
+def test_source_service_does_not_inherit_checkout_beta_selection_refs(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "fixture"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "fixture@example.com"], cwd=source, check=True)
+    (source / "tracked").write_text("source", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "source"], cwd=source, check=True)
+    for name in ("auto-coder-beta-current", "auto-coder-beta-selection-r77"):
+        subprocess.run(["git", "tag", name], cwd=source, check=True)
+
+    service = _SourceService(source, tmp_path / "source.git")
+
+    assert service._git("for-each-ref", "--format=%(refname)", "refs/tags/auto-coder-beta-") == ""
+    assert service._git("rev-parse", "HEAD") == subprocess.run(["git", "rev-parse", "HEAD"], cwd=source, check=True, capture_output=True, text=True).stdout.strip()
 
 
 @contextmanager
