@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from auto_coder.beta_source_selection import BetaSourceSelector, MutationCertainty
-from tests.test_beta_runtime_smoke_container import _SourceService
+from tests.test_beta_runtime_smoke_container import _cleanup_smoke_docker, _SourceService
 
 
 @pytest.mark.parametrize("detached", [False, True])
@@ -44,3 +44,30 @@ def test_source_service_does_not_inherit_checkout_acceptance_tags(tmp_path: Path
     assert selected.selected_sha == candidate
     assert selected.observed_sha == candidate
     assert git("show-ref") == original_refs
+
+
+def test_case_owned_docker_cleanup_preserves_failure_and_removes_every_owned_resource(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import tests.test_beta_runtime_smoke_container as smoke
+
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    calls: list[tuple[str, ...]] = []
+
+    def docker(*arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        if arguments[:2] == ("logs", "worker"):
+            raise OSError("diagnostics unavailable")
+        return subprocess.CompletedProcess(arguments, 0, stdout="fixture log\n", stderr="")
+
+    monkeypatch.setattr(smoke, "_docker", docker)
+    with pytest.raises(AssertionError, match="original setup or assertion failure"):
+        try:
+            raise AssertionError("original setup or assertion failure")
+        finally:
+            _cleanup_smoke_docker("worker", "github", "network", "smoke-case")
+
+    assert ("logs", "worker") in calls
+    assert ("logs", "github") in calls
+    assert ("rm", "-f", "worker") in calls
+    assert ("rm", "-f", "github") in calls
+    assert ("network", "rm", "network") in calls
+    assert (tmp_path / "supervisor-integration-logs" / "smoke-case" / "github.log").read_text() == "fixture log\n"

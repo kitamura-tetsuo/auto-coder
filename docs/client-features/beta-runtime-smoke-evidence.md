@@ -236,6 +236,46 @@ receives only journal and read clients. The `Supervisor Integration Tests`
 workflow executes this boundary. Its disposable source service imports commits
 without importing checkout tags, so live beta pointers and prior tested/selection
 records cannot contaminate the fixture's independently published evidence.
+Six separate pytest cases each acquire their **own** temporary management,
+journal, worker runtime, workspace, trust, Git/HTTP source and Docker processes.
+They do not share a prior case's PASS, installed runtime, journal or selection.
+The two real source revisions and independent same-SHA alternative READY are
+installed within each case; only immutable dependency/image caches may be reused.
+Case-specific Docker logs are written under
+`supervisor-integration-logs/<pytest-case-name>/`, alongside the normal native
+JUnit setup/call/teardown and timing-recorder evidence.
+
+| Independent smoke case suffix | Original assertion family retained |
+| --- | --- |
+| `test_local_smoke_uses_installed_worker_real_progress_and_original_journal` | Authenticated malformed request; original durable capture; fresh management reconstruction; two advancing installed-worker samples and provenance; lost publication response; conflicting Git record; exact reconciliation and publication content hash; replay, changed-artifact conflict and immutable outage readback. |
+| `test_local_smoke_diagnostics_do_not_advance_real_worker_progress` | Real 60-second maintenance-sleep heartbeat, 8-second original deadline/1-second profile, authenticated diagnostics and reads with unique nonces but unchanged heartbeat, terminal BLOCKED and no publication. |
+| `test_local_smoke_preserves_original_evidence_across_real_faults` | Missing/invalid profiles, unavailable clock, fresh-process expired window, SQLite trigger-failure UNAVAILABLE/durable recovery, alternate READY, missing installed provenance, source reads/jobs failures, and genuine held-deployment BUSY/CONFLICT. |
+| `test_local_smoke_later_selection_preserves_proof_and_publication_authority` | Mismatch refusal; independent original-source capture; later same-SHA deployment/PASS retaining original tested proof; original grant withdrawal and current observe-only policy blocking publication with unchanged local evidence/Git writes. |
+| `test_local_smoke_selected_retry_and_same_sha_supersession` | New original-source capture; selected later attempt and real redeployment/PASS; unselected newer execution; same-SHA selection supersession in a fresh process, preserving original capture/window/samples while child continues. |
+| `test_local_smoke_distinct_revision_and_worker_lifecycle_outcomes` | Independent first-revision PASS; second genuine revision deployment/installation/PASS; real child replacement after first qualifying sample yields SUPERSEDED; actual stop after redeployment yields FAIL. |
+
+Each case can run alone, e.g. with the real Supervisor image prepared and
+`AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION=1` set:
+
+```sh
+CI=true bash scripts/test.sh tests/test_beta_runtime_smoke_container.py::test_local_smoke_uses_installed_worker_real_progress_and_original_journal -q
+CI=true bash scripts/test.sh tests/test_beta_runtime_smoke_container.py::test_local_smoke_diagnostics_do_not_advance_real_worker_progress -q
+CI=true bash scripts/test.sh tests/test_beta_runtime_smoke_container.py::test_local_smoke_preserves_original_evidence_across_real_faults -q
+CI=true bash scripts/test.sh tests/test_beta_runtime_smoke_container.py::test_local_smoke_later_selection_preserves_proof_and_publication_authority -q
+CI=true bash scripts/test.sh tests/test_beta_runtime_smoke_container.py::test_local_smoke_selected_retry_and_same_sha_supersession -q
+CI=true bash scripts/test.sh tests/test_beta_runtime_smoke_container.py::test_local_smoke_distinct_revision_and_worker_lifecycle_outcomes -q
+```
+
+Reordered execution passes explicit node IDs in any chosen order to the same
+test script. The workflow's required-node inventory names all six, while its
+whole-file selection still discovers future new or parameterized marked cases.
+The split preserves the positive 180-second *maximum* (not a sleep), two real
+advancing samples, 8-second blocked deadline, and production 60-second
+maintenance cadence. Repeating real setup increases aggregate work even though
+individual scenarios can now be scheduled separately. Before a measured
+post-split Docker run, neither a sub-ten-minute longest case nor a net CI
+speedup is claimed; authoritative setup/call/teardown and longest/aggregate
+durations must come from that run's JUnit and timing artifacts.
 `tests/test_beta_runtime_smoke_source_fixture.py` checks this isolation with real
 Git and HTTP selection while preserving the original source tags. This fixture
 correction changes no production behavior or dashboard schema.
