@@ -300,3 +300,27 @@ def test_session_requires_captured_live_owner_before_claim(host_case, monkeypatc
     with pytest.raises((ValueError, command.HostObservationUnavailable)):
         command.hold_claim_and_guard(case.intent, case.c / "evidence", case.bootstrap, case.b / "state" / ".supervisor-owner.lock", 123, case.c / "guard")
     assert not (case.c / "state" / "fresh-initialization.json").exists()
+
+
+@pytest.mark.parametrize("split", [False, True])
+def test_fresh_command_requires_successful_sealed_provenance(host_case, split):
+    from auto_coder.management.fresh_host_observation import _supported_prior_command
+
+    case = host_case
+    entry = ["python"] if split else ["python", "-m", "auto_coder.management.bootstrap_supervisor"]
+    arguments = (["-m", "auto_coder.management.bootstrap_supervisor"] if split else []) + ["--config", "/bootstrap/config.json"]
+    assert _supported_prior_command(entry, arguments)
+    fresh = [*arguments, "--fresh-initialization"]
+    assert not _supported_prior_command(entry, fresh)
+    _, support = inherited_support(case.mounts)
+    assert _supported_prior_command(entry, fresh, initialized_fresh="/management-initialization" in support)
+    for invalid in ([*fresh, "--unexpected"], [*fresh, "--fresh-initialization"], [*arguments, "--config", "/other.json"]):
+        assert not _supported_prior_command(entry, invalid, initialized_fresh=True)
+    outcome = case.b / "state" / "fresh-outcome.json"
+    original = outcome.read_bytes()
+    data = json.loads(original)
+    data["status"] = "unknown"
+    write(outcome, data)
+    with pytest.raises(ValueError, match="unresolved"):
+        inherited_support(case.mounts)
+    assert not _supported_prior_command(entry, fresh)

@@ -266,3 +266,20 @@ not a claim that the public full-source workflow ran. Container execution is
 required evidence; collecting those tests or component tests alone is not a
 live-cutover GO decision. Preserve existing OAuth, original databases/intents,
 all fences, old-key suppression and worker lifetimes throughout verification.
+
+
+A successful fresh predecessor retains its original Docker command including
+`--fresh-initialization`. Capture accepts only the exact supported command forms
+with that single final flag, and only after its original sealed successful fresh
+intent, bootstrap hash, retained roots and supporting mounts are verified. A flag
+alone, unresolved initialization, extra arguments or changed provenance do not
+qualify; process/kernel/container ownership checks still apply.
+
+The isolated multi-generation fixture pins an explicit host bridge gateway while
+retaining the canonical internal worker network. Installed fixtures prove real
+HTTP authority reachability from both installer and child networks before
+staging. Readiness startup resets may retry until the deadline, never count as a
+challenge or authenticated proof. The uploaded diagnostic artifact includes
+bounded operational state and filtered errors, excluding request headers/bodies
+and credential strings. These observations diagnose a failed boundary; they do
+not relax readiness or replace actual passing mandatory container cases.

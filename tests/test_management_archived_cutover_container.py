@@ -10,9 +10,11 @@ import base64
 import fcntl
 import gc
 import hashlib
+import http.client
 import json
 import os
 import random
+import re
 import select
 import shutil
 import socket
@@ -44,6 +46,42 @@ from auto_coder.operating_policy import MANAGEMENT_REPOSITORY
 from tests.test_management_fresh_end_to_end import _build_fixture_image, _fixture_executable_digest, _resolve_fixture_base
 
 pytestmark = [pytest.mark.supervisor_integration, pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep")]
+
+
+def diagnostic_log_lines(content: str, token: str = "") -> list[str]:
+    """Bounded error observations; no headers, bodies or credential strings."""
+    result = []
+    for line in content.splitlines()[-60:]:
+        try:
+            value = json.loads(line)
+        except ValueError:
+            if not any(word in line.lower() for word in ("error", "exception", "refus", "unavailable", "traceback", "fresh management", "read-only")):
+                continue
+        else:
+            if not isinstance(value, dict):
+                continue
+            line = json.dumps({key: value[key] for key in ("level", "msg", "error") if isinstance(value.get(key), str)})
+        if re.search(r"(?i)\b(headers?|body|authorization|cookie|token|secret|password)\b", line):
+            continue
+        if token:
+            line = line.replace(token, "[redacted]")
+        line = re.sub(r"(?i)(?:Bearer|Basic)\s+[^\s\"',}]+", "[redacted authorization]", line)
+        line = re.sub(r"[A-Za-z0-9_+/.=~-]{24,}", "[redacted]", line)
+        result.append(line[:1024])
+    return result
+
+
+def worker_compose_profile(fixtures: Path, subnet: str, gateway: str):
+    """Keep canonical isolation/worker configuration; pin its host bridge IP."""
+    import ipaddress
+
+    network = ipaddress.ip_network(subnet)
+    address = ipaddress.ip_address(gateway)
+    if address not in network.hosts() or address in {network.network_address + 11, network.network_address + 12}:
+        raise ValueError("fixture gateway overlaps a worker or leaves its subnet")
+    profile = yaml.safe_load((fixtures / "compose.supervisor-network.yml").read_text())
+    profile["networks"]["private"]["ipam"]["config"] = [{"subnet": subnet, "gateway": gateway}]
+    return profile
 
 
 @dataclass
@@ -362,32 +400,40 @@ class Chain:
     def ready(self, generation: Generation, *, fresh: bool) -> None:
         self.ensure_proxy(generation)
         deadline = time.monotonic() + 60
+        last = "not observed"
         while time.monotonic() < deadline:
             try:
                 observation = ""
                 if fresh:
                     code = "import json;from pathlib import Path;from auto_coder.management.fresh_initialization import read_fresh_status;print(json.dumps(read_fresh_status(Path('/management-child-state'))))"
                     status = json.loads(self.docker("exec", generation.container, "python", "-c", code, timeout=10).splitlines()[-1])
+                    last = "fresh initialization status=" + str(status["status"])
                     if status["status"] not in {"launched", "succeeded"}:
                         time.sleep(0.1)
                         continue
                     observation = status["observation_id"]
+                last = "unauthenticated Caddy challenge"
                 if self.call(generation, "auto_coder_whoami", {}, authenticated=False)["http_status"] != 401:
                     time.sleep(0.1)
                     continue
+                last = "authenticated Caddy whoami"
                 result = self.call(generation, "auto_coder_whoami", {"observation_id": observation})
                 if result["uid"] == "operator" and (not fresh or status["status"] == "succeeded"):
                     if self.worker_baseline is not None:
+                        last = "authenticated worker identity readback"
                         self.assert_worker_reads(generation)
                     return
-            except (subprocess.CalledProcessError, ValueError, KeyError, urllib.error.URLError):
-                pass
+            except (subprocess.CalledProcessError, ValueError, KeyError, OSError, http.client.HTTPException) as error:
+                # Transport startup failures may retry, never count as proof.
+                # Keep only stage and exception type, not headers/credential data.
+                last = last.split(";", 1)[0] + "; " + type(error).__name__
             time.sleep(0.1)
-        raise AssertionError("exact synthetic child readiness was not proven")
+        states = self.docker("inspect", "--format", "{{json .State.Status}} {{json .Config.Entrypoint}} {{json .Config.Cmd}}", generation.container, generation.proxy)
+        raise AssertionError("exact synthetic child readiness was not proven; " + last + "; " + states)
 
     @staticmethod
     def child(generation: Generation):
-        with sqlite3.connect(generation.path("state") / "management-child.sqlite3") as connection:
+        with sqlite3.connect((generation.path("state") / "management-child.sqlite3").as_uri() + "?mode=ro", uri=True) as connection:
             return json.loads(connection.execute("SELECT record_json FROM child_state").fetchone()[0])
 
     def prove_child(self, generation: Generation) -> None:
@@ -466,7 +512,13 @@ class Chain:
             SUPERVISOR_BETA_IP=f"10.252.{octet}.12",
             SUPERVISOR_TEST_REQUEST_AUDIT="1",
         )
-        self.worker_compose = ["docker", "compose", "--project-name", "ancestor-workers-" + uuid.uuid4().hex[:12], "-f", str(fixtures / "compose.supervisor-network.yml")]
+        # Internal networks need an explicit host bridge address for the real
+        # published Caddy endpoint and the installed fixture's HTTP authority.
+        # Reuse the canonical worker fixture; only its disposable IPAM changes.
+        private_compose = worker_compose_profile(fixtures, f"10.252.{octet}.0/24", f"10.252.{octet}.1")
+        compose_path = root / "compose.yml"
+        compose_path.write_text(yaml.safe_dump(private_compose))
+        self.worker_compose = ["docker", "compose", "--project-name", "ancestor-workers-" + uuid.uuid4().hex[:12], "-f", str(compose_path)]
         self.compose("up", "-d", "--no-build")
         self.worker_manager = self.compose("ps", "-q", "manager")
         networks = json.loads(self.docker("inspect", self.worker_manager))[0]["NetworkSettings"]["Networks"]
@@ -559,7 +611,41 @@ class Chain:
         process = subprocess.Popen([sys.executable, "-m", "auto_coder.management.proxy_watch_cli", "--config", str(config)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.processes.append(process)
 
+    def save_diagnostics(self) -> None:
+        destination = os.environ.get("SUPERVISOR_RESULTS_PATH")
+        if not destination:
+            return
+        directory = Path(destination).parent / ("cutover-" + uuid.uuid4().hex)
+        directory.mkdir(mode=0o700, parents=True)
+        document = {}
+        if hasattr(self, "worker_network"):
+            document["private_network"] = json.loads(self.docker("network", "inspect", "--format", "{{json .IPAM.Config}}", self.worker_network))
+        for generation in self.generations:
+            observations = {}
+            try:
+                child = self.child(generation)
+                observations["child"] = {key: child.get(key) for key in ("phase", "child_generation", "selected_runtime", "exit_cause", "readiness", "intended_stop", "recovery_used")}
+            except (OSError, sqlite3.Error, ValueError, TypeError):
+                observations["child"] = "unavailable"
+            for kind, container in (("management", generation.container), ("proxy", generation.proxy)):
+                if container is None:
+                    continue
+                facts = json.loads(self.docker("inspect", "--format", "{{json .State}}", container))
+                observations[kind] = {key: facts.get(key) for key in ("Status", "Running", "ExitCode", "Error")}
+                logs = self.docker("logs", "--tail", "60", container)
+                observations[kind]["errors"] = diagnostic_log_lines(logs, getattr(self, "token", ""))
+            document[generation.name] = observations
+        path = directory / "observations.json"
+        with path.open("x") as stream:
+            path.chmod(0o600)
+            json.dump(document, stream, indent=2)
+
     def close(self) -> None:
+        try:
+            self.save_diagnostics()
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+            # Diagnostics cannot replace the test outcome or prevent cleanup.
+            pass
         for process in self.processes:
             if process.poll() is None:
                 process.terminate()

@@ -145,11 +145,16 @@ def _inspect(container_id: str) -> list[object]:
     return values
 
 
-def _supported_prior_command(entrypoint: object, command: object) -> bool:
-    return (entrypoint, command) in (
+def _supported_prior_command(entrypoint: object, command: object, *, initialized_fresh: bool = False) -> bool:
+    profiles = (
         (["python", "-m", "auto_coder.management.bootstrap_supervisor"], ["--config", "/bootstrap/config.json"]),
         (["python"], ["-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json"]),
     )
+    if (entrypoint, command) in profiles:
+        return True
+    # The supported one-shot CLI remains in immutable Docker Cmd after success.
+    # Only captured, hash-sealed successful fresh provenance permits this form.
+    return initialized_fresh and any(entrypoint == prefix and command == [*arguments, "--fresh-initialization"] for prefix, arguments in profiles)
 
 
 def capture_prior_container(container_id: str, image_id: str, *, expected_mounts: tuple[tuple[str, str, bool], ...] = (), require_owner_lock: bool = False, require_deployment_identity: bool = False) -> PriorContainer:
@@ -162,6 +167,7 @@ def capture_prior_container(container_id: str, image_id: str, *, expected_mounts
         raise HostObservationUnavailable("prior container is not the expected live instance")
     if privileged is not False or pid_mode not in ("", None) or caps not in (None, []) or security not in (None, []) or network in ("host", None, "") or devices not in (None, []):
         raise HostObservationUnavailable("unsupported prior container containment")
+    initialized_fresh = False
     allowed_destinations = {"/bootstrap", "/management-child-state", "/management-oauth", "/management-operations", "/management-policy", "/management-versions", "/run/firebase-admin", "/run/secrets/release_worker_bridge", "/run/secrets/beta_worker_bridge", "/etc/caddy/Caddyfile"}
     if require_deployment_identity:
         from .exclusion_host import inherited_support
@@ -169,7 +175,9 @@ def capture_prior_container(container_id: str, image_id: str, *, expected_mounts
         try:
             if not isinstance(mounts, list):
                 raise ValueError("prior mounts unavailable")
-            allowed_destinations.update(inherited_support(mounts)[1])
+            inherited = inherited_support(mounts)[1]
+            initialized_fresh = "/management-initialization" in inherited
+            allowed_destinations.update(inherited)
         except (OSError, ValueError, TypeError, KeyError) as exc:
             raise HostObservationUnavailable("prior inherited mount provenance unavailable") from exc
     if not isinstance(mounts, list) or any(not isinstance(mount, dict) or mount.get("Type") != "bind" or mount.get("Destination") not in allowed_destinations or not isinstance(mount.get("Source"), str) or type(mount.get("RW")) is not bool for mount in mounts):
@@ -241,7 +249,7 @@ def capture_prior_container(container_id: str, image_id: str, *, expected_mounts
         instance_id, bootstrap_source, bootstrap_sha256, published_port = "", "", "", 0
         oauth_source, oauth_device, oauth_inode = "", 0, 0
         if require_deployment_identity:
-            if not _supported_prior_command(values[15], values[16]):
+            if not _supported_prior_command(values[15], values[16], initialized_fresh=initialized_fresh):
                 raise ValueError("prior supervisor entrypoint differs")
             sources = [source for source, destination, rw in observed_mounts if destination == "/bootstrap" and not rw]
             if len(sources) != 1:

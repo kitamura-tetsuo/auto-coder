@@ -93,6 +93,12 @@ class InstalledChain(Chain):
         gateway = json.loads(self.docker("network", "inspect", self.worker_network))[0]["IPAM"]["Config"][0]["Gateway"]
         self.external = {"url": f"http://{gateway}:{self.server.server_port}", "repository": "kitamura-tetsuo/auto-coder"}
         (self.oauth / "external-services.json").write_text(json.dumps(self.external))
+        # Establish actual host-authority reachability from both the installer
+        # and isolated child networks before producing any READY or intent.
+        probe = "import sys,urllib.request;assert urllib.request.build_opener(urllib.request.ProxyHandler({})).open(sys.argv[1]+'/certificates',timeout=5).status==200;print('fixture-authority-reachable')"
+        for network in ("bridge", self.worker_network):
+            assert self.docker("run", "--rm", "--network", network, "--entrypoint", "python", self.image, "-c", probe, self.external["url"]).splitlines()[-1] == "fixture-authority-reachable"
+
         _snapshot_source(source, "source-scaffold")
         cli = source / "src" / "auto_coder" / "cli.py"
         launch_log = """    with (settings.state_root / 'installed-launches.jsonl').open('a') as observed:
