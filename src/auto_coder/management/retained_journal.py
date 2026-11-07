@@ -23,7 +23,8 @@ from .operations import AcceptedAuthority, AdmissionResult, AdmissionStatus, Man
 class RetainedJournal:
     """Pin a previous owner lock and database without modifying either."""
 
-    def __init__(self, database: Path, fence: Path, *, database_identity: tuple[int, int], fence_identity: tuple[int, int], prior_management_instance: str | None = None) -> None:
+    def __init__(self, database: Path, fence: Path, *, database_identity: tuple[int, int], fence_identity: tuple[int, int], prior_management_instance: str | None = None, exclusions: tuple[RetainedJournal, ...] = ()) -> None:
+        self.exclusions = exclusions
         self.database = database
         self.fence = fence
         self.database_identity = database_identity
@@ -53,7 +54,14 @@ class RetainedJournal:
             if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != identity:
                 raise ValueError("retained fence descriptor differs")
 
+    def _check_exclusions(self) -> None:
+        for reader in self.exclusions:
+            if any(record.phase in ACTIVE_PHASES for record in reader.read()):
+                raise ValueError("excluded generation contains unresolved operations")
+
     def close(self) -> None:
+        for reader in self.exclusions:
+            reader.close()
         if self._fd >= 0:
             os.close(self._fd)
             self._fd = -1
@@ -83,6 +91,7 @@ class RetainedJournal:
 
     def read_evidence(self) -> tuple[tuple[OperationRecord, dict[str, object] | None], ...]:
         """Validate all records and their last history; errors never mean empty."""
+        self._check_exclusions()
         if self._fd < 0:
             raise ValueError("prior owner fence is closed")
         self._check_file(self.fence, self.fence_identity, self._fd)
@@ -157,6 +166,8 @@ class RetainedJournal:
         namespace = ManagementOperationStore._namespace(intent, authority)
         fingerprint = intent.fingerprint()
         records = self.read()
+        if any(reader.admission(intent, authority) is not None for reader in self.exclusions):
+            return AdmissionResult(AdmissionStatus.CONFLICT, detail="archived key excluded")
         for record in records:
             if ManagementOperationStore._namespace(record.intent, record.authority) == namespace:
                 status = AdmissionStatus.REPLAY if record.intent_fingerprint == fingerprint else AdmissionStatus.CONFLICT
@@ -218,6 +229,8 @@ class RetainedJournal:
         probe = OperationIntent(target, "management-service-self-update", (), key)
         namespace = ManagementOperationStore._namespace(probe, authority)
         records = self.read()
+        if any(reader.management_request(key, source_sha, authority) is not None for reader in self.exclusions):
+            return AdmissionResult(AdmissionStatus.CONFLICT, detail="archived key excluded")
         for record in records:
             if ManagementOperationStore._namespace(record.intent, record.authority) == namespace:
                 params = {part.name: part.value for part in record.intent.parameters}

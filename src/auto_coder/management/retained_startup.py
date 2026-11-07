@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import ExitStack
 from pathlib import Path
 
 import auto_coder
@@ -31,20 +32,32 @@ def retained_from_fresh_intent(settings: ManagementSettings) -> RetainedJournal 
         raise ValueError("fresh runtime or prior fence unavailable")
     verify_initialization_inputs(intent, bootstrap_config=config_path, management_config=settings.config_path, executable=runtime.executable, application_root=Path(auto_coder.__file__).resolve(strict=True).parent)
     if not intent.host_prior_journal_root:
+        if bootstrap.archived_exclusions:
+            raise ValueError("exclusions require the direct prior journal")
         return None
     root = Path(intent.prior_journal_root)
     if root.is_symlink() or not root.is_dir() or not os.statvfs(root).f_flag & os.ST_RDONLY:
         raise ValueError("retained journal mount is not read-only")
-    reader = RetainedJournal(
-        root / "management-operations.sqlite3",
-        bootstrap.fresh_prior_lock_path,
-        database_identity=(intent.prior_journal_device, intent.prior_journal_inode),
-        fence_identity=(intent.owner_lock_device, intent.owner_lock_inode),
-        prior_management_instance=intent.old_instance,
-    )
-    try:
+    with ExitStack() as cleanup:
+        archives = []
+        for binding in bootstrap.archived_exclusions:
+            excluded = Path(binding.journal_root)
+            if binding.instance_id in {bootstrap.instance_id, intent.old_instance} or excluded.is_symlink() or not excluded.is_dir() or not os.statvfs(excluded).f_flag & os.ST_RDONLY:
+                raise ValueError("excluded journal mount or generation differs")
+            if (binding.database_device, binding.database_inode) == (intent.prior_journal_device, intent.prior_journal_inode) or (binding.fence_device, binding.fence_inode) == (intent.owner_lock_device, intent.owner_lock_inode):
+                raise ValueError("excluded generation duplicates direct prior")
+            archive = RetainedJournal(excluded / "management-operations.sqlite3", Path(binding.fence), database_identity=(binding.database_device, binding.database_inode), fence_identity=(binding.fence_device, binding.fence_inode), prior_management_instance=binding.instance_id)
+            cleanup.callback(archive.close)
+            archives.append(archive)
+        reader = RetainedJournal(
+            root / "management-operations.sqlite3",
+            bootstrap.fresh_prior_lock_path,
+            database_identity=(intent.prior_journal_device, intent.prior_journal_inode),
+            fence_identity=(intent.owner_lock_device, intent.owner_lock_inode),
+            prior_management_instance=intent.old_instance,
+            exclusions=tuple(archives),
+        )
+        cleanup.callback(reader.close)
         reader.read()
-    except BaseException:
-        reader.close()
-        raise
-    return reader
+        cleanup.pop_all()
+        return reader

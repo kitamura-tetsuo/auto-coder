@@ -858,10 +858,11 @@ def test_fresh_host_command_reports_the_final_incomplete_scan(tmp_path: Path, mo
     fence.write_bytes(b"")
     monkeypatch.setattr(command, "load_fresh_initialization", lambda *args, **kwargs: (intent, None))
     monkeypatch.setattr(command, "_evidence", lambda path: (None, None, intent.prior_evidence_sha256))
+    monkeypatch.setattr("auto_coder.management.exclusion_host.validate_successor", lambda *args: ())
     monkeypatch.setattr(command, "acquire_prior_owner_fence", lambda *args, **kwargs: os.open(fence, os.O_RDONLY))
     # Only unrelated guard preconditions/listener setup are outside this unit
     # boundary. The command executes the production bounded observer/refusal.
-    monkeypatch.setattr(command, "serve_one_fresh_grant", lambda *args: observation.assert_prior_network_unreferenced("net:[202]"))
+    monkeypatch.setattr(command, "serve_one_fresh_grant", lambda *args, **kwargs: observation.assert_prior_network_unreferenced("net:[202]"))
     monkeypatch.setattr(sys, "argv", ["fresh-host", "guard", "--state-root", str(tmp_path / "state"), "--evidence-file", str(tmp_path / "evidence"), "--prior-lock", str(fence), "--guard-dir", str(tmp_path / "guard"), "--prior-network-fd", "123"])
     monkeypatch.setattr(observation.os, "geteuid", lambda: 0)
     monkeypatch.setattr(observation.os, "readlink", lambda path: "host")
