@@ -303,8 +303,10 @@ class Chain:
                 if fresh:
                     code = "import json;from pathlib import Path;from auto_coder.management.fresh_initialization import read_fresh_status;print(json.dumps(read_fresh_status(Path('/management-child-state'))))"
                     status = json.loads(self.docker("exec", generation.container, "python", "-c", code, timeout=10).splitlines()[-1])
-                    assert status["status"] != "unknown"
-                    observation = status.get("observation_id", "")
+                    if status["status"] not in {"launched", "succeeded"}:
+                        time.sleep(0.1)
+                        continue
+                    observation = status["observation_id"]
                 result = self.call(generation, "auto_coder_whoami", {"observation_id": observation})
                 if result["uid"] == "operator" and (not fresh or status["status"] == "succeeded"):
                     return
@@ -312,6 +314,27 @@ class Chain:
                 pass
             time.sleep(0.1)
         raise AssertionError("exact synthetic child readiness was not proven")
+
+    @staticmethod
+    def child(generation: Generation):
+        with sqlite3.connect(generation.path("state") / "management-child.sqlite3") as connection:
+            return json.loads(connection.execute("SELECT record_json FROM child_state").fetchone()[0])
+
+    def prove_child(self, generation: Generation) -> None:
+        observation = uuid.uuid4().hex
+        started = time.time()
+        assert self.call(generation, "auto_coder_whoami", {"observation_id": observation})["uid"] == "operator"
+        code = (
+            "import sys;from pathlib import Path;"
+            "from auto_coder.management.bootstrap_supervisor import BootstrapConfig;"
+            "from auto_coder.management.readiness_observation import read_authenticated_readback;"
+            "c=BootstrapConfig.read(Path('/bootstrap/config.json'));"
+            "p=read_authenticated_readback(c,observation_id=sys.argv[1],observation_started_at=float(sys.argv[2]),observation_ends_at=float(sys.argv[2])+60);"
+            "print(p.child_identity if p else 'UNAVAILABLE')"
+        )
+        proof = self.docker("exec", generation.container, "python", "-c", code, observation, str(started)).splitlines()[-1]
+        child = self.child(generation)
+        assert proof == f"{child['pid']}:{child['start_token']}:{child['child_generation']}:{child['selected_runtime']}:{child['supervisor_incarnation']}"
 
     def start_cutover(self, old: Generation, new: Generation) -> None:
         process = self.host(new)
@@ -322,6 +345,7 @@ class Chain:
         out, err = process.communicate(timeout=60)
         assert process.returncode == 0, (out, err)
         self.ready(new, fresh=True)
+        self.prove_child(new)
 
     def seed(self, generation: Generation):
         store = ManagementOperationStore(generation.path("journal"))
@@ -447,9 +471,14 @@ def test_real_second_cutover_preserves_all_owner_and_key_exclusions(chain: Chain
                 fd = os.open(previous.path("state") / ".supervisor-owner.lock", os.O_RDONLY)
                 held.append(fd)
                 fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            before = chain.child(c)
             chain.stop(c)
             chain.docker("start", c.container)
             chain.ready(c, fresh=True)
+            after = chain.child(c)
+            assert after["child_generation"] == before["child_generation"] + 1
+            assert after["supervisor_incarnation"] != before["supervisor_incarnation"]
+            chain.prove_child(c)
         finally:
             for fd in held:
                 os.close(fd)
