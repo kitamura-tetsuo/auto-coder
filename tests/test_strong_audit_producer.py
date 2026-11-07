@@ -21,6 +21,12 @@ def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=cwd, check=True, text=True, capture_output=True).stdout.strip()
 
 
+def _prepare_pull_fetch_head(checkout: Path, head: str) -> None:
+    # Clone does not guarantee FETCH_HEAD; establish the PR-fetch sentinel explicitly.
+    _git(checkout, "fetch", "--no-tags", "origin", "pull/18/head")
+    assert _git(checkout, "rev-parse", "FETCH_HEAD") == head
+
+
 def _repository(tmp_path: Path) -> tuple[Path, str, str]:
     repository = tmp_path / "repository"
     repository.mkdir()
@@ -57,6 +63,7 @@ def test_strong_audit_fetches_missing_exact_base_in_real_worktree(tmp_path: Path
     base = _git(remote, "rev-parse", "HEAD")
     checkout = tmp_path / "checkout"
     _git(tmp_path, "clone", "--depth", "1", "--single-branch", "--branch", "feature", remote.as_uri(), str(checkout))
+    _prepare_pull_fetch_head(checkout, head)
     assert subprocess.run(["git", "cat-file", "-e", base], cwd=checkout, capture_output=True).returncode != 0
     (checkout / "untracked.txt").write_text("preserve\n")
     (checkout / "contract.txt").write_text("local dirty change\n")
@@ -116,6 +123,7 @@ def test_unavailable_exact_base_in_real_worktree_refuses_without_reviewer(tmp_pa
     _git(remote, "update-ref", "refs/pull/18/head", head)
     checkout = tmp_path / "checkout"
     _git(tmp_path, "clone", "--depth", "1", remote.as_uri(), str(checkout))
+    _prepare_pull_fetch_head(checkout, head)
     (checkout / "contract.txt").write_text("preserved staged content\n")
     _git(checkout, "add", "contract.txt")
     (checkout / "untracked.txt").write_text("preserve\n")
