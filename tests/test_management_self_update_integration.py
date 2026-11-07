@@ -1139,3 +1139,24 @@ def test_real_prior_child_proof_rejected_and_selected_child_produces_readback_wi
     assert current.source_receipt == new_child.source_receipt
     assert _effect_counts(system) == effects
     assert not system.journal.list_operations().records
+
+
+@pytest.mark.parametrize("management_system", ["bootstrap_selected"], indirect=True)
+def test_source_bootstrap_cannot_manufacture_installed_previous_ready_for_handoff(management_system: ManagementSystem) -> None:
+    """A real MCP/dispatcher refusal, not proof of archived handoff effects."""
+    from auto_coder.management.operations import EffectState
+
+    system = management_system
+    token = system.issue()
+    child = system.child
+    effects = _effect_counts(system)
+    launches = (system.root / "oauth" / "fixture-launch-history").read_bytes()
+    result = _update(system, token, "source-profile-without-installed-ready")
+    operation = result["operation_id"]
+    refused = _wait_operation(system, token, operation, {"UNSUPPORTED", "FAILED", "NOT_READY"})
+    assert refused["status"] == "UNSUPPORTED"
+    assert "previous_verified_runtime_missing" in str(refused)
+    assert system.journal.get(operation).record.effect.state is EffectState.REJECTED
+    assert HandoffStore(system.bootstrap.state_root, INSTANCE).read(operation) is None
+    assert _effect_counts(system) == effects and system.child == child
+    assert (system.root / "oauth" / "fixture-launch-history").read_bytes() == launches

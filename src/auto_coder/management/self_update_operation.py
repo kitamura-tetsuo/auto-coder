@@ -25,7 +25,6 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from auto_coder.build_provenance import observe_controller_artifact
 from auto_coder.operating_policy import MANAGEMENT_REPOSITORY
 from auto_coder.tested_source_refs import TestedSourcePublisher
-from auto_coder.util.gh_cache import GitHubGitDataClient
 from auto_coder.worker_versions import PreparationFailure, WorkerVersionError
 
 from .bootstrap_store import ChildPhase
@@ -37,7 +36,7 @@ from .operations import AdmissionStatus, EffectReceipt, EffectState, ManagedTarg
 from .self_update_handoff import ApplicationProof, HandoffPhase, HandoffRecord, HandoffStore, SelfUpdateHandoff, observe_supervisor, runtime_for_receipt, valid_application_proof
 from .self_update_policy import MANAGEMENT_JOURNAL_CHANNEL, ManagementUpdateAction, ManagementUpdateIntent, ManagementUpdateOutcome, authorize_management_update, journal_entry_for_update, recheck_management_update_before_effect
 from .self_update_preflight import ManagementPreflightError, ManagementSelfUpdatePreflight
-from .version_staging import ManagementReadyReceipt, ManagementRuntimeConfig, ManagementVersionStager
+from .version_staging import ManagementReadyReceipt, ManagementVersionStager
 
 _ACTION = ManagementUpdateAction.SELF_UPDATE.value
 _SOURCE = re.compile(r"[0-9a-f]{40}\Z")
@@ -81,24 +80,9 @@ class ManagementSelfUpdateHandler:
         return config
 
     def _stager(self, config: BootstrapConfig) -> ManagementVersionStager:
-        settings = self.settings
-        if settings.self_update_source_repository is None or settings.self_update_python_executable is None or settings.self_update_uv_executable is None or not settings.self_update_uv_version or config.management_version_root is None:
-            raise ManagementPreflightError("staging_unconfigured")
-        authority = self.source_authority or TestedSourcePublisher(GitHubGitDataClient(os.environ.get("GITHUB_TOKEN", ""), MANAGEMENT_REPOSITORY), MANAGEMENT_REPOSITORY)
-        return ManagementVersionStager(
-            ManagementRuntimeConfig(
-                config.instance_id,
-                MANAGEMENT_REPOSITORY,
-                settings.self_update_source_repository,
-                config.management_version_root,
-                settings.self_update_python_executable,
-                settings.self_update_uv_executable,
-                settings.self_update_uv_version,
-                protected_roots=(config.state_root, config.oauth_root, config.journal_root),
-                management_config=config.management_config,
-                source_authority=authority,
-            )
-        )
+        from .configured_stager import configured_management_stager
+
+        return configured_management_stager(self.settings, config, source_authority=self.source_authority)
 
     @staticmethod
     def _params(record: OperationRecord) -> dict[str, str | int | bool]:

@@ -44,6 +44,35 @@ def checkout_lock(cwd: Optional[str] = None) -> Iterator[None]:
         yield
 
 
+def _worktree_common_directory(root: Path) -> Path:
+    result = subprocess.run(["git", "rev-parse", "--git-common-dir"], cwd=root, capture_output=True, text=True, check=False)
+    if result.returncode != 0 or not result.stdout.strip():
+        raise RuntimeError("Cannot identify Git common directory for worktree registration")
+    common = Path(result.stdout.strip())
+    if not common.is_absolute():
+        common = root / common
+    common = common.resolve(strict=True)
+    if not common.is_dir():
+        raise RuntimeError("Git common directory is not a directory")
+    return common
+
+
+@contextmanager
+def worktree_registry_lock(cwd: str) -> Iterator[None]:
+    """Serialize Git preparation/removal transactions, not validation."""
+    root = Path(cwd).absolute()
+    common = _worktree_common_directory(root)
+    directory = common.stat()
+    identity = (directory.st_dev, directory.st_ino)
+    path = lock_path("local/worktrees", runtime_root(), "registry", f"{identity[0]}:{identity[1]}")
+    ensure_lock_directory(path, directory.st_gid)
+    with file_lock(path):
+        current = _worktree_common_directory(root).stat()
+        if (current.st_dev, current.st_ino) != identity:
+            raise RuntimeError("Git common directory changed while awaiting registration")
+        yield
+
+
 def serialize_checkout(function: Callable[P, T]) -> Callable[P, T]:
     """Protect a controller operation using its ambient command checkout."""
 
