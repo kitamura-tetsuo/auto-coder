@@ -31,3 +31,9 @@ exact readback for that operation and never selects a replacement record.
 
 Historical OCI evidence may remain readable, but it cannot satisfy this source
 acceptance format or establish the installed Python runtime revision.
+
+The service-owned journal monitor continues unfinished acceptance operations on
+the same dispatcher lane without further run requests. The producer respects the
+persisted next-sample time and original deadline. Startup resumes that same
+window; read-only polling neither samples nor manufactures heartbeat progress.
+Publication uncertainty is reconciled from the original immutable result only.

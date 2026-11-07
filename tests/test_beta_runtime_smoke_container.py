@@ -8,6 +8,7 @@ read-only Git/Actions transport. No observation or verdict is synthesized here.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import random
@@ -28,6 +29,7 @@ from auto_coder.beta_source_selection import BetaSourceSelector, MutationCertain
 from auto_coder.management.action_scopes import DEPLOY_SCOPE, READ_SCOPE
 from auto_coder.management.app import create_management_app
 from auto_coder.management.beta_runtime_smoke import BetaRuntimeSmokeProducer, SmokeProfile
+from auto_coder.management.mcp_runtime_tools import ManagementRuntime
 from auto_coder.management.oauth_config import ManagementSettings, OAuthClient, OAuthSettings
 from auto_coder.management.oauth_grants import OAuthGrantService
 from auto_coder.management.operation_executor import ManagementOperationDispatcher, OperationHandler
@@ -62,6 +64,8 @@ class _SourceService(GitEvidenceBoundary):
         self.read_only_mutations: list[tuple[str, str]] = []
         self.fail_reads = False
         self.lose_acceptance_ref_response = False
+        self.block_acceptance_readback = False
+        self.acceptance_writes = 0
 
     def _git(self, *args: str, input: str | None = None) -> str:
         return subprocess.run(["git", f"--git-dir={self.repository}", *args], input=input, check=True, capture_output=True, text=True).stdout.strip()
@@ -78,6 +82,10 @@ class _SourceService(GitEvidenceBoundary):
         self.proofs[sha] = oid, record
 
     def request(self, method: str, path: str, payload: dict[str, object] | None = None) -> GitDataResponse:
+        if method == "POST" and payload and (str(payload.get("tag", "")).startswith("auto-coder-beta-acceptance-") or str(payload.get("ref", "")).startswith("refs/tags/auto-coder-beta-acceptance-")):
+            self.acceptance_writes += 1
+        if self.block_acceptance_readback and method == "GET" and path.startswith("git/ref/tags/auto-coder-beta-acceptance-"):
+            return GitDataResponse(503)
         if self.fail_reads and method == "GET":
             return GitDataResponse(503, {"message": "controlled evidence outage"})
         if method == "GET" and path.startswith("git/ref/tags/"):
@@ -102,6 +110,7 @@ class _SourceService(GitEvidenceBoundary):
             self._git("update-ref", ref, str(payload["sha"]))
             if self.lose_acceptance_ref_response and ref.startswith("refs/tags/auto-coder-beta-acceptance-"):
                 self.lose_acceptance_ref_response = False
+                self.block_acceptance_readback = True
                 raise RuntimeError("controlled lost acceptance ref response")
             return GitDataResponse(201)
         if method == "PATCH" and path.startswith("git/refs/tags/") and payload:
@@ -447,19 +456,62 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
         assert settled.phase is OperationPhase.FAILED
         return settled
 
-    first = accept("local-pass-original")
-    first_capture = captured(first)
+    service = app.state.management_runtime
+
+    def run(key):
+        worker = client.inspect_supervisor().data["worker"]
+        return _call(
+            http,
+            bearer,
+            "auto_coder_run_beta_acceptance",
+            {
+                "target_id": "beta-worker",
+                "selected_git_sha": revisions[0],
+                "installed_runtime_id": worker["runtime_id"],
+                "process_run_id": worker["process_run_id"],
+                "deployment_generation": worker["deployment_generation"],
+                "supervisor_generation": client.inspect_supervisor().supervisor_generation,
+                "deployment_operation_id": deployed_id,
+                "idempotency_key": key,
+            },
+        )
+
+    def read(operation_id):
+        return _call(http, bearer, "auto_coder_beta_acceptance_get", {"target_id": "beta-worker", "operation_id": operation_id})
+
+    @contextmanager
+    def reconstructed_service():
+        rebuilt = ManagementRuntime(service.settings, service.grants, service.clients, beta_acceptance_source=reader, beta_acceptance_publisher=service.beta_acceptance.publisher)
+        http.portal.call(rebuilt.dispatcher.start)
+        http.portal.call(rebuilt.start_monitor)
+        try:
+            yield rebuilt
+        finally:
+            http.portal.call(rebuilt.stop_monitor)
+            http.portal.call(rebuilt.dispatcher.stop)
+
+    remote.lose_acceptance_ref_response = True
+    started = run("local-pass-original")
+    first = journal.get(started["operation_id"]).record
+    first_capture = journal.smoke_snapshot(first.operation_id)[1]
+    assert first_capture["result"] is None
+    assert len(first_capture["samples"]) == 1
     assert first_capture["capture"]["source"]["proof_run_id"] == 101
     assert first_capture["capture"]["source"]["selected_run_id"] == 11
     assert first_capture["capture"]["worker"]["ready_content_identity"] == ready_a["content_identity"]
-    reconstructed = _fresh_process(reconstruction, first.operation_id)
-    assert reconstructed["state"] in {"IN_PROGRESS", "COMPLETE"}
+    http.portal.call(service.stop_monitor)
+    http.portal.call(service.dispatcher.stop)
+    with reconstructed_service():
+        # Only authenticated reads drive the caller; the service owns continuation.
+        def publication_uncertain():
+            projection = read(first.operation_id)
+            return projection if journal.get(first.operation_id).record.phase is OperationPhase.NEEDS_ATTENTION else None
+
+        _wait_for(publication_uncertain, timeout=190)
     after_restart = journal.smoke_snapshot(first.operation_id)[1]
-    assert after_restart["window"] == first_capture["window"]
-    assert after_restart["profile"] == first_capture["profile"]
-    assert after_restart["binding"] == first_capture["binding"]
-    assert after_restart["capture"] == first_capture["capture"]
-    passed = _finish(producer, first.operation_id)
+    for key in ("window", "profile", "binding", "capture"):
+        assert after_restart[key] == first_capture[key]
+    passed = producer.read(first.operation_id)
     document = result(passed, "PASS")
     qualifying = [sample for sample in document["samples"] if sample["qualifying"]]
     assert len(qualifying) >= 2
@@ -468,25 +520,34 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
     assert all(sample["artifact"]["source_revision"]["origin"] == "build_embedded" for sample in qualifying)
     assert all(sample["artifact"]["distribution_version"]["origin"] == "installed_distribution_metadata" for sample in qualifying)
     assert all(sample["runtime_binding"]["lock_sha256"] == ready_a["lock_sha256"] for sample in qualifying)
-    assert journal.get(first.operation_id).record.phase is OperationPhase.ACCEPTED
-    remote.lose_acceptance_ref_response = True
-    worker = client.inspect_supervisor().data["worker"]
-    published = _call(
-        http,
-        bearer,
-        "auto_coder_run_beta_acceptance",
-        {
-            "target_id": "beta-worker",
-            "selected_git_sha": revisions[0],
-            "installed_runtime_id": worker["runtime_id"],
-            "process_run_id": worker["process_run_id"],
-            "deployment_generation": worker["deployment_generation"],
-            "supervisor_generation": client.inspect_supervisor().supervisor_generation,
-            "deployment_operation_id": deployed_id,
-            "idempotency_key": "local-pass-original",
-        },
-    )
-    assert published["status"] == "PASS_PUBLISHED"
+    assert journal.get(first.operation_id).record.phase is OperationPhase.NEEDS_ATTENTION
+    writes = remote.acceptance_writes
+    assert writes == 2
+    original_snapshot = journal.smoke_snapshot(first.operation_id)
+    remote.block_acceptance_readback = False
+    ref = f"refs/tags/auto-coder-beta-acceptance-{first.operation_id}"
+    original_oid = remote._git("rev-parse", ref)
+    # A canonical conflicting record must not settle the original operation.
+    original_tag = remote._git("cat-file", "-p", original_oid)
+    headers, annotation_text = original_tag.split("\n\n", 1)
+    conflict = json.loads(annotation_text)
+    conflict["local_evidence"]["capture"]["worker"]["process_run_id"] = "different-worker"
+    conflict_content = json.dumps(conflict["local_evidence"], sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    conflict["local_evidence_content_sha256"] = hashlib.sha256(conflict_content.encode()).hexdigest()
+    conflicting_oid = remote._git("mktag", input=headers + "\n\n" + json.dumps(conflict, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n")
+    remote._git("update-ref", ref, conflicting_oid)
+    with reconstructed_service() as rebuilt:
+        http.portal.call(rebuilt.dispatcher.drain)
+        assert journal.get(first.operation_id).record.phase is OperationPhase.NEEDS_ATTENTION
+        assert read(first.operation_id)["status"] != "PASS_PUBLISHED"
+    remote._git("update-ref", ref, original_oid)
+    with reconstructed_service() as rebuilt:
+        http.portal.call(rebuilt.dispatcher.drain)
+        assert read(first.operation_id)["status"] == "PASS_PUBLISHED"
+    assert remote.acceptance_writes == writes
+    assert journal.smoke_snapshot(first.operation_id) == original_snapshot
+    http.portal.call(service.dispatcher.start)
+    http.portal.call(service.start_monitor)
     readback = SourceAcceptancePublisher(remote, "owner/repo").read(first.operation_id)
     assert readback is not None and readback.direct_commit_sha == revisions[0]
     annotation = json.loads(readback.annotation)
@@ -519,24 +580,31 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
         return heartbeat if heartbeat["stage"] == "producer:maintenance-sleep" and heartbeat["age_seconds"] < 5 else None
 
     original_beat = _wait_for(recent_sleep, timeout=90)
-    stuck = accept("stuck-real-heartbeat")
-    short = BetaRuntimeSmokeProducer(journal, client, reader, SmokeProfile(total_seconds=8, interval_seconds=1))
-    assert short.advance(stuck.operation_id).state.value == "IN_PROGRESS"
+    service.beta_acceptance.producer = BetaRuntimeSmokeProducer(journal, client, reader, SmokeProfile(total_seconds=8, interval_seconds=1))
+    started = run("stuck-real-heartbeat")
+    stuck = journal.get(started["operation_id"]).record
+    original_window = journal.smoke_snapshot(stuck.operation_id)[1]["window"]
     diagnostics = []
     until = time.monotonic() + 15
     while time.monotonic() < until:
         diagnostics.append(client.diagnostics("status").result_code)
-        observed = short.advance(stuck.operation_id)
-        if observed.state.value == "COMPLETE":
+        read(stuck.operation_id)
+        observed = producer.read(stuck.operation_id)
+        if observed.state.value == "COMPLETE" and journal.get(stuck.operation_id).record.phase is OperationPhase.FAILED:
             break
         time.sleep(0.3)
+    assert journal.smoke_snapshot(stuck.operation_id)[1]["window"] == original_window
+    assert journal.get(stuck.operation_id).record.phase is OperationPhase.FAILED
+    assert SourceAcceptancePublisher(remote, "owner/repo").read(stuck.operation_id) is None
+    # Remaining cases explicitly exercise lower-level producer faults.
+    http.portal.call(service.stop_monitor)
+    service.beta_acceptance.producer = producer
     blocked = result(observed, "BLOCKED")
     assert diagnostics and all(code == "OK" for code in diagnostics)
     assert blocked["reason"] == "original_deadline_without_progress"
     assert len(blocked["samples"]) >= 2
     assert {sample["heartbeat"]["sequence"] for sample in blocked["samples"]} == {original_beat["sequence"]}
     assert len({sample["nonce"] for sample in blocked["samples"]}) == len(blocked["samples"])
-    _release_local_lane(journal, stuck.operation_id)
 
     for key, invalid in (("missing-profile", None), ("invalid-profile", SmokeProfile(total_seconds=3, interval_seconds=0))):
         operation = accept(key)

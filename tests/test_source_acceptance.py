@@ -1,13 +1,17 @@
 import hashlib
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from auto_coder.management.beta_runtime_smoke import LocalResult, LocalSmokeEvidence, SmokeObservation, SmokeState
+from auto_coder.management.mcp_runtime_tools import ManagementRuntime
+from auto_coder.management.operation_executor import ManagementOperationDispatcher, OperationHandler
 from auto_coder.management.operation_store import ManagementOperationStore
 from auto_coder.management.operations import AcceptedAuthority, EffectState, ManagedTarget, OperationIntent, OperationPhase
 from auto_coder.management.source_acceptance import BetaAcceptanceHandler, SourceAcceptanceError, SourceAcceptancePublisher
 from auto_coder.util.gh_cache import GitDataResponse
+from tests.test_beta_runtime_smoke import _fixture
 
 SHA = "a" * 40
 OID = "b" * 40
@@ -200,3 +204,50 @@ def test_reconcile_confirms_only_the_original_durable_local_evidence(tmp_path, p
     result = reconstructed.reconcile(held.record)
     assert (result.phase is OperationPhase.SUCCEEDED) is settles
     assert (result.effect.state is EffectState.CONFIRMED) is settles
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("progress", [True, False])
+async def test_service_monitor_continues_original_sampling_window_after_reconstruction(tmp_path, monkeypatch, progress):
+    """Component regression: real producer/store/dispatcher, explicit worker double."""
+    smoke = _fixture(tmp_path)
+    publisher = SourceAcceptancePublisher(Git(), "owner/repo")
+
+    def runtime():
+        journal = ManagementOperationStore(tmp_path / "journal")
+        handler = BetaAcceptanceHandler(None, smoke.producer(journal=journal), publisher)
+        monkeypatch.setattr(handler, "_authority_refusal", lambda record: None)
+        dispatcher = ManagementOperationDispatcher(journal)
+        dispatcher.register("run_beta_acceptance", OperationHandler(handler.forward, handler.reconcile))
+        return SimpleNamespace(journal=journal, dispatcher=dispatcher, beta_acceptance=handler)
+
+    first = runtime()
+    await first.dispatcher.start()
+    await first.dispatcher.drain()
+    original = smoke.snapshot()
+    assert len(original["samples"]) == 1
+    await first.dispatcher.stop()
+    rebuilt = runtime()
+    await rebuilt.dispatcher.start()
+    try:
+        await rebuilt.dispatcher.drain()
+        # Frequent service sweeps cannot sample before the persisted interval.
+        for _ in range(3):
+            await ManagementRuntime._poll_lifecycle_once(rebuilt)
+        assert smoke.snapshot() == original
+        if progress:
+            smoke.next_heartbeat()
+        else:
+            smoke.clock.now = original["window"]["deadline"]
+        await ManagementRuntime._poll_lifecycle_once(rebuilt)
+        final = smoke.snapshot()
+        assert final["window"] == original["window"]
+        assert final["capture"] == original["capture"]
+        assert final["binding"] == original["binding"]
+        record = rebuilt.journal.get(smoke.operation.operation_id).record
+        assert record.phase is (OperationPhase.SUCCEEDED if progress else OperationPhase.FAILED)
+        evidence = rebuilt.beta_acceptance.producer.read(record.operation_id).evidence
+        assert evidence.local_result.value == ("PASS" if progress else "BLOCKED")
+        assert (publisher.read(record.operation_id) is not None) is progress
+    finally:
+        await rebuilt.dispatcher.stop()

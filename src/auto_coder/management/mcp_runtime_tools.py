@@ -189,14 +189,15 @@ class ManagementRuntime:
             await self._poll_lifecycle_once()
 
     async def _poll_lifecycle_once(self) -> None:
-        """Run one real journal-backed lifecycle monitor sweep."""
+        """Continue lifecycle and acceptance work on the original journal lane."""
         cursor = 0
         while True:
             page = await asyncio.to_thread(self.journal.list_operations, cursor=cursor, limit=100, outstanding_only=True)
             if page.status.value != "ok":
                 break
             for record in page.records:
-                if record.intent.action in LIFECYCLE_ACTIONS:
+                if record.intent.action in LIFECYCLE_ACTIONS or (record.intent.action == BETA_ACCEPTANCE_ACTION and self.beta_acceptance is not None):
+                    # The producer enforces the persisted interval and deadline.
                     await self.dispatcher.submit(record.operation_id)
             if page.next_cursor is None:
                 break
