@@ -411,6 +411,12 @@ class ManagementRuntime:
         params = {key: str(value) for key, value in {"pr_number": pr_number, "attempt_id": attempt_id, "attempt_sequence": attempt_sequence}.items() if value is not None}
         return await asyncio.to_thread(self._diagnostic, target_id, "validation-attempts", params)
 
+    async def pr_diagnostics(self, target_id: str, pr_number: StrictInt, limit: StrictInt = 50, cursor: StrictInt = 0) -> dict[str, object]:
+        """Return retained evidence for exactly one configured worker PR."""
+        if type(pr_number) is not int or not 0 < pr_number <= 999999999 or type(limit) is not int or not 1 <= limit <= 100 or type(cursor) is not int or not 0 <= cursor < 10**9:
+            return self._response("INVALID_REQUEST", "invalid_pr_diagnostic_selection")
+        return await asyncio.to_thread(self._diagnostic, target_id, "pr-evidence", {"pr_number": str(pr_number), "limit": str(limit), "cursor": str(cursor)})
+
     @staticmethod
     def _journal_authority(grant: AuthenticatedGrant, original: GrantAuthority) -> AcceptedAuthority:
         if original.grant_id != grant.grant_id or original.client_id != grant.client_id:
@@ -861,6 +867,7 @@ class ManagementRuntime:
             ManagementTool("auto_coder_status", self.status, (READ_SCOPE,), read),
             ManagementTool("auto_coder_logs", self.logs, (READ_SCOPE,), read),
             ManagementTool("auto_coder_validation_attempt", self.validation_attempt, (READ_SCOPE,), read),
+            ManagementTool("auto_coder_pr_diagnostics", self.pr_diagnostics, (READ_SCOPE,), read),
             ManagementTool("auto_coder_operation_get", self.operation_get, (READ_SCOPE,), read),
             ManagementTool("auto_coder_reevaluate_target", self.reevaluate_target, (READ_SCOPE, OPERATE_SCOPE), mutation),
             ManagementTool("auto_coder_update_management_service", self.update_management_service, (READ_SCOPE, DEPLOY_SCOPE), ToolAnnotations(readOnlyHint=False, idempotentHint=True, destructiveHint=True, openWorldHint=False), ("source_sha", "idempotency_key")),
