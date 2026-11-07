@@ -802,6 +802,33 @@ def _exercise_smoke(journal, client, reader, selecting, remote, app, http, beare
         grant_service.settings = original_grant_settings
     _release_local_lane(journal, later.operation_id)
 
+    # A durable local PASS does not authorize publication after the current
+    # operator policy is downgraded.  Exercise the real policy file and
+    # production handler so the pre-publish fence, rather than a synthetic
+    # resolver result, proves that no Git tag object or ref is created.
+    policy_denied = accept("current-policy-denied", deployment=new_run_deployment)
+    captured(policy_denied)
+    policy_evidence = result(_finish(producer, policy_denied.operation_id), "PASS")
+    policy_snapshot = journal.smoke_snapshot(policy_denied.operation_id)
+    policy_path = service.settings.operating_policy_path
+    assert policy_path is not None
+    original_policy = policy_path.read_text(encoding="utf-8")
+    writes_before_policy_denial = remote.acceptance_writes
+    try:
+        policy_path.write_text(original_policy.replace("profile: beta", "profile: observe"), encoding="utf-8")
+        held = service.beta_acceptance.forward(journal.get(policy_denied.operation_id).record)
+        assert held.phase is OperationPhase.NEEDS_ATTENTION
+        assert held.safe_error_category == "current_policy_denied"
+        assert remote.acceptance_writes == writes_before_policy_denial
+        assert SourceAcceptancePublisher(remote, "owner/repo").read(policy_denied.operation_id) is None
+        assert journal.smoke_snapshot(policy_denied.operation_id) == policy_snapshot
+        preserved = producer.read(policy_denied.operation_id)
+        assert preserved.evidence is not None
+        assert preserved.evidence.document() == policy_evidence
+    finally:
+        policy_path.write_text(original_policy, encoding="utf-8")
+    _release_local_lane(journal, policy_denied.operation_id)
+
     remote.executions[(12, 2)] = (revisions[0], "2026-10-03T03:00:00Z")
     assert selecting.advance("r79", revisions[0]).certainty is MutationCertainty.CONFIRMED
     retry_deployment = deploy_while_monitored(revisions[0], "smoke-deploy-retry")
