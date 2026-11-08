@@ -16,6 +16,7 @@ from auto_coder.pr_processor import (
     _send_jules_error_feedback,
     _update_jules_pr_body,
 )
+from auto_coder.pr_repair_dispatch import RepairDisposition
 
 
 @pytest.fixture(autouse=True)
@@ -700,9 +701,12 @@ class TestSendJulesErrorFeedback:
         github_client = Mock()
 
         # Execute
-        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
+        result = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
+        actions = result.actions
 
         # Assert
+        assert result.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN
+        assert result.attempt_started is True
         assert len(actions) == 2
         assert "Sent CI failure logs to Jules session 'sessionABC123' for PR #123" in actions[0]
         assert "Posted comment on PR #123 stating that a fix has been requested from Jules" in actions[1]
@@ -739,9 +743,12 @@ class TestSendJulesErrorFeedback:
         github_client = Mock()
 
         # Execute
-        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
+        result = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
+        actions = result.actions
 
         # Assert
+        assert result.disposition is RepairDisposition.REFUSED
+        assert result.attempt_started is False
         assert len(actions) == 1
         assert "Cannot send error feedback to Jules for PR #123: no session ID found" in actions[0]
         # JulesClient should not be instantiated
@@ -772,9 +779,12 @@ class TestSendJulesErrorFeedback:
         github_client = Mock()
 
         # Execute
-        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
+        result = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
+        actions = result.actions
 
         # Assert
+        assert result.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN
+        assert result.attempt_started is True
         assert len(actions) == 1
         assert "Error sending Jules error feedback for PR #123" in actions[0]
         assert "Connection error" in actions[0]
@@ -804,7 +814,8 @@ class TestSendJulesErrorFeedback:
         github_client = Mock()
 
         # Execute
-        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
+        result = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
+        actions = result.actions
 
         # Assert
         assert len(actions) == 2
@@ -846,7 +857,8 @@ class TestSendJulesErrorFeedback:
         # No github_client provided (None)
 
         # Execute
-        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client=None)
+        result = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client=None)
+        actions = result.actions
 
         # Assert
         assert len(actions) == 2
@@ -881,7 +893,8 @@ class TestSendJulesErrorFeedback:
         github_client.add_comment_to_pr.side_effect = Exception("GitHub API error")
 
         # Execute
-        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
+        result = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
+        actions = result.actions
 
         # Assert
         assert len(actions) == 2
@@ -964,11 +977,13 @@ class TestSendJulesErrorFeedback:
         config.MAX_CONCURRENT_IMPLEMENTATIONS = 2
         github_client = Mock()
 
-        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
+        result = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
+        actions = result.actions
 
         assert len(actions) == 1
-        assert f"session '{session_id}'" in actions[0]
-        assert "durably retired" in actions[0]
+        assert "outbound admission refused" in actions[0]
+        assert result.disposition is RepairDisposition.DEFERRED
+        assert result.attempt_started is False
         # The real production guard must have prevented the send entirely.
         mock_jules_client.send_message.assert_not_called()
         github_client.add_comment_to_pr.assert_not_called()

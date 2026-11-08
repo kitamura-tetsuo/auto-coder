@@ -6,6 +6,11 @@
       - "Auto-Coder never pushes automatic fix commits to a Jules PR branch: Jules does not recognize commits made to its branch by other actors, so such commits desynchronize the Jules session."
       - "CI failures are reported back to the Jules session instead, and Jules is expected to push the fix itself."
       - "Only an explicit local run that is already checked out on the PR branch keeps fixing the working copy directly."
+    ci_repair_delivery:
+      - "The real Jules CI sender returns a typed repair result, not an unclassified list of actions. Graceful shutdown, changed-head or unavailable final CI authority, and failed durable outbound admission before the provider call are deferred without claiming a provider request."
+      - "A failed outbound guard can mean either retirement or unavailable admission evidence; the public reason does not assert which without authoritative evidence. The result carries attempt_started=false and no invented delivery receipt."
+      - "Once send_message is invoked, lost provider responses and failures posting the optional PR notice remain accepted_or_uncertain with attempt_started=true; neither state means Jules has fixed the PR, CI is passing, or the PR may merge."
+      - "Local fixes stay disabled for non-checked-out Jules branches regardless of these outcomes. The existing PR repair allowance, shutdown, strict CI/head and durable ownership gates are unchanged."
     ci_timeout:
       - "When a Jules PR still has failing (completed) CI more than [jules].pr_ci_timeout_hours after it was created, the PR is closed as unfixable."
       - "The attempt counter of the issue linked to the PR is incremented so the issue is retried from scratch."

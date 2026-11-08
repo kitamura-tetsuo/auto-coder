@@ -2135,6 +2135,19 @@ specific current-evidence reason and do not emit an accepted-handoff outcome or
 a provider receipt. Initiation logs include the bound PR head and qualifying
 failure identities; no structured event schema or dashboard field changed.
 
+For the Jules CI sender, this distinction is enforced at the same invocation
+that reaches `JulesClient.send_message`. Its `pr.repair-delegation` event retains
+the existing stage but now includes `backend="jules"`, `disposition`, `reason`
+and `attempt_started`. Pre-send drain, strict-head/CI and durable outbound
+admission refusals emit `DEFERRED` (or `BLOCKED` for a definitive refusal),
+with `attempt_started=false`; they never render as `accepted_handoff`.
+Invoked provider calls, including an uncertain response or failed post-call
+notice, retain `ACCEPTED_HANDOFF` and `attempt_started=true` without a delivery
+receipt, finished-repair claim or merge event. Production-path regression tests
+in `tests/test_pr_lifecycle_contract.py` exercise ordinary and forced PR entry,
+while `tests/test_dashboard_observability.py` asserts the trace-to-detail
+projection. No dashboard renderer or stored event schema migration is required.
+
 Codex-associated repairs additionally revalidate the durable PR publication
 origin immediately before provider transport. Attribution failures remain
 deferred/failed actions and do not emit the existing accepted delivery events;

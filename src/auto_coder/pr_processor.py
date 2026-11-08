@@ -8167,23 +8167,39 @@ def _handle_pr_merge(
                 actions.extend(stale_jules_result.actions)
                 return actions
 
-            actions.append(f"PR #{pr_number} is a Jules-created PR, sending error logs to Jules session")
+            actions.append(f"PR #{pr_number} is a Jules-created PR, evaluating CI repair admission")
             session_id = str(pr_data.get("_jules_session_id") or _extract_session_id_from_pr_body(pr_data.get("body", "")) or "")
 
             def send_jules_ci() -> PRRepairResult:
-                produced_actions = tuple(_send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client))
-                return PRRepairResult(
-                    RepairDisposition.ACCEPTED_OR_UNCERTAIN,
-                    produced_actions,
-                    reason="Jules producer does not expose delivery certainty",
-                )
+                return _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
 
             jules_feedback = _dispatch_jules_repair(repo_name, pr_data, RepairKind.CI_FAILURE, session_id, send_jules_ci)
             actions.extend(jules_feedback.actions)
             actions.repair_result = jules_feedback
             actions.retry_not_before = jules_feedback.retry_not_before
-            actions.append(f"Jules will handle fixing PR #{pr_number}, skipping local fixes")
-            _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.ACCEPTED_HANDOFF, {"effect": "ci-failure-repair", "backend": "jules"})
+            actions.repair_attempt_started = jules_feedback.attempt_started is True
+            if jules_feedback.disposition is RepairDisposition.ACCEPTED_OR_UNCERTAIN:
+                actions.append(f"Jules CI repair was attempted for PR #{pr_number}; awaiting a provider update without local fixes")
+                trace_outcome = Outcome.ACCEPTED_HANDOFF
+            else:
+                actions.append(f"Jules CI repair was not sent for PR #{pr_number}; local fixes remain disabled")
+                trace_outcome = Outcome.DEFERRED if jules_feedback.disposition is RepairDisposition.DEFERRED else Outcome.BLOCKED if jules_feedback.disposition is RepairDisposition.REFUSED else Outcome.FAILED
+                if processing_status is not None:
+                    processing_status.outcome = PRProcessingOutcome.FAILED if jules_feedback.disposition is RepairDisposition.FAILED else PRProcessingOutcome.DEFERRED
+                    processing_status.error = jules_feedback.reason if jules_feedback.disposition is RepairDisposition.FAILED else None
+            _record_pr_stage(
+                pr_number,
+                "pr.repair-delegation",
+                f"pr#{pr_number} repair delegation",
+                trace_outcome,
+                {
+                    "effect": "ci-failure-repair",
+                    "backend": "jules",
+                    "disposition": jules_feedback.disposition.value,
+                    "reason": jules_feedback.reason,
+                    "attempt_started": jules_feedback.attempt_started,
+                },
+            )
             return actions
 
         # Step 5: Skip to process PR if it is dependabot PR
@@ -9522,7 +9538,7 @@ def _send_jules_error_feedback(
     failed_checks: List[Dict[str, Any]],
     config: AutomationConfig,
     github_client: Optional[Any] = None,
-) -> List[str]:
+) -> PRRepairResult:
     """Send CI error logs to Jules session for Jules-created PRs.
 
     Args:
@@ -9533,20 +9549,26 @@ def _send_jules_error_feedback(
         github_client: Optional GitHub client instance
 
     Returns:
-        List of action strings describing what was done
+        Typed same-invocation delivery outcome and diagnostic actions
     """
-    actions = []
+    actions: List[str] = []
     pr_number = pr_data["number"]
+    attempt_started = False
+
+    def unsent(disposition: RepairDisposition, reason: str) -> PRRepairResult:
+        return PRRepairResult(disposition, tuple(actions), reason=reason, attempt_started=False)
 
     exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
     if exhaustion_info and exhaustion_info.is_exhausted:
         publish_exhaustion_comment_deduped(github_client, repo_name, pr_number, exhaustion_info)
-        return [f"Skipped Jules error feedback for PR #{pr_number}: automatic repair allowance is exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}"]
+        actions.append(f"Skipped Jules error feedback for PR #{pr_number}: automatic repair allowance is exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}")
+        return unsent(RepairDisposition.REFUSED, "automatic repair allowance exhausted")
 
     # Never send error feedback to Jules for PRs created by Codex or Claude
     if _is_codex_or_claude_pr(pr_data):
         logger.info(f"PR #{pr_number} is created by Codex/Claude, skipping Jules error feedback")
-        return [f"Skipped Jules error feedback for PR #{pr_number} (created by Codex/Claude)"]
+        actions.append(f"Skipped Jules error feedback for PR #{pr_number} (created by Codex/Claude)")
+        return unsent(RepairDisposition.REFUSED, "PR is owned by Codex or Claude")
 
     try:
         # Get the session ID from pr_data
@@ -9560,7 +9582,7 @@ def _send_jules_error_feedback(
                 logger.error(f"No session ID found in PR #{pr_number} data for Jules error feedback")
             except Exception:
                 pass  # Prevent logging failures from affecting the result
-            return actions
+            return unsent(RepairDisposition.REFUSED, "Jules session ID is unavailable")
 
         # Get GitHub Actions error logs
         github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)
@@ -9578,26 +9600,30 @@ PR Author: {pr_data.get('user', {}).get('login', 'Unknown')}
 
         if not new_work_allowed():
             actions.append(f"Deferred Jules CI feedback for PR #{pr_number}: graceful shutdown is draining")
-            return actions
+            return unsent(RepairDisposition.DEFERRED, "graceful shutdown is draining")
 
         expected_head = str(pr_data.get("head", {}).get("sha") or "")
         with current_ci_failure_authority(github_client, repo_name, pr_number, expected_head) as authority:
             if not authority.allowed:
                 actions.append(f"Deferred Jules CI feedback for PR #{pr_number}: {authority.reason}")
-                return actions
+                return unsent(RepairDisposition.DEFERRED, authority.reason)
             # The retirement admission and provider mutation are inside the
             # same invalidation barrier as the final exact-head observation.
             if not _guard_outbound_jules_send(repo_name, config, session_id):
-                actions.append(f"Blocked Jules CI feedback for PR #{pr_number}: session '{session_id}' " "belongs to a durably retired implementation slot (REQ-009)")
-                return actions
+                actions.append(f"Blocked Jules CI feedback for PR #{pr_number}: outbound admission refused")
+                return unsent(RepairDisposition.DEFERRED, "outbound Jules admission refused")
 
             from .jules_client import JulesClient
 
             logger.info(f"Sending CI failure logs to Jules session '{session_id}' for PR #{pr_number}; " f"head={expected_head} failures={authority.failure_identities}")
             jules_client = JulesClient()
+            attempt_started = True
             response = jules_client.send_message(session_id, message)
 
-        get_trace_logger().log("Jules Feedback", f"Sent CI failure logs to Jules for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"session_id": session_id})
+        try:
+            get_trace_logger().log("Jules Feedback", f"Sent CI failure logs to Jules for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"session_id": session_id})
+        except Exception as exc:
+            logger.warning(f"Jules feedback trace is unavailable after provider call for PR #{pr_number}: {exc}")
 
         actions.append(f"Sent CI failure logs to Jules session '{session_id}' for PR #{pr_number}")
         try:
@@ -9630,8 +9656,21 @@ PR Author: {pr_data.get('user', {}).get('login', 'Unknown')}
         except Exception:
             pass  # Prevent logging failures from affecting the result
         actions.append(error_msg)
+        if attempt_started:
+            return PRRepairResult(
+                RepairDisposition.ACCEPTED_OR_UNCERTAIN,
+                tuple(actions),
+                reason="Jules provider response is unavailable after call",
+                attempt_started=True,
+            )
+        return unsent(RepairDisposition.FAILED, "Jules CI feedback preparation failed")
 
-    return actions
+    return PRRepairResult(
+        RepairDisposition.ACCEPTED_OR_UNCERTAIN,
+        tuple(actions),
+        reason="Jules producer does not expose delivery certainty",
+        attempt_started=True,
+    )
 
 
 def _resolve_codex_cloud_task_id(
