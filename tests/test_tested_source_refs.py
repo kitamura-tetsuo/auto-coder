@@ -67,12 +67,14 @@ def assert_required_workflow_profile(workflow: object) -> None:
     assert "-m 'not opencode_live'" in next(step["run"] for step in plan["steps"] if step.get("name") == "Collect complete current source tests and immutable shard plan")
     assert shard["needs"] == ["source-plan"]
     assert shard["strategy"] == {"fail-fast": False, "max-parallel": 12, "matrix": "${{ fromJSON(needs.source-plan.outputs.matrix) }}"}
+    assert "runner.temp" not in str(shard.get("env", {}))
     complete_steps = {step.get("name"): step for step in shard["steps"] if isinstance(step, dict) and step.get("name")}
     assert complete_steps["Install Chromium"] == {"name": "Install Chromium", "run": "uv run playwright install --with-deps chromium"}
     assert complete_steps["Verify real headless Chromium"] == {"name": "Verify real headless Chromium", "run": "uv run python scripts/browser_preflight.py"}
     run = complete_steps["Run complete required source selection"]["run"]
     assert "--ci-plan=" in run and "--ci-shard=${{ matrix.shard }}" in run
     assert "--source-ci-receipt=" in run and "-m 'not opencode_live'" in run
+    assert complete_steps["Run complete required source selection"]["env"]["AUTO_CODER_CI_TIMING_DIR"] == "${{ runner.temp }}/source-shard/timing"
     assert "--splitting-algorithm" not in run
     assert run.endswith('--junitxml "$RUNNER_TEMP/source-shard/results.xml"')
     assert "if" not in complete_steps["Run complete required source selection"]

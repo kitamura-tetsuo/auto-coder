@@ -109,7 +109,6 @@ jobs:
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
       AUTO_CODER_REQUIRE_BROWSER: "1"
       AUTO_CODER_IMMEDIATE_TEST_FAILURES: "1"
-      AUTO_CODER_CI_TIMING_DIR: ${{ runner.temp }}/source-shard/timing
       AUTO_CODER_CI_TIMING_INVOCATION: source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
       PYTEST_ADDOPTS: "-o faulthandler_timeout=60 -o faulthandler_exit_on_timeout=false"
     steps:
@@ -136,6 +135,8 @@ jobs:
       - name: Verify real headless Chromium
         run: uv run python scripts/browser_preflight.py
       - name: Run complete required source selection
+        env:
+          AUTO_CODER_CI_TIMING_DIR: ${{ runner.temp }}/source-shard/timing
         run: >-
           uv run pytest -p scripts.ci_shard_plugin -p scripts.source_ci_receipt_plugin
           --ci-plan="$RUNNER_TEMP/source-plan/plan.json"
