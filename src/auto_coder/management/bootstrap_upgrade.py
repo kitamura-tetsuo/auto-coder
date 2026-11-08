@@ -1030,6 +1030,12 @@ def apply(root: Path, sha: str, authenticated_client_file: Path, *, authorize_so
                     target=latest.effect_target,
                     reason=type(error).__name__,
                 )
+                # A command may lose the Docker response after a real physical
+                # effect. Its CLI return must reflect the persisted uncertainty,
+                # not classify a post-dispatch timeout as a preflight refusal.
+                # Preserve KeyboardInterrupt/SystemExit for host interruption.
+                if isinstance(error, Exception):
+                    raise UpgradeUnavailable("needs-attention", "original effect or host fence requires inspection: " + type(error).__name__) from error
             raise
         finally:
             if network >= 0:
