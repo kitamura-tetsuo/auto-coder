@@ -10,6 +10,8 @@ from .deployment_channel import VALID_CHANNELS, DeploymentChannelError, assign_r
 from .release_catalog import ReleaseCatalog, ReleaseCatalogError, new_record
 from .release_promotion import Registry, ReleasePromotion, ReleasePromotionError, write_summary
 from .release_restore import ReleaseRestore, ReleaseRestoreError, write_restore_failure_summary, write_restore_summary
+from .source_release_catalog import SourceReleaseError, SourceReleasePolicy, SourceReleaseRequest
+from .source_release_promotion import SourceReleasePromotion
 from .util.gh_cache import GitHubGitDataClient
 
 
@@ -94,6 +96,68 @@ def promote_release(repository: str, run_id: int, run_attempt: int, memo_env: st
         write_summary(outcome)
         click.echo(f"{outcome.result}: {outcome.record.release_tag} {outcome.release_url}")
     except (ReleasePromotionError, ReleaseCatalogError, RuntimeError, subprocess.SubprocessError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@deployment_group.command("promote-accepted-release")
+@click.option("--operation-id", required=True)
+@click.option("--source-repository", required=True)
+@click.option("--source-sha", required=True)
+@click.option("--ci-run-id", required=True, type=int)
+@click.option("--ci-run-attempt", required=True, type=int)
+@click.option("--tested-source-ref", required=True)
+@click.option("--tested-source-oid", required=True)
+@click.option("--tested-source-record-sha256", required=True)
+@click.option("--acceptance-ref", required=True)
+@click.option("--acceptance-oid", required=True)
+@click.option("--release-target", required=True)
+@click.option("--promotion-run-id", required=True, type=int)
+@click.option("--promotion-run-attempt", required=True, type=int)
+@click.option("--policy-path", type=click.Path(path_type=Path), default=Path(".github/accepted-source-release-policy.json"), hidden=True)
+@click.option("--github-token", envvar="GITHUB_TOKEN", hidden=True)
+@click.option("--api-url", envvar="GITHUB_API_URL", default="https://api.github.com", hidden=True)
+def promote_accepted_release(
+    operation_id: str,
+    source_repository: str,
+    source_sha: str,
+    ci_run_id: int,
+    ci_run_attempt: int,
+    tested_source_ref: str,
+    tested_source_oid: str,
+    tested_source_record_sha256: str,
+    acceptance_ref: str,
+    acceptance_oid: str,
+    release_target: str,
+    promotion_run_id: int,
+    promotion_run_attempt: int,
+    policy_path: Path,
+    github_token: str | None,
+    api_url: str,
+) -> None:
+    """Promote one exact published beta-accepted Git revision, without Docker."""
+    try:
+        policy = SourceReleasePolicy.load(policy_path)
+        request = SourceReleaseRequest(
+            operation_id,
+            source_repository,
+            source_sha,
+            ci_run_id,
+            ci_run_attempt,
+            tested_source_ref,
+            tested_source_oid,
+            tested_source_record_sha256,
+            acceptance_ref,
+            acceptance_oid,
+            release_target,
+            promotion_run_id,
+            promotion_run_attempt,
+        )
+        request.validate(policy)
+        if not github_token:
+            raise SourceReleaseError("GITHUB_TOKEN is required for immutable source release publication")
+        outcome = SourceReleasePromotion(GitHubGitDataClient(github_token, policy.source_repository, api_url), policy).execute(request)
+        click.echo(f"{outcome.status}: {outcome.record.tag} {outcome.release_url}")
+    except (SourceReleaseError, RuntimeError, OSError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
 
 

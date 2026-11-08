@@ -652,9 +652,15 @@ fresh_host.main()
             status = status_inside_container()
             if status["status"] == "launched":
                 break
-            assert status["status"] != "unknown"
+            # The durable launch claim is written before the child observation.
+            # A concurrent status read can report unknown during this interval;
+            # it is not proof of a terminal failure while the launch is in flight.
             if time.monotonic() >= deadline:
-                raise AssertionError("fresh launch did not reach authenticated readiness")
+                cmd = ["docker", "logs", new_id]
+                logs = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                detail = (logs.stdout + logs.stderr)[-1500:]
+                message = f"fresh launch did not reach readiness ({status!r})"
+                raise AssertionError(f"{message}: {detail}")
             time.sleep(0.1)
         request = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "auto_coder_whoami", "arguments": {"observation_id": status["observation_id"]}}}
         script = (

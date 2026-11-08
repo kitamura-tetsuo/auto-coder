@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "source_repository": "kitamura-tetsuo/auto-coder",
+  "release_target": "release",
+  "release_ref": "refs/tags/auto-coder-release-source-current",
+  "accepted_beta_instance_ids": ["beta-worker"],
+  "accepted_profiles": [
+    {
+      "profile_id": "beta-runtime-smoke-v1",
+      "content_revision": "0caa32fa4fc1e619df7e7252714133546f89676b99be386272598ce144c43d96"
+    }
+  ],
+  "maximum_evidence_age_seconds": 86400,
+  "source_test_workflow_path": ".github/workflows/test-source-for-runtime.yml",
+  "promotion_workflow_path": ".github/workflows/promote-accepted-source-release.yml",
+  "release_branch": "main"
+}

@@ -1,0 +1,110 @@
+name: Promote Accepted Source Release
+run-name: accepted-release/${{ inputs.operation_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation_id:
+        description: Bounded, stable release promotion operation ID
+        required: true
+        type: string
+      source_repository:
+        description: Exact accepted source repository (checked against operator policy)
+        required: true
+        type: string
+      source_sha:
+        description: Full tested Git source commit SHA
+        required: true
+        type: string
+      ci_run_id:
+        description: Original successful tested-source Actions run ID
+        required: true
+        type: number
+      ci_run_attempt:
+        description: Original successful tested-source Actions attempt
+        required: true
+        type: number
+      tested_source_ref:
+        description: Exact immutable tested-source tag ref
+        required: true
+        type: string
+      tested_source_oid:
+        description: Exact annotated tested-source object OID
+        required: true
+        type: string
+      tested_source_record_sha256:
+        description: SHA-256 of canonical immutable tested-source record
+        required: true
+        type: string
+      acceptance_ref:
+        description: Exact published beta-runtime acceptance ref
+        required: true
+        type: string
+      acceptance_oid:
+        description: Exact annotated acceptance object OID
+        required: true
+        type: string
+      release_target:
+        description: Explicit operator-configured release target
+        required: true
+        type: choice
+        options: [release]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: release-channel
+  cancel-in-progress: false
+
+jobs:
+  promote-accepted-git-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject a non-main workflow dispatch
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo 'Accepted source promotion requires a main-branch dispatch' >&2
+            exit 1
+          fi
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.22"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - name: Verify accepted candidate and publish exact source release
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_CATALOG_TOKEN || secrets.GITHUB_TOKEN }}
+          SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+          OPERATION_ID: ${{ inputs.operation_id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CI_RUN_ID: ${{ inputs.ci_run_id }}
+          CI_RUN_ATTEMPT: ${{ inputs.ci_run_attempt }}
+          TESTED_SOURCE_REF: ${{ inputs.tested_source_ref }}
+          TESTED_SOURCE_OID: ${{ inputs.tested_source_oid }}
+          TESTED_SOURCE_RECORD_SHA256: ${{ inputs.tested_source_record_sha256 }}
+          ACCEPTANCE_REF: ${{ inputs.acceptance_ref }}
+          ACCEPTANCE_OID: ${{ inputs.acceptance_oid }}
+          RELEASE_TARGET: ${{ inputs.release_target }}
+        run: |
+          set -Eeuo pipefail
+          uv run auto-coder deployment promote-accepted-release \
+            --operation-id "$OPERATION_ID" \
+            --source-repository "$SOURCE_REPOSITORY" \
+            --source-sha "$SOURCE_SHA" \
+            --ci-run-id "$CI_RUN_ID" \
+            --ci-run-attempt "$CI_RUN_ATTEMPT" \
+            --tested-source-ref "$TESTED_SOURCE_REF" \
+            --tested-source-oid "$TESTED_SOURCE_OID" \
+            --tested-source-record-sha256 "$TESTED_SOURCE_RECORD_SHA256" \
+            --acceptance-ref "$ACCEPTANCE_REF" \
+            --acceptance-oid "$ACCEPTANCE_OID" \
+            --release-target "$RELEASE_TARGET" \
+            --promotion-run-id "$GITHUB_RUN_ID" \
+            --promotion-run-attempt "$GITHUB_RUN_ATTEMPT"
