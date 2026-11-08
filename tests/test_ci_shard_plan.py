@@ -144,7 +144,6 @@ def test_more_than_twelve_groups_binary_searches_smallest_capacity() -> None:
     assert Counter(node for group in shards for node in group["nodeids"]) == Counter(inventory)
 
 
-
 def test_external_control_paths_preserve_fresh_unsharded_config_and_selection(tmp_path: Path) -> None:
     project, context_path, original = _project(tmp_path, source="def test_selected(): assert True\n")
     (project / "extras").mkdir()
@@ -167,15 +166,23 @@ def test_external_control_paths_preserve_fresh_unsharded_config_and_selection(tm
     for args in (("add", "-A"), ("commit", "-qm", "test root/config oracle")):
         subprocess.run(["git", *args], cwd=project, check=True, capture_output=True)
     context = ShardContext(
-        original.repository, original.profile_id,
+        original.repository,
+        original.profile_id,
         subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=project, text=True).strip(),
-        (), original.harness_files, original.semantic_environment, original.origin,
+        (),
+        original.harness_files,
+        original.semantic_environment,
+        original.origin,
     )
     context_path.write_text(json.dumps(context.json()))
     report = tmp_path / "discovery.json"
     baseline_record = tmp_path / "baseline.txt"
     baseline = _run(
-        project, "-m", "pytest", "-q", record=baseline_record,
+        project,
+        "-m",
+        "pytest",
+        "-q",
+        record=baseline_record,
         env_patch={"CI_SHARD_DISCOVERY_RECORD": str(report)},
     )
     assert baseline.returncode == 0, baseline.stdout + baseline.stderr
@@ -183,9 +190,16 @@ def test_external_control_paths_preserve_fresh_unsharded_config_and_selection(tm
     assert metadata == {"root": str(project), "config": str(project / "pyproject.toml"), "xfail_strict": True}
     plan_file = tmp_path / "plan.json"
     created = _run(
-        project, str(ROOT / "scripts/plan_ci_shards.py"),
-        "--context", str(context_path), "--output", str(plan_file), "--log-dir", str(tmp_path / "logs"),
-        "--", env_patch={"CI_SHARD_DISCOVERY_RECORD": str(report)},
+        project,
+        str(ROOT / "scripts/plan_ci_shards.py"),
+        "--context",
+        str(context_path),
+        "--output",
+        str(plan_file),
+        "--log-dir",
+        str(tmp_path / "logs"),
+        "--",
+        env_patch={"CI_SHARD_DISCOVERY_RECORD": str(report)},
     )
     assert created.returncode == 0, created.stdout + created.stderr
     assert json.loads(report.read_text()) == metadata
@@ -193,7 +207,11 @@ def test_external_control_paths_preserve_fresh_unsharded_config_and_selection(tm
     assert plan.inventory == ("tests/test_sample.py::test_selected",)
     selected_record = tmp_path / "selected.txt"
     applied = _apply(
-        project, plan_file, 1, selectors=(), record=selected_record,
+        project,
+        plan_file,
+        1,
+        selectors=(),
+        record=selected_record,
         env_patch={"CI_SHARD_DISCOVERY_RECORD": str(report)},
     )
     assert applied.returncode == 0, applied.stdout + applied.stderr
@@ -217,8 +235,13 @@ def test_xpass():
     ini = project / "pytest.ini"
     ini.write_text("[pytest]\nxfail_strict = true\n")
     context = ShardContext(
-        original.repository, original.profile_id, original.checkout_sha, ("-c", "pytest.ini"),
-        original.harness_files, original.semantic_environment, original.origin,
+        original.repository,
+        original.profile_id,
+        original.checkout_sha,
+        ("-c", "pytest.ini"),
+        original.harness_files,
+        original.semantic_environment,
+        original.origin,
     )
     context_path.write_text(json.dumps(context.json()))
     plan_file = tmp_path / "ini-plan.json"
@@ -247,12 +270,23 @@ def test_legacy_separated_adapter_values_refuse_execution(tmp_path: Path) -> Non
     assert created.returncode == 0, created.stdout + created.stderr
     record = tmp_path / "unexecuted.txt"
     legacy = _run(
-        project, "-m", "pytest", "-p", "scripts.ci_shard_plugin",
-        "--ci-plan", str(plan), "--ci-shard", "1", "-m", "not slow", record=record,
+        project,
+        "-m",
+        "pytest",
+        "-p",
+        "scripts.ci_shard_plugin",
+        "--ci-plan",
+        str(plan),
+        "--ci-shard",
+        "1",
+        "-m",
+        "not slow",
+        record=record,
     )
     assert legacy.returncode != 0
     assert "require --ci-name=value" in legacy.stdout or "require --ci-name=value" in legacy.stderr
     assert not record.exists()
+
 
 def test_real_cli_to_pytest_full_partition_and_native_failed_skip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     project, context_path, context = _project(tmp_path)
@@ -272,7 +306,7 @@ def test_real_cli_to_pytest_full_partition_and_native_failed_skip(tmp_path: Path
     assert "skipped" in results[-1].stdout.lower()
     assert Counter(observed.read_text().splitlines()) == Counter(inventory)
     unsharded = tmp_path / "unsharded.txt"
-    full = _run(project, "-m", "pytest", "--rootdir", str(tmp_path), "-m", "not slow", record=unsharded)
+    full = _run(project, "-m", "pytest", "-m", "not slow", record=unsharded)
     assert full.returncode == 1
     assert Counter(unsharded.read_text().splitlines()) == Counter(observed.read_text().splitlines())
     assert (tmp_path / "logs/ci-shard-plan.log").is_file()
