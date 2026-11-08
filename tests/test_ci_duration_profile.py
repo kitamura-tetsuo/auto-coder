@@ -8,6 +8,8 @@ import math
 import os
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -32,7 +34,7 @@ def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _run_pytest(tmp_path: Path, source: str) -> tuple[subprocess.CompletedProcess[str], list[Path]]:
+def _run_pytest(tmp_path: Path, source: str, *, repeat_node: bool = False) -> tuple[subprocess.CompletedProcess[str], list[Path]]:
     test_file = tmp_path / "test_observed.py"
     test_file.write_text(source, encoding="utf-8")
     output = tmp_path / "timing"
@@ -44,7 +46,7 @@ def _run_pytest(tmp_path: Path, source: str) -> tuple[subprocess.CompletedProces
     }
     for name in ("GITHUB_SHA", "GITHUB_WORKFLOW", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB"):
         environment.pop(name, None)
-    result = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "tests.ci_timing_plugin", str(test_file)], cwd=ROOT, env=environment, text=True, capture_output=True, timeout=30)
+    result = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "tests.ci_timing_plugin", str(test_file), *([str(test_file), "--keep-duplicates"] if repeat_node else [])], cwd=ROOT, env=environment, text=True, capture_output=True, timeout=30)
     return result, sorted(output.glob("timing-*.jsonl"))
 
 
@@ -134,6 +136,70 @@ def test_real_pytest_phases_to_cli_preserve_parameterization_outcomes_and_nested
     assert inherited["status"] == "partial"
     assert inherited["nodes"] == snapshot["nodes"]
     assert "source snapshot has partial diagnostics" in " ".join(inherited["reasons"])
+
+
+def test_repeated_native_execution_never_splices_incomplete_phase_boundaries(tmp_path: Path) -> None:
+    result, files = _run_pytest(tmp_path, "def test_repeated(): assert True\\n", repeat_node=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert len(files) == 1
+    recorded = _records(files)
+    starts = {
+        phase: [event for event in recorded if event.get("event_kind") == "pytest_phase_start" and event.get("pytest_phase") == phase]
+        for phase in ("setup", "call", "teardown")
+    }
+    assert all(len(events) == 2 for events in starts.values())
+    first_ids = {phase: starts[phase][0]["span_id"] for phase in starts}
+    second_ids = {phase: starts[phase][1]["span_id"] for phase in starts}
+    assert len(set(first_ids.values()) | set(second_ids.values())) == 6
+    context = _context(tmp_path)
+    original_batch = _batch(tmp_path, files)
+    full = _run_ok(context, tmp_path / "all-executions.json", batches=[original_batch])
+    nodeid = starts["setup"][0]["nodeid"]
+    assert full["status"] == "available"
+    assert full["nodes"][nodeid]["sample_count"] == 2
+
+    # Both executions are incomplete: setup1/call1-start and
+    # setup2-start/call2/teardown2 cannot form a single measurement.
+    include = {
+        first_ids["setup"]: True,
+        first_ids["call"]: False,
+        second_ids["setup"]: False,
+        second_ids["call"]: True,
+        second_ids["teardown"]: True,
+    }
+    truncated = [
+        event for event in recorded
+        if event.get("span_id") in include
+        and (event.get("event_kind") == "pytest_phase_start"
+             or (event.get("event_kind") == "pytest_phase_report" and include[event["span_id"]]))
+    ]
+    damaged_file = tmp_path / "partial-repetitions.jsonl"
+    damaged_file.write_text("\\n".join(json.dumps(event, sort_keys=True) for event in truncated) + "\\n", encoding="utf-8")
+    damaged = _run_ok(context, tmp_path / "partial-repetitions.json", batches=[_batch(tmp_path, [damaged_file], name="partial-repetitions")])
+    assert damaged["status"] == "unavailable"
+    assert damaged["nodes"] == {}
+    assert "incomplete" in " ".join(damaged["reasons"])
+
+    # A later independently complete execution is retained despite a
+    # conflicting setup report in the first execution.
+    first_setup_report = next(event for event in recorded if event.get("event_kind") == "pytest_phase_report" and event.get("span_id") == first_ids["setup"])
+    conflict = json.loads(json.dumps(first_setup_report))
+    conflict["native_duration_ms"] += 1
+    conflicting_file = tmp_path / "conflicting-repetitions.jsonl"
+    conflicting_file.write_text("\\n".join(json.dumps(event, sort_keys=True) for event in [*recorded, conflict]) + "\\n", encoding="utf-8")
+    retained = _run_ok(context, tmp_path / "conflicting-repetitions.json", batches=[_batch(tmp_path, [conflicting_file], name="conflicting-repetitions")])
+    assert retained["status"] == "partial"
+    assert retained["nodes"][nodeid]["sample_count"] == 1
+    assert retained["nodes"][nodeid]["samples"][0]["phase_span_ids"] == second_ids
+    assert "conflicting native phase" in " ".join(retained["reasons"])
+
+    second_only = [event for event in recorded if event.get("span_id") in set(second_ids.values())]
+    complete_file = tmp_path / "complete-second.jsonl"
+    complete_file.write_text("\\n".join(json.dumps(event, sort_keys=True) for event in second_only) + "\\n", encoding="utf-8")
+    independently_complete = _run_ok(context, tmp_path / "complete-second.json", batches=[_batch(tmp_path, [complete_file], name="complete-second")])
+    assert independently_complete["status"] == "available"
+    assert independently_complete["nodes"][nodeid]["sample_count"] == 1
+    assert independently_complete["nodes"][nodeid]["samples"][0]["phase_span_ids"] == second_ids
 
 
 def test_duplicate_delivery_conflicting_phase_and_invalid_new_batch_preserve_history(tmp_path: Path) -> None:
@@ -301,14 +367,59 @@ def test_corrupt_history_and_atomic_output_failure_preserve_original_files(tmp_p
     context_model = ProfileContext.read(context)
     merged = build_profile(context_model, [batch], [])
 
-    def replace_unavailable(_source, _target):
-        raise OSError("sentinel atomic replace failure")
+    def link_unavailable(_source, _target):
+        raise OSError("sentinel atomic link failure")
 
-    monkeypatch.setattr("auto_coder.ci_duration_profile.os.replace", replace_unavailable)
+    monkeypatch.setattr("auto_coder.ci_duration_profile.os.link", link_unavailable)
     with pytest.raises(ProfileInputError, match="atomic output failed"):
         write_profile(tmp_path / "atomic.json", merged, [context, batch, original])
     assert not (tmp_path / "atomic.json").exists()
     assert list(tmp_path.glob(".atomic.json.*.tmp")) == []
+
+
+def test_two_concurrent_immutable_publishers_have_one_winner(tmp_path: Path, monkeypatch) -> None:
+    result, files = _run_pytest(tmp_path, "def test_observed(): assert True\\n")
+    assert result.returncode == 0
+    context = _context(tmp_path)
+    batch = _batch(tmp_path, files)
+    prior = tmp_path / "immutable-prior.json"
+    _run_ok(context, prior, batches=[batch])
+    prior_bytes = prior.read_bytes()
+    profile_context = ProfileContext.read(context)
+    measured = build_profile(profile_context, [batch], [])
+    empty = build_profile(profile_context, [], [])
+    assert measured.payload["digest_sha256"] != empty.payload["digest_sha256"]
+
+    actual_link = os.link
+    barrier = threading.Barrier(2)
+
+    def simultaneous_publish(source: str, destination: str) -> None:
+        barrier.wait(timeout=10)
+        actual_link(source, destination)
+
+    monkeypatch.setattr("auto_coder.ci_duration_profile.os.link", simultaneous_publish)
+    output = tmp_path / "contended.json"
+
+    def publish(profile) -> str:
+        try:
+            write_profile(output, profile, [context, batch, prior])
+            return "success"
+        except ProfileInputError as error:
+            return str(error)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(publish, (measured, empty)))
+    assert results.count("success") == 1, results
+    assert sum("atomic output failed" in outcome and "FileExistsError" in outcome for outcome in results) == 1, results
+    winner_bytes = output.read_bytes()
+    winner = json.loads(winner_bytes)
+    assert winner in (measured.payload, empty.payload)
+    assert winner_bytes == (json.dumps(winner, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\\n").encode("utf-8")
+    assert list(tmp_path.glob(".contended.json.*.tmp")) == []
+    assert prior.read_bytes() == prior_bytes
+    assert _cli(context, output, batches=[batch], previous=[prior]).returncode != 0
+    assert output.read_bytes() == winner_bytes
+    assert prior.read_bytes() == prior_bytes
 
 
 def test_real_interrupt_and_skipped_call_remain_unavailable_not_measured_zero(tmp_path: Path) -> None:
