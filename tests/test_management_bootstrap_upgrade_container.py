@@ -578,7 +578,7 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
 
 
 @pytest.mark.timeout(900)
-@pytest.mark.parametrize("failure_point", ("lost-stop", "lost-start", "postlaunch-proxy-failed", "retained-unresolved-work", "predecessor-generation", "host-process-interrupted"))
+@pytest.mark.parametrize("failure_point", ("lost-stop", "lost-start", "postlaunch-proxy-failed", "retained-unresolved-work", "predecessor-generation", "predecessor-management-generation", "host-process-interrupted"))
 def test_disposable_operator_failure_fences_real_docker(installed_chain: InstalledChain, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], failure_point: str) -> None:
     """Dispatch real Docker effects, then lose an acknowledgement or the new proxy."""
     chain = installed_chain
@@ -671,19 +671,24 @@ def test_disposable_operator_failure_fences_real_docker(installed_chain: Install
             assert chain.workers() == baseline
             return
         prior_snapshot = chain.snapshot(first)
-        if failure_point == "predecessor-generation":
-            # A new process generation under the same immutable Docker
-            # container ID is NOT the predecessor the operator approved.
-            original_start = chain.docker("inspect", "--format", "{{.State.StartedAt}}", first.proxy)
-            chain.docker("restart", first.proxy)
-            changed_start = chain.docker("inspect", "--format", "{{.State.StartedAt}}", first.proxy)
+        if failure_point in {"predecessor-generation", "predecessor-management-generation"}:
+            # Replacing the Docker process lifetime under either exact predecessor
+            # ID invalidates the approved plan before any coordinator effect.
+            changed_container = first.proxy if failure_point == "predecessor-generation" else first.container
+            original_start = chain.docker("inspect", "--format", "{{.State.StartedAt}}", changed_container)
+            chain.docker("restart", changed_container)
+            changed_start = chain.docker("inspect", "--format", "{{.State.StartedAt}}", changed_container)
             assert changed_start != original_start
+            # A deliberately restarted old manager may reconcile its own state;
+            # compare immutable retained records around the attempted upgrade.
+            restarted_snapshot = chain.snapshot(first)
             code, refused = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
             assert code == 2 and refused["stage"] == "prerequisite-blocked"
             assert effects == [] and chain.workers() == baseline
-            assert chain.snapshot(first) == prior_snapshot
+            assert chain.snapshot(first) == restarted_snapshot
             assert chain.docker("inspect", "--format", "{{.State.Running}}", first.container) == "true"
             assert chain.docker("inspect", "--format", "{{.State.Running}}", first.proxy) == "true"
+            assert chain.docker("inspect", "--format", "{{.State.Running}}", successor.container) == "false"
             return
         if failure_point == "host-process-interrupted":
             # A disposable forked controller really holds the ancestor fence
