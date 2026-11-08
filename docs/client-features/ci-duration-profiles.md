@@ -92,7 +92,11 @@ time and inferred waits never contribute. Positive finite measurements over
 teardown-failed executions with all three reports can contribute timing, while
 their actual phase outcomes remain present. Setup failure, skip-before-call,
 interruption or missing/conflicting phase records do not produce a sample or
-an inferred zero. No snapshot field authorizes a successful test result.
+an inferred zero. In repeated executions of the same node within one process,
+incomplete and conflicting phase starts still establish execution boundaries:
+a later call or teardown cannot complete an earlier setup. Unambiguous,
+independently complete executions remain eligible. No snapshot field
+authorizes a successful test result.
 
 The output schema is `ci-duration-profile-v1`. It includes:
 
@@ -123,9 +127,12 @@ configuration digest and Python major/minor can contribute, but foreign
 profiles, invocations or Actions origins cannot be relabeled.
 
 The input manifests and previous snapshots are read-only. An output must not
-already exist; it is built in a same-directory temporary file, flushed, and
-atomically renamed. A failed output/context operation exits nonzero and does
-not alter previous snapshots or native pytest status. Same normalized inputs
+already exist; it is built in a same-directory temporary file, flushed,
+fsynced and published by an atomic same-filesystem hard link with exclusive
+final-name creation. A concurrent publisher never replaces the first winner;
+the losing invocation exits nonzero and removes only its private temporary
+file. A failed output/context operation exits nonzero and does not alter
+previous snapshots or native pytest status. Same normalized inputs
 and evaluation time generate identical output bytes.
 
 ## Diagnostics and fallback
