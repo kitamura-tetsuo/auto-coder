@@ -173,23 +173,27 @@ def test_dockerfile_pins_opencode_release_and_explicit_architectures() -> None:
     # REQ-001: Pins OpenCode release 1.18.31
     assert f"ARG OPENCODE_VERSION={_PINNED_OPENCODE_VERSION}" in content
 
-    # REQ-001: Map Linux platforms to both release and pinned npm fallback artifacts.
-    assert 'amd64) OPENCODE_ARCH="x64"; CODEX_ARCH="x86_64"; CODEX_NPM_ARCH="x64" ;;' in content
-    assert 'arm64) OPENCODE_ARCH="arm64"; CODEX_ARCH="aarch64"; CODEX_NPM_ARCH="arm64" ;;' in content
+    # REQ-001: Explicit platform mapping for Linux amd64 and arm64
+    assert 'amd64) OPENCODE_ARCH="x64"; CODEX_ARCH="x86_64" ;;' in content
+    assert 'arm64) OPENCODE_ARCH="arm64"; CODEX_ARCH="aarch64" ;;' in content
     assert "Unsupported architecture for OpenCode: $ARCH" in content
-    assert "opencode-linux-${OPENCODE_ARCH}-${OPENCODE_VERSION}.tgz" in content
-    assert "codex-${CODEX_VERSION}-linux-${CODEX_NPM_ARCH}.tgz" in content
-    assert 'test "$(opencode --version)" = "${OPENCODE_VERSION}"' in content
-    assert 'test "$(codex --version)" = "codex-cli ${CODEX_VERSION}"' in content
 
     # REQ-001: Required OS packages in runtime image
     assert "git" in content
     assert "ca-certificates" in content
 
     # REQ-001: Binary copied to final image
+    assert "FROM node:24-slim AS build" in content
+    assert "opencode-linux-${OPENCODE_ARCH}@${OPENCODE_VERSION}" in content
+    assert "--ignore-scripts --no-audit --no-fund --no-save" in content
+    assert 'test "$(/usr/local/bin/opencode --version)" = "$OPENCODE_VERSION"' in content
+    assert "https://github.com/anomalyco/opencode/releases/download/" not in content
     assert "COPY --from=build /usr/local/bin/opencode /usr/local/bin/opencode" in content
     assert f"ARG CODEX_VERSION={_PINNED_CODEX_VERSION}" in content
-    assert "releases/download/rust-v${CODEX_VERSION}/codex-${CODEX_ARCH}-unknown-linux-musl.tar.gz" in content
+    assert "@openai/codex-linux-${OPENCODE_ARCH}@npm:@openai/codex@${CODEX_VERSION}-linux-${OPENCODE_ARCH}" in content
+    assert "vendor/${CODEX_ARCH}-unknown-linux-musl/bin/codex" in content
+    assert 'test "$(/usr/local/bin/codex --version)" = "codex-cli $CODEX_VERSION"' in content
+    assert "https://github.com/openai/codex/releases/download/" not in content
     assert "COPY --from=build /usr/local/bin/codex /usr/local/bin/codex" in content
 
 
