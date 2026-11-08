@@ -38,18 +38,78 @@ jobs:
           uv run flake8 src/ tests/
           uv run mypy --config-file pyproject.toml -p auto_coder
 
+  source-plan:
+    name: Plan complete source tests
+    runs-on: ubuntu-latest
+    env:
+      AUTO_CODER_REQUIRE_BROWSER: "1"
+      AUTO_CODER_IMMEDIATE_TEST_FAILURES: "1"
+      PYTEST_ADDOPTS: "-o faulthandler_timeout=60 -o faulthandler_exit_on_timeout=false"
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      count: ${{ steps.matrix.outputs.count }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.22"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked --dev --extra test
+      - name: Restore optional source timing profile
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/source-history
+          key: source-duration-${{ runner.os }}-${{ hashFiles('uv.lock', 'pyproject.toml', 'tests/conftest.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            source-duration-${{ runner.os }}-${{ hashFiles('uv.lock', 'pyproject.toml', 'tests/conftest.py') }}-
+      - name: Bind exact source, inventory and attempt
+        run: >-
+          uv run python scripts/source_ci_runtime.py --log-dir "$RUNNER_TEMP/source-plan/logs" context
+          --repository '${{ github.repository }}'
+          --source-sha '${{ github.event.pull_request.head.sha || github.sha }}'
+          --event-sha '${{ github.sha }}'
+          --run-id '${{ github.run_id }}'
+          --run-attempt '${{ github.run_attempt }}'
+          --output "$RUNNER_TEMP/source-plan/context.json"
+      - name: Collect complete current source tests and immutable shard plan
+        run: >-
+          uv run python scripts/plan_ci_shards.py
+          --context "$RUNNER_TEMP/source-plan/context.json"
+          --duration-profile "$RUNNER_TEMP/source-history/profile.json"
+          --output "$RUNNER_TEMP/source-plan/plan.json"
+          --log-dir "$RUNNER_TEMP/source-plan/logs" -- -m 'not opencode_live'
+      - name: Export exact dynamic matrix
+        id: matrix
+        run: >-
+          uv run python scripts/source_ci_runtime.py --log-dir "$RUNNER_TEMP/source-plan/logs" matrix
+          --plan "$RUNNER_TEMP/source-plan/plan.json" --github-output "$GITHUB_OUTPUT"
+      - name: Retain immutable source plan even on failure
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: source-test-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/source-plan/
+          if-no-files-found: warn
+
   complete-source-shard:
-    name: Complete source tests (${{ matrix.group }}/4)
+    name: Complete source tests (${{ matrix.shard }}/${{ needs.source-plan.outputs.count }})
+    needs: [source-plan]
     strategy:
       fail-fast: false
-      matrix:
-        group: [1, 2, 3, 4]
+      max-parallel: 12
+      matrix: ${{ fromJSON(needs.source-plan.outputs.matrix) }}
     runs-on: ubuntu-latest
     env:
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
       AUTO_CODER_REQUIRE_BROWSER: "1"
       AUTO_CODER_IMMEDIATE_TEST_FAILURES: "1"
-      AUTO_CODER_CI_TIMING_DIR: ${{ github.workspace }}/source-test-timing-${{ matrix.group }}
+      AUTO_CODER_CI_TIMING_INVOCATION: source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
       PYTEST_ADDOPTS: "-o faulthandler_timeout=60 -o faulthandler_exit_on_timeout=false"
     steps:
       - uses: actions/checkout@v7
@@ -63,6 +123,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --locked --dev --extra test
+      - name: Download this attempt's immutable complete-source plan
+        uses: actions/download-artifact@v6
+        with:
+          name: source-test-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/source-plan
       - name: Prepare Python-only management test fixture
         run: uv run python scripts/prepare_management_test_image.py
       - name: Install Chromium
@@ -70,34 +135,35 @@ jobs:
       - name: Verify real headless Chromium
         run: uv run python scripts/browser_preflight.py
       - name: Run complete required source selection
+        env:
+          AUTO_CODER_CI_TIMING_DIR: ${{ runner.temp }}/source-shard/timing
         run: >-
-          uv run pytest -m 'not opencode_live' -vv
-          --splits 4 --group ${{ matrix.group }}
-          --splitting-algorithm duration_based_chunks
-          --durations-path tests/data/pr-test-durations.json
-          --junitxml source-test-results-${{ matrix.group }}.xml
+          uv run python -m pytest -p scripts.ci_shard_plugin -p scripts.source_ci_receipt_plugin
+          --ci-plan="$RUNNER_TEMP/source-plan/plan.json"
+          --ci-shard=${{ matrix.shard }}
+          --source-ci-receipt="$RUNNER_TEMP/source-shard/receipt.json"
+          -m 'not opencode_live' -vv
+          --junitxml "$RUNNER_TEMP/source-shard/results.xml"
       - name: Summarize shard timing
         if: always()
         continue-on-error: true
-        run: uv run python scripts/summarize_ci_timing.py source-test-timing-${{ matrix.group }} --output source-test-timing-${{ matrix.group }}/summary.json
+        run: uv run python scripts/summarize_ci_timing.py "$RUNNER_TEMP/source-shard/timing" --output "$RUNNER_TEMP/source-shard/timing/summary.json"
       - name: Retain shard diagnostics
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: source-test-results-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.group }}
-          path: |
-            source-test-results-${{ matrix.group }}.xml
-            source-test-timing-${{ matrix.group }}/
-          if-no-files-found: error
+          name: source-test-shard-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/source-shard/
+          if-no-files-found: warn
 
   complete-source-tests:
     name: Complete source tests with Chromium
     if: always()
-    needs: [complete-source-shard]
+    needs: [source-plan, complete-source-shard]
     runs-on: ubuntu-latest
     steps:
       - name: Reject an unsuccessful matrix dependency
-        if: needs.complete-source-shard.result != 'success'
+        if: needs.source-plan.result != 'success' || needs.complete-source-shard.result != 'success'
         run: exit 1
       - uses: actions/checkout@v7
         with:
@@ -110,6 +176,16 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --locked
+      - name: Download current-attempt immutable source plan
+        uses: actions/download-artifact@v6
+        with:
+          name: source-test-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/source-plan
+      - name: Download current-attempt native shard receipts and timing
+        uses: actions/download-artifact@v6
+        with:
+          pattern: source-test-shard-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: ${{ runner.temp }}/source-artifacts
       - name: Verify exact current-attempt shard evidence
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -119,3 +195,66 @@ jobs:
           --run-id '${{ github.run_id }}'
           --run-attempt '${{ github.run_attempt }}'
           --source-sha '${{ github.event.pull_request.head.sha || github.sha }}'
+          --plan "$RUNNER_TEMP/source-plan/plan.json"
+          --artifacts "$RUNNER_TEMP/source-artifacts"
+      - name: Restore optional source duration history
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/source-history
+          key: source-duration-${{ runner.os }}-${{ hashFiles('uv.lock', 'pyproject.toml', 'tests/conftest.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            source-duration-${{ runner.os }}-${{ hashFiles('uv.lock', 'pyproject.toml', 'tests/conftest.py') }}-
+      - name: Update optional native timing snapshot
+        id: duration-update
+        if: always()
+        continue-on-error: true
+        run: >-
+          uv run python scripts/source_ci_runtime.py --log-dir "$RUNNER_TEMP/source-duration-logs" duration
+          --plan "$RUNNER_TEMP/source-plan/plan.json"
+          --artifacts "$RUNNER_TEMP/source-artifacts"
+          --directory "$RUNNER_TEMP/source-duration-work"
+          --previous "$RUNNER_TEMP/source-history/profile.json"
+          --output "$RUNNER_TEMP/source-history-new/profile.json"
+      - name: Stage optional source timing snapshot at restored cache path
+        id: duration-stage
+        if: always() && steps.duration-update.outcome == 'success'
+        continue-on-error: true
+        run: |
+          mkdir -p "$RUNNER_TEMP/source-history"
+          cp "$RUNNER_TEMP/source-history-new/profile.json" "$RUNNER_TEMP/source-history/profile.json"
+      - name: Report queue, setup, native critical path and comparable four-way assignments
+        if: always()
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          uv run python scripts/source_ci_runtime.py --log-dir "$RUNNER_TEMP/source-duration-logs" report
+          --repository '${{ github.repository }}'
+          --source-sha '${{ github.event.pull_request.head.sha || github.sha }}'
+          --run-id '${{ github.run_id }}'
+          --run-attempt '${{ github.run_attempt }}'
+          --plan "$RUNNER_TEMP/source-plan/plan.json"
+          --artifacts "$RUNNER_TEMP/source-artifacts"
+          --legacy-snapshot tests/data/pr-test-durations.json
+          --output "$RUNNER_TEMP/source-duration-work/metrics.json"
+          --github-summary "$GITHUB_STEP_SUMMARY"
+      - name: Cache optional immutable source timing profile
+        if: always() && steps.duration-stage.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/source-history
+          key: source-duration-${{ runner.os }}-${{ hashFiles('uv.lock', 'pyproject.toml', 'tests/conftest.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Retain optional timing profile diagnostics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v6
+        with:
+          name: source-duration-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/source-duration-logs/
+            ${{ runner.temp }}/source-duration-work/
+            ${{ runner.temp }}/source-history-new/
+          if-no-files-found: ignore

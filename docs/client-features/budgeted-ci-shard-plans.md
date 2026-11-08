@@ -1,11 +1,13 @@
 # Complete time-budgeted CI shard plans
 
-`scripts/plan_ci_shards.py` is an **opt-in offline planner**; the companion
-`scripts/ci_shard_plugin.py` is an explicit pytest inventory/application adapter.
-They do not change the existing four-way PR/source workflows, the supervised PR
-runner, retries, test assertions, markers, fixtures, test/result authority,
-required checks, or publication. The planner never authorizes PASS, and no
-changed-file-based test selection or result reuse is performed.
+`scripts/plan_ci_shards.py` is an explicit real-collection planner; the
+companion `scripts/ci_shard_plugin.py` applies immutable assignments. The
+complete source workflow now opts in with the source-specific native receipt
+and Actions aggregate described in `tested-source-references.md`. The ordinary
+PR four-way workflow and supervised runner remain unchanged, as do retry,
+assertion, marker, fixture, required-check and publication semantics. The
+planner alone never authorizes PASS, and no changed-file omission or outcome
+reuse is performed.
 
 ## Profile context and real collection
 
@@ -121,16 +123,17 @@ omitted or given an artificial deadline.
 
 ## Fail-closed application and responsibility
 
-The opt-in pytest application mode reads and verifies the entire canonical
+The explicit pytest application mode reads and verifies the entire canonical
 plan at configuration time. Before the first test, it confirms actual Git
 checkout and fingerprint, complete post-selector inventory, disjoint original-
 order assignments, selected shard ID and unchanged plan bytes. It applies only
 the plan's exact member set and checks final selected items again immediately
 before entering pytest's native test loop. Subsequent changes to the plan file
 fail execution; the adapter never replans after seeing results. It prints the
-plan digest and selected node IDs diagnostically, but writes no success receipt.
-Native skipped, xfailed, failed, and interrupt outcomes retain their pytest
-exit status and artifact semantics.
+plan digest and selected node IDs diagnostically. The source-specific receipt
+plugin separately writes native setup/call/teardown evidence and fails an
+incomplete source execution. The plan itself is never success authority.
+Native skips, xfails, failures and interruptions retain their pytest semantics.
 
 The current-run source workflow and native retained Supervisor consumers have
 **different** run-attempt evidence and result-gate policies. Both must enforce

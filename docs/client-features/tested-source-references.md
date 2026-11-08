@@ -64,30 +64,69 @@ does not replace a hard deadline with a GIL-dependent Python thread. A real
 `ctypes.PyDLL` regression holds the GIL past the deadline and checks that the
 process exits before the native call completes.
 
-## Four-way complete-source partition
+## Current time-budgeted complete-source partition
 
-The complete `not opencode_live` selection is scheduled as four independent
-source-test jobs. Pytest's current collection remains authoritative: the fixed
-duration snapshot balances known cases, while new and parameterized node IDs are
-still assigned exactly once. Every shard independently prepares the verified
-management fixture, installs and launches Chromium, and owns its pytest process
-and diagnostic artifact.
+The complete `not opencode_live` selection is collected on the actual source
+checkout by `scripts/plan_ci_shards.py`, producing one immutable
+`ci-shard-plan-v1` with ordered inventory, fingerprint, semantic digest,
+disjoint contiguous assignments, a 420-second estimated work budget and at
+most twelve nonempty shards (`max-parallel: 12`). New and parameterized nodes
+receive labeled positive fallback estimates and cannot disappear; even an
+indivisible 820-second case is not killed or skipped. Planning and execution
+retain Python 3.12, locked test dependencies and required browser/fixture
+inputs. Every shard prepares the verified Python-only management fixture,
+installs and launches real headless Chromium, and retains native diagnostics.
+The separate source-quality job retains all four Black/isort/Flake8/mypy
+commands on the PR merge checkout; source tests use the exact PR head/main SHA.
+
+The plan artifact is immutable and unique to workflow run and planning attempt.
+Each shard downloads that exact plan, validates the full current post-selector
+collection before selecting its assigned nodes and writes an invocation-owned
+`source-ci-shard-receipt-v1`. The receipt contains the complete ordered
+collection, assigned/selected/executed nodes, native setup/call/teardown
+reports, native pytest exit status, timestamps, profile, plan and producing
+run/attempt identity. A missing receipt or write failure blocks qualification.
+Native failure or teardown error cannot become success; legitimate prerequisite
+skips and xfails retain their native outcomes instead of being relabeled PASS.
 
 `Complete source tests with Chromium` remains the publication-facing aggregate.
-It fails unless an Actions readback finds exactly one completed-success result
-for each fixed shard name in the triggering run and attempt. The readback is
-bound to the workflow path and exact PR-head or main-push SHA, so missing,
-duplicate, stale-attempt, or mixed results cannot qualify publication. Historical
-eligible unsharded tags continue to use their recorded aggregate and quality job.
+It fails unless complete paginated Actions jobs/artifacts contain the exact
+planning job, one native completed-success job with all mandatory steps per
+planned shard, and one matching immutable native receipt per shard. The gate
+compares actual source checkout, ordered inventory and digest, profile, plan
+digest, run, planning attempt, producing invocation and job timestamps. It
+rejects stale or foreign plans, missing/duplicated/failed/mixed-plan results,
+and a latest API alias representing a previously produced successful job under
+a new attempt ID. Failed-only reruns cannot qualify if their plan or retained
+shards were produced in an earlier attempt: rerun the complete source workflow
+on one attempt. A failed current execution never borrows historical success.
 
-The topology reduces the pytest critical path to the slowest shard. Each shard
-still pays checkout, locked installation, fixture, and browser setup costs, so
-total runner work increases by three copies of setup; queue time remains an
-external Actions measurement. Local collection regression checks establish the
-selection equivalence, but remote queue, setup, pytest, and total timings must be
-reported from an observed Actions run and are not claimed here as successful CI.
+Historical eligible unsharded and fixed-four-shard annotations still require
+their originally recorded quality/aggregate Jobs and unchanged annotation
+schema, workflow ID, exact SHA/lock/version; the new receipt gate applies only
+to the current source-execution aggregate. No `Publish Beta`, OCI routing,
+branch-protection or merge-authority change is made.
 
-### Observed timing evidence
+The workflow optionally restores a profile-scoped native timing snapshot from
+immutable Actions cache, generates explicit per-shard JSONL batch manifests,
+and saves new cache/artifacts under unique run/attempt names without tracked
+file writes. The new snapshot is generated in a separate immutable output
+directory, then staged into the exact `source-history` path consumed by the
+planner and both cache restores before the cache save. Restore and save share
+the same cache path/version and exact per-run/attempt key; a failed optional
+update or staging step cannot publish an unchanged restored profile as a new
+snapshot. Failed history restore, update or upload is diagnostic; missing
+mandatory plan or receipt always fails. A `source-ci-metrics-v1` artifact
+distinguishes queue, setup, test-step shard critical path, total runner work,
+and end-to-end required-check latency (only when finished). It reconstructs
+the previous four-way `duration_based_chunks` assignments for the **same new
+inventory**, using the old checked-in duration snapshot, and compares them
+using the newly observed native test phases. This counterfactual excludes
+queue/setup and is not a separately measured old CI run. Ten minutes is an
+observational target, not a test timeout or guarantee; a complete real-source
+Actions execution is required before claiming an actual speedup.
+
+### Historical four-way timing evidence (before this change)
 
 The first PR execution of the partition (run `41763251437`, attempt 1, revision
 `31857c14afd18598d2b149175f39d2e4e10f1dd4`) is recorded separately from the
