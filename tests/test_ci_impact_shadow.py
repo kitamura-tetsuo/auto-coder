@@ -152,19 +152,9 @@ def test_production_cli_freezes_only_old_edges_and_finds_real_omitted_failure(tm
 def test_changed_test_module_exporting_shared_fixture_forces_full(tmp_path: Path, fixture_value: int, expected_exit: int) -> None:
     checkout = _checkout(tmp_path, "def test_control():\n    assert True\n")
     fixture_file = "tests/test_fixture.py"
-    fixture_module = (
-        "import pytest\n"
-        "@pytest.fixture\n"
-        "def shared():\n    return {value}\n"
-        "def test_own(shared):\n    assert shared > 0\n"
-    )
+    fixture_module = "import pytest\n@pytest.fixture\ndef shared():\n    return {value}\ndef test_own(shared):\n    assert shared > 0\n"
     _commit(checkout, fixture_file, fixture_module.format(value=1))
-    _commit(
-        checkout,
-        "tests/test_consumer.py",
-        "from tests.test_fixture import shared\n"
-        "def test_consumer(shared):\n    assert shared == 1\n",
-    )
+    _commit(checkout, "tests/test_consumer.py", "from tests.test_fixture import shared\ndef test_consumer(shared):\n    assert shared == 1\n")
     baseline = _observe(checkout, tmp_path, 511)
     assert baseline["native_session"]["exit_code"] == 0
     _commit(checkout, fixture_file, fixture_module.format(value=fixture_value) + "# descendant fixture change\n")
