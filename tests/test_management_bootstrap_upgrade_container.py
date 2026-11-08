@@ -355,7 +355,7 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         service_credential = next_generation.path("bootstrap") / "source_evidence_read"
         service_token = service_credential.read_bytes()
         try:
-            service_credential.write_text("invalid-disposable-source-token", encoding="utf-8")
+            service_credential.write_text("invalid", encoding="utf-8")
             assert publisher.read(chain.current_sha) is not None
             code, service_unavailable = call_cli("status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
             assert code == 0 and service_unavailable["stage"] == "application-ready"
