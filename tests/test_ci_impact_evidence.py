@@ -293,6 +293,58 @@ def test_replaced_checkout_and_changed_tracked_source_cannot_reuse_observation(t
     assert any("checkout commit/tree differs" in error for error in replaced["errors"])
 
 
+def test_workflow_normalizer_cli_from_clean_committed_checkout(tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path, "def test_ok():\n    assert True\n")
+    directory = _case_dir(tmp_path)
+    native = _run(checkout, directory)
+    assert native.returncode == 0, native.stdout + native.stderr
+
+    workflow = yaml.safe_load((ROOT / ".github/workflows/test-impact-observation.yml").read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["observe"]["steps"]
+    normalizer_step = next(step for step in steps if step["name"] == "Normalize independent diagnostic result")
+    assert "uv run python -m scripts.summarize_test_impact" in normalizer_step["run"]
+
+    # Match the workflow's Python module entrypoint, without inherited root PYTHONPATH.
+    command = [
+        sys.executable,
+        "-m",
+        "scripts.summarize_test_impact",
+        "--directory",
+        str(directory),
+        "--checkout",
+        str(checkout),
+        "--output",
+        str(directory / "observation.json"),
+    ]
+    clean_env = _env(checkout)
+    clean_env.pop("PYTHONPATH", None)
+    finalized = subprocess.run(command, cwd=checkout, env=clean_env, capture_output=True, text=True, timeout=30)
+    assert finalized.returncode == 0, finalized.stdout + finalized.stderr
+    output = directory / "observation.json"
+    available = json.loads(output.read_text(encoding="utf-8"))
+    assert available["status"] == "available"
+    assert available["identity"]["checkout_sha"] == _git(checkout, "rev-parse", "HEAD")
+    assert available["native_session"]["exit_code"] == 0
+
+    event_file = next(directory.glob("pytest-events-*.jsonl"))
+    event_file.write_text("not JSON\n", encoding="utf-8")
+    broken_output = directory / "observation-corrupt.json"
+    broken = subprocess.run(
+        [*command[:-1], str(broken_output)],
+        cwd=checkout,
+        env=clean_env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert broken.returncode == 2, broken.stdout + broken.stderr
+    incomplete = json.loads(broken_output.read_text(encoding="utf-8"))
+    assert incomplete["status"] == "incomplete"
+    assert incomplete["native_session"]["exit_code"] == 0
+    assert any("pytest-events-" in error for error in incomplete["errors"])
+    assert json.loads(output.read_text(encoding="utf-8")) == available
+
+
 def test_workflow_is_manual_only_complete_and_not_a_required_check() -> None:
     workflow = yaml.safe_load((ROOT / ".github/workflows/test-impact-observation.yml").read_text(encoding="utf-8"))
     assert list(workflow["on"]) == ["workflow_dispatch"]
@@ -302,6 +354,7 @@ def test_workflow_is_manual_only_complete_and_not_a_required_check() -> None:
     assert next(step for step in steps if step["name"] == "Checkout explicitly requested source")["with"]["ref"] == "${{ inputs.source_ref }}"
     assert any("--locked --extra test" in step.get("run", "") for step in steps)
     assert any("run_test_impact_observation.py" in step.get("run", "") for step in steps)
+    assert any("uv run python -m scripts.summarize_test_impact" in step.get("run", "") for step in steps)
     assert "--cov-context=test" in (ROOT / "scripts/run_test_impact_observation.py").read_text(encoding="utf-8")
     assert PROFILE_SELECTOR in (ROOT / "scripts/run_test_impact_observation.py").read_text(encoding="utf-8")
     assert "--cov-context" not in (ROOT / ".github/workflows/pr-tests.yml").read_text(encoding="utf-8")
