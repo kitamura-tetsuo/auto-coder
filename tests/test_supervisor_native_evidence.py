@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import cast
@@ -13,12 +16,16 @@ import pytest
 ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from scripts.plan_ci_shards import _collect  # noqa: E402
 from supervisor_aggregate_evidence import REQUIRED_GROUPS, evaluate  # noqa: E402
-from supervisor_ci_profiles import CONTAINER_REQUIRED, FRESH_REQUIRED, HARNESS, PROFILES, REPOSITORY, SEMANTIC_ENV, check_plan, profile_args  # noqa: E402
-from supervisor_native_evidence import GitDataResponse, NativeEvidenceError, _inventory_ok, native_job_name, original_producer  # noqa: E402
+from supervisor_ci_profiles import CONTAINER_REQUIRED, FRESH_REQUIRED, HARNESS, PROFILES, REPOSITORY, SEMANTIC_ENV, check_plan
+from supervisor_ci_profiles import context as profile_context  # noqa: E402
+from supervisor_ci_profiles import profile_args
+from supervisor_native_evidence import GitDataResponse, NativeEvidenceError, _inventory_ok, capture, native_job_name, original_producer  # noqa: E402
 
-from auto_coder.ci_shard_plan import ShardContext, VerifiedPlan, _canonical, build_plan  # noqa: E402
+from auto_coder.ci_shard_plan import ShardContext, VerifiedPlan, _canonical, build_plan, read_plan  # noqa: E402
 from auto_coder.util.gh_cache import GitHubGitDataClient  # noqa: E402
+from tests.test_ci_shard_plan import _history  # noqa: E402
 
 SHA = "a" * 40
 HEAD_SHA = "b" * 40  # The PR API head is deliberately not the tested synthetic merge.
@@ -275,3 +282,185 @@ def test_actual_collection_control_mode_never_creates_pass_receipt(tmp_path: Pat
     result = subprocess.run(["uv", "run", "pytest", "-p", "supervisor_ci_results", "--collect-only", "-q", str(file)], cwd=ROOT, env=env, text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
     assert not report.exists()
+
+
+def test_real_planned_pytest_shards_produce_complete_native_aggregate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    """Run actual selected pytest shards through the receipt and aggregate boundary."""
+    project = tmp_path / "checkout"
+    project.mkdir()
+    # Reproduce the workflow's exact fresh-host selectors and required parameter IDs
+    # with disposable, side-effect-free cases; the production plugins remain unmodified.
+    cases = {
+        "test_management_fresh_host_integration.py": (
+            "test_real_docker_published_listener_is_owned_by_replacement",
+            "test_real_docker_listener_rejects_mismatched_container_address",
+            "test_real_docker_listener_rejects_changed_container_inspection",
+            "test_real_listener_accepts_only_mount_order_changes",
+            "test_real_prior_supervisor_binds_instance_and_published_port",
+        ),
+        "test_management_fresh_end_to_end.py": ("test_initial_handoff",),
+        "test_management_retained_startup_container.py": ("test_retained_startup",),
+        "test_management_proxy_watcher_process_integration.py": ("test_proxy_watcher",),
+    }
+    for filename, names in cases.items():
+        path = project / "tests" / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(f"def {name}(): assert True" for name in names) + "\n", encoding="utf-8")
+    for filename, test_name, variants in (
+        ("test_management_archived_cutover_container.py", "test_real_second_cutover_preserves_all_owner_and_key_exclusions", ("complete", "host-interrupted", "omitted-ancestor", "stopped-prior")),
+        ("test_management_installed_fresh_container.py", "test_installed_initial_abc_real_handoff", ("complete", "before-stop", "before-forward-start", "ready-corrupt", "host-interrupted", "source-unavailable")),
+    ):
+        (project / "tests" / filename).write_text(
+            "import pytest\n" f"@pytest.mark.parametrize('variant', {list(variants)!r}, ids={list(variants)!r})\n" f"def {test_name}(variant): assert variant\n",
+            encoding="utf-8",
+        )
+    (project / "pyproject.toml").write_text('[tool.pytest.ini_options]\ntestpaths = ["tests"]\n', encoding="utf-8")
+    (project / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    for name in HARNESS:
+        target = project / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if name.startswith("tests/"):
+            target.write_text("", encoding="utf-8")
+        else:
+            shutil.copyfile(ROOT / name, target)
+    for command in (("init", "-q"), ("config", "user.name", "CI Test"), ("config", "user.email", "ci@example.invalid"), ("add", "-A"), ("commit", "-qm", "isolated source")):
+        subprocess.run(["git", *command], cwd=project, check=True, capture_output=True)
+    checkout = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=project, text=True).strip()
+
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys.modules[__name__], "SHA", checkout)
+    environment = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join((str(project), str(project / "scripts"), str(ROOT / "src"))),
+        "PYTEST_ADDOPTS": "",
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        "PYTEST_PLUGINS": "",
+        "GITHUB_WORKFLOW": "Supervisor Integration Tests",
+        "GITHUB_RUN_ID": str(RUN),
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_SHA": checkout,
+        "GITHUB_JOB": "fresh-host",
+        "SUPERVISOR_REQUIRED_NODEIDS": json.dumps(FRESH_REQUIRED, separators=(",", ":")),
+        "SUPERVISOR_ALLOWED_SKIPS": "{}",
+    }
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    plan_dir = tmp_path / "plans"
+    fresh_dir = plan_dir / "fresh-host"
+    fresh_dir.mkdir(parents=True)
+    context = profile_context("fresh-host", environ=environment, checkout=checkout)
+    context_path = fresh_dir / "context.json"
+    context_path.write_text(json.dumps(context.json()), encoding="utf-8")
+    environment["SUPERVISOR_CI_RESULT_MODE"] = "collect"
+    monkeypatch.setenv("SUPERVISOR_CI_RESULT_MODE", "collect")
+    profile, collected = _collect(context_path, context)
+    assert set(FRESH_REQUIRED) <= set(collected)
+    assert len(collected) > len(FRESH_REQUIRED)
+    history = tmp_path / "history.json"
+    _history(history, profile, collected, seconds=90.0)
+    plan_file = fresh_dir / "plan.json"
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "plan_ci_shards.py"), "--context", str(context_path), "--duration-profile", str(history), "--output", str(plan_file), "--log-dir", str(tmp_path / "planner-logs"), "--", *profile_args("fresh-host")],
+        cwd=project,
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=90,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    planned, _raw = read_plan(plan_file)
+    assert len(planned.shards) >= 2
+    assert tuple(node for shard in planned.shards for node in shard) == collected
+    assert len({index for index, shard in enumerate(planned.shards) if set(shard) & set(FRESH_REQUIRED)}) >= 2
+
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    management = _plan("management-self-update", plan_dir)
+    containers = _plan("isolated-containers", plan_dir)
+    jobs = [
+        _job(native_job_name("worker", None), 10, 1, start="2026-11-08T10:00:00Z", runner=10),
+        _job(native_job_name("management-self-update", 1), 11, 1, start="2026-11-08T10:00:00Z", runner=11),
+        _job(native_job_name("isolated-containers", 1), 12, 1, start="2026-11-08T10:00:00Z", runner=12),
+    ]
+    client = FakeGitHub({1: jobs})
+    _artifact(artifacts, "worker", None, None, jobs[0], 1)
+    _artifact(artifacts, "management-self-update", 1, management, jobs[1], 1)
+    _artifact(artifacts, "isolated-containers", 1, containers, jobs[2], 1)
+    native_files = []
+    for shard, assigned in enumerate(planned.shards, 1):
+        job = _job(native_job_name("fresh-host", shard), 100 + shard, 1, start="2026-11-08T10:00:00Z", runner=100 + shard)
+        jobs.append(job)
+        report = tmp_path / f"fresh-host-{shard}.json"
+        run_env = {
+            **environment,
+            "SUPERVISOR_CI_RESULT_MODE": "",
+            "SUPERVISOR_RESULTS_PATH": str(report),
+            "SUPERVISOR_PLAN_PATH": str(plan_file),
+            "SUPERVISOR_PROFILE": "fresh-host",
+            "SUPERVISOR_SHARD_ID": str(shard),
+            "RUNNER_NAME": str(job["runner_name"]),
+        }
+        execution = subprocess.run(
+            [sys.executable, "-m", "pytest", "-p", "scripts.ci_shard_plugin", f"--ci-plan={plan_file}", f"--ci-shard={shard}", "-q", "-vv", *profile_args("fresh-host"), f"--junitxml={tmp_path / f'fresh-host-{shard}.xml'}"],
+            cwd=project,
+            env=run_env,
+            text=True,
+            capture_output=True,
+            timeout=90,
+        )
+        assert execution.returncode == 0, execution.stdout + execution.stderr
+        produced = json.loads(report.read_text(encoding="utf-8"))
+        assert produced["collected"] == list(assigned)
+        assert produced["outcomes"] == dict.fromkeys(assigned, "passed")
+        assert produced["missing_selection"] == produced["missing"] == produced["repeated"] == []
+        assert produced["first_case_phase_epoch"] <= produced["last_case_phase_epoch"]
+        assert set(produced["collected"]) & set(FRESH_REQUIRED) == set(assigned) & set(FRESH_REQUIRED)
+        native_files.append(report)
+        folder = artifacts / f"supervisor-integration-fresh-host-shard-{shard}-{RUN}-1"
+        folder.mkdir()
+        consumed = folder / report.name
+        shutil.copyfile(report, consumed)
+        receipt = capture(
+            cast(GitHubGitDataClient, client),
+            profile="fresh-host",
+            shard=shard,
+            plan_file=plan_file,
+            inventories=(consumed,),
+            destination=folder / "receipt.json",
+            environ=run_env,
+        )
+        assert receipt["job_id"] == job["id"]
+
+    selected, metrics = evaluate(
+        cast(GitHubGitDataClient, client),
+        {name: {"result": "success"} for name in REQUIRED_GROUPS},
+        plan_dir,
+        artifacts,
+        checkout,
+        checkout,
+        RUN,
+        1,
+    )
+    observed = [node for item in selected if item.profile == "fresh-host" for report in item.inventories for node in report["collected"]]
+    assert tuple(observed) == collected
+    assert metrics["fresh-host"]["shards"] == len(planned.shards)
+    duplicate = "tests/test_management_fresh_host_integration.py::test_real_prior_supervisor_binds_instance_and_published_port"
+    assert duplicate in observed and duplicate in management.inventory
+
+    # The real producer file, when made incomplete, must fail before a receipt can
+    # be issued, even if the simulated native job still reports success.
+    damaged = tmp_path / "damaged.json"
+    data = json.loads(native_files[0].read_text(encoding="utf-8"))
+    data["outcomes"].pop(data["collected"][0])
+    damaged.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(NativeEvidenceError, match="outcomes are missing"):
+        capture(
+            cast(GitHubGitDataClient, client),
+            profile="fresh-host",
+            shard=1,
+            plan_file=plan_file,
+            inventories=(damaged,),
+            destination=tmp_path / "forbidden-receipt.json",
+            environ={**environment, "RUNNER_NAME": str(jobs[3]["runner_name"])},
+        )
+    assert not (tmp_path / "forbidden-receipt.json").exists()
