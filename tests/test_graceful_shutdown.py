@@ -1203,7 +1203,7 @@ def test_container_entrypoint_and_compose_grace_preserve_sigterm_delivery():
     assert 'ENTRYPOINT ["auto-coder"]' in dockerfile
 
     compose = yaml.safe_load(Path("compose.channels.yml").read_text(encoding="utf-8"))
-    assert set(compose["services"]) == {"release", "beta"}
+    assert set(compose["services"]) == {"release", "beta", "beta-agent-table"}
     for service in compose["services"].values():
         assert service["stop_grace_period"] == "30m"
         assert service["environment"]["AUTO_CODER_SUPERVISOR_INSTANCE_ID"]

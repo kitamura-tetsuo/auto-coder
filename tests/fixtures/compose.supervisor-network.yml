@@ -55,6 +55,34 @@ services:
       private:
         ipv4_address: ${SUPERVISOR_BETA_IP}
 
+  beta-agent-table:
+    image: ${AUTOCODER_SUPERVISOR_IMAGE}
+    entrypoint: ["python", "/fixtures/supervisor_container_entry.py"]
+    user: "${SUPERVISOR_HOST_UID}:${SUPERVISOR_HOST_GID}"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      AUTO_CODER_SUPERVISOR_INSTANCE_ID: beta-agent-table-worker
+      AUTO_CODER_CHANNEL: beta
+      AUTO_CODER_REPOSITORY: fixture/agent-table
+      AUTO_CODER_RUNTIME_ROOT: /runtime
+      AUTO_CODER_WORKSPACE_ROOT: /workspace
+      AUTO_CODER_SOURCE_REPOSITORY_ROOT: /workspace/source
+      AUTO_CODER_SUPERVISOR_AUTO_START: "1"
+      AUTO_CODER_TEST_REQUEST_AUDIT: ${SUPERVISOR_TEST_REQUEST_AUDIT:-0}
+      AUTO_CODER_BRIDGE_BIND_ADDRESS: ${SUPERVISOR_AGENT_TABLE_IP:?Private IP is required}
+      AUTO_CODER_BRIDGE_PORT: "8843"
+      AUTO_CODER_BRIDGE_SECRET_FILE: /run/secrets/agent_table_bridge
+      HOME: /runtime/home
+    volumes:
+      - ${SUPERVISOR_FIXTURES_DIR}:/fixtures:ro
+      - ${SUPERVISOR_RUN_ROOT}/agent-table:/runtime
+      - ${SUPERVISOR_RUN_ROOT}/agent-table-workspace:/workspace
+    secrets: [agent_table_bridge]
+    networks:
+      private:
+        ipv4_address: ${SUPERVISOR_AGENT_TABLE_IP}
+
   manager:
     image: ${AUTOCODER_SUPERVISOR_IMAGE}
     entrypoint: ["sleep", "infinity"]
@@ -62,19 +90,15 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     environment:
-      AUTO_CODER_RELEASE_SUPERVISOR_INSTANCE_ID: release-worker
-      AUTO_CODER_RELEASE_REPOSITORY: fixture/release
-      AUTO_CODER_RELEASE_BRIDGE_ADDRESS: ${SUPERVISOR_RELEASE_IP}
-      AUTO_CODER_RELEASE_BRIDGE_PORT: "8843"
-      AUTO_CODER_RELEASE_BRIDGE_SECRET_FILE: /run/secrets/release_bridge
-      AUTO_CODER_BETA_SUPERVISOR_INSTANCE_ID: beta-worker
-      AUTO_CODER_BETA_REPOSITORY: fixture/beta
-      AUTO_CODER_BETA_BRIDGE_ADDRESS: ${SUPERVISOR_BETA_IP}
-      AUTO_CODER_BETA_BRIDGE_PORT: "8843"
-      AUTO_CODER_BETA_BRIDGE_SECRET_FILE: /run/secrets/beta_bridge
+      AUTO_CODER_WORKER_REGISTRY: >-
+        {"workers":[
+          {"target_id":"release-worker","supervisor_instance_id":"release-worker","channel":"release","repository":"fixture/release","bridge_address":"${SUPERVISOR_RELEASE_IP}","bridge_port":8843,"bridge_secret_file":"/run/secrets/release_bridge"},
+          {"target_id":"beta-worker","supervisor_instance_id":"beta-worker","channel":"beta","repository":"fixture/beta","bridge_address":"${SUPERVISOR_BETA_IP}","bridge_port":8843,"bridge_secret_file":"/run/secrets/beta_bridge"},
+          {"target_id":"beta-agent-table-worker","supervisor_instance_id":"beta-agent-table-worker","channel":"beta","repository":"fixture/agent-table","bridge_address":"${SUPERVISOR_AGENT_TABLE_IP}","bridge_port":8843,"bridge_secret_file":"/run/secrets/agent_table_bridge"}
+        ]}
     volumes:
       - ${SUPERVISOR_FIXTURES_DIR}:/fixtures:ro
-    secrets: [release_bridge, beta_bridge]
+    secrets: [release_bridge, beta_bridge, agent_table_bridge]
     networks: [private]
 
 secrets:
@@ -82,6 +106,8 @@ secrets:
     file: ${SUPERVISOR_RUN_ROOT}/release-secret
   beta_bridge:
     file: ${SUPERVISOR_RUN_ROOT}/beta-secret
+  agent_table_bridge:
+    file: ${SUPERVISOR_RUN_ROOT}/agent-table-secret
 
 networks:
   private:

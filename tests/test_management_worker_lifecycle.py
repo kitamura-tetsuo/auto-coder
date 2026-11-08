@@ -447,7 +447,8 @@ def test_authenticated_real_bridge_held_drain_lost_reply_and_management_reconstr
                 saved = supervisor.store.read()
                 saved["operations"][requests[0]]["digest"] = "0" * 64
                 supervisor.store.write(saved)
-            listener, reconstructed_client = _bridge(supervisor, b"s" * 48)
+            listener, reconstructed_client = _bridge(supervisor, b"s" * 48, port=worker_client.config.port)
+            assert reconstructed_client.config.binding_digest == worker_client.config.binding_digest
         else:
             reconstructed_client = WorkerNetworkClient(worker_client.config)
         assert reconstructed_client.supervisor_generation is None
@@ -557,7 +558,8 @@ def test_authenticated_bootstrap_start_reply_loss_survives_supervisor_reconstruc
             new_child = supervisor.child
         listener.close()
         supervisor = WorkerSupervisor(supervisor.config)
-        listener, reconstructed_client = _bridge(supervisor, b"s" * 48)
+        listener, reconstructed_client = _bridge(supervisor, b"s" * 48, port=worker_client.config.port)
+        assert reconstructed_client.config.binding_digest == worker_client.config.binding_digest
         reconstructed = create_management_app(settings, grants, worker_clients={"beta": reconstructed_client})
         with TestClient(reconstructed, base_url=origin) as client:
             for _ in range(300):
@@ -608,7 +610,7 @@ def test_concurrent_status_cannot_rebind_client_during_lifecycle_effect(real_bou
         resolved = runtime._resolve("beta-worker", ActionClass.INSPECT)
         entered, release, status_attempted, status_contended, status_entered = (threading.Event() for _ in range(5))
         original_inspect = bridge.inspect_supervisor
-        original_lock = runtime._worker_locks["beta"]
+        original_lock = runtime._worker_locks["beta-worker"]
         status_thread: threading.Thread | None = None
 
         class ObservedLock:
@@ -642,7 +644,7 @@ def test_concurrent_status_cannot_rebind_client_during_lifecycle_effect(real_bou
             status_thread = threading.current_thread()
             return runtime._observe(resolved)
 
-        monkeypatch.setitem(runtime._worker_locks, "beta", ObservedLock())
+        monkeypatch.setitem(runtime._worker_locks, "beta-worker", ObservedLock())
         monkeypatch.setattr(runtime.lifecycle, "_process_locked", held_process)
         monkeypatch.setattr(bridge, "inspect_supervisor", observed_inspect)
         # An unrelated client observation must not satisfy this oracle.
@@ -689,3 +691,165 @@ def test_full_policy_allows_release_process_restart_but_never_beta_source_update
         completed = _call(client, bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
         assert completed["status"] == "SUCCEEDED", completed
         assert [name for name, _id in bridge.actions] == ["REQUEST_GRACEFUL_STOP", "START"]
+
+
+def test_two_beta_targets_deploy_independently_and_keep_distinct_journal_lanes(real_boundary, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Use authenticated MCP admission and the production lifecycle dispatcher."""
+    base, _base_grants, identity, signed, _uids, state = real_boundary
+    origin = base.oauth.canonical_issuer
+    oauth = OAuthSettings(base.oauth.database_path, origin, base.oauth.firebase_project_id, (OAuthClient("alice-client", (origin + "/alice-callback",), allowed_scopes=(READ_SCOPE, DEPLOY_SCOPE)),), enabled_scopes=(READ_SCOPE, DEPLOY_SCOPE))
+    policy = tmp_path / "operator.yaml"
+    policy.write_text(
+        "profile: full\ntargets:\n  release-worker:\n    channel: release\n    repositories: [fixture/release]\n  beta-worker:\n    channel: beta\n    repositories: [fixture/beta]\n  beta-agent-table-worker:\n    channel: beta\n    repositories: [fixture/agent-table]\n",
+        encoding="utf-8",
+    )
+    source_token = tmp_path / "source-token"
+    source_token.write_text("x" * 40, encoding="utf-8")
+    settings = ManagementSettings(tmp_path, oauth, port=base.port, operating_policy_path=policy, operation_state_root=tmp_path / "journal", source_repository="owner/repo", source_evidence_token_file=source_token)
+    grants = OAuthGrantService(oauth, identity, clock=lambda: state["now"])
+    remote = GitEvidenceBoundary()
+    assert selector(remote).advance("r77", None).certainty is MutationCertainty.CONFIRMED
+    reader = BetaEvidenceReader(remote, "owner/repo")  # type: ignore[arg-type]
+    monkeypatch.setattr("auto_coder.management.worker_lifecycle.WorkerLifecycle._source", lambda _self: reader)
+    outliner = LifecycleBridge()
+    agent_table = LifecycleBridge()
+    agent_table.config = WorkerEndpointConfig("beta-agent-table-worker", "beta", "fixture/agent-table", "10.23.10.13", 17890, b"c" * 48)
+    release = LifecycleBridge()
+    release.config = WorkerEndpointConfig("release-worker", "release", "fixture/release", "10.23.10.11", 17890, b"r" * 48)
+    app = create_management_app(settings, grants, worker_clients={"outliner": outliner, "agent-table": agent_table, "release": release})  # type: ignore[dict-item]
+
+    async def no_background_monitor() -> None:
+        pass
+
+    monkeypatch.setattr(app.state.management_runtime, "start_monitor", no_background_monitor)
+    with TestClient(app, base_url=origin) as client:
+        bearer = _issue(client, settings, signed, "alice", "alice-client", READ_SCOPE + " " + DEPLOY_SCOPE)["access_token"]
+        for target_id, repository in (("beta-worker", "fixture/beta"), ("beta-agent-table-worker", "fixture/agent-table"), ("release-worker", "fixture/release")):
+            status = _call(client, bearer, "auto_coder_deployment_status", {"target_id": target_id})
+            assert status["status"] == "OK" and status["target_id"] == target_id and status["repository"] == repository
+
+        def deploy(target_id: str) -> str:
+            response = _call(
+                client,
+                bearer,
+                "auto_coder_deploy_beta_source",
+                {"target_id": target_id, "selected_git_sha": SHA_A, "idempotency_key": "shared-client-key", "expected_supervisor_generation": "supervisor-a", "expected_process_run_id": "run-old", "expected_deployment_generation": "generation-old", "expected_runtime_id": "runtime-old"},
+            )
+            assert isinstance(response.get("operation_id"), str), response
+            operation_id = str(response["operation_id"])
+            _drive(app, operation_id)
+            result = _call(client, bearer, "auto_coder_operation_get", {"target_id": target_id, "operation_id": operation_id})
+            assert result["status"] == "SUCCEEDED" and result["target_id"] == target_id, result
+            return operation_id
+
+        agent_operation = deploy("beta-agent-table-worker")
+        assert agent_table.selected == "runtime-new" and outliner.selected == release.selected == "runtime-old"
+        assert not outliner.actions and not release.actions
+        assert _call(client, bearer, "auto_coder_operation_get", {"target_id": "beta-worker", "operation_id": agent_operation})["status"] == "NOT_FOUND"
+
+        outliner_operation = deploy("beta-worker")
+        assert outliner_operation != agent_operation
+        assert agent_table.selected == outliner.selected == "runtime-new" and release.selected == "runtime-old"
+        assert [name for name, _ in agent_table.actions] == ["PREPARE", "REQUEST_GRACEFUL_STOP", "START"]
+        assert [name for name, _ in outliner.actions] == ["PREPARE", "REQUEST_GRACEFUL_STOP", "START"]
+        assert not release.actions
+
+        agent_table.inspect_supervisor = lambda: WorkerNetworkResult(0, "UNKNOWN", None, "", "unreachable")  # type: ignore[method-assign]
+        assert _call(client, bearer, "auto_coder_deployment_status", {"target_id": "beta-agent-table-worker"})["status"] == "UNAVAILABLE"
+        assert _call(client, bearer, "auto_coder_deployment_status", {"target_id": "beta-worker"})["status"] == "OK"
+        assert _call(client, bearer, "auto_coder_deployment_status", {"target_id": "release-worker"})["status"] == "OK"
+
+    changed_bridge = LifecycleBridge()
+    changed_bridge.config = WorkerEndpointConfig("beta-agent-table-worker", "beta", "fixture/agent-table", "10.23.10.19", 17890, b"z" * 48)
+    restarted = create_management_app(settings, grants, worker_clients={"beta-agent-table-worker": changed_bridge})  # type: ignore[dict-item]
+    original = restarted.state.management_runtime.journal.get(agent_operation).record
+    assert original is not None
+    assert restarted.state.management_runtime._record_client(original) is None
+    assert changed_bridge.actions == []
+
+
+@pytest.mark.parametrize("unavailable_target", ("beta-worker", "beta-agent-table-worker"))
+def test_monitor_recovers_other_workers_after_one_beta_bridge_is_lost(real_boundary, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unavailable_target: str) -> None:
+    """Run the real monitor, dispatcher and lifecycle handlers on three lanes."""
+    base, _base_grants, identity, signed, _uids, state = real_boundary
+    origin = base.oauth.canonical_issuer
+    oauth = OAuthSettings(base.oauth.database_path, origin, base.oauth.firebase_project_id, (OAuthClient("alice-client", (origin + "/alice-callback",), allowed_scopes=(READ_SCOPE, DEPLOY_SCOPE)),), enabled_scopes=(READ_SCOPE, DEPLOY_SCOPE))
+    policy = tmp_path / "operator.yaml"
+    policy.write_text(
+        "profile: full\ntargets:\n  release-worker:\n    channel: release\n    repositories: [fixture/release]\n  beta-worker:\n    channel: beta\n    repositories: [fixture/beta]\n  beta-agent-table-worker:\n    channel: beta\n    repositories: [fixture/agent-table]\n",
+        encoding="utf-8",
+    )
+    settings = ManagementSettings(tmp_path, oauth, port=base.port, operating_policy_path=policy, operation_state_root=tmp_path / "journal")
+    bridges = {target_id: LifecycleBridge() for target_id in ("release-worker", "beta-worker", "beta-agent-table-worker")}
+    for target_id, channel, repository, address, secret in (
+        ("release-worker", "release", "fixture/release", "10.23.10.11", b"r" * 48),
+        ("beta-worker", "beta", "fixture/beta", "10.23.10.12", b"b" * 48),
+        ("beta-agent-table-worker", "beta", "fixture/agent-table", "10.23.10.13", b"a" * 48),
+    ):
+        bridge = bridges[target_id]
+        bridge.config = WorkerEndpointConfig(target_id, channel, repository, address, 17890, secret, target_id)
+        assert bridge.worker is not None
+        bridge.worker["process_run_id"] = f"{target_id}-original-run"
+
+    app = create_management_app(settings, OAuthGrantService(oauth, identity, clock=lambda: state["now"]), worker_clients=bridges)  # type: ignore[arg-type]
+    runtime = app.state.management_runtime
+
+    # Keep scheduling deterministic; the real poll enters the real dispatcher
+    # and WorkerLifecycle handler below. Neither is stubbed or replaced.
+    async def manual_monitor() -> None:
+        pass
+
+    monkeypatch.setattr(runtime, "start_monitor", manual_monitor)
+    with TestClient(app, base_url=origin) as http:
+        bearer = _issue(http, settings, signed, "alice", "alice-client", READ_SCOPE + " " + DEPLOY_SCOPE)["access_token"]
+        operation_ids: dict[str, str] = {}
+        for target_id, bridge in bridges.items():
+            response = _call(
+                http,
+                bearer,
+                "auto_coder_restart_worker",
+                {
+                    "target_id": target_id,
+                    "idempotency_key": "same-client-key",
+                    "expected_supervisor_generation": bridge.supervisor_generation,
+                    "expected_process_run_id": f"{target_id}-original-run",
+                    "expected_deployment_generation": "generation-old",
+                    "expected_runtime_id": "runtime-old",
+                },
+            )
+            assert isinstance(response.get("operation_id"), str), response
+            operation_ids[target_id] = str(response["operation_id"])
+            record = runtime.journal.get(operation_ids[target_id]).record
+            assert record is not None and record.intent.target.repository == bridge.config.repository
+            assert runtime.journal.lifecycle_snapshot(record.operation_id)[1]["stage"] == "DRAINING"  # type: ignore[index]
+
+        unavailable = bridges[unavailable_target]
+        unavailable.inspect_supervisor = lambda: WorkerNetworkResult(503, "UNAVAILABLE", None, "", "bridge-down")  # type: ignore[method-assign]
+        healthy_targets = set(bridges) - {unavailable_target}
+        assert http.portal is not None
+        for _ in range(18):
+            http.portal.call(runtime._poll_lifecycle_once)
+            if all(runtime.journal.get(operation_ids[target_id]).record.phase.value == "succeeded" for target_id in healthy_targets):  # type: ignore[union-attr]
+                break
+
+        for target_id, bridge in bridges.items():
+            operation_id = operation_ids[target_id]
+            record = runtime.journal.get(operation_id).record
+            assert record is not None
+            assert record.intent.target.repository == bridge.config.repository
+            projection = _call(http, bearer, "auto_coder_operation_get", {"target_id": target_id, "operation_id": operation_id})
+            assert projection["target_id"] == target_id and projection["repository"] == bridge.config.repository
+            observed = _call(http, bearer, "auto_coder_deployment_status", {"target_id": target_id})
+            if target_id == unavailable_target:
+                assert record.phase.value != "succeeded" and projection["status"] != "SUCCEEDED"
+                assert observed["status"] == "UNAVAILABLE" and observed["target_id"] == target_id
+                assert runtime.journal.lifecycle_snapshot(operation_id)[1]["stage"] == "DRAINING"  # type: ignore[index]
+                assert bridge.actions == [] and bridge.selected == "runtime-old"
+                assert bridge.worker is not None and bridge.worker["process_run_id"] == f"{target_id}-original-run"
+            else:
+                assert record.phase.value == "succeeded" and projection["status"] == "SUCCEEDED", projection
+                assert observed["status"] == "OK" and observed["target_id"] == target_id
+                assert [action for action, _ in bridge.actions] == ["REQUEST_GRACEFUL_STOP", "START"]
+                assert all(operation_id in step_id for _, step_id in bridge.actions)
+                assert bridge.selected == "runtime-old"
+                assert bridge.worker is not None and bridge.worker["process_run_id"] == "run-new"

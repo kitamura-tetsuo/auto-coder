@@ -96,6 +96,23 @@ scripts/test.sh tests/test_worker_management_bridge.py -k reevaluation`.
 
 Management journal operation IDs, phases, targets, and safe categories use the existing Loguru sinks without changing worker command/trace lifecycle events. Its separate contract is documented in [`client-features/management-operation-journal.md`](client-features/management-operation-journal.md).
 
+Multiple beta Supervisors are managed by exact target ID, each with its own
+signed bridge, lock, journal operation lane and unavailable status. Authenticated
+MCP responses retain the target ID alongside instance/channel/repository for
+successful and failed target observations and retained operations. Existing
+worker Issue/PR traces already carry repository and invocation identities, so
+this management-only change adds no worker processing origin, structured trace
+schema, dashboard rendering branch or aggregate. The dashboard must continue
+to show each repository's worker history independently rather than coalescing
+entries with `channel=beta`. Run `bash scripts/test.sh
+tests/test_management_worker_lifecycle.py -k two_beta_targets` for production
+MCP dispatch and isolation, and `bash scripts/test.sh
+tests/test_worker_network_integration.py` on the Supervisor Integration Tests
+runner for three independently authenticated private bridges, peer failure
+isolation and durable Supervisor operation readback across manager restart.
+Registry validation and journal fencing are checked by
+`tests/test_management_worker_registry.py`.
+
 Local management recovery uses a private Supervisor mailbox rather than the
 management operation journal or worker Issue/PR trace lifecycle. The owning
 Supervisor logs the bounded request ID and transition status; the complete local

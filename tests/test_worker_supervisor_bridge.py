@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 import pytest
 
-from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkClient, configured_worker_bridge_environment
+from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkClient, configured_worker_bridge_environment, configured_worker_registry
 from auto_coder.worker_network_protocol import MAX_RESPONSE_BYTES, load_machine_secret, request_mac
 from auto_coder.worker_supervisor import SupervisorConfig, WorkerSupervisor
 from auto_coder.worker_supervisor_bridge import SupervisorBridgeConfig, SupervisorBridgeServer, _BridgeHandler
@@ -45,11 +45,11 @@ def _supervisor(tmp_path: Path, channel: str = "beta") -> WorkerSupervisor:
     )
 
 
-def _bridge(supervisor: WorkerSupervisor, key: bytes) -> tuple[SupervisorBridgeServer, WorkerNetworkClient]:
+def _bridge(supervisor: WorkerSupervisor, key: bytes, *, port: int = 0) -> tuple[SupervisorBridgeServer, WorkerNetworkClient]:
     # The loopback address is used only in this disposable local test fixture;
     # production environment configuration requires a private Docker IP.
     config = supervisor.config
-    listener = SupervisorBridgeServer(SupervisorBridgeConfig(config.instance_id, config.channel, config.repository, "127.0.0.1", 0, key), supervisor)
+    listener = SupervisorBridgeServer(SupervisorBridgeConfig(config.instance_id, config.channel, config.repository, "127.0.0.1", port, key), supervisor)
     port = listener._http.server_port
     client = WorkerNetworkClient(WorkerEndpointConfig(config.instance_id, config.channel, config.repository, "127.0.0.1", port, key))
     listener.start()
@@ -99,32 +99,47 @@ def test_bridge_configuration_fails_closed_and_has_distinct_machine_key(tmp_path
         SupervisorBridgeConfig.from_supervisor(supervisor)
 
 
-def test_manager_requires_two_distinct_configured_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    for channel, ip in (("RELEASE", "10.31.2.11"), ("BETA", "10.31.2.12")):
-        path = tmp_path / f"{channel}.secret"
+def test_manager_requires_distinct_registry_target_identities_and_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    entries = []
+    for name, channel, ip in (("release-worker", "release", "10.31.2.11"), ("beta-worker", "beta", "10.31.2.12"), ("beta-agent-table-worker", "beta", "10.31.2.13")):
+        path = tmp_path / f"{name}.secret"
         path.write_bytes(base64.b64encode(os.urandom(48)))
-        prefix = f"AUTO_CODER_{channel}_"
-        for suffix, value in {
-            "SUPERVISOR_INSTANCE_ID": channel.lower() + "-worker",
-            "REPOSITORY": "fixture/" + channel.lower(),
-            "BRIDGE_ADDRESS": ip,
-            "BRIDGE_PORT": "8843",
-            "BRIDGE_SECRET_FILE": str(path),
-        }.items():
-            monkeypatch.setenv(prefix + suffix, value)
-    configured = configured_worker_bridge_environment()
-    assert len(configured) == 10
-    assert WorkerEndpointConfig.environment("beta").instance_id == "beta-worker"
-    monkeypatch.setenv("AUTO_CODER_BETA_BRIDGE_SECRET_FILE", configured["AUTO_CODER_RELEASE_BRIDGE_SECRET_FILE"])
-    with pytest.raises(ValueError, match="distinct"):
-        configured_worker_bridge_environment()
-    monkeypatch.setenv("AUTO_CODER_BETA_BRIDGE_SECRET_FILE", configured["AUTO_CODER_BETA_BRIDGE_SECRET_FILE"])
-    monkeypatch.setenv("AUTO_CODER_BETA_BRIDGE_ADDRESS", "0.0.0.0")
-    with pytest.raises(ValueError, match="private Docker"):
-        configured_worker_bridge_environment()
+        entries.append({"target_id": name, "supervisor_instance_id": name, "channel": channel, "repository": "fixture/" + name, "bridge_address": ip, "bridge_port": 8843, "bridge_secret_file": str(path)})
+
+    def configure(values: list[dict[str, object]]) -> None:
+        monkeypatch.setenv("AUTO_CODER_WORKER_REGISTRY", json.dumps({"workers": values}))
+
+    configure(entries)
+    assert len(configured_worker_bridge_environment()) == 1
+    assert set(configured_worker_registry()) == {"release-worker", "beta-worker", "beta-agent-table-worker"}
+    assert WorkerEndpointConfig.environment("beta-agent-table-worker").channel == "beta"
+    assert len({entry.binding_digest for entry in configured_worker_registry().values()}) == 3
+    with pytest.raises(KeyError):
+        WorkerEndpointConfig.environment("unknown")
+
+    for field, replacement in (
+        ("target_id", entries[0]["target_id"]),
+        ("supervisor_instance_id", entries[0]["supervisor_instance_id"]),
+        ("repository", entries[0]["repository"]),
+        ("bridge_address", entries[0]["bridge_address"]),
+        ("bridge_secret_file", entries[0]["bridge_secret_file"]),
+        ("channel", "staging"),
+        ("bridge_port", 123),
+    ):
+        altered = [dict(entry) for entry in entries]
+        altered[1][field] = replacement
+        configure(altered)
+        with pytest.raises(ValueError):
+            configured_worker_bridge_environment()
+
+    for changed in (dict(entries[1], bridge_address="0.0.0.0"), dict(entries[1], repository="bad\nowner/repo"), {key: value for key, value in entries[1].items() if key != "channel"}):
+        configure([entries[0], changed, entries[2]])
+        with pytest.raises(ValueError):
+            configured_worker_bridge_environment()
+
+    configure(entries)
     monkeypatch.setenv("AUTO_CODER_BETA_BRIDGE_ADDRESS", "10.31.2.12")
-    monkeypatch.setenv("AUTO_CODER_BETA_REPOSITORY", "fixture/beta\nother")
-    with pytest.raises(ValueError, match="identity"):
+    with pytest.raises(ValueError, match="legacy"):
         configured_worker_bridge_environment()
 
 

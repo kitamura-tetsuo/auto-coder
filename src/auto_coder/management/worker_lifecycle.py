@@ -79,7 +79,7 @@ class WorkerLifecycle:
 
         action = ActionClass.DEPLOYMENT if record.intent.action == "deploy_beta_source" else ActionClass.WORKER_CONTROL
         current = self.runtime._resolve(target_id, action)
-        if not isinstance(current, ResolvedWorker) or current.target != record.intent.target:
+        if not isinstance(current, ResolvedWorker) or current.target != record.intent.target or self.runtime._record_client(record) is None:
             return "current_policy_unavailable" if isinstance(current, dict) and current.get("status") == "UNAVAILABLE" else "current_policy_denied"
         return None
 
@@ -136,6 +136,7 @@ class WorkerLifecycle:
             return self._answer("INVALID_REQUEST", "start_requires_stopped_worker")
         params = (
             ActionParameter("target_id", target_id),
+            ActionParameter("worker_binding", resolved.client.config.binding_digest),
             ActionParameter("supervisor_generation", expected_supervisor_generation),
             ActionParameter("runtime_id", expected_runtime_id or "-"),
             ActionParameter("source_sha", selected_git_sha or "-"),
@@ -149,7 +150,7 @@ class WorkerLifecycle:
         if old.status is ReadStatus.UNAVAILABLE:
             return self._answer("UNAVAILABLE", "journal_unavailable")
         if old.record is not None:
-            if old.record.intent_fingerprint != intent.fingerprint():
+            if not self.runtime._same_original_intent(old.record, intent):
                 return self._answer("CONFLICT", "idempotency_key_conflict", operation_id=old.record.operation_id)
             updated = await self.runtime.dispatcher.submit(old.record.operation_id)
             return self.project(updated or old.record)
@@ -158,7 +159,7 @@ class WorkerLifecycle:
             return mutation
 
         def inspect_locked() -> tuple[WorkerFence, dict[str, object]] | None:
-            with self.runtime._worker_locks[mutation.client.config.channel]:
+            with self.runtime._worker_locks[mutation.target_id]:
                 return self._inspection(mutation.client)
 
         inspected = await asyncio.to_thread(inspect_locked)
@@ -221,8 +222,10 @@ class WorkerLifecycle:
             operation_id=record.operation_id,
             phase=record.phase.value,
             action=record.intent.action,
+            target_id=self.runtime._params(record).get("target_id"),
             channel=record.intent.target.channel,
             instance_id=record.intent.target.instance_id,
+            repository=record.intent.target.repository,
             source_sha=snapshot.get("source_sha"),
             revalidation_observation=snapshot.get("revalidation_observation"),
             incumbent=snapshot.get("incumbent"),
@@ -385,19 +388,20 @@ class WorkerLifecycle:
         return record
 
     def process(self, record: OperationRecord) -> OperationRecord | None:
-        lock = self.runtime._worker_locks.get(record.intent.target.channel)
-        if lock is None:
+        bound = self.runtime._record_client(record)
+        if bound is None:
             return record
         # The network client caches the signed Supervisor incarnation. Keep an
         # inspect/read/dispatch sequence bound to that same client generation
         # while concurrent management reads and admissions use the client.
-        with lock:
+        with self.runtime._worker_locks[bound[0]]:
             return self._process_locked(record)
 
     def _process_locked(self, record: OperationRecord) -> OperationRecord | None:
-        client = self.runtime.clients.get(record.intent.target.channel)
-        if client is None or (client.config.instance_id, client.config.channel, client.config.repository) != (record.intent.target.instance_id, record.intent.target.channel, record.intent.target.repository):
+        bound = self.runtime._record_client(record)
+        if bound is None:
             return record
+        _, client = bound
         try:
             persisted = self.runtime.journal.lifecycle_snapshot(record.operation_id)
             if persisted is None:

@@ -194,32 +194,30 @@ def test_compose_channels_runtime_mounts_and_isolation() -> None:
     compose_data = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
 
     services = compose_data.get("services", {})
-    assert set(services.keys()) == {"release", "beta"}
+    assert set(services) == {"release", "beta", "beta-agent-table"}
 
     compose_text = compose_path.read_text(encoding="utf-8")
     dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text()
-    assert compose_text.count('AUTO_CODER_LOCAL_WORKER_UID: "65532"') == 2
-    assert compose_text.count('AUTO_CODER_LOCAL_WORKER_GID: "65532"') == 2
-    assert compose_text.count("- /sys/fs/cgroup:/sys/fs/cgroup:rw") == 2
-    assert compose_text.count("privileged: true") == 2
-    assert compose_text.count("cgroup: host") == 2
+    assert compose_text.count('AUTO_CODER_LOCAL_WORKER_UID: "65532"') == 3
+    assert compose_text.count('AUTO_CODER_LOCAL_WORKER_GID: "65532"') == 3
+    assert compose_text.count("- /sys/fs/cgroup:/sys/fs/cgroup:rw") == 3
+    assert compose_text.count("privileged: true") == 3
+    assert compose_text.count("cgroup: host") == 3
     assert "useradd --uid 65532 --gid 65532" in dockerfile
 
-    release = services["release"]
-    beta = services["beta"]
+    # REQ-003: Every worker gets a private runtime HOME.
+    for service in services.values():
+        assert service["environment"]["HOME"] == "/runtime/home"
 
-    # REQ-003: Effective HOME is /runtime/home
-    assert release["environment"]["HOME"] == "/runtime/home"
-    assert beta["environment"]["HOME"] == "/runtime/home"
-
-    # REQ-004: Persistent runtime mounts are separated between channels
+    # REQ-004: Both beta workers and release use distinct runtime/workspace roots.
     shared_infrastructure = {"/routing", "/sys/fs/cgroup"}
-    release_vols = {v.split(":")[0] for v in release["volumes"] if not any(f":{target}" in v for target in shared_infrastructure)}
-    beta_vols = {v.split(":")[0] for v in beta["volumes"] if not any(f":{target}" in v for target in shared_infrastructure)}
-
-    assert "./runtime/release" in release_vols
-    assert "./runtime/beta" in beta_vols
-    assert release_vols.isdisjoint(beta_vols)
+    volumes = {}
+    for name, service in services.items():
+        volumes[name] = {v.split(":")[0] for v in service["volumes"] if not any(f":{target}" in v for target in shared_infrastructure)}
+    assert "./runtime/release" in volumes["release"]
+    assert "./runtime/beta" in volumes["beta"]
+    assert "./runtime/beta-agent-table" in volumes["beta-agent-table"]
+    assert all(volumes[first].isdisjoint(volumes[second]) for first in services for second in services if first != second)
 
 
 def test_effective_home_and_xdg_storage_resolution() -> None:

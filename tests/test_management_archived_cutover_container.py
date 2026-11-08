@@ -121,7 +121,7 @@ def worker_compose_profile(fixtures: Path, subnet: str, gateway: str):
 
     network = ipaddress.ip_network(subnet)
     address = ipaddress.ip_address(gateway)
-    if address not in network.hosts() or address in {network.network_address + 11, network.network_address + 12}:
+    if address not in network.hosts() or address in {network.network_address + 11, network.network_address + 12, network.network_address + 13}:
         raise ValueError("fixture gateway overlaps a worker or leaves its subnet")
     profile = yaml.safe_load((fixtures / "compose.supervisor-network.yml").read_text())
     profile["networks"]["private"]["ipam"]["config"] = [{"subnet": subnet, "gateway": gateway}]
@@ -271,16 +271,24 @@ class Chain:
             bindings = required_exclusions(captured)
             config.update(fresh_guard_path="/management-initialization/fresh-guard.sock", fresh_prior_lock_path="/management-prior-owner.lock", archived_exclusions=[] if omit_archive else [asdict(item) for item in bindings])
         if self.worker_environment is not None:
-            for channel in ("beta", "release"):
-                runtime["environment"].update(
-                    {
-                        f"AUTO_CODER_{channel.upper()}_SUPERVISOR_INSTANCE_ID": channel + "-worker",
-                        f"AUTO_CODER_{channel.upper()}_REPOSITORY": "fixture/" + channel,
-                        f"AUTO_CODER_{channel.upper()}_BRIDGE_ADDRESS": self.worker_environment[f"SUPERVISOR_{channel.upper()}_IP"],
-                        f"AUTO_CODER_{channel.upper()}_BRIDGE_PORT": "8843",
-                        f"AUTO_CODER_{channel.upper()}_BRIDGE_SECRET_FILE": "/run/secrets/" + channel + "_worker_bridge",
-                    }
-                )
+            # The installed management child must receive the same trusted,
+            # target-keyed registry used by the private worker-network fixture.
+            runtime["environment"]["AUTO_CODER_WORKER_REGISTRY"] = json.dumps(
+                {
+                    "workers": [
+                        {
+                            "target_id": channel + "-worker",
+                            "supervisor_instance_id": channel + "-worker",
+                            "channel": channel,
+                            "repository": "fixture/" + channel,
+                            "bridge_address": self.worker_environment[f"SUPERVISOR_{channel.upper()}_IP"],
+                            "bridge_port": 8843,
+                            "bridge_secret_file": "/run/secrets/" + channel + "_worker_bridge",
+                        }
+                        for channel in ("beta", "release")
+                    ]
+                }
+            )
         config_file = root / "bootstrap" / "config.json"
         config_file.write_text(json.dumps(config))
         config_file.chmod(0o600)
@@ -544,9 +552,9 @@ class Chain:
 
     def start_workers(self) -> None:
         root = self.root / "workers"
-        for name in ("beta/home", "release/home", "beta-workspace", "release-workspace"):
+        for name in ("beta/home", "release/home", "agent-table/home", "beta-workspace", "release-workspace", "agent-table-workspace"):
             (root / name).mkdir(parents=True)
-        for channel in ("beta", "release"):
+        for channel in ("beta", "release", "agent-table"):
             secret = root / (channel + "-secret")
             secret.write_bytes(base64.b64encode(os.urandom(48)) + b"\n")
             secret.chmod(0o600)
@@ -562,6 +570,7 @@ class Chain:
             SUPERVISOR_BRIDGE_SUBNET=f"10.252.{octet}.0/24",
             SUPERVISOR_RELEASE_IP=f"10.252.{octet}.11",
             SUPERVISOR_BETA_IP=f"10.252.{octet}.12",
+            SUPERVISOR_AGENT_TABLE_IP=f"10.252.{octet}.13",
             SUPERVISOR_TEST_REQUEST_AUDIT="1",
         )
         # Internal networks need an explicit host bridge address for the real
@@ -591,7 +600,7 @@ class Chain:
                 "c=WorkerNetworkClient(WorkerEndpointConfig.environment(sys.argv[1]));c.inspect_supervisor();"
                 "c._call('POST','/v1/fixture-audit-probe',{'operation_id':'fixture-audit-probe'});print('observed')"
             )
-            self.docker("exec", self.worker_manager, "python", "-c", code, channel)
+            self.docker("exec", self.worker_manager, "python", "-c", code, channel + "-worker")
         assert self.worker_posts() == {"beta": 1, "release": 1}
 
     def compose(self, *args: str) -> str:
@@ -606,7 +615,7 @@ class Chain:
         )
         result = {}
         for channel in ("beta", "release"):
-            observed = json.loads(self.docker("exec", self.worker_manager, "python", "-c", code, channel))
+            observed = json.loads(self.docker("exec", self.worker_manager, "python", "-c", code, channel + "-worker"))
             container = self.compose("ps", "-q", channel)
             metadata = json.loads(self.docker("inspect", container))[0]
             result[channel] = {**observed, "container": container, "started": metadata["State"]["StartedAt"]}

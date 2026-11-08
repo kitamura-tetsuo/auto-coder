@@ -15,21 +15,21 @@ returns `UNAVAILABLE`/`UNKNOWN`, never a synthetic healthy heartbeat.
 1. Build/deploy the Supervisor image once. On the **host**, create a dedicated
    user-defined Docker bridge network with an operator-selected IPv4 subnet
    (`docker network create --driver bridge --subnet <private-subnet>
-   <private-network>`). Choose two distinct, unused static addresses in the
-   subnet for beta/release. Do not configure `internal: true` on the worker's
+   <private-network>`). Choose three distinct, unused static addresses for
+   release, outliner beta and agent-table beta. Do not configure `internal: true` on the worker's
    sole egress network if GitHub/provider access is still needed. Existing
    Compose default network membership is retained.
-2. Generate **independent** high-entropy base64 secrets for release and beta
+2. Generate **independent** high-entropy base64 secrets for release and both beta workers
    (for example `openssl rand -base64 48` per secret), in distinct host files
    accessible to the Compose operator. Do not reuse Firebase/OAuth access or
    refresh tokens, and never place the secret text in Compose environment
    values, Git, image layers, application logs, or MCP arguments.
 3. Set `AUTO_CODER_PRIVATE_NETWORK` to the precreated network name;
-   `RELEASE_WORKER_BRIDGE_ADDRESS`, `BETA_WORKER_BRIDGE_ADDRESS` to the reserved
-   distinct IPv4 addresses; `RELEASE_WORKER_BRIDGE_PORT`,
-   `BETA_WORKER_BRIDGE_PORT` to fixed listener ports (1024–65535); and
-   `RELEASE_WORKER_BRIDGE_SECRET_FILE`, `BETA_WORKER_BRIDGE_SECRET_FILE` to
-   **host paths** to the two distinct secret files. Retain the existing
+   `RELEASE_WORKER_BRIDGE_ADDRESS`, `BETA_WORKER_BRIDGE_ADDRESS` and
+   `BETA_AGENT_TABLE_WORKER_BRIDGE_ADDRESS` to distinct IPv4 addresses;
+   corresponding `_PORT` variables to fixed ports (1024–65535), and
+   corresponding `_SECRET_FILE` variables to **host paths** to distinct
+   credential files. Retain the existing
    `RELEASE_REPOSITORY`, `BETA_REPOSITORY`, image and digest settings. Check
    `docker compose -f compose.channels.yml config` and
    `docker compose -f compose.management.yml config` before the one-time host
@@ -45,24 +45,24 @@ returns `UNAVAILABLE`/`UNKNOWN`, never a synthetic healthy heartbeat.
 
 `compose.channels.yml` sets the immutable channel/instance/repository identity,
 private bind address/port, and `AUTO_CODER_BRIDGE_SECRET_FILE` backed by that
-channel's Compose secret. `compose.management.yml` mounts the same *two*
-secrets only in the trusted management container and supplies fixed
-`AUTO_CODER_{RELEASE,BETA}_SUPERVISOR_INSTANCE_ID`, `_REPOSITORY`,
-`_BRIDGE_ADDRESS`, `_BRIDGE_PORT`, `_BRIDGE_SECRET_FILE` variables to the
-`WorkerNetworkClient` constructor. The worker containers receive only their
-own key. No service publishes the Supervisor port on the host (`ports:` and
-Docker socket mounts are absent from both worker services), and the manager's
+channel's Compose secret. `compose.management.yml` mounts all three secrets
+only in the trusted management container and supplies the validated
+`AUTO_CODER_WORKER_REGISTRY` to target-keyed clients. The worker containers
+receive only their own key. See
+[`management-multi-worker-registry.md`](management-multi-worker-registry.md)
+for the schema and migration. No service publishes the Supervisor port on the host (`ports:` and
+Docker socket mounts are absent from all worker services), and the manager's
 existing loopback-host-published MCP port is unchanged. Bootstrap refuses a
 partially specified, public/loopback or nonlocal bind, missing credential,
 invalid channel/repository, or unconfigured trusted source root **before** it
 launches a worker. It does not fall back to public binding or Docker operations.
 
 The management bootstrap itself launches an immutable runtime with an explicit
-environment. It forwards **only** the ten validated worker-endpoint metadata
-variables from the operator-provided Compose environment into its replaceable
-MCP child; a partial pair, identical keys, duplicated endpoints or duplicated
-instance IDs is rejected. The management application's composition root retains
-two fixed typed `WorkerNetworkClient` instances for authorized future MCP
+environment. It forwards **only** the complete validated worker-registry JSON
+from the operator-provided Compose environment into its replaceable MCP child;
+duplicate credentials, endpoints, instances and repository owners are rejected.
+The management application's composition root retains one typed
+`WorkerNetworkClient` instance per target for authorized future MCP
 action dispatchers. It does not create an unauthenticated management tool.
 
 ## Machine authentication and request correlation

@@ -18,7 +18,7 @@ from .retained_journal import RetainedJournal
 from .retained_startup import retained_from_fresh_intent
 from .source_acceptance import SourceAcceptancePublisher
 from .source_evidence import BetaEvidenceReader
-from .worker_network_client import WorkerEndpointConfig, WorkerNetworkClient, configured_worker_bridge_environment
+from .worker_network_client import WorkerNetworkClient, configured_worker_registry
 
 
 def create_management_app(
@@ -36,9 +36,20 @@ def create_management_app(
     if grants is None:
         identity = FirebaseOperatorIdentity(IdentityConfig(settings.oauth.firebase_project_id, settings.state_root / "allowed_uids.json"))
         grants = OAuthGrantService(settings.oauth, identity)
-    clients: dict[str, WorkerNetworkClient] = worker_clients if worker_clients is not None else {}
-    if worker_clients is None and configured_worker_bridge_environment():
-        clients = {channel: WorkerNetworkClient(WorkerEndpointConfig.environment(channel)) for channel in ("beta", "release")}
+    # Injected clients use the same target identity normalization as configured
+    # clients; the caller's dictionary key must never select a channel fallback.
+    supplied = worker_clients if worker_clients is not None else {target: WorkerNetworkClient(config) for target, config in configured_worker_registry().items()}
+    clients: dict[str, WorkerNetworkClient] = {}
+    repositories: set[str] = set()
+    instances: set[str] = set()
+    for client in supplied.values():
+        config = client.config
+        target = config.target_id or config.instance_id
+        if target in clients or config.instance_id in instances or config.repository in repositories:
+            raise ValueError("worker targets, supervisor instances and repository ownership must be unique")
+        clients[target] = client
+        instances.add(config.instance_id)
+        repositories.add(config.repository)
     owned_retained = retained_from_fresh_intent(settings, source_authority=self_update_source_authority, serving_process=True) if retained_journal is None else None
     selected_retained = retained_journal if retained_journal is not None else owned_retained
     runtime = ManagementRuntime(

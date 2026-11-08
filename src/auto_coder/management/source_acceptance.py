@@ -193,7 +193,7 @@ class BetaAcceptanceHandler:
             return "original_authority_denied"
         target_id = next((part.value for part in record.intent.parameters if part.name == "target_id"), None)
         resolved = self.runtime._resolve(target_id, self.runtime.acceptance_action_class)  # type: ignore[attr-defined]
-        if not self.runtime.is_resolved_worker(resolved) or resolved.target != record.intent.target:  # type: ignore[attr-defined]
+        if not self.runtime.is_resolved_worker(resolved) or resolved.target != record.intent.target or self.runtime._record_client(record) is None:  # type: ignore[attr-defined]
             return "current_policy_unavailable" if isinstance(resolved, dict) and resolved.get("status") == "UNAVAILABLE" else "current_policy_denied"
         return None
 

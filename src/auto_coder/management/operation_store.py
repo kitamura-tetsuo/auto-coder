@@ -91,9 +91,36 @@ class ManagementOperationStore:
           operation_id TEXT PRIMARY KEY, revision INTEGER NOT NULL,
           snapshot_json TEXT NOT NULL, updated_at REAL NOT NULL,
           FOREIGN KEY(operation_id) REFERENCES operations(operation_id));
+        CREATE TABLE IF NOT EXISTS legacy_worker_bindings (
+          operation_id TEXT PRIMARY KEY, binding_digest TEXT NOT NULL,
+          FOREIGN KEY(operation_id) REFERENCES operations(operation_id));
         """
         )
         return connection
+
+    def pin_legacy_worker_binding(self, operation_id: str, digest: str) -> bool:
+        """Pin a pre-registry operation once, across subsequent restarts.
+
+        Only older records lack an immutable bridge digest. The operator must
+        migrate them with the original endpoints still provisioned.
+        """
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            return False
+        try:
+            connection = self._connect()
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute("SELECT binding_digest FROM legacy_worker_bindings WHERE operation_id=?", (operation_id,)).fetchone()
+                if row is None:
+                    connection.execute("INSERT INTO legacy_worker_bindings VALUES (?,?)", (operation_id, digest))
+                    connection.commit()
+                    return True
+                connection.rollback()
+                return row["binding_digest"] == digest
+            finally:
+                connection.close()
+        except (sqlite3.Error, OSError):
+            return False
 
     def smoke_snapshot(self, operation_id: str) -> tuple[int, dict[str, object]] | None:
         """Read the exact acceptance operation's local smoke evidence.

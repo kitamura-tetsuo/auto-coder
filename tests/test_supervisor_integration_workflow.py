@@ -26,7 +26,7 @@ OTHER_REQUIRED_NODEIDS = (
     "tests/test_supervisor_container_integration.py::test_release_beta_held_drain_replay_restart_and_crash_reconstruction",
     "tests/test_supervisor_container_integration.py::test_real_process_issues_bootstrap_and_staged_ready_binding",
     "tests/test_supervisor_container_integration.py::test_independently_prepared_staged_restart_preserves_held_intent",
-    "tests/test_worker_network_integration.py::test_two_channel_manager_restart_peer_isolation_and_lost_response",
+    "tests/test_worker_network_integration.py::test_three_target_manager_restart_peer_isolation_and_lost_response",
     "tests/test_management_beta_deploy_container.py::test_authenticated_beta_source_installs_real_version_and_reconciles_after_lost_reply",
 )
 
