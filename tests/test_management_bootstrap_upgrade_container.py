@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import select
 import signal
 import sqlite3
 import subprocess
@@ -521,7 +522,7 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
 
 
 @pytest.mark.timeout(900)
-@pytest.mark.parametrize("failure_point", ("lost-stop", "lost-start", "postlaunch-proxy-failed", "retained-unresolved-work", "predecessor-generation"))
+@pytest.mark.parametrize("failure_point", ("lost-stop", "lost-start", "postlaunch-proxy-failed", "retained-unresolved-work", "predecessor-generation", "host-process-interrupted"))
 def test_disposable_operator_failure_fences_real_docker(installed_chain: InstalledChain, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], failure_point: str) -> None:
     """Dispatch real Docker effects, then lose an acknowledgement or the new proxy."""
     chain = installed_chain
@@ -627,6 +628,56 @@ def test_disposable_operator_failure_fences_real_docker(installed_chain: Install
             assert chain.snapshot(first) == prior_snapshot
             assert chain.docker("inspect", "--format", "{{.State.Running}}", first.container) == "true"
             assert chain.docker("inspect", "--format", "{{.State.Running}}", first.proxy) == "true"
+            return
+        if failure_point == "host-process-interrupted":
+            # A disposable forked controller really holds the ancestor fence
+            # and dispatches SIGTERM to the exact old proxy. Killing that host
+            # controller drops the continuous locks without authorizing replay.
+            read_fd, write_fd = os.pipe()
+            child = os.fork()
+            if child == 0:
+                os.close(read_fd)
+
+                def pause_after_real_stop(*args: str, timeout: float = 30) -> str:
+                    answer = actual_docker(*args, timeout=timeout)
+                    if args == ("kill", "--signal=SIGTERM", first.proxy):
+                        os.write(write_fd, b"1")
+                        signal.pause()
+                    return answer
+
+                upgrade._docker = pause_after_real_stop
+                try:
+                    upgrade.apply(operator, plan_id, auth_file, authorize_source_read=True)
+                except BaseException:
+                    os._exit(41)
+                os._exit(42)
+            os.close(write_fd)
+            try:
+                poll = select.poll()
+                poll.register(read_fd, select.POLLIN | select.POLLHUP)
+                assert poll.poll(120000), "disposable controller never reached the actual stop"
+                assert os.read(read_fd, 1) == b"1", "controller stopped before the expected physical effect"
+            finally:
+                os.kill(child, signal.SIGKILL)
+                os.waitpid(child, 0)
+                os.close(read_fd)
+            persisted = upgrade._operation(operator, plan_id)
+            assert persisted.stage == "stopping"
+            assert persisted.effect == "stop-proxy" and persisted.effect_target == first.proxy
+            assert persisted.completed == ()
+            assert chain.docker("inspect", "--format", "{{.State.Running}}", first.proxy) == "false"
+            assert chain.docker("inspect", "--format", "{{.State.Running}}", first.container) == "true"
+            assert chain.snapshot(first) == prior_snapshot and chain.workers() == baseline
+            code, observed = call_cli("status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file))
+            assert code == 2 and observed["stage"] == "needs-attention"
+            assert observed["uncertain_effect"] == "stop-proxy"
+            assert observed["uncertain_target"] == first.proxy
+            assert observed["physical_effect_observation"] == "same-predecessor-stopped"
+            code, replay = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+            assert code == 2 and replay["stage"] == "needs-attention"
+            assert upgrade._operation(operator, plan_id) == persisted
+            assert chain.docker("inspect", "--format", "{{.State.Running}}", successor.container) == "false"
+            assert chain.workers() == baseline
             return
         code, failed = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
         assert code == 2 and failed["stage"] in {"needs-attention", "prerequisite-blocked"}
