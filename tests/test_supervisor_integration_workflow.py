@@ -13,6 +13,22 @@ import yaml
 
 ROOT = Path(__file__).parents[1]
 GROUPS = {"worker-bridge", "management-self-update", "fresh-host", "isolated-containers"}
+SMOKE_CASES = (
+    "test_local_smoke_uses_installed_worker_real_progress_and_original_journal",
+    "test_local_smoke_diagnostics_do_not_advance_real_worker_progress",
+    "test_local_smoke_preserves_original_evidence_across_real_faults",
+    "test_local_smoke_later_selection_preserves_proof_and_publication_authority",
+    "test_local_smoke_selected_retry_and_same_sha_supersession",
+    "test_local_smoke_distinct_revision_and_worker_lifecycle_outcomes",
+)
+OTHER_REQUIRED_NODEIDS = (
+    "tests/test_supervisor_container_integration.py::test_production_entrypoint_is_private_pid1_without_docker_socket",
+    "tests/test_supervisor_container_integration.py::test_release_beta_held_drain_replay_restart_and_crash_reconstruction",
+    "tests/test_supervisor_container_integration.py::test_real_process_issues_bootstrap_and_staged_ready_binding",
+    "tests/test_supervisor_container_integration.py::test_independently_prepared_staged_restart_preserves_held_intent",
+    "tests/test_worker_network_integration.py::test_two_channel_manager_restart_peer_isolation_and_lost_response",
+    "tests/test_management_beta_deploy_container.py::test_authenticated_beta_source_installs_real_version_and_reconciles_after_lost_reply",
+)
 
 
 def _workflow() -> dict:
@@ -148,8 +164,31 @@ def test_all_baseline_selectors_and_execution_contexts_are_preserved() -> None:
     assert "-m supervisor_integration" in containers["run"]
     assert containers["env"]["AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION"] == "1"
     required = json.loads(workflow["jobs"]["isolated-containers"]["env"]["SUPERVISOR_REQUIRED_NODEIDS"])
-    assert len(required) == 7
+    assert len(required) == len(set(required))
+    assert set(OTHER_REQUIRED_NODEIDS) | {f"tests/test_beta_runtime_smoke_container.py::{name}" for name in SMOKE_CASES} <= set(required)
     assert all(nodeid.startswith("tests/") for nodeid in required)
+
+
+def test_all_six_smoke_families_are_collected_with_the_required_marker(_use_real_commands) -> None:
+    """A removed case or marker fails before the Docker integration run begins."""
+    command = [
+        "uv",
+        "run",
+        "pytest",
+        "--collect-only",
+        "-q",
+        "-m",
+        "supervisor_integration",
+        "tests/test_beta_runtime_smoke_container.py",
+    ]
+    collected = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=90)
+    assert collected.returncode == 0, collected.stdout + collected.stderr
+    nodeids = set(collected.stdout.splitlines())
+    required = json.loads(_workflow()["jobs"]["isolated-containers"]["env"]["SUPERVISOR_REQUIRED_NODEIDS"])
+    for name in SMOKE_CASES:
+        nodeid = f"tests/test_beta_runtime_smoke_container.py::{name}"
+        assert nodeid in nodeids
+        assert nodeid in required
 
 
 def test_result_inventory_fails_closed_and_discovers_whole_file_cases(tmp_path: Path, _use_real_commands) -> None:
