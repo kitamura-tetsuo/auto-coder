@@ -333,6 +333,7 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         assert code == 0 and beta_status["stage"] == "beta-deploy-prerequisites-verified"
         assert beta_status["selected_source_sha"] == chain.current_sha
         assert beta_status["selection_operation_id"] == "r101"
+        assert upgrade._operation(operator, plan_id).stage == "beta-deploy-prerequisites-verified"
         assert len(effects) == 4 and chain.workers() == original_worker
         assert chain.worker_posts() == before_readback_posts
         # Keep the host's tested-source fixture intact while the actual child
@@ -350,6 +351,7 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         try:
             code, unavailable = call_cli("status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
             assert code == 0 and unavailable["stage"] == "application-ready"
+            assert upgrade._operation(operator, plan_id).stage == "application-ready"
             assert unavailable["missing_prerequisites"]
             assert len(effects) == 4 and chain.worker_posts() == before_readback_posts
         finally:
@@ -361,12 +363,14 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         try:
             code, conflicting = call_cli("status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
             assert code == 0 and conflicting["stage"] == "application-ready"
+            assert upgrade._operation(operator, plan_id).stage == "application-ready"
             assert conflicting["missing_prerequisites"]
             assert len(effects) == 4 and chain.worker_posts() == before_readback_posts
         finally:
             subprocess.run(["git", "update-ref", beta_ref, chain.current_sha], cwd=chain.services.repository, check=True)
         code, restored = call_cli("status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
         assert code == 0 and restored["stage"] == "beta-deploy-prerequisites-verified"
+        assert upgrade._operation(operator, plan_id).stage == "beta-deploy-prerequisites-verified"
         assert restored["selected_source_sha"] == chain.current_sha
         assert len(effects) == 4 and chain.worker_posts() == before_readback_posts
         code, repeated = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
