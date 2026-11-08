@@ -1092,7 +1092,10 @@ def status(root: Path, sha: str, *, authenticated_client_file: Path | None = Non
             if original_authority != plan.oauth_authority_sha256 or any(original_grants.get(key) != value for key, value in plan.oauth_grant_sha256.items()):
                 raise ValueError("retained OAuth or grant authority changed")
             answer["stage"] = "application-ready"
-            if operation.stage not in {"application-ready", "beta-deploy-prerequisites-verified"}:
+            # A verified beta prerequisite is a current observation, not a
+            # permanent authorization. Demote the durable stage before every
+            # new source read, including absent consent or a moved selection.
+            if operation.stage != "application-ready":
                 operation = _record_operation(lane, operation, stage="application-ready")
             if not authorize_source_read:
                 answer["missing_prerequisites"] = ["explicit source credential read approval"]
