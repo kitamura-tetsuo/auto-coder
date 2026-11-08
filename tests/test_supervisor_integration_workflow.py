@@ -12,7 +12,7 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).parents[1]
-GROUPS = {"worker-bridge", "management-self-update", "fresh-host", "isolated-containers"}
+GROUPS = {"worker-bridge", "management-self-update", "fresh-host", "operator-upgrade", "isolated-containers"}
 SMOKE_CASES = (
     "test_local_smoke_uses_installed_worker_real_progress_and_original_journal",
     "test_local_smoke_diagnostics_do_not_advance_real_worker_progress",
@@ -109,7 +109,7 @@ def test_each_group_pins_tools_checkout_and_uploads_unique_diagnostics() -> None
         assert summary["if"] == "always()"
         assert summary["continue-on-error"] is True
         assert "scripts/summarize_ci_timing.py supervisor-integration-logs/timing" in summary["run"]
-        if group != "fresh-host":
+        if group not in {"fresh-host", "operator-upgrade"}:
             assert job["env"]["PYTHONPATH"] == "${{ github.workspace }}/scripts"
     assert len(set(artifact_names)) == len(GROUPS)
     for group in ("fresh-host", "isolated-containers"):

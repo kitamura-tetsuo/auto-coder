@@ -248,7 +248,7 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
 
     try:
         code, prepared = call_cli("prepare", "--profile", str(profile_path), "--auth-token-file", str(auth_file), "--authorize-source-read")
-        assert code == 0 and prepared["stage"] == "prepared"
+        assert code == 0 and prepared["stage"] == "prepared", prepared
         assert effects == [] and chain.workers() == original_worker
         plan_id = prepared["plan_sha256"]
         assert isinstance(plan_id, str)
@@ -646,7 +646,7 @@ def test_disposable_operator_failure_fences_real_docker(installed_chain: Install
 
     try:
         code, prepared = call_cli("prepare", "--profile", str(profile), "--auth-token-file", str(auth_file), "--authorize-source-read")
-        assert code == 0 and prepared["stage"] == "prepared"
+        assert code == 0 and prepared["stage"] == "prepared", prepared
         plan_id = prepared["plan_sha256"]
         assert isinstance(plan_id, str)
         if failure_point == "retained-unresolved-work":

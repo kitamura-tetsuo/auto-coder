@@ -9,6 +9,7 @@ REQUIRED_GROUPS = {
     "worker-bridge",
     "management-self-update",
     "fresh-host",
+    "operator-upgrade",
     "isolated-containers",
 }
 
