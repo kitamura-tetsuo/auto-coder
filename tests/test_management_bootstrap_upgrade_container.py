@@ -736,7 +736,8 @@ def test_disposable_operator_failure_fences_real_docker(installed_chain: Install
             assert chain.workers() == baseline
             return
         code, failed = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
-        assert code == 2 and failed["stage"] in {"needs-attention", "prerequisite-blocked"}
+        assert code == 2 and failed["stage"] == "needs-attention", "post-dispatch CLI must not imply a preflight-only refusal"
+        assert "original effect or host fence requires inspection" in failed["reason"]
         persisted = upgrade._operation(operator, plan_id)
         assert persisted.stage == "needs-attention"
         if failure_point == "lost-stop":
