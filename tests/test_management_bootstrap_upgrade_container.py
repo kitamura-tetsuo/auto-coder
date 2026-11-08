@@ -179,6 +179,10 @@ print('DISPOSABLE_READY_VERIFIED')
     assert result.stdout.strip().endswith("DISPOSABLE_READY_VERIFIED")
 
 
+@pytest.mark.skipif(
+    os.geteuid() != 0,
+    reason="root-only disposable Docker verification runs in the mandatory Supervisor operator job",
+)
 @pytest.mark.timeout(1800)
 def test_disposable_operator_prepare_apply_status_real_docker(installed_ready_chain: InstalledChain, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     chain = installed_ready_chain
