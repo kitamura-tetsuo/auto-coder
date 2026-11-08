@@ -303,12 +303,51 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
             return result["stage"] == "application-ready"
 
         wait_for(application_ready, "protected exact-child application readiness", timeout=90)
-        # A host-side fixture source publisher is insufficient: the upgraded
-        # service must itself validate the current selection without deployment.
+        # Read-only beta eligibility must come from the *running upgraded
+        # service's* configured BetaEvidenceReader, over the authenticated MCP
+        # endpoint. The fixture has real Git objects and locally executed tests,
+        # not substituted public GitHub Actions/producer proof.
+        before_readback_posts = chain.worker_posts()
         code, beta_status = call_cli("status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
-        assert code == 0 and beta_status["stage"] == "application-ready"
-        assert beta_status["missing_prerequisites"]
+        assert code == 0 and beta_status["stage"] == "beta-deploy-prerequisites-verified"
+        assert beta_status["selected_source_sha"] == chain.current_sha
+        assert beta_status["selection_operation_id"] == "r101"
         assert len(effects) == 4 and chain.workers() == original_worker
+        assert chain.worker_posts() == before_readback_posts
+        # Keep the host's tested-source fixture intact while the actual child
+        # reader loses the beta selection. A host-only proof must not certify
+        # the upgraded service's eligibility.
+        selection_ref = "refs/tags/auto-coder-beta-selection-current"
+        selected_oid = subprocess.run(
+            ["git", "rev-parse", selection_ref],
+            cwd=chain.services.repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        subprocess.run(["git", "update-ref", "-d", selection_ref], cwd=chain.services.repository, check=True)
+        try:
+            code, unavailable = call_cli("status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+            assert code == 0 and unavailable["stage"] == "application-ready"
+            assert unavailable["missing_prerequisites"]
+            assert len(effects) == 4 and chain.worker_posts() == before_readback_posts
+        finally:
+            subprocess.run(["git", "update-ref", selection_ref, selected_oid], cwd=chain.services.repository, check=True)
+        # A mismatched direct beta pointer must also be rejected by the
+        # service's real selection reader without admitting worker effects.
+        beta_ref = "refs/tags/auto-coder-beta-current"
+        subprocess.run(["git", "update-ref", beta_ref, chain.candidate_sha], cwd=chain.services.repository, check=True)
+        try:
+            code, conflicting = call_cli("status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+            assert code == 0 and conflicting["stage"] == "application-ready"
+            assert conflicting["missing_prerequisites"]
+            assert len(effects) == 4 and chain.worker_posts() == before_readback_posts
+        finally:
+            subprocess.run(["git", "update-ref", beta_ref, chain.current_sha], cwd=chain.services.repository, check=True)
+        code, restored = call_cli("status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+        assert code == 0 and restored["stage"] == "beta-deploy-prerequisites-verified"
+        assert restored["selected_source_sha"] == chain.current_sha
+        assert len(effects) == 4 and chain.worker_posts() == before_readback_posts
         code, repeated = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
         assert code == 2 and repeated["stage"] == "needs-attention"
         assert len(effects) == 4 and chain.workers() == original_worker
@@ -387,6 +426,14 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
             return result["stage"] == "application-ready"
 
         wait_for(c_application_ready, "C installed child, archived A and direct-prior B", timeout=90)
+        # Beta prerequisite verification also survives the second physical
+        # upgrade. Neither the host command nor this readback deploys beta.
+        worker_posts_c = chain.worker_posts()
+        code, c_beta = call_cli("status", "--plan-sha256", c_plan, "--auth-token-file", str(auth_file), "--authorize-source-read")
+        assert code == 0 and c_beta["stage"] == "beta-deploy-prerequisites-verified"
+        assert c_beta["selected_source_sha"] == chain.current_sha
+        assert c_beta["selection_operation_id"] == "r101"
+        assert chain.worker_posts() == worker_posts_c
         chain.assert_workers(third, original_worker_records)
         assert chain.grants() == chain.grants_before
         assert chain.worker_posts() == {"beta": 1, "release": 1}
