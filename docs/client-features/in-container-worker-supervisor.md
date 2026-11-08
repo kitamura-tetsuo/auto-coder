@@ -191,11 +191,18 @@ conservative estimates. Failure to restore/update timing is diagnostic, while
 loss of a required plan, case inventory, job or native receipt fails CI. The
 aggregate uploads queue, runner setup, test-phase duration, overlap, wave peak,
 total runner work, capacity-limited and indivisible over-budget diagnostics.
-Without a compatible prior duration profile the B planner conservatively assigns
-unknown nodes one-second fallback estimates: the first run may therefore form
-only one shard per profile. Later runs can use native measurements; neither
-the 420-second estimated work budget nor four available concurrent runners
-guarantees a ten-minute end-to-end SLA or a particular Actions queue time.
+With no matching native duration history, the Supervisor workflow now supplies
+a **120-second cold-start estimate** for each unknown test node. This is an
+explicit scheduling heuristic, not an invented native measurement: the generic
+B planner retains its default one-second fallback for other callers. The
+conservative bootstrap prevents all expensive fresh-host cases from being
+placed on one runner merely because history has not yet been produced. Real
+native P95 measurements take precedence when greater, while still-unmeasured
+nodes retain at least the cold-start estimate. An indivisible case may exceed
+420 seconds; the twelve-shard cap may raise the effective grouping budget.
+Later successful runs can use native duration snapshots. The 420-second
+estimated work budget and four parallel runners do not guarantee a ten-minute
+end-to-end SLA, available capacity or a particular Actions queue time.
 
 The container group runs network-disabled,
 capability-dropped disposable Docker containers. Each worker service's fixed

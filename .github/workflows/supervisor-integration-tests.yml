@@ -130,6 +130,7 @@ jobs:
           uv run python scripts/plan_ci_shards.py \
             --context supervisor-plan/management-self-update/context.json \
             --duration-profile supervisor-plan/management-self-update/history/profile.json \
+            --cold-start-estimate-seconds 120 \
             --output supervisor-plan/management-self-update/plan.json \
             --log-dir supervisor-plan/management-self-update/logs -- "${selectors[@]}"
           uv run python scripts/supervisor_ci_profiles.py matrix --profile management-self-update \
@@ -206,6 +207,7 @@ jobs:
             "$GITHUB_WORKSPACE/.venv/bin/python" scripts/plan_ci_shards.py \
             --context supervisor-plan/fresh-host/context.json \
             --duration-profile supervisor-plan/fresh-host/history/profile.json \
+            --cold-start-estimate-seconds 120 \
             --output supervisor-plan/fresh-host/plan.json \
             --log-dir supervisor-plan/fresh-host/logs -- "${selectors[@]}"
           sudo chown -R "$(id -u):$(id -g)" supervisor-plan/fresh-host
@@ -265,6 +267,7 @@ jobs:
           uv run python scripts/plan_ci_shards.py \
             --context supervisor-plan/isolated-containers/context.json \
             --duration-profile supervisor-plan/isolated-containers/history/profile.json \
+            --cold-start-estimate-seconds 120 \
             --output supervisor-plan/isolated-containers/plan.json \
             --log-dir supervisor-plan/isolated-containers/logs -- "${selectors[@]}"
           uv run python scripts/supervisor_ci_profiles.py matrix --profile isolated-containers \

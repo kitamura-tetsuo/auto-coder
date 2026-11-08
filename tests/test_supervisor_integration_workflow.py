@@ -41,6 +41,19 @@ def _step(job: dict, name: str) -> dict:
     return next(step for step in job["steps"] if step.get("name") == name)
 
 
+def test_supervisor_planners_bootstrap_without_historical_native_durations() -> None:
+    workflow = _workflow()
+    steps = {
+        "prepare-management": "Plan complete management collection",
+        "prepare-fresh-host": "Plan complete privileged collection",
+        "prepare-containers": "Plan complete container collection",
+    }
+    for planner, step_name in steps.items():
+        run = _step(workflow["jobs"][planner], step_name)["run"]
+        assert "--duration-profile" in run
+        assert "--cold-start-estimate-seconds 120" in run
+
+
 def test_parallel_groups_and_stable_fail_closed_aggregate() -> None:
     workflow = _workflow()
     assert workflow["name"] == "Supervisor Integration Tests"

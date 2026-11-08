@@ -125,6 +125,52 @@ def _apply(project: Path, plan: Path, shard: int, *, record: Path | None = None,
     return _run(project, "-m", "pytest", "-p", "scripts.ci_shard_plugin", f"--ci-plan={plan}", f"--ci-shard={shard}", *selectors, record=record, env_patch=env_patch)
 
 
+def test_cold_start_supervisor_estimate_splits_real_collection_without_history(tmp_path: Path) -> None:
+    project, context_path, context = _project(tmp_path)
+    plan_path = tmp_path / "cold-start-plan.json"
+    command = (
+        str(ROOT / "scripts/plan_ci_shards.py"),
+        "--context",
+        str(context_path),
+        "--cold-start-estimate-seconds",
+        "120",
+        "--output",
+        str(plan_path),
+        "--log-dir",
+        str(tmp_path / "logs"),
+        "--",
+        *context.pytest_args,
+    )
+    created = _run(project, *command)
+    assert created.returncode == 0, created.stdout + created.stderr
+    verified, _raw = read_plan(plan_path)
+    semantic = json.loads(plan_path.read_text())["semantic"]
+    assert len(verified.inventory) == 5
+    assert len(verified.shards) == 2
+    assert [len(shard) for shard in verified.shards] == [3, 2]
+    assert Counter(node for shard in verified.shards for node in shard) == Counter(verified.inventory)
+    assert {entry["provenance"] for entry in semantic["estimates"]} == {"fallback_cold_start"}
+    assert {entry["estimated_ms"] for entry in semantic["estimates"]} == {120_000}
+    assert semantic["duration_source"]["status"] == "unavailable"
+
+    invalid = _run(
+        project,
+        str(ROOT / "scripts/plan_ci_shards.py"),
+        "--context",
+        str(context_path),
+        "--cold-start-estimate-seconds",
+        "0",
+        "--output",
+        str(tmp_path / "invalid-plan.json"),
+        "--log-dir",
+        str(tmp_path / "invalid-logs"),
+        "--",
+        *context.pytest_args,
+    )
+    assert invalid.returncode != 0
+    assert not (tmp_path / "invalid-plan.json").exists()
+
+
 def test_contiguous_minimal_budget_boundary_and_indivisible_long_test() -> None:
     inventory = tuple(f"test.py::test_{position}" for position in range(5))
     estimates = [{"nodeid": node, "estimated_ms": ms} for node, ms in zip(inventory, (210_000, 210_000, 210_000, 821_000, 210_000))]
