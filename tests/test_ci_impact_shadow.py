@@ -148,11 +148,8 @@ def test_production_cli_freezes_only_old_edges_and_finds_real_omitted_failure(tm
     assert json.loads((artifacts / "bad-report.json").read_text(encoding="utf-8"))["comparison_status"] == "unavailable"
 
 
-
 @pytest.mark.parametrize(("fixture_value", "expected_exit"), [(1, 0), (2, 1)])
-def test_changed_test_module_exporting_shared_fixture_forces_full(
-    tmp_path: Path, fixture_value: int, expected_exit: int
-) -> None:
+def test_changed_test_module_exporting_shared_fixture_forces_full(tmp_path: Path, fixture_value: int, expected_exit: int) -> None:
     checkout = _checkout(tmp_path, "def test_control():\n    assert True\n")
     fixture_file = "tests/test_fixture.py"
     fixture_module = (
@@ -197,12 +194,25 @@ def test_changed_test_module_exporting_shared_fixture_forces_full(
     baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
     current_path.write_text(json.dumps(current), encoding="utf-8")
     command = [
-        sys.executable, "-m", "scripts.report_test_impact",
-        "--baseline", str(baseline_path), "--current", str(current_path),
-        "--baseline-run-id", "511", "--baseline-run-attempt", "3",
-        "--repository", "owner/repo", "--repository-dir", str(checkout),
-        "--output", str(output_dir / "report.json"),
-        "--summary", str(output_dir / "summary.md"),
+        sys.executable,
+        "-m",
+        "scripts.report_test_impact",
+        "--baseline",
+        str(baseline_path),
+        "--current",
+        str(current_path),
+        "--baseline-run-id",
+        "511",
+        "--baseline-run-attempt",
+        "3",
+        "--repository",
+        "owner/repo",
+        "--repository-dir",
+        str(checkout),
+        "--output",
+        str(output_dir / "report.json"),
+        "--summary",
+        str(output_dir / "summary.md"),
     ]
     result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr

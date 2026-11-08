@@ -285,7 +285,6 @@ def _is_test_file(path: str) -> bool:
     return len(parts) >= 2 and parts[0] == "tests" and parts[-1].startswith("test_") and parts[-1].endswith(".py")
 
 
-
 def _ordinary_test_mark(decorator: ast.expr) -> bool:
     """Recognize marks on local tests without assuming arbitrary decorators are local."""
     while isinstance(decorator, ast.Call):
