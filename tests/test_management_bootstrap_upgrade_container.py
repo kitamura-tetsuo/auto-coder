@@ -184,6 +184,7 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
     chain.ensure_proxy(first)
     original_worker = chain.workers()
     original_a = chain.seed(first)
+    original_worker_records = chain.seed_workers(first)
     next_generation = chain.prepare("manager-b", first)
     profile_path, _, new_watcher = approved_profile(chain, first, next_generation)
     auth_file = tmp_path / "operator-auth-client"
@@ -281,6 +282,66 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         assert len(effects) == 4 and chain.workers() == original_worker
         assert chain.call(next_generation, "auto_coder_whoami", {})["uid"] == "operator"
         assert chain.call(next_generation, "auto_coder_operation_get", {"operation_id": original_a.operation_id})["history_origin"] == "retained_prior_instance"
+
+        # B is now the actual online predecessor. Explicitly stop only its
+        # known disposable watcher under the operator's service-owner boundary.
+        old_b = chain.seed(next_generation)
+        snapshot_b = chain.snapshot(next_generation)
+        b_operation = upgrade._operation(operator, plan_id)
+        assert b_operation.stage == "application-ready" and b_operation.watcher_pid > 0
+        assert upgrade._watcher_lifetime(b_operation.watcher_pid) == b_operation.watcher_start_token
+        assert upgrade._watcher_is_owned(new_watcher.parent / "watch", b_operation, new_watcher)
+        os.kill(b_operation.watcher_pid, signal.SIGTERM)
+
+        def b_watcher_exited() -> bool:
+            try:
+                upgrade._watcher_lifetime(b_operation.watcher_pid)
+            except (OSError, ValueError):
+                return True
+            return False
+
+        wait_for(b_watcher_exited, "disposable prior watcher exit", timeout=20)
+        os.waitpid(b_operation.watcher_pid, 0)
+        assert chain.workers() == original_worker
+
+        third = chain.prepare("manager-c", next_generation)
+        profile_c, _, _ = approved_profile(chain, next_generation, third)
+        code, c_prepared = call_cli("prepare", "--profile", str(profile_c), "--auth-token-file", str(auth_file), "--authorize-source-read")
+        assert code == 0 and c_prepared["stage"] == "prepared"
+        c_plan = c_prepared["plan_sha256"]
+        assert isinstance(c_plan, str) and c_plan != plan_id
+        assert len(effects) == 4 and chain.workers() == original_worker
+        code, c_applied = call_cli("apply", "--plan-sha256", c_plan, "--auth-token-file", str(auth_file), "--authorize-source-read")
+        assert code == 0 and c_applied["stage"] == "successor-launch-uncertain"
+        assert effects[4:] == [
+            ("kill", "--signal=SIGTERM", next_generation.proxy),
+            ("kill", "--signal=SIGTERM", next_generation.container),
+            ("start", third.container),
+            ("start", third.proxy),
+        ]
+        assert chain.snapshot(first) == old_snapshot
+        assert chain.snapshot(next_generation) == snapshot_b
+        assert chain.workers() == original_worker
+
+        def c_application_ready() -> bool:
+            _, result = call_cli("status", "--plan-sha256", c_plan, "--auth-token-file", str(auth_file))
+            return result["stage"] == "application-ready"
+
+        wait_for(c_application_ready, "C installed child, archived A and direct-prior B", timeout=90)
+        chain.assert_workers(third, original_worker_records)
+        for previous in (first, next_generation):
+            chain.owner_refused(previous)
+        # B is the direct previous history; A is an immutable archived
+        # exclusion, not a source of re-admissible old idempotency keys.
+        response_b = chain.call(third, "auto_coder_update_management_service", {"source_sha": "a" * 40, "idempotency_key": old_b.intent.idempotency_key})
+        assert response_b["operation_id"] == old_b.operation_id and response_b["history_origin"] == "retained_prior_instance"
+        response_a = chain.call(third, "auto_coder_update_management_service", {"source_sha": "a" * 40, "idempotency_key": original_a.intent.idempotency_key})
+        assert response_a["status"] == "CONFLICT" and response_a.get("operation_id") is None
+        assert chain.call(third, "auto_coder_operation_get", {"operation_id": original_a.operation_id})["status"] == "NOT_FOUND"
+        assert chain.snapshot(first) == old_snapshot and chain.snapshot(next_generation) == snapshot_b
+        assert chain.workers() == original_worker
+        code, replay = call_cli("apply", "--plan-sha256", c_plan, "--auth-token-file", str(auth_file), "--authorize-source-read")
+        assert code == 2 and replay["stage"] == "needs-attention" and len(effects) == 8
     finally:
         for record in operator.glob("*/upgrade-operation.json"):
             try:
