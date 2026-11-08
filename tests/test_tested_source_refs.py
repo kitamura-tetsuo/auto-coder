@@ -41,7 +41,7 @@ def test_pull_request_full_source_selection_checks_out_head_without_publishing()
     checkout = next(step for step in steps if str(step.get("uses", "")).startswith("actions/checkout@"))
     assert checkout["with"]["ref"] == "${{ github.event.pull_request.head.sha || github.sha }}"
     command = next(step for step in steps if step.get("name") == "Run complete required source selection")["run"]
-    assert command.startswith("uv run pytest -p scripts.ci_shard_plugin -p scripts.source_ci_receipt_plugin")
+    assert command.startswith("uv run python -m pytest -p scripts.ci_shard_plugin -p scripts.source_ci_receipt_plugin")
     assert "-m 'not opencode_live'" in command
     assert "--ci-plan=" in command and "--source-ci-receipt=" in command
     assert "--splits" not in command

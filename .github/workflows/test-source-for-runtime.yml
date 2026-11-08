@@ -138,7 +138,7 @@ jobs:
         env:
           AUTO_CODER_CI_TIMING_DIR: ${{ runner.temp }}/source-shard/timing
         run: >-
-          uv run pytest -p scripts.ci_shard_plugin -p scripts.source_ci_receipt_plugin
+          uv run python -m pytest -p scripts.ci_shard_plugin -p scripts.source_ci_receipt_plugin
           --ci-plan="$RUNNER_TEMP/source-plan/plan.json"
           --ci-shard=${{ matrix.shard }}
           --source-ci-receipt="$RUNNER_TEMP/source-shard/receipt.json"
