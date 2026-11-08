@@ -1133,6 +1133,8 @@ def status(root: Path, sha: str, *, authenticated_client_file: Path | None = Non
                     evidence.get("proof_run_id"),
                     evidence.get("proof_run_attempt"),
                 )
+                selection_oid = evidence.get("selection_oid")
+                selection_operation_id = evidence.get("selection_operation_id")
                 if (
                     selected_identity[0] != target
                     or selected_identity[1] != MANAGEMENT_REPOSITORY
@@ -1144,10 +1146,10 @@ def status(root: Path, sha: str, *, authenticated_client_file: Path | None = Non
                     or selected_identity[4] <= 0
                     or type(selected_identity[5]) is not int
                     or selected_identity[5] <= 0
-                    or not isinstance(evidence.get("selection_oid"), str)
-                    or _REVISION.fullmatch(evidence["selection_oid"]) is None
-                    or not isinstance(evidence.get("selection_operation_id"), str)
-                    or not evidence["selection_operation_id"]
+                    or not isinstance(selection_oid, str)
+                    or _REVISION.fullmatch(selection_oid) is None
+                    or not isinstance(selection_operation_id, str)
+                    or not selection_operation_id
                 ):
                     answer["missing_prerequisites"] = [f"{target}: upgraded-service source/selection identity conflict"]
                     return answer
