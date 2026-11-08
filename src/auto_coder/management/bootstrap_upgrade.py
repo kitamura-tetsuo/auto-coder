@@ -70,6 +70,20 @@ _STAGES = frozenset(
     }
 )
 _EFFECTS = ("stop-proxy", "stop-management", "start-management", "start-proxy", "start-watcher")
+# A matching public source must have completed every required supervisor
+# producer lane. The matrix and operator lane are separate mandatory jobs.
+_REQUIRED_SUPERVISOR_JOBS = frozenset(
+    {
+        "Worker processes and bridge",
+        "Authenticated management self-update",
+        "Fresh host verification (core)",
+        "Fresh host verification (installed-early)",
+        "Fresh host verification (installed-late)",
+        "Operator upgrade production-origin Docker",
+        "Isolated Supervisor containers",
+        "Supervisor Integration Tests",
+    }
+)
 
 
 class UpgradeUnavailable(RuntimeError):
@@ -327,9 +341,24 @@ def _source_proof(publisher: TestedSourcePublisher, source_sha: str) -> tuple[st
         data = jobs.data if jobs.status == 200 else None
         if not isinstance(data, dict) or not isinstance(data.get("jobs"), list) or data.get("total_count") != len(data["jobs"]):
             continue
-        matching = [item for item in data["jobs"] if isinstance(item, dict) and item.get("name") == "Fresh host verification"]
-        if len(matching) == 1 and matching[0].get("status") == "completed" and matching[0].get("conclusion") == "success" and matching[0].get("run_attempt") == run.get("run_attempt", 1):
-            return proof.tag_object_oid, run["id"], run.get("run_attempt", 1)
+        # The old single "Fresh host verification" job was split into three
+        # mandatory matrix jobs and a separate production-origin operator lane.
+        # Do not accept an aggregate green conclusion when any required job is
+        # missing, skipped, from another attempt, or not independently green.
+        observed = data["jobs"]
+        if len(observed) != len(_REQUIRED_SUPERVISOR_JOBS) or any(not isinstance(job, dict) for job in observed):
+            continue
+        if {job.get("name") for job in observed} != _REQUIRED_SUPERVISOR_JOBS:
+            continue
+        attempt = run.get("run_attempt", 1)
+        if all(
+            job.get("status") == "completed"
+            and job.get("conclusion") == "success"
+            and job.get("run_attempt") == attempt
+            and job.get("run_id") == run["id"]
+            for job in observed
+        ):
+            return proof.tag_object_oid, run["id"], attempt
     raise UpgradeUnavailable("prerequisite-blocked", "required fresh-host/exclusion integration cases are not proven successful")
 
 
