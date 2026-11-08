@@ -447,7 +447,8 @@ def test_authenticated_real_bridge_held_drain_lost_reply_and_management_reconstr
                 saved = supervisor.store.read()
                 saved["operations"][requests[0]]["digest"] = "0" * 64
                 supervisor.store.write(saved)
-            listener, reconstructed_client = _bridge(supervisor, b"s" * 48)
+            listener, reconstructed_client = _bridge(supervisor, b"s" * 48, port=worker_client.config.port)
+            assert reconstructed_client.config.binding_digest == worker_client.config.binding_digest
         else:
             reconstructed_client = WorkerNetworkClient(worker_client.config)
         assert reconstructed_client.supervisor_generation is None
@@ -557,7 +558,8 @@ def test_authenticated_bootstrap_start_reply_loss_survives_supervisor_reconstruc
             new_child = supervisor.child
         listener.close()
         supervisor = WorkerSupervisor(supervisor.config)
-        listener, reconstructed_client = _bridge(supervisor, b"s" * 48)
+        listener, reconstructed_client = _bridge(supervisor, b"s" * 48, port=worker_client.config.port)
+        assert reconstructed_client.config.binding_digest == worker_client.config.binding_digest
         reconstructed = create_management_app(settings, grants, worker_clients={"beta": reconstructed_client})
         with TestClient(reconstructed, base_url=origin) as client:
             for _ in range(300):

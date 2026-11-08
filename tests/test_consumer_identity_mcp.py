@@ -178,4 +178,11 @@ def test_mcp_rejects_invalid_worker_evidence_and_conflicting_binding(runtime_bou
         token = _issue(client, settings, signed, "alice", "alice-client", READ_SCOPE)["access_token"]
         assert _call(client, token, "auto_coder_consumer_identity", {"target_id": "beta-worker"})["reason"] == "invalid_consumer_identity"
         beta.wrong_lock = True
-        assert _call(client, token, "auto_coder_consumer_identity", {"target_id": "beta-worker"}) == {"status": "CONFLICT", "reason": "runtime_binding_conflict"}
+        assert _call(client, token, "auto_coder_consumer_identity", {"target_id": "beta-worker"}) == {
+            "status": "CONFLICT",
+            "reason": "runtime_binding_conflict",
+            "target_id": "beta-worker",
+            "instance_id": "beta-worker",
+            "channel": "beta",
+            "repository": "fixture/beta",
+        }

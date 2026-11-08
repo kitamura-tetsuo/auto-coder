@@ -45,11 +45,11 @@ def _supervisor(tmp_path: Path, channel: str = "beta") -> WorkerSupervisor:
     )
 
 
-def _bridge(supervisor: WorkerSupervisor, key: bytes) -> tuple[SupervisorBridgeServer, WorkerNetworkClient]:
+def _bridge(supervisor: WorkerSupervisor, key: bytes, *, port: int = 0) -> tuple[SupervisorBridgeServer, WorkerNetworkClient]:
     # The loopback address is used only in this disposable local test fixture;
     # production environment configuration requires a private Docker IP.
     config = supervisor.config
-    listener = SupervisorBridgeServer(SupervisorBridgeConfig(config.instance_id, config.channel, config.repository, "127.0.0.1", 0, key), supervisor)
+    listener = SupervisorBridgeServer(SupervisorBridgeConfig(config.instance_id, config.channel, config.repository, "127.0.0.1", port, key), supervisor)
     port = listener._http.server_port
     client = WorkerNetworkClient(WorkerEndpointConfig(config.instance_id, config.channel, config.repository, "127.0.0.1", port, key))
     listener.start()

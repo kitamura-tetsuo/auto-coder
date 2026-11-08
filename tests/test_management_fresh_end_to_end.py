@@ -218,16 +218,22 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
     executable_digest = _fixture_executable_digest(base_image)
     runtime = {"reference": "bootstrap", "receipt": "sha256:" + executable_digest, "executable": "/opt/auto-coder/.venv/bin/auto-coder", "arguments": ["management", "serve", "--config", "/bootstrap/management.yaml"], "environment": {"PYTHONDONTWRITEBYTECODE": "1"}}
     if retained_history:
-        for channel, address in (("BETA", "10.254.253.2"), ("RELEASE", "10.254.253.3")):
-            runtime["environment"].update(
+        # A new manager uses the canonical registry while retained operations
+        # preserve their historical target, channel, and repository identities.
+        workers = []
+        for channel, address in (("beta", "10.254.253.2"), ("release", "10.254.253.3")):
+            workers.append(
                 {
-                    f"AUTO_CODER_{channel}_SUPERVISOR_INSTANCE_ID": channel.lower() + "-worker",
-                    f"AUTO_CODER_{channel}_REPOSITORY": "fixture/" + channel.lower(),
-                    f"AUTO_CODER_{channel}_BRIDGE_ADDRESS": address,
-                    f"AUTO_CODER_{channel}_BRIDGE_PORT": "17890",
-                    f"AUTO_CODER_{channel}_BRIDGE_SECRET_FILE": "/run/secrets/" + channel.lower() + "_worker_bridge",
+                    "target_id": channel + "-worker",
+                    "supervisor_instance_id": channel + "-worker",
+                    "channel": channel,
+                    "repository": "fixture/" + channel,
+                    "bridge_address": address,
+                    "bridge_port": 17890,
+                    "bridge_secret_file": "/run/secrets/" + channel + "_worker_bridge",
                 }
             )
+        runtime["environment"]["AUTO_CODER_WORKER_REGISTRY"] = json.dumps({"workers": workers})
     if restart_after:
         runtime["drain_ack"] = "/management-child-state/drain-bootstrap.json"
     common = {"state_root": "/management-child-state", "oauth_root": "/management-oauth", "journal_root": "/management-operations", "listener_url": origin + "/mcp", "initial_runtime": "bootstrap", "runtimes": [runtime]}
