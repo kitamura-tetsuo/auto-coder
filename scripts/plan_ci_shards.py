@@ -59,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Create an immutable complete CI shard plan from real pytest collection")
     parser.add_argument("--context", type=Path, required=True, help="Explicit tested checkout, profile, selectors, harness/env and origin JSON")
     parser.add_argument("--duration-profile", type=Path, help="Optional immutable native duration snapshot; invalid/missing history uses fallback estimates")
+    parser.add_argument("--cold-start-estimate-seconds", type=int, default=1, help="Conservative estimate for unknown cases; never substitutes for native duration evidence")
     parser.add_argument("--output", type=Path, required=True, help="New immutable output file")
     parser.add_argument("--log-dir", type=Path, required=True, help="Rotating diagnostic logs")
     args = parser.parse_args(arguments[:split])
@@ -68,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         if tuple(arguments[split + 1 :]) != context.pytest_args:
             raise ShardPlanError("CLI pytest selectors/configuration differ from context.pytest_args")
         profile, nodeids = _collect(args.context, context)
-        plan = build_plan(context, profile, nodeids, args.duration_profile)
+        plan = build_plan(context, profile, nodeids, args.duration_profile, cold_start_fallback_ms=args.cold_start_estimate_seconds * 1000)
         verified = verify_plan(plan)
         protected = (args.context, *((args.duration_profile,) if args.duration_profile is not None else ()))
         write_plan(args.output, plan, protected)

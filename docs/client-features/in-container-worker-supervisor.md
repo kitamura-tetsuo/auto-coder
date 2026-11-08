@@ -115,18 +115,94 @@ authority. Supervisor logs go to colored-capable stdout and to rotating
 
 ## Isolated CI integration
 
-The `Supervisor Integration Tests` GitHub Actions workflow runs four independent
-jobs for worker/bridge processes, authenticated management self-update, privileged
-fresh-host observations, and isolated Supervisor containers. The unchanged
-`Supervisor Integration Tests` aggregate check fails unless all four jobs succeed.
-Each job checks out the same workflow revision and installs Python 3.12, uv 0.7.22,
-and locked dependencies; the host and container jobs each build their own production
-image from that checkout. Per-group JUnit and JSON inventories are uploaded on success
-and failure under artifact names containing the run and producing-attempt identity.
-The inventories include the collected node IDs, terminal outcomes, checkout identity,
-and first/last pytest case-phase timestamps, so missing outcomes and mandatory skips
-fail closed and actual test overlap can be distinguished from runner queue or setup
-overlap.
+The `Supervisor Integration Tests` GitHub Actions workflow retains the independent
+**worker-bridge and worker-daemon** pytest invocations on one worker runner. Three
+additional, independently planned profiles—`management-self-update`, `fresh-host`,
+and `isolated-containers`—each collect their *complete current* selection before
+dispatching a dynamic matrix of at most 12 nonempty, contiguous time-budgeted
+shards. Each matrix uses `max-parallel: 4` (at most 12 long-profile execution
+jobs concurrently across the three matrices, plus the worker job); each shard
+gets its own ephemeral runner and repeats the real profile prerequisites. The
+stable required check is still named `Supervisor Integration Tests`, always runs,
+and now refuses unless the native workers, all three plan jobs, all dispatched
+matrix jobs and every native per-shard pytest receipt are complete and successful.
+
+The shared source of profile selectors and stable anchors is
+`scripts/supervisor_ci_profiles.py`, consumed identically by planning and
+execution. The unchanged worker/daemon selectors, whole-file selections in all
+three long profiles, the five special fresh-host node selectors, and all six
+parameterized installed-handoff nodes are preserved. The complete fresh-host
+required-node registry includes the four archived-cutover variants and six
+installed-handoff variants; the isolated-container registry contains the four
+production Supervisor, one worker-network, one beta-deploy and six smoke nodes.
+Removing a required marker fails **full collection before the matrix launches**.
+Each result-inventory plugin checks only its own shard's *intersection* with the
+full required-anchor registry, and the aggregate compares every exact outcome
+and the union of all assignments against the immutable full profile inventory;
+node IDs repeated intentionally in management and privileged profiles are never
+de-duplicated globally.
+
+Every job uses Python 3.12, uv 0.7.22 and locked test extras. Both preparation
+and execution perform the checked-out image build for host/container profiles;
+fresh-host additionally tags the production image, pulls the pinned Caddy image,
+installs `strace` and runs the original `-o timeout=240` selectors under root
+with the checked-out venv/PYTHONPATH. The container profile retains the
+container-preparation cache and `AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION=1`.
+Native pytest cancellation, fixture assertions, child/process/HTTP/SQLite/Git
+oracles and test deadlines remain unchanged. Exactly four Docker-proxy
+management duplicates may keep their original `host root is required to observe
+the disposable Docker proxy` skip reason; the fifth duplicate may keep the
+original `production-profile image is not available locally` skip reason.
+Those exceptions are **management-only**: a missing required privileged or
+container verdict is never replaced by a management skip.
+
+Every full-profile plan binds the actual tested `git rev-parse HEAD`, selectors,
+effective Python/locked dependencies, tracked harness and semantic environment.
+For pull requests this is the synthetic **merge** commit, not the PR-head SHA
+returned by the GitHub workflow API. The checked-out source-bound image tag and
+per-shard timing/report-control paths are derived from the source or plan, not
+independent configuration identities. Planning uses
+`SUPERVISOR_CI_RESULT_MODE=collect`, which cannot produce executed PASS receipts;
+execution uses both `scripts.ci_shard_plugin` and `supervisor_ci_results` with
+identical semantic pytest selectors. A plan artifact is immutable and scoped to
+the workflow run, producing planning attempt and profile.
+
+Each native shard uploads its full JSON result inventory, JUnit diagnostics,
+native timing JSONL and a separately bound Actions receipt. A receipt binds
+actual checkout, event SHA, run, producing attempt, logical profile/shard,
+immutable plan digest, numeric producing job ID, runner identity and native
+inventory hashes. The required aggregate reads *all* Actions job pages and
+attempts through the existing read-only GitHub boundary (`actions: read` and
+`contents: read`; no new write authority). On GitHub `rerun-failed-jobs`, an
+original successful job may appear in the current attempt with a **new alias
+job ID**. Reuse is allowed only when the complete native step results,
+execution timestamps, logical matrix name and runner identity uniquely identify
+the original producing job, and its matching original receipt is still present.
+Missing, ambiguous, foreign, new-plan or stale-source receipts fail the gate;
+rerunning the entire workflow is required when retained attribution cannot be
+proved. A green matrix or plan artifact alone has no result authority.
+
+An optional update after the successful aggregate materializes one
+`ci-duration-profile-v1` snapshot **per long profile** from original native
+timing JSONL plus explicit per-shard batch-origin manifests; JUnit is kept only
+as outcome diagnostics. Snapshots are uploaded under run/attempt/profile-qualified
+names, restored from previous run artifacts when available and used only for
+conservative estimates. Failure to restore/update timing is diagnostic, while
+loss of a required plan, case inventory, job or native receipt fails CI. The
+aggregate uploads queue, runner setup, test-phase duration, overlap, wave peak,
+total runner work, capacity-limited and indivisible over-budget diagnostics.
+With no matching native duration history, the Supervisor workflow now supplies
+a **120-second cold-start estimate** for each unknown test node. This is an
+explicit scheduling heuristic, not an invented native measurement: the generic
+B planner retains its default one-second fallback for other callers. The
+conservative bootstrap prevents all expensive fresh-host cases from being
+placed on one runner merely because history has not yet been produced. Real
+native P95 measurements take precedence when greater, while still-unmeasured
+nodes retain at least the cold-start estimate. An indivisible case may exceed
+420 seconds; the twelve-shard cap may raise the effective grouping budget.
+Later successful runs can use native duration snapshots. The 420-second
+estimated work budget and four parallel runners do not guarantee a ten-minute
+end-to-end SLA, available capacity or a particular Actions queue time.
 
 The container group runs network-disabled,
 capability-dropped disposable Docker containers. Each worker service's fixed
@@ -169,14 +245,23 @@ original accepted destination and start only one successor. Reconstruction and
 peer noninterference are separately exercised against the actual worker
 management bridge. No real GitHub issue is dispatched.
 
-The normal PR test shards exclude the `supervisor_integration` marker. To reproduce
-a group, copy its complete selector and environment from
-`.github/workflows/supervisor-integration-tests.yml`; do not replace a whole-file
-selector with a fixed node list. For the isolated-container group, build the checkout
-with `uv run python scripts/prepare_opencode_image.py --tag <tag>`, export that tag as
-`AUTOCODER_SUPERVISOR_IMAGE`, set `AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION=1`,
-and run the four documented container files with `-m supervisor_integration`.
-The fresh-host reproduction additionally requires Docker, Caddy's pinned image,
-`strace`, and its workflow command under the privileged host interpreter. Diagnose a
-failure from the matching group/run-attempt artifact; compare the inventory timestamps
-to demonstrate execution overlap while treating Actions queue time separately.
+The normal PR test shards exclude the `supervisor_integration` marker. To
+reproduce a complete profile locally, run
+`python scripts/supervisor_ci_profiles.py args --profile <profile>` to obtain
+its complete selectors, configure its full anchor registry and approved skips
+with the `configure` command, and follow the prepare/collect steps in
+`.github/workflows/supervisor-integration-tests.yml`. Use
+`scripts/plan_ci_shards.py --context ... --output ... --log-dir ... -- <exact
+profile args>` (source and Python must match), then run
+`pytest -p scripts.ci_shard_plugin --ci-plan=... --ci-shard=N <same exact
+profile args>` with `SUPERVISOR_PLAN_PATH`, `SUPERVISOR_SHARD_ID`,
+`SUPERVISOR_PROFILE` and `SUPERVISOR_RESULTS_PATH`. Do not replace whole-file
+selectors with fixed node lists or de-privilege the host profile. Reproduce the
+container profile with the checked-out production image,
+`AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION=1` and the separate nested UV cache.
+The root fresh-host profile additionally requires Docker, pinned Caddy, `strace`
+and the checked-out Python interpreter. Inspect the original producing
+run/attempt/shard artifact and the final aggregate `native-metrics.json`, not
+merely GitHub's current-attempt alias or runner setup timestamps. Actual test
+interval overlap must be observed in Actions before claiming acceleration;
+queue and image preparation costs remain outside the estimated test budget.
