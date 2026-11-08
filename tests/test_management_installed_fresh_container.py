@@ -344,11 +344,15 @@ class InstalledChain(Chain):
                 observed = manager("runtime-observe", "beta")
             except (OSError, ValueError, subprocess.CalledProcessError):
                 return None
-            heartbeat = observed.get("observation", {}).get("heartbeat", {})
+            observation = observed.get("observation")
+            binding = observed.get("runtime_binding")
+            heartbeat = observation.get("heartbeat") if isinstance(observation, dict) else None
             if (
                 observed.get("status") == "OK"
                 and observed.get("binding_status") == "VERIFIED"
-                and observed.get("runtime_binding", {}).get("runtime_id") == receipt["installed_runtime_id"]
+                and isinstance(binding, dict)
+                and binding.get("runtime_id") == receipt["installed_runtime_id"]
+                and isinstance(heartbeat, dict)
                 and heartbeat.get("available") is True
                 and type(heartbeat.get("sequence")) is int
             ):
