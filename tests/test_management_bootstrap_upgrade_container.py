@@ -25,16 +25,27 @@ import pytest
 from auto_coder.management import bootstrap_upgrade as upgrade
 from auto_coder.management.fresh_initialization import FreshInitializationIntent
 from auto_coder.management.operation_store import ManagementOperationStore
-from auto_coder.management.operations import ActionParameter, EffectReceipt, ManagedTarget, OperationIntent, OperationPhase
+from auto_coder.management.operations import (
+    ActionParameter,
+    EffectReceipt,
+    ManagedTarget,
+    OperationIntent,
+    OperationPhase,
+)
 from auto_coder.operating_policy import MANAGEMENT_REPOSITORY
 from auto_coder.tested_source_refs import TestedSourcePublisher as SourceProofPublisher
 from auto_coder.util.gh_cache import GitHubGitDataClient
 from tests.test_management_archived_cutover_container import Generation
 from tests.test_management_installed_fresh_container import InstalledChain
-from tests.test_management_installed_fresh_container import installed_chain as installed_chain
+from tests.test_management_installed_fresh_container import (
+    installed_chain as installed_chain,
+)
 from tests.test_management_installed_fresh_container import wait_for
 
-pytestmark = [pytest.mark.supervisor_integration, pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep")]
+pytestmark = [
+    pytest.mark.supervisor_integration,
+    pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep"),
+]
 
 
 def private(path: Path, value: object) -> Path:
@@ -44,9 +55,15 @@ def private(path: Path, value: object) -> Path:
     return path
 
 
-def approved_profile(chain: InstalledChain, old: Generation, new: Generation) -> tuple[Path, Path, Path]:
+def approved_profile(
+    chain: InstalledChain,
+    old: Generation,
+    new: Generation,
+) -> tuple[Path, Path, Path]:
     """Seal the exact, already created Docker objects without mutating old ones."""
-    assert old.proxy is not None and new.intent is not None and new.prior_lock is not None
+    assert (
+        old.proxy is not None and new.intent is not None and new.prior_lock is not None
+    )
     caddy = new.path("Caddyfile")
     caddy.write_text("http://127.0.0.1:8080 {\n reverse_proxy 127.0.0.1:8081 {\n header_up Host 127.0.0.1:8081\n }\n}\n")
     caddy.chmod(0o600)
@@ -83,7 +100,9 @@ def approved_profile(chain: InstalledChain, old: Generation, new: Generation) ->
                 "manager_image": chain.image,
                 "proxy_id": generation.proxy,
                 "proxy_image": chain.proxy_image,
-                "config_sha256": hashlib.sha256(generation.path("Caddyfile").read_bytes()).hexdigest(),
+                "config_sha256": hashlib.sha256(
+                    generation.path("Caddyfile").read_bytes()
+                ).hexdigest(),
             },
         )
 
@@ -94,7 +113,9 @@ def approved_profile(chain: InstalledChain, old: Generation, new: Generation) ->
         extension_file,
         {
             "schema_version": 1,
-            "management_config_sha256": hashlib.sha256(management.read_bytes()).hexdigest(),
+            "management_config_sha256": hashlib.sha256(
+                management.read_bytes()
+            ).hexdigest(),
             "source_repository": "kitamura-tetsuo/auto-coder",
             "source_evidence_token_file": "/bootstrap/source_evidence_read",
         },
@@ -143,7 +164,9 @@ def approved_profile(chain: InstalledChain, old: Generation, new: Generation) ->
 
 def installed_fixture_preflight(profile: upgrade.UpgradeProfile) -> None:
     """Run the real installed READY verifier against the local fixture source."""
-    intent = FreshInitializationIntent(**json.loads(Path(profile.intent_file).read_text()))
+    intent = FreshInitializationIntent(
+        **json.loads(Path(profile.intent_file).read_text())
+    )
     mounts = json.loads(Path(profile.successor_mounts_file).read_text())["management"]
     script = """import json
 from pathlib import Path
@@ -162,17 +185,42 @@ authority=TestedSourcePublisher(GitHubGitDataClient('',external['repository'],ap
 verify_installed_fresh_binding(config,bootstrap,intent,settings,source_authority=authority)
 print('DISPOSABLE_READY_VERIFIED')
 """
-    command = ["docker", "run", "--rm", "--network", "bridge", "--read-only", "--env", "PYTHONDONTWRITEBYTECODE=1"]
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "bridge",
+        "--read-only",
+        "--env",
+        "PYTHONDONTWRITEBYTECODE=1",
+    ]
     for source, destination, _writable in mounts:
-        command.extend(("--mount", f"type=bind,src={source},dst={destination},readonly"))
-    command.extend(("--mount", f"type=bind,src={profile.intent_file},dst=/upgrade-intent.json,readonly"))
-    command.extend(("--entrypoint", "python", intent.image_digest, "-I", "-B", "-c", script))
-    result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=240)
+        command.extend(
+            ("--mount", f"type=bind,src={source},dst={destination},readonly")
+        )
+    command.extend(
+        (
+            "--mount",
+            f"type=bind,src={profile.intent_file},dst=/upgrade-intent.json,readonly",
+        )
+    )
+    command.extend(
+        ("--entrypoint", "python", intent.image_digest, "-I", "-B", "-c", script)
+    )
+    result = subprocess.run(
+        command, check=True, capture_output=True, text=True, timeout=240
+    )
     assert result.stdout.strip().endswith("DISPOSABLE_READY_VERIFIED")
 
 
 @pytest.mark.timeout(900)
-def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: InstalledChain, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_disposable_operator_prepare_apply_status_real_docker(
+    installed_chain: InstalledChain,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     chain = installed_chain
     first = chain.prepare("manager-a")
     chain.docker("start", first.container)
@@ -198,18 +246,31 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
     operator = tmp_path / "host-upgrades"
     operator.mkdir(mode=0o700)
     monkeypatch.setattr(upgrade, "OPERATOR_ROOT", operator)
-    publisher = SourceProofPublisher(GitHubGitDataClient("", chain.external["repository"], api_url=chain.external["url"]), chain.external["repository"])
+    publisher = SourceProofPublisher(
+        GitHubGitDataClient(
+            "",
+            chain.external["repository"],
+            api_url=chain.external["url"],
+        ),
+        chain.external["repository"],
+    )
     monkeypatch.setattr(upgrade, "_source_authority", lambda _token: publisher)
 
-    def fixture_source_proof(authority: SourceProofPublisher, source_sha: str) -> tuple[str, int, int]:
+    def fixture_source_proof(
+        authority: SourceProofPublisher, source_sha: str
+    ) -> tuple[str, int, int]:
         proof = authority.read(source_sha)
         assert proof is not None
         authority.verify_run(proof.record, recorded_attempt=True)
         return proof.tag_object_oid, proof.record.run_id, proof.record.run_attempt
 
     monkeypatch.setattr(upgrade, "_source_proof", fixture_source_proof)
-    monkeypatch.setattr(upgrade, "_candidate_image_source", lambda _container, _image: chain.current_sha)
-    monkeypatch.setattr(upgrade, "_installed_candidate_preflight", installed_fixture_preflight)
+    monkeypatch.setattr(
+        upgrade, "_candidate_image_source", lambda _container, _image: chain.current_sha
+    )
+    monkeypatch.setattr(
+        upgrade, "_installed_candidate_preflight", installed_fixture_preflight
+    )
     actual_docker = upgrade._docker
     effects = []
 
@@ -223,12 +284,23 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
     def call_cli(*args: str) -> tuple[int, dict[str, object]]:
         monkeypatch.setattr(sys, "argv", ["bootstrap_upgrade", *args])
         result = upgrade.main()
-        lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
+        lines = [
+            line
+            for line in capsys.readouterr().out.splitlines()
+            if line.startswith("{")
+        ]
         assert lines, "real operator command did not emit its protected result"
         return result, json.loads(lines[-1])
 
     try:
-        code, prepared = call_cli("prepare", "--profile", str(profile_path), "--auth-token-file", str(auth_file), "--authorize-source-read")
+        code, prepared = call_cli(
+            "prepare",
+            "--profile",
+            str(profile_path),
+            "--auth-token-file",
+            str(auth_file),
+            "--authorize-source-read",
+        )
         assert code == 0 and prepared["stage"] == "prepared"
         assert effects == [] and chain.workers() == original_worker
         plan_id = prepared["plan_sha256"]
@@ -238,8 +310,17 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         management_config = next_generation.path("bootstrap") / "management.yaml"
         original_config = management_config.read_bytes()
         try:
-            management_config.write_bytes(original_config + b"\n# disposable changed-config boundary\n")
-            code, denied = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+            management_config.write_bytes(
+                original_config + b"\n# disposable changed-config boundary\n"
+            )
+            code, denied = call_cli(
+                "apply",
+                "--plan-sha256",
+                plan_id,
+                "--auth-token-file",
+                str(auth_file),
+                "--authorize-source-read",
+            )
             assert code == 2 and denied["stage"] == "prerequisite-blocked"
             assert effects == [] and chain.snapshot(first) == old_snapshot
         finally:
@@ -254,7 +335,14 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
             changed_intent = json.loads(original_intent)
             changed_intent["image_digest"] = "sha256:" + "0" * 64
             candidate_intent.write_text(json.dumps(changed_intent))
-            code, denied = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+            code, denied = call_cli(
+                "apply",
+                "--plan-sha256",
+                plan_id,
+                "--auth-token-file",
+                str(auth_file),
+                "--authorize-source-read",
+            )
             assert code == 2 and denied["stage"] == "prerequisite-blocked"
             assert effects == [] and chain.snapshot(first) == old_snapshot
         finally:
@@ -263,10 +351,19 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         # A missing already-authorized protected reader must not be silently
         # substituted with a host token or lead to a predecessor stop.
         source_credential = next_generation.path("bootstrap") / "source_evidence_read"
-        absent_credential = next_generation.path("bootstrap") / "source_evidence_read.absent"
+        absent_credential = (
+            next_generation.path("bootstrap") / "source_evidence_read.absent"
+        )
         source_credential.rename(absent_credential)
         try:
-            code, denied = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+            code, denied = call_cli(
+                "apply",
+                "--plan-sha256",
+                plan_id,
+                "--auth-token-file",
+                str(auth_file),
+                "--authorize-source-read",
+            )
             assert code == 2 and denied["stage"] == "prerequisite-blocked"
             assert effects == [] and chain.snapshot(first) == old_snapshot
         finally:
@@ -276,16 +373,32 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         # must each block the incumbent-preserving operation.
         chain.services.unavailable = True
         try:
-            code, denied = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+            code, denied = call_cli(
+                "apply",
+                "--plan-sha256",
+                plan_id,
+                "--auth-token-file",
+                str(auth_file),
+                "--authorize-source-read",
+            )
             assert code == 2 and denied["stage"] == "prerequisite-blocked"
             assert effects == [] and chain.snapshot(first) == old_snapshot
         finally:
             chain.services.unavailable = False
-        code, denied = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file))
+        code, denied = call_cli(
+            "apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file)
+        )
         assert code == 2 and denied["stage"] == "prerequisite-blocked"
         assert effects == [] and chain.workers() == original_worker
 
-        code, applied = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+        code, applied = call_cli(
+            "apply",
+            "--plan-sha256",
+            plan_id,
+            "--auth-token-file",
+            str(auth_file),
+            "--authorize-source-read",
+        )
         assert code == 0 and applied["stage"] == "successor-launch-uncertain"
         assert effects == [
             ("kill", "--signal=SIGTERM", first.proxy),
@@ -294,26 +407,59 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
             ("start", next_generation.proxy),
         ]
         assert chain.snapshot(first) == old_snapshot
-        assert chain.docker("inspect", "--format", "{{.State.Running}}", first.container) == "false"
-        assert chain.docker("inspect", "--format", "{{.State.Running}}", first.proxy) == "false"
+        assert (
+            chain.docker(
+                "inspect", "--format", "{{.State.Running}}", first.container
+            ) == "false"
+        )
+        assert (
+            chain.docker(
+                "inspect", "--format", "{{.State.Running}}", first.proxy
+            ) == "false"
+        )
         assert chain.workers() == original_worker
 
         def application_ready() -> bool:
-            _, result = call_cli("status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file))
+            _, result = call_cli(
+                "status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file)
+            )
             return result["stage"] == "application-ready"
 
-        wait_for(application_ready, "protected exact-child application readiness", timeout=90)
+        wait_for(
+            application_ready, "protected exact-child application readiness", timeout=90
+        )
         # A host-side fixture source publisher is insufficient: the upgraded
         # service must itself validate the current selection without deployment.
-        code, beta_status = call_cli("status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+        code, beta_status = call_cli(
+            "status",
+            "--plan-sha256",
+            plan_id,
+            "--auth-token-file",
+            str(auth_file),
+            "--authorize-source-read",
+        )
         assert code == 0 and beta_status["stage"] == "application-ready"
         assert beta_status["missing_prerequisites"]
         assert len(effects) == 4 and chain.workers() == original_worker
-        code, repeated = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+        code, repeated = call_cli(
+            "apply",
+            "--plan-sha256",
+            plan_id,
+            "--auth-token-file",
+            str(auth_file),
+            "--authorize-source-read",
+        )
         assert code == 2 and repeated["stage"] == "needs-attention"
         assert len(effects) == 4 and chain.workers() == original_worker
         assert chain.call(next_generation, "auto_coder_whoami", {})["uid"] == "operator"
-        assert chain.call(next_generation, "auto_coder_operation_get", {"operation_id": original_a.operation_id})["history_origin"] == "retained_prior_instance"
+        assert (
+            chain.call(
+                next_generation,
+                "auto_coder_operation_get",
+                {"operation_id": original_a.operation_id},
+            )["history_origin"]
+            == "retained_prior_instance"
+        )
 
         # B is now the actual online predecessor. Explicitly stop only its
         # known disposable watcher under the operator's service-owner boundary.
@@ -338,15 +484,24 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
                 admitted.operation_id,
                 0,
                 OperationPhase.FAILED,
-                evidence=EffectReceipt(admitted.operation_id, "synthetic-no-effect", 1, "no_effect_sent"),
+                evidence=EffectReceipt(
+                    admitted.operation_id, "synthetic-no-effect", 1, "no_effect_sent"
+                ),
             ).record is not None
             b_worker_records[channel] = admitted
-        chain.checkpoint(next_generation.path("journal") / "management-operations.sqlite3")
+        chain.checkpoint(
+            next_generation.path("journal") / "management-operations.sqlite3"
+        )
         snapshot_b = chain.snapshot(next_generation)
         b_operation = upgrade._operation(operator, plan_id)
         assert b_operation.stage == "application-ready" and b_operation.watcher_pid > 0
-        assert upgrade._watcher_lifetime(b_operation.watcher_pid) == b_operation.watcher_start_token
-        assert upgrade._watcher_is_owned(new_watcher.parent / "watch", b_operation, new_watcher)
+        assert (
+            upgrade._watcher_lifetime(b_operation.watcher_pid)
+            == b_operation.watcher_start_token
+        )
+        assert upgrade._watcher_is_owned(
+            new_watcher.parent / "watch", b_operation, new_watcher
+        )
         os.kill(b_operation.watcher_pid, signal.SIGTERM)
 
         def b_watcher_exited() -> bool:
@@ -362,12 +517,26 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
 
         third = chain.prepare("manager-c", next_generation)
         profile_c, _, _ = approved_profile(chain, next_generation, third)
-        code, c_prepared = call_cli("prepare", "--profile", str(profile_c), "--auth-token-file", str(auth_file), "--authorize-source-read")
+        code, c_prepared = call_cli(
+            "prepare",
+            "--profile",
+            str(profile_c),
+            "--auth-token-file",
+            str(auth_file),
+            "--authorize-source-read",
+        )
         assert code == 0 and c_prepared["stage"] == "prepared"
         c_plan = c_prepared["plan_sha256"]
         assert isinstance(c_plan, str) and c_plan != plan_id
         assert len(effects) == 4 and chain.workers() == original_worker
-        code, c_applied = call_cli("apply", "--plan-sha256", c_plan, "--auth-token-file", str(auth_file), "--authorize-source-read")
+        code, c_applied = call_cli(
+            "apply",
+            "--plan-sha256",
+            c_plan,
+            "--auth-token-file",
+            str(auth_file),
+            "--authorize-source-read",
+        )
         assert code == 0 and c_applied["stage"] == "successor-launch-uncertain"
         assert effects[4:] == [
             ("kill", "--signal=SIGTERM", next_generation.proxy),
@@ -380,10 +549,16 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         assert chain.workers() == original_worker
 
         def c_application_ready() -> bool:
-            _, result = call_cli("status", "--plan-sha256", c_plan, "--auth-token-file", str(auth_file))
+            _, result = call_cli(
+                "status", "--plan-sha256", c_plan, "--auth-token-file", str(auth_file)
+            )
             return result["stage"] == "application-ready"
 
-        wait_for(c_application_ready, "C installed child, archived A and direct-prior B", timeout=90)
+        wait_for(
+            c_application_ready,
+            "C installed child, archived A and direct-prior B",
+            timeout=90,
+        )
         chain.assert_workers(third, original_worker_records)
         assert chain.grants() == chain.grants_before
         assert chain.worker_posts() == {"beta": 1, "release": 1}
@@ -392,9 +567,21 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
             chain.owner_refused(previous)
         # B is the direct previous history; A is an immutable archived
         # exclusion, not a source of re-admissible old idempotency keys.
-        response_b = chain.call(third, "auto_coder_update_management_service", {"source_sha": "a" * 40, "idempotency_key": old_b.intent.idempotency_key})
-        assert response_b["operation_id"] == old_b.operation_id and response_b["history_origin"] == "retained_prior_instance"
-        assert chain.call(third, "auto_coder_operation_get", {"operation_id": old_b.operation_id})["history_origin"] == "retained_prior_instance"
+        response_b = chain.call(
+            third,
+            "auto_coder_update_management_service",
+            {"source_sha": "a" * 40, "idempotency_key": old_b.intent.idempotency_key},
+        )
+        assert (
+            response_b["operation_id"] == old_b.operation_id
+            and response_b["history_origin"] == "retained_prior_instance"
+        )
+        assert (
+            chain.call(
+                third, "auto_coder_operation_get", {"operation_id": old_b.operation_id}
+            )["history_origin"]
+            == "retained_prior_instance"
+        )
         # The direct-prior worker namespace replays B's original result. It
         # must not dispatch a fresh worker request or read A's archived result.
         prior_posts = chain.worker_posts()
@@ -414,10 +601,26 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
             assert replayed["operation_id"] == record.operation_id
             assert replayed["history_origin"] == "retained_prior_instance"
         assert chain.worker_posts() == prior_posts
-        response_a = chain.call(third, "auto_coder_update_management_service", {"source_sha": "a" * 40, "idempotency_key": original_a.intent.idempotency_key})
-        assert response_a["status"] == "CONFLICT" and response_a.get("operation_id") is None
-        assert chain.call(third, "auto_coder_operation_get", {"operation_id": original_a.operation_id})["status"] == "NOT_FOUND"
-        assert chain.snapshot(first) == old_snapshot and chain.snapshot(next_generation) == snapshot_b
+        response_a = chain.call(
+            third,
+            "auto_coder_update_management_service",
+            {
+                "source_sha": "a" * 40,
+                "idempotency_key": original_a.intent.idempotency_key,
+            },
+        )
+        assert response_a["status"] == "CONFLICT"
+        assert response_a.get("operation_id") is None
+        assert (
+            chain.call(
+                third,
+                "auto_coder_operation_get",
+                {"operation_id": original_a.operation_id},
+            )["status"]
+            == "NOT_FOUND"
+        )
+        assert chain.snapshot(first) == old_snapshot
+        assert chain.snapshot(next_generation) == snapshot_b
         assert chain.workers() == original_worker
         # Only after checking preserved lifetimes and archived/direct-prior
         # exclusions, prove a genuinely unrelated new worker key is usable.
@@ -435,7 +638,14 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
             },
         )
         assert isinstance(fresh.get("operation_id"), str) and fresh["operation_id"]
-        code, replay = call_cli("apply", "--plan-sha256", c_plan, "--auth-token-file", str(auth_file), "--authorize-source-read")
+        code, replay = call_cli(
+            "apply",
+            "--plan-sha256",
+            c_plan,
+            "--auth-token-file",
+            str(auth_file),
+            "--authorize-source-read",
+        )
         assert code == 2 and replay["stage"] == "needs-attention" and len(effects) == 8
     finally:
         for record in operator.glob("*/upgrade-operation.json"):
@@ -451,8 +661,17 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
 
 
 @pytest.mark.timeout(900)
-@pytest.mark.parametrize("failure_point", ("lost-stop", "lost-start", "postlaunch-proxy-failed", "retained-unresolved-work"))
-def test_disposable_operator_failure_fences_real_docker(installed_chain: InstalledChain, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], failure_point: str) -> None:
+@pytest.mark.parametrize(
+    "failure_point",
+    ("lost-stop", "lost-start", "postlaunch-proxy-failed", "retained-unresolved-work"),
+)
+def test_disposable_operator_failure_fences_real_docker(
+    installed_chain: InstalledChain,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure_point: str,
+) -> None:
     """Dispatch real Docker effects, then lose an acknowledgement or the new proxy."""
     chain = installed_chain
     first = chain.prepare("manager-a")
@@ -478,18 +697,31 @@ def test_disposable_operator_failure_fences_real_docker(installed_chain: Install
     operator = tmp_path / "host-upgrades"
     operator.mkdir(mode=0o700)
     monkeypatch.setattr(upgrade, "OPERATOR_ROOT", operator)
-    publisher = SourceProofPublisher(GitHubGitDataClient("", chain.external["repository"], api_url=chain.external["url"]), chain.external["repository"])
+    publisher = SourceProofPublisher(
+        GitHubGitDataClient(
+            "",
+            chain.external["repository"],
+            api_url=chain.external["url"],
+        ),
+        chain.external["repository"],
+    )
     monkeypatch.setattr(upgrade, "_source_authority", lambda _token: publisher)
 
-    def fixture_source_proof(authority: SourceProofPublisher, source_sha: str) -> tuple[str, int, int]:
+    def fixture_source_proof(
+        authority: SourceProofPublisher, source_sha: str
+    ) -> tuple[str, int, int]:
         proof = authority.read(source_sha)
         assert proof is not None
         authority.verify_run(proof.record, recorded_attempt=True)
         return proof.tag_object_oid, proof.record.run_id, proof.record.run_attempt
 
     monkeypatch.setattr(upgrade, "_source_proof", fixture_source_proof)
-    monkeypatch.setattr(upgrade, "_candidate_image_source", lambda _container, _image: chain.current_sha)
-    monkeypatch.setattr(upgrade, "_installed_candidate_preflight", installed_fixture_preflight)
+    monkeypatch.setattr(
+        upgrade, "_candidate_image_source", lambda _container, _image: chain.current_sha
+    )
+    monkeypatch.setattr(
+        upgrade, "_installed_candidate_preflight", installed_fixture_preflight
+    )
     actual_docker = upgrade._docker
     effects: list[tuple[str, ...]] = []
 
@@ -497,11 +729,17 @@ def test_disposable_operator_failure_fences_real_docker(installed_chain: Install
         if args and args[0] in {"kill", "start"}:
             effects.append(args)
         answer = actual_docker(*args, timeout=timeout)
-        if failure_point == "lost-stop" and args == ("kill", "--signal=SIGTERM", first.container):
+        if (
+            failure_point == "lost-stop"
+            and args == ("kill", "--signal=SIGTERM", first.container)
+        ):
             raise subprocess.TimeoutExpired("docker", timeout)
         if failure_point == "lost-start" and args == ("start", successor.container):
             raise subprocess.TimeoutExpired("docker", timeout)
-        if failure_point == "postlaunch-proxy-failed" and args == ("start", successor.proxy):
+        if (
+            failure_point == "postlaunch-proxy-failed"
+            and args == ("start", successor.proxy)
+        ):
             # The physical replacement proxy dies before the watcher proves it.
             actual_docker("kill", "--signal=SIGTERM", successor.proxy)
         return answer
@@ -511,12 +749,23 @@ def test_disposable_operator_failure_fences_real_docker(installed_chain: Install
     def call_cli(*args: str) -> tuple[int, dict[str, object]]:
         monkeypatch.setattr(sys, "argv", ["bootstrap_upgrade", *args])
         code = upgrade.main()
-        output = [line for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
+        output = [
+            line
+            for line in capsys.readouterr().out.splitlines()
+            if line.startswith("{")
+        ]
         assert output, "operator command must retain a typed failure"
         return code, json.loads(output[-1])
 
     try:
-        code, prepared = call_cli("prepare", "--profile", str(profile), "--auth-token-file", str(auth_file), "--authorize-source-read")
+        code, prepared = call_cli(
+            "prepare",
+            "--profile",
+            str(profile),
+            "--auth-token-file",
+            str(auth_file),
+            "--authorize-source-read",
+        )
         assert code == 0 and prepared["stage"] == "prepared"
         plan_id = prepared["plan_sha256"]
         assert isinstance(plan_id, str)
@@ -534,40 +783,87 @@ def test_disposable_operator_failure_fences_real_docker(installed_chain: Install
             ).record
             assert pending is not None and pending.phase is OperationPhase.ACCEPTED
             prior_snapshot = chain.snapshot(first)
-            code, denied = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+            code, denied = call_cli(
+                "apply",
+                "--plan-sha256",
+                plan_id,
+                "--auth-token-file",
+                str(auth_file),
+                "--authorize-source-read",
+            )
             assert code == 2 and denied["stage"] == "prerequisite-blocked"
             assert "unresolved operations" in denied["reason"]
             assert effects == [] and chain.snapshot(first) == prior_snapshot
-            assert journal.get(pending.operation_id).record.phase is OperationPhase.ACCEPTED
+            assert (
+                journal.get(pending.operation_id).record.phase
+                is OperationPhase.ACCEPTED
+            )
             for container in (first.container, first.proxy):
-                assert chain.docker("inspect", "--format", "{{.State.Running}}", container) == "true"
+                assert (
+                    chain.docker(
+                        "inspect", "--format", "{{.State.Running}}", container
+                    ) == "true"
+                )
             assert chain.workers() == baseline
             return
         prior_snapshot = chain.snapshot(first)
-        code, failed = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
-        assert code == 2 and failed["stage"] in {"needs-attention", "prerequisite-blocked"}
+        code, failed = call_cli(
+            "apply",
+            "--plan-sha256",
+            plan_id,
+            "--auth-token-file",
+            str(auth_file),
+            "--authorize-source-read",
+        )
+        assert (
+            code == 2 and failed["stage"] in {"needs-attention", "prerequisite-blocked"}
+        )
         persisted = upgrade._operation(operator, plan_id)
         assert persisted.stage == "needs-attention"
         if failure_point == "lost-stop":
             assert persisted.completed == ("stop-proxy",)
-            assert persisted.effect == "stop-management" and persisted.effect_target == first.container
+            assert (
+                persisted.effect == "stop-management"
+                and persisted.effect_target == first.container
+            )
             assert len(effects) == 2
         elif failure_point == "lost-start":
             assert persisted.completed == ("stop-proxy", "stop-management")
-            assert persisted.effect == "start-management" and persisted.effect_target == successor.container
+            assert (
+                persisted.effect == "start-management"
+                and persisted.effect_target == successor.container
+            )
             assert len(effects) == 3
         else:
-            assert persisted.completed == ("stop-proxy", "stop-management", "start-management", "start-proxy")
+            assert persisted.completed == (
+                "stop-proxy",
+                "stop-management",
+                "start-management",
+                "start-proxy",
+            )
             assert persisted.effect == "" and len(effects) == 4
-            assert chain.docker("inspect", "--format", "{{.State.Running}}", successor.proxy) == "false"
+            assert (
+                chain.docker(
+                    "inspect", "--format", "{{.State.Running}}", successor.proxy
+                ) == "false"
+            )
         assert chain.snapshot(first) == prior_snapshot and chain.workers() == baseline
-        code, reported = call_cli("status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file))
+        code, reported = call_cli(
+            "status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file)
+        )
         assert code == 2 and reported["stage"] == "needs-attention"
         assert reported["uncertain_effect"] == persisted.effect
         if persisted.effect:
             assert reported["uncertain_target"] == persisted.effect_target
         before_retry = tuple(effects)
-        code, replay = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+        code, replay = call_cli(
+            "apply",
+            "--plan-sha256",
+            plan_id,
+            "--auth-token-file",
+            str(auth_file),
+            "--authorize-source-read",
+        )
         assert code == 2 and replay["stage"] == "needs-attention"
         assert tuple(effects) == before_retry
         assert upgrade._operation(operator, plan_id) == persisted
