@@ -121,7 +121,7 @@ def worker_compose_profile(fixtures: Path, subnet: str, gateway: str):
 
     network = ipaddress.ip_network(subnet)
     address = ipaddress.ip_address(gateway)
-    if address not in network.hosts() or address in {network.network_address + 11, network.network_address + 12}:
+    if address not in network.hosts() or address in {network.network_address + 11, network.network_address + 12, network.network_address + 13}:
         raise ValueError("fixture gateway overlaps a worker or leaves its subnet")
     profile = yaml.safe_load((fixtures / "compose.supervisor-network.yml").read_text())
     profile["networks"]["private"]["ipam"]["config"] = [{"subnet": subnet, "gateway": gateway}]
@@ -544,9 +544,9 @@ class Chain:
 
     def start_workers(self) -> None:
         root = self.root / "workers"
-        for name in ("beta/home", "release/home", "beta-workspace", "release-workspace"):
+        for name in ("beta/home", "release/home", "agent-table/home", "beta-workspace", "release-workspace", "agent-table-workspace"):
             (root / name).mkdir(parents=True)
-        for channel in ("beta", "release"):
+        for channel in ("beta", "release", "agent-table"):
             secret = root / (channel + "-secret")
             secret.write_bytes(base64.b64encode(os.urandom(48)) + b"\n")
             secret.chmod(0o600)
@@ -562,6 +562,7 @@ class Chain:
             SUPERVISOR_BRIDGE_SUBNET=f"10.252.{octet}.0/24",
             SUPERVISOR_RELEASE_IP=f"10.252.{octet}.11",
             SUPERVISOR_BETA_IP=f"10.252.{octet}.12",
+            SUPERVISOR_AGENT_TABLE_IP=f"10.252.{octet}.13",
             SUPERVISOR_TEST_REQUEST_AUDIT="1",
         )
         # Internal networks need an explicit host bridge address for the real

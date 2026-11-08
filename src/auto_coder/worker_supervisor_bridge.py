@@ -103,7 +103,9 @@ class _ReplayGuard:
 class _BoundedServer(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 8
-    allow_reuse_address = False
+    # Rebinding after a clean restart must work despite existing TCP TIME_WAIT sockets.
+    # SO_REUSEADDR does not permit a concurrent listener on the same endpoint.
+    allow_reuse_address = True
 
     def __init__(self, config: SupervisorBridgeConfig, supervisor: "WorkerSupervisor") -> None:
         self.bridge_config = config

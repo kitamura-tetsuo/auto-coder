@@ -211,10 +211,9 @@ def test_compose_channels_runtime_mounts_and_isolation() -> None:
 
     # REQ-004: Both beta workers and release use distinct runtime/workspace roots.
     shared_infrastructure = {"/routing", "/sys/fs/cgroup"}
-    volumes = {
-        name: {v.split(":")[0] for v in service["volumes"] if not any(f":{target}" in v for target in shared_infrastructure)}
-        for name, service in services.items()
-    }
+    volumes = {}
+    for name, service in services.items():
+        volumes[name] = {v.split(":")[0] for v in service["volumes"] if not any(f":{target}" in v for target in shared_infrastructure)}
     assert "./runtime/release" in volumes["release"]
     assert "./runtime/beta" in volumes["beta"]
     assert "./runtime/beta-agent-table" in volumes["beta-agent-table"]
