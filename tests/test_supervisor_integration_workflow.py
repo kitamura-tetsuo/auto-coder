@@ -10,9 +10,11 @@ from pathlib import Path
 
 import pytest
 import yaml
+from scripts.supervisor_ci_profiles import CONTAINER_REQUIRED, FRESH_REQUIRED, MANAGEMENT_SKIPS, OPERATOR_REQUIRED, PROFILES, profile_args
 
 ROOT = Path(__file__).parents[1]
-GROUPS = {"worker-bridge", "management-self-update", "fresh-host", "operator-upgrade", "isolated-containers"}
+PLANNERS = {"prepare-management", "prepare-fresh-host", "prepare-containers"}
+GROUPS = {"worker-bridge", "operator-upgrade", *PROFILES, *PLANNERS}
 SMOKE_CASES = (
     "test_local_smoke_uses_installed_worker_real_progress_and_original_journal",
     "test_local_smoke_diagnostics_do_not_advance_real_worker_progress",
@@ -39,11 +41,44 @@ def _step(job: dict, name: str) -> dict:
     return next(step for step in job["steps"] if step.get("name") == name)
 
 
+def test_supervisor_planners_bootstrap_without_historical_native_durations() -> None:
+    workflow = _workflow()
+    steps = {
+        "prepare-management": "Plan complete management collection",
+        "prepare-fresh-host": "Plan complete privileged collection",
+        "prepare-containers": "Plan complete container collection",
+    }
+    for planner, step_name in steps.items():
+        run = _step(workflow["jobs"][planner], step_name)["run"]
+        assert "--duration-profile" in run
+        assert "--cold-start-estimate-seconds 120" in run
+
+
+def test_operator_upgrade_keeps_its_complete_native_mandatory_gate() -> None:
+    workflow = _workflow()
+    job = workflow["jobs"]["operator-upgrade"]
+    assert "needs" not in job
+    assert job["env"]["SUPERVISOR_PROFILE"] == "operator-upgrade"
+    assert tuple(json.loads(job["env"]["SUPERVISOR_REQUIRED_NODEIDS"])) == OPERATOR_REQUIRED
+    assert len(OPERATOR_REQUIRED) == 8
+    run = _step(job, "Verify operator prepare/apply/status with disposable Docker")["run"]
+    assert "tests/test_management_bootstrap_upgrade_container.py" in run
+    assert "-p supervisor_ci_results" in run
+    assert '"SUPERVISOR_REQUIRED_NODEIDS=$SUPERVISOR_REQUIRED_NODEIDS"' in run
+    assert '"RUNNER_NAME=$RUNNER_NAME"' in run
+    assert "sudo chown -R" in run
+    receipt = _step(job, "Bind native operator upgrade receipt")
+    assert receipt["if"] == "always()"
+    assert "--profile operator-upgrade" in receipt["run"]
+    assert "--inventory supervisor-integration-logs/operator-upgrade.json" in receipt["run"]
+    assert _step(workflow["jobs"]["supervisor-integration"], "Require every integration group to succeed")["env"]["REQUIRED_RESULTS"] == "${{ toJSON(needs) }}"
+
+
 def test_parallel_groups_and_stable_fail_closed_aggregate() -> None:
     workflow = _workflow()
     assert workflow["name"] == "Supervisor Integration Tests"
     assert set(workflow["on"]) == {"pull_request", "workflow_dispatch"}
-    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["permissions"] == {"contents": "read", "actions": "read"}
     assert set(workflow["jobs"]) == GROUPS | {"supervisor-integration"}
     aggregate = workflow["jobs"]["supervisor-integration"]
     assert aggregate["name"] == "Supervisor Integration Tests"
@@ -51,12 +86,20 @@ def test_parallel_groups_and_stable_fail_closed_aggregate() -> None:
     assert set(aggregate["needs"]) == GROUPS
     assert _step(aggregate, "Checkout")["uses"] == "actions/checkout@v7"
     gate = _step(aggregate, "Require every integration group to succeed")["run"]
-    assert gate == "python3 scripts/validate_supervisor_aggregate.py"
+    assert gate == "uv run python scripts/validate_supervisor_aggregate.py"
+    assert _step(aggregate, "Download all current-run native diagnostic artifacts")["with"]["merge-multiple"] is False
+    assert _step(aggregate, "Require every integration group to succeed")["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
     for group in GROUPS:
         job = workflow["jobs"][group]
-        assert "needs" not in job
+        assert ("needs" not in job) is (group in PLANNERS | {"worker-bridge", "operator-upgrade"})
         assert job["runs-on"] == "ubuntu-latest"
         assert job.get("continue-on-error", False) is False
+    for profile, planner in zip(PROFILES, ("prepare-management", "prepare-fresh-host", "prepare-containers")):
+        job = workflow["jobs"][profile]
+        assert job["needs"] == planner
+        assert job["strategy"]["max-parallel"] == 4
+        assert job["strategy"]["fail-fast"] is False
+        assert f"fromJSON(needs.{planner}.outputs.matrix)" in job["strategy"]["matrix"]
 
 
 @pytest.mark.parametrize("result", ["failure", "cancelled", "skipped", None])
@@ -76,7 +119,7 @@ def test_actual_aggregate_decision_rejects_every_incomplete_result(result: str |
     assert result_process.returncode != 0
 
 
-def test_actual_aggregate_decision_accepts_all_successful_groups() -> None:
+def test_green_job_counts_alone_cannot_pass_without_native_receipts() -> None:
     values = {name: {"result": "success"} for name in GROUPS}
     environment = {**os.environ, "REQUIRED_RESULTS": json.dumps(values)}
     result = subprocess.run(
@@ -85,7 +128,7 @@ def test_actual_aggregate_decision_accepts_all_successful_groups() -> None:
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.returncode != 0
 
 
 def test_each_group_pins_tools_checkout_and_uploads_unique_diagnostics() -> None:
@@ -100,19 +143,20 @@ def test_each_group_pins_tools_checkout_and_uploads_unique_diagnostics() -> None
         checkout = _step(job, "Checkout")
         assert checkout["uses"] == "actions/checkout@v7"
         upload = next(step for step in steps if step.get("uses") == "actions/upload-artifact@v7")
-        assert upload["if"] == "always()"
+        if group not in PLANNERS:
+            assert upload["if"] == "always()"
         assert upload["with"]["if-no-files-found"] == "error"
         assert "${{ github.run_id }}-${{ github.run_attempt }}" in upload["with"]["name"]
         artifact_names.append(upload["with"]["name"])
-        assert job["env"]["AUTO_CODER_CI_TIMING_DIR"] == "${{ github.workspace }}/supervisor-integration-logs/timing"
-        summary = _step(job, "Summarize integration timing")
-        assert summary["if"] == "always()"
-        assert summary["continue-on-error"] is True
-        assert "scripts/summarize_ci_timing.py supervisor-integration-logs/timing" in summary["run"]
-        if group not in {"fresh-host", "operator-upgrade"}:
-            assert job["env"]["PYTHONPATH"] == "${{ github.workspace }}/scripts"
+        if group not in PLANNERS:
+            assert job["env"]["AUTO_CODER_CI_TIMING_DIR"] == "${{ github.workspace }}/supervisor-integration-logs/timing"
+            summary = _step(job, "Summarize integration timing")
+            assert summary["if"] == "always()"
+            assert summary["continue-on-error"] is True
+            assert "scripts/summarize_ci_timing.py supervisor-integration-logs/timing" in summary["run"]
+            assert any("supervisor_native_evidence.py" in step.get("run", "") for step in job["steps"])
     assert len(set(artifact_names)) == len(GROUPS)
-    for group in ("fresh-host", "isolated-containers"):
+    for group in ("prepare-fresh-host", "prepare-containers", "fresh-host", "isolated-containers", "operator-upgrade"):
         build = _step(workflow["jobs"][group], "Build the checked-out production image")["run"]
         assert "scripts/prepare_opencode_image.py" in build
         assert "auto-coder:supervisor-${{ github.sha }}" in build
@@ -141,29 +185,43 @@ def test_all_baseline_selectors_and_execution_contexts_are_preserved() -> None:
     assert "test_actual_daemon_uds_observes_admitted_drain_and_persists_receipt" in worker
     assert "-o timeout=60" in worker and "set -o pipefail" in worker
 
-    management = _step(workflow["jobs"]["management-self-update"], "Verify authenticated management self-update")["run"]
+    management = profile_args("management-self-update")
+    # Python module mode keeps the repository package importable by the CI pytest plugin.
+    for group, step_name in (
+        ("management-self-update", "Verify authenticated management self-update"),
+        ("isolated-containers", "Verify isolated Supervisor containers"),
+    ):
+        command = _step(workflow["jobs"][group], step_name)["run"]
+        assert "uv run python -m pytest -p scripts.ci_shard_plugin" in command
     for path in ("test_management_self_update_integration.py", "test_management_self_update_failures.py", "test_management_clean_restart_integration.py", "test_management_fresh_host_integration.py"):
-        assert path in management
-    assert "-m supervisor_integration" in management
+        assert any(path in value for value in management)
+    assert management[2:4] == ("-m", "supervisor_integration")
 
     host = _step(workflow["jobs"]["fresh-host"], "Verify fresh initialization with host evidence")["run"]
+    plan = _step(workflow["jobs"]["prepare-fresh-host"], "Plan complete privileged collection")["run"]
+    assert "trap 'sudo chown -R \"$(id -u):$(id -g)\" supervisor-plan/fresh-host' EXIT" in plan
+    assert plan.index('sudo chown -R "$(id -u):$(id -g)" supervisor-plan/fresh-host\n') < plan.index("uv run python scripts/supervisor_ci_profiles.py matrix")
+    assert "trap 'sudo chown -R \"$(id -u):$(id -g)\" supervisor-integration-logs' EXIT" in host
     for path in ("test_management_fresh_end_to_end.py", "test_management_retained_startup_container.py", "test_management_proxy_watcher_process_integration.py"):
-        assert path in host
+        assert any(path in value for value in profile_args("fresh-host"))
     assert "sudo env" in host and "PYTHONPATH=$GITHUB_WORKSPACE/src" in host
     assert 'checkout_sha="$(git rev-parse HEAD)"' in host
     for name in ("AUTO_CODER_CI_TIMING_CHECKOUT_SHA", "GITHUB_SHA", "GITHUB_WORKFLOW", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB"):
         assert f'"{name}=$' in host
-    assert "SUPERVISOR_ALLOWED_SKIPS" not in host and "strace" in host
-    allowed = workflow["jobs"]["management-self-update"]["env"]["SUPERVISOR_ALLOWED_SKIPS"]
-    assert "host root is required" in allowed
-    assert "production-profile image is not available locally" in allowed
+    assert "SUPERVISOR_ALLOWED_SKIPS" not in host
+    assert "strace" in _step(workflow["jobs"]["fresh-host"], "Prepare privileged fresh-host prerequisites")["run"]
+    assert len(MANAGEMENT_SKIPS) == 5
+    assert sum("host root is required" in reason for reason in MANAGEMENT_SKIPS.values()) == 4
+    assert sum("production-profile image is not available locally" in reason for reason in MANAGEMENT_SKIPS.values()) == 1
+    assert len(FRESH_REQUIRED) == 10
+    assert all(node in profile_args("fresh-host") or node.split("::")[0] in profile_args("fresh-host") for node in FRESH_REQUIRED)
 
     containers = _step(workflow["jobs"]["isolated-containers"], "Verify isolated Supervisor containers")
     for path in ("test_supervisor_container_integration.py", "test_worker_network_integration.py", "test_management_beta_deploy_container.py", "test_beta_runtime_smoke_container.py"):
-        assert path in containers["run"]
-    assert "-m supervisor_integration" in containers["run"]
-    assert containers["env"]["AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION"] == "1"
-    required = json.loads(workflow["jobs"]["isolated-containers"]["env"]["SUPERVISOR_REQUIRED_NODEIDS"])
+        assert any(path in value for value in profile_args("isolated-containers"))
+    assert profile_args("isolated-containers")[2:4] == ("-m", "supervisor_integration")
+    assert workflow["jobs"]["isolated-containers"]["env"]["AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION"] == "1"
+    required = CONTAINER_REQUIRED
     assert len(required) == len(set(required))
     assert set(OTHER_REQUIRED_NODEIDS) | {f"tests/test_beta_runtime_smoke_container.py::{name}" for name in SMOKE_CASES} <= set(required)
     assert all(nodeid.startswith("tests/") for nodeid in required)
@@ -184,7 +242,7 @@ def test_all_six_smoke_families_are_collected_with_the_required_marker(_use_real
     collected = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=90)
     assert collected.returncode == 0, collected.stdout + collected.stderr
     nodeids = set(collected.stdout.splitlines())
-    required = json.loads(_workflow()["jobs"]["isolated-containers"]["env"]["SUPERVISOR_REQUIRED_NODEIDS"])
+    required = CONTAINER_REQUIRED
     for name in SMOKE_CASES:
         nodeid = f"tests/test_beta_runtime_smoke_container.py::{name}"
         assert nodeid in nodeids

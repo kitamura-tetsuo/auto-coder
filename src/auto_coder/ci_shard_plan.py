@@ -202,10 +202,10 @@ def semantic_pytest_args(args: tuple[str, ...]) -> tuple[str, ...]:
     """Strip only this adapter's controls and explicitly permitted report flags."""
     result: list[str] = []
     index = 0
-    value_options = {"--ci-collect-output", "--ci-context", "--ci-plan", "--ci-shard", "--junitxml", "--junit-xml", "--color"}
+    value_options = {"--ci-collect-output", "--ci-context", "--ci-plan", "--ci-shard", "--source-ci-receipt", "--junitxml", "--junit-xml", "--color"}
     while index < len(args):
         arg = args[index]
-        if arg == "-p" and index + 1 < len(args) and args[index + 1] == PLUGIN:
+        if arg == "-p" and index + 1 < len(args) and args[index + 1] in (PLUGIN, "scripts.source_ci_receipt_plugin"):
             index += 2
         elif arg in value_options:
             if index + 1 >= len(args):
@@ -242,7 +242,15 @@ def _weight(seconds: object) -> int:
     return max(1, int((Decimal(str(value)) * 1000).to_integral_value(rounding=ROUND_CEILING)))
 
 
-def duration_estimates(path: Path | None, profile: dict[str, object], inventory: tuple[str, ...]) -> tuple[list[dict[str, object]], dict[str, object]]:
+def duration_estimates(
+    path: Path | None,
+    profile: dict[str, object],
+    inventory: tuple[str, ...],
+    *,
+    cold_start_fallback_ms: int = 1000,
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    if isinstance(cold_start_fallback_ms, bool) or not isinstance(cold_start_fallback_ms, int) or cold_start_fallback_ms < 1000:
+        raise ShardPlanError("cold-start fallback must be a positive whole number of milliseconds (at least 1000)")
     known: dict[str, tuple[int, int]] = {}
     source: dict[str, object] = {"status": "unavailable", "digest": None, "reason": "no duration profile supplied"}
     if path is not None:
@@ -261,11 +269,20 @@ def duration_estimates(path: Path | None, profile: dict[str, object], inventory:
         except (ProfileInputError, ShardPlanError, OSError, ValueError) as error:
             source = {"status": "unavailable", "digest": None, "reason": f"duration profile ignored: {type(error).__name__}: {error}"}
             known.clear()
-    fallback = max(1000, max((item[0] for item in known.values()), default=0))
-    estimate: list[dict[str, object]] = [
-        {"nodeid": node, "estimated_ms": known[node][0], "provenance": "native_p95", "sample_count": known[node][1]} if node in known else {"nodeid": node, "estimated_ms": fallback, "provenance": "fallback_current_max_p95" if known else "fallback_one_second", "sample_count": 0} for node in inventory
-    ]
-    return estimate, source
+    historical_max = max((item[0] for item in known.values()), default=0)
+    fallback = max(1000, cold_start_fallback_ms, historical_max)
+    if fallback > max(1000, historical_max):
+        fallback_provenance = "fallback_cold_start"
+    else:
+        fallback_provenance = "fallback_current_max_p95" if known else "fallback_one_second"
+    estimates: list[dict[str, object]] = []
+    for node in inventory:
+        if node in known:
+            milliseconds, count = known[node]
+            estimates.append({"nodeid": node, "estimated_ms": milliseconds, "provenance": "native_p95", "sample_count": count})
+        else:
+            estimates.append({"nodeid": node, "estimated_ms": fallback, "provenance": fallback_provenance, "sample_count": 0})
+    return estimates, source
 
 
 def _groups(weights: tuple[int, ...], capacity: int) -> list[tuple[int, int]]:
@@ -308,9 +325,16 @@ def allocate(inventory: tuple[str, ...], estimates: list[dict[str, object]]) -> 
     return shards, capacity, capacity_limited
 
 
-def build_plan(context: ShardContext, profile: dict[str, object], inventory: tuple[str, ...], duration_path: Path | None) -> dict[str, object]:
+def build_plan(
+    context: ShardContext,
+    profile: dict[str, object],
+    inventory: tuple[str, ...],
+    duration_path: Path | None,
+    *,
+    cold_start_fallback_ms: int = 1000,
+) -> dict[str, object]:
     validate_inventory(inventory)
-    estimates, source = duration_estimates(duration_path, profile, inventory)
+    estimates, source = duration_estimates(duration_path, profile, inventory, cold_start_fallback_ms=cold_start_fallback_ms)
     shards, capacity, limited = allocate(inventory, estimates)
     semantic = {
         "context": context.semantic_json(),
@@ -366,7 +390,7 @@ def verify_plan(data: dict[str, object]) -> VerifiedPlan:
     estimates = [_object(item, "estimate") for item in estimates_raw]
     for estimate in estimates:
         _number(estimate.get("estimated_ms"), "estimated_ms")
-        if estimate.get("provenance") not in ("native_p95", "fallback_current_max_p95", "fallback_one_second"):
+        if estimate.get("provenance") not in ("native_p95", "fallback_current_max_p95", "fallback_one_second", "fallback_cold_start"):
             raise ShardPlanError("unknown estimate provenance")
         if isinstance(estimate.get("sample_count"), bool) or not isinstance(estimate.get("sample_count"), int) or cast(int, estimate["sample_count"]) < 0:
             raise ShardPlanError("invalid estimate sample count")

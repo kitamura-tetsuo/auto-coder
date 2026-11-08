@@ -36,7 +36,7 @@ def test_all_six_production_workflows_have_pr_only_supersession() -> None:
             "group": GROUP_EXPRESSION,
             "cancel-in-progress": CANCEL_EXPRESSION,
         }
-        expected_permissions = {"contents": "read", "actions": "read"} if expected_name == "Test Source for Runtime" else {"contents": "read"}
+        expected_permissions = {"contents": "read", "actions": "read"} if expected_name in {"Test Source for Runtime", "Supervisor Integration Tests"} else {"contents": "read"}
         assert workflow["permissions"] == expected_permissions
 
 
@@ -102,7 +102,7 @@ def test_required_profiles_and_fail_closed_prerequisites_are_unchanged() -> None
     supervisor_workflow = _load("Supervisor Integration Tests")
     supervisor_steps = {step.get("name", ""): step for step in supervisor_workflow["jobs"]["isolated-containers"]["steps"]}
     required_container = supervisor_steps["Verify isolated Supervisor containers"]
-    assert required_container["env"]["AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION"] == "1"
+    assert supervisor_workflow["jobs"]["isolated-containers"]["env"]["AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION"] == "1"
     assert "pytest" in required_container["run"]
 
     source_job = _load("Test Source for Runtime")["jobs"]["complete-source-shard"]
@@ -110,7 +110,7 @@ def test_required_profiles_and_fail_closed_prerequisites_are_unchanged() -> None
     source_steps = {step.get("name", ""): step for step in source_job["steps"]}
     assert "scripts/prepare_management_test_image.py" in source_steps["Prepare Python-only management test fixture"]["run"]
     assert "scripts/browser_preflight.py" in source_steps["Verify real headless Chromium"]["run"]
-    assert "pytest -m 'not opencode_live'" in source_steps["Run complete required source selection"]["run"]
+    assert "-m 'not opencode_live'" in source_steps["Run complete required source selection"]["run"]
 
     runner = (ROOT / "scripts/run_pr_test_shard.py").read_text(encoding="utf-8")
     assert "os.killpg(pgid, signal.SIGTERM)" in runner

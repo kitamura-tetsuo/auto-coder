@@ -11,7 +11,7 @@ import yaml
 from scripts import prepare_management_test_image as preparation
 
 
-@pytest.mark.parametrize("name,selection", [("publish-beta.yml", 'bash scripts/test.sh -m "not opencode_live"'), ("test-source-for-runtime.yml", "uv run pytest -m 'not opencode_live' -vv")])
+@pytest.mark.parametrize("name,selection", [("publish-beta.yml", 'bash scripts/test.sh -m "not opencode_live"'), ("test-source-for-runtime.yml", "uv run python -m pytest -p scripts.ci_shard_plugin -p scripts.source_ci_receipt_plugin")])
 def test_complete_workflow_prepares_python_fixture_before_unchanged_tests(name, selection):
     workflow = yaml.safe_load((Path(__file__).parents[1] / ".github/workflows" / name).read_text())
     selected = [job for job in workflow["jobs"].values() if any(str(step.get("run", "")).startswith(selection) for step in job["steps"])]
@@ -19,6 +19,8 @@ def test_complete_workflow_prepares_python_fixture_before_unchanged_tests(name, 
     commands = [step.get("run") for step in selected[0]["steps"]]
     test_command = next(command for command in commands if str(command).startswith(selection))
     assert commands.index("uv run python scripts/prepare_management_test_image.py") < commands.index(test_command)
+    if name == "test-source-for-runtime.yml":
+        assert "-m 'not opencode_live'" in test_command
 
 
 def test_dirty_fixture_does_not_build_or_publish_identity(tmp_path, monkeypatch):
