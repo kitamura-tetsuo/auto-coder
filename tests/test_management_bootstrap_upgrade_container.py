@@ -373,6 +373,22 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         assert chain.call(third, "auto_coder_operation_get", {"operation_id": original_a.operation_id})["status"] == "NOT_FOUND"
         assert chain.snapshot(first) == old_snapshot and chain.snapshot(next_generation) == snapshot_b
         assert chain.workers() == original_worker
+        # Only after checking preserved lifetimes and archived/direct-prior
+        # exclusions, prove a genuinely unrelated new worker key is usable.
+        fresh_record = original_worker_records["beta"]
+        fresh = chain.call(
+            third,
+            "auto_coder_reevaluate_target",
+            {
+                "target_id": "beta-worker",
+                "target_type": "issue",
+                "number": 2603,
+                "idempotency_key": "c-unrelated-worker-" + uuid.uuid4().hex,
+                "expected_process_run_id": fresh_record.intent.expected_incarnation,
+                "expected_deployment_generation": fresh_record.intent.expected_artifact,
+            },
+        )
+        assert isinstance(fresh.get("operation_id"), str) and fresh["operation_id"]
         code, replay = call_cli("apply", "--plan-sha256", c_plan, "--auth-token-file", str(auth_file), "--authorize-source-read")
         assert code == 2 and replay["stage"] == "needs-attention" and len(effects) == 8
     finally:
