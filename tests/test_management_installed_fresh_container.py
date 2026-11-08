@@ -288,6 +288,14 @@ class InstalledChain(Chain):
                 f"type=bind,src={runtime},dst=/runtime",
                 "--mount",
                 f"type=bind,src={Path(__file__).parent / 'fixtures'},dst=/fixtures,readonly",
+                # The trusted Actions checkout is bind-mounted read-only and is
+                # owned by the non-root runner. Trust only that exact Git path.
+                "-e",
+                "GIT_CONFIG_COUNT=1",
+                "-e",
+                "GIT_CONFIG_KEY_0=safe.directory",
+                "-e",
+                "GIT_CONFIG_VALUE_0=/source",
                 "-e",
                 "HOME=/runtime/home",
                 "--entrypoint",
