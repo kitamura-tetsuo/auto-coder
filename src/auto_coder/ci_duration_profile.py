@@ -310,45 +310,67 @@ def _native_event(data: dict[str, object], origin: BatchOrigin, profile: Profile
 def _pairs_to_samples(events: dict[tuple[str, str, str], tuple[str, PhaseEvent]], conflicts: set[tuple[str, str]], profile: ProfileIdentity, reasons: list[str]) -> list[DurationSample]:
     spans: dict[tuple[str, str], dict[str, PhaseEvent]] = {}
     for (process_id, span_id, kind), (_raw, event) in events.items():
-        if (process_id, span_id) not in conflicts:
-            spans.setdefault((process_id, span_id), {})[kind] = event
-    by_node: dict[tuple[str, str], list[PhasePair]] = {}
+        spans.setdefault((process_id, span_id), {})[kind] = event
+
+    # A missing or conflicting report must not erase the phase-start boundary:
+    # a later execution of the same node may otherwise complete the earlier one.
+    by_node: dict[tuple[str, str], list[tuple[PhaseEvent, PhasePair | None]]] = {}
+    unanchored_nodes: set[tuple[str, str]] = set()
     for (process_id, span_id), parts in sorted(spans.items()):
         start, report = parts.get("pytest_phase_start"), parts.get("pytest_phase_report")
-        if start is None or report is None:
+        if start is None:
             reasons.append(f"incomplete phase record for process {process_id} span {span_id}")
+            if report is not None:
+                unanchored_nodes.add((process_id, report.nodeid))
             continue
-        if (start.nodeid, start.phase, start.origin) != (report.nodeid, report.phase, report.origin):
+        pair: PhasePair | None = None
+        if (process_id, span_id) in conflicts:
+            reasons.append(f"conflicting native phase records for process {process_id} span {span_id}")
+        elif report is None:
+            reasons.append(f"incomplete phase record for process {process_id} span {span_id}")
+        elif (start.nodeid, start.phase, start.origin) != (report.nodeid, report.phase, report.origin):
             reasons.append(f"conflicting phase-start/report identity for process {process_id} span {span_id}")
-            continue
-        by_node.setdefault((process_id, start.nodeid), []).append(PhasePair(start, report))
+            unanchored_nodes.add((process_id, report.nodeid))
+        else:
+            pair = PhasePair(start, report)
+        by_node.setdefault((process_id, start.nodeid), []).append((start, pair))
 
     samples: list[DurationSample] = []
-    for (process_id, nodeid), pairs in sorted(by_node.items()):
-        pairs.sort(key=lambda pair: (cast(datetime, pair.start.started_at), PHASES.index(pair.start.phase), pair.start.span_id))
+    for (process_id, nodeid), observations in sorted(by_node.items()):
+        observations.sort(key=lambda item: (cast(datetime, item[0].started_at), PHASES.index(item[0].phase), item[0].span_id))
         current: list[PhasePair] = []
-        for pair in pairs:
-            phase = pair.start.phase
-            if phase == "setup" and current:
-                reasons.append(f"incomplete pytest execution: {nodeid} in process {process_id}")
-                current = []
-            if not current:
-                if phase != "setup":
-                    reasons.append(f"unreached setup/call: {nodeid} {phase} in process {process_id}")
-                    continue
-                current = [pair]
-            elif phase == PHASES[len(current)] and pair.start.origin == current[0].start.origin:
-                current.append(pair)
-            else:
+        active = False
+        invalid = False
+        for start, pair in observations:
+            phase = start.phase
+            if phase == "setup":
+                if active:
+                    reasons.append(f"incomplete pytest execution: {nodeid} in process {process_id}")
+                current = [pair] if pair is not None else []
+                active = True
+                invalid = pair is None
+                continue
+            if not active:
+                reasons.append(f"unreached setup/call: {nodeid} {phase} in process {process_id}")
+                continue
+            if invalid:
+                continue
+            if pair is None or phase != PHASES[len(current)] or start.origin != current[0].start.origin:
                 reasons.append(f"nonconsecutive or conflicting pytest phases: {nodeid} in process {process_id}")
+                invalid = True
                 current = []
+                continue
+            current.append(pair)
             if len(current) == len(PHASES):
-                samples.append(DurationSample.from_pairs(profile, current))
+                if (process_id, nodeid) not in unanchored_nodes:
+                    samples.append(DurationSample.from_pairs(profile, current))
+                else:
+                    reasons.append(f"unanchored phase report makes execution ambiguous: {nodeid} in process {process_id}")
                 current = []
-        if current:
+                active = False
+        if active:
             reasons.append(f"incomplete pytest execution: {nodeid} in process {process_id}")
     return samples
-
 
 def _batch(path: Path, profile: ProfileIdentity) -> tuple[list[DurationSample], InputDiagnostic, tuple[Path, ...]]:
     data = _read_json(path)
@@ -555,7 +577,7 @@ def build_profile(context: ProfileContext, batches: list[Path], previous: list[P
 
 
 def write_profile(path: Path, result: ProfileResult, inputs: list[Path]) -> None:
-    """Create a new immutable snapshot via same-directory atomic replacement."""
+    """Publish a complete immutable snapshot with exclusive final-name creation."""
 
     destination = path.resolve()
     if any(destination == source.resolve() for source in (*inputs, *result.native_input_paths)):
@@ -570,8 +592,9 @@ def write_profile(path: Path, result: ProfileResult, inputs: list[Path]) -> None
             stream.write(_canonical(result.payload))
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        temporary = None
+        # A preflight existence check is not a lock: link() creates the final
+        # name exclusively without ever replacing a concurrent publisher.
+        os.link(temporary, path)
     except OSError as error:
         raise ProfileInputError(f"atomic output failed for {path}: {type(error).__name__}: {error}") from error
     finally:
