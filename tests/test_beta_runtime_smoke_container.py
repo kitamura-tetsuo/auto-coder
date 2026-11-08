@@ -449,7 +449,7 @@ def _smoke_system(real_boundary, tmp_path: Path, scenario_id: str, stage_name: s
             assert selecting.advance("r77", None).certainty is MutationCertainty.CONFIRMED
             base, _grants, identity, signed, _uids, state = real_boundary
             origin = base.oauth.canonical_issuer
-            oauth = OAuthSettings(base.oauth.database_path, origin, base.oauth.firebase_project_id, (OAuthClient("alice-client", (origin + "/alice-callback",), allowed_scopes=(READ_SCOPE, DEPLOY_SCOPE)),), enabled_scopes=(READ_SCOPE, DEPLOY_SCOPE))
+            oauth = OAuthSettings(tmp_path / "oauth.sqlite3", origin, base.oauth.firebase_project_id, (OAuthClient("alice-client", (origin + "/alice-callback",), allowed_scopes=(READ_SCOPE, DEPLOY_SCOPE)),), enabled_scopes=(READ_SCOPE, DEPLOY_SCOPE))
             policy = tmp_path / "operator.yaml"
             policy.write_text("profile: beta\ntargets:\n  beta-worker:\n    channel: beta\n    repositories: [fixture/beta]\n", encoding="utf-8")
             settings = ManagementSettings(tmp_path, oauth, port=base.port, operating_policy_path=policy, operation_state_root=tmp_path / "journal", source_repository="owner/repo")
@@ -530,7 +530,7 @@ def _cleanup_staging_container(stage_name: str, scenario_id: str, case_root: Pat
         inspected = _docker("inspect", stage_name, check=False, timeout=15)
         if inspected.returncode == 0:
             errors.append(f"staging container still exists: {stage_name}")
-        elif "No such object" not in inspected.stderr and "No such container" not in inspected.stderr:
+        elif "no such object" not in inspected.stderr.lower() and "no such container" not in inspected.stderr.lower():
             errors.append(f"staging removal could not be verified: {inspected.stderr.strip()}")
     except (OSError, subprocess.SubprocessError) as error:
         errors.append(f"could not verify staging container removal: {error}")
@@ -614,7 +614,7 @@ def test_staging_timeout_reaps_real_container_and_descendant(tmp_path: Path, _us
         time.sleep(0.6)
         assert heartbeat.read_text() == before
         inspected = _docker("inspect", stage_name, check=False)
-        assert inspected.returncode != 0 and "No such object" in inspected.stderr
+        assert inspected.returncode != 0 and "no such object" in inspected.stderr.lower()
         remaining = _docker("ps", "-a", "--filter", f"name=^/{stage_name}$", "--format", "{{.Names}}")
         assert remaining.stdout.strip() == ""
         log_root = Path(os.environ.get("GITHUB_WORKSPACE", str(Path(__file__).parents[1]))) / "supervisor-integration-logs" / scenario_id

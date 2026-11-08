@@ -73,7 +73,8 @@ def test_case_owned_docker_cleanup_preserves_failure_and_removes_every_owned_res
     assert (tmp_path / "supervisor-integration-logs" / "smoke-case" / "github.log").read_text() == "fixture log\n"
 
 
-def test_staging_guard_owns_timeout_cleanup_before_temporary_roots_close(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("missing_message", ["Error: No such object: stage", "error: no such object: stage", "Error: No such container: stage"])
+def test_staging_guard_owns_timeout_cleanup_before_temporary_roots_close(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing_message: str) -> None:
     import tests.test_beta_runtime_smoke_container as smoke
 
     monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
@@ -90,7 +91,7 @@ def test_staging_guard_owns_timeout_cleanup_before_temporary_roots_close(tmp_pat
         if arguments[:2] == ("rm", "-f"):
             exists = False
         if arguments[0] == "inspect":
-            return subprocess.CompletedProcess(arguments, 0 if exists else 1, stdout="", stderr="" if exists else "Error: No such object: stage")
+            return subprocess.CompletedProcess(arguments, 0 if exists else 1, stdout="", stderr="" if exists else missing_message)
         return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
 
     monkeypatch.setattr(smoke, "_docker", docker)
