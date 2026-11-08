@@ -241,6 +241,33 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         finally:
             management_config.write_bytes(original_config)
 
+        # A different candidate image binding is not an approved effect input.
+        # Alter the immutable fresh intent only on this disposable candidate.
+        candidate_intent = next_generation.intent
+        assert candidate_intent is not None
+        original_intent = candidate_intent.read_bytes()
+        try:
+            changed_intent = json.loads(original_intent)
+            changed_intent["image_digest"] = "sha256:" + "0" * 64
+            candidate_intent.write_text(json.dumps(changed_intent))
+            code, denied = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+            assert code == 2 and denied["stage"] == "prerequisite-blocked"
+            assert effects == [] and chain.snapshot(first) == old_snapshot
+        finally:
+            candidate_intent.write_bytes(original_intent)
+
+        # A missing already-authorized protected reader must not be silently
+        # substituted with a host token or lead to a predecessor stop.
+        source_credential = next_generation.path("bootstrap") / "source_evidence_read"
+        absent_credential = next_generation.path("bootstrap") / "source_evidence_read.absent"
+        source_credential.rename(absent_credential)
+        try:
+            code, denied = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+            assert code == 2 and denied["stage"] == "prerequisite-blocked"
+            assert effects == [] and chain.snapshot(first) == old_snapshot
+        finally:
+            absent_credential.rename(source_credential)
+
         # Unavailable exact-source/Actions evidence and absent explicit consent
         # must each block the incumbent-preserving operation.
         chain.services.unavailable = True
@@ -330,12 +357,16 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
 
         wait_for(c_application_ready, "C installed child, archived A and direct-prior B", timeout=90)
         chain.assert_workers(third, original_worker_records)
+        assert chain.grants() == chain.grants_before
+        assert chain.worker_posts() == {"beta": 1, "release": 1}
+        assert chain.call(third, "auto_coder_whoami", {})["uid"] == "operator"
         for previous in (first, next_generation):
             chain.owner_refused(previous)
         # B is the direct previous history; A is an immutable archived
         # exclusion, not a source of re-admissible old idempotency keys.
         response_b = chain.call(third, "auto_coder_update_management_service", {"source_sha": "a" * 40, "idempotency_key": old_b.intent.idempotency_key})
         assert response_b["operation_id"] == old_b.operation_id and response_b["history_origin"] == "retained_prior_instance"
+        assert chain.call(third, "auto_coder_operation_get", {"operation_id": old_b.operation_id})["history_origin"] == "retained_prior_instance"
         response_a = chain.call(third, "auto_coder_update_management_service", {"source_sha": "a" * 40, "idempotency_key": original_a.intent.idempotency_key})
         assert response_a["status"] == "CONFLICT" and response_a.get("operation_id") is None
         assert chain.call(third, "auto_coder_operation_get", {"operation_id": original_a.operation_id})["status"] == "NOT_FOUND"
