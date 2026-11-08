@@ -311,8 +311,11 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
             try:
                 assert first_stop_entered.wait(120), "real stop dispatch never reached the live barrier"
                 assert effects == [] and chain.workers() == original_worker
-                with pytest.raises(upgrade.UpgradeUnavailable, match="live operator"):
-                    upgrade.apply(operator, plan_id, auth_file, authorize_source_read=True)
+                # Enter the second contender through the actual operator
+                # apply command, not just a direct internal apply() invocation.
+                second_code, second_apply = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+                assert second_code == 2 and second_apply["stage"] == "needs-attention"
+                assert "live operator" in second_apply["reason"]
                 assert effects == [] and chain.workers() == original_worker
             finally:
                 first_stop_released.set()
