@@ -637,3 +637,32 @@ def test_source_proof_requires_every_producer_job_at_exact_run_attempt(
             upgrade._source_proof(authority, source)
     assert source_shard_checks == [(client, 17, 1, source)]
     assert len(observed_paths) == (1 if boundary == "wrong-source" else 2)
+
+
+def test_fresh_status_asks_child_for_exact_authenticated_observation_without_claiming_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A protected whoami read produces proof; only the observer can seal success."""
+    credential = private_file(tmp_path / "fresh-client", b"disposable-authenticated-client")
+    observation = "a" * 32
+    calls: list[tuple[object, ...]] = []
+
+    def whoami(port: int, token: str, tool: str, arguments: dict[str, object]) -> dict[str, str]:
+        calls.append((port, token, tool, arguments))
+        return {"uid": "operator"}
+
+    monkeypatch.setattr(upgrade, "_mcp_call", whoami)
+    upgrade._request_fresh_readback(18080, credential, {"status": "launched", "observation_id": observation})
+    assert calls == [(18080, "disposable-authenticated-client", "auto_coder_whoami", {"observation_id": observation})]
+
+    for invalid in ("short", "g" * 32, "", None):
+        with pytest.raises(ValueError, match="fresh observation identity"):
+            upgrade._request_fresh_readback(18080, credential, {"status": "launched", "observation_id": invalid})
+    assert len(calls) == 1
+
+    def denied(*_args: object) -> dict[str, object]:
+        return {"status": "NOT_AUTHORIZED"}
+
+    monkeypatch.setattr(upgrade, "_mcp_call", denied)
+    with pytest.raises(ValueError, match="observation-bound authenticated identity unavailable"):
+        upgrade._request_fresh_readback(18080, credential, {"status": "launched", "observation_id": observation})
