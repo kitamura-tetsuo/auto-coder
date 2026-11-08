@@ -173,10 +173,14 @@ def test_dockerfile_pins_opencode_release_and_explicit_architectures() -> None:
     # REQ-001: Pins OpenCode release 1.18.31
     assert f"ARG OPENCODE_VERSION={_PINNED_OPENCODE_VERSION}" in content
 
-    # REQ-001: Explicit platform mapping for Linux amd64 and arm64
-    assert 'amd64) OPENCODE_ARCH="x64"; CODEX_ARCH="x86_64" ;;' in content
-    assert 'arm64) OPENCODE_ARCH="arm64"; CODEX_ARCH="aarch64" ;;' in content
+    # REQ-001: Map Linux platforms to both release and pinned npm fallback artifacts.
+    assert 'amd64) OPENCODE_ARCH="x64"; CODEX_ARCH="x86_64"; CODEX_NPM_ARCH="x64" ;;' in content
+    assert 'arm64) OPENCODE_ARCH="arm64"; CODEX_ARCH="aarch64"; CODEX_NPM_ARCH="arm64" ;;' in content
     assert "Unsupported architecture for OpenCode: $ARCH" in content
+    assert "opencode-linux-${OPENCODE_ARCH}-${OPENCODE_VERSION}.tgz" in content
+    assert "codex-${CODEX_VERSION}-linux-${CODEX_NPM_ARCH}.tgz" in content
+    assert 'test "$(opencode --version)" = "${OPENCODE_VERSION}"' in content
+    assert 'test "$(codex --version)" = "codex-cli ${CODEX_VERSION}"' in content
 
     # REQ-001: Required OS packages in runtime image
     assert "git" in content
