@@ -656,7 +656,9 @@ fresh_host.main()
             # A concurrent status read can report unknown during this interval;
             # it is not proof of a terminal failure while the launch is in flight.
             if time.monotonic() >= deadline:
-                logs = subprocess.run(["docker", "logs", new_id], capture_output=True, text=True, check=False, timeout=10)
+                logs = subprocess.run(
+                    ["docker", "logs", new_id], capture_output=True, text=True, check=False, timeout=10
+                )
                 raise AssertionError(
                     f"fresh launch did not reach authenticated readiness (status={status!r}): "
                     + (logs.stdout + logs.stderr)[-1500:]
