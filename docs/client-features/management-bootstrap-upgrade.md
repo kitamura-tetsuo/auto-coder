@@ -150,8 +150,14 @@ image revision; their original Actions attempts must not be conflated.
 The operator does not call a separate host-side fixture/proof producer in place
 of the upgraded service. Unavailable actual child evidence, missing credentials,
 a moved selection, or disagreement across beta targets leaves only
-`application-ready` and a precise missing prerequisite. The tool does not
-select a ref, enqueue an operation, start or stop workers, or deploy beta.
+`application-ready` and a precise missing prerequisite. Even a previously
+recorded `beta-deploy-prerequisites-verified` result is not a durable
+authorization: every subsequent `status` first returns its persisted stage to
+`application-ready` and only promotes it after a fresh authorized successful
+read from the actual upgraded child. A missing read approval, disappeared
+selection or conflicting pointer must never leave stale persisted beta-ready
+authority. The tool does not select a ref, enqueue an operation, start or stop
+workers, or deploy beta.
 `beta-deploy-prerequisites-verified` is **not** beta deployment or proof of
 completion. The actual beta source deployment remains a separate authorized
 MCP operation using the existing policy, worker bridge/generation and exact
