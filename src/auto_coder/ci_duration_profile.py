@@ -372,6 +372,7 @@ def _pairs_to_samples(events: dict[tuple[str, str, str], tuple[str, PhaseEvent]]
             reasons.append(f"incomplete pytest execution: {nodeid} in process {process_id}")
     return samples
 
+
 def _batch(path: Path, profile: ProfileIdentity) -> tuple[list[DurationSample], InputDiagnostic, tuple[Path, ...]]:
     data = _read_json(path)
     if data.get("schema_version") != BATCH_SCHEMA:
