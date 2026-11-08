@@ -16,8 +16,8 @@ ARG CODEX_VERSION=0.159.2
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
     ARCH="${TARGETARCH:-$(dpkg --print-architecture)}" && \
     case "$ARCH" in \
-        amd64) OPENCODE_ARCH="x64"; CODEX_ARCH="x86_64" ;; \
-        arm64) OPENCODE_ARCH="arm64"; CODEX_ARCH="aarch64" ;; \
+        amd64) OPENCODE_ARCH="x64"; CODEX_ARCH="x86_64"; CODEX_NPM_ARCH="x64" ;; \
+        arm64) OPENCODE_ARCH="arm64"; CODEX_ARCH="aarch64"; CODEX_NPM_ARCH="arm64" ;; \
         *) echo "Unsupported architecture for OpenCode: $ARCH" >&2; exit 1 ;; \
     esac && \
     if curl --retry 2 --retry-all-errors --retry-delay 3 --connect-timeout 15 --max-time 90 -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${OPENCODE_ARCH}.tar.gz" -o /tmp/opencode.tar.gz; then \
@@ -29,11 +29,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
         chmod +x /usr/local/bin/opencode; \
     fi && \
     test "$(opencode --version)" = "${OPENCODE_VERSION}" && \
-    curl --retry 5 --retry-all-errors --retry-delay 4 --connect-timeout 15 --max-time 90 -fsSL "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-${CODEX_ARCH}-unknown-linux-musl.tar.gz" -o /tmp/codex.tar.gz && \
-    tar -xzf /tmp/codex.tar.gz -C /tmp && \
-    mv "/tmp/codex-${CODEX_ARCH}-unknown-linux-musl" /usr/local/bin/codex && \
+    if curl --retry 2 --retry-all-errors --retry-delay 3 --connect-timeout 15 --max-time 90 -fsSL "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-${CODEX_ARCH}-unknown-linux-musl.tar.gz" -o /tmp/codex.tar.gz; then \
+        tar -xzf /tmp/codex.tar.gz -C /tmp && \
+        mv "/tmp/codex-${CODEX_ARCH}-unknown-linux-musl" /usr/local/bin/codex; \
+    else \
+        curl --retry 3 --retry-all-errors --retry-delay 3 --connect-timeout 15 --max-time 90 -fsSL "https://registry.npmjs.org/@openai/codex/-/codex-${CODEX_VERSION}-linux-${CODEX_NPM_ARCH}.tgz" -o /tmp/codex-npm.tgz && \
+        tar -xzf /tmp/codex-npm.tgz -C /usr/local/bin --strip-components=4 "package/vendor/${CODEX_ARCH}-unknown-linux-musl/bin/codex"; \
+    fi && \
     chmod +x /usr/local/bin/codex && \
-    rm -f /tmp/opencode.tar.gz /tmp/opencode-npm.tgz /tmp/codex.tar.gz && \
+    test "$(codex --version)" = "codex-cli ${CODEX_VERSION}" && \
+    rm -f /tmp/opencode.tar.gz /tmp/opencode-npm.tgz /tmp/codex.tar.gz /tmp/codex-npm.tgz && \
     rm -rf /var/lib/apt/lists/*
 
 FROM python:3.12-slim
