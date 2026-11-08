@@ -215,56 +215,6 @@ jobs:
           path: supervisor-integration-logs/
           if-no-files-found: error
 
-  # One-time #2793 acceptance verification. Remove after the case-specific
-  # independent/reversed execution artifact is retained.
-  smoke-standalone-reversed:
-    name: Standalone smoke cases in reversed order
-    if: github.event_name == 'pull_request' && github.head_ref == 'feat/2793-split-beta-smoke-scenarios'
-    runs-on: ubuntu-latest
-    timeout-minutes: 55
-    env:
-      UV_LOCKED: "1"
-      AUTO_CODER_CI_TIMING_DIR: ${{ github.workspace }}/supervisor-integration-logs/timing
-      AUTO_CODER_CI_TIMING_EXPECTED_INVOCATIONS: smoke-standalone-reversed
-      AUTO_CODER_CI_TIMING_INVOCATION: smoke-standalone-reversed
-      AUTO_CODER_INTEGRATION_UV_CACHE_DIR: ${{ github.workspace }}/.cache/nested-preparation-uv
-      PYTHONPATH: ${{ github.workspace }}/scripts
-    steps:
-      - *checkout
-      - *python
-      - *uv
-      - *dependencies
-      - *build
-      - name: Execute each real smoke case alone, in reverse order
-        timeout-minutes: 45
-        env:
-          AUTOCODER_SUPERVISOR_IMAGE: auto-coder:supervisor-${{ github.sha }}
-          AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION: "1"
-        run: |
-          set -euo pipefail
-          mkdir -p supervisor-integration-logs/standalone
-          cases=(
-            test_local_smoke_distinct_revision_and_worker_lifecycle_outcomes
-            test_local_smoke_selected_retry_and_same_sha_supersession
-            test_local_smoke_later_selection_preserves_proof_and_publication_authority
-            test_local_smoke_preserves_original_evidence_across_real_faults
-            test_local_smoke_diagnostics_do_not_advance_real_worker_progress
-            test_local_smoke_uses_installed_worker_real_progress_and_original_journal
-          )
-          for smoke_case in "${cases[@]}"; do
-            uv run pytest -q -vv -m supervisor_integration \
-              "tests/test_beta_runtime_smoke_container.py::${smoke_case}" \
-              --junitxml="supervisor-integration-logs/standalone/${smoke_case}.xml"
-          done
-      - *summarize-timing
-      - name: Upload standalone smoke timing and diagnostics
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: supervisor-integration-standalone-${{ github.run_id }}-${{ github.run_attempt }}
-          path: supervisor-integration-logs/
-          if-no-files-found: error
-
   supervisor-integration:
     name: Supervisor Integration Tests
     if: always()

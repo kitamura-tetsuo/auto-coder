@@ -286,7 +286,8 @@ maintenance cadence. Repeating real setup increases aggregate work even though
 individual scenarios can now be scheduled separately. On GitHub-hosted
 `ubuntu-latest`, the real production-image `Supervisor Integration Tests`
 [run 42429881051](https://github.com/kitamura-tetsuo/auto-coder/actions/runs/42429881051)
-at head `c1e008e8105dada1d9abff356d5319456309bf9b` passed all six scenarios,
+for PR head `c1e008e8105dada1d9abff356d5319456309bf9b` (actual Actions
+merge checkout `d12e60e84ba52c9c408234449c9c78473562a813`) passed all six scenarios,
 the real staging-timeout regression and all other container tests: 14 passed,
 0 skipped, 0 failures, 0 errors. Native pytest timing records, in seconds:
 
@@ -305,9 +306,19 @@ sequential work than the previous 820.05-second monolith. Setup is genuinely
 repeated for isolation. This proves a smaller indivisible scheduling unit,
 **not** a shorter serial CI job. The same JUnit/timing artifacts retain the
 actual 8.74-second staging-timeout regression and native setup/call/teardown
-phases. A separate one-time acceptance run will exercise each smoke node in
-its own pytest process and in reverse family order; the above measured run
-alone establishes independent fixture state but not that reordered check.
+phases. A separate one-time acceptance
+[run 42433139744](https://github.com/kitamura-tetsuo/auto-coder/actions/runs/42433139744)
+at PR head `f4a06b30a9e4336e0b6e3bd99f1e4d6d168a2467` (actual Actions merge
+checkout `bd655a841f02f419e790e6666d912bdab2b78c4e`) executed the six
+cases as **six separate pytest processes in reverse family order**: lifecycle,
+retry, later selection, faults, diagnostics, core. All six standalone JUnit
+files recorded one passing test, zero skipped, failures or errors, and six
+distinct timing-process IDs. The native timing summary had zero invalid or
+incomplete records. The longest standalone case took 421.35 seconds (7m01s),
+and the six summed to 1,467.23 seconds (24m27s), still with no individual
+case over ten minutes. The original and reverse/standalone artifacts remain
+available at their linked runs; the temporary extra CI job was removed once
+that evidence was recorded, leaving the normal required-node workflow intact.
 `tests/test_beta_runtime_smoke_source_fixture.py` checks this isolation with real
 Git and HTTP selection while preserving the original source tags. This fixture
 correction changes no production behavior or dashboard schema.
