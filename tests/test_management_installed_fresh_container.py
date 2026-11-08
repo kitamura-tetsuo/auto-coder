@@ -59,6 +59,22 @@ print(json.dumps({'receipts':[asdict(r) for r in receipts], 'runtimes':[{**asdic
 """
 
 
+def _bind_disposable_source_reader(package: Path) -> None:
+    """Bind only the fixture's source transport, not its evidence producer."""
+    lifecycle = package / "management" / "worker_lifecycle.py"
+    original = lifecycle.read_text()
+    constructor = "return BetaEvidenceReader(GitHubGitDataClient(secret, config.source_repository), config.source_repository)"
+    assert original.count(constructor) == 1
+    # The staged fixture source is committed and locally tested *after* this
+    # adapter; it never substitutes for public GitHub Actions provenance.
+    lifecycle.write_text(
+        original.replace(
+            constructor,
+            "external = json.loads((config.oauth.database_path.parent / 'external-services.json').read_text())\n" "        return BetaEvidenceReader(GitHubGitDataClient(secret, config.source_repository, api_url=external['url']), config.source_repository)",
+        )
+    )
+
+
 class InstalledChain(Chain):
     def __init__(self, root: Path):
         super().__init__(root, with_workers=True)
@@ -149,6 +165,7 @@ class InstalledChain(Chain):
             assert self.docker("run", "--rm", "--network", network, "--entrypoint", "python", self.image, "-c", probe, self.external["url"]).splitlines()[-1] == "fixture-authority-reachable"
 
         _snapshot_source(source, "source-scaffold")
+        _bind_disposable_source_reader(source / "src" / "auto_coder")
         cli = source / "src" / "auto_coder" / "cli.py"
         launch_log = """    with (settings.state_root / 'installed-launches.jsonl').open('a') as observed:
         observed.write(json.dumps({'pid': os.getpid(), 'runtime': os.environ.get('AUTO_CODER_MANAGEMENT_RUNTIME_ID'), 'revision': json.loads(Path(__file__).with_name('fixture_revision.json').read_text())['revision']}) + '\\n')
@@ -207,18 +224,7 @@ class InstalledChain(Chain):
         needle = "    raise SystemExit(ManagementBootstrapSupervisor(config, bootstrap_config_path=args.config, fresh_initialization=args.fresh_initialization).run())"
         assert original.count(needle) == 1
         bootstrap.write_text(original.replace(needle, _BOOTSTRAP_AUTHORITY + needle.replace("fresh_initialization=args.fresh_initialization)", "fresh_initialization=args.fresh_initialization, source_authority=authority)")))
-        lifecycle = package / "management" / "worker_lifecycle.py"
-        lifecycle_source = lifecycle.read_text()
-        reader_constructor = "return BetaEvidenceReader(GitHubGitDataClient(secret, config.source_repository), config.source_repository)"
-        assert lifecycle_source.count(reader_constructor) == 1
-        # Substitute only the disposable external endpoint; the production
-        # reader validates actual Git selection, proof and required jobs.
-        lifecycle.write_text(
-            lifecycle_source.replace(
-                reader_constructor,
-                "external = json.loads((config.oauth.database_path.parent / 'external-services.json').read_text())\n" "        return BetaEvidenceReader(GitHubGitDataClient(secret, config.source_repository, api_url=external['url']), config.source_repository)",
-            )
-        )
+        _bind_disposable_source_reader(package)
         self.installed_tag = "auto-coder-installed-fresh:" + uuid.uuid4().hex
         _build_fixture_image(context, self.image, self.installed_tag, owner_token_gap=False)
         self.image = self.docker("image", "inspect", self.installed_tag, "--format", "{{.Id}}")
