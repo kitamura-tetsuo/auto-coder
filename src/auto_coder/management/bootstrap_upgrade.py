@@ -1089,7 +1089,7 @@ def status(root: Path, sha: str, *, authenticated_client_file: Path | None = Non
                     plan.endpoint_port,
                     token,
                     "auto_coder_beta_source_readback",
-                    {"target_id": target, "source_sha": plan.profile.source_sha},
+                    {"target_id": target},
                 )
                 if evidence.get("status") != "OK":
                     reason = evidence.get("reason")
@@ -1104,8 +1104,22 @@ def status(root: Path, sha: str, *, authenticated_client_file: Path | None = Non
                     evidence.get("proof_run_id"),
                     evidence.get("proof_run_attempt"),
                 )
-                expected_identity = (target, MANAGEMENT_REPOSITORY, plan.profile.source_sha, plan.tested_source_identity, plan.supervisor_run_id, plan.supervisor_run_attempt)
-                if selected_identity != expected_identity or not isinstance(evidence.get("selection_oid"), str) or not isinstance(evidence.get("selection_operation_id"), str):
+                if (
+                    selected_identity[0] != target
+                    or selected_identity[1] != MANAGEMENT_REPOSITORY
+                    or not isinstance(selected_identity[2], str)
+                    or _REVISION.fullmatch(selected_identity[2]) is None
+                    or not isinstance(selected_identity[3], str)
+                    or _REVISION.fullmatch(selected_identity[3]) is None
+                    or type(selected_identity[4]) is not int
+                    or selected_identity[4] <= 0
+                    or type(selected_identity[5]) is not int
+                    or selected_identity[5] <= 0
+                    or not isinstance(evidence.get("selection_oid"), str)
+                    or _REVISION.fullmatch(evidence["selection_oid"]) is None
+                    or not isinstance(evidence.get("selection_operation_id"), str)
+                    or not evidence["selection_operation_id"]
+                ):
                     answer["missing_prerequisites"] = [f"{target}: upgraded-service source/selection identity conflict"]
                     return answer
                 if selected is not None and any(selected.get(key) != evidence.get(key) for key in ("source_sha", "selection_oid", "selection_operation_id", "selected_run_id", "selected_run_attempt")):
