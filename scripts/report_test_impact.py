@@ -403,6 +403,16 @@ def _result(
         "reasons": sorted(set(reasons)),
         "baseline_identity": baseline.get("identity") if baseline else None,
         "current_identity": current.get("identity") if current else None,
+        "evidence": {
+            "baseline_status": baseline.get("status") if baseline else None,
+            "current_status": current.get("status") if current else None,
+            "baseline_native_session": baseline.get("native_session") if baseline else None,
+            "current_native_session": current.get("native_session") if current else None,
+            "baseline_collection_digest": _object(baseline["profile"]).get("node_inventory_digest") if baseline and isinstance(baseline.get("profile"), dict) else None,
+            "current_collection_digest": _object(current["profile"]).get("node_inventory_digest") if current and isinstance(current.get("profile"), dict) else None,
+            "baseline_tooling": baseline.get("tooling") if baseline else None,
+            "current_tooling": current.get("tooling") if current else None,
+        },
         "profile": PROFILE,
         "selector": SELECTOR,
         "collection_known": inventory is not None,
@@ -546,7 +556,12 @@ def markdown_summary(report: dict[str, object]) -> str:
         identity = report.get(name)
         if not isinstance(identity, dict):
             return f"- {name}: unavailable"
-        return f"- {name}: repo {code(identity.get('repository'))}, run/attempt " f"{code(identity.get('run_id'))}/{code(identity.get('run_attempt'))}, " f"invocation {code(identity.get('invocation_id'))}, tree {code(identity.get('checkout_tree'))}"
+        return (
+            f"- {name}: repo {code(identity.get('repository'))}, run/attempt "
+            f"{code(identity.get('run_id'))}/{code(identity.get('run_attempt'))}, "
+            f"invocation {code(identity.get('invocation_id'))}, source ref {code(identity.get('source_ref'))}, "
+            f"workflow {code(identity.get('workflow_path'))}, tree {code(identity.get('checkout_tree'))}"
+        )
 
     interval = _object(report["compared_interval"])
     lines = [
@@ -563,6 +578,7 @@ def markdown_summary(report: dict[str, object]) -> str:
         f"- Profile/marker selector: {code(report['profile'])} / {code(report['selector'])}",
         f"- Exact ancestry/full interval proven: {code(interval['verified_ancestry_and_full_path_status'])}",
         f"- Current collected inventory known: {code(report['collection_known'])}",
+        f"- Baseline/current observation availability: {code(_object(report['evidence']).get('baseline_status'))} / {code(_object(report['evidence']).get('current_status'))}",
         f"- Hypothetical selected/omitted/new/removed nodes: **{len(report['candidate_nodes'])}/{len(report['omitted_nodes'])}/{len(report['new_nodes'])}/{len(report['removed_nodes'])}**",
         "",
     ]

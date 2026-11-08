@@ -107,8 +107,9 @@ that all possible indirect effects were measured.
 `shadow-report.json` uses deterministic keys and ordered arrays with:
 
 - Exact baseline and current run/attempt/invocation, evaluated commit/tree and
-  observation profile; verified compared interval and each original path-status
-  record (including both rename paths).
+  observation profile; availability, native session, collection digest and
+  measurement-tool fingerprints of both; verified compared interval and each
+  original path-status record (including both rename paths).
 - `comparison_status` (`candidate`, `full`, `unavailable`), `selection_mode`
   (`BASELINE_CANDIDATE`, `FULL`, `UNKNOWN`), reasons, unmeasured changed paths
   and the observer's unmeasured-domain catalog.

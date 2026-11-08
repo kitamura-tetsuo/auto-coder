@@ -98,6 +98,8 @@ def test_production_cli_freezes_only_old_edges_and_finds_real_omitted_failure(tm
     report = _report(baseline, current, checkout)
     assert report["comparison_status"] == "candidate", report["reasons"]
     assert report["selection_mode"] == "BASELINE_CANDIDATE"
+    assert report["evidence"]["baseline_status"] == report["evidence"]["current_status"] == "available"
+    assert report["evidence"]["current_native_session"]["exit_code"] == 1
     assert report["candidate_nodes"] == [alpha["nodeid"]]
     assert report["omitted_nodes"] == [beta["nodeid"]]
     assert report["validation_status"] == "missed_failure"
