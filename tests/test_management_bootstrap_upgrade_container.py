@@ -193,6 +193,15 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
     original_worker = chain.workers()
     original_a = chain.seed(first)
     original_worker_records = chain.seed_workers(first)
+    # Independent installed-process history is written by the real child,
+    # not by the host coordinator's _docker effect accounting wrapper.
+    def installed_launches() -> tuple[tuple[int, str, str], ...]:
+        history = chain.oauth / "installed-launches.jsonl"
+        if not history.exists():
+            return ()
+        return tuple((entry["pid"], entry["runtime"], entry["revision"]) for entry in (json.loads(line) for line in history.read_text().splitlines()))
+
+    initial_installed_launches = installed_launches()
     next_generation = chain.prepare("manager-b", first)
     profile_path, _, new_watcher = approved_profile(chain, first, next_generation)
     auth_file = tmp_path / "operator-auth-client"
@@ -324,6 +333,9 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
             return result["stage"] == "application-ready"
 
         wait_for(application_ready, "protected exact-child application readiness", timeout=90)
+        b_installed_launches = installed_launches()
+        assert b_installed_launches[: len(initial_installed_launches)] == initial_installed_launches
+        assert len(b_installed_launches) == len(initial_installed_launches) + 1, "B must launch exactly one installed child"
         # Read-only beta eligibility must come from the *running upgraded
         # service's* configured BetaEvidenceReader, over the authenticated MCP
         # endpoint. The fixture has real Git objects and locally executed tests,
@@ -373,6 +385,22 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         assert upgrade._operation(operator, plan_id).stage == "beta-deploy-prerequisites-verified"
         assert restored["selected_source_sha"] == chain.current_sha
         assert len(effects) == 4 and chain.worker_posts() == before_readback_posts
+
+        # A completed Docker cutover alone cannot authorize a dead/revoked
+        # authenticated client. This failure must not reuse the previous
+        # successful source readback or trigger another installed launch.
+        original_client = auth_file.read_bytes()
+        try:
+            auth_file.write_text("invalid-disposable-authentication", encoding="utf-8")
+            code, no_auth = call_cli("status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+            assert code == 2 and no_auth["stage"] == "needs-attention"
+            assert installed_launches() == b_installed_launches
+            assert len(effects) == 4 and chain.worker_posts() == before_readback_posts
+        finally:
+            auth_file.write_bytes(original_client)
+        code, authenticated_again = call_cli("status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+        assert code == 0 and authenticated_again["stage"] == "beta-deploy-prerequisites-verified"
+        assert installed_launches() == b_installed_launches
         code, repeated = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
         assert code == 2 and repeated["stage"] == "needs-attention"
         assert len(effects) == 4 and chain.workers() == original_worker
@@ -451,6 +479,9 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
             return result["stage"] == "application-ready"
 
         wait_for(c_application_ready, "C installed child, archived A and direct-prior B", timeout=90)
+        c_installed_launches = installed_launches()
+        assert c_installed_launches[: len(b_installed_launches)] == b_installed_launches
+        assert len(c_installed_launches) == len(b_installed_launches) + 1, "C must launch exactly one installed child"
         # Beta prerequisite verification also survives the second physical
         # upgrade. Neither the host command nor this readback deploys beta.
         worker_posts_c = chain.worker_posts()
@@ -512,6 +543,7 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         assert isinstance(fresh.get("operation_id"), str) and fresh["operation_id"]
         code, replay = call_cli("apply", "--plan-sha256", c_plan, "--auth-token-file", str(auth_file), "--authorize-source-read")
         assert code == 2 and replay["stage"] == "needs-attention" and len(effects) == 8
+        assert installed_launches() == c_installed_launches, "replayed apply must not launch another installed child"
     finally:
         for record in operator.glob("*/upgrade-operation.json"):
             try:
@@ -706,10 +738,22 @@ def test_disposable_operator_failure_fences_real_docker(installed_chain: Install
         if persisted.effect:
             assert reported["uncertain_target"] == persisted.effect_target
         before_retry = tuple(effects)
+        # Docker's own persisted start times, unlike the wrapper counter,
+        # detect a restarted successor after an ambiguous physical response.
+        successor_start_times = {
+            container: chain.docker("inspect", "--format", "{{.State.StartedAt}}", container)
+            for container in (successor.container, successor.proxy)
+        }
         code, replay = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
         assert code == 2 and replay["stage"] == "needs-attention"
         assert tuple(effects) == before_retry
+        assert {
+            container: chain.docker("inspect", "--format", "{{.State.StartedAt}}", container)
+            for container in (successor.container, successor.proxy)
+        } == successor_start_times
         assert upgrade._operation(operator, plan_id) == persisted
         assert chain.workers() == baseline
     finally:
-        chain.close()
+        # The installed_chain fixture exclusively owns disposable cleanup.
+        # Calling close() here also would close the same namespace FDs twice.
+        chain.gate_release.set()
