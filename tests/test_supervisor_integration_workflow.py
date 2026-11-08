@@ -158,6 +158,9 @@ def test_all_baseline_selectors_and_execution_contexts_are_preserved() -> None:
     assert management[2:4] == ("-m", "supervisor_integration")
 
     host = _step(workflow["jobs"]["fresh-host"], "Verify fresh initialization with host evidence")["run"]
+    plan = _step(workflow["jobs"]["prepare-fresh-host"], "Plan complete privileged collection")["run"]
+    assert 'trap \'sudo chown -R "$(id -u):$(id -g)" supervisor-plan/fresh-host\' EXIT' in plan
+    assert 'trap \'sudo chown -R "$(id -u):$(id -g)" supervisor-integration-logs\' EXIT' in host
     for path in ("test_management_fresh_end_to_end.py", "test_management_retained_startup_container.py", "test_management_proxy_watcher_process_integration.py"):
         assert any(path in value for value in profile_args("fresh-host"))
     assert "sudo env" in host and "PYTHONPATH=$GITHUB_WORKSPACE/src" in host

@@ -197,6 +197,8 @@ jobs:
           set -euo pipefail
           uv run python scripts/supervisor_ci_profiles.py context --profile fresh-host --output supervisor-plan/fresh-host/context.json
           mapfile -t selectors < <(uv run python scripts/supervisor_ci_profiles.py args --profile fresh-host)
+          # Return only the generated plan/collection files to the runner, even on failure.
+          trap 'sudo chown -R "$(id -u):$(id -g)" supervisor-plan/fresh-host' EXIT
           sudo env "PATH=$PATH" "PYTHONPATH=$PYTHONPATH" \
             "GIT_CONFIG_COUNT=1" "GIT_CONFIG_KEY_0=safe.directory" "GIT_CONFIG_VALUE_0=$GITHUB_WORKSPACE" \
             "SUPERVISOR_CI_RESULT_MODE=collect" \
@@ -370,6 +372,8 @@ jobs:
           checkout_sha="$(git rev-parse HEAD)"
           uv run python scripts/supervisor_ci_profiles.py verify --profile fresh-host --plan "$SUPERVISOR_PLAN_PATH"
           mapfile -t selectors < <(uv run python scripts/supervisor_ci_profiles.py args --profile fresh-host)
+          # Make root-produced native receipts and timing readable by the upload and verification steps.
+          trap 'sudo chown -R "$(id -u):$(id -g)" supervisor-integration-logs' EXIT
           # Real kernel/proxy observations still run in a root interpreter.
           sudo env "PATH=$PATH" "PYTHONPATH=$GITHUB_WORKSPACE/src:$GITHUB_WORKSPACE/scripts" \
             "GIT_CONFIG_COUNT=1" "GIT_CONFIG_KEY_0=safe.directory" "GIT_CONFIG_VALUE_0=$GITHUB_WORKSPACE" \
