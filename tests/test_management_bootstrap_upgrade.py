@@ -10,8 +10,8 @@ import sys
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from types import SimpleNamespace
 from threading import Thread
+from types import SimpleNamespace
 
 import pytest
 
