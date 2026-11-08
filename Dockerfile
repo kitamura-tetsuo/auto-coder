@@ -20,14 +20,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
         arm64) OPENCODE_ARCH="arm64"; CODEX_ARCH="aarch64" ;; \
         *) echo "Unsupported architecture for OpenCode: $ARCH" >&2; exit 1 ;; \
     esac && \
-    curl --retry 5 --retry-all-errors --retry-delay 4 --connect-timeout 15 --max-time 90 -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${OPENCODE_ARCH}.tar.gz" -o /tmp/opencode.tar.gz && \
-    tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode && \
-    chmod +x /usr/local/bin/opencode && \
+    if curl --retry 2 --retry-all-errors --retry-delay 3 --connect-timeout 15 --max-time 90 -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${OPENCODE_ARCH}.tar.gz" -o /tmp/opencode.tar.gz; then \
+        tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode && \
+        chmod +x /usr/local/bin/opencode; \
+    else \
+        # Use the same upstream version's glibc platform artifact when GitHub release delivery fails. \
+        curl --retry 3 --retry-all-errors --retry-delay 3 --connect-timeout 15 --max-time 90 -fsSL "https://registry.npmjs.org/opencode-linux-${OPENCODE_ARCH}/-/opencode-linux-${OPENCODE_ARCH}-${OPENCODE_VERSION}.tgz" -o /tmp/opencode-npm.tgz && \
+        tar -xzf /tmp/opencode-npm.tgz -C /usr/local/bin --strip-components=2 package/bin/opencode && \
+        chmod +x /usr/local/bin/opencode; \
+    fi && \
+    test "$(opencode --version)" = "${OPENCODE_VERSION}" && \
     curl --retry 5 --retry-all-errors --retry-delay 4 --connect-timeout 15 --max-time 90 -fsSL "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-${CODEX_ARCH}-unknown-linux-musl.tar.gz" -o /tmp/codex.tar.gz && \
     tar -xzf /tmp/codex.tar.gz -C /tmp && \
     mv "/tmp/codex-${CODEX_ARCH}-unknown-linux-musl" /usr/local/bin/codex && \
     chmod +x /usr/local/bin/codex && \
-    rm -f /tmp/opencode.tar.gz /tmp/codex.tar.gz && \
+    rm -f /tmp/opencode.tar.gz /tmp/opencode-npm.tgz /tmp/codex.tar.gz && \
     rm -rf /var/lib/apt/lists/*
 
 FROM python:3.12-slim
