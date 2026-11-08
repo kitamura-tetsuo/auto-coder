@@ -154,9 +154,7 @@ def test_wrong_producing_attempt_and_receipt_overwrite_are_native_failures(tmp_p
     assert receipt.read_text(encoding="utf-8") == "user data"
 
 
-def test_source_duration_cache_round_trip_matches_workflow_paths_and_reuses_native_history(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_source_duration_cache_round_trip_matches_workflow_paths_and_reuses_native_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workflow_path = Path(__file__).resolve().parents[1] / ".github/workflows/test-source-for-runtime.yml"
     workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
     planning_steps = {step["name"]: step for step in workflow["jobs"]["source-plan"]["steps"] if "name" in step}
@@ -219,9 +217,7 @@ def test_source_duration_cache_round_trip_matches_workflow_paths_and_reuses_nati
     assert {estimate["estimated_ms"] for estimate in semantic["estimates"]} == {333_000}
 
     missing_plan = tmp_path / "missing-history-plan.json"
-    fallback = _plan_cli(
-        project, context_path, missing_plan, consumer / "missing/profile.json", "-m", "not opencode_live"
-    )
+    fallback = _plan_cli(project, context_path, missing_plan, consumer / "missing/profile.json", "-m", "not opencode_live")
     assert fallback.returncode == 0, fallback.stdout + fallback.stderr
     missing_semantic = json.loads(missing_plan.read_text(encoding="utf-8"))["semantic"]
     assert missing_semantic["inventory"] == list(inventory)
