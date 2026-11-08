@@ -216,8 +216,7 @@ class InstalledChain(Chain):
         lifecycle.write_text(
             lifecycle_source.replace(
                 reader_constructor,
-                "external = json.loads((config.oauth.database_path.parent / 'external-services.json').read_text())\n"
-                "        return BetaEvidenceReader(GitHubGitDataClient(secret, config.source_repository, api_url=external['url']), config.source_repository)",
+                "external = json.loads((config.oauth.database_path.parent / 'external-services.json').read_text())\n" "        return BetaEvidenceReader(GitHubGitDataClient(secret, config.source_repository, api_url=external['url']), config.source_repository)",
             )
         )
         self.installed_tag = "auto-coder-installed-fresh:" + uuid.uuid4().hex
