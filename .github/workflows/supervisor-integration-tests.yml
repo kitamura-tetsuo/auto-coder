@@ -208,6 +208,7 @@ jobs:
             --duration-profile supervisor-plan/fresh-host/history/profile.json \
             --output supervisor-plan/fresh-host/plan.json \
             --log-dir supervisor-plan/fresh-host/logs -- "${selectors[@]}"
+          sudo chown -R "$(id -u):$(id -g)" supervisor-plan/fresh-host
           uv run python scripts/supervisor_ci_profiles.py matrix --profile fresh-host \
             --plan supervisor-plan/fresh-host/plan.json --github-output "$GITHUB_OUTPUT"
       - name: Publish immutable fresh-host plan
