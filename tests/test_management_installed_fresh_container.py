@@ -97,9 +97,7 @@ class InstalledChain(Chain):
         beta["volumes"].append(f"{Path(__file__).resolve().parents[1]}:/source:ro")
         runtime = self.root / "workers" / "beta"
         (runtime / "ownership.json").write_text(json.dumps({"fixture/beta": "beta"}))
-        (runtime / "llm_config.toml").write_text(
-            '[backend]\norder = ["jules"]\n\n[backends.jules]\nbackend_type = "jules"\nenabled = true\napi_key = "offline-unused"\n'
-        )
+        (runtime / "llm_config.toml").write_text('[backend]\norder = ["jules"]\n\n[backends.jules]\nbackend_type = "jules"\nenabled = true\napi_key = "offline-unused"\n')
         return profile
 
     def __init__(self, root: Path, *, installed_ready_beta: bool = False):
@@ -362,9 +360,7 @@ class InstalledChain(Chain):
         first = wait_for(ready_observation, "installed READY beta worker with producer heartbeat", timeout=120)
         first_sequence = first["observation"]["heartbeat"]["sequence"]
         wait_for(
-            lambda: (latest if latest["observation"]["heartbeat"]["sequence"] > first_sequence else None)
-            if (latest := ready_observation()) is not None
-            else None,
+            lambda: (latest if latest["observation"]["heartbeat"]["sequence"] > first_sequence else None) if (latest := ready_observation()) is not None else None,
             "advancing producer-owned beta heartbeat",
             timeout=90,
         )
