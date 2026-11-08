@@ -46,7 +46,7 @@ from .retained_journal import RetainedGuardedOperationStore, RetainedJournal
 from .self_update_operation import ManagementSelfUpdateHandler
 from .self_update_policy import ManagementUpdateAction
 from .source_acceptance import BetaAcceptanceHandler, SourceAcceptancePublisher
-from .source_evidence import BetaEvidenceReader
+from .source_evidence import BetaEvidenceReader, SourceEvidenceError
 from .worker_lifecycle import LIFECYCLE_ACTIONS, WorkerLifecycle
 from .worker_network_client import WorkerNetworkClient, WorkerNetworkResult
 
@@ -632,6 +632,39 @@ class ManagementRuntime:
                 output["installed_runtime"] = observed.get("runtime_binding")
             return output
 
+    async def beta_source_readback(self, target_id: str, source_sha: str) -> dict[str, object]:
+        """Report actual configured beta-source evidence without admitting deployment."""
+        self._grant((READ_SCOPE,))
+        if not isinstance(source_sha, str) or re.fullmatch(r"[0-9a-f]{40}", source_sha) is None:
+            return self._response("INVALID_REQUEST", "exact_beta_source_sha_required")
+        resolved = self._resolve(target_id, ActionClass.INSPECT)
+        if not isinstance(resolved, ResolvedWorker):
+            return resolved
+        if resolved.target.channel != "beta":
+            return self._response("DENIED", "beta_target_required")
+        try:
+            # This is the same reader, configured credential and exact-source
+            # producer as deploy_beta_source, but has no mutation/admission path.
+            evidence = await asyncio.to_thread(lambda: self.lifecycle._source().read_current())
+        except (SourceEvidenceError, RuntimeError, OSError, ValueError):
+            return self._response("UNAVAILABLE", "configured_beta_source_evidence_unavailable")
+        if evidence.source_sha != source_sha:
+            return self._response("UNAVAILABLE", "current_beta_selection_differs_from_requested_source")
+        return self._response(
+            "OK",
+            "configured_beta_source_verified",
+            target_id=target_id,
+            repository=evidence.repository,
+            source_sha=evidence.source_sha,
+            tested_source_oid=evidence.tested_source_oid,
+            proof_run_id=evidence.proof_run_id,
+            proof_run_attempt=evidence.proof_run_attempt,
+            selection_oid=evidence.selection_oid,
+            selection_operation_id=evidence.selection_operation_id,
+            selected_run_id=evidence.selected_run_id,
+            selected_run_attempt=evidence.selected_run_attempt,
+        )
+
     async def start_worker(self, target_id: str, idempotency_key: str, expected_supervisor_generation: str, expected_runtime_id: str | None = None) -> dict[str, object]:
         return await self.lifecycle.admit("start_worker", target_id, idempotency_key, expected_supervisor_generation, None, None, expected_runtime_id)
 
@@ -937,6 +970,7 @@ class ManagementRuntime:
             ManagementTool("auto_coder_reevaluate_target", self.reevaluate_target, (READ_SCOPE, OPERATE_SCOPE), mutation),
             ManagementTool("auto_coder_update_management_service", self.update_management_service, (READ_SCOPE, DEPLOY_SCOPE), ToolAnnotations(readOnlyHint=False, idempotentHint=True, destructiveHint=True, openWorldHint=False), ("source_sha", "idempotency_key")),
             ManagementTool("auto_coder_deployment_status", self.deployment_status, (READ_SCOPE,), read),
+            ManagementTool("auto_coder_beta_source_readback", self.beta_source_readback, (READ_SCOPE,), read),
             ManagementTool("auto_coder_start_worker", self.start_worker, (READ_SCOPE, DEPLOY_SCOPE), mutation),
             ManagementTool("auto_coder_stop_worker", self.stop_worker, (READ_SCOPE, DEPLOY_SCOPE), mutation),
             ManagementTool("auto_coder_restart_worker", self.restart_worker, (READ_SCOPE, DEPLOY_SCOPE), mutation),
