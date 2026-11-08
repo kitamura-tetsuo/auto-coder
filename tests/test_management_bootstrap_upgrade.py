@@ -201,7 +201,8 @@ def test_actual_apply_keeps_persisted_uncertain_target_after_lost_response(tmp_p
     monkeypatch.setattr(upgrade, "_candidate_image_source", lambda *args: plan.image_source_identity)
     monkeypatch.setattr(upgrade, "_source_authority", lambda *args: object())
     monkeypatch.setattr(
-        upgrade, "_source_proof",
+        upgrade,
+        "_source_proof",
         lambda *args: (plan.tested_source_identity, plan.supervisor_run_id, plan.supervisor_run_attempt),
     )
     monkeypatch.setattr(upgrade, "_configured_source_credential", lambda _: tmp_path / "fixture-token")

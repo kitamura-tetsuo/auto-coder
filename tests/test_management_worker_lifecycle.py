@@ -187,7 +187,6 @@ def _drive(app, operation_id: str, count: int = 16) -> None:
         runtime.lifecycle.process(record)
 
 
-
 def test_authenticated_beta_source_readback_uses_current_production_reader_without_deploy(real_boundary, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     base, _base_grants, identity, signed, _uids, state = real_boundary
     origin = base.oauth.canonical_issuer
@@ -221,7 +220,6 @@ def test_authenticated_beta_source_readback_uses_current_production_reader_witho
         missing = _call(client, bearer, "auto_coder_beta_source_readback", {"target_id": "beta-worker"})
         assert missing == {"status": "UNAVAILABLE", "reason": "configured_beta_source_evidence_unavailable"}
         assert bridge.actions == []
-
 
 
 @pytest.mark.parametrize("intervention", ("none", "selection_changed", "source_unavailable", "policy_downgrade", "lost_stop_response", "supervisor_changed_after_unknown", "crash_after_start"))
