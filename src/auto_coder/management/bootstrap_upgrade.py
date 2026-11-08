@@ -1079,7 +1079,7 @@ def status(root: Path, sha: str, *, authenticated_client_file: Path | None = Non
             # read its configured credential, source proof and beta selection.
             # Ask the authenticated child to run the existing production reader.
             token = _read_record(authenticated_client_file).decode("utf-8").strip()
-            if not token or "\\n" in token:
+            if not token or "\n" in token:
                 answer["missing_prerequisites"] = ["fresh authorized authenticated client"]
                 return answer
             selected: dict[str, object] | None = None
@@ -1095,22 +1095,19 @@ def status(root: Path, sha: str, *, authenticated_client_file: Path | None = Non
                     safe_reason = reason if isinstance(reason, str) and len(reason) <= 128 else "unavailable"
                     answer["missing_prerequisites"] = [f"{target}: upgraded-service beta source readback {safe_reason}"]
                     return answer
-                if (
-                    evidence.get("target_id") != target
-                    or evidence.get("repository") != MANAGEMENT_REPOSITORY
-                    or evidence.get("source_sha") != plan.profile.source_sha
-                    or evidence.get("tested_source_oid") != plan.tested_source_identity
-                    or evidence.get("proof_run_id") != plan.supervisor_run_id
-                    or evidence.get("proof_run_attempt") != plan.supervisor_run_attempt
-                    or not isinstance(evidence.get("selection_oid"), str)
-                    or not isinstance(evidence.get("selection_operation_id"), str)
-                ):
+                selected_identity = (
+                    evidence.get("target_id"),
+                    evidence.get("repository"),
+                    evidence.get("source_sha"),
+                    evidence.get("tested_source_oid"),
+                    evidence.get("proof_run_id"),
+                    evidence.get("proof_run_attempt"),
+                )
+                expected_identity = (target, MANAGEMENT_REPOSITORY, plan.profile.source_sha, plan.tested_source_identity, plan.supervisor_run_id, plan.supervisor_run_attempt)
+                if selected_identity != expected_identity or not isinstance(evidence.get("selection_oid"), str) or not isinstance(evidence.get("selection_operation_id"), str):
                     answer["missing_prerequisites"] = [f"{target}: upgraded-service source/selection identity conflict"]
                     return answer
-                if selected is not None and any(
-                    selected.get(key) != evidence.get(key)
-                    for key in ("source_sha", "selection_oid", "selection_operation_id", "selected_run_id", "selected_run_attempt")
-                ):
+                if selected is not None and any(selected.get(key) != evidence.get(key) for key in ("source_sha", "selection_oid", "selection_operation_id", "selected_run_id", "selected_run_attempt")):
                     answer["missing_prerequisites"] = ["beta targets disagree on the current selection"]
                     return answer
                 selected = evidence
