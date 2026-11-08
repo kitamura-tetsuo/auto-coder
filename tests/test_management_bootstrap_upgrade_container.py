@@ -25,7 +25,7 @@ import pytest
 from auto_coder.management import bootstrap_upgrade as upgrade
 from auto_coder.management.fresh_initialization import FreshInitializationIntent
 from auto_coder.management.operation_store import ManagementOperationStore
-from auto_coder.management.operations import ActionParameter, ManagedTarget, OperationIntent, OperationPhase
+from auto_coder.management.operations import ActionParameter, EffectReceipt, ManagedTarget, OperationIntent, OperationPhase
 from auto_coder.operating_policy import MANAGEMENT_REPOSITORY
 from auto_coder.tested_source_refs import TestedSourcePublisher as SourceProofPublisher
 from auto_coder.util.gh_cache import GitHubGitDataClient
@@ -318,6 +318,30 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         # B is now the actual online predecessor. Explicitly stop only its
         # known disposable watcher under the operator's service-owner boundary.
         old_b = chain.seed(next_generation)
+        # B must own distinct direct-prior worker keys; A's existing keys are
+        # already archived and cannot be substituted as B's replay records.
+        b_store = ManagementOperationStore(next_generation.path("journal"))
+        b_worker_records = {}
+        for channel, original in original_worker_records.items():
+            intent = original.intent
+            b_intent = OperationIntent(
+                intent.target,
+                intent.action,
+                intent.parameters,
+                "b-prior-worker-" + channel + "-" + uuid.uuid4().hex,
+                intent.expected_incarnation,
+                intent.expected_artifact,
+            )
+            admitted = b_store.admit(b_intent, chain.authority).record
+            assert admitted is not None
+            assert b_store.transition(
+                admitted.operation_id,
+                0,
+                OperationPhase.FAILED,
+                evidence=EffectReceipt(admitted.operation_id, "synthetic-no-effect", 1, "no_effect_sent"),
+            ).record is not None
+            b_worker_records[channel] = admitted
+        chain.checkpoint(next_generation.path("journal") / "management-operations.sqlite3")
         snapshot_b = chain.snapshot(next_generation)
         b_operation = upgrade._operation(operator, plan_id)
         assert b_operation.stage == "application-ready" and b_operation.watcher_pid > 0
@@ -371,6 +395,25 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         response_b = chain.call(third, "auto_coder_update_management_service", {"source_sha": "a" * 40, "idempotency_key": old_b.intent.idempotency_key})
         assert response_b["operation_id"] == old_b.operation_id and response_b["history_origin"] == "retained_prior_instance"
         assert chain.call(third, "auto_coder_operation_get", {"operation_id": old_b.operation_id})["history_origin"] == "retained_prior_instance"
+        # The direct-prior worker namespace replays B's original result. It
+        # must not dispatch a fresh worker request or read A's archived result.
+        prior_posts = chain.worker_posts()
+        for channel, record in b_worker_records.items():
+            replayed = chain.call(
+                third,
+                "auto_coder_reevaluate_target",
+                {
+                    "target_id": channel + "-worker",
+                    "target_type": "issue",
+                    "number": 2603,
+                    "idempotency_key": record.intent.idempotency_key,
+                    "expected_process_run_id": record.intent.expected_incarnation,
+                    "expected_deployment_generation": record.intent.expected_artifact,
+                },
+            )
+            assert replayed["operation_id"] == record.operation_id
+            assert replayed["history_origin"] == "retained_prior_instance"
+        assert chain.worker_posts() == prior_posts
         response_a = chain.call(third, "auto_coder_update_management_service", {"source_sha": "a" * 40, "idempotency_key": original_a.intent.idempotency_key})
         assert response_a["status"] == "CONFLICT" and response_a.get("operation_id") is None
         assert chain.call(third, "auto_coder_operation_get", {"operation_id": original_a.operation_id})["status"] == "NOT_FOUND"
