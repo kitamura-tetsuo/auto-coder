@@ -183,6 +183,11 @@ def test_dockerfile_pins_opencode_release_and_explicit_architectures() -> None:
     assert "ca-certificates" in content
 
     # REQ-001: Binary copied to final image
+    assert "FROM node:24-slim AS build" in content
+    assert 'opencode-linux-${OPENCODE_ARCH}@${OPENCODE_VERSION}' in content
+    assert "--ignore-scripts --no-audit --no-fund --no-save" in content
+    assert 'test "$(/usr/local/bin/opencode --version)" = "$OPENCODE_VERSION"' in content
+    assert "https://github.com/anomalyco/opencode/releases/download/" not in content
     assert "COPY --from=build /usr/local/bin/opencode /usr/local/bin/opencode" in content
     assert f"ARG CODEX_VERSION={_PINNED_CODEX_VERSION}" in content
     assert "releases/download/rust-v${CODEX_VERSION}/codex-${CODEX_ARCH}-unknown-linux-musl.tar.gz" in content

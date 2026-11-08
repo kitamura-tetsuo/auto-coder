@@ -15,8 +15,9 @@ ARG OPENCODE_VERSION=1.18.31
 ```
 
 During the multi-stage build, the target architecture is resolved explicitly:
-- `amd64` (`x86_64`) selects `opencode-linux-x64.tar.gz`.
-- `arm64` (`aarch64`) selects `opencode-linux-arm64.tar.gz`.
+- `amd64` (`x86_64`) installs `opencode-linux-x64@1.18.31` from the official npm registry.
+- `arm64` (`aarch64`) installs `opencode-linux-arm64@1.18.31` from the same registry.
+- The build uses the native glibc binary without running npm lifecycle scripts and verifies `opencode --version` before copying it into the runtime image.
 - Any unsupported platform fails closed immediately.
 
 The resulting binary is installed at `/usr/local/bin/opencode` with executable

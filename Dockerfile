@@ -9,7 +9,7 @@ RUN test -n "$AUTO_CODER_BUILD_IDENTITY_B64" && echo "$AUTO_CODER_BUILD_IDENTITY
     AUTO_CODER_BUILD_IDENTITY_FILE=/opt/auto-coder/.auto-coder-build-identity.json \
     uv sync --locked --no-dev --no-editable --no-cache
 
-FROM python:3.12-slim AS build
+FROM node:24-slim AS build
 ARG TARGETARCH
 ARG OPENCODE_VERSION=1.18.31
 ARG CODEX_VERSION=0.159.2
@@ -20,14 +20,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
         arm64) OPENCODE_ARCH="arm64"; CODEX_ARCH="aarch64" ;; \
         *) echo "Unsupported architecture for OpenCode: $ARCH" >&2; exit 1 ;; \
     esac && \
-    curl --retry 5 --retry-delay 3 --retry-max-time 180 -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${OPENCODE_ARCH}.tar.gz" -o /tmp/opencode.tar.gz && \
-    tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode && \
-    chmod +x /usr/local/bin/opencode && \
+    npm install --prefix /tmp/opencode --ignore-scripts --no-audit --no-fund --no-save "opencode-linux-${OPENCODE_ARCH}@${OPENCODE_VERSION}" && \
+    install -m 0755 "/tmp/opencode/node_modules/opencode-linux-${OPENCODE_ARCH}/bin/opencode" /usr/local/bin/opencode && \
+    test "$(/usr/local/bin/opencode --version)" = "$OPENCODE_VERSION" && \
     curl --retry 5 --retry-delay 3 --retry-max-time 180 -fsSL "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-${CODEX_ARCH}-unknown-linux-musl.tar.gz" -o /tmp/codex.tar.gz && \
     tar -xzf /tmp/codex.tar.gz -C /tmp && \
     mv "/tmp/codex-${CODEX_ARCH}-unknown-linux-musl" /usr/local/bin/codex && \
     chmod +x /usr/local/bin/codex && \
-    rm -f /tmp/opencode.tar.gz /tmp/codex.tar.gz && \
+    rm -rf /tmp/opencode && rm -f /tmp/codex.tar.gz && \
     rm -rf /var/lib/apt/lists/*
 
 FROM python:3.12-slim
