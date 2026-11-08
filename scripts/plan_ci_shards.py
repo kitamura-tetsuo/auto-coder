@@ -28,7 +28,8 @@ def _logging(directory: Path) -> None:
 def _collect(context_file: Path, context: ShardContext) -> tuple[dict[str, object], tuple[str, ...]]:
     with tempfile.TemporaryDirectory(prefix="ci-shard-collect-") as directory:
         output = Path(directory) / "inventory.json"
-        command = [sys.executable, "-m", "pytest", "-p", PLUGIN, "--collect-only", "--ci-context", str(context_file.resolve()), "--ci-collect-output", str(output), *context.pytest_args]
+        # Use attached values: pytest discovers its root/config before registering plugin options.
+        command = [sys.executable, "-m", "pytest", "-p", PLUGIN, "--collect-only", f"--ci-context={context_file.resolve()}", f"--ci-collect-output={output}", *context.pytest_args]
         try:
             process = subprocess.run(command, text=True, capture_output=True, check=False, timeout=300)
         except subprocess.TimeoutExpired as error:

@@ -59,10 +59,17 @@ uv run --locked python scripts/plan_ci_shards.py \
   --log-dir ci-plan-logs -- -m 'not opencode_live'
 
 uv run --locked python -m pytest -p scripts.ci_shard_plugin \
-  --ci-plan source-plan.json --ci-shard 1 -m 'not opencode_live'
+  --ci-plan=source-plan.json --ci-shard=1 -m 'not opencode_live'
 ```
 
 The final `--` and subsequent pytest arguments must match `pytest_args` exactly.
+Use attached adapter controls (`--ci-context=PATH`, `--ci-collect-output=PATH`,
+`--ci-plan=PATH`, `--ci-shard=NUMBER`) rather than separated values. pytest 9
+performs initial root/config discovery before registering third-party options;
+separated paths can otherwise become unintended collection targets. The adapter
+rejects separated controls instead of accepting an altered profile. The actual
+bytes of the effective config file, including an untracked `-c pytest.ini`, are
+fingerprinted to detect outcome-affecting changes before test execution.
 Only adapter controls (`--ci-*`, `--collect-only`) and explicitly recognized
 reporting flags (`-q`, `-v`/`-vv`/`-vvv`, `--junitxml`, `--junit-xml`, `--color`)
 are excluded from that semantic argument comparison; other flags stay binding.

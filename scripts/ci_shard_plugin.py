@@ -66,6 +66,10 @@ def pytest_configure(config: pytest.Config) -> None:
     if not any((context_file, collect_file, plan_file, shard_value)):
         config.stash[STATE] = None
         return
+    # pytest initial root/config discovery precedes registration of these options.
+    # Separated values can be mistaken for collection paths; fail closed.
+    if any(arg in ("--ci-context", "--ci-collect-output", "--ci-plan", "--ci-shard") for arg in config.invocation_params.args):
+        raise pytest.UsageError("CI shard controls require --ci-name=value syntax to preserve original pytest configuration discovery")
     try:
         if collect_file and context_file and not plan_file and not shard_value:
             if not config.getoption("collectonly"):

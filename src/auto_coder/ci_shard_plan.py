@@ -173,14 +173,18 @@ def _runtime(root: Path, context: ShardContext, actual_args: tuple[str, ...], co
         if not resolved.is_relative_to(root.resolve()):
             raise ShardPlanError("pytest configuration escapes tested checkout")
         config_name = str(resolved.relative_to(root.resolve()))
+        # Bind actual effective config bytes, even for an accepted untracked -c file.
+        config_digest: str | None = "sha256:" + hashlib.sha256(resolved.read_bytes()).hexdigest()
     else:
         config_name = None
+        config_digest = None
     files = {name: "sha256:" + hashlib.sha256((root / name).read_bytes()).hexdigest() for name in ("uv.lock", "pyproject.toml")}
     files.update({name: _tracked_hash(root, name) for name in sorted(context.harness_files)})
     names = sorted(set(context.semantic_environment).union(MANDATORY_ENVIRONMENT))
     return {
         "pytest_args": list(actual_args),
         "pytest_config_path": config_name,
+        "pytest_config_digest": config_digest,
         "pytest_rootdir": os.path.relpath(Path(pytest_rootdir).resolve(), root),
         "python_major_minor": f"{sys.version_info.major}.{sys.version_info.minor}",
         "files": files,

@@ -122,7 +122,7 @@ def _plan_cli(project: Path, context_path: Path, output: Path, history: Path | N
 
 
 def _apply(project: Path, plan: Path, shard: int, *, record: Path | None = None, selectors: tuple[str, ...] = ("-m", "not slow"), env_patch: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    return _run(project, "-m", "pytest", "-p", "scripts.ci_shard_plugin", "--ci-plan", str(plan), "--ci-shard", str(shard), *selectors, record=record, env_patch=env_patch)
+    return _run(project, "-m", "pytest", "-p", "scripts.ci_shard_plugin", f"--ci-plan={plan}", f"--ci-shard={shard}", *selectors, record=record, env_patch=env_patch)
 
 
 def test_contiguous_minimal_budget_boundary_and_indivisible_long_test() -> None:
@@ -143,6 +143,116 @@ def test_more_than_twelve_groups_binary_searches_smallest_capacity() -> None:
     assert capacity == 630_003
     assert Counter(node for group in shards for node in group["nodeids"]) == Counter(inventory)
 
+
+
+def test_external_control_paths_preserve_fresh_unsharded_config_and_selection(tmp_path: Path) -> None:
+    project, context_path, original = _project(tmp_path, source="def test_selected(): assert True\n")
+    (project / "extras").mkdir()
+    (project / "extras/test_excluded.py").write_text("def test_outside_testpaths(): assert False\n")
+    (project / "pyproject.toml").write_text('[tool.pytest.ini_options]\ntestpaths = ["tests"]\nxfail_strict = true\n')
+    (project / "tests/conftest.py").write_text(
+        'import json, os\nfrom pathlib import Path\nimport pytest\n'
+        '@pytest.fixture(autouse=True)\n'
+        'def record(request):\n'
+        '    output = os.environ.get("CI_SHARD_TEST_RECORD")\n'
+        '    if output:\n'
+        '        with open(output, "a", encoding="utf-8") as stream:\n'
+        '            stream.write(request.node.nodeid + "\\n")\n'
+        'def pytest_sessionstart(session):\n'
+        '    output = os.environ.get("CI_SHARD_DISCOVERY_RECORD")\n'
+        '    if output:\n'
+        '        Path(output).write_text(json.dumps({"root": str(session.config.rootpath), '
+        '"config": str(session.config.inipath), "xfail_strict": session.config.getini("xfail_strict")}))\n'
+    )
+    for args in (("add", "-A"), ("commit", "-qm", "test root/config oracle")):
+        subprocess.run(["git", *args], cwd=project, check=True, capture_output=True)
+    context = ShardContext(
+        original.repository, original.profile_id,
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=project, text=True).strip(),
+        (), original.harness_files, original.semantic_environment, original.origin,
+    )
+    context_path.write_text(json.dumps(context.json()))
+    report = tmp_path / "discovery.json"
+    baseline_record = tmp_path / "baseline.txt"
+    baseline = _run(
+        project, "-m", "pytest", "-q", record=baseline_record,
+        env_patch={"CI_SHARD_DISCOVERY_RECORD": str(report)},
+    )
+    assert baseline.returncode == 0, baseline.stdout + baseline.stderr
+    metadata = json.loads(report.read_text())
+    assert metadata == {"root": str(project), "config": str(project / "pyproject.toml"), "xfail_strict": True}
+    plan_file = tmp_path / "plan.json"
+    created = _run(
+        project, str(ROOT / "scripts/plan_ci_shards.py"),
+        "--context", str(context_path), "--output", str(plan_file), "--log-dir", str(tmp_path / "logs"),
+        "--", env_patch={"CI_SHARD_DISCOVERY_RECORD": str(report)},
+    )
+    assert created.returncode == 0, created.stdout + created.stderr
+    assert json.loads(report.read_text()) == metadata
+    plan, _ = read_plan(plan_file)
+    assert plan.inventory == ("tests/test_sample.py::test_selected",)
+    selected_record = tmp_path / "selected.txt"
+    applied = _apply(
+        project, plan_file, 1, selectors=(), record=selected_record,
+        env_patch={"CI_SHARD_DISCOVERY_RECORD": str(report)},
+    )
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert json.loads(report.read_text()) == metadata
+    assert Counter(selected_record.read_text().splitlines()) == Counter(baseline_record.read_text().splitlines())
+
+
+def test_explicit_untracked_effective_ini_change_is_refused_before_test(tmp_path: Path) -> None:
+    source = """
+import os
+from pathlib import Path
+import pytest
+
+@pytest.mark.xfail(reason="ini controls XPASS strictness")
+def test_xpass():
+    output = os.environ.get("CI_SHARD_TEST_RECORD")
+    if output:
+        Path(output).write_text("executed\\n")
+"""
+    project, context_path, original = _project(tmp_path, source=source)
+    ini = project / "pytest.ini"
+    ini.write_text("[pytest]\nxfail_strict = true\n")
+    context = ShardContext(
+        original.repository, original.profile_id, original.checkout_sha, ("-c", "pytest.ini"),
+        original.harness_files, original.semantic_environment, original.origin,
+    )
+    context_path.write_text(json.dumps(context.json()))
+    plan_file = tmp_path / "ini-plan.json"
+    created = _plan_cli(project, context_path, plan_file, None, "-c", "pytest.ini")
+    assert created.returncode == 0, created.stdout + created.stderr
+    record = tmp_path / "record.txt"
+    same_ini = _apply(project, plan_file, 1, selectors=context.pytest_args, record=record)
+    assert same_ini.returncode == 1, same_ini.stdout + same_ini.stderr
+    assert "XPASS(strict)" in same_ini.stdout and record.read_text() == "executed\n"
+    record.unlink()
+    ini.write_text("[pytest]\nxfail_strict = false\n")
+    changed_ini = _apply(project, plan_file, 1, selectors=context.pytest_args, record=record)
+    assert changed_ini.returncode != 0, changed_ini.stdout + changed_ini.stderr
+    assert "CI shard refused" in changed_ini.stdout or "CI shard refused" in changed_ini.stderr
+    assert not record.exists()
+    ini.write_text("[pytest]\nxfail_strict = true\n")
+    restored = _apply(project, plan_file, 1, selectors=context.pytest_args, record=record)
+    assert restored.returncode == 1 and "XPASS(strict)" in restored.stdout
+    assert record.read_text() == "executed\n"
+
+
+def test_legacy_separated_adapter_values_refuse_execution(tmp_path: Path) -> None:
+    project, context_path, _ = _project(tmp_path)
+    plan = tmp_path / "plan.json"
+    created = _plan_cli(project, context_path, plan)
+    assert created.returncode == 0, created.stdout + created.stderr
+    record = tmp_path / "unexecuted.txt"
+    legacy = _run(
+        project, "-m", "pytest", "-p", "scripts.ci_shard_plugin",
+        "--ci-plan", str(plan), "--ci-shard", "1", "-m", "not slow", record=record,
+    )
+    assert legacy.returncode != 0
+    assert "require --ci-name=value" in legacy.stdout or "require --ci-name=value" in legacy.stderr
+    assert not record.exists()
 
 def test_real_cli_to_pytest_full_partition_and_native_failed_skip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     project, context_path, context = _project(tmp_path)
