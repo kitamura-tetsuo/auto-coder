@@ -460,6 +460,35 @@ class InstalledChain(Chain):
                 }
             except (OSError, ValueError, subprocess.CalledProcessError) as observation_error:
                 diagnostic = {"observation_error": type(observation_error).__name__}
+            # Docker logs include the genuine staged child's stderr even after
+            # the Supervisor loses its process lifetime. Never upload those
+            # unredacted logs: the real CLI may write credentials or request
+            # bodies. Report only fixed, allowlisted startup signatures.
+            try:
+                worker_container = self.compose("ps", "-q", "beta")
+                worker_logs = self.docker("logs", "--tail", "300", worker_container, timeout=15).lower()
+                startup_signatures = (
+                    ("python-traceback", ("traceback (most recent call last)",)),
+                    ("module-import", ("modulenotfounderror", "importerror:")),
+                    ("filesystem-permission", ("permissionerror", "permission denied")),
+                    ("missing-path", ("filenotfounderror", "no such file or directory")),
+                    ("git-repository", ("not a git repository", "unsafe repository", "dubious ownership")),
+                    ("github-tls", ("certificate_verify_failed", "sslerror", "certificate verify failed")),
+                    ("github-auth", ("badcredentials", "401 unauthorized", "bad credentials")),
+                    ("github-route", ("404 client error", "404 not found")),
+                    ("github-network", ("connectionerror", "name or service not known", "connection refused")),
+                    ("backend-prerequisite", ("ordinary backend candidate pool is empty", "backend prerequisite")),
+                    ("cli-usage", ("click.exceptions.usageerror", "error: no such option")),
+                    ("runtime-exception", ("runtimeerror", "keyerror", "valueerror", "typeerror")),
+                )
+                diagnostic["worker_log_observed"] = bool(worker_logs)
+                diagnostic["worker_startup_signatures"] = [
+                    category
+                    for category, markers in startup_signatures
+                    if any(marker in worker_logs for marker in markers)
+                ]
+            except (OSError, ValueError, subprocess.CalledProcessError) as log_error:
+                diagnostic["worker_log_status"] = type(log_error).__name__
             raise AssertionError(f"{error}; disposable-worker-observation={json.dumps(diagnostic, sort_keys=True)}") from error
         first_sequence = first["observation"]["heartbeat"]["sequence"]
         wait_for(
