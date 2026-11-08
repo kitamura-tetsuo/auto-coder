@@ -10,6 +10,7 @@ import sys
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from threading import Thread
 
 import pytest
@@ -193,7 +194,7 @@ def test_actual_apply_keeps_persisted_uncertain_target_after_lost_response(tmp_p
         on_listening()
 
     monkeypatch.setattr(upgrade, "_immutable_inputs", lambda _: None)
-    monkeypatch.setattr(upgrade, "_fresh_intent", lambda _: object())
+    monkeypatch.setattr(upgrade, "_fresh_intent", lambda _: SimpleNamespace(new_container_id=plan.successor_management, image_digest=plan.successor_image))
     monkeypatch.setattr(upgrade, "_evidence", lambda _: (predecessor, None, None))
     monkeypatch.setattr(upgrade, "_mount_profile", lambda _: {"management": ()})
     monkeypatch.setattr(upgrade, "capture_prior_container", lambda *args, **kwargs: predecessor)
