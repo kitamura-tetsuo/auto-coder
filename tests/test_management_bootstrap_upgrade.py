@@ -181,10 +181,9 @@ def test_actual_apply_keeps_persisted_uncertain_target_after_lost_response(tmp_p
         sent.append(arguments)
         target = arguments[-1]
         running[target] = arguments[0] == "start"
-        if (
-            (arguments[0] == "kill" and target == plan.predecessor_management and lost_effect == "stop-management")
-            or (arguments[0] == "start" and target == plan.successor_management and lost_effect == "start-management")
-        ):
+        lost_stop = arguments[0] == "kill" and target == plan.predecessor_management and lost_effect == "stop-management"
+        lost_start = arguments[0] == "start" and target == plan.successor_management and lost_effect == "start-management"
+        if lost_stop or lost_start:
             # Physical effect occurs, but the Docker acknowledgement is lost.
             raise subprocess.TimeoutExpired("docker", timeout)
         return ""
