@@ -142,6 +142,108 @@ def test_repeated_operation_cannot_send_a_saved_unknown_effect(tmp_path: Path, m
     assert len(effects) == 1
 
 
+
+@pytest.mark.parametrize("lost_effect", ["stop-management", "start-management"])
+def test_actual_apply_keeps_persisted_uncertain_target_after_lost_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lost_effect: str
+) -> None:
+    """An apply callback may fail before assigning the already-fsynced effect."""
+    root = operator_root(tmp_path)
+    sha, plan = prepared(root, profile(tmp_path))
+
+    class Predecessor:
+        container_id = plan.predecessor_management
+        image_id = plan.predecessor_management_image
+        pid = os.getpid()
+        instance_id = "manager-old"
+
+    predecessor = Predecessor()
+    running = {
+        plan.predecessor_proxy: True,
+        plan.predecessor_management: True,
+        plan.successor_management: False,
+    }
+    images = {
+        plan.predecessor_proxy: plan.predecessor_proxy_image,
+        plan.predecessor_management: plan.predecessor_management_image,
+        plan.successor_management: plan.successor_image,
+    }
+    started = {
+        plan.predecessor_proxy: plan.predecessor_proxy_started_at,
+        plan.predecessor_management: plan.predecessor_started_at,
+        plan.successor_management: "2026-11-08T02:00:00Z",
+    }
+    sent: list[tuple[str, ...]] = []
+
+    def inspect(container: str) -> list[object]:
+        active = running[container]
+        return [
+            None, images[container], active, 17 if active else 0,
+            "running" if active else "exited", *([None] * 8), started[container],
+        ]
+
+    def docker(*arguments: str, timeout: float = 30) -> str:
+        sent.append(arguments)
+        target = arguments[-1]
+        running[target] = arguments[0] == "start"
+        if (
+            (arguments[0] == "kill" and target == plan.predecessor_management and lost_effect == "stop-management")
+            or (arguments[0] == "start" and target == plan.successor_management and lost_effect == "start-management")
+        ):
+            # Physical effect occurs, but the Docker acknowledgement is lost.
+            raise subprocess.TimeoutExpired("docker", timeout)
+        return ""
+
+    def fenced(_intent: object, _evidence: object, _config: object, _prior: object,
+               _network: object, _guard: object, *, on_fenced: object,
+               on_stopped: object, on_listening: object) -> None:
+        on_fenced()
+        on_listening()
+
+    monkeypatch.setattr(upgrade, "_immutable_inputs", lambda _: None)
+    monkeypatch.setattr(upgrade, "_fresh_intent", lambda _: object())
+    monkeypatch.setattr(upgrade, "_evidence", lambda _: (predecessor, None, None))
+    monkeypatch.setattr(upgrade, "_mount_profile", lambda _: {"management": ()})
+    monkeypatch.setattr(upgrade, "capture_prior_container", lambda *args, **kwargs: predecessor)
+    monkeypatch.setattr(upgrade, "_candidate_stack", lambda *args: None)
+    monkeypatch.setattr(upgrade, "_candidate_image_source", lambda *args: plan.image_source_identity)
+    monkeypatch.setattr(upgrade, "_source_authority", lambda *args: object())
+    monkeypatch.setattr(
+        upgrade, "_source_proof",
+        lambda *args: (plan.tested_source_identity, plan.supervisor_run_id, plan.supervisor_run_attempt),
+    )
+    monkeypatch.setattr(upgrade, "_configured_source_credential", lambda _: tmp_path / "fixture-token")
+    monkeypatch.setattr(upgrade, "_installed_candidate_preflight", lambda _: None)
+    monkeypatch.setattr(upgrade, "_authenticated_baseline", lambda *args: plan.worker_baseline)
+    monkeypatch.setattr(upgrade, "_watcher_lock", lambda *args: os.open(os.devnull, os.O_RDONLY))
+    monkeypatch.setattr(upgrade, "hold_claim_and_guard", fenced)
+    monkeypatch.setattr(upgrade, "_inspect", inspect)
+    monkeypatch.setattr(upgrade, "_docker", docker)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        upgrade.apply(root, sha, tmp_path / "auth-client", authorize_source_read=True)
+
+    persisted = upgrade._operation(root, sha)
+    assert persisted.stage == "needs-attention"
+    assert persisted.effect == lost_effect
+    expected_target = (
+        plan.predecessor_management if lost_effect == "stop-management"
+        else plan.successor_management
+    )
+    assert persisted.effect_target == expected_target
+    assert persisted.completed == (
+        ("stop-proxy",) if lost_effect == "stop-management"
+        else ("stop-proxy", "stop-management")
+    )
+    assert persisted.reason == "TimeoutExpired"
+    report = upgrade.status(root, sha)
+    assert report["stage"] == "needs-attention"
+    assert report["uncertain_effect"] == lost_effect
+    assert report["uncertain_target"] == expected_target
+    assert len(sent) == (2 if lost_effect == "stop-management" else 3)
+    assert upgrade._operation(root, sha) == persisted
+
+
 def test_graceful_stop_observes_exact_target_and_records_completion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = operator_root(tmp_path)
     sha, plan = prepared(root, profile(tmp_path))
