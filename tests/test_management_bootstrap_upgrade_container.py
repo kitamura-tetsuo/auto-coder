@@ -335,11 +335,17 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         assert chain.docker("inspect", "--format", "{{.State.Running}}", first.proxy) == "false"
         assert chain.workers() == original_worker
 
+        last_b_status: dict[str, object] = {}
+
         def application_ready() -> bool:
             _, result = call_cli("status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file))
+            last_b_status.update({key: result.get(key) for key in ("stage", "reason", "missing_prerequisites")})
             return result["stage"] == "application-ready"
 
-        wait_for(application_ready, "protected exact-child application readiness", timeout=90)
+        try:
+            wait_for(application_ready, "protected exact-child application readiness", timeout=90)
+        except AssertionError as error:
+            raise AssertionError(f"{error}; last protected B status={last_b_status}") from error
         b_installed_launches = installed_launches()
         assert b_installed_launches[: len(initial_installed_launches)] == initial_installed_launches
         assert len(b_installed_launches) == len(initial_installed_launches) + 1, "B must launch exactly one installed child"
@@ -498,11 +504,17 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         assert chain.snapshot(next_generation) == snapshot_b
         assert chain.workers() == original_worker
 
+        last_c_status: dict[str, object] = {}
+
         def c_application_ready() -> bool:
             _, result = call_cli("status", "--plan-sha256", c_plan, "--auth-token-file", str(auth_file))
+            last_c_status.update({key: result.get(key) for key in ("stage", "reason", "missing_prerequisites")})
             return result["stage"] == "application-ready"
 
-        wait_for(c_application_ready, "C installed child, archived A and direct-prior B", timeout=90)
+        try:
+            wait_for(c_application_ready, "C installed child, archived A and direct-prior B", timeout=90)
+        except AssertionError as error:
+            raise AssertionError(f"{error}; last protected C status={last_c_status}") from error
         c_installed_launches = installed_launches()
         assert c_installed_launches[: len(b_installed_launches)] == b_installed_launches
         assert len(c_installed_launches) == len(b_installed_launches) + 1, "C must launch exactly one installed child"
