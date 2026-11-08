@@ -150,16 +150,16 @@ def test_external_control_paths_preserve_fresh_unsharded_config_and_selection(tm
     (project / "extras/test_excluded.py").write_text("def test_outside_testpaths(): assert False\n")
     (project / "pyproject.toml").write_text('[tool.pytest.ini_options]\ntestpaths = ["tests"]\nxfail_strict = true\n')
     (project / "tests/conftest.py").write_text(
-        'import json, os\nfrom pathlib import Path\nimport pytest\n'
-        '@pytest.fixture(autouse=True)\n'
-        'def record(request):\n'
+        "import json, os\nfrom pathlib import Path\nimport pytest\n"
+        "@pytest.fixture(autouse=True)\n"
+        "def record(request):\n"
         '    output = os.environ.get("CI_SHARD_TEST_RECORD")\n'
-        '    if output:\n'
+        "    if output:\n"
         '        with open(output, "a", encoding="utf-8") as stream:\n'
         '            stream.write(request.node.nodeid + "\\n")\n'
-        'def pytest_sessionstart(session):\n'
+        "def pytest_sessionstart(session):\n"
         '    output = os.environ.get("CI_SHARD_DISCOVERY_RECORD")\n'
-        '    if output:\n'
+        "    if output:\n"
         '        Path(output).write_text(json.dumps({"root": str(session.config.rootpath), '
         '"config": str(session.config.inipath), "xfail_strict": session.config.getini("xfail_strict")}))\n'
     )
