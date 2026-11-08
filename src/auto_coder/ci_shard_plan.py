@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
+from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
 from typing import cast
 
@@ -232,7 +233,9 @@ def _weight(seconds: object) -> int:
         raise ShardPlanError("invalid measured estimate") from error
     if not math.isfinite(value) or value <= 0:
         raise ShardPlanError("measured estimate must be finite and positive")
-    return max(1, math.ceil(value * 1000))
+    # A finite native P95 can exceed float's range after conversion to ms.
+    # Decimal keeps that legitimate indivisible work instead of overflowing.
+    return max(1, int((Decimal(str(value)) * 1000).to_integral_value(rounding=ROUND_CEILING)))
 
 
 def duration_estimates(path: Path | None, profile: dict[str, object], inventory: tuple[str, ...]) -> tuple[list[dict[str, object]], dict[str, object]]:

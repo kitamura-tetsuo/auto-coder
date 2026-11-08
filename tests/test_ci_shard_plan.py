@@ -240,6 +240,28 @@ def test_stale_nodes_ignored_and_known_current_max_is_positive_fallback(tmp_path
     assert source["status"] == "unavailable" and all(item["estimated_ms"] == 1000 for item in ignored)
 
 
+def test_extreme_finite_native_measurement_is_never_clipped_or_lost(tmp_path: Path) -> None:
+    profile = {"repository": "kitamura-tetsuo/auto-coder", "profile_id": "duration-boundary", "configuration_digest": "sha256:" + "a" * 64, "python_major_minor": "3.12"}
+    node = "tests/test_long.py::test_indivisible"
+    history = tmp_path / "huge-duration.json"
+    _history(history, profile, (node,), 1e305)
+    data = json.loads(history.read_text())
+    sample = data["nodes"][node]["samples"][0]
+    sample["native_phase_ms"] = {phase: 1e308 for phase in ("setup", "call", "teardown")}
+    sample["raw_duration_seconds"] = 3e305
+    sample["duration_seconds"] = 3e305
+    data["nodes"][node]["p95_seconds"] = 3e305
+    data["digest_sha256"] = native_digest({key: value for key, value in data.items() if key != "digest_sha256"})
+    history.write_text(json.dumps(data))
+    estimates, source = duration_estimates(history, profile, (node,))
+    assert source["status"] == "matched"
+    assert estimates[0]["provenance"] == "native_p95"
+    assert estimates[0]["estimated_ms"] == 3 * 10**308
+    shards, capacity, limited = allocate((node,), estimates)
+    assert not limited and capacity == 420_000
+    assert shards[0]["nodeids"] == [node] and shards[0]["over_budget_nodes"] == [node]
+
+
 def test_execution_keeps_plan_immutable_even_when_a_test_rewrites_it(tmp_path: Path) -> None:
     source = """import os
 from pathlib import Path
