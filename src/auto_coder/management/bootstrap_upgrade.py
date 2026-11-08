@@ -50,8 +50,7 @@ from .fresh_initialization import FreshInitializationIntent, read_fresh_status
 from .operation_store import ACTIVE_PHASES
 from .proxy_reconnect import DockerProxyObservation
 from .retained_journal import RetainedJournal
-from .source_evidence import BetaEvidenceReader, SourceEvidenceError
-from .source_evidence_config import REPOSITORY
+from .source_evidence import SourceEvidenceError
 from .source_evidence_config import _protected as protected_credential
 
 OPERATOR_ROOT = Path("/var/lib/auto-coder/management-upgrades")
@@ -1069,16 +1068,56 @@ def status(root: Path, sha: str, *, authenticated_client_file: Path | None = Non
                 answer["missing_prerequisites"] = ["explicit source credential read approval"]
                 return answer
             workers = _worker_registry(BootstrapConfig.read(Path(plan.profile.bootstrap_config)))["workers"]
-            if not isinstance(workers, list) or not any(item.get("channel") == "beta" for item in workers):
+            if not isinstance(workers, list):
                 answer["missing_prerequisites"] = ["configured beta worker target"]
                 return answer
-            token_file = _configured_source_credential(Path(plan.profile.management_config))
-            _source_authority(token_file)
-            token = _read_record(token_file).decode("utf-8").strip()
-            evidence = BetaEvidenceReader(GitHubGitDataClient(token, REPOSITORY), REPOSITORY).read_current()
+            beta_targets = [item["target_id"] for item in workers if item.get("channel") == "beta"]
+            if not beta_targets or any(target not in baseline for target in beta_targets):
+                answer["missing_prerequisites"] = ["configured beta worker target readback"]
+                return answer
+            # The host's GitHub access cannot prove that the upgraded child can
+            # read its configured credential, source proof and beta selection.
+            # Ask the authenticated child to run the existing production reader.
+            token = _read_record(authenticated_client_file).decode("utf-8").strip()
+            if not token or "\\n" in token:
+                answer["missing_prerequisites"] = ["fresh authorized authenticated client"]
+                return answer
+            selected: dict[str, object] | None = None
+            for target in beta_targets:
+                evidence = _mcp_call(
+                    plan.endpoint_port,
+                    token,
+                    "auto_coder_beta_source_readback",
+                    {"target_id": target, "source_sha": plan.profile.source_sha},
+                )
+                if evidence.get("status") != "OK":
+                    reason = evidence.get("reason")
+                    safe_reason = reason if isinstance(reason, str) and len(reason) <= 128 else "unavailable"
+                    answer["missing_prerequisites"] = [f"{target}: upgraded-service beta source readback {safe_reason}"]
+                    return answer
+                if (
+                    evidence.get("target_id") != target
+                    or evidence.get("repository") != MANAGEMENT_REPOSITORY
+                    or evidence.get("source_sha") != plan.profile.source_sha
+                    or evidence.get("tested_source_oid") != plan.tested_source_identity
+                    or evidence.get("proof_run_id") != plan.supervisor_run_id
+                    or evidence.get("proof_run_attempt") != plan.supervisor_run_attempt
+                    or not isinstance(evidence.get("selection_oid"), str)
+                    or not isinstance(evidence.get("selection_operation_id"), str)
+                ):
+                    answer["missing_prerequisites"] = [f"{target}: upgraded-service source/selection identity conflict"]
+                    return answer
+                if selected is not None and any(
+                    selected.get(key) != evidence.get(key)
+                    for key in ("source_sha", "selection_oid", "selection_operation_id", "selected_run_id", "selected_run_attempt")
+                ):
+                    answer["missing_prerequisites"] = ["beta targets disagree on the current selection"]
+                    return answer
+                selected = evidence
+            assert selected is not None
             answer["stage"] = "beta-deploy-prerequisites-verified"
-            answer["selected_source_sha"] = evidence.source_sha
-            answer["selection_operation_id"] = evidence.selection_operation_id
+            answer["selected_source_sha"] = selected["source_sha"]
+            answer["selection_operation_id"] = selected["selection_operation_id"]
             answer["worker_targets"] = sorted(baseline)
             _record_operation(lane, operation, stage="beta-deploy-prerequisites-verified")
             return answer
