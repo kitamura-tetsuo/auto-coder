@@ -639,9 +639,7 @@ def test_source_proof_requires_every_producer_job_at_exact_run_attempt(
     assert len(observed_paths) == (1 if boundary == "wrong-source" else 2)
 
 
-def test_fresh_status_asks_child_for_exact_authenticated_observation_without_claiming_outcome(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_fresh_status_asks_child_for_exact_authenticated_observation_without_claiming_outcome(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A protected whoami read produces proof; only the observer can seal success."""
     credential = private_file(tmp_path / "fresh-client", b"disposable-authenticated-client")
     observation = "a" * 32
