@@ -23,7 +23,8 @@ from .operations import AcceptedAuthority, AdmissionResult, AdmissionStatus, Man
 class RetainedJournal:
     """Pin a previous owner lock and database without modifying either."""
 
-    def __init__(self, database: Path, fence: Path, *, database_identity: tuple[int, int], fence_identity: tuple[int, int], prior_management_instance: str | None = None) -> None:
+    def __init__(self, database: Path, fence: Path, *, database_identity: tuple[int, int], fence_identity: tuple[int, int], prior_management_instance: str | None = None, exclusions: tuple[RetainedJournal, ...] = ()) -> None:
+        self.exclusions = exclusions
         self.database = database
         self.fence = fence
         self.database_identity = database_identity
@@ -53,7 +54,14 @@ class RetainedJournal:
             if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != identity:
                 raise ValueError("retained fence descriptor differs")
 
+    def _check_exclusions(self) -> None:
+        for reader in self.exclusions:
+            if any(record.phase in ACTIVE_PHASES for record in reader.read()):
+                raise ValueError("excluded generation contains unresolved operations")
+
     def close(self) -> None:
+        for reader in self.exclusions:
+            reader.close()
         if self._fd >= 0:
             os.close(self._fd)
             self._fd = -1
@@ -83,6 +91,7 @@ class RetainedJournal:
 
     def read_evidence(self) -> tuple[tuple[OperationRecord, dict[str, object] | None], ...]:
         """Validate all records and their last history; errors never mean empty."""
+        self._check_exclusions()
         if self._fd < 0:
             raise ValueError("prior owner fence is closed")
         self._check_file(self.fence, self.fence_identity, self._fd)
@@ -157,6 +166,8 @@ class RetainedJournal:
         namespace = ManagementOperationStore._namespace(intent, authority)
         fingerprint = intent.fingerprint()
         records = self.read()
+        if any(reader.admission(intent, authority) is not None for reader in self.exclusions):
+            return AdmissionResult(AdmissionStatus.CONFLICT, detail="archived key excluded")
         for record in records:
             if ManagementOperationStore._namespace(record.intent, record.authority) == namespace:
                 status = AdmissionStatus.REPLAY if record.intent_fingerprint == fingerprint else AdmissionStatus.CONFLICT
@@ -218,6 +229,8 @@ class RetainedJournal:
         probe = OperationIntent(target, "management-service-self-update", (), key)
         namespace = ManagementOperationStore._namespace(probe, authority)
         records = self.read()
+        if any(reader.management_request(key, source_sha, authority) is not None for reader in self.exclusions):
+            return AdmissionResult(AdmissionStatus.CONFLICT, detail="archived key excluded")
         for record in records:
             if ManagementOperationStore._namespace(record.intent, record.authority) == namespace:
                 params = {part.name: part.value for part in record.intent.parameters}
@@ -239,18 +252,28 @@ class RetainedGuardedOperationStore(ManagementOperationStore):
         super().__init__(state_root)
         self.retained = retained
 
+    def _retained_admission(self, intent: OperationIntent, authority: AcceptedAuthority) -> AdmissionResult | None:
+        if intent.target.channel == "management":
+            previous_management = self.retained.management_lane()
+            if previous_management is not None:
+                return AdmissionResult(AdmissionStatus.BUSY, previous_management, "retained management operation")
+            # The successor's instance is not an old management key namespace.
+            # Apply the same original-instance lookup before admission and
+            # dispatch, including rows accepted before this guard existed.
+            source = str(next((part.value for part in intent.parameters if part.name == "source_sha"), ""))
+            previous = self.retained.management_request(intent.idempotency_key, source, authority)
+            if previous is not None:
+                return previous
+        return self.retained.admission(intent, authority)
+
     def admit(self, intent: OperationIntent, authority: AcceptedAuthority, *, lifecycle_snapshot: dict[str, object] | None = None) -> AdmissionResult:
         try:
-            if intent.target.channel == "management":
-                previous_management = self.retained.management_lane()
-                if previous_management is not None:
-                    return AdmissionResult(AdmissionStatus.BUSY, previous_management, "retained management operation")
-            previous = self.retained.admission(intent, authority)
+            previous = self._retained_admission(intent, authority)
             if previous is not None:
                 # Never return a retained replay as an admitted current row:
                 # the normal dispatcher would try to execute that old ID.
                 status = AdmissionStatus.CONFLICT if previous.status is AdmissionStatus.CONFLICT else AdmissionStatus.BUSY
-                return AdmissionResult(status, previous.record, "retained operation")
+                return AdmissionResult(status, previous.record, previous.detail or "retained operation")
         except Exception:
             return AdmissionResult(AdmissionStatus.UNAVAILABLE, detail="retained journal unavailable")
         return super().admit(intent, authority, lifecycle_snapshot=lifecycle_snapshot)
@@ -258,8 +281,6 @@ class RetainedGuardedOperationStore(ManagementOperationStore):
     def effect_permitted(self, record: OperationRecord) -> bool:
         """Revalidate at dispatch; no prior row may be executed by this store."""
         try:
-            if record.intent.target.channel == "management" and self.retained.management_lane() is not None:
-                return False
-            return self.retained.admission(record.intent, record.authority) is None
+            return self._retained_admission(record.intent, record.authority) is None
         except Exception:
             return False

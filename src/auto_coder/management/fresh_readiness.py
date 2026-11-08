@@ -26,6 +26,21 @@ class FreshReadinessObserver:
         self.finished = False
         self.succeeded = False
 
+    def _application_matches(self, path: str, selected: str) -> bool:
+        config = self.supervisor.config
+        if config.fresh_runtime_binding is None:
+            return Path(path).resolve(strict=True).parent == self.application_root and application_tree_sha256(self.application_root) == self.intent.application_sha256
+        from .fresh_runtime_binding import fresh_management_path, verify_installed_fresh_binding
+        from .oauth_config import load_management_settings
+
+        if self.supervisor.bootstrap_config_path is None:
+            return False
+        runtime = next((item for item in config.runtimes if item.reference == self.intent.runtime_reference), None)
+        if runtime is None or selected != runtime.reference:
+            return False
+        verified = verify_installed_fresh_binding(config, self.supervisor.bootstrap_config_path, self.intent, load_management_settings(fresh_management_path(runtime)), source_authority=self.supervisor.source_authority, bootstrap_application=self.application_root)
+        return verified.source_root is not None and Path(path).resolve(strict=True).is_relative_to(verified.source_root.resolve(strict=True))
+
     def tick(self) -> None:
         if self.finished:
             return
@@ -55,13 +70,7 @@ class FreshReadinessObserver:
             if not challenge:
                 return
             proof = read_authenticated_readback(self.supervisor.config, observation_id=observation_id, observation_started_at=float(started), observation_ends_at=float(deadline))
-            if (
-                proof is not None
-                and proof.child_identity == identity
-                and proof.management_config_sha256 == self.intent.management_config_sha256
-                and Path(proof.application_path).resolve(strict=True).parent == self.application_root
-                and application_tree_sha256(self.application_root) == self.intent.application_sha256
-            ):
+            if proof is not None and proof.child_identity == identity and proof.management_config_sha256 == self.intent.management_config_sha256 and self._application_matches(proof.application_path, current.record.selected_runtime):
                 assert_current_owner(self.supervisor.config, self.supervisor.incarnation)
                 record_fresh_outcome(self.supervisor.config.state_root, self.observation, status="succeeded")
                 logger.info("Fresh management initialization request={} status=succeeded", self.intent.request_id)

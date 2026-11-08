@@ -1,5 +1,6 @@
 """Real OAuth/MCP adapter tests for the injected, fenced prior journal."""
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,7 @@ from auto_coder.management.mcp_runtime_tools import ManagementRuntime
 from auto_coder.management.oauth_config import ManagementSettings, OAuthClient, OAuthSettings
 from auto_coder.management.oauth_grants import OAuthGrantService
 from auto_coder.management.operation_store import ManagementOperationStore
-from auto_coder.management.operations import ActionParameter, ManagedTarget, OperationIntent, OperationPhase
+from auto_coder.management.operations import ActionParameter, EffectReceipt, ManagedTarget, OperationIntent, OperationPhase
 from auto_coder.management.retained_journal import RetainedJournal
 from auto_coder.operating_policy import MANAGEMENT_REPOSITORY
 from tests.test_management_mcp import _issue, real_boundary  # noqa: F401
@@ -162,3 +163,46 @@ def test_prior_fence_lost_after_admission_prevents_actual_effect(runtime_boundar
         result = _call(client, token, "auto_coder_reevaluate_target", _request(beta))
         assert result["phase"] == "accepted" and beta.send_calls == 0
         assert app.state.management_runtime.journal.get(result["operation_id"]).record is not None
+
+
+def test_authenticated_successor_excludes_archive_keys_without_old_history(runtime_boundary, tmp_path: Path) -> None:
+    settings, grants, signed, _policy, beta, release = runtime_boundary
+    with TestClient(_application(runtime_boundary), base_url=settings.oauth.canonical_issuer) as client:
+        token = _issue(client, settings, signed, "bob", "bob-client", READ_SCOPE + " " + OPERATE_SCOPE)["access_token"]
+    grant = grants.authenticate_access(token, settings.oauth.resource, (READ_SCOPE, OPERATE_SCOPE))
+    authority = ManagementRuntime._journal_authority(grant, grants.accepted_authority(grant))
+    original = OperationIntent(ManagedTarget(beta.config.instance_id, beta.config.channel, beta.config.repository), "reevaluate_target", (ActionParameter("target_id", "beta-worker"), ActionParameter("target_type", "issue"), ActionParameter("number", 2603)), "key-1", beta.run, beta.deployment)
+    readers = []
+    ids = []
+    for name, key in (("manager-a", "key-1"), ("manager-b", "direct-key")):
+        root = tmp_path / name
+        store = ManagementOperationStore(root)
+        intent = OperationIntent(original.target, original.action, original.parameters, key, original.expected_incarnation, original.expected_artifact)
+        record = store.admit(intent, authority).record
+        assert record is not None
+        assert store.transition(record.operation_id, 0, OperationPhase.FAILED, evidence=EffectReceipt(record.operation_id, "disposable-journal", 1, "no_effect_sent")).record is not None
+        lock = root / "owner.lock"
+        lock.touch()
+        readers.append(RetainedJournal(root / "management-operations.sqlite3", lock, database_identity=identity(root / "management-operations.sqlite3"), fence_identity=identity(lock), prior_management_instance=name))
+        ids.append(record.operation_id)
+    archive, retained = readers
+    retained.exclusions = (archive,)
+    with retained:
+        app = create_management_app(settings, grants, worker_clients={"beta": beta, "release": release}, retained_journal=retained)
+        with TestClient(app, base_url=settings.oauth.canonical_issuer) as client:
+            denied = _call(client, token, "auto_coder_reevaluate_target", _request(beta))
+            assert denied["status"] == "CONFLICT" and denied.get("operation_id") is None
+            assert _call(client, token, "auto_coder_operation_get", {"target_id": "beta-worker", "operation_id": ids[0]})["status"] == "NOT_FOUND"
+            direct = _call(client, token, "auto_coder_operation_get", {"target_id": "beta-worker", "operation_id": ids[1]})
+            assert direct["status"] == "FAILED" and direct["history_origin"] == "retained_prior_instance"
+            assert beta.send_calls == 0
+            admitted = _call(client, token, "auto_coder_reevaluate_target", _request(beta, key="fresh-key"))
+            assert admitted["operation_id"] not in ids
+            for _ in range(100):
+                if beta.send_calls:
+                    break
+                threading.Event().wait(0.02)
+            assert beta.send_calls == 1
+            archive.close()
+            refused = _call(client, token, "auto_coder_reevaluate_target", _request(beta, key="after-evidence-loss"))
+            assert refused["status"] == "UNAVAILABLE" and beta.send_calls == 1

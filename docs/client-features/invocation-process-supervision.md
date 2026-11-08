@@ -47,6 +47,17 @@ The deterministic conformance coverage is in
 cancellation regression uses readiness and release files to keep the peer active
 until the cancelled invocation settles, then verifies that the peer completes
 successfully. It does not rely on observing a short, fixed-duration active state.
+
+The unread-prompt regression keeps a real child alive without reading stdin and
+proves that its pipe is full and its prompt writer remains blocked. It advances
+only the supervisor's execution clock, checks that the child is not stopped
+before the deadline, and then verifies timeout, termination, reaping and completed
+I/O threads at the deadline. A separate real-time watchdog releases the child on
+test failure. This replaces a whole-call wall-time assertion that also measured
+policy setup, process startup, scheduling and cleanup outside the execution budget.
+The budget starts after the invocation becomes active; this unit regression is
+not a subsecond scheduling guarantee or a replacement for real cgroup conformance.
+
 Production startup compatibility can be checked by ensuring `/sys/fs/cgroup/cgroup.controllers`
 and `cgroup.kill` exist, the controller runs as root, a non-root worker identity is
 configured, and `/sys/fs/cgroup/auto-coder` is root-owned and not worker-writable.

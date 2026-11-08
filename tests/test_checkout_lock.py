@@ -4,13 +4,15 @@ import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+from auto_coder import checkout_lock as checkout_locks
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.branch_manager import BranchManager
-from auto_coder.checkout_lock import checkout_lock
+from auto_coder.checkout_lock import checkout_lock, worktree_registry_lock
 from auto_coder.git_utils import git_commit_with_retry
 from auto_coder.pr_processor import _checkout_pr_branch
 from auto_coder.shutdown_context import install_admission_check, reset_admission_check
@@ -219,3 +221,88 @@ def test_checkout_lease_coordinates_another_process(checkout):
         if child.poll() is None:
             child.kill()
             child.communicate(timeout=5)
+
+
+@pytest.mark.parametrize("caller", ["main", "linked", "alias"])
+def test_registry_lease_coordinates_linked_callers_in_another_process(checkout, tmp_path, caller):
+    linked, alias = tmp_path / "linked", tmp_path / "alias"
+    git(checkout, "worktree", "add", "--detach", str(linked), "HEAD")
+    alias.symlink_to(linked, target_is_directory=True)
+    target = {"main": checkout, "linked": linked, "alias": alias}[caller]
+    code = """import sys
+from contextlib import contextmanager
+from auto_coder import checkout_lock as locks
+actual = locks.file_lock
+@contextmanager
+def observed(path, **kwargs):
+    try:
+        with actual(path, timeout=0):
+            pass
+    except locks.LockAcquisitionTimeout:
+        print('contended', flush=True)
+    with actual(path, **kwargs):
+        yield
+locks.file_lock = observed
+with locks.worktree_registry_lock(sys.argv[1]):
+    print('acquired', flush=True)
+"""
+    child = None
+    try:
+        with worktree_registry_lock(str(checkout)):
+            child = subprocess.Popen([sys.executable, "-c", code, str(target)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            assert child.stdout is not None
+            # This reports an actual nonblocking kernel-lock failure, rather
+            # than inferring contention from a startup sleep.
+            assert child.stdout.readline().strip() == "contended"
+        output, error = child.communicate(timeout=10)
+        assert child.returncode == 0, error
+        assert output.strip() == "acquired"
+    finally:
+        if child is not None and child.poll() is None:
+            child.kill()
+            child.wait(timeout=5)
+        git(checkout, "worktree", "remove", "--force", str(linked))
+
+
+@pytest.mark.parametrize("retarget", ["gitfile", "alias"])
+def test_registry_lease_refuses_changed_caller_common_directory(checkout, tmp_path, monkeypatch, retarget):
+    other, linked, alias = tmp_path / "other", tmp_path / "linked", tmp_path / "alias"
+    git(tmp_path, "clone", str(checkout), str(other))
+    git(checkout, "worktree", "add", "--detach", str(linked), "HEAD")
+    alias.symlink_to(checkout, target_is_directory=True)
+    gitfile = linked / ".git"
+    original = gitfile.read_bytes()
+    actual_lock = checkout_locks.file_lock
+
+    @contextmanager
+    def change_after_acquisition(path, **kwargs):
+        with actual_lock(path, **kwargs):
+            if retarget == "gitfile":
+                gitfile.write_text("gitdir: " + str(other / ".git") + "\n")
+            else:
+                alias.unlink()
+                alias.symlink_to(other, target_is_directory=True)
+            yield
+
+    target = linked if retarget == "gitfile" else alias
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(checkout_locks, "file_lock", change_after_acquisition)
+            with pytest.raises(RuntimeError, match="common directory changed"):
+                with worktree_registry_lock(str(target)):
+                    pytest.fail("Changed caller was admitted under its old registry lock")
+    finally:
+        gitfile.write_bytes(original)
+        alias.unlink()
+        alias.symlink_to(checkout, target_is_directory=True)
+        git(checkout, "worktree", "remove", "--force", str(linked))
+    # The failure released the lease and left the original repository usable.
+    with worktree_registry_lock(str(checkout)):
+        assert git(checkout, "branch", "--show-current") == "main"
+
+
+def test_registry_lease_refuses_unidentifiable_repository(tmp_path, monkeypatch):
+    monkeypatch.setenv("AUTO_CODER_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    with pytest.raises(RuntimeError, match="Cannot identify Git common directory"):
+        with worktree_registry_lock(str(tmp_path)):
+            pytest.fail("A non-repository cannot own a Git registry lease")
