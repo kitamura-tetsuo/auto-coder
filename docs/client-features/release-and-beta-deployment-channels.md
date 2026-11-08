@@ -33,4 +33,9 @@ The independently operator-dispatched mutable Git source pointer is documented
 in `source-beta-selection.md`. It selects verified source for later in-container
 updates without moving an image tag or claiming that a worker installed it.
 
+The separately configured, accepted-candidate Git-source release pointer and
+immutable schema-v2 release history are documented in
+[`accepted-source-release-promotion.md`](accepted-source-release-promotion.md).
+They never change the legacy OCI `release` image tag or start a release worker.
+
 This file documents the client-facing features and tools provided by auto-coder.

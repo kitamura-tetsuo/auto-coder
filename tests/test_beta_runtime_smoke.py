@@ -161,15 +161,16 @@ class Harness:
         return saved[1]
 
 
-def _fixture(tmp_path: Path, *, selected_execution: tuple[int, int] = (11, 1)) -> Harness:
+def _fixture(tmp_path: Path, *, selected_execution: tuple[int, int] = (11, 1), remote: GitEvidenceBoundary | None = None) -> Harness:
     journal = ManagementOperationStore(tmp_path / "journal")
-    remote = GitEvidenceBoundary()
+    remote = remote or GitEvidenceBoundary()
     if selected_execution != (11, 1):
         remote.executions[(selected_execution[0], 1)] = (SHA_A, "2026-10-02T01:00:00Z")
         remote.executions[selected_execution] = (SHA_A, "2026-10-02T02:00:00Z")
     assert selector(remote).advance("r77", None).certainty is MutationCertainty.CONFIRMED
     reader = BetaEvidenceReader(remote, "owner/repo")  # type: ignore[arg-type]
-    worker = WorkerBoundary()
+    selected_sha = remote.executions[(11, 1)][0]
+    worker = WorkerBoundary(source_sha=selected_sha, distribution_version=f"1.0+g{selected_sha}")
     authority = AcceptedAuthority("https://manager.example", "https://manager.example/mcp", "project", "operator", "client", "original-grant", ("auto-coder:read", "auto-coder:deploy"), 1_797_999_900.0, 1_797_999_950.0)
     target = ManagedTarget(worker.config.instance_id, worker.config.channel, worker.config.repository)
     staged = {"source_sha": worker.source_sha, "lock_sha256": worker.lock_sha256, "distribution_version": worker.distribution_version, "content_identity": worker.receipt_identity, "installed_runtime_id": worker.runtime_id, "runtime_profile": "python-3.12"}
@@ -177,8 +178,8 @@ def _fixture(tmp_path: Path, *, selected_execution: tuple[int, int] = (11, 1)) -
         "schema_version": 1,
         "stage": "SUCCEEDED",
         "action": "deploy_beta_source",
-        "accepted_evidence": reader.read(SHA_A).canonical(),
-        "source_sha": SHA_A,
+        "accepted_evidence": reader.read(selected_sha).canonical(),
+        "source_sha": selected_sha,
         "staged": staged,
         "new_worker": worker.worker(),
         "incumbent": {"supervisor_generation": worker.supervisor_generation},
@@ -186,11 +187,11 @@ def _fixture(tmp_path: Path, *, selected_execution: tuple[int, int] = (11, 1)) -
         "heartbeats": [39, 40],
         "original_deadline": 1_798_000_100.0,
     }
-    admitted = journal.admit(OperationIntent(target, "deploy_beta_source", (ActionParameter("source_sha", SHA_A),), "deployment-key"), authority, lifecycle_snapshot=deployed_snapshot)
+    admitted = journal.admit(OperationIntent(target, "deploy_beta_source", (ActionParameter("source_sha", selected_sha),), "deployment-key"), authority, lifecycle_snapshot=deployed_snapshot)
     assert admitted.status is AdmissionStatus.CREATED and admitted.record is not None
     completed = journal.transition(admitted.record.operation_id, admitted.record.revision, OperationPhase.SUCCEEDED, evidence=EffectReceipt(admitted.record.operation_id, "supervisor-and-worker-lifecycle-journal", 1_797_999_999.0, "real_installed_worker_and_advancing_producer_heartbeats_verified"))
     assert completed.status is MutationStatus.UPDATED and completed.record is not None
-    parameters = (ActionParameter("source_sha", SHA_A), ActionParameter("deployment_operation_id", completed.record.operation_id), ActionParameter("supervisor_generation", worker.supervisor_generation), ActionParameter("deployment_generation", worker.deployment_generation))
+    parameters = (ActionParameter("source_sha", selected_sha), ActionParameter("deployment_operation_id", completed.record.operation_id), ActionParameter("supervisor_generation", worker.supervisor_generation), ActionParameter("deployment_generation", worker.deployment_generation))
     accepted = journal.admit(OperationIntent(target, "run_beta_acceptance", parameters, "acceptance-key", worker.process_run_id, worker.runtime_id), authority)
     assert accepted.status is AdmissionStatus.CREATED and accepted.record is not None
     remote.calls.clear()
