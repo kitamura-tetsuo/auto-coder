@@ -632,24 +632,20 @@ class ManagementRuntime:
                 output["installed_runtime"] = observed.get("runtime_binding")
             return output
 
-    async def beta_source_readback(self, target_id: str, source_sha: str) -> dict[str, object]:
-        """Report actual configured beta-source evidence without admitting deployment."""
+    async def beta_source_readback(self, target_id: str) -> dict[str, object]:
+        """Report the independently selected beta source without admitting deployment."""
         self._grant((READ_SCOPE,))
-        if not isinstance(source_sha, str) or re.fullmatch(r"[0-9a-f]{40}", source_sha) is None:
-            return self._response("INVALID_REQUEST", "exact_beta_source_sha_required")
         resolved = self._resolve(target_id, ActionClass.INSPECT)
         if not isinstance(resolved, ResolvedWorker):
             return resolved
         if resolved.target.channel != "beta":
             return self._response("DENIED", "beta_target_required")
         try:
-            # This is the same reader, configured credential and exact-source
-            # producer as deploy_beta_source, but has no mutation/admission path.
+            # The beta source differs from the management candidate revision.
+            # Reuse the actual deployer's configured credential and producer.
             evidence = await asyncio.to_thread(lambda: self.lifecycle._source().read_current())
         except (SourceEvidenceError, RuntimeError, OSError, ValueError):
             return self._response("UNAVAILABLE", "configured_beta_source_evidence_unavailable")
-        if evidence.source_sha != source_sha:
-            return self._response("UNAVAILABLE", "current_beta_selection_differs_from_requested_source")
         return self._response(
             "OK",
             "configured_beta_source_verified",
