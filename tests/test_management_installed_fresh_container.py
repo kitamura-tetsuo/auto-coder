@@ -80,7 +80,62 @@ class InstalledChain(Chain):
         """Use the real producer only for opt-in installed worker coverage."""
         if not self.installed_ready_beta:
             return profile
+        # The installed process-issues child uses the production GitHub HTTP
+        # transport during startup reconciliation. Keep the HTTPS endpoint
+        # entirely inside this disposable worker network; unlike the bootstrap
+        # bridge fixture it must actually complete a real producer loop.
+        trust = self.root / "workers" / "ci-trust"
+        trust.mkdir(mode=0o700)
+        subprocess.run(
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
+                str(trust / "github.key"),
+                "-out",
+                str(trust / "github.crt"),
+                "-subj",
+                "/CN=api.github.com",
+                "-addext",
+                "subjectAltName=DNS:api.github.com",
+                "-days",
+                "1",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        (trust / "github.key").chmod(0o600)
+        profile["services"]["github-ci"] = {
+            "image": profile["services"]["beta"]["image"],
+            "entrypoint": ["python", "/fixtures/supervisor_fake_github_https.py"],
+            "user": f"{os.getuid()}:{os.getgid()}",
+            "cap_drop": ["ALL"],
+            "security_opt": ["no-new-privileges:true"],
+            "sysctls": ["net.ipv4.ip_unprivileged_port_start=0"],
+            "volumes": [
+                f"{trust}:/ci-trust:ro",
+                f"{Path(__file__).parent / 'fixtures'}:/fixtures:ro",
+            ],
+            "networks": {"private": {"aliases": ["api.github.com"]}},
+            "healthcheck": {
+                "test": [
+                    "CMD",
+                    "python",
+                    "-c",
+                    "import socket,ssl; ssl.create_default_context(cafile='/ci-trust/github.crt').wrap_socket(socket.create_connection(('127.0.0.1',443),timeout=3),server_hostname='api.github.com').close()",
+                ],
+                "interval": "1s",
+                "timeout": "5s",
+                "retries": 30,
+            },
+        }
         beta = profile["services"]["beta"]
+        beta["depends_on"] = {"github-ci": {"condition": "service_healthy"}}
         beta["entrypoint"] = ["python", "/fixtures/supervisor_offline_pid1.py"]
         beta["environment"].update(
             {
@@ -92,9 +147,15 @@ class InstalledChain(Chain):
                 "AUTO_CODER_HEALTH_LOG_ENABLED": "0",
                 "AUTO_CODER_DISABLE_AUTO_UPDATE": "1",
                 "GITHUB_TOKEN": "nonfunctional-disposable-worker-token",
+                "SSL_CERT_FILE": "/ci-trust/github.crt",
+                "REQUESTS_CA_BUNDLE": "/ci-trust/github.crt",
+                "NO_PROXY": "api.github.com,localhost,127.0.0.1",
+                "no_proxy": "api.github.com,localhost,127.0.0.1",
             }
         )
         beta["volumes"].append(f"{Path(__file__).resolve().parents[1]}:/source:ro")
+        # A worker can read only the ephemeral test CA, not the HTTPS key.
+        beta["volumes"].append(f"{trust / 'github.crt'}:/ci-trust/github.crt:ro")
         runtime = self.root / "workers" / "beta"
         (runtime / "ownership.json").write_text(json.dumps({"fixture/beta": "beta"}))
         (runtime / "llm_config.toml").write_text('[backend]\norder = ["jules"]\n\n[backends.jules]\nbackend_type = "jules"\nenabled = true\napi_key = "offline-unused"\n')
@@ -367,7 +428,39 @@ class InstalledChain(Chain):
                 return observed
             return None
 
-        first = wait_for(ready_observation, "installed READY beta worker with producer heartbeat", timeout=120)
+        try:
+            first = wait_for(ready_observation, "installed READY beta worker with producer heartbeat", timeout=120)
+        except AssertionError as error:
+            # Retain typed, bounded production observations for CI diagnosis.
+            # Never print raw worker logs, transport bodies or credentials.
+            try:
+                observed = manager("runtime-observe", "beta")
+                inspected = manager("inspect", "beta")
+                state = inspected.get("data")
+                state = state if isinstance(state, dict) else {}
+                worker = state.get("worker")
+                worker = worker if isinstance(worker, dict) else {}
+                observation = observed.get("observation")
+                observation = observation if isinstance(observation, dict) else {}
+                lifecycle = observation.get("lifecycle")
+                lifecycle = lifecycle if isinstance(lifecycle, dict) else {}
+                heartbeat = observation.get("heartbeat")
+                heartbeat = heartbeat if isinstance(heartbeat, dict) else {}
+                diagnostic = {
+                    "supervisor_result": inspected.get("result_code"),
+                    "supervisor_state": state.get("status"),
+                    "worker_alive": state.get("alive"),
+                    "selected_runtime_matches": state.get("selected_runtime_id") == receipt["installed_runtime_id"],
+                    "worker_runtime_matches": worker.get("runtime_id") == receipt["installed_runtime_id"],
+                    "service_status": observed.get("status"),
+                    "binding_status": observed.get("binding_status"),
+                    "startup_reconciled": lifecycle.get("startup_reconciled"),
+                    "daemon_serving": lifecycle.get("daemon_serving"),
+                    "heartbeat_available": heartbeat.get("available"),
+                }
+            except (OSError, ValueError, subprocess.CalledProcessError) as observation_error:
+                diagnostic = {"observation_error": type(observation_error).__name__}
+            raise AssertionError(f"{error}; disposable-worker-observation={json.dumps(diagnostic, sort_keys=True)}") from error
         first_sequence = first["observation"]["heartbeat"]["sequence"]
         wait_for(
             lambda: (latest if latest["observation"]["heartbeat"]["sequence"] > first_sequence else None) if (latest := ready_observation()) is not None else None,
