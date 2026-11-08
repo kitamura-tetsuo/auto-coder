@@ -67,7 +67,7 @@ class FakeGitHub:
 def _plan(
     profile: str, base: Path, nodes_override: tuple[str, ...] | None = None
 ) -> VerifiedPlan:
-    nodes = nodes_override if nodes_override is not None else (
+    nodes = (
         (*FRESH_REQUIRED, "tests/test_management_fresh_host_integration.py::test_real_prior_supervisor_binds_instance_and_published_port")
         if profile == "fresh-host"
         else (
@@ -79,6 +79,8 @@ def _plan(
             )
         )
     )
+    if nodes_override is not None:
+        nodes = nodes_override
     context = ShardContext.parse(
         {
             "schema_version": "ci-shard-context-v1",
@@ -185,7 +187,6 @@ def valid_native_evidence(tmp_path: Path):
 def _evaluate(valid_native_evidence):
     client, plans, artifacts = valid_native_evidence
     return evaluate(cast(GitHubGitDataClient, client), {name: {"result": "success"} for name in REQUIRED_GROUPS}, plans, artifacts, SHA, SHA, RUN, 2)
-
 
 
 @pytest.mark.parametrize("case", ("allowed", "wrong-reason", "sibling", "prefix"))
