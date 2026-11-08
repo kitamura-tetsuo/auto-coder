@@ -153,6 +153,13 @@ def test_all_baseline_selectors_and_execution_contexts_are_preserved() -> None:
     assert "-o timeout=60" in worker and "set -o pipefail" in worker
 
     management = profile_args("management-self-update")
+    # Python module mode keeps the repository package importable by the CI pytest plugin.
+    for group, step_name in (
+        ("management-self-update", "Verify authenticated management self-update"),
+        ("isolated-containers", "Verify isolated Supervisor containers"),
+    ):
+        command = _step(workflow["jobs"][group], step_name)["run"]
+        assert "uv run python -m pytest -p scripts.ci_shard_plugin" in command
     for path in ("test_management_self_update_integration.py", "test_management_self_update_failures.py", "test_management_clean_restart_integration.py", "test_management_fresh_host_integration.py"):
         assert any(path in value for value in management)
     assert management[2:4] == ("-m", "supervisor_integration")

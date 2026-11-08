@@ -313,7 +313,7 @@ jobs:
           set -euo pipefail
           uv run python scripts/supervisor_ci_profiles.py verify --profile management-self-update --plan "$SUPERVISOR_PLAN_PATH"
           mapfile -t selectors < <(uv run python scripts/supervisor_ci_profiles.py args --profile management-self-update)
-          uv run pytest -p scripts.ci_shard_plugin \
+          uv run python -m pytest -p scripts.ci_shard_plugin \
             "--ci-plan=$SUPERVISOR_PLAN_PATH" "--ci-shard=$SUPERVISOR_SHARD_ID" -q -vv \
             "${selectors[@]}" --junitxml="supervisor-integration-logs/management-self-update-$SUPERVISOR_SHARD_ID.xml"
       - name: Bind native management receipt
@@ -453,7 +453,7 @@ jobs:
           set -euo pipefail
           uv run python scripts/supervisor_ci_profiles.py verify --profile isolated-containers --plan "$SUPERVISOR_PLAN_PATH"
           mapfile -t selectors < <(uv run python scripts/supervisor_ci_profiles.py args --profile isolated-containers)
-          uv run pytest -p scripts.ci_shard_plugin \
+          uv run python -m pytest -p scripts.ci_shard_plugin \
             "--ci-plan=$SUPERVISOR_PLAN_PATH" "--ci-shard=$SUPERVISOR_SHARD_ID" -q -vv \
             "${selectors[@]}" --junitxml="supervisor-integration-logs/isolated-containers-$SUPERVISOR_SHARD_ID.xml"
       - name: Bind native container receipt
