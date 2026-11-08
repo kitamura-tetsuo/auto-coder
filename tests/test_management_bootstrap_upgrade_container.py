@@ -73,8 +73,10 @@ def approved_profile(chain: InstalledChain, old: Generation, new: Generation) ->
         "caddyfile",
     )
     old_watch, new_watch = old.path("watch"), new.path("watch")
-    for directory in (old_watch, new_watch):
-        directory.mkdir(mode=0o700)
+    # B's watcher root is reused as the pinned predecessor root for B->C.
+    # Never recreate the fresh successor root if it already exists.
+    old_watch.mkdir(mode=0o700, exist_ok=True)
+    new_watch.mkdir(mode=0o700)
 
     def watcher(generation: Generation, state: Path) -> Path:
         assert generation.proxy is not None
@@ -699,7 +701,8 @@ def test_disposable_operator_failure_fences_real_docker(installed_chain: Install
             # compare immutable retained records around the attempted upgrade.
             restarted_snapshot = chain.snapshot(first)
             code, refused = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
-            assert code == 2 and refused["stage"] == "prerequisite-blocked"
+            assert code == 2 and refused["stage"] == "prerequisite-blocked", refused
+            assert refused["reason"] == "pinned predecessor process generation changed", refused
             assert effects == [] and chain.workers() == baseline
             assert chain.snapshot(first) == restarted_snapshot
             assert chain.docker("inspect", "--format", "{{.State.Running}}", first.container) == "true"
@@ -770,8 +773,12 @@ def test_disposable_operator_failure_fences_real_docker(installed_chain: Install
             assert persisted.effect == "start-management" and persisted.effect_target == successor.container
             assert len(effects) == 3
         else:
-            assert persisted.completed == ("stop-proxy", "stop-management", "start-management", "start-proxy")
-            assert persisted.effect == "" and len(effects) == 4
+            # The proxy was physically started and then died before the
+            # independent running/StartedAt receipt. The start is uncertain,
+            # not completed: it must never be automatically dispatched again.
+            assert persisted.completed == ("stop-proxy", "stop-management", "start-management")
+            assert persisted.effect == "start-proxy" and persisted.effect_target == successor.proxy
+            assert "start-proxy" not in persisted.effect_receipts and len(effects) == 4
             assert chain.docker("inspect", "--format", "{{.State.Running}}", successor.proxy) == "false"
         assert chain.snapshot(first) == prior_snapshot and chain.workers() == baseline
         code, reported = call_cli("status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file))

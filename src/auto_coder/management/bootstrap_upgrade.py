@@ -683,15 +683,19 @@ def _immutable_inputs(plan: UpgradePlan) -> None:
         raise UpgradeUnavailable("prerequisite-blocked", "successor exclusion ancestry differs")
     assert_retained_oauth_mount(management, intent)
     assert_retained_journal_source(management, intent)
-    for expected_id, expected_image in (
-        (management.container_id, management.image_id),
-        (proxy.container_id, proxy.image_id),
-        (intent.new_container_id, intent.image_digest),
-        (plan.profile.successor_proxy_id, plan.profile.successor_proxy_image),
+    for expected_id, expected_image, expected_started_at in (
+        (management.container_id, management.image_id, plan.predecessor_started_at),
+        (proxy.container_id, proxy.image_id, plan.predecessor_proxy_started_at),
+        (intent.new_container_id, intent.image_digest, None),
+        (plan.profile.successor_proxy_id, plan.profile.successor_proxy_image, None),
     ):
         observed = _inspect(expected_id)
         if observed[1] != expected_image:
             raise UpgradeUnavailable("prerequisite-blocked", "pinned container image changed")
+        # A stopped predecessor retains its original Docker StartedAt. Reject
+        # any restarted generation before touching the saved host effects.
+        if expected_started_at is not None and observed[13] != expected_started_at:
+            raise UpgradeUnavailable("prerequisite-blocked", "pinned predecessor process generation changed")
     if _candidate_image_source(plan.successor_management, plan.successor_image) != plan.image_source_identity:
         raise UpgradeUnavailable("prerequisite-blocked", "pinned installed candidate differs")
     candidate = BootstrapConfig.read(Path(plan.profile.bootstrap_config))
