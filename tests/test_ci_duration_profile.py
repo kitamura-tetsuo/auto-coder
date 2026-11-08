@@ -143,10 +143,7 @@ def test_repeated_native_execution_never_splices_incomplete_phase_boundaries(tmp
     assert result.returncode == 0, result.stdout + result.stderr
     assert len(files) == 1
     recorded = _records(files)
-    starts = {
-        phase: [event for event in recorded if event.get("event_kind") == "pytest_phase_start" and event.get("pytest_phase") == phase]
-        for phase in ("setup", "call", "teardown")
-    }
+    starts = {phase: [event for event in recorded if event.get("event_kind") == "pytest_phase_start" and event.get("pytest_phase") == phase] for phase in ("setup", "call", "teardown")}
     assert all(len(events) == 2 for events in starts.values())
     first_ids = {phase: starts[phase][0]["span_id"] for phase in starts}
     second_ids = {phase: starts[phase][1]["span_id"] for phase in starts}
@@ -167,12 +164,7 @@ def test_repeated_native_execution_never_splices_incomplete_phase_boundaries(tmp
         second_ids["call"]: True,
         second_ids["teardown"]: True,
     }
-    truncated = [
-        event for event in recorded
-        if event.get("span_id") in include
-        and (event.get("event_kind") == "pytest_phase_start"
-             or (event.get("event_kind") == "pytest_phase_report" and include[event["span_id"]]))
-    ]
+    truncated = [event for event in recorded if event.get("span_id") in include and (event.get("event_kind") == "pytest_phase_start" or (event.get("event_kind") == "pytest_phase_report" and include[event["span_id"]]))]
     damaged_file = tmp_path / "partial-repetitions.jsonl"
     damaged_file.write_text("\n".join(json.dumps(event, sort_keys=True) for event in truncated) + "\n", encoding="utf-8")
     damaged = _run_ok(context, tmp_path / "partial-repetitions.json", batches=[_batch(tmp_path, [damaged_file], name="partial-repetitions")])
