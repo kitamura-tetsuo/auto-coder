@@ -217,6 +217,13 @@ jobs:
           --directory "$RUNNER_TEMP/source-duration-work"
           --previous "$RUNNER_TEMP/source-history/profile.json"
           --output "$RUNNER_TEMP/source-history-new/profile.json"
+      - name: Stage optional source timing snapshot at restored cache path
+        id: duration-stage
+        if: always() && steps.duration-update.outcome == 'success'
+        continue-on-error: true
+        run: |
+          mkdir -p "$RUNNER_TEMP/source-history"
+          cp "$RUNNER_TEMP/source-history-new/profile.json" "$RUNNER_TEMP/source-history/profile.json"
       - name: Report queue, setup, native critical path and comparable four-way assignments
         if: always()
         continue-on-error: true
@@ -234,11 +241,11 @@ jobs:
           --output "$RUNNER_TEMP/source-duration-work/metrics.json"
           --github-summary "$GITHUB_STEP_SUMMARY"
       - name: Cache optional immutable source timing profile
-        if: always() && steps.duration-update.outcome == 'success'
+        if: always() && steps.duration-stage.outcome == 'success'
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
-          path: ${{ runner.temp }}/source-history-new
+          path: ${{ runner.temp }}/source-history
           key: source-duration-${{ runner.os }}-${{ hashFiles('uv.lock', 'pyproject.toml', 'tests/conftest.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Retain optional timing profile diagnostics
         if: always()
