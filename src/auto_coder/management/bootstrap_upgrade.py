@@ -573,11 +573,7 @@ def _mcp_call(port: int, token: str, tool: str, arguments: dict[str, object]) ->
 def _request_fresh_readback(port: int, credential: Path, fresh: dict[str, object]) -> None:
     """Request the existing child's observation-bound proof, never infer success."""
     observation_id = fresh.get("observation_id")
-    if (
-        not isinstance(observation_id, str)
-        or len(observation_id) != 32
-        or any(char not in "0123456789abcdef" for char in observation_id)
-    ):
+    if not isinstance(observation_id, str) or len(observation_id) != 32 or any(char not in "0123456789abcdef" for char in observation_id):
         raise ValueError("fresh observation identity is incomplete")
     token = _read_record(credential).decode("utf-8").strip()
     if not token or "\n" in token:
