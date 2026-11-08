@@ -656,17 +656,11 @@ fresh_host.main()
             # A concurrent status read can report unknown during this interval;
             # it is not proof of a terminal failure while the launch is in flight.
             if time.monotonic() >= deadline:
-                logs = subprocess.run(
-                    ["docker", "logs", new_id],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=10,
-                )
-                raise AssertionError(
-                    f"fresh launch did not reach authenticated readiness (status={status!r}): "
-                    + (logs.stdout + logs.stderr)[-1500:]
-                )
+                cmd = ["docker", "logs", new_id]
+                logs = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                detail = (logs.stdout + logs.stderr)[-1500:]
+                message = f"fresh launch did not reach readiness ({status!r})"
+                raise AssertionError(f"{message}: {detail}")
             time.sleep(0.1)
         request = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "auto_coder_whoami", "arguments": {"observation_id": status["observation_id"]}}}
         script = (
