@@ -109,6 +109,16 @@ def test_real_parametrization_fixture_collection_provenance_and_actual_checkout(
     assert result.returncode == 0, result.stdout + result.stderr
     report = normalize(directory, checkout)
     assert report["status"] == "available", report["errors"]
+    native_collection = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-m", PROFILE_SELECTOR],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        env=_env(checkout),
+        timeout=30,
+    )
+    assert native_collection.returncode == 0, native_collection.stdout + native_collection.stderr
+    assert [line for line in native_collection.stdout.splitlines() if line.startswith("tests/") and "::" in line] == [node["nodeid"] for node in report["nodes"]]
     assert report["identity"]["checkout_sha"] == _git(checkout, "rev-parse", "HEAD")
     assert report["identity"]["checkout_tree"] == _git(checkout, "rev-parse", "HEAD^{tree}")
     assert report["identity"]["event_sha"] == EVENT_SHA != report["identity"]["checkout_sha"]
@@ -153,6 +163,15 @@ def test_native_failure_skip_xfail_xpass_teardown_error_and_unreached_call(tmp_p
     directory = _case_dir(tmp_path)
     result = _run(checkout, directory)
     assert result.returncode == 1, result.stdout + result.stderr
+    native = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-m", PROFILE_SELECTOR],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        env=_env(checkout),
+        timeout=30,
+    )
+    assert native.returncode == result.returncode
     assert all(sentinel in result.stdout for sentinel in ("native failure", "teardown sentinel", "setup sentinel"))
     report = normalize(directory, checkout)
     assert report["native_session"]["exit_code"] == 1
