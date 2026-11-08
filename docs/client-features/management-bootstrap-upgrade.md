@@ -140,12 +140,22 @@ the active new watcher attached to the successor namespace. An unavailable
 authenticated client token leaves a specific prerequisite; it is never a
 host-control bearer.
 
-With separate `--authorize-source-read`, `status` also reads the verified
-current beta source selection/proof through the configured reader. It does not
-select or advance a ref. `beta-deploy-prerequisites-verified` is **not** a beta
-deployment, proof of its completion or an approval to activate. The actual
-beta source deployment remains a separate authorized MCP operation using the
-existing policy, worker bridge/generation and exact source admission.
+With separate `--authorize-source-read`, `status` asks the **upgraded
+management service** for authenticated `auto_coder_beta_source_readback` for
+each configured beta target. This read-only tool uses the same protected
+credential, current-selection reader, original tested-source tag, selected
+workflow run, and required job verification as the production beta deployer.
+The beta-selected source revision is independent of the candidate management
+image revision; their original Actions attempts must not be conflated.
+The operator does not call a separate host-side fixture/proof producer in place
+of the upgraded service. Unavailable actual child evidence, missing credentials,
+a moved selection, or disagreement across beta targets leaves only
+`application-ready` and a precise missing prerequisite. The tool does not
+select a ref, enqueue an operation, start or stop workers, or deploy beta.
+`beta-deploy-prerequisites-verified` is **not** beta deployment or proof of
+completion. The actual beta source deployment remains a separate authorized
+MCP operation using the existing policy, worker bridge/generation and exact
+source admission.
 
 An A→B→C sequence retains each previous plan under its original digest
 directory. A new preparation is rejected while any earlier operation is
