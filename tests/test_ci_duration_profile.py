@@ -167,7 +167,7 @@ def test_repeated_native_execution_never_splices_incomplete_phase_boundaries(tmp
     truncated = [event for event in recorded if event.get("span_id") in include and (event.get("event_kind") == "pytest_phase_start" or (event.get("event_kind") == "pytest_phase_report" and include[event["span_id"]]))]
     damaged_file = tmp_path / "partial-repetitions.jsonl"
     damaged_file.write_text("\n".join(json.dumps(event, sort_keys=True) for event in truncated) + "\n", encoding="utf-8")
-    damaged = _run_ok(context, tmp_path / "partial-repetitions.json", batches=[_batch(tmp_path, [damaged_file], name="partial-repetitions")])
+    damaged = _run_ok(context, tmp_path / "partial-repetitions-profile.json", batches=[_batch(tmp_path, [damaged_file], name="partial-repetitions")])
     assert damaged["status"] == "unavailable"
     assert damaged["nodes"] == {}
     assert "incomplete" in " ".join(damaged["reasons"])
@@ -179,7 +179,7 @@ def test_repeated_native_execution_never_splices_incomplete_phase_boundaries(tmp
     conflict["native_duration_ms"] += 1
     conflicting_file = tmp_path / "conflicting-repetitions.jsonl"
     conflicting_file.write_text("\n".join(json.dumps(event, sort_keys=True) for event in [*recorded, conflict]) + "\n", encoding="utf-8")
-    retained = _run_ok(context, tmp_path / "conflicting-repetitions.json", batches=[_batch(tmp_path, [conflicting_file], name="conflicting-repetitions")])
+    retained = _run_ok(context, tmp_path / "conflicting-repetitions-profile.json", batches=[_batch(tmp_path, [conflicting_file], name="conflicting-repetitions")])
     assert retained["status"] == "partial"
     assert retained["nodes"][nodeid]["sample_count"] == 1
     assert retained["nodes"][nodeid]["samples"][0]["phase_span_ids"] == second_ids
@@ -188,7 +188,7 @@ def test_repeated_native_execution_never_splices_incomplete_phase_boundaries(tmp
     second_only = [event for event in recorded if event.get("span_id") in set(second_ids.values())]
     complete_file = tmp_path / "complete-second.jsonl"
     complete_file.write_text("\n".join(json.dumps(event, sort_keys=True) for event in second_only) + "\n", encoding="utf-8")
-    independently_complete = _run_ok(context, tmp_path / "complete-second.json", batches=[_batch(tmp_path, [complete_file], name="complete-second")])
+    independently_complete = _run_ok(context, tmp_path / "complete-second-profile.json", batches=[_batch(tmp_path, [complete_file], name="complete-second")])
     assert independently_complete["status"] == "available"
     assert independently_complete["nodes"][nodeid]["sample_count"] == 1
     assert independently_complete["nodes"][nodeid]["samples"][0]["phase_span_ids"] == second_ids
