@@ -138,7 +138,13 @@ jobs:
       - *python
       - *uv
       - *dependencies
-      - *build
+      - &build
+        name: Build the checked-out production image
+        timeout-minutes: 25
+        run: |
+          uv run python scripts/prepare_opencode_image.py \
+            --tag "auto-coder:supervisor-${{ github.sha }}" \
+            --log-dir supervisor-integration-logs
       - name: Verify fresh initialization with host evidence
         timeout-minutes: 35
         run: |
