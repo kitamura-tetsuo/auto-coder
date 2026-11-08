@@ -24,7 +24,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
         tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode && \
         chmod +x /usr/local/bin/opencode; \
     else \
-        # Use the same upstream version's glibc platform artifact when GitHub release delivery fails. \
         curl --retry 3 --retry-all-errors --retry-delay 3 --connect-timeout 15 --max-time 90 -fsSL "https://registry.npmjs.org/opencode-linux-${OPENCODE_ARCH}/-/opencode-linux-${OPENCODE_ARCH}-${OPENCODE_VERSION}.tgz" -o /tmp/opencode-npm.tgz && \
         tar -xzf /tmp/opencode-npm.tgz -C /usr/local/bin --strip-components=2 package/bin/opencode && \
         chmod +x /usr/local/bin/opencode; \
