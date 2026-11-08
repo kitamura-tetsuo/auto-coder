@@ -93,6 +93,8 @@ def approved_profile(chain: InstalledChain, old: Generation, new: Generation) ->
     old_watcher, new_watcher = watcher(old, old_watch), watcher(new, new_watch)
     extension_file = new.path("bootstrap") / "management.yaml.source-evidence.json"
     management = new.path("bootstrap") / "management.yaml"
+    # Match the operator CLI's owner-only protection for the real sealed YAML.
+    management.chmod(0o600)
     private(
         extension_file,
         {
