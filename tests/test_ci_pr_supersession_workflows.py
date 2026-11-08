@@ -110,7 +110,7 @@ def test_required_profiles_and_fail_closed_prerequisites_are_unchanged() -> None
     source_steps = {step.get("name", ""): step for step in source_job["steps"]}
     assert "scripts/prepare_management_test_image.py" in source_steps["Prepare Python-only management test fixture"]["run"]
     assert "scripts/browser_preflight.py" in source_steps["Verify real headless Chromium"]["run"]
-    assert "pytest -m 'not opencode_live'" in source_steps["Run complete required source selection"]["run"]
+    assert "-m 'not opencode_live'" in source_steps["Run complete required source selection"]["run"]
 
     runner = (ROOT / "scripts/run_pr_test_shard.py").read_text(encoding="utf-8")
     assert "os.killpg(pgid, signal.SIGTERM)" in runner

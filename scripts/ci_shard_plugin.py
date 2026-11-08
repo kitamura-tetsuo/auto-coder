@@ -25,6 +25,7 @@ class Adapter:
     shard: int | None
     context: ShardContext
     profile: dict[str, object]
+    collected: tuple[str, ...] = ()
     selected: tuple[str, ...] = ()
 
 
@@ -138,6 +139,7 @@ def pytest_collection_finish(session: pytest.Session):  # type: ignore[no-untype
         assert state.plan is not None and state.shard is not None
         if nodeids != state.plan.inventory:
             raise ShardPlanError("complete post-selector inventory differs from immutable plan (added, deleted, reordered or duplicate test)")
+        state.collected = nodeids
         selected = state.plan.shards[state.shard - 1]
         selected_set = set(selected)
         keep = [item for item in session.items if item.nodeid in selected_set]

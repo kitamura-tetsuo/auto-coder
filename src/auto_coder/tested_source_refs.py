@@ -15,6 +15,7 @@ from typing import Literal
 
 from .build_identity import resolve_build_identity
 from .logger_config import get_logger
+from .source_ci_evidence import SourceEvidenceError, verify_current_source_attempt
 from .util.gh_cache import GitDataResponse, GitHubGitDataClient
 
 logger = get_logger(__name__)
@@ -23,6 +24,8 @@ SCHEMA_VERSION = 1
 TEST_PROFILE = "source-required-v1"
 WORKFLOW_PATH = ".github/workflows/test-source-for-runtime.yml"
 REQUIRED_JOBS = frozenset({"Source identity and quality", "Complete source tests with Chromium"})
+# Historical annotations remain bound to their original recorded quality and
+# aggregate jobs. Fixed-four shard names are never used for current qualification.
 SOURCE_SHARD_JOBS = tuple(f"Complete source tests ({group}/4)" for group in range(1, 5))
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -128,39 +131,16 @@ def verify_source_shard_attempt(
     run_id: int,
     run_attempt: int,
     source_sha: str,
+    *,
+    plan_path: Path,
+    artifacts_root: Path,
 ) -> None:
-    """Require all four source shards from one exact, current workflow attempt."""
-    if type(run_id) is not int or run_id <= 0 or type(run_attempt) is not int or run_attempt <= 0:
-        raise TestedSourceError("run_id and run_attempt must be positive integers")
+    """Require one full current-attempt plan, actual Jobs and native receipts."""
     _require_sha(source_sha, "source_sha")
-    run = _object(client.request("GET", f"actions/runs/{run_id}/attempts/{run_attempt}"), "source shard run readback")
-    expected = {
-        "id": run_id,
-        "run_attempt": run_attempt,
-        "head_sha": source_sha,
-        "path": WORKFLOW_PATH,
-    }
-    if any(run.get(key) != value for key, value in expected.items()):
-        raise TestedSourceError("source shards are not from the exact workflow run attempt and source")
-
-    jobs_data = _object(
-        client.request("GET", f"actions/runs/{run_id}/attempts/{run_attempt}/jobs?per_page=100"),
-        "source shard jobs readback",
-    )
-    jobs = jobs_data.get("jobs")
-    if not isinstance(jobs, list) or not jobs or jobs_data.get("total_count") != len(jobs):
-        raise TestedSourceError("source shard job evidence is missing or incomplete")
-    observed: dict[str, int] = {name: 0 for name in SOURCE_SHARD_JOBS}
-    for item in jobs:
-        if not isinstance(item, dict):
-            raise TestedSourceError("source shard job evidence is malformed")
-        name = item.get("name")
-        if name in observed:
-            observed[str(name)] += 1
-            if item.get("run_id") != run_id or item.get("run_attempt") != run_attempt or item.get("status") != "completed" or item.get("conclusion") != "success":
-                raise TestedSourceError(f"source shard did not succeed in the exact attempt: {name}")
-    if any(count != 1 for count in observed.values()):
-        raise TestedSourceError("source shard job evidence is missing or duplicated")
+    try:
+        verify_current_source_attempt(client, run_id, run_attempt, source_sha, plan_path, artifacts_root)
+    except (SourceEvidenceError, ValueError, OSError) as error:
+        raise TestedSourceError(f"current source qualification refused: {error}") from error
 
 
 class TestedSourcePublisher:

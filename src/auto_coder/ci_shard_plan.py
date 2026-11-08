@@ -202,10 +202,10 @@ def semantic_pytest_args(args: tuple[str, ...]) -> tuple[str, ...]:
     """Strip only this adapter's controls and explicitly permitted report flags."""
     result: list[str] = []
     index = 0
-    value_options = {"--ci-collect-output", "--ci-context", "--ci-plan", "--ci-shard", "--junitxml", "--junit-xml", "--color"}
+    value_options = {"--ci-collect-output", "--ci-context", "--ci-plan", "--ci-shard", "--source-ci-receipt", "--junitxml", "--junit-xml", "--color"}
     while index < len(args):
         arg = args[index]
-        if arg == "-p" and index + 1 < len(args) and args[index + 1] == PLUGIN:
+        if arg == "-p" and index + 1 < len(args) and args[index + 1] in (PLUGIN, "scripts.source_ci_receipt_plugin"):
             index += 2
         elif arg in value_options:
             if index + 1 >= len(args):

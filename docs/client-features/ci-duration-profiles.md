@@ -6,6 +6,13 @@ an offline diagnostic consumer, not a pytest plugin, selector, test-success
 authority, workflow change, or GitHub client. It does not write
 `tests/data/pr-test-durations.json` or its reviewed provenance.
 
+The complete source workflow now consumes these snapshots as **optional
+estimates**, with source-profile identity validation, unique run/attempt cache
+keys and explicit manifests for each actual source shard. A missing, corrupt
+or incompatible cache leaves a complete plan with labeled positive fallbacks.
+Timing updates and artifact uploads remain diagnostic only; source success
+still requires exact current-plan, native job and receipt qualification.
+
 ## Inputs and origin adapter
 
 The CLI requires one explicit profile context, any number of `--batch` JSON
