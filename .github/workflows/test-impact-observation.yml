@@ -1,0 +1,77 @@
+name: Test Impact Observation (Advisory)
+
+'on':
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Git SHA, tag or branch to actually check out and measure"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  observe:
+    name: Full Python test-impact diagnostic
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Checkout explicitly requested source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.22"
+
+      - name: Sync locked test dependencies
+        run: uv sync --locked --extra test --dev
+
+      - name: Prepare isolated invocation
+        id: prepare
+        run: |
+          invocation_id="$(uv run python -c 'import uuid; print(uuid.uuid4())')"
+          invocation_dir="${RUNNER_TEMP}/test-impact/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/${invocation_id}"
+          mkdir -p "$invocation_dir"
+          echo "invocation_id=$invocation_id" >> "$GITHUB_OUTPUT"
+          echo "invocation_dir=$invocation_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Observe the entire ordinary PR pytest profile
+        id: native
+        timeout-minutes: 130
+        env:
+          IMPACT_DIRECTORY: ${{ steps.prepare.outputs.invocation_dir }}
+          REQUESTED_SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          uv run python scripts/run_test_impact_observation.py \
+            --directory "$IMPACT_DIRECTORY" \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-ref "$REQUESTED_SOURCE_REF"
+
+      - name: Normalize independent diagnostic result
+        if: always() && steps.prepare.outputs.invocation_dir != ''
+        env:
+          IMPACT_DIRECTORY: ${{ steps.prepare.outputs.invocation_dir }}
+        run: |
+          uv run python scripts/summarize_test_impact.py \
+            --directory "$IMPACT_DIRECTORY" \
+            --checkout "$GITHUB_WORKSPACE" \
+            --output "$IMPACT_DIRECTORY/observation.json"
+
+      - name: Upload partial or finalized invocation evidence
+        if: always() && steps.prepare.outputs.invocation_dir != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-impact-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.prepare.outputs.invocation_id }}
+          path: ${{ steps.prepare.outputs.invocation_dir }}/
+          if-no-files-found: warn
+          retention-days: 14
