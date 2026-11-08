@@ -64,9 +64,7 @@ class FakeGitHub:
         return GitDataResponse(200, {"id": RUN, "run_attempt": attempt, "path": ".github/workflows/supervisor-integration-tests.yml", "head_sha": HEAD_SHA})
 
 
-def _plan(
-    profile: str, base: Path, nodes_override: tuple[str, ...] | None = None
-) -> VerifiedPlan:
+def _plan(profile: str, base: Path, nodes_override: tuple[str, ...] | None = None) -> VerifiedPlan:
     nodes = (
         (*FRESH_REQUIRED, "tests/test_management_fresh_host_integration.py::test_real_prior_supervisor_binds_instance_and_published_port")
         if profile == "fresh-host"
@@ -190,15 +188,10 @@ def _evaluate(valid_native_evidence):
 
 
 @pytest.mark.parametrize("case", ("allowed", "wrong-reason", "sibling", "prefix"))
-def test_parameterized_management_skips_cross_receipt_and_aggregate(
-    valid_native_evidence, monkeypatch: pytest.MonkeyPatch, case: str
-) -> None:
+def test_parameterized_management_skips_cross_receipt_and_aggregate(valid_native_evidence, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
     client, plans, artifacts = valid_native_evidence
     profile = "management-self-update"
-    base = (
-        "tests/test_management_fresh_host_integration.py::"
-        "test_real_prior_supervisor_binds_instance_and_published_port"
-    )
+    base = "tests/test_management_fresh_host_integration.py::" "test_real_prior_supervisor_binds_instance_and_published_port"
     variants = (f"{base}[False]", f"{base}[True]")
     unexpected = {
         "sibling": f"{base}_sibling[False]",
@@ -210,19 +203,13 @@ def test_parameterized_management_skips_cross_receipt_and_aggregate(
         *((unexpected,) if unexpected else ()),
     )
     plan = _plan(profile, plans, nodes_override=nodes)
-    artifact = (
-        artifacts / f"supervisor-integration-management-self-update-shard-1-{RUN}-1"
-    )
+    artifact = artifacts / f"supervisor-integration-management-self-update-shard-1-{RUN}-1"
     inventory_file = artifact / f"{profile}-1.json"
     report = _inventory(profile, 1, plan.inventory, plan, 1, 11)
     skipped = (*variants, *((unexpected,) if unexpected else ()))
     for node in skipped:
         report["outcomes"][node] = "skipped"
-        report["skip_reasons"][node] = (
-            "Skipped: an unrelated reason"
-            if case == "wrong-reason" and node == variants[0]
-            else "Skipped: production-profile image is not available locally"
-        )
+        report["skip_reasons"][node] = "Skipped: an unrelated reason" if case == "wrong-reason" and node == variants[0] else "Skipped: production-profile image is not available locally"
     inventory_file.write_text(json.dumps(report), encoding="utf-8")
     receipt_file = artifact / "receipt.json"
     receipt_file.unlink()
@@ -240,9 +227,7 @@ def test_parameterized_management_skips_cross_receipt_and_aggregate(
     }
 
     if case != "allowed":
-        with pytest.raises(
-            NativeEvidenceError, match="unauthorized or unproven native management skip"
-        ):
+        with pytest.raises(NativeEvidenceError, match="unauthorized or unproven native management skip"):
             capture(
                 cast(GitHubGitDataClient, client),
                 profile=profile,
@@ -266,47 +251,30 @@ def test_parameterized_management_skips_cross_receipt_and_aggregate(
     )
     selected, _metrics = _evaluate(valid_native_evidence)
     management = next(item for item in selected if item.profile == profile)
-    assert all(
-        management.inventories[0]["outcomes"][node] == "skipped" for node in variants
-    )
+    assert all(management.inventories[0]["outcomes"][node] == "skipped" for node in variants)
 
     # Even a valid receipt digest cannot authorize a changed skip reason.
     report["skip_reasons"][variants[0]] = "Skipped: another unapproved reason"
     inventory_file.write_text(json.dumps(report), encoding="utf-8")
     receipt = json.loads(receipt_file.read_text(encoding="utf-8"))
-    receipt["inventories"][inventory_file.name] = (
-        "sha256:" + hashlib.sha256(inventory_file.read_bytes()).hexdigest()
-    )
+    receipt["inventories"][inventory_file.name] = "sha256:" + hashlib.sha256(inventory_file.read_bytes()).hexdigest()
     receipt_file.write_text(json.dumps(receipt), encoding="utf-8")
-    with pytest.raises(
-        NativeEvidenceError, match="unauthorized or unproven native management skip"
-    ):
+    with pytest.raises(NativeEvidenceError, match="unauthorized or unproven native management skip"):
         _evaluate(valid_native_evidence)
 
 
-@pytest.mark.parametrize(
-    ("profile", "runner"), (("fresh-host", 20), ("isolated-containers", 21))
-)
-def test_privileged_profiles_reject_management_skip_reason(
-    valid_native_evidence, monkeypatch: pytest.MonkeyPatch, profile: str, runner: int
-) -> None:
+@pytest.mark.parametrize(("profile", "runner"), (("fresh-host", 20), ("isolated-containers", 21)))
+def test_privileged_profiles_reject_management_skip_reason(valid_native_evidence, monkeypatch: pytest.MonkeyPatch, profile: str, runner: int) -> None:
     client, plans, artifacts = valid_native_evidence
     plan_file = plans / profile / "plan.json"
     plan, _raw = read_plan(plan_file)
     artifact = artifacts / f"supervisor-integration-{profile}-shard-1-{RUN}-2"
     inventory_file = artifact / f"{profile}-1.json"
     report = _inventory(profile, 1, plan.inventory, plan, 2, runner)
-    node = (
-        "tests/test_management_fresh_host_integration.py::"
-        "test_real_prior_supervisor_binds_instance_and_published_port"
-        if profile == "fresh-host"
-        else plan.inventory[0]
-    )
+    node = "tests/test_management_fresh_host_integration.py::" "test_real_prior_supervisor_binds_instance_and_published_port" if profile == "fresh-host" else plan.inventory[0]
     assert node in plan.inventory
     report["outcomes"][node] = "skipped"
-    report["skip_reasons"][node] = (
-        "Skipped: production-profile image is not available locally"
-    )
+    report["skip_reasons"][node] = "Skipped: production-profile image is not available locally"
     inventory_file.write_text(json.dumps(report), encoding="utf-8")
     receipt_file = artifact / "receipt.json"
     receipt_file.unlink()
@@ -315,9 +283,7 @@ def test_privileged_profiles_reject_management_skip_reason(
         lambda *_args, **_kwargs: SHA,
     )
 
-    with pytest.raises(
-        NativeEvidenceError, match="mandatory privileged/container test was skipped"
-    ):
+    with pytest.raises(NativeEvidenceError, match="mandatory privileged/container test was skipped"):
         capture(
             cast(GitHubGitDataClient, client),
             profile=profile,
