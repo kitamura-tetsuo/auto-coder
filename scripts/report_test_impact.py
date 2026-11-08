@@ -7,6 +7,7 @@ before inspecting current native outcomes, and no edge is proof of independence.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -284,6 +285,52 @@ def _is_test_file(path: str) -> bool:
     return len(parts) >= 2 and parts[0] == "tests" and parts[-1].startswith("test_") and parts[-1].endswith(".py")
 
 
+
+def _ordinary_test_mark(decorator: ast.expr) -> bool:
+    """Recognize marks on local tests without assuming arbitrary decorators are local."""
+    while isinstance(decorator, ast.Call):
+        decorator = decorator.func
+    return (
+        isinstance(decorator, ast.Attribute)
+        and isinstance(decorator.value, ast.Attribute)
+        and isinstance(decorator.value.value, ast.Name)
+        and decorator.value.value.id == "pytest"
+        and decorator.value.attr == "mark"
+    )
+
+
+def _shared_test_module_boundary(repository_dir: Path, baseline_sha: str, change: PathChange) -> bool:
+    """Fail closed when a changed test module can supply behavior to other tests.
+
+    The current HEAD has already been proven equal to the evaluated checkout by
+    _exact_interval. Inspect both Git revisions so removing an exported fixture
+    or helper does not silently narrow the historical candidate.
+    """
+    snapshots: list[list[str]] = []
+    for revision, path in ((baseline_sha, change.old_path or change.path), ("HEAD", change.path)):
+        if (revision == baseline_sha and change.status == "A") or (revision == "HEAD" and change.status == "D"):
+            continue
+        try:
+            module = ast.parse(_git(repository_dir, "show", f"{revision}:{path}").decode("utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            return True
+        imports: list[str] = []
+        for statement in module.body:
+            if isinstance(statement, (ast.Import, ast.ImportFrom)):
+                imports.append(ast.dump(statement, include_attributes=False))
+            elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if not statement.name.startswith("test_") or any(not _ordinary_test_mark(mark) for mark in statement.decorator_list):
+                    return True
+            elif not (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant) and isinstance(statement.value.value, str)):
+                # Top-level fixtures/helpers, aliases, shared state, class
+                # definitions, executable statements and unknown syntax are
+                # not safely scoped to this test file.
+                return True
+        snapshots.append(imports)
+    # Changed imports can also change an exported binding used elsewhere.
+    return (len(snapshots) == 2 and snapshots[0] != snapshots[1]) or (len(snapshots) == 1 and bool(snapshots[0]))
+
+
 def _selection(
     changes: list[PathChange],
     baseline: dict[str, object],
@@ -325,6 +372,10 @@ def _selection(
                 continue
             candidate.update(source_nodes[path] & current_set)
         elif _is_test_file(path) and (change.old_path is None or _is_test_file(change.old_path)) and (change.status in {"A", "M", "D"} or change.status.startswith(("R", "C"))):
+            if _shared_test_module_boundary(repository_dir, before_sha, change):
+                reasons.append(f"shared_fixture_or_helper_test_module:{change.status}:{path}")
+                unmeasured_changes.add(path)
+                continue
             candidate.update(node for node in current_ids if node.split("::", 1)[0] == path)
         else:
             reasons.append(f"unmeasured_or_global_change:{change.status}:{change.old_path or ''}:{path}")

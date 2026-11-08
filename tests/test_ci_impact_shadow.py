@@ -148,6 +148,67 @@ def test_production_cli_freezes_only_old_edges_and_finds_real_omitted_failure(tm
     assert json.loads((artifacts / "bad-report.json").read_text(encoding="utf-8"))["comparison_status"] == "unavailable"
 
 
+
+@pytest.mark.parametrize(("fixture_value", "expected_exit"), [(1, 0), (2, 1)])
+def test_changed_test_module_exporting_shared_fixture_forces_full(
+    tmp_path: Path, fixture_value: int, expected_exit: int
+) -> None:
+    checkout = _checkout(tmp_path, "def test_control():\n    assert True\n")
+    fixture_file = "tests/test_fixture.py"
+    fixture_module = (
+        "import pytest\n"
+        "@pytest.fixture\n"
+        "def shared():\n    return {value}\n"
+        "def test_own(shared):\n    assert shared > 0\n"
+    )
+    _commit(checkout, fixture_file, fixture_module.format(value=1))
+    _commit(
+        checkout,
+        "tests/test_consumer.py",
+        "from tests.test_fixture import shared\n"
+        "def test_consumer(shared):\n    assert shared == 1\n",
+    )
+    baseline = _observe(checkout, tmp_path, 511)
+    assert baseline["native_session"]["exit_code"] == 0
+    _commit(checkout, fixture_file, fixture_module.format(value=fixture_value) + "# descendant fixture change\n")
+    current = _observe(checkout, tmp_path, 512, expected_exit=expected_exit)
+    assert current["native_session"]["exit_code"] == expected_exit
+    assert current["native_session"]["finalized"] is True
+    assert len(baseline["nodes"]) == len(current["nodes"]) == 3
+
+    report = _report(baseline, current, checkout)
+    current_ids = {node["nodeid"] for node in current["nodes"]}
+    assert report["comparison_status"] == "full", report["reasons"]
+    assert report["selection_mode"] == "FULL"
+    assert set(report["candidate_nodes"]) == current_ids
+    assert report["omitted_nodes"] == []
+    assert report["validation_status"] == "not_validated"
+    assert report["changed_paths"] == [{"status": "M", "path": fixture_file, "old_path": None}]
+    assert any(reason.startswith("shared_fixture_or_helper_test_module:") for reason in report["reasons"])
+    assert fixture_file in report["unmeasured_changed_paths"]
+    assert any(nodeid.endswith("test_consumer") for nodeid in current_ids)
+    if expected_exit == 1:
+        consumer = next(node for node in current["nodes"] if node["nodeid"].endswith("test_consumer"))
+        assert consumer["phases"]["call"]["outcome"] == "failed"
+
+    output_dir = tmp_path / "shared-fixture-cli"
+    output_dir.mkdir()
+    baseline_path, current_path = output_dir / "baseline.json", output_dir / "current.json"
+    baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
+    current_path.write_text(json.dumps(current), encoding="utf-8")
+    command = [
+        sys.executable, "-m", "scripts.report_test_impact",
+        "--baseline", str(baseline_path), "--current", str(current_path),
+        "--baseline-run-id", "511", "--baseline-run-attempt", "3",
+        "--repository", "owner/repo", "--repository-dir", str(checkout),
+        "--output", str(output_dir / "report.json"),
+        "--summary", str(output_dir / "summary.md"),
+    ]
+    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads((output_dir / "report.json").read_text(encoding="utf-8")) == report
+
+
 def test_empty_verified_diff_is_distinct_from_missing_evidence(tmp_path: Path) -> None:
     checkout = _fixture(tmp_path)
     baseline = _observe(checkout, tmp_path, 511)

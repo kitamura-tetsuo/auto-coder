@@ -79,6 +79,11 @@ Only these changes permit a historical candidate:
   and any surviving baseline node with unusable/no phase coverage mapping.
   Parametrization IDs remain intact; baseline nodes removed from collection are
   reported separately, not silently retained as executable current tests.
+  If either Git revision of a changed test module exposes a fixture, helper,
+  top-level shared declaration, or potentially nonlocal decorator, or its
+  top-level imports change, conservatively force `FULL` with a shared-module
+  reason. This includes fixtures imported by tests in other modules. Unreadable
+  Git objects make the comparison unavailable rather than suggesting isolation.
 
 The comparison verifies the actual checked-out baseline and current commit/tree
 objects and ancestor relation, and parses the **whole** NUL-delimited Git
