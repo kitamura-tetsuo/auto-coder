@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import cast
 
-from supervisor_ci_profiles import MANAGEMENT_SKIPS, PROFILES, REPOSITORY, check_plan
+from supervisor_ci_profiles import PROFILES, REPOSITORY, check_plan
 from supervisor_native_evidence import (
     RECEIPT_SCHEMA,
     EvidenceSelection,
@@ -140,10 +140,8 @@ def _select(
         _inventory_ok(report, plan, profile, shard, sha, run_id, producer_attempt)
         if report.get("event_sha") != event_sha or report.get("job_key") != receipt.get("job_key") or report.get("runner_name") != receipt.get("runner_name"):
             raise NativeEvidenceError(f"{name}: report and producing job identity disagree")
-        if profile == "management-self-update":
-            outcomes = _object(report.get("outcomes"), "management outcomes")
-            if any(node not in MANAGEMENT_SKIPS for node, outcome in outcomes.items() if outcome == "skipped"):
-                raise NativeEvidenceError("management skipped a case outside the five unchanged duplicate exceptions")
+        # _inventory_ok enforces the five management-only skip reasons for exact
+        # functions and their parameterizations, and rejects all other skips.
         inventories.append(report)
     return EvidenceSelection(profile, shard, job, producer_attempt, producer, folder, receipt, tuple(inventories))
 

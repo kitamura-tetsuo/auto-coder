@@ -64,8 +64,10 @@ class FakeGitHub:
         return GitDataResponse(200, {"id": RUN, "run_attempt": attempt, "path": ".github/workflows/supervisor-integration-tests.yml", "head_sha": HEAD_SHA})
 
 
-def _plan(profile: str, base: Path) -> VerifiedPlan:
-    nodes = (
+def _plan(
+    profile: str, base: Path, nodes_override: tuple[str, ...] | None = None
+) -> VerifiedPlan:
+    nodes = nodes_override if nodes_override is not None else (
         (*FRESH_REQUIRED, "tests/test_management_fresh_host_integration.py::test_real_prior_supervisor_binds_instance_and_published_port")
         if profile == "fresh-host"
         else (
@@ -92,7 +94,7 @@ def _plan(profile: str, base: Path) -> VerifiedPlan:
     profile_identity = {"repository": REPOSITORY, "profile_id": profile, "configuration_digest": "sha256:" + "1" * 64, "python_major_minor": "3.12"}
     result = build_plan(context, profile_identity, nodes, None)
     directory = base / profile
-    directory.mkdir(parents=True)
+    directory.mkdir(parents=True, exist_ok=True)
     (directory / "context.json").write_text(json.dumps(context.json()))
     (directory / "plan.json").write_bytes(_canonical(result))
     return VerifiedPlan(cast(str, result["digest_sha256"]), context, profile_identity, nodes, (nodes,))
@@ -183,6 +185,154 @@ def valid_native_evidence(tmp_path: Path):
 def _evaluate(valid_native_evidence):
     client, plans, artifacts = valid_native_evidence
     return evaluate(cast(GitHubGitDataClient, client), {name: {"result": "success"} for name in REQUIRED_GROUPS}, plans, artifacts, SHA, SHA, RUN, 2)
+
+
+
+@pytest.mark.parametrize("case", ("allowed", "wrong-reason", "sibling", "prefix"))
+def test_parameterized_management_skips_cross_receipt_and_aggregate(
+    valid_native_evidence, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    client, plans, artifacts = valid_native_evidence
+    profile = "management-self-update"
+    base = (
+        "tests/test_management_fresh_host_integration.py::"
+        "test_real_prior_supervisor_binds_instance_and_published_port"
+    )
+    variants = (f"{base}[False]", f"{base}[True]")
+    unexpected = {
+        "sibling": f"{base}_sibling[False]",
+        "prefix": base.removesuffix("_port"),
+    }.get(case)
+    nodes = (
+        "tests/test_management_self_update_integration.py::test_case",
+        *variants,
+        *((unexpected,) if unexpected else ()),
+    )
+    plan = _plan(profile, plans, nodes_override=nodes)
+    artifact = (
+        artifacts / f"supervisor-integration-management-self-update-shard-1-{RUN}-1"
+    )
+    inventory_file = artifact / f"{profile}-1.json"
+    report = _inventory(profile, 1, plan.inventory, plan, 1, 11)
+    skipped = (*variants, *((unexpected,) if unexpected else ()))
+    for node in skipped:
+        report["outcomes"][node] = "skipped"
+        report["skip_reasons"][node] = (
+            "Skipped: an unrelated reason"
+            if case == "wrong-reason" and node == variants[0]
+            else "Skipped: production-profile image is not available locally"
+        )
+    inventory_file.write_text(json.dumps(report), encoding="utf-8")
+    receipt_file = artifact / "receipt.json"
+    receipt_file.unlink()
+
+    monkeypatch.setattr(
+        "supervisor_native_evidence.subprocess.check_output",
+        lambda *_args, **_kwargs: SHA,
+    )
+    env = {
+        "GITHUB_RUN_ID": str(RUN),
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_SHA": SHA,
+        "GITHUB_JOB": profile,
+        "RUNNER_NAME": "GitHub Actions 11",
+    }
+
+    if case != "allowed":
+        with pytest.raises(
+            NativeEvidenceError, match="unauthorized or unproven native management skip"
+        ):
+            capture(
+                cast(GitHubGitDataClient, client),
+                profile=profile,
+                shard=1,
+                plan_file=plans / profile / "plan.json",
+                inventories=(inventory_file,),
+                destination=receipt_file,
+                environ=env,
+            )
+        assert not receipt_file.exists()
+        return
+
+    capture(
+        cast(GitHubGitDataClient, client),
+        profile=profile,
+        shard=1,
+        plan_file=plans / profile / "plan.json",
+        inventories=(inventory_file,),
+        destination=receipt_file,
+        environ=env,
+    )
+    selected, _metrics = _evaluate(valid_native_evidence)
+    management = next(item for item in selected if item.profile == profile)
+    assert all(
+        management.inventories[0]["outcomes"][node] == "skipped" for node in variants
+    )
+
+    # Even a valid receipt digest cannot authorize a changed skip reason.
+    report["skip_reasons"][variants[0]] = "Skipped: another unapproved reason"
+    inventory_file.write_text(json.dumps(report), encoding="utf-8")
+    receipt = json.loads(receipt_file.read_text(encoding="utf-8"))
+    receipt["inventories"][inventory_file.name] = (
+        "sha256:" + hashlib.sha256(inventory_file.read_bytes()).hexdigest()
+    )
+    receipt_file.write_text(json.dumps(receipt), encoding="utf-8")
+    with pytest.raises(
+        NativeEvidenceError, match="unauthorized or unproven native management skip"
+    ):
+        _evaluate(valid_native_evidence)
+
+
+@pytest.mark.parametrize(
+    ("profile", "runner"), (("fresh-host", 20), ("isolated-containers", 21))
+)
+def test_privileged_profiles_reject_management_skip_reason(
+    valid_native_evidence, monkeypatch: pytest.MonkeyPatch, profile: str, runner: int
+) -> None:
+    client, plans, artifacts = valid_native_evidence
+    plan_file = plans / profile / "plan.json"
+    plan, _raw = read_plan(plan_file)
+    artifact = artifacts / f"supervisor-integration-{profile}-shard-1-{RUN}-2"
+    inventory_file = artifact / f"{profile}-1.json"
+    report = _inventory(profile, 1, plan.inventory, plan, 2, runner)
+    node = (
+        "tests/test_management_fresh_host_integration.py::"
+        "test_real_prior_supervisor_binds_instance_and_published_port"
+        if profile == "fresh-host"
+        else plan.inventory[0]
+    )
+    assert node in plan.inventory
+    report["outcomes"][node] = "skipped"
+    report["skip_reasons"][node] = (
+        "Skipped: production-profile image is not available locally"
+    )
+    inventory_file.write_text(json.dumps(report), encoding="utf-8")
+    receipt_file = artifact / "receipt.json"
+    receipt_file.unlink()
+    monkeypatch.setattr(
+        "supervisor_native_evidence.subprocess.check_output",
+        lambda *_args, **_kwargs: SHA,
+    )
+
+    with pytest.raises(
+        NativeEvidenceError, match="mandatory privileged/container test was skipped"
+    ):
+        capture(
+            cast(GitHubGitDataClient, client),
+            profile=profile,
+            shard=1,
+            plan_file=plan_file,
+            inventories=(inventory_file,),
+            destination=receipt_file,
+            environ={
+                "GITHUB_RUN_ID": str(RUN),
+                "GITHUB_RUN_ATTEMPT": "2",
+                "GITHUB_SHA": SHA,
+                "GITHUB_JOB": profile,
+                "RUNNER_NAME": f"GitHub Actions {runner}",
+            },
+        )
+    assert not receipt_file.exists()
 
 
 def test_native_rerun_alias_uses_original_successful_job_receipt(valid_native_evidence) -> None:
