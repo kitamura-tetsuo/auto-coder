@@ -353,3 +353,106 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
                         os.kill(pid, signal.SIGTERM)
             except (OSError, ValueError):
                 pass
+
+
+@pytest.mark.timeout(900)
+@pytest.mark.parametrize("failure_point", ("lost-stop", "lost-start", "postlaunch-proxy-failed"))
+def test_disposable_operator_failure_fences_real_docker(installed_chain: InstalledChain, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], failure_point: str) -> None:
+    """Dispatch real Docker effects, then lose an acknowledgement or the new proxy."""
+    chain = installed_chain
+    first = chain.prepare("manager-a")
+    chain.docker("start", first.container)
+
+    def first_running() -> bool:
+        try:
+            return chain.child(first)["phase"] == "running"
+        except (sqlite3.Error, KeyError, TypeError):
+            return False
+
+    wait_for(first_running, "failure fixture installed child")
+    chain.authorize()
+    chain.ready(first, fresh=False)
+    chain.ensure_proxy(first)
+    baseline = chain.workers()
+    chain.seed(first)
+    successor = chain.prepare("manager-b", first)
+    profile, _, _ = approved_profile(chain, first, successor)
+    auth_file = tmp_path / "operator-auth-client"
+    auth_file.write_text(chain.token)
+    auth_file.chmod(0o600)
+    operator = tmp_path / "host-upgrades"
+    operator.mkdir(mode=0o700)
+    monkeypatch.setattr(upgrade, "OPERATOR_ROOT", operator)
+    publisher = SourceProofPublisher(GitHubGitDataClient("", chain.external["repository"], api_url=chain.external["url"]), chain.external["repository"])
+    monkeypatch.setattr(upgrade, "_source_authority", lambda _token: publisher)
+
+    def fixture_source_proof(authority: SourceProofPublisher, source_sha: str) -> tuple[str, int, int]:
+        proof = authority.read(source_sha)
+        assert proof is not None
+        authority.verify_run(proof.record, recorded_attempt=True)
+        return proof.tag_object_oid, proof.record.run_id, proof.record.run_attempt
+
+    monkeypatch.setattr(upgrade, "_source_proof", fixture_source_proof)
+    monkeypatch.setattr(upgrade, "_candidate_image_source", lambda _container, _image: chain.current_sha)
+    monkeypatch.setattr(upgrade, "_installed_candidate_preflight", installed_fixture_preflight)
+    actual_docker = upgrade._docker
+    effects: list[tuple[str, ...]] = []
+
+    def fault_after_real_docker(*args: str, timeout: float = 30) -> str:
+        if args and args[0] in {"kill", "start"}:
+            effects.append(args)
+        answer = actual_docker(*args, timeout=timeout)
+        if failure_point == "lost-stop" and args == ("kill", "--signal=SIGTERM", first.container):
+            raise subprocess.TimeoutExpired("docker", timeout)
+        if failure_point == "lost-start" and args == ("start", successor.container):
+            raise subprocess.TimeoutExpired("docker", timeout)
+        if failure_point == "postlaunch-proxy-failed" and args == ("start", successor.proxy):
+            # The physical replacement proxy dies before the watcher proves it.
+            actual_docker("kill", "--signal=SIGTERM", successor.proxy)
+        return answer
+
+    monkeypatch.setattr(upgrade, "_docker", fault_after_real_docker)
+
+    def call_cli(*args: str) -> tuple[int, dict[str, object]]:
+        monkeypatch.setattr(sys, "argv", ["bootstrap_upgrade", *args])
+        code = upgrade.main()
+        output = [line for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
+        assert output, "operator command must retain a typed failure"
+        return code, json.loads(output[-1])
+
+    try:
+        code, prepared = call_cli("prepare", "--profile", str(profile), "--auth-token-file", str(auth_file), "--authorize-source-read")
+        assert code == 0 and prepared["stage"] == "prepared"
+        plan_id = prepared["plan_sha256"]
+        assert isinstance(plan_id, str)
+        prior_snapshot = chain.snapshot(first)
+        code, failed = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+        assert code == 2 and failed["stage"] in {"needs-attention", "prerequisite-blocked"}
+        persisted = upgrade._operation(operator, plan_id)
+        assert persisted.stage == "needs-attention"
+        if failure_point == "lost-stop":
+            assert persisted.completed == ("stop-proxy",)
+            assert persisted.effect == "stop-management" and persisted.effect_target == first.container
+            assert len(effects) == 2
+        elif failure_point == "lost-start":
+            assert persisted.completed == ("stop-proxy", "stop-management")
+            assert persisted.effect == "start-management" and persisted.effect_target == successor.container
+            assert len(effects) == 3
+        else:
+            assert persisted.completed == ("stop-proxy", "stop-management", "start-management", "start-proxy")
+            assert persisted.effect == "" and len(effects) == 4
+            assert chain.docker("inspect", "--format", "{{.State.Running}}", successor.proxy) == "false"
+        assert chain.snapshot(first) == prior_snapshot and chain.workers() == baseline
+        code, reported = call_cli("status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file))
+        assert code == 2 and reported["stage"] == "needs-attention"
+        assert reported["uncertain_effect"] == persisted.effect
+        if persisted.effect:
+            assert reported["uncertain_target"] == persisted.effect_target
+        before_retry = tuple(effects)
+        code, replay = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+        assert code == 2 and replay["stage"] == "needs-attention"
+        assert tuple(effects) == before_retry
+        assert upgrade._operation(operator, plan_id) == persisted
+        assert chain.workers() == baseline
+    finally:
+        chain.close()
