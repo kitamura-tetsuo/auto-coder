@@ -19,8 +19,8 @@ import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
-from threading import Event
 from pathlib import Path
+from threading import Event
 
 import pytest
 
