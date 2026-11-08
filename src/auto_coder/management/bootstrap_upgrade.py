@@ -15,7 +15,6 @@ import io
 import json
 import os
 import re
-import socket
 import sqlite3
 import stat
 import subprocess
@@ -23,7 +22,6 @@ import sys
 import tarfile
 import time
 import urllib.error
-import urllib.request
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -522,9 +520,20 @@ def _oauth_snapshot(root: Path) -> tuple[str, dict[str, str]]:
 def _mcp_call(port: int, token: str, tool: str, arguments: dict[str, object]) -> dict[str, object]:
     body = _canonical({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": arguments}})
     headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream", "Authorization": "Bearer " + token, "Host": "127.0.0.1:8080"}
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(urllib.request.Request(f"http://127.0.0.1:{port}/mcp", data=body, headers=headers), timeout=5) as response:
-        data = json.load(response)
+    # A fixed direct loopback connection must never follow an HTTP redirect
+    # that could forward the separately supplied operator bearer elsewhere.
+    client = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        client.request("POST", "/mcp", body=body, headers=headers)
+        response = client.getresponse()
+        if response.status != 200 or "application/json" not in (response.getheader("Content-Type") or ""):
+            raise ValueError("authenticated loopback response is unavailable")
+        encoded = response.read(65537)
+        if len(encoded) > 65536:
+            raise ValueError("authenticated loopback response exceeds the fixed limit")
+        data = json.loads(encoded)
+    finally:
+        client.close()
     result = data.get("result") if isinstance(data, dict) else None
     content = result.get("structuredContent") if isinstance(result, dict) else None
     if not isinstance(content, dict):

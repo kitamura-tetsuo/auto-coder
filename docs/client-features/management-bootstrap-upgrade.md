@@ -125,6 +125,11 @@ image to get past a refusal. The supported next action in uncertain cases is
 operator inspection of the original host evidence; recovery that uses a new
 instance/plan requires separate explicit review. A prior-generation restart
 could bypass successor admissions and is **not** an automatic rollback.
+The command prints an operator result to standard output and records the same
+non-secret report and Loguru diagnostics in the mode-0600
+`/var/lib/auto-coder/management-upgrades/upgrade-audit.log`. Authenticated
+MCP readbacks use a fixed direct loopback connection and never follow a
+redirect with the bearer credential.
 
 `status` distinguishes completed effect dispatch from live application
 readiness. The latter requires the original fresh `succeeded` outcome

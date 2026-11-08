@@ -8,7 +8,9 @@ import os
 import subprocess
 import sys
 from dataclasses import asdict
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 
 import pytest
 
@@ -186,6 +188,33 @@ def test_second_live_operator_cannot_acquire_the_same_lane(tmp_path: Path) -> No
                 pytest.fail("overlapping upgrades acquired the same lane")
 
 
+def test_independent_operator_process_retains_the_live_barrier(tmp_path: Path) -> None:
+    root = operator_root(tmp_path)
+    script = """import sys
+from pathlib import Path
+from auto_coder.management.bootstrap_upgrade import _exclusive
+with _exclusive(Path(sys.argv[1])):
+    print('LOCK_HELD', flush=True)
+    sys.stdin.readline()
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(root)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert process.stdout is not None
+        assert process.stdout.readline().strip() == "LOCK_HELD"
+        with pytest.raises(upgrade.UpgradeUnavailable, match="live operator"):
+            with upgrade._exclusive(root):
+                pytest.fail("two different host operators simultaneously acquired the effect lane")
+    finally:
+        process.communicate(input="\n", timeout=10)
+    assert process.returncode == 0
+
+
 def test_candidate_image_must_retain_both_exact_source_observations(monkeypatch: pytest.MonkeyPatch) -> None:
     import io
     import tarfile
@@ -298,6 +327,80 @@ def test_operator_cli_forwards_exact_approved_plan_and_does_not_deploy_beta(tmp_
     assert upgrade.main() == 0
     assert json.loads(capsys.readouterr().out)["operation_id"] == sha
     assert called == [(root, sha, token, True)]
+
+
+def test_authenticated_loopback_refuses_redirect_without_reusing_bearer() -> None:
+    observed = []
+
+    class Receiver(BaseHTTPRequestHandler):
+        def log_message(self, *args: object) -> None:
+            pass
+
+        def do_POST(self) -> None:
+            observed.append(self.headers.get("Authorization"))
+            self.send_response(200)
+            self.end_headers()
+
+    receiver = ThreadingHTTPServer(("127.0.0.1", 0), Receiver)
+
+    class Redirect(BaseHTTPRequestHandler):
+        def log_message(self, *args: object) -> None:
+            pass
+
+        def do_POST(self) -> None:
+            self.send_response(307)
+            self.send_header("Location", f"http://127.0.0.1:{receiver.server_port}/other")
+            self.end_headers()
+
+    redirect = ThreadingHTTPServer(("127.0.0.1", 0), Redirect)
+    threads = [Thread(target=server.serve_forever, daemon=True) for server in (receiver, redirect)]
+    for thread in threads:
+        thread.start()
+    try:
+        with pytest.raises(ValueError, match="loopback response is unavailable"):
+            upgrade._mcp_call(redirect.server_port, "disposable-test-bearer", "auto_coder_whoami", {})
+        assert observed == []
+    finally:
+        for server in (receiver, redirect):
+            server.shutdown()
+            server.server_close()
+        for thread in threads:
+            thread.join(timeout=5)
+
+
+def test_authenticated_loopback_reads_only_a_bounded_json_tool_response() -> None:
+    received = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: object) -> None:
+            pass
+
+        def do_POST(self) -> None:
+            received.append((self.path, self.headers.get("Authorization"), json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
+            content = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"structuredContent": {"uid": "operator", "scopes": ["read"]}}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        result = upgrade._mcp_call(server.server_port, "disposable-test-bearer", "auto_coder_whoami", {})
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
+    assert result == {"uid": "operator", "scopes": ["read"]}
+    assert received == [
+        (
+            "/mcp",
+            "Bearer disposable-test-bearer",
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "auto_coder_whoami", "arguments": {}}},
+        )
+    ]
 
 
 def test_watcher_must_not_start_if_real_proxy_namespace_is_unproven(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
