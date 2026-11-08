@@ -20,10 +20,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
         arm64) OPENCODE_ARCH="arm64"; CODEX_ARCH="aarch64" ;; \
         *) echo "Unsupported architecture for OpenCode: $ARCH" >&2; exit 1 ;; \
     esac && \
-    curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${OPENCODE_ARCH}.tar.gz" -o /tmp/opencode.tar.gz && \
+    curl --retry 5 --retry-delay 3 --retry-max-time 180 -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${OPENCODE_ARCH}.tar.gz" -o /tmp/opencode.tar.gz && \
     tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode && \
     chmod +x /usr/local/bin/opencode && \
-    curl -fsSL "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-${CODEX_ARCH}-unknown-linux-musl.tar.gz" -o /tmp/codex.tar.gz && \
+    curl --retry 5 --retry-delay 3 --retry-max-time 180 -fsSL "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-${CODEX_ARCH}-unknown-linux-musl.tar.gz" -o /tmp/codex.tar.gz && \
     tar -xzf /tmp/codex.tar.gz -C /tmp && \
     mv "/tmp/codex-${CODEX_ARCH}-unknown-linux-musl" /usr/local/bin/codex && \
     chmod +x /usr/local/bin/codex && \
