@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 from collections import Counter
 from pathlib import Path
 
 import pytest
+import yaml
 
 from auto_coder.ci_shard_plan import ShardContext, read_plan
 from auto_coder.source_ci_evidence import receipt_complete, validate_receipt
@@ -149,3 +152,78 @@ def test_wrong_producing_attempt_and_receipt_overwrite_are_native_failures(tmp_p
     overwritten = _apply_receipt(project, plan_path, 1, receipt)
     assert overwritten.returncode != 0
     assert receipt.read_text(encoding="utf-8") == "user data"
+
+
+def test_source_duration_cache_round_trip_matches_workflow_paths_and_reuses_native_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workflow_path = Path(__file__).resolve().parents[1] / ".github/workflows/test-source-for-runtime.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    planning_steps = {step["name"]: step for step in workflow["jobs"]["source-plan"]["steps"] if "name" in step}
+    aggregate_steps = {step["name"]: step for step in workflow["jobs"]["complete-source-tests"]["steps"] if "name" in step}
+    restores = [
+        planning_steps["Restore optional source timing profile"],
+        aggregate_steps["Restore optional source duration history"],
+    ]
+    saved = aggregate_steps["Cache optional immutable source timing profile"]
+    update = aggregate_steps["Update optional native timing snapshot"]
+    stage = aggregate_steps["Stage optional source timing snapshot at restored cache path"]
+    plan_command = planning_steps["Collect complete current source tests and immutable shard plan"]["run"]
+
+    # actions/cache incorporates the path in its cache version, not only the key.
+    for restore in restores:
+        assert restore["with"]["path"] == saved["with"]["path"] == "${{ runner.temp }}/source-history"
+        assert restore["with"]["key"] == saved["with"]["key"]
+        assert restore["continue-on-error"] is True
+    assert saved["if"] == "always() && steps.duration-stage.outcome == 'success'"
+    assert stage["if"] == "always() && steps.duration-update.outcome == 'success'"
+    assert stage["continue-on-error"] is True
+    assert saved["continue-on-error"] is True
+    assert '--output "$RUNNER_TEMP/source-history-new/profile.json"' in update["run"]
+    assert '--duration-profile "$RUNNER_TEMP/source-history/profile.json"' in plan_command
+
+    project, context_path, context = _source_project(tmp_path, GOOD_TESTS)
+    profile, inventory = _inventory(project, context_path, context, monkeypatch)
+    producer = tmp_path / "producer-run"
+    restored = producer / "source-history/profile.json"
+    new_snapshot = producer / "source-history-new/profile.json"
+    restored.parent.mkdir(parents=True)
+    new_snapshot.parent.mkdir(parents=True)
+    _history(restored, profile, inventory, seconds=111)
+    stale_contents = restored.read_bytes()
+    _history(new_snapshot, profile, inventory, seconds=333)
+
+    # Execute the actual workflow staging command, including replacement of restored history.
+    staged = subprocess.run(
+        ["bash", "-e", "-c", stage["run"]],
+        cwd=project,
+        env={**os.environ, "RUNNER_TEMP": str(producer)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert staged.returncode == 0, staged.stdout + staged.stderr
+    assert restored.read_bytes() == new_snapshot.read_bytes() != stale_contents
+
+    # Simulate a later Actions cache restore and invoke the real source planner.
+    consumer = tmp_path / "consumer-run"
+    shutil.copytree(producer / "source-history", consumer / "source-history")
+    restored_history = consumer / "source-history/profile.json"
+    current_plan = tmp_path / "current-plan.json"
+    result = _plan_cli(project, context_path, current_plan, restored_history, "-m", "not opencode_live")
+    assert result.returncode == 0, result.stdout + result.stderr
+    semantic = json.loads(current_plan.read_text(encoding="utf-8"))["semantic"]
+    assert semantic["inventory"] == list(inventory)
+    assert semantic["duration_source"]["status"] == "matched"
+    assert {estimate["provenance"] for estimate in semantic["estimates"]} == {"native_p95"}
+    assert {estimate["estimated_ms"] for estimate in semantic["estimates"]} == {333_000}
+
+    missing_plan = tmp_path / "missing-history-plan.json"
+    fallback = _plan_cli(
+        project, context_path, missing_plan, consumer / "missing/profile.json", "-m", "not opencode_live"
+    )
+    assert fallback.returncode == 0, fallback.stdout + fallback.stderr
+    missing_semantic = json.loads(missing_plan.read_text(encoding="utf-8"))["semantic"]
+    assert missing_semantic["inventory"] == list(inventory)
+    assert missing_semantic["duration_source"]["status"] == "unavailable"
+    assert {estimate["provenance"] for estimate in missing_semantic["estimates"]} == {"fallback_one_second"}
