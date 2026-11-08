@@ -18,6 +18,7 @@ During the multi-stage build, the target architecture is resolved explicitly:
 - `amd64` (`x86_64`) installs `opencode-linux-x64@1.18.31` from the official npm registry.
 - `arm64` (`aarch64`) installs `opencode-linux-arm64@1.18.31` from the same registry.
 - The build uses the native glibc binary without running npm lifecycle scripts and verifies `opencode --version` before copying it into the runtime image.
+- The same build installs the pinned Codex `0.159.2` native musl binary from the official `@openai/codex-linux-x64` or `@openai/codex-linux-arm64` npm package. It checks `codex --version` before copying the executable into the final image; the GitHub Release asset download is not required.
 - Any unsupported platform fails closed immediately.
 
 The resulting binary is installed at `/usr/local/bin/opencode` with executable

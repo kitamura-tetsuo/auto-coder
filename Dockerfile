@@ -23,11 +23,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     npm install --prefix /tmp/opencode --ignore-scripts --no-audit --no-fund --no-save "opencode-linux-${OPENCODE_ARCH}@${OPENCODE_VERSION}" && \
     install -m 0755 "/tmp/opencode/node_modules/opencode-linux-${OPENCODE_ARCH}/bin/opencode" /usr/local/bin/opencode && \
     test "$(/usr/local/bin/opencode --version)" = "$OPENCODE_VERSION" && \
-    curl --retry 5 --retry-delay 3 --retry-max-time 180 -fsSL "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-${CODEX_ARCH}-unknown-linux-musl.tar.gz" -o /tmp/codex.tar.gz && \
-    tar -xzf /tmp/codex.tar.gz -C /tmp && \
-    mv "/tmp/codex-${CODEX_ARCH}-unknown-linux-musl" /usr/local/bin/codex && \
-    chmod +x /usr/local/bin/codex && \
-    rm -rf /tmp/opencode && rm -f /tmp/codex.tar.gz && \
+    npm install --prefix /tmp/codex --ignore-scripts --no-audit --no-fund --no-save "@openai/codex-linux-${OPENCODE_ARCH}@${CODEX_VERSION}" && \
+    install -m 0755 "/tmp/codex/node_modules/@openai/codex-linux-${OPENCODE_ARCH}/vendor/${CODEX_ARCH}-unknown-linux-musl/bin/codex" /usr/local/bin/codex && \
+    test "$(/usr/local/bin/codex --version)" = "codex-cli $CODEX_VERSION" && \
+    rm -rf /tmp/opencode /tmp/codex && \
     rm -rf /var/lib/apt/lists/*
 
 FROM python:3.12-slim
