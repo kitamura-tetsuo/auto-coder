@@ -349,6 +349,22 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         assert upgrade._operation(operator, plan_id).stage == "beta-deploy-prerequisites-verified"
         assert len(effects) == 4 and chain.workers() == original_worker
         assert chain.worker_posts() == before_readback_posts
+        # Prove the host can still read real local source proof while the
+        # upgraded child's independently configured credential is invalid.
+        # The host's successful proof must never substitute for child readback.
+        service_credential = next_generation.path("bootstrap") / "source_evidence_read"
+        service_token = service_credential.read_bytes()
+        try:
+            service_credential.write_text("invalid-disposable-source-token", encoding="utf-8")
+            assert publisher.read(chain.current_sha) is not None
+            code, service_unavailable = call_cli("status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+            assert code == 0 and service_unavailable["stage"] == "application-ready"
+            assert "upgraded-service beta source readback" in service_unavailable["missing_prerequisites"][0]
+            assert len(effects) == 4 and chain.worker_posts() == before_readback_posts
+            assert installed_launches() == b_installed_launches
+        finally:
+            service_credential.write_bytes(service_token)
+
         # Keep the host's tested-source fixture intact while the actual child
         # reader loses the beta selection. A host-only proof must not certify
         # the upgraded service's eligibility.
