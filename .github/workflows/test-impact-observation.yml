@@ -7,9 +7,18 @@ name: Test Impact Observation (Advisory)
         description: "Git SHA, tag or branch to actually check out and measure"
         required: true
         type: string
+      baseline_run_id:
+        description: "Optional exact successful test-impact baseline workflow run ID"
+        required: false
+        type: string
+      baseline_run_attempt:
+        description: "Optional exact successful baseline workflow run attempt"
+        required: false
+        type: string
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   observe:
@@ -21,6 +30,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Setup Python
@@ -66,6 +76,57 @@ jobs:
             --directory "$IMPACT_DIRECTORY" \
             --checkout "$GITHUB_WORKSPACE" \
             --output "$IMPACT_DIRECTORY/observation.json"
+
+      - name: Verify exact successful baseline attempt before retrieval
+        id: baseline_provenance
+        if: ${{ always() && inputs.baseline_run_id != '' && inputs.baseline_run_attempt != '' && steps.prepare.outputs.invocation_dir != '' }}
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASELINE_RUN_ID: ${{ inputs.baseline_run_id }}
+          BASELINE_RUN_ATTEMPT: ${{ inputs.baseline_run_attempt }}
+        run: |
+          uv run python -c 'import os; from scripts.report_test_impact import _verify_remote_attempt; _verify_remote_attempt(os.environ["GITHUB_REPOSITORY"], int(os.environ["BASELINE_RUN_ID"]), int(os.environ["BASELINE_RUN_ATTEMPT"]), os.environ["GITHUB_TOKEN"])'
+
+      - name: Download exact baseline run and attempt evidence
+        if: ${{ always() && steps.baseline_provenance.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.baseline_run_id }}
+          pattern: test-impact-${{ inputs.baseline_run_id }}-${{ inputs.baseline_run_attempt }}-*
+          merge-multiple: false
+          path: ${{ runner.temp }}/test-impact-baseline
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compare baseline candidates after the full native run
+        if: ${{ always() && (inputs.baseline_run_id != '' || inputs.baseline_run_attempt != '') && steps.prepare.outputs.invocation_dir != '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMPACT_DIRECTORY: ${{ steps.prepare.outputs.invocation_dir }}
+          BASELINE_RUN_ID: ${{ inputs.baseline_run_id }}
+          BASELINE_RUN_ATTEMPT: ${{ inputs.baseline_run_attempt }}
+        run: |
+          uv run python -m scripts.report_test_impact \
+            --baseline-directory "${RUNNER_TEMP}/test-impact-baseline" \
+            --baseline-run-id "${BASELINE_RUN_ID:-0}" \
+            --baseline-run-attempt "${BASELINE_RUN_ATTEMPT:-0}" \
+            --verify-baseline-run \
+            --repository "$GITHUB_REPOSITORY" \
+            --current "$IMPACT_DIRECTORY/observation.json" \
+            --repository-dir "$GITHUB_WORKSPACE" \
+            --output "$IMPACT_DIRECTORY/shadow-report.json" \
+            --summary "$IMPACT_DIRECTORY/shadow-report.md"
+
+      - name: Show independent retrospective summary
+        if: always() && steps.prepare.outputs.invocation_dir != ''
+        env:
+          IMPACT_DIRECTORY: ${{ steps.prepare.outputs.invocation_dir }}
+        run: |
+          if [ -s "$IMPACT_DIRECTORY/shadow-report.md" ]; then
+            cat "$IMPACT_DIRECTORY/shadow-report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload partial or finalized invocation evidence
         if: always() && steps.prepare.outputs.invocation_dir != ''

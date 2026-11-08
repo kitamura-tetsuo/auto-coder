@@ -40,6 +40,11 @@ failing pytest job green. A diagnostic destination
 known to be unusable before execution causes a single uninstrumented run of the
 same native selection with an explicit observer-unavailable warning.
 
+For an optional baseline-derived, strictly non-gating retrospective report
+after the full current run, see
+[Retrospective test-impact shadow reporting](test-impact-shadow-report.md).
+Without baseline inputs the original observation-only workflow is unchanged.
+
 ## Evidence identity and schema
 
 The upload is named `test-impact-<run>-<attempt>-<invocation>`; every attempt
