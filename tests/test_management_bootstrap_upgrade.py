@@ -298,3 +298,31 @@ def test_operator_cli_forwards_exact_approved_plan_and_does_not_deploy_beta(tmp_
     assert upgrade.main() == 0
     assert json.loads(capsys.readouterr().out)["operation_id"] == sha
     assert called == [(root, sha, token, True)]
+
+
+def test_watcher_must_not_start_if_real_proxy_namespace_is_unproven(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = operator_root(tmp_path)
+    sha, plan = prepared(root, profile(tmp_path))
+    operation = upgrade.UpgradeOperation(
+        sha,
+        sha,
+        "successor-launch-uncertain",
+        "",
+        "",
+        upgrade._EFFECTS[:4],
+        effect_receipts={"start-management": "2026-11-08T02:00:00Z", "start-proxy": "2026-11-08T02:00:01Z"},
+    )
+    upgrade._replace_record(root / sha, "upgrade-operation.json", upgrade._canonical(asdict(operation)))
+    monkeypatch.setattr(upgrade, "_immutable_inputs", lambda _: None)
+    monkeypatch.setattr(upgrade, "_inspect", lambda _: [None, plan.successor_image, True, 17, "running", *([None] * 8), "2026-11-08T02:00:00Z"])
+    monkeypatch.setattr(
+        upgrade.DockerProxyObservation,
+        "inspect",
+        lambda _: {"image": plan.profile.successor_proxy_image, "running": True, "pid": 19, "started": "2026-11-08T02:00:01Z"},
+    )
+    monkeypatch.setattr(upgrade.DockerProxyObservation, "namespace", lambda _: "net:[222]")
+    monkeypatch.setattr(upgrade.os, "readlink", lambda _: "net:[111]")
+    monkeypatch.setattr(upgrade.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("unverified watcher must not launch"))
+    with pytest.raises(upgrade.UpgradeUnavailable, match="not attached"):
+        upgrade._start_watcher(root / sha, operation, plan)
+    assert upgrade._operation(root, sha) == operation

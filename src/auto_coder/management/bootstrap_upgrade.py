@@ -481,7 +481,9 @@ def _configured_source_credential(config: Path) -> Path:
 
 
 def _worker_registry(config: BootstrapConfig) -> dict[str, object]:
-    runtime = next(item for item in config.runtimes if item.reference == config.initial_runtime)
+    runtime = next((item for item in config.runtimes if item.reference == config.initial_runtime), None)
+    if runtime is None:
+        raise ValueError("selected management runtime is unavailable")
     environment = dict(runtime.environment)
     raw = environment.get("AUTO_CODER_WORKER_REGISTRY")
     if raw is None:
@@ -530,7 +532,7 @@ def _mcp_call(port: int, token: str, tool: str, arguments: dict[str, object]) ->
     return content
 
 
-def _authenticated_baseline(port: int, targets: tuple[str, ...], credential: Path, *, expected_instance: str | None = None) -> dict[str, dict[str, str]]:
+def _authenticated_baseline(port: int, targets: tuple[str, ...], credential: Path) -> dict[str, dict[str, str]]:
     token = _read_record(credential).decode("utf-8").strip()
     if not token or "\n" in token:
         raise ValueError("fresh authenticated client credential invalid")
@@ -541,7 +543,7 @@ def _authenticated_baseline(port: int, targets: tuple[str, ...], credential: Pat
     for target in targets:
         result = _mcp_call(port, token, "auto_coder_deployment_status", {"target_id": target})
         worker = result.get("worker_observation")
-        if result.get("status") != "OK" or result.get("alive") is not True or not isinstance(worker, dict) or (expected_instance is not None and result.get("instance_id") != expected_instance):
+        if result.get("status") != "OK" or result.get("alive") is not True or not isinstance(worker, dict):
             raise ValueError("configured worker readback unavailable")
         values = {"supervisor_generation": result.get("supervisor_generation"), "process_run_id": worker.get("process_run_id"), "deployment_generation": worker.get("deployment_generation")}
         if any(not isinstance(item, str) or not item for item in values.values()):
@@ -648,7 +650,7 @@ def _immutable_inputs(plan: UpgradePlan) -> None:
     if _candidate_image_source(plan.successor_management, plan.successor_image) != plan.image_source_identity:
         raise UpgradeUnavailable("prerequisite-blocked", "pinned installed candidate differs")
     candidate = BootstrapConfig.read(Path(plan.profile.bootstrap_config))
-    if _worker_targets(candidate) != tuple(plan.worker_baseline):
+    if set(_worker_targets(candidate)) != set(plan.worker_baseline):
         raise UpgradeUnavailable("prerequisite-blocked", "candidate worker target identities changed")
     if hashlib.sha256(_canonical(_worker_registry(candidate))).hexdigest() != plan.worker_registry_sha256:
         raise UpgradeUnavailable("prerequisite-blocked", "candidate worker target configuration changed")
@@ -662,7 +664,7 @@ def prepare(root: Path, profile_file: Path, authenticated_client_file: Path, *, 
         raise UpgradeUnavailable("prerequisite-blocked", "source credential use requires explicit operator acceptance")
     with _exclusive(root):
         for entry in root.iterdir():
-            if entry.name == "upgrade.lock":
+            if entry.name in {"upgrade.lock", "upgrade-audit.log"}:
                 continue
             if not _SHA.fullmatch(entry.name) or entry.is_symlink():
                 raise UpgradeUnavailable("needs-attention", "unrecognized operator history; retain it for inspection")
@@ -822,6 +824,20 @@ def _start_watcher(root: Path, operation: UpgradeOperation, plan: UpgradePlan) -
     if operation.effect or operation.completed != _EFFECTS[:4]:
         raise UpgradeUnavailable("needs-attention", "watcher start ordering or earlier effect differs")
     _immutable_inputs(plan)
+    manager = _inspect(plan.successor_management)
+    proxy = DockerProxyObservation.inspect(plan.profile.successor_proxy_id)
+    proxy_pid = proxy.get("pid")
+    if (
+        manager[1] != plan.successor_image
+        or manager[2] is not True
+        or manager[13] != operation.effect_receipts.get("start-management")
+        or proxy.get("image") != plan.profile.successor_proxy_image
+        or proxy.get("running") is not True
+        or proxy.get("started") != operation.effect_receipts.get("start-proxy")
+        or type(proxy_pid) is not int
+        or DockerProxyObservation.namespace(proxy_pid) != os.readlink(f"/proc/{manager[3]}/ns/net")
+    ):
+        raise UpgradeUnavailable("needs-attention", "replacement proxy is not attached to the exact launched manager")
     config = Path(plan.profile.new_watcher_config)
     watcher_root = _watcher_binding(config, plan.successor_management, plan.successor_image, plan.profile.successor_proxy_id, plan.profile.successor_proxy_image, Path(plan.profile.successor_proxy_config))
     lock = os.open(watcher_root / "proxy-watch.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -939,7 +955,7 @@ def apply(root: Path, sha: str, authenticated_client_file: Path, *, authorize_so
         if _source_proof(authority, plan.profile.source_sha) != (plan.tested_source_identity, plan.supervisor_run_id, plan.supervisor_run_attempt):
             raise UpgradeUnavailable("prerequisite-blocked", "tested source evidence changed")
         _installed_candidate_preflight(plan.profile)
-        if _authenticated_baseline(plan.endpoint_port, tuple(plan.worker_baseline), authenticated_client_file, expected_instance=management.instance_id) != plan.worker_baseline:
+        if _authenticated_baseline(plan.endpoint_port, tuple(plan.worker_baseline), authenticated_client_file) != plan.worker_baseline:
             raise UpgradeUnavailable("prerequisite-blocked", "worker baseline changed before effect")
         watcher = _watcher_lock(Path(plan.profile.old_watcher_config), plan)
         network = -1
@@ -1019,7 +1035,7 @@ def status(root: Path, sha: str, *, authenticated_client_file: Path | None = Non
                 answer["stage"] = "successor-launch-uncertain"
                 answer["missing_prerequisites"] = ["fresh authorized authenticated client readback"]
                 return answer
-            baseline = _authenticated_baseline(plan.endpoint_port, tuple(plan.worker_baseline), authenticated_client_file, expected_instance=plan.successor_instance)
+            baseline = _authenticated_baseline(plan.endpoint_port, tuple(plan.worker_baseline), authenticated_client_file)
             if baseline != plan.worker_baseline:
                 raise ValueError("retained worker lifetime changed")
             original_authority, original_grants = _oauth_snapshot(Path(intent.host_oauth_root))
@@ -1045,7 +1061,11 @@ def status(root: Path, sha: str, *, authenticated_client_file: Path | None = Non
             answer["worker_targets"] = sorted(baseline)
             _record_operation(lane, operation, stage="beta-deploy-prerequisites-verified")
             return answer
-        except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError, urllib.error.URLError, SourceEvidenceError, TestedSourceError) as error:
+        except SourceEvidenceError as error:
+            answer["stage"] = "application-ready" if answer.get("stage") == "application-ready" else "needs-attention"
+            answer["missing_prerequisites"] = [str(error)[:256]]
+            return answer
+        except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError, urllib.error.URLError, TestedSourceError) as error:
             answer["stage"] = "application-ready" if answer.get("stage") == "application-ready" else "needs-attention"
             answer["missing_prerequisites"] = [type(error).__name__]
             return answer
@@ -1067,7 +1087,20 @@ def main() -> int:
     status_command.add_argument("--auth-token-file", type=Path)
     status_command.add_argument("--authorize-source-read", action="store_true")
     args = parser.parse_args()
+    audit_enabled = False
     try:
+        if OPERATOR_ROOT.exists():
+            _protected_root(OPERATOR_ROOT)
+            descriptor = os.open(OPERATOR_ROOT / "upgrade-audit.log", os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+                os.close(descriptor)
+                raise UpgradeUnavailable("prerequisite-blocked", "operator audit sink is not private")
+            audit_file = os.fdopen(descriptor, "a", encoding="utf-8")
+            logger.remove()
+            logger.add(sys.stdout, format="{message}", filter=lambda record: record["extra"].get("operator_result") is True)
+            logger.add(audit_file, format="{time:YYYY-MM-DDTHH:mm:ssZ} {level} {message}")
+            audit_enabled = True
         if args.command == "prepare":
             sha = prepare(OPERATOR_ROOT, args.profile, args.auth_token_file, authorize_source_read=args.authorize_source_read)
             result: dict[str, object] = {"stage": "prepared", "plan_sha256": sha}
@@ -1076,15 +1109,17 @@ def main() -> int:
             result = {"stage": operation.stage, "operation_id": operation.operation_id, "completed_effects": operation.completed}
         else:
             result = status(OPERATOR_ROOT, args.plan_sha256, authenticated_client_file=args.auth_token_file, authorize_source_read=args.authorize_source_read)
-        print(json.dumps(result, sort_keys=True))
-        return 0 if result.get("stage") in {"prepared", "application-ready", "beta-deploy-prerequisites-verified", "successor-launch-uncertain"} else 2
     except UpgradeUnavailable as error:
-        print(json.dumps({"stage": error.stage, "reason": error.reason}, sort_keys=True))
-        return 2
+        result = {"stage": error.stage, "reason": error.reason}
     except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError, urllib.error.URLError, TestedSourceError, SourceEvidenceError, HostObservationUnavailable) as error:
         logger.warning("Trusted host upgrade unavailable type={}", type(error).__name__)
-        print(json.dumps({"stage": "prerequisite-blocked", "reason": type(error).__name__}, sort_keys=True))
-        return 2
+        result = {"stage": "prerequisite-blocked", "reason": type(error).__name__}
+    report = json.dumps(result, sort_keys=True)
+    if audit_enabled:
+        logger.bind(operator_result=True).info(report)
+    else:
+        print(report)
+    return 0 if result.get("stage") in {"prepared", "application-ready", "beta-deploy-prerequisites-verified", "successor-launch-uncertain"} else 2
 
 
 if __name__ == "__main__":
