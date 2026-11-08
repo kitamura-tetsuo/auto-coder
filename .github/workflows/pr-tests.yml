@@ -33,7 +33,7 @@ jobs:
       - name: Check repository hygiene
         run: scripts/check_repository_hygiene.py --source head --repo .
       - name: Black (check)
-        run: uv run black --check --diff src/ tests/
+        run: uv run black --check src/ tests/
       - name: isort (check)
         run: uv run isort --check-only src/ tests/
       - name: Flake8
