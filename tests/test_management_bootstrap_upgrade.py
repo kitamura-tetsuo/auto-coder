@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from auto_coder.management import bootstrap_upgrade as upgrade
+from auto_coder.management.operation_store import ManagementOperationStore
 
 
 def private_file(path: Path, data: bytes = b"{}") -> Path:
@@ -148,6 +149,9 @@ def test_actual_apply_keeps_persisted_uncertain_target_after_lost_response(tmp_p
     """An apply callback may fail before assigning the already-fsynced effect."""
     root = operator_root(tmp_path)
     sha, plan = prepared(root, profile(tmp_path))
+    journal_root = tmp_path / "prior-journal"
+    ManagementOperationStore(journal_root)._connect().close()
+    journal_stat = (journal_root / "management-operations.sqlite3").stat()
 
     class Predecessor:
         container_id = plan.predecessor_management
@@ -193,7 +197,17 @@ def test_actual_apply_keeps_persisted_uncertain_target_after_lost_response(tmp_p
         on_listening()
 
     monkeypatch.setattr(upgrade, "_immutable_inputs", lambda _: None)
-    monkeypatch.setattr(upgrade, "_fresh_intent", lambda _: SimpleNamespace(new_container_id=plan.successor_management, image_digest=plan.successor_image))
+    monkeypatch.setattr(
+        upgrade,
+        "_fresh_intent",
+        lambda _: SimpleNamespace(
+            new_container_id=plan.successor_management,
+            image_digest=plan.successor_image,
+            host_prior_journal_root=str(journal_root),
+            prior_journal_device=journal_stat.st_dev,
+            prior_journal_inode=journal_stat.st_ino,
+        ),
+    )
     monkeypatch.setattr(upgrade, "_evidence", lambda _: (predecessor, None, None))
     monkeypatch.setattr(upgrade, "_mount_profile", lambda _: {"management": ()})
     monkeypatch.setattr(upgrade, "capture_prior_container", lambda *args, **kwargs: predecessor)
