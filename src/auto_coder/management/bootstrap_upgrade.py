@@ -51,6 +51,7 @@ from .operation_store import ACTIVE_PHASES
 from .proxy_reconnect import DockerProxyObservation
 from .retained_journal import RetainedJournal
 from .source_evidence import SourceEvidenceError
+from .source_evidence_config import REPOSITORY
 from .source_evidence_config import _protected as protected_credential
 
 OPERATOR_ROOT = Path("/var/lib/auto-coder/management-upgrades")
