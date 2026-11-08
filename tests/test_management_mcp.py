@@ -428,6 +428,7 @@ def test_real_discovery_firebase_exchange_and_whoami(real_boundary) -> None:
             "auto_coder_reevaluate_target",
             "auto_coder_update_management_service",
             "auto_coder_deployment_status",
+            "auto_coder_beta_source_readback",
             "auto_coder_start_worker",
             "auto_coder_stop_worker",
             "auto_coder_restart_worker",
