@@ -25,7 +25,9 @@ from pathlib import Path
 import pytest
 import yaml
 
+from auto_coder.beta_source_selection import BetaSelectionRecord
 from auto_coder.management.self_update_handoff import HandoffPhase, HandoffStore
+from auto_coder.tested_source_refs import tag_name
 from tests.test_management_archived_cutover_container import Chain
 from tests.test_management_fresh_end_to_end import _build_fixture_image
 from tests.test_management_self_update_integration import ExternalServices, _snapshot_source, _test_source
@@ -73,7 +75,54 @@ class InstalledChain(Chain):
         fixture = self
 
         class Handler(original_handler):
+            def respond(self, code: int, body: object) -> None:
+                # The disposable HTTP service reports actually executed local
+                # fixture checks, not public GitHub Actions evidence.
+                if code == 200 and isinstance(body, dict) and "/actions/runs/" in self.path:
+                    if "/jobs?" in self.path and isinstance(body.get("jobs"), list):
+                        run_id = int(self.path.split("/actions/runs/", 1)[1].split("/", 1)[0])
+                        body = {
+                            **body,
+                            "jobs": [
+                                {
+                                    **job,
+                                    "id": index + 100,
+                                    "run_id": run_id,
+                                    "run_attempt": 1,
+                                    "completed_at": "2026-11-08T00:00:00Z",
+                                }
+                                for index, job in enumerate(body["jobs"])
+                            ],
+                        }
+                    elif "/jobs?" not in self.path:
+                        body = {**body, "head_branch": "main"}
+                super().respond(code, body)
+
             def do_GET(self):
+                # The beta pointer is a real direct commit ref; history and
+                # tested-source refs remain immutable annotated Git tags.
+                reference = "refs/tags/auto-coder-beta-current"
+                if self.path == f"/repos/{fixture.external['repository']}/git/ref/tags/auto-coder-beta-current":
+                    observed = subprocess.run(
+                        ["git", "rev-parse", "--verify", reference],
+                        cwd=fixture.services.repository,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if observed.returncode:
+                        self.respond(404, {})
+                    else:
+                        sha = observed.stdout.strip()
+                        kind = subprocess.run(
+                            ["git", "cat-file", "-t", sha],
+                            cwd=fixture.services.repository,
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                        ).stdout.strip()
+                        self.respond(200, {"ref": reference, "object": {"type": kind, "sha": sha}})
+                    return
+
                 if "/actions/runs/" in self.path and fixture.gate_database is not None and fixture.gate_phase is not None:
                     try:
                         with sqlite3.connect(fixture.gate_database.as_uri() + "?mode=ro", uri=True, timeout=1) as connection:
@@ -113,6 +162,41 @@ class InstalledChain(Chain):
         cli.write_text(cli.read_text().replace("class LocalCredential", "INSTALLED_REVISION = 'different-candidate-code'\n\nclass LocalCredential"))
         self.candidate_sha = _snapshot_source(source, "installed-candidate")
         _test_source(self.services, self.candidate_sha, 102)
+        # Genuine annotated history and commit refs select the locally tested
+        # fixture source. These records do not claim public Actions provenance.
+        tested_ref = tag_name(self.current_sha)
+        tested_oid = subprocess.run(
+            ["git", "rev-parse", f"refs/tags/{tested_ref}"],
+            cwd=source,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        selected = BetaSelectionRecord(
+            1,
+            self.external["repository"],
+            "r101",
+            self.current_sha,
+            101,
+            1,
+            "2026-11-08T00:00:00Z",
+            f"refs/tags/{tested_ref}",
+            tested_oid,
+            101,
+            1,
+            None,
+        )
+        history = "auto-coder-beta-selection-r101"
+        subprocess.run(["git", "tag", "-a", history, "-m", selected.serialize(), self.current_sha], cwd=source, check=True, capture_output=True, text=True)
+        history_oid = subprocess.run(
+            ["git", "rev-parse", f"refs/tags/{history}"],
+            cwd=source,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        subprocess.run(["git", "update-ref", "refs/tags/auto-coder-beta-current", self.current_sha], cwd=source, check=True)
+        subprocess.run(["git", "update-ref", "refs/tags/auto-coder-beta-selection-current", history_oid], cwd=source, check=True)
         # Constructor wiring for a private external HTTP service is a fixture
         # deployment adapter. Production stop/start and verification remain intact.
         context = root / "installed-image"
@@ -123,6 +207,19 @@ class InstalledChain(Chain):
         needle = "    raise SystemExit(ManagementBootstrapSupervisor(config, bootstrap_config_path=args.config, fresh_initialization=args.fresh_initialization).run())"
         assert original.count(needle) == 1
         bootstrap.write_text(original.replace(needle, _BOOTSTRAP_AUTHORITY + needle.replace("fresh_initialization=args.fresh_initialization)", "fresh_initialization=args.fresh_initialization, source_authority=authority)")))
+        lifecycle = package / "management" / "worker_lifecycle.py"
+        lifecycle_source = lifecycle.read_text()
+        reader_constructor = "return BetaEvidenceReader(GitHubGitDataClient(secret, config.source_repository), config.source_repository)"
+        assert lifecycle_source.count(reader_constructor) == 1
+        # Substitute only the disposable external endpoint; the production
+        # reader validates actual Git selection, proof and required jobs.
+        lifecycle.write_text(
+            lifecycle_source.replace(
+                reader_constructor,
+                "external = json.loads((config.oauth.database_path.parent / 'external-services.json').read_text())\n"
+                "        return BetaEvidenceReader(GitHubGitDataClient(secret, config.source_repository, api_url=external['url']), config.source_repository)",
+            )
+        )
         self.installed_tag = "auto-coder-installed-fresh:" + uuid.uuid4().hex
         _build_fixture_image(context, self.image, self.installed_tag, owner_token_gap=False)
         self.image = self.docker("image", "inspect", self.installed_tag, "--format", "{{.Id}}")
