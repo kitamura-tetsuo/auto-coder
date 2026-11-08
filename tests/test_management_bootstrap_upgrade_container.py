@@ -27,8 +27,9 @@ from auto_coder.management.fresh_initialization import FreshInitializationIntent
 from auto_coder.tested_source_refs import TestedSourcePublisher as SourceProofPublisher
 from auto_coder.util.gh_cache import GitHubGitDataClient
 from tests.test_management_archived_cutover_container import Generation
-from tests.test_management_installed_fresh_container import InstalledChain, wait_for
+from tests.test_management_installed_fresh_container import InstalledChain
 from tests.test_management_installed_fresh_container import installed_chain as installed_chain
+from tests.test_management_installed_fresh_container import wait_for
 
 pytestmark = [pytest.mark.supervisor_integration, pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep")]
 
