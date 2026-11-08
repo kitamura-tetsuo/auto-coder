@@ -227,8 +227,9 @@ def test_actual_apply_keeps_persisted_uncertain_target_after_lost_response(tmp_p
     monkeypatch.setattr(upgrade, "_inspect", inspect)
     monkeypatch.setattr(upgrade, "_docker", docker)
 
-    with pytest.raises(subprocess.TimeoutExpired):
+    with pytest.raises(upgrade.UpgradeUnavailable, match="original effect or host fence requires inspection") as raised:
         upgrade.apply(root, sha, tmp_path / "auth-client", authorize_source_read=True)
+    assert raised.value.stage == "needs-attention"
 
     persisted = upgrade._operation(root, sha)
     assert persisted.stage == "needs-attention"
