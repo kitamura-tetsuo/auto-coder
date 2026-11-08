@@ -228,6 +228,30 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         plan_id = prepared["plan_sha256"]
         assert isinstance(plan_id, str)
         old_snapshot = chain.snapshot(first)
+        # Refuse changed protected configuration before any container effect.
+        management_config = next_generation.path("bootstrap") / "management.yaml"
+        original_config = management_config.read_bytes()
+        try:
+            management_config.write_bytes(original_config + b"\n# disposable changed-config boundary\n")
+            code, denied = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+            assert code == 2 and denied["stage"] == "prerequisite-blocked"
+            assert effects == [] and chain.snapshot(first) == old_snapshot
+        finally:
+            management_config.write_bytes(original_config)
+
+        # Unavailable exact-source/Actions evidence and absent explicit consent
+        # must each block the incumbent-preserving operation.
+        chain.services.unavailable = True
+        try:
+            code, denied = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+            assert code == 2 and denied["stage"] == "prerequisite-blocked"
+            assert effects == [] and chain.snapshot(first) == old_snapshot
+        finally:
+            chain.services.unavailable = False
+        code, denied = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file))
+        assert code == 2 and denied["stage"] == "prerequisite-blocked"
+        assert effects == [] and chain.workers() == original_worker
+
         code, applied = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
         assert code == 0 and applied["stage"] == "successor-launch-uncertain"
         assert effects == [
@@ -246,6 +270,12 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
             return result["stage"] == "application-ready"
 
         wait_for(application_ready, "protected exact-child application readiness", timeout=90)
+        # A host-side fixture source publisher is insufficient: the upgraded
+        # service must itself validate the current selection without deployment.
+        code, beta_status = call_cli("status", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+        assert code == 0 and beta_status["stage"] == "application-ready"
+        assert beta_status["missing_prerequisites"]
+        assert len(effects) == 4 and chain.workers() == original_worker
         code, repeated = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
         assert code == 2 and repeated["stage"] == "needs-attention"
         assert len(effects) == 4 and chain.workers() == original_worker
