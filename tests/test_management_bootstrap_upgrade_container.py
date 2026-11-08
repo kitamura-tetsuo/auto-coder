@@ -193,6 +193,7 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
     original_worker = chain.workers()
     original_a = chain.seed(first)
     original_worker_records = chain.seed_workers(first)
+
     # Independent installed-process history is written by the real child,
     # not by the host coordinator's _docker effect accounting wrapper.
     def installed_launches() -> tuple[tuple[int, str, str], ...]:
@@ -740,17 +741,11 @@ def test_disposable_operator_failure_fences_real_docker(installed_chain: Install
         before_retry = tuple(effects)
         # Docker's own persisted start times, unlike the wrapper counter,
         # detect a restarted successor after an ambiguous physical response.
-        successor_start_times = {
-            container: chain.docker("inspect", "--format", "{{.State.StartedAt}}", container)
-            for container in (successor.container, successor.proxy)
-        }
+        successor_start_times = {container: chain.docker("inspect", "--format", "{{.State.StartedAt}}", container) for container in (successor.container, successor.proxy)}
         code, replay = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
         assert code == 2 and replay["stage"] == "needs-attention"
         assert tuple(effects) == before_retry
-        assert {
-            container: chain.docker("inspect", "--format", "{{.State.StartedAt}}", container)
-            for container in (successor.container, successor.proxy)
-        } == successor_start_times
+        assert {container: chain.docker("inspect", "--format", "{{.State.StartedAt}}", container) for container in (successor.container, successor.proxy)} == successor_start_times
         assert upgrade._operation(operator, plan_id) == persisted
         assert chain.workers() == baseline
     finally:
