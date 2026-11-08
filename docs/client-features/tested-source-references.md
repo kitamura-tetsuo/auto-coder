@@ -110,7 +110,12 @@ branch-protection or merge-authority change is made.
 The workflow optionally restores a profile-scoped native timing snapshot from
 immutable Actions cache, generates explicit per-shard JSONL batch manifests,
 and saves new cache/artifacts under unique run/attempt names without tracked
-file writes. Failed history restore, update or upload is diagnostic; missing
+file writes. The new snapshot is generated in a separate immutable output
+directory, then staged into the exact `source-history` path consumed by the
+planner and both cache restores before the cache save. Restore and save share
+the same cache path/version and exact per-run/attempt key; a failed optional
+update or staging step cannot publish an unchanged restored profile as a new
+snapshot. Failed history restore, update or upload is diagnostic; missing
 mandatory plan or receipt always fails. A `source-ci-metrics-v1` artifact
 distinguishes queue, setup, test-step shard critical path, total runner work,
 and end-to-end required-check latency (only when finished). It reconstructs
