@@ -98,7 +98,7 @@ class InstalledChain(Chain):
         runtime = self.root / "workers" / "beta"
         (runtime / "ownership.json").write_text(json.dumps({"fixture/beta": "beta"}))
         (runtime / "llm_config.toml").write_text(
-            '[backend]\\norder = ["jules"]\\n\\n[backends.jules]\\nbackend_type = "jules"\\nenabled = true\\napi_key = "offline-unused"\\n'
+            '[backend]\norder = ["jules"]\n\n[backends.jules]\nbackend_type = "jules"\nenabled = true\napi_key = "offline-unused"\n'
         )
         return profile
 
