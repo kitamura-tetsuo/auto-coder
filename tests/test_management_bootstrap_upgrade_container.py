@@ -563,6 +563,16 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         assert chain.call(third, "auto_coder_operation_get", {"operation_id": original_a.operation_id})["status"] == "NOT_FOUND"
         assert chain.snapshot(first) == old_snapshot and chain.snapshot(next_generation) == snapshot_b
         assert chain.workers() == original_worker
+        # Prove the original C operation is not re-dispatched even if the
+        # unrelated new worker-key oracle cannot yet pass on a bootstrap-only
+        # fixture worker. Exercise repeat apply through the real host CLI.
+        code, replay_before_new_key = call_cli("apply", "--plan-sha256", c_plan, "--auth-token-file", str(auth_file), "--authorize-source-read")
+        assert code == 2 and replay_before_new_key["stage"] == "needs-attention"
+        assert len(effects) == 8
+        assert installed_launches() == c_installed_launches
+        assert chain.snapshot(first) == old_snapshot and chain.snapshot(next_generation) == snapshot_b
+        assert chain.workers() == original_worker
+        assert chain.worker_posts() == prior_posts
         # Only after checking preserved lifetimes and archived/direct-prior
         # exclusions, prove a genuinely unrelated new worker key is usable.
         fresh_record = original_worker_records["beta"]
