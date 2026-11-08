@@ -987,8 +987,20 @@ def apply(root: Path, sha: str, authenticated_client_file: Path, *, authorize_so
             operation = _effect(lane, operation, plan, "start-proxy", plan.profile.successor_proxy_id)
             return _start_watcher(lane, operation, plan)
         except BaseException as error:
-            if operation.effect or operation.completed:
-                _record_operation(lane, operation, stage="needs-attention", reason=type(error).__name__)
+            # The effect journal is authoritative: _effect may have persisted a
+            # dispatch before its callback returned to update this local value.
+            # Reload under the same operator lock and never erase an uncertain
+            # target, completed prefix, or launch receipt on an exception.
+            latest = _operation(root, sha)
+            if latest.effect or latest.completed:
+                _record_operation(
+                    lane,
+                    latest,
+                    stage="needs-attention",
+                    effect=latest.effect,
+                    target=latest.effect_target,
+                    reason=type(error).__name__,
+                )
             raise
         finally:
             if network >= 0:
