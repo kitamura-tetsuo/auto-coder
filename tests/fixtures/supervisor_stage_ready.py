@@ -69,11 +69,7 @@ def main() -> None:
                 # may contain credentials. The disposable fixture reports only a
                 # fixed, allowlisted category for a failed local clone.
                 cause = exc.__cause__
-                if (
-                    isinstance(cause, subprocess.CalledProcessError)
-                    and isinstance(cause.cmd, (list, tuple))
-                    and list(cause.cmd[:2]) == ["git", "clone"]
-                ):
+                if isinstance(cause, subprocess.CalledProcessError) and isinstance(cause.cmd, (list, tuple)) and list(cause.cmd[:2]) == ["git", "clone"]:
                     diagnostic = (cause.stderr or "").lower()
                     patterns = (
                         ("untrusted-source", ("dubious ownership", "unsafe repository")),

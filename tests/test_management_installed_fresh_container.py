@@ -269,6 +269,12 @@ class InstalledChain(Chain):
             text=True,
         ).stdout.strip()
         runtime = self.root / "workers" / "beta"
+        # The trusted local clone spawns git-upload-pack. Unlike rev-parse,
+        # that subprocess needs protected Git configuration for /source/.git.
+        # Keep trust restricted to this disposable, read-only checkout.
+        trusted_git = runtime / "source-safe.gitconfig"
+        trusted_git.write_text("[safe]\n\tdirectory = /source\n\tdirectory = /source/.git\n")
+        trusted_git.chmod(0o600)
         staged = subprocess.run(
             [
                 "docker",
@@ -288,14 +294,10 @@ class InstalledChain(Chain):
                 f"type=bind,src={runtime},dst=/runtime",
                 "--mount",
                 f"type=bind,src={Path(__file__).parent / 'fixtures'},dst=/fixtures,readonly",
-                # The trusted Actions checkout is bind-mounted read-only and is
-                # owned by the non-root runner. Trust only that exact Git path.
+                # Read only the staging fixture's narrowly scoped global Git
+                # trust, including in the local-clone upload-pack subprocess.
                 "-e",
-                "GIT_CONFIG_COUNT=1",
-                "-e",
-                "GIT_CONFIG_KEY_0=safe.directory",
-                "-e",
-                "GIT_CONFIG_VALUE_0=/source",
+                "GIT_CONFIG_GLOBAL=/runtime/source-safe.gitconfig",
                 "-e",
                 "HOME=/runtime/home",
                 "--entrypoint",
