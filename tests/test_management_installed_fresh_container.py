@@ -76,7 +76,34 @@ def _bind_disposable_source_reader(package: Path) -> None:
 
 
 class InstalledChain(Chain):
-    def __init__(self, root: Path):
+    def worker_compose_profile(self, profile: dict) -> dict:
+        """Use the real producer only for opt-in installed worker coverage."""
+        if not self.installed_ready_beta:
+            return profile
+        beta = profile["services"]["beta"]
+        beta["entrypoint"] = ["python", "/fixtures/supervisor_offline_pid1.py"]
+        beta["environment"].update(
+            {
+                "AUTO_CODER_FIXTURE_HOLD_BOOTSTRAP": "1",
+                "AUTO_CODER_SOURCE_REPOSITORY_ROOT": "/source",
+                "AUTO_CODER_CONFIG_PATH": "/runtime/llm_config.toml",
+                "AUTO_CODER_OWNERSHIP_FILE": "/runtime/ownership.json",
+                "AUTO_CODER_ARTIFACT_DIGEST": "disposable-installed-ready",
+                "AUTO_CODER_HEALTH_LOG_ENABLED": "0",
+                "AUTO_CODER_DISABLE_AUTO_UPDATE": "1",
+                "GITHUB_TOKEN": "nonfunctional-disposable-worker-token",
+            }
+        )
+        beta["volumes"].append(f"{Path(__file__).resolve().parents[1]}:/source:ro")
+        runtime = self.root / "workers" / "beta"
+        (runtime / "ownership.json").write_text(json.dumps({"fixture/beta": "beta"}))
+        (runtime / "llm_config.toml").write_text(
+            '[backend]\\norder = ["jules"]\\n\\n[backends.jules]\\nbackend_type = "jules"\\nenabled = true\\napi_key = "offline-unused"\\n'
+        )
+        return profile
+
+    def __init__(self, root: Path, *, installed_ready_beta: bool = False):
+        self.installed_ready_beta = installed_ready_beta
         super().__init__(root, with_workers=True)
         source = root / "tested-source"
         source.mkdir()
@@ -232,6 +259,114 @@ class InstalledChain(Chain):
         self.application_digest = self.docker("run", "--rm", "--network", "none", "--read-only", "-e", "PYTHONDONTWRITEBYTECODE=1", "--entrypoint", "python", self.image, "-c", probe).splitlines()[-1]
         self.receipts = {}
 
+    def stage_real_ready_beta_worker(self) -> None:
+        """Stage a pinned worker READY and observe its own progressing heartbeat."""
+        assert self.installed_ready_beta
+        source = Path(__file__).resolve().parents[1]
+        revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=source,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        runtime = self.root / "workers" / "beta"
+        staged = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "bridge",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges:true",
+                "--user",
+                f"{os.getuid()}:{os.getgid()}",
+                "--mount",
+                f"type=bind,src={source},dst=/source,readonly",
+                "--mount",
+                f"type=bind,src={runtime},dst=/runtime",
+                "--mount",
+                f"type=bind,src={Path(__file__).parent / 'fixtures'},dst=/fixtures,readonly",
+                "-e",
+                "HOME=/runtime/home",
+                "--entrypoint",
+                "python",
+                self.image,
+                "/fixtures/supervisor_stage_ready.py",
+                revision,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=1200,
+        )
+        assert staged.returncode == 0, (staged.stdout[-2000:], staged.stderr[-4000:])
+        prepared = json.loads(staged.stdout.splitlines()[-1])
+        receipt = prepared["receipt"]
+        assert receipt["source_sha"] == revision
+        assert receipt["installed_runtime_id"] != "bootstrap"
+        assert (runtime / Path(prepared["ready_path"]).relative_to("/runtime")).is_file()
+
+        def manager(*arguments: str) -> dict:
+            return json.loads(
+                self.docker(
+                    "exec",
+                    self.worker_manager,
+                    "python",
+                    "/fixtures/supervisor_network_client_fixture.py",
+                    *arguments,
+                    timeout=30,
+                )
+            )
+
+        stop_id = "installed-ready-stop-" + uuid.uuid4().hex
+        stopped = manager("stop-worker", "beta", stop_id)
+        assert stopped["result_code"] in {"DRAINING", "STOPPED"}, stopped
+        (runtime / "fixture-release").write_text("release bootstrap worker after real drain\n")
+        wait_for(
+            lambda: manager("read-operation", "beta", stop_id)["result_code"] == "STOPPED",
+            "original beta worker gracefully stopped",
+            timeout=90,
+        )
+        started = manager(
+            "start-staged",
+            "beta",
+            "installed-ready-start-" + uuid.uuid4().hex,
+            receipt["installed_runtime_id"],
+        )
+        assert started["result_code"] == "RUNNING", started
+
+        def ready_observation() -> dict | None:
+            try:
+                observed = manager("runtime-observe", "beta")
+            except (OSError, ValueError, subprocess.CalledProcessError):
+                return None
+            heartbeat = observed.get("observation", {}).get("heartbeat", {})
+            if (
+                observed.get("status") == "OK"
+                and observed.get("binding_status") == "VERIFIED"
+                and observed.get("runtime_binding", {}).get("runtime_id") == receipt["installed_runtime_id"]
+                and heartbeat.get("available") is True
+                and type(heartbeat.get("sequence")) is int
+            ):
+                return observed
+            return None
+
+        first = wait_for(ready_observation, "installed READY beta worker with producer heartbeat", timeout=120)
+        first_sequence = first["observation"]["heartbeat"]["sequence"]
+        wait_for(
+            lambda: (latest if latest["observation"]["heartbeat"]["sequence"] > first_sequence else None)
+            if (latest := ready_observation()) is not None
+            else None,
+            "advancing producer-owned beta heartbeat",
+            timeout=90,
+        )
+        self.worker_baseline = self.workers()
+        self.worker_post_baseline = self.worker_posts()
+
     def configure_profile(self, name, root, config, runtime, management, mounts, *, fresh: bool):
         source = root / "bootstrap" / "source"
         shutil.copytree(self.services.repository, source, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.egg-info"))
@@ -305,6 +440,22 @@ def wait_for(predicate, description, timeout=90):
             return value
         time.sleep(0.05)
     raise AssertionError("missing real installed-fresh evidence: " + description)
+
+
+@pytest.fixture
+def installed_ready_chain(tmp_path):
+    """Opt-in installed READY worker on an exclusively disposable host."""
+    if os.geteuid() != 0:
+        pytest.fail("root is required for mandatory disposable Docker verification")
+    fixture = InstalledChain.__new__(InstalledChain)
+    try:
+        fixture.__init__(tmp_path, installed_ready_beta=True)
+        yield fixture
+    finally:
+        if hasattr(fixture, "server"):
+            fixture.close()
+        elif hasattr(fixture, "names"):
+            Chain.close(fixture)
 
 
 @pytest.fixture

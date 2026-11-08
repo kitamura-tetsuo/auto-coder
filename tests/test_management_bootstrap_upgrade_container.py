@@ -35,6 +35,7 @@ from auto_coder.util.gh_cache import GitHubGitDataClient
 from tests.test_management_archived_cutover_container import Generation
 from tests.test_management_installed_fresh_container import InstalledChain
 from tests.test_management_installed_fresh_container import installed_chain as installed_chain
+from tests.test_management_installed_fresh_container import installed_ready_chain as installed_ready_chain
 from tests.test_management_installed_fresh_container import wait_for
 
 pytestmark = [pytest.mark.supervisor_integration, pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep")]
@@ -178,9 +179,10 @@ print('DISPOSABLE_READY_VERIFIED')
     assert result.stdout.strip().endswith("DISPOSABLE_READY_VERIFIED")
 
 
-@pytest.mark.timeout(900)
-def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: InstalledChain, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    chain = installed_chain
+@pytest.mark.timeout(1800)
+def test_disposable_operator_prepare_apply_status_real_docker(installed_ready_chain: InstalledChain, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    chain = installed_ready_chain
+    chain.stage_real_ready_beta_worker()
     first = chain.prepare("manager-a")
     chain.docker("start", first.container)
 
@@ -530,7 +532,7 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         assert chain.worker_posts() == worker_posts_c
         chain.assert_workers(third, original_worker_records)
         assert chain.grants() == chain.grants_before
-        assert chain.worker_posts() == {"beta": 1, "release": 1}
+        assert chain.worker_posts() == chain.worker_post_baseline
         assert chain.call(third, "auto_coder_whoami", {})["uid"] == "operator"
         for previous in (first, next_generation):
             chain.owner_refused(previous)
@@ -576,6 +578,8 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         # Only after checking preserved lifetimes and archived/direct-prior
         # exclusions, prove a genuinely unrelated new worker key is usable.
         fresh_record = original_worker_records["beta"]
+        fresh_key = "c-unrelated-worker-" + uuid.uuid4().hex
+        before_fresh_posts = chain.worker_posts()
         fresh = chain.call(
             third,
             "auto_coder_reevaluate_target",
@@ -583,12 +587,31 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
                 "target_id": "beta-worker",
                 "target_type": "issue",
                 "number": 2603,
-                "idempotency_key": "c-unrelated-worker-" + uuid.uuid4().hex,
+                "idempotency_key": fresh_key,
                 "expected_process_run_id": fresh_record.intent.expected_incarnation,
                 "expected_deployment_generation": fresh_record.intent.expected_artifact,
             },
         )
         assert isinstance(fresh.get("operation_id"), str) and fresh["operation_id"]
+        after_fresh_posts = chain.worker_posts()
+        assert after_fresh_posts == {
+            "beta": before_fresh_posts["beta"] + 1,
+            "release": before_fresh_posts["release"],
+        }
+        duplicate = chain.call(
+            third,
+            "auto_coder_reevaluate_target",
+            {
+                "target_id": "beta-worker",
+                "target_type": "issue",
+                "number": 2603,
+                "idempotency_key": fresh_key,
+                "expected_process_run_id": fresh_record.intent.expected_incarnation,
+                "expected_deployment_generation": fresh_record.intent.expected_artifact,
+            },
+        )
+        assert duplicate["operation_id"] == fresh["operation_id"]
+        assert chain.worker_posts() == after_fresh_posts
         code, replay = call_cli("apply", "--plan-sha256", c_plan, "--auth-token-file", str(auth_file), "--authorize-source-read")
         assert code == 2 and replay["stage"] == "needs-attention" and len(effects) == 8
         assert installed_launches() == c_installed_launches, "replayed apply must not launch another installed child"
