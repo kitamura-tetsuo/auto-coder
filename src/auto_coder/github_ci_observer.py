@@ -14,6 +14,7 @@ from functools import wraps
 from typing import Any, Callable, Iterator, TypeVar
 from uuid import uuid4
 
+from .ci_advisory_workflows import associated_actions_run_id, is_advisory_ci_run
 from .ci_observation import (
     CheckExecutionIdentity,
     CheckObservation,
@@ -31,12 +32,6 @@ from .util.github_request_outcome import GitHubRequestError
 logger = get_logger(__name__)
 T = TypeVar("T")
 _PAGE_SIZE = 100
-_ADVISORY_WORKFLOW_PATHS = frozenset(
-    {
-        ".github/workflows/prompt-regression.yml",
-        ".github/workflows/prompt-regression-report.yml",
-    }
-)
 
 
 def _conclusion(status: str, conclusion: object) -> CIConclusion:
@@ -171,9 +166,13 @@ def observe_ci(api: Any, token: str, repository: str, pr_number: int, head_sha: 
         cycle = str(uuid4())
         facts: list[CheckObservation | WorkflowObservation] = []
         try:
+            # Fetch complete workflow provenance before admitting check-run facts.
+            # A diagnostic's associated job check is not an independent gate.
+            advisory_run_ids: set[int] = set()
+            deferred_checks: list[dict[str, Any]] = []
             for source, operation, field_name in (
-                ("checks", api.checks.list_for_ref, "check_runs"),  # type: ignore[attr-defined]
                 ("workflows", api.actions.list_workflow_runs_for_repo, "workflow_runs"),  # type: ignore[attr-defined]
+                ("checks", api.checks.list_for_ref, "check_runs"),  # type: ignore[attr-defined]
             ):
                 page = 1
                 while True:
@@ -187,7 +186,9 @@ def observe_ci(api: Any, token: str, repository: str, pr_number: int, head_sha: 
                             raise ValueError(f"malformed or mismatched {source} identity")
                         if source == "workflows":
                             workflow_path = str(item.get("path") or "").split("@", 1)[0]
-                            if workflow_path in _ADVISORY_WORKFLOW_PATHS:
+                            if is_advisory_ci_run(item):
+                                if isinstance(item.get("id"), int):
+                                    advisory_run_ids.add(item["id"])
                                 continue
                             run_id, workflow_id, attempt = item.get("id"), item.get("workflow_id"), item.get("run_attempt")
                             if not run_id or not workflow_id or not isinstance(attempt, int) or attempt <= 0:
@@ -200,15 +201,19 @@ def observe_ci(api: Any, token: str, repository: str, pr_number: int, head_sha: 
                                 )
                             )
                         else:
-                            check_id = item.get("id")
-                            app = item.get("app")
-                            app_id = app.get("id") if isinstance(app, dict) else None
-                            if not check_id or not app_id:
-                                raise ValueError("check run lacks check/app identity")
-                            facts.append(CheckObservation(CheckExecutionIdentity(str(app_id), str(check_id)), _conclusion(str(item.get("status") or ""), item.get("conclusion")), str(item.get("name") or "")))
+                            deferred_checks.append(item)
                     if len(entries) < _PAGE_SIZE:
                         break
                     page += 1
+            for item in deferred_checks:
+                if associated_actions_run_id(item, repository) in advisory_run_ids:
+                    continue
+                check_id = item.get("id")
+                app = item.get("app")
+                app_id = app.get("id") if isinstance(app, dict) else None
+                if not check_id or not app_id:
+                    raise ValueError("check run lacks check/app identity")
+                facts.append(CheckObservation(CheckExecutionIdentity(str(app_id), str(check_id)), _conclusion(str(item.get("status") or ""), item.get("conclusion")), str(item.get("name") or "")))
             availability = ObservationAvailability.KNOWN if facts else ObservationAvailability.KNOWN_EMPTY
             snapshot = CIObservationSnapshot(subject, request, cycle, captured_epoch, availability, tuple(facts))
         except GitHubRequestError as exc:
