@@ -349,7 +349,7 @@ def test_workflow_is_manual_only_complete_and_not_a_required_check() -> None:
     workflow = yaml.safe_load((ROOT / ".github/workflows/test-impact-observation.yml").read_text(encoding="utf-8"))
     assert list(workflow["on"]) == ["workflow_dispatch"]
     assert workflow["on"]["workflow_dispatch"]["inputs"]["source_ref"]["required"] is True
-    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["permissions"] == {"contents": "read", "actions": "read"}
     steps = workflow["jobs"]["observe"]["steps"]
     assert next(step for step in steps if step["name"] == "Checkout explicitly requested source")["with"]["ref"] == "${{ inputs.source_ref }}"
     assert any("--locked --extra test" in step.get("run", "") for step in steps)
