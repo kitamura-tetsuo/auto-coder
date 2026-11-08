@@ -459,7 +459,7 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         chain.checkpoint(next_generation.path("journal") / "management-operations.sqlite3")
         snapshot_b = chain.snapshot(next_generation)
         b_operation = upgrade._operation(operator, plan_id)
-        assert b_operation.stage == "application-ready" and b_operation.watcher_pid > 0
+        assert b_operation.stage == "beta-deploy-prerequisites-verified" and b_operation.watcher_pid > 0
         assert upgrade._watcher_lifetime(b_operation.watcher_pid) == b_operation.watcher_start_token
         assert upgrade._watcher_is_owned(new_watcher.parent / "watch", b_operation, new_watcher)
         os.kill(b_operation.watcher_pid, signal.SIGTERM)
