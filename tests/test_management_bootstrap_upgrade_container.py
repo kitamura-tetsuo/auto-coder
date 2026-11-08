@@ -17,7 +17,9 @@ import sqlite3
 import subprocess
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
+from threading import Event
 from pathlib import Path
 
 import pytest
@@ -212,8 +214,13 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
     monkeypatch.setattr(upgrade, "_installed_candidate_preflight", installed_fixture_preflight)
     actual_docker = upgrade._docker
     effects = []
+    first_stop_entered = Event()
+    first_stop_released = Event()
 
     def counted_effect(*args: str, timeout: float = 30) -> str:
+        if args == ("kill", "--signal=SIGTERM", first.proxy):
+            first_stop_entered.set()
+            assert first_stop_released.wait(90), "real predecessor-stop barrier was not released"
         if args and args[0] in {"kill", "start"}:
             effects.append(args)
         return actual_docker(*args, timeout=timeout)
@@ -285,7 +292,20 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         assert code == 2 and denied["stage"] == "prerequisite-blocked"
         assert effects == [] and chain.workers() == original_worker
 
-        code, applied = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+        # Two real operator apply invocations must contend on the SAME held
+        # global lane while the first is suspended at a physical-effect
+        # barrier, rather than merely appearing concurrent after completion.
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(call_cli, "apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+            try:
+                assert first_stop_entered.wait(120), "real stop dispatch never reached the live barrier"
+                assert effects == [] and chain.workers() == original_worker
+                with pytest.raises(upgrade.UpgradeUnavailable, match="live operator"):
+                    upgrade.apply(operator, plan_id, auth_file, authorize_source_read=True)
+                assert effects == [] and chain.workers() == original_worker
+            finally:
+                first_stop_released.set()
+            code, applied = pending.result(timeout=240)
         assert code == 0 and applied["stage"] == "successor-launch-uncertain"
         assert effects == [
             ("kill", "--signal=SIGTERM", first.proxy),
@@ -501,7 +521,7 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
 
 
 @pytest.mark.timeout(900)
-@pytest.mark.parametrize("failure_point", ("lost-stop", "lost-start", "postlaunch-proxy-failed", "retained-unresolved-work"))
+@pytest.mark.parametrize("failure_point", ("lost-stop", "lost-start", "postlaunch-proxy-failed", "retained-unresolved-work", "predecessor-generation"))
 def test_disposable_operator_failure_fences_real_docker(installed_chain: InstalledChain, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], failure_point: str) -> None:
     """Dispatch real Docker effects, then lose an acknowledgement or the new proxy."""
     chain = installed_chain
@@ -594,6 +614,20 @@ def test_disposable_operator_failure_fences_real_docker(installed_chain: Install
             assert chain.workers() == baseline
             return
         prior_snapshot = chain.snapshot(first)
+        if failure_point == "predecessor-generation":
+            # A new process generation under the same immutable Docker
+            # container ID is NOT the predecessor the operator approved.
+            original_start = chain.docker("inspect", "--format", "{{.State.StartedAt}}", first.proxy)
+            chain.docker("restart", first.proxy)
+            changed_start = chain.docker("inspect", "--format", "{{.State.StartedAt}}", first.proxy)
+            assert changed_start != original_start
+            code, refused = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+            assert code == 2 and refused["stage"] == "prerequisite-blocked"
+            assert effects == [] and chain.workers() == baseline
+            assert chain.snapshot(first) == prior_snapshot
+            assert chain.docker("inspect", "--format", "{{.State.Running}}", first.container) == "true"
+            assert chain.docker("inspect", "--format", "{{.State.Running}}", first.proxy) == "true"
+            return
         code, failed = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
         assert code == 2 and failed["stage"] in {"needs-attention", "prerequisite-blocked"}
         persisted = upgrade._operation(operator, plan_id)
