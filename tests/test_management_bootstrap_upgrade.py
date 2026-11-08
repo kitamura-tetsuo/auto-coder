@@ -533,3 +533,107 @@ def test_watcher_must_not_start_if_real_proxy_namespace_is_unproven(tmp_path: Pa
     with pytest.raises(upgrade.UpgradeUnavailable, match="not attached"):
         upgrade._start_watcher(root / sha, operation, plan)
     assert upgrade._operation(root, sha) == operation
+
+@pytest.mark.parametrize(
+    "boundary",
+    (
+        "complete",
+        "legacy-single-job",
+        "missing-operator",
+        "missing-aggregate",
+        "skipped-required",
+        "wrong-attempt",
+        "wrong-run",
+        "wrong-source",
+    ),
+)
+def test_source_proof_requires_every_producer_job_at_exact_run_attempt(
+    monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    """Synthetic API metadata exercises the verifier; it is not public CI proof."""
+    source = "a" * 40
+    run_id, attempt = 4242, 3
+    jobs = [
+        {
+            "name": name,
+            "run_id": run_id,
+            "run_attempt": attempt,
+            "status": "completed",
+            "conclusion": "success",
+        }
+        for name in sorted(upgrade._REQUIRED_SUPERVISOR_JOBS)
+    ]
+    if boundary == "legacy-single-job":
+        jobs = [{**jobs[0], "name": "Fresh host verification"}]
+    elif boundary in {"missing-operator", "missing-aggregate"}:
+        omitted = (
+            "Operator upgrade production-origin Docker"
+            if boundary == "missing-operator"
+            else "Supervisor Integration Tests"
+        )
+        jobs = [job for job in jobs if job["name"] != omitted]
+    elif boundary == "skipped-required":
+        jobs[0]["conclusion"] = "skipped"
+    elif boundary == "wrong-attempt":
+        jobs[0]["run_attempt"] = attempt - 1
+    elif boundary == "wrong-run":
+        jobs[0]["run_id"] = run_id + 1
+
+    observed_paths: list[str] = []
+
+    def request(method: str, path: str) -> SimpleNamespace:
+        assert method == "GET"
+        observed_paths.append(path)
+        if "/workflows/" in path:
+            return SimpleNamespace(
+                status=200,
+                data={
+                    "workflow_runs": [
+                        {
+                            "head_sha": "b" * 40 if boundary == "wrong-source" else source,
+                            "status": "completed",
+                            "conclusion": "success",
+                            "id": run_id,
+                            "run_attempt": attempt,
+                        }
+                    ]
+                },
+            )
+        assert path == f"actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100"
+        return SimpleNamespace(
+            status=200, data={"jobs": jobs, "total_count": len(jobs)}
+        )
+
+    source_shard_checks: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        upgrade,
+        "verify_source_shard_attempt",
+        lambda *args: source_shard_checks.append(args),
+    )
+    client = SimpleNamespace(request=request)
+    proof = SimpleNamespace(
+        tag_object_oid="c" * 40, record=SimpleNamespace(run_id=17, run_attempt=1)
+    )
+
+    def read(requested: str) -> SimpleNamespace:
+        assert requested == source
+        return proof
+
+    def verify_run(record: object, *, recorded_attempt: bool) -> None:
+        assert record is proof.record and recorded_attempt
+
+    authority = SimpleNamespace(client=client, read=read, verify_run=verify_run)
+    if boundary == "complete":
+        assert upgrade._source_proof(authority, source) == (
+            "c" * 40,
+            run_id,
+            attempt,
+        )
+    else:
+        with pytest.raises(
+            upgrade.UpgradeUnavailable,
+            match="required fresh-host/exclusion integration cases",
+        ):
+            upgrade._source_proof(authority, source)
+    assert source_shard_checks == [(client, 17, 1, source)]
+    assert len(observed_paths) == (1 if boundary == "wrong-source" else 2)
