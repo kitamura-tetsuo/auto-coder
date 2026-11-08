@@ -44,7 +44,11 @@ def test_parallel_groups_and_stable_fail_closed_aggregate() -> None:
     assert workflow["name"] == "Supervisor Integration Tests"
     assert set(workflow["on"]) == {"pull_request", "workflow_dispatch"}
     assert workflow["permissions"] == {"contents": "read"}
-    assert set(workflow["jobs"]) == GROUPS | {"supervisor-integration"}
+    assert set(workflow["jobs"]) == GROUPS | {"supervisor-integration", "smoke-standalone-reversed"}
+    standalone = workflow["jobs"]["smoke-standalone-reversed"]
+    assert standalone["if"] == "github.event_name == 'pull_request' && github.head_ref == 'feat/2793-split-beta-smoke-scenarios'"
+    assert standalone["runs-on"] == "ubuntu-latest"
+    assert standalone.get("continue-on-error", False) is False
     aggregate = workflow["jobs"]["supervisor-integration"]
     assert aggregate["name"] == "Supervisor Integration Tests"
     assert aggregate["if"] == "always()"

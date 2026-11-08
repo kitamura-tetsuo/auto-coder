@@ -283,10 +283,31 @@ whole-file selection still discovers future new or parameterized marked cases.
 The split preserves the positive 180-second *maximum* (not a sleep), two real
 advancing samples, 8-second blocked deadline, and production 60-second
 maintenance cadence. Repeating real setup increases aggregate work even though
-individual scenarios can now be scheduled separately. Before a measured
-post-split Docker run, neither a sub-ten-minute longest case nor a net CI
-speedup is claimed; authoritative setup/call/teardown and longest/aggregate
-durations must come from that run's JUnit and timing artifacts.
+individual scenarios can now be scheduled separately. On GitHub-hosted
+`ubuntu-latest`, the real production-image `Supervisor Integration Tests`
+[run 42429881051](https://github.com/kitamura-tetsuo/auto-coder/actions/runs/42429881051)
+at head `c1e008e8105dada1d9abff356d5319456309bf9b` passed all six scenarios,
+the real staging-timeout regression and all other container tests: 14 passed,
+0 skipped, 0 failures, 0 errors. Native pytest timing records, in seconds:
+
+| Independently provisioned scenario | Setup | Call | Teardown | Total |
+| --- | ---: | ---: | ---: | ---: |
+| Original journal / publication | 117.44 | 61.95 | 10.39 | 189.78 |
+| Diagnostics without heartbeat progress | 106.04 | 10.02 | 10.50 | 126.56 |
+| Persistence / evidence / admission faults | 107.80 | 23.07 | 10.45 | 141.32 |
+| Later selection / publication authority | 107.45 | 202.48 | 10.78 | 320.71 |
+| Selected retry / same-SHA supersession | 106.72 | 146.58 | 10.22 | 263.53 |
+| Different revision / worker lifecycle | 106.63 | 295.94 | 10.47 | 413.04 |
+
+The longest case is 413.04 seconds (6m53s); **none exceeds ten minutes**.
+The sum of all six is 1,454.94 seconds (24m15s), approximately 77.4% more
+sequential work than the previous 820.05-second monolith. Setup is genuinely
+repeated for isolation. This proves a smaller indivisible scheduling unit,
+**not** a shorter serial CI job. The same JUnit/timing artifacts retain the
+actual 8.74-second staging-timeout regression and native setup/call/teardown
+phases. A separate one-time acceptance run will exercise each smoke node in
+its own pytest process and in reverse family order; the above measured run
+alone establishes independent fixture state but not that reordered check.
 `tests/test_beta_runtime_smoke_source_fixture.py` checks this isolation with real
 Git and HTTP selection while preserving the original source tags. This fixture
 correction changes no production behavior or dashboard schema.
