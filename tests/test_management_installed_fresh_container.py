@@ -482,11 +482,7 @@ class InstalledChain(Chain):
                     ("runtime-exception", ("runtimeerror", "keyerror", "valueerror", "typeerror")),
                 )
                 diagnostic["worker_log_observed"] = bool(worker_logs)
-                diagnostic["worker_startup_signatures"] = [
-                    category
-                    for category, markers in startup_signatures
-                    if any(marker in worker_logs for marker in markers)
-                ]
+                diagnostic["worker_startup_signatures"] = [category for category, markers in startup_signatures if any(marker in worker_logs for marker in markers)]
             except (OSError, ValueError, subprocess.CalledProcessError) as log_error:
                 diagnostic["worker_log_status"] = type(log_error).__name__
             raise AssertionError(f"{error}; disposable-worker-observation={json.dumps(diagnostic, sort_keys=True)}") from error
