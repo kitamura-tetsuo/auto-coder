@@ -62,7 +62,7 @@ jobs:
         env:
           IMPACT_DIRECTORY: ${{ steps.prepare.outputs.invocation_dir }}
         run: |
-          uv run python scripts/summarize_test_impact.py \
+          uv run python -m scripts.summarize_test_impact \
             --directory "$IMPACT_DIRECTORY" \
             --checkout "$GITHUB_WORKSPACE" \
             --output "$IMPACT_DIRECTORY/observation.json"
