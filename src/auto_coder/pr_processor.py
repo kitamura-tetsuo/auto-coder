@@ -63,7 +63,7 @@ from .bounded_repair_bundle import (
 )
 from .branch_manager import BranchManager
 from .canonical_pr_blocker_ledger import BlockerDisposition, BlockerLedgerSnapshot, CanonicalPRBlockerLedger
-from .checkout_lock import checkout_lock, serialize_checkout
+from .checkout_lock import checkout_lock, serialize_checkout, worktree_registry_lock
 from .ci_repair_authority import current_ci_failure_authority
 from .ci_repair_verification import FocusedVerification, dedupe_targets, follow_up_budget_exhausted, verify_targets
 from .claude_followup_waits import ClaudeFollowupHoldActive, get_claude_followup_wait_store, wait_from_error
@@ -5393,21 +5393,25 @@ def isolated_pr_head_worktree(repo_name: str, pr_number: int, head_sha: Optional
     worktree_dir = None
     repository_cwd = os.getcwd()
     execution_token = None
+    registered = False
     try:
-        # Ensure the exact head_sha / pull head is fetched locally
-        cmd.run_command(["git", "fetch", "origin", f"pull/{pr_number}/head"], cwd=repository_cwd)
-
         worktree_dir = tempfile.mkdtemp(prefix=f"auto_coder_val_pr{pr_number}_")
 
-        add_res = cmd.run_command(["git", "worktree", "add", "--detach", worktree_dir, head_sha], cwd=repository_cwd)
-        if not add_res.success:
-            logger.warning(f"Failed to create isolated git worktree at {head_sha[:8]}: {add_res.stderr}")
-            raise RuntimeError(f"Failed to create isolated git worktree at {head_sha[:8]}: {add_res.stderr}")
-
-        verified = cmd.run_command(["git", "rev-parse", "HEAD"], cwd=worktree_dir)
-        if not verified.success or verified.stdout.strip().lower() != head_sha.strip().lower():
-            actual = verified.stdout.strip() or verified.stderr.strip() or "unavailable"
-            raise RuntimeError(f"Isolated validation target mismatch: expected {head_sha}, found {actual}")
+        # Git exposes an initializing registry entry before commondir has
+        # content. A concurrent add/remove can read that incomplete entry.
+        with worktree_registry_lock(repository_cwd):
+            # Fetch also enumerates linked-worktree metadata. Disable detached
+            # maintenance so no background registry reader outlives this lease.
+            cmd.run_command(["git", "fetch", "--no-write-fetch-head", "--no-auto-maintenance", "origin", f"pull/{pr_number}/head"], cwd=repository_cwd)
+            add_res = cmd.run_command(["git", "worktree", "add", "--detach", worktree_dir, head_sha], cwd=repository_cwd)
+            if not add_res.success:
+                logger.warning(f"Failed to create isolated git worktree at {head_sha[:8]}: {add_res.stderr}")
+                raise RuntimeError(f"Failed to create isolated git worktree at {head_sha[:8]}: {add_res.stderr}")
+            registered = True
+            verified = cmd.run_command(["git", "rev-parse", "HEAD"], cwd=worktree_dir)
+            if not verified.success or verified.stdout.strip().lower() != head_sha.strip().lower():
+                actual = verified.stdout.strip() or verified.stderr.strip() or "unavailable"
+                raise RuntimeError(f"Isolated validation target mismatch: expected {head_sha}, found {actual}")
         execution_token = bind_command_execution_cwd(worktree_dir)
         logger.info(f"Bound isolated detached worktree at {head_sha[:8]} ({worktree_dir}) for validation")
         yield worktree_dir
@@ -5417,9 +5421,15 @@ def isolated_pr_head_worktree(repo_name: str, pr_number: int, head_sha: Optional
 
         if worktree_dir and os.path.exists(worktree_dir):
             try:
-                cmd.run_command(["git", "worktree", "remove", "--force", worktree_dir], cwd=repository_cwd)
-                shutil.rmtree(worktree_dir, ignore_errors=True)
-                logger.debug(f"Cleaned up isolated worktree at {worktree_dir}")
+                with worktree_registry_lock(repository_cwd):
+                    removed = cmd.run_command(["git", "worktree", "remove", "--force", worktree_dir], cwd=repository_cwd)
+                    if removed.success:
+                        shutil.rmtree(worktree_dir, ignore_errors=True)
+                        logger.debug(f"Cleaned up isolated worktree at {worktree_dir}")
+                    elif not registered and not any(Path(worktree_dir).iterdir()):
+                        Path(worktree_dir).rmdir()
+                    else:
+                        logger.warning(f"Isolated worktree cleanup was not confirmed; retaining owned path {worktree_dir}")
             except Exception as e:
                 logger.warning(f"Failed to clean up worktree dir {worktree_dir}: {e}")
 

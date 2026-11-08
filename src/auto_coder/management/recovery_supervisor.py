@@ -221,7 +221,8 @@ class RecoveryConsumer:
                 environment.update({"AUTO_CODER_MANAGEMENT_RUNTIME_ID": runtime.reference, "AUTO_CODER_MANAGEMENT_RECEIPT_ID": runtime.source_receipt})
             if runtime.drain_ack is not None:
                 environment["AUTO_CODER_DRAIN_RECEIPT"] = str(runtime.drain_ack)
-            process = subprocess.Popen([str(runtime.executable), *runtime.arguments], env=environment, start_new_session=False)
+            with self.supervisor._exclusion_evidence():
+                process = self.supervisor._spawn_owned_child(runtime, environment)
             start_token = self.supervisor._start_token(process.pid)
             if not start_token:
                 self._set(intent.request_id, "claimed", "unknown", "launched process lifetime unavailable")
@@ -231,6 +232,7 @@ class RecoveryConsumer:
             if not self.supervisor.store.reserve(prepared, running):
                 self._set(intent.request_id, "claimed", "unknown", "launched process observation conflicted")
                 return
+            self.supervisor._owned_launch_unresolved = False
             self.supervisor._finish(operation, ResultStatus.OBSERVED_RUNNING, running)
             now = time.time()
             self._set(intent.request_id, "claimed", "launched", "process launched; authenticated readback pending", observation_id=secrets.token_hex(16), child_identity=self.supervisor._identity(running), started=now, deadline=now + self.config.verification_timeout)

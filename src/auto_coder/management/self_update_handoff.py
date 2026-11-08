@@ -13,6 +13,7 @@ import math
 import os
 import sqlite3
 import time
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -23,6 +24,9 @@ from loguru import logger
 
 from .bootstrap_store import ChildPhase, ChildRecord
 from .version_staging import ManagementReadyReceipt, ManagementRuntimeConfig, ManagementVersionStager
+
+if TYPE_CHECKING:
+    from .retained_journal import RetainedJournal
 
 
 class HandoffPhase(str, Enum):
@@ -440,7 +444,13 @@ class SelfUpdateHandoffConsumer:
             if stopped.status is not ResultStatus.STOPPED or stopped.record.effect_operation_id != operation + ":stop" or stopped.record.selected_runtime != handoff.expected_child.selected_runtime:
                 self._attention(record, "the original child has not been authoritatively drained and stopped")
                 return
+            if not self._launch_evidence_available(record):
+                return
             refusal = self._authority_refusal(handoff)
+            # Authority scanning can itself observe evidence loss after the
+            # first gate. Refuse before claiming either physical launch lane.
+            if not self._launch_evidence_available(record):
+                return
             if refusal is not None:
                 failed = self.store.change(record, phase=HandoffPhase.RESTORE_STARTING, detail=refusal[1].replace("; no stop was sent", "") + "; the stopped original runtime will be restored once")
                 if failed is None:
@@ -456,7 +466,13 @@ class SelfUpdateHandoffConsumer:
             claimed = self.store.change(record, phase=HandoffPhase.STARTING)
             if claimed is None:
                 return
-            result = self.supervisor.start_selected(operation + ":start", handoff.attempt_id, handoff.candidate.management_runtime_id, self.supervisor._identity(stopped.record))
+            result = self.supervisor.start_selected(
+                operation + ":start",
+                handoff.attempt_id,
+                handoff.candidate.management_runtime_id,
+                self.supervisor._identity(stopped.record),
+                forward_authority=lambda retained: self._check_authority(handoff, retained=retained, reuse_retained=bool(self.config.archived_exclusions)) is None,
+            )
             self._after_start(claimed, result)
             return
         if record.phase is HandoffPhase.STARTING:
@@ -555,6 +571,8 @@ class SelfUpdateHandoffConsumer:
         if observed.status is not ResultStatus.STOPPED:
             self._attention(record, "failed candidate did not confirm drain and exit; exact previous runtime was not started")
             return
+        if not self._launch_evidence_available(record):
+            return
         claimed = self.store.change(record, phase=HandoffPhase.RESTORE_STARTING)
         if claimed is None:
             return
@@ -565,6 +583,17 @@ class SelfUpdateHandoffConsumer:
             self.store.change(claimed, phase=HandoffPhase.PROCESS_RESTORED, restored_identity=self.supervisor._identity(restored.record), detail="one exact previous executable restored after failed application verification; operator state was retained")
         else:
             self._attention(claimed, "the one previous-runtime attempt failed or is unobservable; manual recovery is required")
+
+    def _launch_evidence_available(self, record: HandoffRecord) -> bool:
+        from .bootstrap_supervisor import ExclusionEvidenceUnavailable
+
+        try:
+            with self.supervisor._exclusion_evidence():
+                pass
+            return True
+        except ExclusionEvidenceUnavailable:
+            self._attention(record, "ancestry evidence or continuous owner fencing unavailable; no candidate or previous runtime was started")
+            return False
 
     def _is_restored(self, record: HandoffRecord, observed: "Observation") -> bool:
         from .bootstrap_supervisor import ResultStatus
@@ -583,12 +612,15 @@ class SelfUpdateHandoffConsumer:
         )
 
     def _authority_refusal(self, handoff: SelfUpdateHandoff) -> tuple[HandoffPhase, str] | None:
+        return self._check_authority(handoff)
+
+    def _check_authority(self, handoff: SelfUpdateHandoff, *, retained: RetainedJournal | None = None, reuse_retained: bool = False) -> tuple[HandoffPhase, str] | None:
         from .action_scopes import PendingAuthorityStatus
         from .identity import FirebaseOperatorIdentity, IdentityConfig
         from .oauth_config import load_management_settings
         from .oauth_grants import OAuthGrantService
         from .operation_store import ManagementOperationStore
-        from .operations import EffectState, ReadStatus
+        from .operations import EffectState, OperationPhase, ReadStatus
         from .self_update_policy import REQUIRED_SCOPES, ManagementUpdateOutcome, _current_policy, _recorded_update
 
         try:
@@ -597,6 +629,8 @@ class SelfUpdateHandoffConsumer:
             bootstrap_path = settings.bootstrap_config_path
             if bootstrap_path is None or settings.operating_policy_path is None:
                 return HandoffPhase.UNAVAILABLE, "configured original authority paths are unavailable; no stop was sent"
+            if self.config.archived_exclusions and bootstrap_path != self.supervisor.bootstrap_config_path:
+                return HandoffPhase.UNAVAILABLE, "configured bootstrap conflicts with the owning supervisor; no stop was sent"
             journal_root = settings.operation_state_root or settings.state_root
             if journal_root != self.config.journal_root or settings.state_root != self.config.oauth_root:
                 return HandoffPhase.UNAVAILABLE, "configured retained operator-state roots conflict; no stop was sent"
@@ -606,13 +640,36 @@ class SelfUpdateHandoffConsumer:
                 return HandoffPhase.UNAVAILABLE, "original operation journal unavailable; no stop was sent"
             record = lookup.record
             accepted = _recorded_update(record)
-            if accepted is None or record.effect.state is not EffectState.SENT_UNKNOWN or (record.effect.attempt_id, record.effect.correlation_identity, record.effect.owner_generation) != (handoff.attempt_id, handoff.correlation_identity, handoff.effect_generation):
+            if (
+                accepted is None
+                or record.phase is not OperationPhase.RECONCILING
+                or record.revision != handoff.effect_generation
+                or record.effect.state is not EffectState.SENT_UNKNOWN
+                or (record.effect.attempt_id, record.effect.correlation_identity, record.effect.owner_generation) != (handoff.attempt_id, handoff.correlation_identity, handoff.effect_generation)
+            ):
                 return HandoffPhase.DENIED, "original operation or effect generation mismatches the handoff; no stop was sent"
             intent, original, revision = accepted
             if (original.issuer, original.resource, original.project_id) != (settings.oauth.canonical_issuer, settings.oauth.resource, settings.oauth.firebase_project_id):
                 return HandoffPhase.DENIED, "original authority issuer or resource conflicts with fixed configuration; no stop was sent"
             if revision != handoff.policy_revision or {p.name: p.value for p in record.intent.parameters}.get("source_sha") != handoff.candidate.source_sha:
                 return HandoffPhase.DENIED, "handoff changed immutable original intent; no stop was sent"
+            # The durable handoff outlives the child dispatch guard. Reopen
+            # sealed retained evidence at each forward stop/start boundary.
+            from .retained_journal import RetainedGuardedOperationStore
+            from .retained_startup import retained_from_fresh_intent
+
+            authority = getattr(self.supervisor, "source_authority", None)
+            if not reuse_retained:
+                retained = retained_from_fresh_intent(settings, source_authority=authority, serving_process=False)
+            if self.config.archived_exclusions and retained is None:
+                return HandoffPhase.UNAVAILABLE, "sealed ancestor evidence is unavailable; no stop was sent"
+            if retained is not None:
+                # The physical launch owns a supplied reader until Popen. Key
+                # checks run before the final policy/grant/journal checks, and
+                # no additional evidence scan follows those checks.
+                with nullcontext(retained) if reuse_retained else retained:
+                    if retained.management_request(record.intent.idempotency_key, handoff.candidate.source_sha, record.authority) is not None or not RetainedGuardedOperationStore(journal_root, retained).effect_permitted(record):
+                        return HandoffPhase.UNAVAILABLE, "retained management evidence is unavailable or excludes the effect; no stop was sent"
             policy = _current_policy(settings.operating_policy_path, bootstrap_path, intent)
             if policy.outcome is ManagementUpdateOutcome.UNAVAILABLE:
                 return HandoffPhase.UNAVAILABLE, "current management policy is unavailable; no stop was sent"

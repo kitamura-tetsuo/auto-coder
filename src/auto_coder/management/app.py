@@ -50,7 +50,7 @@ def create_management_app(
         clients[target] = client
         instances.add(config.instance_id)
         repositories.add(config.repository)
-    owned_retained = retained_from_fresh_intent(settings) if retained_journal is None else None
+    owned_retained = retained_from_fresh_intent(settings, source_authority=self_update_source_authority, serving_process=True) if retained_journal is None else None
     selected_retained = retained_journal if retained_journal is not None else owned_retained
     runtime = ManagementRuntime(
         settings, grants, clients, self_update_source_authority=self_update_source_authority, retained_journal=selected_retained, beta_acceptance_source=beta_acceptance_source, beta_acceptance_publisher=beta_acceptance_publisher, beta_acceptance_profile=beta_acceptance_profile

@@ -145,11 +145,16 @@ def _inspect(container_id: str) -> list[object]:
     return values
 
 
-def _supported_prior_command(entrypoint: object, command: object) -> bool:
-    return (entrypoint, command) in (
+def _supported_prior_command(entrypoint: object, command: object, *, initialized_fresh: bool = False) -> bool:
+    profiles = (
         (["python", "-m", "auto_coder.management.bootstrap_supervisor"], ["--config", "/bootstrap/config.json"]),
         (["python"], ["-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json"]),
     )
+    if (entrypoint, command) in profiles:
+        return True
+    # The supported one-shot CLI remains in immutable Docker Cmd after success.
+    # Only captured, hash-sealed successful fresh provenance permits this form.
+    return initialized_fresh and any(entrypoint == prefix and command == [*arguments, "--fresh-initialization"] for prefix, arguments in profiles)
 
 
 def capture_prior_container(container_id: str, image_id: str, *, expected_mounts: tuple[tuple[str, str, bool], ...] = (), require_owner_lock: bool = False, require_deployment_identity: bool = False) -> PriorContainer:
@@ -162,7 +167,19 @@ def capture_prior_container(container_id: str, image_id: str, *, expected_mounts
         raise HostObservationUnavailable("prior container is not the expected live instance")
     if privileged is not False or pid_mode not in ("", None) or caps not in (None, []) or security not in (None, []) or network in ("host", None, "") or devices not in (None, []):
         raise HostObservationUnavailable("unsupported prior container containment")
+    initialized_fresh = False
     allowed_destinations = {"/bootstrap", "/management-child-state", "/management-oauth", "/management-operations", "/management-policy", "/management-versions", "/run/firebase-admin", "/run/secrets/release_worker_bridge", "/run/secrets/beta_worker_bridge", "/etc/caddy/Caddyfile"}
+    if require_deployment_identity:
+        from .exclusion_host import inherited_support
+
+        try:
+            if not isinstance(mounts, list):
+                raise ValueError("prior mounts unavailable")
+            inherited = inherited_support(mounts)[1]
+            initialized_fresh = "/management-initialization" in inherited
+            allowed_destinations.update(inherited)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise HostObservationUnavailable("prior inherited mount provenance unavailable") from exc
     if not isinstance(mounts, list) or any(not isinstance(mount, dict) or mount.get("Type") != "bind" or mount.get("Destination") not in allowed_destinations or not isinstance(mount.get("Source"), str) or type(mount.get("RW")) is not bool for mount in mounts):
         raise HostObservationUnavailable("prior container mount boundary is unsupported")
     observed_mounts = tuple(sorted((str(mount["Source"]), str(mount["Destination"]), bool(mount["RW"])) for mount in mounts))
@@ -232,7 +249,7 @@ def capture_prior_container(container_id: str, image_id: str, *, expected_mounts
         instance_id, bootstrap_source, bootstrap_sha256, published_port = "", "", "", 0
         oauth_source, oauth_device, oauth_inode = "", 0, 0
         if require_deployment_identity:
-            if not _supported_prior_command(values[15], values[16]):
+            if not _supported_prior_command(values[15], values[16], initialized_fresh=initialized_fresh):
                 raise ValueError("prior supervisor entrypoint differs")
             sources = [source for source, destination, rw in observed_mounts if destination == "/bootstrap" and not rw]
             if len(sources) != 1:
@@ -326,8 +343,16 @@ def assert_prior_container_stopped(prior: PriorContainer) -> None:
     if prior.instance_id:
         mounts = values[11]
         expected_source = str(Path(prior.bootstrap_source).parent)
+        from .exclusion_host import inherited_support
+
+        try:
+            if not isinstance(mounts, list):
+                raise ValueError("prior mounts unavailable")
+            initialized_fresh = "/management-initialization" in inherited_support(mounts)[1]
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise HostObservationUnavailable("stopped prior inherited provenance unavailable") from exc
         if (
-            not _supported_prior_command(values[15], values[16])
+            not _supported_prior_command(values[15], values[16], initialized_fresh=initialized_fresh)
             or values[17] != {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(prior.published_port)}]}
             or Path(prior.bootstrap_source).name != "config.json"
             or not isinstance(mounts, list)
@@ -734,6 +759,19 @@ def assert_replacement_owner(intent: FreshInitializationIntent, incarnation: str
         allowed_destinations = set(expected) | {"/bootstrap", "/management-policy", "/management-versions", "/management-initialization", "/management-prior-owner.lock", "/run/firebase-admin", "/run/secrets/release_worker_bridge", "/run/secrets/beta_worker_bridge"}
         if intent.host_prior_journal_root:
             allowed_destinations.add(intent.prior_journal_root)
+        from .exclusion_host import check_archive_mounts
+
+        bootstrap_mount = [m for m in mounts if isinstance(m, dict) and m.get("Destination") == "/bootstrap" and m.get("RW") is False]
+        if len(bootstrap_mount) != 1:
+            raise ValueError("replacement bootstrap mount differs")
+        bootstrap_path = Path(str(bootstrap_mount[0]["Source"])) / "config.json"
+        from .bootstrap_supervisor import BootstrapConfig
+        from .exclusion_host import protected_bytes
+
+        if hashlib.sha256(protected_bytes(bootstrap_path, private=False)).hexdigest() != intent.bootstrap_config_sha256:
+            raise ValueError("replacement bootstrap bytes changed")
+        archived = BootstrapConfig.read(bootstrap_path).archived_exclusions
+        allowed_destinations.update(check_archive_mounts(mounts, archived))
         for mount in mounts:
             if isinstance(mount, dict) and mount.get("Type") == "tmpfs" and mount.get("Destination") == "/tmp":
                 continue
@@ -801,7 +839,9 @@ def assert_replacement_owner(intent: FreshInitializationIntent, incarnation: str
         raise HostObservationUnavailable("replacement owner evidence unavailable") from exc
 
 
-def serve_one_fresh_grant(socket_path: Path, intent: FreshInitializationIntent, management: PriorContainer, proxy: PriorContainer, fence_descriptor: int, network_descriptor: int, *, trusted_uid: int | None = None, timeout: float = 120) -> None:
+def serve_one_fresh_grant(
+    socket_path: Path, intent: FreshInitializationIntent, management: PriorContainer, proxy: PriorContainer, fence_descriptor: int, network_descriptor: int, *, trusted_uid: int | None = None, timeout: float = 120, bootstrap_config: Path | None = None, exclusion_fences: tuple[int, ...] = ()
+) -> None:
     """Serve one challenge only after fresh host and replacement checks.
 
     This foreground host adapter does not start containers and never supplies a
@@ -810,6 +850,11 @@ def serve_one_fresh_grant(socket_path: Path, intent: FreshInitializationIntent, 
     if trusted_uid is None:
         trusted_uid = os.geteuid()
     intent.validate()
+    from .exclusion_host import check_exclusion_peer, check_host_archives, validate_successor
+
+    excluded = validate_successor(management, intent, bootstrap_config)
+    check_exclusion_peer(excluded, exclusion_fences, os.getpid())
+    check_host_archives(excluded)
     evidence = json.dumps({"management": asdict(management), "proxy": asdict(proxy)}, sort_keys=True, separators=(",", ":")).encode()
     if (
         management.container_id != intent.old_container_id
@@ -892,6 +937,14 @@ def serve_one_fresh_grant(socket_path: Path, intent: FreshInitializationIntent, 
             assert_prior_network_pin(network_descriptor, management.net_namespace)
             assert_prior_network_unreferenced(management.net_namespace)
             assert_replacement_owner(intent, incarnation, peer_pid, fence_descriptor, socket_path.parent)
+            if validate_successor(management, intent, bootstrap_config) != excluded:
+                raise ValueError("excluded ancestry changed")
+            check_host_archives(excluded)
+            replacement_mounts = _inspect(intent.new_container_id)[11]
+            if not isinstance(replacement_mounts, list):
+                raise ValueError("replacement exclusion mounts unavailable")
+            check_exclusion_peer(excluded, exclusion_fences, os.getpid())
+            check_exclusion_peer(excluded, exclusion_fences, peer_pid, mounts=replacement_mounts)
             assert_replacement_published_listener(intent)
             connection.sendall(json.dumps({**request, "granted": "host-evidence-verified"}, sort_keys=True, separators=(",", ":")).encode() + b"\n")
             print(json.dumps({"status": "grant-delivered", "request_id": intent.request_id}), flush=True)

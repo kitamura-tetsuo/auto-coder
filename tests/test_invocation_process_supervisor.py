@@ -1,13 +1,18 @@
 import errno
+import fcntl
 import os
+import select
 import signal
+import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import src.auto_coder.invocation_process_supervisor as invocation_module
 from src.auto_coder.invocation_process_supervisor import (
     CgroupV2Owner,
     CgroupV2Unavailable,
@@ -208,23 +213,138 @@ def test_large_unread_prompt_does_not_block_cancellation(tmp_path: Path, _use_re
         worker.join(timeout=3)
 
 
-def test_large_unread_prompt_does_not_block_timeout(tmp_path: Path) -> None:
-    supervisor = make_supervisor(ProcessGroupOwner(tmp_path / "owners"))
-    started = time.monotonic()
+def test_large_unread_prompt_does_not_block_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands, _use_real_sleep) -> None:
+    # Control only the execution clock, not scheduling, Popen or real cleanup.
+    # A total wall-time bound also measures pre-deadline startup and CI load.
+    budget = 0.05
+    polls = [threading.Event(), threading.Event()]
+    releases = [threading.Event(), threading.Event()]
+    writer_armed = threading.Event()
+    errors: list[BaseException] = []
+    children = []
+    readers = []
+    writers = []
+    streams = []
+    controllers = []
+    stops = []
+    ready = tmp_path / "child-ready"
 
-    result = supervisor.run(
-        request(
-            tmp_path,
-            "import time; time.sleep(30)",
-            prompt_transport=PromptTransport.STDIN,
-            prompt="p" * (4 * 1024 * 1024),
-            timeout_seconds=0.05,
+    class Clock:
+        now = 0.0
+        sleeps = 0
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, delay):
+            index = self.sleeps
+            self.sleeps += 1
+            assert index < len(polls), "deadline expired without stopping the child"
+            polls[index].set()
+            assert releases[index].wait(10), "deadline controller did not respond"
+
+    clock = Clock()
+    real_popen = subprocess.Popen
+
+    def observe_popen(*args, **kwargs):
+        child = real_popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(invocation_module, "time", clock)
+    monkeypatch.setattr(invocation_module, "subprocess", SimpleNamespace(Popen=observe_popen, PIPE=subprocess.PIPE, SubprocessError=subprocess.SubprocessError, TimeoutExpired=subprocess.TimeoutExpired))
+
+    class ObservedOwner(ProcessGroupOwner):
+        def stop_and_confirm(self, group, deadline):
+            stops.append(clock.now)
+            super().stop_and_confirm(group, deadline)
+
+    def drive_deadline(descriptor):
+        try:
+            assert writer_armed.wait(10), "prompt submission blocked the supervisor"
+            assert polls[0].wait(10), "supervisor never checked its deadline"
+            guard = time.monotonic() + 10
+            while not ready.exists() or select.select([], [descriptor], [], 0)[1]:
+                assert children[0].poll() is None
+                assert time.monotonic() < guard, "unread stdin pipe never filled"
+                threading.Event().wait(0.01)
+            assert writers[0].is_alive()
+            clock.now = budget / 2
+            releases[0].set()
+            assert polls[1].wait(10), "supervisor did not recheck the deadline"
+            assert supervisor.state("invocation-one") is WriterState.ACTIVE
+            assert children[0].poll() is None and writers[0].is_alive()
+            assert not select.select([], [descriptor], [], 0)[1]
+            assert stops == []
+            clock.now = budget
+            releases[1].set()
+        except BaseException as error:
+            errors.append(error)
+            clock.now = budget
+            for release in releases:
+                release.set()
+            if children and children[0].poll() is None:
+                children[0].kill()
+                children[0].wait(timeout=5)
+
+    class ObservedSupervisor(InvocationProcessSupervisor):
+        def _start_reader(self, stream, chunks):
+            thread = super()._start_reader(stream, chunks)
+            readers.append(thread)
+            streams.append(stream)
+            return thread
+
+        def _start_writer(self, stream, prompt):
+            descriptor = stream.fileno()
+            assert len(prompt) > fcntl.fcntl(descriptor, fcntl.F_GETPIPE_SZ)
+            streams.append(stream)
+            # Start the watchdog before submitting input, so a synchronous-write
+            # regression also releases the real child instead of hanging a test.
+            controller = threading.Thread(target=drive_deadline, args=(descriptor,), name="unread-prompt-deadline")
+            controllers.append(controller)
+            controller.start()
+            thread = super()._start_writer(stream, prompt)
+            writers.append(thread)
+            writer_armed.set()
+            return thread
+
+    owner = ObservedOwner(tmp_path / "owners")
+    supervisor = ObservedSupervisor(owner=owner, filesystem_policy_factory=TestFilesystemPolicy)
+    try:
+        result = supervisor.run(
+            request(
+                tmp_path,
+                "from pathlib import Path; import time; Path('child-ready').write_text('ready'); time.sleep(30)",
+                prompt_transport=PromptTransport.STDIN,
+                prompt="p" * (4 * 1024 * 1024),
+                timeout_seconds=budget,
+            )
         )
-    )
-
-    assert time.monotonic() - started < 1
-    assert result.outcome is InvocationOutcome.TIMED_OUT
-    assert result.writer_state is WriterState.POSITIVELY_STOPPED
+        for controller in controllers:
+            controller.join(10)
+        assert not errors, errors
+        assert clock.sleeps == 2 and stops == [budget]
+        assert result.outcome is InvocationOutcome.TIMED_OUT
+        assert result.writer_state is WriterState.POSITIVELY_STOPPED
+        assert result.returncode == -signal.SIGKILL
+        assert all(not thread.is_alive() for thread in (*readers, *writers, *controllers))
+        assert all(stream.closed for stream in streams)
+        assert not (owner.root / "invocation-one").exists()
+        with pytest.raises(ChildProcessError):
+            os.waitpid(children[0].pid, os.WNOHANG)
+    finally:
+        for release in releases:
+            release.set()
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
+        for thread in (*controllers, *readers, *writers):
+            if thread is not None:
+                thread.join(15)
+                assert not thread.is_alive(), "fixture I/O or deadline controller leaked"
+        if (owner.root / "invocation-one").exists():
+            owner.discard(owner.root / "invocation-one")
 
 
 def test_timeout_and_confirmation_uncertainty_remain_distinct(tmp_path: Path) -> None:
