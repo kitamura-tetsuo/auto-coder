@@ -33,8 +33,10 @@ python -m pytest -p tests.ci_impact_plugin --cov=. --cov-context=test --cov-repo
 
 The diagnostic does not shard the suite or introduce reruns. Pytest's native
 assertions, fixtures, teardown, child-process/container behavior and exit status
-remain authoritative. The separate normalization step runs even after a test
-failure and cannot turn a failing pytest job green. A diagnostic destination
+remain authoritative. The separate normalization step runs as
+`uv run python -m scripts.summarize_test_impact` from the checkout root without
+requiring `PYTHONPATH`. It runs even after a test failure and cannot turn a
+failing pytest job green. A diagnostic destination
 known to be unusable before execution causes a single uninstrumented run of the
 same native selection with an explicit observer-unavailable warning.
 
