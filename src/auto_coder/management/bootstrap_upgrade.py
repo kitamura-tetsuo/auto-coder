@@ -570,6 +570,23 @@ def _mcp_call(port: int, token: str, tool: str, arguments: dict[str, object]) ->
     return content
 
 
+def _request_fresh_readback(port: int, credential: Path, fresh: dict[str, object]) -> None:
+    """Request the existing child's observation-bound proof, never infer success."""
+    observation_id = fresh.get("observation_id")
+    if (
+        not isinstance(observation_id, str)
+        or len(observation_id) != 32
+        or any(char not in "0123456789abcdef" for char in observation_id)
+    ):
+        raise ValueError("fresh observation identity is incomplete")
+    token = _read_record(credential).decode("utf-8").strip()
+    if not token or "\n" in token:
+        raise ValueError("fresh authenticated client credential invalid")
+    identity = _mcp_call(port, token, "auto_coder_whoami", {"observation_id": observation_id})
+    if not isinstance(identity.get("uid"), str) or not identity["uid"]:
+        raise ValueError("fresh observation-bound authenticated identity unavailable")
+
+
 def _authenticated_baseline(port: int, targets: tuple[str, ...], credential: Path) -> dict[str, dict[str, str]]:
     token = _read_record(credential).decode("utf-8").strip()
     if not token or "\n" in token:
@@ -1099,8 +1116,7 @@ def status(root: Path, sha: str, *, authenticated_client_file: Path | None = Non
             proxy_pid = proxy.get("pid")
             new_watcher_root = _watcher_binding(Path(plan.profile.new_watcher_config), plan.successor_management, plan.successor_image, plan.profile.successor_proxy_id, plan.profile.successor_proxy_image, Path(plan.profile.successor_proxy_config))
             if (
-                fresh["status"] != "succeeded"
-                or manager[1] != intent.image_digest
+                manager[1] != intent.image_digest
                 or manager[2] is not True
                 or manager[13] != operation.effect_receipts.get("start-management")
                 or proxy.get("image") != plan.profile.successor_proxy_image
@@ -1112,6 +1128,19 @@ def status(root: Path, sha: str, *, authenticated_client_file: Path | None = Non
             ):
                 answer["stage"] = "successor-launch-uncertain"
                 answer["reason"] = "authenticated fresh-child or proxy attachment not proven"
+                return answer
+            # The fresh observer only seals "succeeded" after a real
+            # observation-bound authenticated whoami read. A newly launched
+            # successor has not yet seen that read: status must initiate it
+            # over the pinned loopback endpoint instead of waiting for a
+            # separate test-only/client-side call. This is read-only and must
+            # never substitute the observer's independently sealed outcome.
+            if fresh["status"] == "launched" and authenticated_client_file is not None:
+                _request_fresh_readback(plan.endpoint_port, authenticated_client_file, fresh)
+                fresh = read_fresh_status(Path(intent.host_state_root), host=True)
+            if fresh["status"] != "succeeded":
+                answer["stage"] = "successor-launch-uncertain"
+                answer["reason"] = "fresh authenticated child outcome has not been sealed"
                 return answer
             management, _, _ = _evidence(Path(plan.profile.evidence_file))
             assert_retained_oauth_mount(management, intent)
