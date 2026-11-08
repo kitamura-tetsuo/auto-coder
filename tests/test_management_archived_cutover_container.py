@@ -592,7 +592,7 @@ class Chain:
                 "c=WorkerNetworkClient(WorkerEndpointConfig.environment(sys.argv[1]));c.inspect_supervisor();"
                 "c._call('POST','/v1/fixture-audit-probe',{'operation_id':'fixture-audit-probe'});print('observed')"
             )
-            self.docker("exec", self.worker_manager, "python", "-c", code, channel)
+            self.docker("exec", self.worker_manager, "python", "-c", code, channel + "-worker")
         assert self.worker_posts() == {"beta": 1, "release": 1}
 
     def compose(self, *args: str) -> str:
@@ -607,7 +607,7 @@ class Chain:
         )
         result = {}
         for channel in ("beta", "release"):
-            observed = json.loads(self.docker("exec", self.worker_manager, "python", "-c", code, channel))
+            observed = json.loads(self.docker("exec", self.worker_manager, "python", "-c", code, channel + "-worker"))
             container = self.compose("ps", "-q", channel)
             metadata = json.loads(self.docker("inspect", container))[0]
             result[channel] = {**observed, "container": container, "started": metadata["State"]["StartedAt"]}
