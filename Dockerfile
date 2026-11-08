@@ -23,7 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     npm install --prefix /tmp/opencode --ignore-scripts --no-audit --no-fund --no-save "opencode-linux-${OPENCODE_ARCH}@${OPENCODE_VERSION}" && \
     install -m 0755 "/tmp/opencode/node_modules/opencode-linux-${OPENCODE_ARCH}/bin/opencode" /usr/local/bin/opencode && \
     test "$(/usr/local/bin/opencode --version)" = "$OPENCODE_VERSION" && \
-    npm install --prefix /tmp/codex --ignore-scripts --no-audit --no-fund --no-save "@openai/codex-linux-${OPENCODE_ARCH}@${CODEX_VERSION}" && \
+    npm install --prefix /tmp/codex --ignore-scripts --no-audit --no-fund --no-save "@openai/codex-linux-${OPENCODE_ARCH}@npm:@openai/codex@${CODEX_VERSION}-linux-${OPENCODE_ARCH}" && \
     install -m 0755 "/tmp/codex/node_modules/@openai/codex-linux-${OPENCODE_ARCH}/vendor/${CODEX_ARCH}-unknown-linux-musl/bin/codex" /usr/local/bin/codex && \
     test "$(/usr/local/bin/codex --version)" = "codex-cli $CODEX_VERSION" && \
     rm -rf /tmp/opencode /tmp/codex && \

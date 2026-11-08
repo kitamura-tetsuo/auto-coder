@@ -190,7 +190,7 @@ def test_dockerfile_pins_opencode_release_and_explicit_architectures() -> None:
     assert "https://github.com/anomalyco/opencode/releases/download/" not in content
     assert "COPY --from=build /usr/local/bin/opencode /usr/local/bin/opencode" in content
     assert f"ARG CODEX_VERSION={_PINNED_CODEX_VERSION}" in content
-    assert "@openai/codex-linux-${OPENCODE_ARCH}@${CODEX_VERSION}" in content
+    assert "@openai/codex-linux-${OPENCODE_ARCH}@npm:@openai/codex@${CODEX_VERSION}-linux-${OPENCODE_ARCH}" in content
     assert "vendor/${CODEX_ARCH}-unknown-linux-musl/bin/codex" in content
     assert 'test "$(/usr/local/bin/codex --version)" = "codex-cli $CODEX_VERSION"' in content
     assert "https://github.com/openai/codex/releases/download/" not in content
