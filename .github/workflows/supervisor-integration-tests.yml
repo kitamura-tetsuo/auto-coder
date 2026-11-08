@@ -455,7 +455,8 @@ jobs:
             "GITHUB_RUN_ID=$GITHUB_RUN_ID" \
             "GITHUB_RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT" \
             "GITHUB_JOB=$GITHUB_JOB" \
-            "RUNNER_NAME=$RUNNER_NAME" \
+            "RUNNER_NAME=$RUNNER_NAME"
+            "SUPERVISOR_PROFILE=$SUPERVISOR_PROFILE" \
             "SUPERVISOR_REQUIRED_NODEIDS=$SUPERVISOR_REQUIRED_NODEIDS" \
             "SUPERVISOR_RESULTS_PATH=$GITHUB_WORKSPACE/supervisor-integration-logs/operator-upgrade.json" \
             "$GITHUB_WORKSPACE/.venv/bin/python" -m pytest -p supervisor_ci_results -q -vv -o timeout=240 \

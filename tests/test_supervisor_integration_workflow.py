@@ -66,6 +66,7 @@ def test_operator_upgrade_keeps_its_complete_native_mandatory_gate() -> None:
     assert "-p supervisor_ci_results" in run
     assert '"SUPERVISOR_REQUIRED_NODEIDS=$SUPERVISOR_REQUIRED_NODEIDS"' in run
     assert '"RUNNER_NAME=$RUNNER_NAME"' in run
+    assert '"SUPERVISOR_PROFILE=$SUPERVISOR_PROFILE"' in run
     assert "sudo chown -R" in run
     receipt = _step(job, "Bind native operator upgrade receipt")
     assert receipt["if"] == "always()"
