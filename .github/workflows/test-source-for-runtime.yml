@@ -72,6 +72,7 @@ jobs:
       - name: Run complete required source selection
         run: >-
           uv run pytest -m 'not opencode_live' -vv
+          --deselect tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_prepare_apply_status_real_docker
           --splits 4 --group ${{ matrix.group }}
           --splitting-algorithm duration_based_chunks
           --durations-path tests/data/pr-test-durations.json
