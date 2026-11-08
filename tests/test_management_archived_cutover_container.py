@@ -271,16 +271,24 @@ class Chain:
             bindings = required_exclusions(captured)
             config.update(fresh_guard_path="/management-initialization/fresh-guard.sock", fresh_prior_lock_path="/management-prior-owner.lock", archived_exclusions=[] if omit_archive else [asdict(item) for item in bindings])
         if self.worker_environment is not None:
-            for channel in ("beta", "release"):
-                runtime["environment"].update(
-                    {
-                        f"AUTO_CODER_{channel.upper()}_SUPERVISOR_INSTANCE_ID": channel + "-worker",
-                        f"AUTO_CODER_{channel.upper()}_REPOSITORY": "fixture/" + channel,
-                        f"AUTO_CODER_{channel.upper()}_BRIDGE_ADDRESS": self.worker_environment[f"SUPERVISOR_{channel.upper()}_IP"],
-                        f"AUTO_CODER_{channel.upper()}_BRIDGE_PORT": "8843",
-                        f"AUTO_CODER_{channel.upper()}_BRIDGE_SECRET_FILE": "/run/secrets/" + channel + "_worker_bridge",
-                    }
-                )
+            # The installed management child must receive the same trusted,
+            # target-keyed registry used by the private worker-network fixture.
+            runtime["environment"]["AUTO_CODER_WORKER_REGISTRY"] = json.dumps(
+                {
+                    "workers": [
+                        {
+                            "target_id": channel + "-worker",
+                            "supervisor_instance_id": channel + "-worker",
+                            "channel": channel,
+                            "repository": "fixture/" + channel,
+                            "bridge_address": self.worker_environment[f"SUPERVISOR_{channel.upper()}_IP"],
+                            "bridge_port": 8843,
+                            "bridge_secret_file": "/run/secrets/" + channel + "_worker_bridge",
+                        }
+                        for channel in ("beta", "release")
+                    ]
+                }
+            )
         config_file = root / "bootstrap" / "config.json"
         config_file.write_text(json.dumps(config))
         config_file.chmod(0o600)
