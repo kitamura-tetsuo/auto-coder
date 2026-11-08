@@ -139,7 +139,7 @@ def test_real_pytest_phases_to_cli_preserve_parameterization_outcomes_and_nested
 
 
 def test_repeated_native_execution_never_splices_incomplete_phase_boundaries(tmp_path: Path) -> None:
-    result, files = _run_pytest(tmp_path, "def test_repeated(): assert True\\n", repeat_node=True)
+    result, files = _run_pytest(tmp_path, "def test_repeated(): assert True\n", repeat_node=True)
     assert result.returncode == 0, result.stdout + result.stderr
     assert len(files) == 1
     recorded = _records(files)
@@ -174,7 +174,7 @@ def test_repeated_native_execution_never_splices_incomplete_phase_boundaries(tmp
              or (event.get("event_kind") == "pytest_phase_report" and include[event["span_id"]]))
     ]
     damaged_file = tmp_path / "partial-repetitions.jsonl"
-    damaged_file.write_text("\\n".join(json.dumps(event, sort_keys=True) for event in truncated) + "\\n", encoding="utf-8")
+    damaged_file.write_text("\n".join(json.dumps(event, sort_keys=True) for event in truncated) + "\n", encoding="utf-8")
     damaged = _run_ok(context, tmp_path / "partial-repetitions.json", batches=[_batch(tmp_path, [damaged_file], name="partial-repetitions")])
     assert damaged["status"] == "unavailable"
     assert damaged["nodes"] == {}
@@ -186,7 +186,7 @@ def test_repeated_native_execution_never_splices_incomplete_phase_boundaries(tmp
     conflict = json.loads(json.dumps(first_setup_report))
     conflict["native_duration_ms"] += 1
     conflicting_file = tmp_path / "conflicting-repetitions.jsonl"
-    conflicting_file.write_text("\\n".join(json.dumps(event, sort_keys=True) for event in [*recorded, conflict]) + "\\n", encoding="utf-8")
+    conflicting_file.write_text("\n".join(json.dumps(event, sort_keys=True) for event in [*recorded, conflict]) + "\n", encoding="utf-8")
     retained = _run_ok(context, tmp_path / "conflicting-repetitions.json", batches=[_batch(tmp_path, [conflicting_file], name="conflicting-repetitions")])
     assert retained["status"] == "partial"
     assert retained["nodes"][nodeid]["sample_count"] == 1
@@ -195,7 +195,7 @@ def test_repeated_native_execution_never_splices_incomplete_phase_boundaries(tmp
 
     second_only = [event for event in recorded if event.get("span_id") in set(second_ids.values())]
     complete_file = tmp_path / "complete-second.jsonl"
-    complete_file.write_text("\\n".join(json.dumps(event, sort_keys=True) for event in second_only) + "\\n", encoding="utf-8")
+    complete_file.write_text("\n".join(json.dumps(event, sort_keys=True) for event in second_only) + "\n", encoding="utf-8")
     independently_complete = _run_ok(context, tmp_path / "complete-second.json", batches=[_batch(tmp_path, [complete_file], name="complete-second")])
     assert independently_complete["status"] == "available"
     assert independently_complete["nodes"][nodeid]["sample_count"] == 1
@@ -378,7 +378,7 @@ def test_corrupt_history_and_atomic_output_failure_preserve_original_files(tmp_p
 
 
 def test_two_concurrent_immutable_publishers_have_one_winner(tmp_path: Path, monkeypatch) -> None:
-    result, files = _run_pytest(tmp_path, "def test_observed(): assert True\\n")
+    result, files = _run_pytest(tmp_path, "def test_observed(): assert True\n")
     assert result.returncode == 0
     context = _context(tmp_path)
     batch = _batch(tmp_path, files)
@@ -414,7 +414,7 @@ def test_two_concurrent_immutable_publishers_have_one_winner(tmp_path: Path, mon
     winner_bytes = output.read_bytes()
     winner = json.loads(winner_bytes)
     assert winner in (measured.payload, empty.payload)
-    assert winner_bytes == (json.dumps(winner, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\\n").encode("utf-8")
+    assert winner_bytes == (json.dumps(winner, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
     assert list(tmp_path.glob(".contended.json.*.tmp")) == []
     assert prior.read_bytes() == prior_bytes
     assert _cli(context, output, batches=[batch], previous=[prior]).returncode != 0
