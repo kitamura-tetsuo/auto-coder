@@ -24,6 +24,9 @@ import pytest
 
 from auto_coder.management import bootstrap_upgrade as upgrade
 from auto_coder.management.fresh_initialization import FreshInitializationIntent
+from auto_coder.management.operation_store import ManagementOperationStore
+from auto_coder.management.operations import ActionParameter, ManagedTarget, OperationIntent, OperationPhase
+from auto_coder.operating_policy import MANAGEMENT_REPOSITORY
 from auto_coder.tested_source_refs import TestedSourcePublisher as SourceProofPublisher
 from auto_coder.util.gh_cache import GitHubGitDataClient
 from tests.test_management_archived_cutover_container import Generation
@@ -405,7 +408,7 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
 
 
 @pytest.mark.timeout(900)
-@pytest.mark.parametrize("failure_point", ("lost-stop", "lost-start", "postlaunch-proxy-failed"))
+@pytest.mark.parametrize("failure_point", ("lost-stop", "lost-start", "postlaunch-proxy-failed", "retained-unresolved-work"))
 def test_disposable_operator_failure_fences_real_docker(installed_chain: InstalledChain, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], failure_point: str) -> None:
     """Dispatch real Docker effects, then lose an acknowledgement or the new proxy."""
     chain = installed_chain
@@ -474,6 +477,29 @@ def test_disposable_operator_failure_fences_real_docker(installed_chain: Install
         assert code == 0 and prepared["stage"] == "prepared"
         plan_id = prepared["plan_sha256"]
         assert isinstance(plan_id, str)
+        if failure_point == "retained-unresolved-work":
+            # Admit real pending work after the immutable plan is prepared.
+            journal = ManagementOperationStore(first.path("journal"))
+            pending = journal.admit(
+                OperationIntent(
+                    ManagedTarget(first.name, "management", MANAGEMENT_REPOSITORY),
+                    "management-service-self-update",
+                    (ActionParameter("source_sha", "a" * 40),),
+                    "unresolved-fixture-" + uuid.uuid4().hex,
+                ),
+                chain.authority,
+            ).record
+            assert pending is not None and pending.phase is OperationPhase.ACCEPTED
+            prior_snapshot = chain.snapshot(first)
+            code, denied = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
+            assert code == 2 and denied["stage"] == "prerequisite-blocked"
+            assert "unresolved operations" in denied["reason"]
+            assert effects == [] and chain.snapshot(first) == prior_snapshot
+            assert journal.get(pending.operation_id).record.phase is OperationPhase.ACCEPTED
+            for container in (first.container, first.proxy):
+                assert chain.docker("inspect", "--format", "{{.State.Running}}", container) == "true"
+            assert chain.workers() == baseline
+            return
         prior_snapshot = chain.snapshot(first)
         code, failed = call_cli("apply", "--plan-sha256", plan_id, "--auth-token-file", str(auth_file), "--authorize-source-read")
         assert code == 2 and failed["stage"] in {"needs-attention", "prerequisite-blocked"}

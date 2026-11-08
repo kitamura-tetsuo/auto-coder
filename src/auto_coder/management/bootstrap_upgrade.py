@@ -47,7 +47,7 @@ from .fresh_host_observation import (
     capture_prior_container,
 )
 from .fresh_initialization import FreshInitializationIntent, read_fresh_status
-from .operation_store import ACTIVE_PHASES
+from .operation_store import ACTIVE_PHASES, TERMINAL_PHASES
 from .proxy_reconnect import DockerProxyObservation
 from .retained_journal import RetainedJournal
 from .source_evidence import SourceEvidenceError
@@ -919,6 +919,32 @@ def _observe_uncertain_effect(operation: UpgradeOperation, plan: UpgradePlan) ->
         return "physical-effect-observation-unavailable"
 
 
+def _refuse_known_unresolved_work_before_stop(intent: FreshInitializationIntent) -> None:
+    """Reject live nonterminal work without trying to take the incumbent's lock.
+
+    This read-only snapshot is a pre-stop refusal, not admission evidence. A
+    concurrent operation can still arrive; _current_journal_clear must recheck
+    the complete authoritative retained journal after the predecessor is fenced.
+    """
+    database = Path(intent.host_prior_journal_root) / "management-operations.sqlite3"
+    info = database.lstat()
+    expected = (intent.prior_journal_device, intent.prior_journal_inode)
+    if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != expected:
+        raise UpgradeUnavailable("prerequisite-blocked", "predecessor journal identity changed before stop")
+    with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=5) as connection:
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("BEGIN")
+        phases = {row[0] for row in connection.execute("SELECT DISTINCT phase FROM operations")}
+        if not phases <= (ACTIVE_PHASES | TERMINAL_PHASES):
+            raise UpgradeUnavailable("prerequisite-blocked", "predecessor operation phase cannot be validated")
+        if phases & ACTIVE_PHASES:
+            raise UpgradeUnavailable("prerequisite-blocked", "predecessor has unresolved operations; incumbent remains running")
+        connection.rollback()
+    checked = database.lstat()
+    if not stat.S_ISREG(checked.st_mode) or (checked.st_dev, checked.st_ino) != expected:
+        raise UpgradeUnavailable("prerequisite-blocked", "predecessor journal identity changed during pre-stop check")
+
+
 def _current_journal_clear(intent: FreshInitializationIntent, old_instance: str, prior_lock: Path) -> None:
     database = Path(intent.host_prior_journal_root) / "management-operations.sqlite3"
     with RetainedJournal(database, prior_lock, database_identity=(intent.prior_journal_device, intent.prior_journal_inode), fence_identity=(intent.owner_lock_device, intent.owner_lock_inode), prior_management_instance=old_instance) as journal:
@@ -966,6 +992,9 @@ def apply(root: Path, sha: str, authenticated_client_file: Path, *, authorize_so
         _installed_candidate_preflight(plan.profile)
         if _authenticated_baseline(plan.endpoint_port, tuple(plan.worker_baseline), authenticated_client_file) != plan.worker_baseline:
             raise UpgradeUnavailable("prerequisite-blocked", "worker baseline changed before effect")
+        # Refuse known active work *before* dispatching any stop, then retain
+        # the fenced post-stop complete-journal validation.
+        _refuse_known_unresolved_work_before_stop(intent)
         watcher = _watcher_lock(Path(plan.profile.old_watcher_config), plan)
         network = -1
         try:
