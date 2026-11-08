@@ -205,6 +205,7 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
     initial_installed_launches = installed_launches()
     next_generation = chain.prepare("manager-b", first)
     profile_path, _, new_watcher = approved_profile(chain, first, next_generation)
+    disposable_watchers = {new_watcher}
     auth_file = tmp_path / "operator-auth-client"
     auth_file.write_text(chain.token)
     auth_file.chmod(0o600)
@@ -476,7 +477,8 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
         assert chain.workers() == original_worker
 
         third = chain.prepare("manager-c", next_generation)
-        profile_c, _, _ = approved_profile(chain, next_generation, third)
+        profile_c, _, c_watcher = approved_profile(chain, next_generation, third)
+        disposable_watchers.add(c_watcher)
         code, c_prepared = call_cli("prepare", "--profile", str(profile_c), "--auth-token-file", str(auth_file), "--authorize-source-read")
         assert code == 0 and c_prepared["stage"] == "prepared"
         c_plan = c_prepared["plan_sha256"]
@@ -571,7 +573,7 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_chain: I
                 pid = operation.get("watcher_pid")
                 if type(pid) is int and pid > 0:
                     cmdline = (Path("/proc") / str(pid) / "cmdline").read_bytes()
-                    if os.fsencode(new_watcher) in cmdline:
+                    if any(os.fsencode(config) in cmdline for config in disposable_watchers):
                         os.kill(pid, signal.SIGTERM)
             except (OSError, ValueError):
                 pass
