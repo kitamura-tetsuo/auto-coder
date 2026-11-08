@@ -142,11 +142,8 @@ def test_repeated_operation_cannot_send_a_saved_unknown_effect(tmp_path: Path, m
     assert len(effects) == 1
 
 
-
 @pytest.mark.parametrize("lost_effect", ["stop-management", "start-management"])
-def test_actual_apply_keeps_persisted_uncertain_target_after_lost_response(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lost_effect: str
-) -> None:
+def test_actual_apply_keeps_persisted_uncertain_target_after_lost_response(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lost_effect: str) -> None:
     """An apply callback may fail before assigning the already-fsynced effect."""
     root = operator_root(tmp_path)
     sha, plan = prepared(root, profile(tmp_path))
@@ -177,10 +174,7 @@ def test_actual_apply_keeps_persisted_uncertain_target_after_lost_response(
 
     def inspect(container: str) -> list[object]:
         active = running[container]
-        return [
-            None, images[container], active, 17 if active else 0,
-            "running" if active else "exited", *([None] * 8), started[container],
-        ]
+        return [None, images[container], active, 17 if active else 0, "running" if active else "exited", *([None] * 8), started[container]]
 
     def docker(*arguments: str, timeout: float = 30) -> str:
         sent.append(arguments)
@@ -194,9 +188,7 @@ def test_actual_apply_keeps_persisted_uncertain_target_after_lost_response(
             raise subprocess.TimeoutExpired("docker", timeout)
         return ""
 
-    def fenced(_intent: object, _evidence: object, _config: object, _prior: object,
-               _network: object, _guard: object, *, on_fenced: object,
-               on_stopped: object, on_listening: object) -> None:
+    def fenced(_intent: object, _evidence: object, _config: object, _prior: object, _network: object, _guard: object, *, on_fenced: object, on_stopped: object, on_listening: object) -> None:
         on_fenced()
         on_listening()
 
@@ -226,15 +218,9 @@ def test_actual_apply_keeps_persisted_uncertain_target_after_lost_response(
     persisted = upgrade._operation(root, sha)
     assert persisted.stage == "needs-attention"
     assert persisted.effect == lost_effect
-    expected_target = (
-        plan.predecessor_management if lost_effect == "stop-management"
-        else plan.successor_management
-    )
+    expected_target = plan.predecessor_management if lost_effect == "stop-management" else plan.successor_management
     assert persisted.effect_target == expected_target
-    assert persisted.completed == (
-        ("stop-proxy",) if lost_effect == "stop-management"
-        else ("stop-proxy", "stop-management")
-    )
+    assert persisted.completed == (("stop-proxy",) if lost_effect == "stop-management" else ("stop-proxy", "stop-management"))
     assert persisted.reason == "TimeoutExpired"
     report = upgrade.status(root, sha)
     assert report["stage"] == "needs-attention"
