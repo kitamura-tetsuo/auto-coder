@@ -534,6 +534,7 @@ def test_watcher_must_not_start_if_real_proxy_namespace_is_unproven(tmp_path: Pa
         upgrade._start_watcher(root / sha, operation, plan)
     assert upgrade._operation(root, sha) == operation
 
+
 @pytest.mark.parametrize(
     "boundary",
     (
@@ -547,9 +548,7 @@ def test_watcher_must_not_start_if_real_proxy_namespace_is_unproven(tmp_path: Pa
         "wrong-source",
     ),
 )
-def test_source_proof_requires_every_producer_job_at_exact_run_attempt(
-    monkeypatch: pytest.MonkeyPatch, boundary: str
-) -> None:
+def test_source_proof_requires_every_producer_job_at_exact_run_attempt(monkeypatch: pytest.MonkeyPatch, boundary: str) -> None:
     """Synthetic API metadata exercises the verifier; it is not public CI proof."""
     source = "a" * 40
     run_id, attempt = 4242, 3
@@ -566,11 +565,7 @@ def test_source_proof_requires_every_producer_job_at_exact_run_attempt(
     if boundary == "legacy-single-job":
         jobs = [{**jobs[0], "name": "Fresh host verification"}]
     elif boundary in {"missing-operator", "missing-aggregate"}:
-        omitted = (
-            "Operator upgrade production-origin Docker"
-            if boundary == "missing-operator"
-            else "Supervisor Integration Tests"
-        )
+        omitted = "Operator upgrade production-origin Docker" if boundary == "missing-operator" else "Supervisor Integration Tests"
         jobs = [job for job in jobs if job["name"] != omitted]
     elif boundary == "skipped-required":
         jobs[0]["conclusion"] = "skipped"
@@ -600,9 +595,7 @@ def test_source_proof_requires_every_producer_job_at_exact_run_attempt(
                 },
             )
         assert path == f"actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100"
-        return SimpleNamespace(
-            status=200, data={"jobs": jobs, "total_count": len(jobs)}
-        )
+        return SimpleNamespace(status=200, data={"jobs": jobs, "total_count": len(jobs)})
 
     source_shard_checks: list[tuple[object, ...]] = []
     monkeypatch.setattr(
@@ -611,9 +604,7 @@ def test_source_proof_requires_every_producer_job_at_exact_run_attempt(
         lambda *args: source_shard_checks.append(args),
     )
     client = SimpleNamespace(request=request)
-    proof = SimpleNamespace(
-        tag_object_oid="c" * 40, record=SimpleNamespace(run_id=17, run_attempt=1)
-    )
+    proof = SimpleNamespace(tag_object_oid="c" * 40, record=SimpleNamespace(run_id=17, run_attempt=1))
 
     def read(requested: str) -> SimpleNamespace:
         assert requested == source

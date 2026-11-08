@@ -351,13 +351,7 @@ def _source_proof(publisher: TestedSourcePublisher, source_sha: str) -> tuple[st
         if {job.get("name") for job in observed} != _REQUIRED_SUPERVISOR_JOBS:
             continue
         attempt = run.get("run_attempt", 1)
-        if all(
-            job.get("status") == "completed"
-            and job.get("conclusion") == "success"
-            and job.get("run_attempt") == attempt
-            and job.get("run_id") == run["id"]
-            for job in observed
-        ):
+        if all(job.get("status") == "completed" and job.get("conclusion") == "success" and job.get("run_attempt") == attempt and job.get("run_id") == run["id"] for job in observed):
             return proof.tag_object_oid, run["id"], attempt
     raise UpgradeUnavailable("prerequisite-blocked", "required fresh-host/exclusion integration cases are not proven successful")
 
