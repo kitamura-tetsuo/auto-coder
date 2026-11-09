@@ -766,7 +766,7 @@ def test_disposable_operator_failure_fences_real_docker(installed_chain: Install
                 elif failure_point == "changed-successor-config":
                     changed_file = successor.path("bootstrap") / "management.yaml"
                     saved_content = changed_file.read_bytes()
-                    changed_file.write_bytes(saved_content + b"\\n# changed disposable source config\\n")
+                    changed_file.write_bytes(saved_content + b"\n# changed disposable source config\n")
                 elif failure_point == "changed-candidate-image":
                     changed_file = successor.intent
                     assert changed_file is not None
