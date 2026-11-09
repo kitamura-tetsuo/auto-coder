@@ -9,7 +9,7 @@ RUN test -n "$AUTO_CODER_BUILD_IDENTITY_B64" && echo "$AUTO_CODER_BUILD_IDENTITY
     AUTO_CODER_BUILD_IDENTITY_FILE=/opt/auto-coder/.auto-coder-build-identity.json \
     uv sync --locked --no-dev --no-editable --no-cache
 
-FROM node:24-slim AS build
+FROM node:26-slim AS build
 ARG TARGETARCH
 ARG OPENCODE_VERSION=1.18.31
 ARG CODEX_VERSION=0.159.2
