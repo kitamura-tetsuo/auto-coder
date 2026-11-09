@@ -170,6 +170,8 @@ class ResourceAdmission:
             await self._refusal(scope, receive, send, 401, "invalid_token")
             return
         context_token: Token[AuthenticatedGrant | None] | None = None
+        discovery_argument_error = False
+        discovery_request_id: str | int | None = None
         try:
             required: tuple[str, ...] = (READ_SCOPE,)
             selected_receive = receive
@@ -210,11 +212,20 @@ class ResourceAdmission:
                     allowed = self.arguments_by_name.get(name)
                     arguments = params.get("arguments", {}) if isinstance(params, dict) else None
                     if allowed is not None and (not isinstance(arguments, dict) or set(arguments) - set(allowed)):
-                        await self._refusal(scope, selected_receive, send, 400, "invalid_request")
-                        return
+                        if name == "auto_coder_targets":
+                            # Authenticate first; valid calls must receive a JSON-RPC error.
+                            discovery_argument_error = True
+                            discovery_request_id = payload.get("id")
+                        else:
+                            await self._refusal(scope, selected_receive, send, 400, "invalid_request")
+                            return
             grant = self.grants.authenticate_access(parts[1], self.settings.oauth.resource, required)
             logger.info("Management MCP authentication outcome: authorized")
             context_token = _grant.set(grant)
+            if discovery_argument_error:
+                response = JSONResponse({"jsonrpc": "2.0", "id": discovery_request_id, "error": {"code": -32602, "message": "Invalid params"}})
+                await response(scope, selected_receive, send)
+                return
             await self.app(scope, selected_receive, send)
         except InvalidScope:
             logger.warning("Management MCP authentication outcome: insufficient_scope")
