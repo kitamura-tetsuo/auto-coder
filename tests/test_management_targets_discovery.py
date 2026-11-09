@@ -157,7 +157,6 @@ def test_discovery_uses_existing_fresh_oauth_refusals(runtime_boundary, real_bou
         assert beta.send_calls == release.send_calls == 0
 
 
-
 def _transport_observed_app(runtime_boundary):
     settings, grants, _signed, _policy_path, beta, release = runtime_boundary
     clients = {"beta": WorkerNetworkClient(beta.config), "release": WorkerNetworkClient(release.config)}
