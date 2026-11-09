@@ -60,7 +60,7 @@ def test_operator_upgrade_keeps_its_complete_native_mandatory_gate() -> None:
     assert "needs" not in job
     assert job["env"]["SUPERVISOR_PROFILE"] == "operator-upgrade"
     assert tuple(json.loads(job["env"]["SUPERVISOR_REQUIRED_NODEIDS"])) == OPERATOR_REQUIRED
-    assert len(OPERATOR_REQUIRED) == 8
+    assert len(OPERATOR_REQUIRED) == 13
     run = _step(job, "Verify operator prepare/apply/status with disposable Docker")["run"]
     assert "tests/test_management_bootstrap_upgrade_container.py" in run
     assert "-p supervisor_ci_results" in run
