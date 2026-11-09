@@ -542,6 +542,15 @@ def test_reconstructed_owner_does_not_replace_missing_claimed_mailbox(management
     system.supervisor_log.close()
     with sqlite3.connect(child_path) as connection:
         connection.execute("DROP TRIGGER reject_recovery_effect")
+    # A committed claim may still live in SQLite's WAL. Checkpoint it before
+    # moving only the database file to simulate a missing retained mailbox.
+    # Otherwise the saved file can appear to contain the older pending state.
+    connection = sqlite3.connect(mailbox.path, timeout=5, isolation_level=None)
+    try:
+        assert connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone() == (0, 0, 0)
+        assert connection.execute("SELECT status FROM recovery_requests WHERE request_id=?", (request_id,)).fetchone()[0] in {"claimed", "unknown"}
+    finally:
+        connection.close()
     backup = mailbox.path.with_suffix(".saved")
     mailbox.path.rename(backup)
     try:
