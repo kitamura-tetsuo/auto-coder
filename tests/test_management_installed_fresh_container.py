@@ -130,9 +130,8 @@ def test_disposable_worker_error_diagnostics_never_include_sensitive_messages() 
     )
     assert _safe_worker_exception_types(log_text) == ["connectionerror"]
     assert _safe_worker_exception_types("unclassified secret=do-not-publish") == []
-    assert _safe_worker_exception_types(
-        "auto_coder.deployment_channel.DeploymentChannelError: private-path=not-for-output"
-    ) == ["deploymentchannelerror"]
+    diagnostic = "auto_coder.deployment_channel.DeploymentChannelError: private-path=not-for-output"
+    assert _safe_worker_exception_types(diagnostic) == ["deploymentchannelerror"]
 
 
 class InstalledChain(Chain):
