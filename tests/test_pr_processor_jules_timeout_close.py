@@ -8,6 +8,7 @@ from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsSta
 from src.auto_coder.automation_config import AutomationConfig, StaleJulesPRResult
 from src.auto_coder.issue_stage_routing import IssueStageRoutingStore, implementation_classification
 from src.auto_coder.pr_processor import _close_stale_jules_pr, _handle_pr_merge, _should_skip_waiting_for_jules, process_pull_request
+from src.auto_coder.pr_repair_dispatch import PRRepairResult, RepairDisposition
 from src.auto_coder.stale_jules_recovery import recovery_request_id
 from tests.ci_observation_fakes import authoritative_ci_status
 
@@ -415,6 +416,11 @@ class TestHandlePrMergeJulesPR:
         mock_run_command.return_value = CommandResult(success=True, stdout="main", stderr="", returncode=0)
 
         # Many previous failure comments used to trigger the removed local fallback
+        mock_send_feedback.return_value = PRRepairResult(
+            RepairDisposition.ACCEPTED_OR_UNCERTAIN,
+            ("Jules provider was called",),
+            attempt_started=True,
+        )
         target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
         old_time = (datetime.now(timezone.utc) - timedelta(hours=240)).isoformat()
         github_client.get_pr_comments.return_value = [{"body": target_message, "created_at": old_time}] * 20
@@ -425,7 +431,7 @@ class TestHandlePrMergeJulesPR:
         mock_fix_issues.assert_not_called()
         mock_checkout.assert_not_called()
         github_client.close_pr.assert_not_called()
-        assert "Jules will handle fixing PR #4643, skipping local fixes" in actions[-1]
+        assert "Jules CI repair was attempted for PR #4643; awaiting a provider update without local fixes" in actions[-1]
 
 
 class TestStaleJulesPRWithAutoCoderLabel:

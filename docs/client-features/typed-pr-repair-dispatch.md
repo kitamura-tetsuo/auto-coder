@@ -37,7 +37,19 @@ fact remains explicitly unknown. Mergeability remediation carries its typed
 repair result and retry deadline through base update and the public PR facade;
 diagnostic action wording does not determine failed or deferred outcomes.
 
+Jules CI repair supplies typed evidence directly from its actual sender. A
+graceful-drain hold, final current-head/CI refusal, or failed outbound owner
+admission before `JulesClient.send_message` returns a non-accepted result with
+`attempt_started=false` and the known refusal reason; a Boolean outbound guard
+does not prove which particular retirement or store failure occurred. Once the
+provider method is invoked, even a lost response remains
+`accepted_or_uncertain` with `attempt_started=true` and no fabricated receipt.
+An informational PR comment or trace-log failure after the call does not change
+that disposition. Neither outcome proves a completed repair or authorizes a
+merge, and action text is never parsed to decide delivery.
+
 Focused regressions are in `tests/test_pr_repair_dispatch.py`; broader
 production-origin and durable replay coverage remains in
-`tests/test_pr_lifecycle_contract.py`, `tests/test_codex_cloud_pr_ci_flow.py`,
-and `tests/test_cloud_conflict_delegation.py`.
+`tests/test_pr_lifecycle_contract.py`, `tests/test_pr_processor_jules.py`,
+`tests/test_codex_cloud_pr_ci_flow.py`, and
+`tests/test_cloud_conflict_delegation.py`.

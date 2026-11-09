@@ -21,6 +21,7 @@ from auto_coder.dashboard import init_dashboard
 from auto_coder.entity_invalidation import DurableInvalidationQueue, EntityIdentity
 from auto_coder.execution_trace import EventKind, Outcome, TraceCollector, get_trace_collector
 from auto_coder.github_pending_work import PendingObligation, PendingReason, WorkIdentity
+from auto_coder.pr_repair_dispatch import PRRepairResult, RepairDisposition
 from auto_coder.reissue_required_store import ReissueRequiredStore
 from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult
 from auto_coder.util.github_request_outcome import GitHubRequestContext, github_http_client
@@ -985,7 +986,10 @@ class TestOutcomeMatrixCoverage:
     @patch("auto_coder.pr_processor.get_detailed_checks_from_history")
     @patch("auto_coder.pr_processor._is_jules_pr", return_value=True)
     @patch("auto_coder.pr_processor._close_stale_jules_pr")
-    @patch("auto_coder.pr_processor._send_jules_error_feedback", return_value=["Sent Jules error feedback"])
+    @patch(
+        "auto_coder.pr_processor._send_jules_error_feedback",
+        return_value=PRRepairResult(RepairDisposition.ACCEPTED_OR_UNCERTAIN, ("Sent Jules error feedback",), attempt_started=True),
+    )
     def test_corrective_work_accepted_without_claiming_a_repair(
         self,
         mock_send_feedback,
@@ -1011,7 +1015,7 @@ class TestOutcomeMatrixCoverage:
         with get_trace_collector().start_execution("owner/repo", "pr", 3001, origin="worker"):
             actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
-        assert any("Jules will handle fixing" in a for a in actions)
+        assert any("Jules CI repair was attempted" in a for a in actions)
         snapshot = get_trace_collector().get_snapshot(item_type="pr", item_number=3001)
         repair_events = [e for e in snapshot.events if e.stage_id == "pr.repair-delegation"]
         assert len(repair_events) == 1
@@ -1021,6 +1025,54 @@ class TestOutcomeMatrixCoverage:
         # a merge (REQ-006 of Issue #1946, REQ-007 of Issue #1948).
         assert not any(e.stage_id == "pr.merge-delivery" for e in snapshot.events)
         assert not any(e.stage_id == "pr.cleanup" for e in snapshot.events)
+
+    @patch("auto_coder.dashboard.ui")
+    def test_jules_presend_refusal_is_deferred_in_mounted_detail(self, mock_ui, tmp_path, monkeypatch):
+        """Issue #2771: the real Jules pre-send path cannot render a handoff."""
+        from auto_coder.pr_processor import _handle_pr_merge
+
+        monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+        config = AutomationConfig()
+        pr_data = {
+            "number": 3002,
+            "body": "Jules session: session_3002",
+            "_jules_session_id": "session_3002",
+            "labels": [],
+            "head": {"ref": "jules/feature", "sha": "a" * 40},
+            "user": {"login": "google-labs-jules[bot]"},
+        }
+        github = MagicMock()
+
+        with (
+            patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr") as unsafe,
+            patch("auto_coder.pr_processor._check_github_actions_status", side_effect=authoritative_ci_status(success=False, ids=[1])),
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor.get_detailed_checks_from_history", return_value=DetailedChecksResult(success=False, failed_checks=[{"name": "build"}])),
+            patch("auto_coder.pr_processor._is_codex_pr", return_value=False),
+            patch("auto_coder.pr_processor._is_jules_pr", return_value=True),
+            patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=StaleJulesPRResult(closed=False)),
+            patch("auto_coder.pr_processor.cmd.run_command", return_value=SimpleNamespace(success=True, stdout="main\n")),
+            patch("auto_coder.pr_processor._get_github_actions_logs", return_value="failed CI evidence"),
+            patch("auto_coder.pr_processor.new_work_allowed", return_value=False),
+            patch("auto_coder.jules_client.JulesClient") as provider,
+        ):
+            unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
+            with get_trace_collector().start_execution("owner/repo", "pr", 3002, origin="worker"):
+                actions = _handle_pr_merge(github, "owner/repo", pr_data, config, {})
+
+        assert actions.repair_result is not None
+        assert actions.repair_result.disposition is RepairDisposition.DEFERRED
+        assert actions.repair_result.attempt_started is False
+        provider.assert_not_called()
+        snapshot = get_trace_collector().get_snapshot(item_type="pr", item_number=3002)
+        event = next(event for event in snapshot.events if event.stage_id == "pr.repair-delegation")
+        assert event.outcome == Outcome.DEFERRED.value
+        assert event.facts["attempt_started"] is False
+        diagram = _mounted_detail(mock_ui, "pr", 3002)
+        _assert_required_stage_visible(diagram, "repair delegation")
+        assert not any(event.stage_id in {"pr.merge-delivery", "pr.cleanup"} for event in snapshot.events)
 
     def test_queued_validation_is_distinguishable_from_disabled_and_blocked(self):
         """A running validation job (STAGE_STARTED, no result yet) is

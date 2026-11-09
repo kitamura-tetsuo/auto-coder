@@ -29,6 +29,7 @@ from auto_coder.ci_observation import (
 )
 from auto_coder.cloud_manager import CloudTaskBinding
 from auto_coder.durable_repair_allowance import RepairAllowanceLedger
+from auto_coder.execution_trace import Outcome, TraceCollector, get_trace_collector
 from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.github_ci_observer import fence_active_ci_observations
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
@@ -1153,7 +1154,17 @@ def test_public_processing_preserves_cloud_ci_executor_result(
             )
             stack.enter_context(patch("auto_coder.pr_processor._send_codex_cloud_error_feedback", return_value=feedback))
         else:
-            stack.enter_context(patch("auto_coder.pr_processor._send_jules_error_feedback", return_value=["accepted Jules continuation"]))
+            stack.enter_context(
+                patch(
+                    "auto_coder.pr_processor._send_jules_error_feedback",
+                    return_value=PRRepairResult(
+                        RepairDisposition.ACCEPTED_OR_UNCERTAIN,
+                        ("accepted Jules continuation",),
+                        reason="Jules producer does not expose delivery certainty",
+                        attempt_started=True,
+                    ),
+                )
+            )
         label = stack.enter_context(patch("auto_coder.pr_processor.LabelManager"))
         label.return_value.__enter__.return_value = True
         unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
@@ -1358,7 +1369,7 @@ def test_terminal_ci_jules_owner_enters_typed_dispatch_once(tmp_path, monkeypatc
         patch("auto_coder.pr_processor._is_jules_pr", return_value=True),
         patch("auto_coder.pr_processor.cmd.run_command", return_value=CommandResult(True, "main\n", "", 0)),
         patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=SimpleNamespace(closed=False, actions=[])),
-        patch("auto_coder.pr_processor._send_jules_error_feedback", return_value=["existing Jules helper sent feedback"]) as producer,
+        patch("auto_coder.pr_processor._send_jules_error_feedback", return_value=PRRepairResult(RepairDisposition.ACCEPTED_OR_UNCERTAIN, ("existing Jules helper sent feedback",), attempt_started=True)) as producer,
         patch("auto_coder.pr_processor.dispatch_pr_repair", side_effect=capture_dispatch),
     ):
         unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
@@ -1370,6 +1381,169 @@ def test_terminal_ci_jules_owner_enters_typed_dispatch_once(tmp_path, monkeypatc
     assert requests[0].owner_identity == "session_jules_ci"
     assert requests[0].kind.value == "ci_failure"
     assert "existing Jules helper sent feedback" in actions
+
+
+def _retire_public_jules_session(repo_name: str, session_id: str) -> None:
+    """Build a real persisted retired-owner refusal for the outbound sender."""
+    from auto_coder.implementation_retirement import (
+        ContinuingObligations,
+        ImplementationPRObservation,
+        ImplementationRetirementObservation,
+        ProviderSessionObservation,
+        PRTerminalState,
+        SessionTerminalState,
+    )
+
+    owner = ImplementationOwner("issue", 777)
+    slots = ImplementationSlotRepository(repo_name, 2)
+    execution_id = slots.start_execution(owner, generation="jules-repair-regression")
+    slots.record_implementation_pr(owner, PR_NUMBER)
+    slots.record_provider_session(owner, session_id)
+    slots.finish_execution(owner, execution_id)
+    observation = ImplementationRetirementObservation(
+        repository=repo_name,
+        owner=owner,
+        reservation_incarnation=slots.owner_incarnation(owner),
+        activity_revision=slots.owner_activity_revision(owner),
+        implementation_prs=(ImplementationPRObservation(PR_NUMBER, PRTerminalState.CLOSED, merged=True),),
+        provider_sessions=(ProviderSessionObservation(session_id, "jules", SessionTerminalState.ENDED),),
+        continuing_obligations=ContinuingObligations(),
+    )
+    assert slots.retire_owner(observation).status.value == "RELEASED"
+
+
+@pytest.mark.parametrize("force", [False, True], ids=["ordinary", "explicit-force"])
+@pytest.mark.parametrize(
+    ("scenario", "expected_disposition", "expected_attempt", "expected_outcome"),
+    [
+        ("changed-head", RepairDisposition.DEFERRED, False, Outcome.DEFERRED),
+        ("changed-head-wording", RepairDisposition.DEFERRED, False, Outcome.DEFERRED),
+        ("draining", RepairDisposition.DEFERRED, False, Outcome.DEFERRED),
+        ("retired", RepairDisposition.DEFERRED, False, Outcome.DEFERRED),
+        ("preparation-failed", RepairDisposition.FAILED, False, Outcome.FAILED),
+        ("sent", RepairDisposition.ACCEPTED_OR_UNCERTAIN, True, Outcome.ACCEPTED_HANDOFF),
+        ("response-unknown", RepairDisposition.ACCEPTED_OR_UNCERTAIN, True, Outcome.ACCEPTED_HANDOFF),
+        ("notice-failed", RepairDisposition.ACCEPTED_OR_UNCERTAIN, True, Outcome.ACCEPTED_HANDOFF),
+    ],
+)
+def test_public_jules_ci_repair_retains_actual_send_boundary(tmp_path, monkeypatch, force, scenario, expected_disposition, expected_attempt, expected_outcome):
+    """Issue #2771: public PR routes preserve real no-send and attempted-send evidence."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    monkeypatch.setenv("AUTO_CODER_RUNTIME_ROOT", str(tmp_path))
+    monkeypatch.setattr(TraceCollector, "_instance", None)
+    session_id = "session_jules_ci_2771"
+    if scenario == "retired":
+        _retire_public_jules_session(REPOSITORY, session_id)
+
+    failed = _snapshot(ObservationAvailability.KNOWN, CIConclusion.FAILURE)
+    config = AutomationConfig()
+    config.MAX_CONCURRENT_IMPLEMENTATIONS = 2
+    pr_data = {
+        "number": PR_NUMBER,
+        "title": "Jules CI correction",
+        "body": f"Jules session: {session_id}",
+        "_jules_session_id": session_id,
+        "labels": [],
+        "user": {"login": "google-labs-jules[bot]"},
+        "head": {"ref": "jules/feature", "sha": H1},
+        "base": {"ref": "main", "sha": "base-1"},
+    }
+    github = MagicMock(token="controlled-token")
+    github.get_pull_request_metadata_strict.return_value = {
+        "number": PR_NUMBER,
+        "state": "open",
+        "merged_at": None,
+        "head": {"sha": H2 if scenario.startswith("changed-head") else H1},
+    }
+    ready = [True]
+
+    def load_logs(*_args):
+        if scenario == "draining":
+            ready[0] = False
+        if scenario == "preparation-failed":
+            raise ValueError("unavailable CI log input")
+        return "failed CI evidence"
+
+    with ExitStack() as stack:
+        unsafe = stack.enter_context(patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr"))
+        unsafe.return_value = SimpleNamespace(metadata_error=None, actions=[], authoritative_pr_data=pr_data, closed=False)
+        stack.enter_context(patch("auto_coder.pr_processor.get_speculative_jules_lifecycle", return_value=None))
+        stack.enter_context(patch("auto_coder.pr_processor._close_empty_pr", return_value=SimpleNamespace(closed=False)))
+        stack.enter_context(patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=SimpleNamespace(closed=False)))
+        stack.enter_context(patch("auto_coder.pr_processor._should_skip_waiting_for_jules", return_value=False))
+        stack.enter_context(patch("auto_coder.pr_processor._link_jules_pr_to_issue", return_value=True))
+        stack.enter_context(patch("auto_coder.pr_processor._link_codex_cloud_pr_to_issue", return_value=None))
+        stack.enter_context(patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=False, ids=[701], observation=failed)))
+        stack.enter_context(patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True))
+        stack.enter_context(patch("auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False))
+        stack.enter_context(patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}))
+        stack.enter_context(patch("auto_coder.pr_processor.get_detailed_checks_from_history", return_value=SimpleNamespace(failed_checks=[{"name": "PR Tests"}])))
+        stack.enter_context(patch("auto_coder.pr_processor.check_pr_repair_exhaustion", return_value=None))
+        stack.enter_context(patch("auto_coder.pr_processor._is_codex_pr", return_value=False))
+        stack.enter_context(patch("auto_coder.pr_processor._is_jules_pr", return_value=True))
+        stack.enter_context(patch("auto_coder.pr_processor._is_dependabot_pr", return_value=False))
+        stack.enter_context(patch("auto_coder.pr_processor.cmd.run_command", return_value=CommandResult(True, "main\n", "", 0)))
+        stack.enter_context(patch("auto_coder.pr_processor._get_github_actions_logs", side_effect=load_logs))
+        stack.enter_context(patch("auto_coder.pr_processor.new_work_allowed", side_effect=lambda: ready[0]))
+        if scenario == "changed-head-wording":
+            from auto_coder import pr_processor
+
+            sender = pr_processor._send_jules_error_feedback
+
+            def misleading_actions(*args, **kwargs):
+                return replace(sender(*args, **kwargs), actions=("Sent Jules repair successfully",))
+
+            stack.enter_context(patch("auto_coder.pr_processor._send_jules_error_feedback", side_effect=misleading_actions))
+        stack.enter_context(patch("auto_coder.ci_repair_authority.get_ghapi_client"))
+        observe = stack.enter_context(patch("auto_coder.ci_repair_authority.observe_ci", return_value=failed))
+        stack.enter_context(patch("auto_coder.ci_repair_authority.ci_observation_merge_authority", return_value=nullcontext(True)))
+        manager = stack.enter_context(patch("auto_coder.pr_processor.CloudManager"))
+        manager.return_value.get_issue_by_session.return_value = 777 if scenario == "retired" else None
+        jules = stack.enter_context(patch("auto_coder.jules_client.JulesClient"))
+        if scenario == "response-unknown":
+            jules.return_value.send_message.side_effect = TimeoutError("provider response lost")
+        if scenario == "notice-failed":
+            github.add_comment_to_pr.side_effect = OSError("notice not accepted")
+        label = stack.enter_context(patch("auto_coder.pr_processor.LabelManager"))
+        label.return_value.__enter__.return_value = True
+
+        with get_trace_collector().start_execution(REPOSITORY, "pr", PR_NUMBER, origin="public-pr"):
+            result = process_pull_request(github, config, REPOSITORY, pr_data, force_adversarial_validation=force)
+
+    assert result.repair_result is not None
+    assert result.repair_result.disposition is expected_disposition
+    assert result.repair_result.attempt_started is expected_attempt
+    assert result.repair_result.receipt_state is RepairFactState.UNKNOWN
+    assert result.repair_result.receipt == ""
+    assert result.outcome is (PRProcessingOutcome.FAILED if scenario == "preparation-failed" else PRProcessingOutcome.DEFERRED)
+    assert not any("Jules will handle fixing" in text for text in result.actions_taken)
+    assert not any("Successfully merged" in text for text in result.actions_taken)
+    if scenario.startswith("changed-head"):
+        assert "head changed" in result.repair_result.reason
+        observe.assert_not_called()
+    if scenario == "changed-head-wording":
+        assert result.repair_result.actions == ("Sent Jules repair successfully",)
+    if scenario == "draining":
+        assert "graceful shutdown" in result.repair_result.reason
+    if scenario == "retired":
+        assert result.repair_result.reason == "outbound Jules admission refused"
+    if scenario == "notice-failed":
+        assert any("Failed to post comment" in action for action in result.repair_result.actions)
+    if scenario == "response-unknown":
+        assert "response is unavailable" in result.repair_result.reason
+    if scenario == "preparation-failed":
+        assert result.repair_result.reason == "Jules CI feedback preparation failed"
+    assert jules.return_value.send_message.call_count == int(expected_attempt)
+    assert github.add_comment_to_pr.call_count == int(scenario in {"sent", "notice-failed"})
+
+    snapshot = get_trace_collector().get_snapshot(repository=REPOSITORY, item_type="pr", item_number=PR_NUMBER)
+    events = [event for event in snapshot.events if event.stage_id == "pr.repair-delegation"]
+    assert len(events) == 1
+    assert events[0].outcome == expected_outcome.value
+    assert events[0].facts["disposition"] == expected_disposition.value
+    assert events[0].facts["reason"] == result.repair_result.reason
+    assert events[0].facts["attempt_started"] is expected_attempt
+    assert not any(event.stage_id == "pr.merge-delivery" for event in snapshot.events)
 
 
 def test_terminal_ci_failure_enters_typed_synchronous_local_repair(tmp_path, monkeypatch):
