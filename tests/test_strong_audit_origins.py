@@ -111,8 +111,7 @@ class OriginScenario:
     def configure(self, strategy, enabled=True, backend_type="codex"):
         backend_name = f"{backend_type}-reviewer"
         model = "muse-spark-1.3" if backend_type == "muse" else "gpt-5"
-        self.config_file.write_text(
-            f"""[quota_selection]
+        self.config_file.write_text(f"""[quota_selection]
 strategy = "{strategy}"
 [backend_strong_pr_adversarial_validation]
 order = ["{backend_name}"]
@@ -121,8 +120,7 @@ default = "{backend_name}"
 backend_type = "{backend_type}"
 model = "{model}"
 enabled = {str(enabled).lower()}
-"""
-        )
+""")
 
     def account(self, method, **kwargs):
         self.observations.append((self.clock, self.used))

@@ -46,8 +46,7 @@ def _create_production_fixture(tmp_path: Path) -> tuple[Path, str, Path, str]:
     (repo / "src" / "auto_coder" / "__init__.py").write_text("")
     (repo / "src" / "auto_coder" / "cli.py").write_text("import argparse\n\ndef main():\n    argparse.ArgumentParser(prog='auto-coder').parse_args()\n")
     (repo / "README.md").write_text("fixture\n")
-    (repo / "pyproject.toml").write_text(
-        """[build-system]
+    (repo / "pyproject.toml").write_text("""[build-system]
 requires = ["setuptools>=84.2.1", "wheel"]
 build-backend = "auto_coder_build_backend"
 backend-path = ["build_backend"]
@@ -72,8 +71,7 @@ auto_coder = ["*.json"]
 
 [tool.setuptools.dynamic]
 version = {attr = "auto_coder_build_backend.get_build_version"}
-"""
-    )
+""")
     _command(["git", "init", "-q"], repo)
     _command(["git", "config", "user.email", "worker-version-test@example.invalid"], repo)
     _command(["git", "config", "user.name", "Worker Version Test"], repo)

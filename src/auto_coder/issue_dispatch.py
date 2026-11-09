@@ -169,8 +169,7 @@ class IssueDispatchGuard:
 
     @staticmethod
     def _ensure_schema(connection: sqlite3.Connection) -> None:
-        connection.execute(
-            """
+        connection.execute("""
             CREATE TABLE IF NOT EXISTS issue_dispatch_handoffs (
                 repository_owner TEXT NOT NULL,
                 repository_name TEXT NOT NULL,
@@ -187,10 +186,8 @@ class IssueDispatchGuard:
                 updated_at REAL NOT NULL,
                 PRIMARY KEY (repository_owner, repository_name, issue_number, attempt_id)
             )
-            """
-        )
-        connection.execute(
-            """
+            """)
+        connection.execute("""
             CREATE TABLE IF NOT EXISTS legacy_issue_dispatch_ownership (
                 repository_owner TEXT NOT NULL,
                 repository_name TEXT NOT NULL,
@@ -202,8 +199,7 @@ class IssueDispatchGuard:
                 observed_at REAL NOT NULL,
                 PRIMARY KEY (repository_owner, repository_name, issue_number)
             )
-            """
-        )
+            """)
 
     @staticmethod
     def _key(identity: IssueAttemptIdentity) -> tuple[object, ...]:

@@ -281,8 +281,7 @@ class ProviderRepairCorrelationStore:
                 if version > SUPPORTED_CORRELATION_SCHEMA_VERSION:
                     raise CorrelationUnavailableError(f"Unsupported schema version {version} (max: {SUPPORTED_CORRELATION_SCHEMA_VERSION})")
 
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS admission_tickets (
                     ticket_id TEXT PRIMARY KEY,
                     correlation_key TEXT NOT NULL,
@@ -301,10 +300,8 @@ class ProviderRepairCorrelationStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS delivery_observations (
                     observation_id TEXT PRIMARY KEY,
                     ticket_id TEXT NOT NULL,
@@ -323,10 +320,8 @@ class ProviderRepairCorrelationStore:
                     evidence TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS correction_observations (
                     observation_id TEXT PRIMARY KEY,
                     ticket_id TEXT NOT NULL,
@@ -345,10 +340,8 @@ class ProviderRepairCorrelationStore:
                     evidence TEXT NOT NULL,
                     observed_at TEXT NOT NULL
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS validation_bindings (
                     binding_id TEXT PRIMARY KEY,
                     generation_id TEXT NOT NULL,
@@ -366,8 +359,7 @@ class ProviderRepairCorrelationStore:
                     captured_at TEXT NOT NULL,
                     is_settled INTEGER NOT NULL DEFAULT 0
                 )
-                """
-            )
+                """)
         except sqlite3.DatabaseError as exc:
             raise CorrelationUnavailableError(f"Correlation schema verification failed: {exc}") from exc
 

@@ -210,16 +210,14 @@ class LocalReviewRepairStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS local_review_repair_attempts (
+            connection.execute("""CREATE TABLE IF NOT EXISTS local_review_repair_attempts (
                 repository TEXT NOT NULL, pr_number INTEGER NOT NULL,
                 attempt_id TEXT NOT NULL, head_sha TEXT NOT NULL, head_ref TEXT NOT NULL,
                 feedback_json TEXT NOT NULL, phase TEXT NOT NULL,
                 result_sha TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
                 updated_at REAL NOT NULL, incarnation INTEGER NOT NULL,
                 workspace_path TEXT NOT NULL DEFAULT '',
-                PRIMARY KEY(repository, pr_number, attempt_id))"""
-            )
+                PRIMARY KEY(repository, pr_number, attempt_id))""")
             columns = {row[1] for row in connection.execute("PRAGMA table_info(local_review_repair_attempts)")}
             for name, declaration in (("owner_pid", "INTEGER"), ("owner_boot_id", "TEXT"), ("owner_start_ticks", "INTEGER")):
                 if name not in columns:

@@ -147,8 +147,7 @@ def test_pr_repair_runner_records_real_muse_failure_for_cleanup(tmp_path, monkey
 
 def _host(path: Path) -> Path:
     host = path / "muse"
-    host.write_text(
-        r"""#!/usr/bin/env python3
+    host.write_text(r"""#!/usr/bin/env python3
 import json, os, re, subprocess, sys, time
 from pathlib import Path
 if sys.argv[1:] == ["--version"]:
@@ -371,8 +370,7 @@ for line in sys.stdin:
 retain({"kind":"session_end","record":{"session_id":last_session,"exit_reason":"clean"}})
 if os.environ.get("MSP_EXIT_NONZERO"):
     raise SystemExit(7)
-"""
-    )
+""")
     host.chmod(0o700)
     return host
 

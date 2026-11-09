@@ -393,8 +393,7 @@ class RepairAllowanceLedger:
                 if version > SUPPORTED_SCHEMA_VERSION:
                     raise RepairAllowanceUnavailableError(f"Unsupported schema version {version} (max supported: {SUPPORTED_SCHEMA_VERSION})")
 
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS namespaces (
                     namespace_key TEXT PRIMARY KEY,
                     api_origin TEXT NOT NULL,
@@ -404,10 +403,8 @@ class RepairAllowanceLedger:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS blocker_allowances (
                     namespace_key TEXT NOT NULL,
                     blocker_id TEXT NOT NULL,
@@ -421,10 +418,8 @@ class RepairAllowanceLedger:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (namespace_key, blocker_id)
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS generations (
                     generation_id TEXT PRIMARY KEY,
                     namespace_key TEXT NOT NULL,
@@ -443,10 +438,8 @@ class RepairAllowanceLedger:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS generation_delivery_attempts (
                     attempt_id TEXT PRIMARY KEY,
                     generation_id TEXT NOT NULL,
@@ -455,10 +448,8 @@ class RepairAllowanceLedger:
                     evidence TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS generation_blocker_settlements (
                     generation_id TEXT NOT NULL,
                     blocker_id TEXT NOT NULL,
@@ -470,10 +461,8 @@ class RepairAllowanceLedger:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (generation_id, blocker_id)
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS generation_pending_validations (
                     id TEXT PRIMARY KEY,
                     generation_id TEXT NOT NULL,
@@ -484,10 +473,8 @@ class RepairAllowanceLedger:
                     evidence TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS operator_grants (
                     request_id TEXT PRIMARY KEY,
                     namespace_key TEXT NOT NULL,
@@ -498,13 +485,11 @@ class RepairAllowanceLedger:
                     created_at TEXT NOT NULL,
                     reevaluation_delivered INTEGER NOT NULL DEFAULT 0
                 )
-                """
-            )
+                """)
             columns = {row[1] for row in conn.execute("PRAGMA table_info(operator_grants)")}
             if "reevaluation_delivered" not in columns:
                 conn.execute("ALTER TABLE operator_grants ADD COLUMN reevaluation_delivered INTEGER NOT NULL DEFAULT 0")
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS operation_journal (
                     operation_id TEXT PRIMARY KEY,
                     namespace_key TEXT NOT NULL,
@@ -513,8 +498,7 @@ class RepairAllowanceLedger:
                     result_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 )
-                """
-            )
+                """)
         except sqlite3.DatabaseError as exc:
             raise RepairAllowanceUnavailableError(f"Repair allowance schema verification failed: {exc}") from exc
 

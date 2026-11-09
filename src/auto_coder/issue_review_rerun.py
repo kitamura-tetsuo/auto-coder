@@ -69,8 +69,7 @@ class IssueReviewRerunStore:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self._connect() as db:
-                db.executescript(
-                    """
+                db.executescript("""
                     CREATE TABLE IF NOT EXISTS rerun_requests (
                         request_id TEXT PRIMARY KEY, normalized_subjects TEXT NOT NULL,
                         accepted_sequence INTEGER NOT NULL
@@ -86,8 +85,7 @@ class IssueReviewRerunStore:
                         request_id TEXT NOT NULL, subject_key TEXT NOT NULL,
                         authority INTEGER NOT NULL, PRIMARY KEY(request_id, subject_key)
                     );
-                    """
-                )
+                    """)
         except (OSError, sqlite3.Error) as exc:
             raise RerunAuthorityUnavailable(str(exc)) from exc
 

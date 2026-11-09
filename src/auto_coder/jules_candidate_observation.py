@@ -194,8 +194,7 @@ class CandidateObservationStore:
         self._lock = threading.RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
-            connection.executescript(
-                """
+            connection.executescript("""
                 CREATE TABLE IF NOT EXISTS clocks (
                     scope TEXT PRIMARY KEY, next_read INTEGER NOT NULL,
                     accepted_read INTEGER NOT NULL, invalidated_read INTEGER NOT NULL);
@@ -218,8 +217,7 @@ class CandidateObservationStore:
                     repository TEXT NOT NULL, pr_repository TEXT NOT NULL, pr_number INTEGER NOT NULL,
                     provider_id TEXT NOT NULL, session_id TEXT NOT NULL, binding_id TEXT NOT NULL,
                     PRIMARY KEY (repository, pr_repository, pr_number));
-                """
-            )
+                """)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(str(self.path), timeout=30, isolation_level=None)

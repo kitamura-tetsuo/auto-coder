@@ -99,12 +99,10 @@ def test_closed_target_revocation_rolls_back_partial_lane_cleanup_on_write_failu
     store = IssueStageRoutingStore(tmp_path / "routing.sqlite3")
     store.reconcile(review_classification(REPO, 10, "parent-review", 0, True, (requirement(10),)))
     store.reconcile(implementation_classification(REPO, 11, "owned-child", 0, True, (), family_parent_number=10))
-    store._connection.execute(
-        """CREATE TRIGGER fail_closed_family_cleanup
+    store._connection.execute("""CREATE TRIGGER fail_closed_family_cleanup
         BEFORE DELETE ON issue_lane_arrivals
         WHEN OLD.stage = 'implementation' AND OLD.family_parent_number = 10
-        BEGIN SELECT RAISE(ABORT, 'injected closure persistence failure'); END"""
-    )
+        BEGIN SELECT RAISE(ABORT, 'injected closure persistence failure'); END""")
 
     with pytest.raises(sqlite3.IntegrityError, match="injected closure persistence failure"):
         store.revoke_closed_target(REPO, 10)
@@ -247,8 +245,7 @@ def test_priority_contract_and_review_versus_child_sources():
 def test_schema_upgrade_discards_unattributable_implementation_rows(tmp_path):
     path = tmp_path / "routing.sqlite3"
     connection = sqlite3.connect(path)
-    connection.executescript(
-        """
+    connection.executescript("""
         CREATE TABLE issue_lane_arrivals (
             arrival INTEGER PRIMARY KEY AUTOINCREMENT, repository TEXT NOT NULL,
             stage TEXT NOT NULL, target_number INTEGER NOT NULL,
@@ -259,8 +256,7 @@ def test_schema_upgrade_discards_unattributable_implementation_rows(tmp_path):
         INSERT INTO issue_lane_arrivals(repository,stage,target_number,generation,priority,state,remaining_json,created_at)
         VALUES ('owner/repo','review',10,'review-g',0,'pending','[]',1),
                ('owner/repo','implementation',12,'old-family-g',0,'pending','[]',1);
-        """
-    )
+        """)
     connection.commit()
     connection.close()
 

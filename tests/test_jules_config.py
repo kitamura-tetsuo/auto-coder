@@ -21,15 +21,13 @@ def test_jules_config_enabled_true():
 
         # Create config with Jules explicitly enabled
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [backends.jules]
 enabled = true
 model = "jules-v1"
 api_key = "test-key-123"
 temperature = 0.7
-"""
-            )
+""")
 
         # Load configuration
         config = LLMBackendConfiguration.load_from_file(config_path)
@@ -55,13 +53,11 @@ def test_jules_config_enabled_false():
 
         # Create config with Jules explicitly disabled
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [backends.jules]
 enabled = false
 model = "jules-v1"
-"""
-            )
+""")
 
         # Load configuration
         config = LLMBackendConfiguration.load_from_file(config_path)
@@ -85,13 +81,11 @@ def test_jules_config_default_behavior():
 
         # Create config without Jules section
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [backends.codex]
 enabled = true
 model = "codex-model"
-"""
-            )
+""")
 
         # Load configuration
         config = LLMBackendConfiguration.load_from_file(config_path)
@@ -136,13 +130,11 @@ def test_jules_config_get_model_for_backend():
 
         # Test with explicit model
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [backends.jules]
 enabled = true
 model = "jules-specific-model"
-"""
-            )
+""")
 
         config = LLMBackendConfiguration.load_from_file(config_path)
         model = config.get_model_for_backend("jules")
@@ -150,12 +142,10 @@ model = "jules-specific-model"
 
         # Test with default model (no model specified)
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [backends.jules]
 enabled = true
-"""
-            )
+""")
 
         config = LLMBackendConfiguration.load_from_file(config_path)
         model = config.get_model_for_backend("jules")
@@ -170,8 +160,7 @@ def test_jules_config_with_backend_order():
 
         # Create config with backend order including Jules
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [backend]
 order = ["codex", "jules", "antigravity"]
 default = "codex"
@@ -186,8 +175,7 @@ model = "jules"
 
 [backends.gemini]
 enabled = false
-"""
-            )
+""")
 
         # Load configuration
         config = LLMBackendConfiguration.load_from_file(config_path)
@@ -211,8 +199,7 @@ def test_jules_config_full_parameters():
 
         # Create config with full Jules parameters
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [backends.jules]
 enabled = true
 model = "jules-v2"
@@ -223,8 +210,7 @@ timeout = 500
 max_retries = 10
 backend_type = "jules"
 options = ["option1", "option2"]
-"""
-            )
+""")
 
         # Load configuration
         config = LLMBackendConfiguration.load_from_file(config_path)
@@ -251,8 +237,7 @@ def test_jules_config_multiple_backends():
 
         # Create config with multiple backends
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [backends.codex]
 enabled = true
 model = "codex-model"
@@ -268,8 +253,7 @@ model = "jules-model"
 [backends.qwen]
 enabled = true
 model = "qwen-model"
-"""
-            )
+""")
 
         # Load configuration
         config = LLMBackendConfiguration.load_from_file(config_path)
@@ -300,13 +284,11 @@ def test_jules_config_backend_type_is_jules():
 
         # Create Jules config with backend_type set
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [backends.jules]
 enabled = true
 backend_type = "jules"
-"""
-            )
+""")
 
         # Load configuration
         config = LLMBackendConfiguration.load_from_file(config_path)

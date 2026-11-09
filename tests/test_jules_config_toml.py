@@ -21,12 +21,10 @@ def test_jules_enabled_via_config_toml():
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
 
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [jules]
 enabled = true
-"""
-            )
+""")
 
         # Test that Jules is enabled
         assert get_jules_enabled_from_config(config_path) is True, "Jules should be enabled when config.toml has [jules].enabled = true"
@@ -40,12 +38,10 @@ def test_jules_disabled_via_config_toml():
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
 
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [jules]
 enabled = false
-"""
-            )
+""")
 
         # Test that Jules is disabled
         assert get_jules_enabled_from_config(config_path) is False, "Jules should be disabled when config.toml has [jules].enabled = false"
@@ -65,24 +61,20 @@ def test_jules_config_toml_with_local_and_home():
 
         # Write home config (disabled)
         with open(home_config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [jules]
 enabled = false
-"""
-            )
+""")
 
         # Create local config (enabled) in the "project" directory
         local_config_path = os.path.join(local_cwd, ".auto-coder", "config.toml")
         os.makedirs(os.path.dirname(local_config_path), exist_ok=True)
 
         with open(local_config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [jules]
 enabled = true
-"""
-            )
+""")
 
         # Change to the local directory and test
         original_cwd = os.getcwd()
@@ -119,12 +111,10 @@ def test_jules_config_toml_without_jules_section():
 
         # Create config.toml without [jules] section
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [other_section]
 setting = "value"
-"""
-            )
+""")
 
         # Should return default (True) when [jules] section is missing
         assert get_jules_enabled_from_config(config_path) is True, "Should return default (True) when [jules] section is missing"
@@ -138,12 +128,10 @@ def test_jules_config_toml_with_jules_no_enabled():
 
         # Create config.toml with [jules] but no 'enabled' field
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [jules]
 model = "jules-v1"
-"""
-            )
+""")
 
         # Should return default (True) when 'enabled' field is missing
         assert get_jules_enabled_from_config(config_path) is True, "Should return default (True) when 'enabled' field is missing"
@@ -157,15 +145,13 @@ def test_jules_config_toml_with_other_fields():
 
         # Create config.toml with [jules] section having multiple fields
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [jules]
 enabled = false
 model = "jules-v1"
 api_key = "test-key"
 temperature = 0.7
-"""
-            )
+""")
 
         # Should respect enabled=false even with other fields
         assert get_jules_enabled_from_config(config_path) is False, "Should respect enabled=false with other fields present"
@@ -181,12 +167,10 @@ def test_jules_config_toml_home_directory():
 
         try:
             with open(home_config_path, "w") as f:
-                f.write(
-                    """
+                f.write("""
 [jules]
 enabled = false
-"""
-                )
+""")
 
             # Should read from home directory when local doesn't exist
             original_cwd = os.getcwd()

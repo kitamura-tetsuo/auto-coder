@@ -189,8 +189,7 @@ class IssueStageRoutingStore:
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._lock = threading.Lock()
         with self._connection:
-            self._connection.executescript(
-                """
+            self._connection.executescript("""
                 CREATE TABLE IF NOT EXISTS issue_lane_arrivals (
                     arrival INTEGER PRIMARY KEY AUTOINCREMENT,
                     repository TEXT NOT NULL,
@@ -239,8 +238,7 @@ class IssueStageRoutingStore:
                     closed_period INTEGER NOT NULL,
                     PRIMARY KEY(repository, target_number)
                 );
-                """
-            )
+                """)
             columns = {row[1] for row in self._connection.execute("PRAGMA table_info(issue_lane_arrivals)")}
             if "family_parent_number" not in columns:
                 self._connection.execute("ALTER TABLE issue_lane_arrivals ADD COLUMN family_parent_number INTEGER")

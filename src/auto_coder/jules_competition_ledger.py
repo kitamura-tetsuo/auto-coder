@@ -507,8 +507,7 @@ class JulesCompetitionLedger:
                 if version > SUPPORTED_SCHEMA_VERSION:
                     raise JulesCompetitionUnavailableError(f"Unsupported schema version {version} (max supported: {SUPPORTED_SCHEMA_VERSION})")
 
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS namespaces (
                     namespace_key TEXT PRIMARY KEY,
                     repository TEXT NOT NULL,
@@ -517,10 +516,8 @@ class JulesCompetitionLedger:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS generations (
                     generation_id TEXT PRIMARY KEY,
                     namespace_key TEXT NOT NULL,
@@ -549,16 +546,14 @@ class JulesCompetitionLedger:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
-                """
-            )
+                """)
             generation_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(generations)").fetchall()}
             if "winner_validation_revision" not in generation_columns:
                 conn.execute("ALTER TABLE generations ADD COLUMN winner_validation_revision INTEGER")
             if "winner_invalidation_revision" not in generation_columns:
                 conn.execute("ALTER TABLE generations ADD COLUMN winner_invalidation_revision INTEGER")
             conn.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(SUPPORTED_SCHEMA_VERSION),))
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS candidates (
                     namespace_key TEXT NOT NULL,
                     generation_id TEXT NOT NULL,
@@ -571,10 +566,8 @@ class JulesCompetitionLedger:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (generation_id, candidate_id)
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS candidate_bindings (
                     binding_id TEXT PRIMARY KEY,
                     generation_id TEXT NOT NULL,
@@ -588,10 +581,8 @@ class JulesCompetitionLedger:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS obligations (
                     obligation_id TEXT PRIMARY KEY,
                     namespace_key TEXT NOT NULL,
@@ -603,10 +594,8 @@ class JulesCompetitionLedger:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS reconciliations (
                     reconciliation_id TEXT PRIMARY KEY,
                     namespace_key TEXT NOT NULL,
@@ -617,10 +606,8 @@ class JulesCompetitionLedger:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS operation_journal (
                     operation_id TEXT PRIMARY KEY,
                     namespace_key TEXT NOT NULL,
@@ -629,8 +616,7 @@ class JulesCompetitionLedger:
                     result_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 )
-                """
-            )
+                """)
         except sqlite3.DatabaseError as exc:
             raise JulesCompetitionUnavailableError(f"Jules competition schema verification failed: {exc}") from exc
 

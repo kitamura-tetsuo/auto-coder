@@ -453,8 +453,7 @@ def test_fresh_console_wrapper_rejects_extra_code_and_python_hooks(tmp_path: Pat
     from auto_coder.management.bootstrap_supervisor import RuntimeSpec, _verify_fresh_console_entrypoint
 
     wrapper = tmp_path / "auto-coder"
-    wrapper.write_text(
-        """#!/opt/auto-coder/.venv/bin/python
+    wrapper.write_text("""#!/opt/auto-coder/.venv/bin/python
 import sys
 from auto_coder.cli import main
 if __name__ == "__main__":
@@ -463,8 +462,7 @@ if __name__ == "__main__":
     elif sys.argv[0].endswith(".exe"):
         sys.argv[0] = sys.argv[0][:-4]
     sys.exit(main())
-"""
-    )
+""")
     runtime = RuntimeSpec("initial", "unused", wrapper, ())
     _verify_fresh_console_entrypoint(runtime)
     with pytest.raises(ValueError):

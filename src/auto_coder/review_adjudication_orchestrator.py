@@ -113,8 +113,7 @@ class AdjudicationEffectStore:
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=FULL")
-        self._db.execute(
-            """CREATE TABLE IF NOT EXISTS adjudication_effects (
+        self._db.execute("""CREATE TABLE IF NOT EXISTS adjudication_effects (
                 context_id TEXT PRIMARY KEY,
                 repository TEXT NOT NULL,
                 pr_number INTEGER NOT NULL,
@@ -124,8 +123,7 @@ class AdjudicationEffectStore:
                 verdict TEXT NOT NULL,
                 status TEXT NOT NULL,
                 gap_id TEXT NOT NULL DEFAULT ''
-            )"""
-        )
+            )""")
         self._db.commit()
 
     def get(self, context_id: str) -> Optional[EffectRecord]:

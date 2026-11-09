@@ -218,11 +218,7 @@ def register_adjudication_page(repo_name: str) -> None:
           byId('adj-refresh').onclick = refresh;
           boot();
         })();
-        """.replace(
-            "__PR__", json.dumps(pr_number)
-        ).replace(
-            "__REPO__", json.dumps(repo_name)
-        )
+        """.replace("__PR__", json.dumps(pr_number)).replace("__REPO__", json.dumps(repo_name))
         # Queue the controller after NiceGUI has created the page elements;
         # an inline body script can run before ``adj-root`` exists.
         ui.run_javascript(script)

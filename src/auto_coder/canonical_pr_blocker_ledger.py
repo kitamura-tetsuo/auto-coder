@@ -354,14 +354,12 @@ class CanonicalPRBlockerLedger:
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
         try:
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS meta (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 )
-                """
-            )
+                """)
             cursor = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'")
             row = cursor.fetchone()
             if row is None:
@@ -377,8 +375,7 @@ class CanonicalPRBlockerLedger:
                 if version > SUPPORTED_SCHEMA_VERSION:
                     raise BlockerLedgerUnavailableError(f"Unsupported schema version {version} (max supported: {SUPPORTED_SCHEMA_VERSION})")
 
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS namespaces (
                     namespace_key TEXT PRIMARY KEY,
                     api_origin TEXT NOT NULL,
@@ -389,10 +386,8 @@ class CanonicalPRBlockerLedger:
                     updated_at TEXT NOT NULL,
                     initialized_explicitly INTEGER NOT NULL DEFAULT 1
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS blockers (
                     blocker_id TEXT PRIMARY KEY,
                     namespace_key TEXT NOT NULL,
@@ -411,20 +406,16 @@ class CanonicalPRBlockerLedger:
                     last_updated_revision INTEGER NOT NULL,
                     reconciliation_needs_json TEXT NOT NULL DEFAULT '[]'
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS blocker_requirements (
                     blocker_id TEXT NOT NULL,
                     issue_number INTEGER NOT NULL,
                     requirement_id TEXT NOT NULL,
                     PRIMARY KEY (blocker_id, issue_number, requirement_id)
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS blocker_aliases (
                     alias_id TEXT PRIMARY KEY,
                     namespace_key TEXT NOT NULL,
@@ -434,10 +425,8 @@ class CanonicalPRBlockerLedger:
                     concern_id TEXT,
                     created_at TEXT NOT NULL
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS blocker_transitions (
                     transition_id TEXT PRIMARY KEY,
                     namespace_key TEXT NOT NULL,
@@ -455,10 +444,8 @@ class CanonicalPRBlockerLedger:
                     created_at TEXT NOT NULL,
                     contract_rebinding_json TEXT
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS reconciliation_records (
                     reconciliation_id TEXT PRIMARY KEY,
                     namespace_key TEXT NOT NULL,
@@ -473,10 +460,8 @@ class CanonicalPRBlockerLedger:
                     ledger_revision INTEGER NOT NULL,
                     created_at TEXT NOT NULL
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS operation_journal (
                     operation_id TEXT PRIMARY KEY,
                     namespace_key TEXT NOT NULL,
@@ -485,10 +470,8 @@ class CanonicalPRBlockerLedger:
                     result_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS publication_intents (
                     intent_id TEXT PRIMARY KEY,
                     namespace_key TEXT NOT NULL,
@@ -505,8 +488,7 @@ class CanonicalPRBlockerLedger:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
-                """
-            )
+                """)
             columns = {row[1] for row in conn.execute("PRAGMA table_info(publication_intents)")}
             for name, declaration in (
                 ("submitted_event", "TEXT NOT NULL DEFAULT ''"),
@@ -516,8 +498,7 @@ class CanonicalPRBlockerLedger:
             ):
                 if name not in columns:
                     conn.execute(f"ALTER TABLE publication_intents ADD COLUMN {name} {declaration}")
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS repair_bundles (
                     bundle_id TEXT PRIMARY KEY,
                     namespace_key TEXT NOT NULL,
@@ -534,8 +515,7 @@ class CanonicalPRBlockerLedger:
                     created_at TEXT NOT NULL,
                     rendered_payload TEXT NOT NULL
                 )
-                """
-            )
+                """)
         except sqlite3.DatabaseError as exc:
             raise BlockerLedgerUnavailableError(f"Blocker ledger schema verification failed: {exc}") from exc
 
