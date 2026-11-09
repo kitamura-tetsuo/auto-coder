@@ -84,6 +84,7 @@ _ALLOWED_WORKER_EXCEPTION_TYPES = frozenset(
         "attributeerror",
         "calledprocesserror",
         "connectionerror",
+        "deploymentchannelerror",
         "filenotfounderror",
         "httperror",
         "httpstatuserror",
@@ -129,6 +130,7 @@ def test_disposable_worker_error_diagnostics_never_include_sensitive_messages() 
     )
     assert _safe_worker_exception_types(log_text) == ["connectionerror"]
     assert _safe_worker_exception_types("unclassified secret=do-not-publish") == []
+    assert _safe_worker_exception_types("auto_coder.deployment_channel.DeploymentChannelError: private-path=not-for-output") == ["deploymentchannelerror"]
 
 
 class InstalledChain(Chain):
@@ -198,7 +200,7 @@ class InstalledChain(Chain):
                 "AUTO_CODER_FIXTURE_HOLD_BOOTSTRAP": "1",
                 "AUTO_CODER_SOURCE_REPOSITORY_ROOT": "/source",
                 "AUTO_CODER_CONFIG_PATH": "/runtime/llm_config.toml",
-                "AUTO_CODER_OWNERSHIP_FILE": "/runtime/ownership.json",
+                "AUTO_CODER_OWNERSHIP_FILE": "/workspace/ownership.json",
                 "AUTO_CODER_ARTIFACT_DIGEST": "disposable-installed-ready",
                 "AUTO_CODER_HEALTH_LOG_ENABLED": "0",
                 "AUTO_CODER_DISABLE_AUTO_UPDATE": "1",
@@ -213,7 +215,12 @@ class InstalledChain(Chain):
         # A worker can read only the ephemeral test CA, not the HTTPS key.
         beta["volumes"].append(f"{trust / 'github.crt'}:/ci-trust/github.crt:ro")
         runtime = self.root / "workers" / "beta"
-        (runtime / "ownership.json").write_text(json.dumps({"fixture/beta": "beta"}))
+        # DeploymentChannel requires the shared ownership registry to live
+        # outside the channel-private /runtime. The /workspace mount is
+        # writable and persistent for this disposable process only.
+        ownership = self.root / "workers" / "beta-workspace" / "ownership.json"
+        assert runtime not in ownership.parents
+        ownership.write_text(json.dumps({"fixture/beta": "beta"}))
         (runtime / "llm_config.toml").write_text('[backend]\norder = ["jules"]\n\n[backends.jules]\nbackend_type = "jules"\nenabled = true\napi_key = "offline-unused"\n')
         return profile
 
