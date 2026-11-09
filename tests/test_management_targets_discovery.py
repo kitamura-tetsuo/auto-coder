@@ -23,11 +23,7 @@ def test_authenticated_read_only_discovery_lists_actual_aliases_without_worker_i
     settings, _grants, signed, policy, beta, release = runtime_boundary
     beta.config = replace(beta.config, target_id="north.beta")
     release.config = replace(release.config, target_id="zeta-release")
-    _policy(
-        policy,
-        "  zeta-release:\n    channel: release\n    repositories: [fixture/release]\n"
-        "  north.beta:\n    channel: beta\n    repositories: [fixture/beta]\n",
-    )
+    _policy(policy, "  zeta-release:\n    channel: release\n    repositories: [fixture/release]\n  north.beta:\n    channel: beta\n    repositories: [fixture/beta]\n")
     app = _application(runtime_boundary)
     with TestClient(app, base_url=settings.oauth.canonical_issuer) as client:
         token = _issue(client, settings, signed, "alice", "alice-client", READ_SCOPE)["access_token"]
@@ -90,11 +86,7 @@ def test_discovery_distinguishes_definitive_empty_from_unavailable(runtime_bound
             "status": "UNAVAILABLE",
             "reason": "target_classification_unavailable",
         }
-        _policy(
-            policy,
-            "  beta-worker:\n    channel: beta\n    repositories: [fixture/beta]\n"
-            "  no-client:\n    channel: release\n    repositories: [fixture/release]\n",
-        )
+        _policy(policy, "  beta-worker:\n    channel: beta\n    repositories: [fixture/beta]\n  no-client:\n    channel: release\n    repositories: [fixture/release]\n")
         assert _call(client, token, "auto_coder_targets", {}, 3)["status"] == "UNAVAILABLE"
 
         _policy(policy, "  beta-worker:\n    channel: beta\n    repositories: [fixture/wrong]\n")
