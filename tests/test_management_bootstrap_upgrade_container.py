@@ -633,7 +633,23 @@ def test_disposable_operator_prepare_apply_status_real_docker(installed_ready_ch
 
 
 @pytest.mark.timeout(900)
-@pytest.mark.parametrize("failure_point", ("lost-stop", "lost-start", "postlaunch-proxy-failed", "retained-unresolved-work", "predecessor-generation", "predecessor-management-generation", "host-process-interrupted"))
+@pytest.mark.parametrize(
+    "failure_point",
+    (
+        "lost-stop",
+        "lost-start",
+        "postlaunch-proxy-failed",
+        "retained-unresolved-work",
+        "missing-source-credential",
+        "missing-source-evidence",
+        "missing-source-consent",
+        "changed-successor-config",
+        "changed-candidate-image",
+        "predecessor-generation",
+        "predecessor-management-generation",
+        "host-process-interrupted",
+    ),
+)
 def test_disposable_operator_failure_fences_real_docker(installed_chain: InstalledChain, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], failure_point: str) -> None:
     """Dispatch real Docker effects, then lose an acknowledgement or the new proxy."""
     chain = installed_chain
@@ -726,6 +742,61 @@ def test_disposable_operator_failure_fences_real_docker(installed_chain: Install
             assert chain.workers() == baseline
             return
         prior_snapshot = chain.snapshot(first)
+        # Execute each pre-effect refusal independently in the required real
+        # Docker lane. The comprehensive READY A->B->C test covers these too,
+        # but its own early READY failure must not hide negative evidence.
+        if failure_point in {
+            "missing-source-credential",
+            "missing-source-evidence",
+            "missing-source-consent",
+            "changed-successor-config",
+            "changed-candidate-image",
+        }:
+            changed_file: Path | None = None
+            saved_content: bytes | None = None
+            missing_token: Path | None = None
+            token_backup: Path | None = None
+            try:
+                if failure_point == "missing-source-credential":
+                    missing_token = successor.path("bootstrap") / "source_evidence_read"
+                    token_backup = missing_token.with_suffix(".absent")
+                    missing_token.rename(token_backup)
+                elif failure_point == "missing-source-evidence":
+                    chain.services.unavailable = True
+                elif failure_point == "changed-successor-config":
+                    changed_file = successor.path("bootstrap") / "management.yaml"
+                    saved_content = changed_file.read_bytes()
+                    changed_file.write_bytes(saved_content + b"\\n# changed disposable source config\\n")
+                elif failure_point == "changed-candidate-image":
+                    changed_file = successor.intent
+                    assert changed_file is not None
+                    saved_content = changed_file.read_bytes()
+                    changed_intent = json.loads(saved_content)
+                    changed_intent["image_digest"] = "sha256:" + "0" * 64
+                    changed_file.write_text(json.dumps(changed_intent))
+                operator_args = (
+                    "apply",
+                    "--plan-sha256",
+                    plan_id,
+                    "--auth-token-file",
+                    str(auth_file),
+                )
+                if failure_point != "missing-source-consent":
+                    operator_args += ("--authorize-source-read",)
+                code, denied = call_cli(*operator_args)
+                assert code == 2 and denied["stage"] == "prerequisite-blocked", denied
+                assert effects == [] and chain.snapshot(first) == prior_snapshot
+                assert chain.workers() == baseline
+                for container in (first.container, first.proxy):
+                    assert chain.docker("inspect", "--format", "{{.State.Running}}", container) == "true"
+                assert chain.docker("inspect", "--format", "{{.State.Running}}", successor.container) == "false"
+            finally:
+                if changed_file is not None and saved_content is not None:
+                    changed_file.write_bytes(saved_content)
+                if missing_token is not None and token_backup is not None:
+                    token_backup.rename(missing_token)
+                chain.services.unavailable = False
+            return
         if failure_point in {"predecessor-generation", "predecessor-management-generation"}:
             # Replacing the Docker process lifetime under either exact predecessor
             # ID invalidates the approved plan before any coordinator effect.
