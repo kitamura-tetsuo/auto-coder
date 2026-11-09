@@ -68,7 +68,7 @@ jobs:
           python prompt-evals/run_prompt_evals.py --base '${{ steps.resolved.outputs.base }}' --head '${{ steps.resolved.outputs.head }}' --report prompt-eval-report/report.json --require-credentials --repository '${{ github.repository }}' --pr-number '${{ github.event.pull_request.number || 0 }}' --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' "${args[@]}"
       - name: Upload structured advisory record
         if: ${{ always() }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: prompt-regression-report-${{ github.run_attempt }}
           path: prompt-eval-report/report.json

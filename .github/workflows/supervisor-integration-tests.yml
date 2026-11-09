@@ -113,7 +113,7 @@ jobs:
       - name: Restore optional management duration snapshot
         if: steps.history.outputs.name != ''
         continue-on-error: true
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: ${{ steps.history.outputs.name }}
           run-id: ${{ steps.history.outputs.run_id }}
@@ -184,7 +184,7 @@ jobs:
       - name: Restore optional fresh-host duration snapshot
         if: steps.history.outputs.name != ''
         continue-on-error: true
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: ${{ steps.history.outputs.name }}
           run-id: ${{ steps.history.outputs.run_id }}
@@ -250,7 +250,7 @@ jobs:
       - name: Restore optional container duration snapshot
         if: steps.history.outputs.name != ''
         continue-on-error: true
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: ${{ steps.history.outputs.name }}
           run-id: ${{ steps.history.outputs.run_id }}
@@ -304,7 +304,7 @@ jobs:
       - *uv
       - *dependencies
       - name: Download immutable management plan
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: ${{ needs.prepare-management.outputs.artifact_name }}
           path: supervisor-plan/management-self-update
@@ -363,7 +363,7 @@ jobs:
       - *build
       - *host-prerequisites
       - name: Download immutable fresh-host plan
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: ${{ needs.prepare-fresh-host.outputs.artifact_name }}
           path: supervisor-plan/fresh-host
@@ -508,7 +508,7 @@ jobs:
       - *dependencies
       - *build
       - name: Download immutable container plan
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: ${{ needs.prepare-containers.outputs.artifact_name }}
           path: supervisor-plan/isolated-containers
@@ -560,24 +560,24 @@ jobs:
       - *dependencies
       - name: Download original management plan
         if: needs.prepare-management.outputs.artifact_name != ''
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: ${{ needs.prepare-management.outputs.artifact_name }}
           path: evidence/plans/management-self-update
       - name: Download original fresh-host plan
         if: needs.prepare-fresh-host.outputs.artifact_name != ''
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: ${{ needs.prepare-fresh-host.outputs.artifact_name }}
           path: evidence/plans/fresh-host
       - name: Download original container plan
         if: needs.prepare-containers.outputs.artifact_name != ''
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: ${{ needs.prepare-containers.outputs.artifact_name }}
           path: evidence/plans/isolated-containers
       - name: Download all current-run native diagnostic artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: supervisor-integration-*
           path: evidence/shards
