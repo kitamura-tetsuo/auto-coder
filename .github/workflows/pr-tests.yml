@@ -34,6 +34,9 @@ jobs:
         run: scripts/check_repository_hygiene.py --source head --repo .
       - name: Black (check)
         run: uv run black --check src/ tests/
+      - name: Show Black formatting diff on failure
+        if: failure()
+        run: uv run black --diff src/ tests/
       - name: isort (check)
         run: uv run isort --check-only src/ tests/
       - name: Flake8
