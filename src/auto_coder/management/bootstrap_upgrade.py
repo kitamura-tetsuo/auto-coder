@@ -87,7 +87,7 @@ _SUPERVISOR_MATRIX_STEPS = {
     "fresh-host": ("Verify fresh initialization with host evidence", "Bind native fresh-host receipt"),
     "isolated-containers": ("Verify isolated Supervisor containers", "Bind native container receipt"),
 }
-_SUPERVISOR_MATRIX_NAME = re.compile(r"Supervisor (management-self-update|fresh-host|isolated-containers) \\(shard ([1-9][0-9]*)\\)\\Z")
+_SUPERVISOR_MATRIX_NAME = re.compile(r"Supervisor (management-self-update|fresh-host|isolated-containers) \(shard ([1-9][0-9]*)\)\Z")
 
 
 class UpgradeUnavailable(RuntimeError):
