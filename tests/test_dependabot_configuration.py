@@ -67,10 +67,7 @@ def _assert_manifest_coverage(
         ("uv", "/"),
         ("docker", "/"),
         ("github-actions", "/"),
-        *(
-            ("uv", directory)
-            for directory in _nested_python_projects(repository_root)
-        ),
+        *(("uv", directory) for directory in _nested_python_projects(repository_root)),
     }
     declared: list[tuple[str, str]] = []
 
@@ -98,9 +95,7 @@ def _assert_manifest_coverage(
         if ecosystem == "github-actions":
             assert (target_directory / ".github" / "workflows").is_dir()
         else:
-            manifest_name = (
-                "Dockerfile" if ecosystem == "docker" else "pyproject.toml"
-            )
+            manifest_name = "Dockerfile" if ecosystem == "docker" else "pyproject.toml"
             assert (target_directory / manifest_name).is_file(), (
                 f"{ecosystem} mapping does not monitor {directory}/{manifest_name}"
             )
@@ -146,9 +141,7 @@ def test_dependabot_covers_repository_dependency_manifests() -> None:
 def test_missing_nested_uv_project_is_rejected() -> None:
     updates = deepcopy(_load_updates())
     missing_directory = sorted(_nested_python_projects(REPOSITORY_ROOT))[0]
-    uv_entry = next(
-        entry for entry in updates if entry["package-ecosystem"] == "uv"
-    )
+    uv_entry = next(entry for entry in updates if entry["package-ecosystem"] == "uv")
     uv_entry["directories"].remove(missing_directory)
 
     with pytest.raises(AssertionError, match="does not monitor required project"):
@@ -196,9 +189,7 @@ def test_invalid_grouping_is_rejected(ecosystem: str, change: str) -> None:
 @pytest.mark.parametrize("change", ["both", "duplicate", "empty", "scalar"])
 def test_invalid_directory_shapes_are_rejected(change: str) -> None:
     updates = deepcopy(_load_updates())
-    uv_entry = next(
-        entry for entry in updates if entry["package-ecosystem"] == "uv"
-    )
+    uv_entry = next(entry for entry in updates if entry["package-ecosystem"] == "uv")
     if change == "both":
         uv_entry["directory"] = "/"
     elif change == "duplicate":
@@ -221,9 +212,7 @@ def test_duplicate_directory_across_entries_is_rejected() -> None:
 
 def test_missing_fastcore_exclusion_is_rejected() -> None:
     updates = deepcopy(_load_updates())
-    uv_entry = next(
-        entry for entry in updates if entry["package-ecosystem"] == "uv"
-    )
+    uv_entry = next(entry for entry in updates if entry["package-ecosystem"] == "uv")
     uv_entry.pop("ignore")
     with pytest.raises(AssertionError, match="fastcore"):
         _assert_update_contract(updates)
