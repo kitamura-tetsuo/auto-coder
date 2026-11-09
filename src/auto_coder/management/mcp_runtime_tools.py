@@ -15,7 +15,7 @@ from typing import Callable
 from mcp.types import ToolAnnotations
 from pydantic import StrictInt
 
-from auto_coder.operating_policy import ActionClass, DecisionOutcome, PolicyIntent, TargetChannel, evaluate_snapshot, load_operating_policy
+from auto_coder.operating_policy import ActionClass, DecisionOutcome, OperatingPolicy, PolicyIntent, TargetChannel, evaluate_snapshot, load_operating_policy
 from auto_coder.tested_source_refs import TestedSourcePublisher
 from auto_coder.util.gh_cache import GitHubGitDataClient
 
@@ -240,6 +240,23 @@ class ManagementRuntime:
             raise PermissionError("the current management grant lacks the required scopes")
         return grant
 
+    def _resolve_snapshot(self, policy: OperatingPolicy, target_id: str, action: ActionClass) -> ResolvedWorker | dict[str, object]:
+        """Classify one policy alias against its fixed client without I/O."""
+        target = next((item for item in policy.targets if item.target_id == target_id), None)
+        if target is None:
+            return self._response("DENIED", "target_unknown")
+        client = self.clients.get(target_id)
+        if client is None:
+            return self._response("UNAVAILABLE", "supervisor_bridge_unconfigured")
+        config = client.config
+        # A policy alias cannot substitute a different physical bridge.
+        if len(target.repositories) != 1 or target.repositories[0] != config.repository or target.channel.value != config.channel:
+            return self._response("DENIED", "target_configuration_mismatch")
+        decision = evaluate_snapshot(policy, PolicyIntent(target_id, config.repository, action, TargetChannel(config.channel)))
+        if decision.outcome is not DecisionOutcome.ALLOWED:
+            return self._response(decision.outcome.value, decision.reason_code.value)
+        return ResolvedWorker(target_id, client, policy.revision)
+
     def _resolve(self, target_id: str, action: ActionClass) -> ResolvedWorker | dict[str, object]:
         if not isinstance(target_id, str) or not _NAME.fullmatch(target_id):
             return self._response("INVALID_REQUEST", "invalid_target_id")
@@ -248,21 +265,30 @@ class ManagementRuntime:
         loaded = load_operating_policy(self.settings.operating_policy_path)
         if loaded.outcome is DecisionOutcome.UNAVAILABLE or loaded.policy is None:
             return self._response("UNAVAILABLE", "operating_policy_unavailable")
-        target = next((item for item in loaded.policy.targets if item.target_id == target_id), None)
-        if target is None:
-            return self._response("DENIED", "target_unknown")
-        client = self.clients.get(target_id)
-        if client is None:
-            return self._response("UNAVAILABLE", "supervisor_bridge_unconfigured")
-        config = client.config
-        # Policy target IDs select one exact configured endpoint; neither the
-        # policy's channel nor its repository can select a substitute client.
-        if len(target.repositories) != 1 or target.repositories[0] != config.repository or target.channel.value != config.channel:
-            return self._response("DENIED", "target_configuration_mismatch")
-        decision = evaluate_snapshot(loaded.policy, PolicyIntent(target_id, config.repository, action, TargetChannel(config.channel)))
-        if decision.outcome is not DecisionOutcome.ALLOWED:
-            return self._response(decision.outcome.value, decision.reason_code.value)
-        return ResolvedWorker(target_id, client, loaded.revision)
+        return self._resolve_snapshot(loaded.policy, target_id, action)
+
+    async def targets(self) -> dict[str, object]:
+        """Discover configured inspectable aliases without probing a worker."""
+        self._grant((READ_SCOPE,))
+        if self.settings.operating_policy_path is None:
+            return self._response("UNAVAILABLE", "operating_policy_unconfigured")
+        loaded = load_operating_policy(self.settings.operating_policy_path)
+        if loaded.outcome is DecisionOutcome.UNAVAILABLE or loaded.policy is None:
+            return self._response("UNAVAILABLE", "operating_policy_unavailable")
+
+        candidates: list[dict[str, str]] = []
+        for target in loaded.policy.targets:
+            # A valid policy key is not necessarily a resolvable logical ID.
+            if _NAME.fullmatch(target.target_id) is None:
+                continue
+            resolved = self._resolve_snapshot(loaded.policy, target.target_id, ActionClass.INSPECT)
+            if isinstance(resolved, ResolvedWorker):
+                config = resolved.client.config
+                candidates.append({"target_id": resolved.target_id, "repository": config.repository, "channel": config.channel})
+            elif resolved["status"] == "UNAVAILABLE":
+                # One unknown classification makes the whole projection unknown.
+                return self._response("UNAVAILABLE", "target_classification_unavailable")
+        return self._response("OK", "inspectable_targets", targets=candidates)
 
     def _record_client(self, record: OperationRecord) -> tuple[str, WorkerNetworkClient] | None:
         """Recover only the original physical worker, including its secret."""
@@ -957,6 +983,7 @@ class ManagementRuntime:
         read = ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False, openWorldHint=False)
         mutation = ToolAnnotations(readOnlyHint=False, idempotentHint=True, destructiveHint=False, openWorldHint=False)
         return (
+            ManagementTool("auto_coder_targets", self.targets, (READ_SCOPE,), read, ()),
             ManagementTool("auto_coder_consumer_identity", self.consumer_identity, (READ_SCOPE,), read),
             ManagementTool("auto_coder_status", self.status, (READ_SCOPE,), read),
             ManagementTool("auto_coder_logs", self.logs, (READ_SCOPE,), read),

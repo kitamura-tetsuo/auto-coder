@@ -841,7 +841,8 @@ def test_jules_ci_feedback_rechecks_drain_after_log_acquisition(monkeypatch, tmp
         feedback.cancel()
         release.set()
         actions = await feedback
-        assert actions == ["Deferred Jules CI feedback for PR #90: graceful shutdown is draining"]
+        assert actions.actions == ("Deferred Jules CI feedback for PR #90: graceful shutdown is draining",)
+        assert actions.attempt_started is False
 
     asyncio.run(scenario())
     client.send_message.assert_not_called()

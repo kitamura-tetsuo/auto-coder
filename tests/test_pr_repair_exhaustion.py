@@ -255,7 +255,8 @@ def test_as002_bypass_matrix_stopped(allowance_store: RepairAllowanceLedger, mon
     assert any("repair allowance is exhausted" in a for a in codex_feedback.actions)
 
     jules_feedback = _send_jules_error_feedback(REPO, pr_data, [], config, mock_gh)
-    assert any("repair allowance is exhausted" in a for a in jules_feedback)
+    assert any("repair allowance is exhausted" in a for a in jules_feedback.actions)
+    assert jules_feedback.attempt_started is False
 
     # 4. Review repair delegation stopped
     review_feedback = _delegate_cloud_review_thread_repair(REPO, pr_data, mock_gh)

@@ -197,7 +197,8 @@ def test_send_jules_error_feedback_bypasses_codex_and_claude(route):
 
     with patch("auto_coder.jules_client.JulesClient") as mock_jules:
         actions = _send_jules_error_feedback("owner/repo", codex_pr, [{"name": "test"}], config, github_client)
-        assert any("Skipped Jules error feedback" in action for action in actions)
+        assert any("Skipped Jules error feedback" in action for action in actions.actions)
+        assert actions.attempt_started is False
         mock_jules.assert_not_called()
         github_client.add_comment_to_pr.assert_not_called()
 
