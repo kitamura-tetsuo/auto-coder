@@ -731,3 +731,147 @@ def test_source_valid_partial_native_profile_and_invalid_history_preserve_curren
     assert [row["nodeid"] for row in degraded] == list(current)
     assert [row["provenance"] for row in degraded] == ["same_file_max", "snapshot_exact", "source_floor", "source_floor"]
     assert [row["estimated_ms"] for row in degraded] == [2500, 2500, 5000, 5000]
+
+
+def test_source_policy_degraded_history_cli_applies_every_fresh_node_with_native_outcomes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cover partial/foreign/corrupt history through real collection, plan, and pytest shards."""
+    source = TEST_SOURCE + """
+@pytest.mark.parametrize("variant", ["recent"], ids=["new-parameter"])
+def test_added_parameter(variant):
+    assert variant == "recent"
+"""
+    project, context_path, original = _project(tmp_path, source=source)
+    (project / "tests/test_unseen.py").write_text(
+        """
+import os
+import pytest
+
+@pytest.mark.parametrize("variant", ["brand-new"], ids=["unseen-file"])
+def test_new_file(variant, request):
+    record = os.environ.get("CI_SHARD_TEST_RECORD")
+    if record:
+        with open(record, "a", encoding="utf-8") as stream:
+            stream.write(request.node.nodeid + "\\n")
+    assert variant == "brand-new"
+""",
+        encoding="utf-8",
+    )
+    for args in (("add", "-A"), ("commit", "-qm", "include new parameter and unseen file")):
+        subprocess.run(["git", *args], cwd=project, check=True, capture_output=True)
+    checkout = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=project, text=True).strip()
+    context = ShardContext(
+        original.repository,
+        original.profile_id,
+        checkout,
+        original.pytest_args,
+        original.harness_files,
+        original.semantic_environment,
+        original.origin,
+    )
+    context_path.write_text(json.dumps(context.json()), encoding="utf-8")
+    profile, selected = _inventory(project, context_path, context, monkeypatch)
+    assert len(selected) == 7
+    assert "tests/test_sample.py::test_added_parameter[new-parameter]" in selected
+    assert "tests/test_unseen.py::test_new_file[unseen-file]" in selected
+
+    # The unsharded native execution supplies an independent membership/outcome oracle.
+    baseline_record = tmp_path / "unsharded-record.txt"
+    baseline = _run(project, "-m", "pytest", "-m", "not slow", "-q", record=baseline_record)
+    assert baseline.returncode == 1, baseline.stdout + baseline.stderr
+    assert "1 failed" in baseline.stdout and "1 skipped" in baseline.stdout
+    assert Counter(baseline_record.read_text().splitlines()) == Counter(selected)
+
+    native_node = "tests/test_sample.py::test_parameterized[zero]"
+    snapshot_node = "tests/test_sample.py::test_parameterized[one]"
+    heavy_node = "tests/test_sample.py::test_parameterized[two]"
+    added_node = "tests/test_sample.py::test_added_parameter[new-parameter]"
+    unseen_node = "tests/test_unseen.py::test_new_file[unseen-file]"
+    valid_history = tmp_path / "native-partial.json"
+    _history(valid_history, profile, (native_node,), seconds=126)
+    foreign_history = tmp_path / "native-foreign.json"
+    foreign_identity = dict(profile)
+    foreign_identity["configuration_digest"] = "sha256:" + "f" * 64
+    _history(foreign_history, foreign_identity, (native_node,), seconds=126)
+    corrupt_history = tmp_path / "native-corrupt.json"
+    corrupt_history.write_text("{invalid-json", encoding="utf-8")
+
+    snapshot, provenance = _bootstrap_snapshot(
+        tmp_path,
+        {snapshot_node: 2.5, heavy_node: 801, "tests/test_retired.py::test_removed": 999},
+    )
+    bad_provenance = tmp_path / "bootstrap-bad-provenance.json"
+    mismatched = json.loads(provenance.read_text())
+    mismatched["selector"] = "not slow"
+    bad_provenance.write_text(json.dumps(mismatched), encoding="utf-8")
+    scenarios = (
+        ("partial", valid_history, snapshot, provenance, "matched", "matched"),
+        ("foreign", foreign_history, snapshot, provenance, "unavailable", "matched"),
+        ("corrupt", corrupt_history, snapshot, provenance, "unavailable", "matched"),
+        ("missing", tmp_path / "missing-native.json", tmp_path / "missing-snapshot.json", tmp_path / "missing-provenance.json", "unavailable", "unavailable"),
+        ("bad-provenance", corrupt_history, snapshot, bad_provenance, "unavailable", "unavailable"),
+    )
+    for name, history, bootstrap, provenance_file, native_status, snapshot_status in scenarios:
+        plan_file = tmp_path / f"source-{name}.json"
+        result = _run(
+            project,
+            str(ROOT / "scripts/plan_ci_shards.py"),
+            "--context",
+            str(context_path),
+            "--duration-policy",
+            "source-required-v1",
+            "--duration-profile",
+            str(history),
+            "--bootstrap-duration-snapshot",
+            str(bootstrap),
+            "--bootstrap-duration-provenance",
+            str(provenance_file),
+            "--output",
+            str(plan_file),
+            "--log-dir",
+            str(tmp_path / f"logs-{name}"),
+            "--",
+            *context.pytest_args,
+        )
+        assert result.returncode == 0, f"{name}: {result.stdout}{result.stderr}"
+        verified, _ = read_plan(plan_file)
+        semantic = json.loads(plan_file.read_text())["semantic"]
+        assert semantic["duration_policy"] == "source-required-v1"
+        assert semantic["duration_source"]["status"] == native_status
+        assert semantic["snapshot_source"]["status"] == snapshot_status
+        if native_status == "unavailable":
+            assert semantic["duration_source"]["reason"]
+        if snapshot_status == "unavailable":
+            assert semantic["snapshot_source"]["reason"]
+        assert Counter(verified.inventory) == Counter(selected)
+        assert Counter(node for shard in verified.shards for node in shard) == Counter(selected)
+        estimates = {row["nodeid"]: row for row in semantic["estimates"]}
+        assert set(estimates) == set(selected)
+        assert all(row["estimated_ms"] > 0 for row in estimates.values())
+        if snapshot_status == "matched":
+            assert estimates[snapshot_node]["provenance"] == "snapshot_exact"
+            assert estimates[heavy_node]["provenance"] == "snapshot_exact"
+            assert estimates[heavy_node]["estimated_ms"] == 801_000
+            assert estimates[added_node]["provenance"] == "same_file_max"
+            assert estimates[added_node]["basis_nodeid"] == heavy_node
+            assert estimates[unseen_node]["provenance"] == "source_floor"
+            assert any(heavy_node in shard["over_budget_nodes"] for shard in semantic["shards"])
+            if native_status == "matched":
+                assert estimates[native_node]["provenance"] == "native_p95"
+                assert estimates[native_node]["estimated_ms"] == 126_000
+            else:
+                assert estimates[native_node]["provenance"] == "same_file_max"
+        else:
+            assert {row["provenance"] for row in estimates.values()} == {"source_floor"}
+            assert {row["estimated_ms"] for row in estimates.values()} == {5_000}
+        observed: list[str] = []
+        shard_results: list[subprocess.CompletedProcess[str]] = []
+        for shard_number in range(1, len(verified.shards) + 1):
+            record = tmp_path / f"{name}-shard-{shard_number}.txt"
+            completed = _apply(project, plan_file, shard_number, record=record)
+            assert completed.returncode in (0, 1), f"{name} shard {shard_number}: {completed.stdout}{completed.stderr}"
+            shard_results.append(completed)
+            observed.extend(record.read_text().splitlines())
+        assert Counter(observed) == Counter(selected), name
+        assert Counter(observed) == Counter(baseline_record.read_text().splitlines()), name
+        assert any(completed.returncode == 1 and "failed" in completed.stdout for completed in shard_results), name
+        assert any("skipped" in completed.stdout for completed in shard_results), name
