@@ -574,9 +574,22 @@ def _operation(system: ManagementSystem, bearer: str, operation_id: str) -> dict
     return system.call(bearer, "auto_coder_operation_get", {"operation_id": operation_id})
 
 
-def _wait_operation(system: ManagementSystem, bearer: str, operation_id: str, statuses: set[str], *, timeout: float = 120) -> dict[str, object]:
+def _wait_operation(system: ManagementSystem, bearer: str, operation_id: str, statuses: set[str], *, timeout: float = 120, retry_auth_unavailable: bool = False) -> dict[str, object]:
     def observed():
-        result = _operation(system, bearer, operation_id)
+        if retry_auth_unavailable:
+            # During concurrent grant revocation, only a typed temporary auth
+            # refusal can be retried; every other HTTP/protocol error is fatal.
+            response = system.request(bearer, "auto_coder_operation_get", {"operation_id": operation_id})
+            if response.status_code == 503:
+                assert response.json() == {"error": "temporarily_unavailable"}, response.text
+                return None
+            assert response.status_code == 200, response.text
+            payload = response.json()["result"]
+            assert payload.get("isError") is not True, payload
+            result = payload["structuredContent"]
+            assert isinstance(result, dict), result
+        else:
+            result = _operation(system, bearer, operation_id)
         return result if result["status"] in statuses else None
 
     with recorder().span("management.operation_wait", operation_id=operation_id):
@@ -823,8 +836,9 @@ def test_original_authority_is_rechecked_after_real_admission_before_stop(manage
         result = request.result(timeout=90)
     assert result["operation_id"] == original.operation_id
     fresh = system.issue()
-    observed = _wait_operation(system, fresh, original.operation_id, {"DENIED", "FAILED", "NEEDS_ATTENTION"})
+    observed = _wait_operation(system, fresh, original.operation_id, {"DENIED", "FAILED", "NEEDS_ATTENTION"}, retry_auth_unavailable=True)
     assert observed["status"] != "SUCCEEDED"
+    assert system.call(fresh, "auto_coder_whoami")["uid"] == "operator"
     assert system.child == old
     assert system.journal.get(original.operation_id).record.authority == original.authority
     assert _effect_counts(system) == effects

@@ -551,15 +551,14 @@ class TestResourceLimits:
             prompt_file = f.name
 
         try:
-            start = time.perf_counter()
+            # Measure execution CPU, not runner scheduling pauses in parallel CI.
+            # Keep the existing 0.5s budget for the decorated render path.
+            start = time.thread_time()
             result = render_prompt("issue.nested_50.level_5", path=prompt_file)
-            elapsed = time.perf_counter() - start
+            elapsed = time.thread_time() - start
 
             assert "Value 50.5" in result
-            # Nested access should be fast
-            # Note: @log_calls decorator adds overhead, so we use a more lenient threshold
-            # Increased to 0.5s to account for variance during parallel test execution
-            assert elapsed < 0.5, f"Nested template access took {elapsed:.3f}s"
+            assert elapsed < 0.5, f"Nested template access took {elapsed:.3f}s of thread CPU"
             print(f"✓ Deeply nested templates: {elapsed:.3f}s")
         finally:
             Path(prompt_file).unlink()
