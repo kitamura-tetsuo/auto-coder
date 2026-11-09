@@ -1,0 +1,64 @@
+name: Python 3.14 Compatibility (Advisory)
+
+'on':
+  pull_request:
+    paths:
+      - '.github/workflows/python-314-compatibility.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'tests/test_ci_uv_lock_policy.py'
+  workflow_dispatch:
+  schedule:
+    - cron: '17 2 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  python314-compatibility:
+    name: Python 3.14 source quality and non-live tests (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+      AUTO_CODER_REQUIRE_BROWSER: "1"
+      AUTO_CODER_IMMEDIATE_TEST_FAILURES: "1"
+      PYTEST_ADDOPTS: "-o faulthandler_timeout=60 -o faulthandler_exit_on_timeout=false"
+    steps:
+      - name: Checkout exact source revision
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Select supported uv release
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.22"
+      - name: Select advisory Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Admit unchanged locked dependencies
+        run: uv sync --locked --dev --extra test
+      - name: Verify selected interpreter and source identity
+        run: |
+          uv run python -c 'import sys; assert sys.version_info[:2] == (3, 14), sys.version'
+          uv run python -c 'from auto_coder.build_identity import resolve_build_identity; r=resolve_build_identity("."); assert r.state == "clean" and r.source_revision == "${{ github.event.pull_request.head.sha || github.sha }}"'
+      - name: Check source quality on Python 3.14
+        run: |
+          uv run black --check src/ tests/
+          uv run isort --check-only src/ tests/
+          uv run flake8 src/ tests/
+          uv run mypy --config-file pyproject.toml -p auto_coder
+      - name: Prepare required Python-only management fixture
+        run: uv run python scripts/prepare_management_test_image.py
+      - name: Install real Chromium
+        run: uv run playwright install --with-deps chromium
+      - name: Verify real headless Chromium
+        run: uv run python scripts/browser_preflight.py
+      - name: Run complete non-live test selection
+        run: uv run python -m pytest -m 'not opencode_live' -vv
