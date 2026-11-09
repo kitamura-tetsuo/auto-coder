@@ -75,6 +75,73 @@ def test_operator_upgrade_keeps_its_complete_native_mandatory_gate() -> None:
     assert _step(workflow["jobs"]["supervisor-integration"], "Require every integration group to succeed")["env"]["REQUIRED_RESULTS"] == "${{ toJSON(needs) }}"
 
 
+def test_operator_upgrade_executes_root_pytest_with_exact_profile(tmp_path: Path) -> None:
+    """Execute the real workflow shell under inert commands, not just string checks."""
+    run = _step(_workflow()["jobs"]["operator-upgrade"], "Verify operator prepare/apply/status with disposable Docker")["run"]
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    scripts = {
+        "sudo": '#!/bin/sh\nif [ "$1" = "env" ]; then shift; exec env "$@"; fi\nexit 0\n',
+        "docker": "#!/bin/sh\nexit 0\n",
+        "strace": "#!/bin/sh\nexit 0\n",
+        "git": '#!/bin/sh\nif [ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]; then echo "' + "a" * 40 + '"; else exit 9; fi\n',
+    }
+    for name, script in scripts.items():
+        path = fake_bin / name
+        path.write_text(script)
+        path.chmod(0o755)
+
+    executable = tmp_path / ".venv" / "bin" / "python"
+    executable.parent.mkdir(parents=True)
+    executable.write_text(
+        '#!/bin/sh\n'
+        'printf "profile=%s\\nrunner=%s\\nrequired=%s\\nresults=%s\\n" '
+        '"$SUPERVISOR_PROFILE" "$RUNNER_NAME" "$SUPERVISOR_REQUIRED_NODEIDS" "$SUPERVISOR_RESULTS_PATH" > "$CAPTURE"\n'
+        'printf "arg=%s\\n" "$@" >> "$CAPTURE"\n'
+    )
+    executable.chmod(0o755)
+    (tmp_path / "supervisor-integration-logs").mkdir()
+    captured = tmp_path / "invocation.txt"
+    required = json.dumps(list(OPERATOR_REQUIRED))
+    environ = {
+        **os.environ,
+        "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
+        "GITHUB_WORKSPACE": str(tmp_path),
+        "GITHUB_SHA": "a" * 40,
+        "GITHUB_WORKFLOW": "Supervisor Integration Tests",
+        "GITHUB_RUN_ID": "4242",
+        "GITHUB_RUN_ATTEMPT": "3",
+        "GITHUB_JOB": "operator-upgrade",
+        "RUNNER_NAME": "disposable-runner",
+        "AUTO_CODER_CI_TIMING_DIR": str(tmp_path / "supervisor-integration-logs" / "timing"),
+        "SUPERVISOR_PROFILE": "operator-upgrade",
+        "SUPERVISOR_REQUIRED_NODEIDS": required,
+        "CAPTURE": str(captured),
+    }
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", run],
+        env=environ,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    lines = captured.read_text().splitlines()
+    assert lines[:4] == [
+        "profile=operator-upgrade",
+        "runner=disposable-runner",
+        "required=" + required,
+        "results=" + str(tmp_path / "supervisor-integration-logs" / "operator-upgrade.json"),
+    ]
+    arguments = [line.removeprefix("arg=") for line in lines[4:]]
+    assert arguments == [
+        "-m", "pytest", "-p", "supervisor_ci_results", "-q", "-vv",
+        "-o", "timeout=240", "tests/test_management_bootstrap_upgrade_container.py",
+        "--junitxml=supervisor-integration-logs/operator-upgrade.xml",
+    ]
+
+
 def test_parallel_groups_and_stable_fail_closed_aggregate() -> None:
     workflow = _workflow()
     assert workflow["name"] == "Supervisor Integration Tests"
