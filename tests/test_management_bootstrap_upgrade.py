@@ -538,15 +538,24 @@ def test_watcher_must_not_start_if_real_proxy_namespace_is_unproven(tmp_path: Pa
 @pytest.mark.parametrize(
     "boundary",
     (
-        "complete", "variable-matrix", "legacy-single-job", "missing-operator",
-        "missing-aggregate", "skipped-required", "skipped-step", "wrong-attempt",
-        "wrong-run", "wrong-source", "missing-shard", "duplicate-shard",
-        "missing-source-plan", "missing-source-receipt", "wrong-source-attempt",
+        "complete",
+        "variable-matrix",
+        "legacy-single-job",
+        "missing-operator",
+        "missing-aggregate",
+        "skipped-required",
+        "skipped-step",
+        "wrong-attempt",
+        "wrong-run",
+        "wrong-source",
+        "missing-shard",
+        "duplicate-shard",
+        "missing-source-plan",
+        "missing-source-receipt",
+        "wrong-source-attempt",
     ),
 )
-def test_source_proof_requires_every_producer_job_at_exact_run_attempt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
-) -> None:
+def test_source_proof_requires_every_producer_job_at_exact_run_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str) -> None:
     """Use the real source receipt validator and native Supervisor step contract.
 
     Fixture-local GitHub responses are not public source/Actions/image evidence.
@@ -565,18 +574,16 @@ def test_source_proof_requires_every_producer_job_at_exact_run_attempt(
     matrix = upgrade._SUPERVISOR_MATRIX_STEPS
     definitions = [(name, steps) for name, steps in fixed.items()]
     for profile, count in profiles.items():
-        definitions.extend(
-            (f"Supervisor {profile} (shard {number})", matrix[profile])
-            for number in range(1, count + 1)
-        )
+        definitions.extend((f"Supervisor {profile} (shard {number})", matrix[profile]) for number in range(1, count + 1))
     jobs = [
         {
-            "id": 200 + n, "name": name, "run_id": run_id, "run_attempt": attempt,
-            "status": "completed", "conclusion": "success",
-            "steps": [
-                {"name": step, "status": "completed", "conclusion": "success"}
-                for step in steps
-            ],
+            "id": 200 + n,
+            "name": name,
+            "run_id": run_id,
+            "run_attempt": attempt,
+            "status": "completed",
+            "conclusion": "success",
+            "steps": [{"name": step, "status": "completed", "conclusion": "success"} for step in steps],
         }
         for n, (name, steps) in enumerate(definitions)
     ]
@@ -606,9 +613,11 @@ def test_source_proof_requires_every_producer_job_at_exact_run_attempt(
 
     run = {
         "head_sha": "b" * 40 if boundary == "wrong-source" else source,
-        "status": "completed", "conclusion": "success",
+        "status": "completed",
+        "conclusion": "success",
         "path": ".github/workflows/supervisor-integration-tests.yml",
-        "id": run_id, "run_attempt": attempt,
+        "id": run_id,
+        "run_attempt": attempt,
     }
 
     observed_paths: list[str] = []
@@ -653,9 +662,7 @@ def test_source_proof_requires_every_producer_job_at_exact_run_attempt(
     assert "actions/runs/17/attempts/2" in observed_paths
 
 
-def test_operator_source_proof_requires_private_original_artifacts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_operator_source_proof_requires_private_original_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "provenance"
     root.mkdir(mode=0o700)
     monkeypatch.setattr(upgrade, "SOURCE_PROOF_ROOT", root)
@@ -698,7 +705,6 @@ def test_supervisor_source_contract_matches_native_workflow_names() -> None:
     job_by_name = {job["name"]: job for job in jobs.values()}
     for name, steps in required.items():
         assert set(steps) <= {step.get("name") for step in job_by_name[name]["steps"]}
-
 
 
 def test_fresh_status_asks_child_for_exact_authenticated_observation_without_claiming_outcome(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
