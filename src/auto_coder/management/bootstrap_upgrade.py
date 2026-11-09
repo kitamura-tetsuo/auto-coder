@@ -55,6 +55,7 @@ from .source_evidence_config import REPOSITORY
 from .source_evidence_config import _protected as protected_credential
 
 OPERATOR_ROOT = Path("/var/lib/auto-coder/management-upgrades")
+SOURCE_PROOF_ROOT = Path("/var/lib/auto-coder/management-upgrade-source-evidence")
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
 _REVISION = re.compile(r"[0-9a-f]{40}\Z")
 _IMAGE = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -70,20 +71,23 @@ _STAGES = frozenset(
     }
 )
 _EFFECTS = ("stop-proxy", "stop-management", "start-management", "start-proxy", "start-watcher")
-# A matching public source must have completed every required supervisor
-# producer lane. The matrix and operator lane are separate mandatory jobs.
-_REQUIRED_SUPERVISOR_JOBS = frozenset(
-    {
-        "Worker processes and bridge",
-        "Authenticated management self-update",
-        "Fresh host verification (core)",
-        "Fresh host verification (installed-early)",
-        "Fresh host verification (installed-late)",
-        "Operator upgrade production-origin Docker",
-        "Isolated Supervisor containers",
-        "Supervisor Integration Tests",
-    }
-)
+# Verify the current Supervisor producer topology, not historical fixed matrices.
+# The original aggregate owns the immutable plans and native case receipts;
+# these required successful native steps independently bind its execution.
+_SUPERVISOR_FIXED_STEPS = {
+    "Worker processes and bridge": ("Test real worker processes and management bridge", "Bind native worker result to the producing job"),
+    "Prepare Supervisor plan (management)": ("Plan complete management collection",),
+    "Prepare Supervisor plan (fresh host)": ("Plan complete privileged collection",),
+    "Prepare Supervisor plan (containers)": ("Plan complete container collection",),
+    "Operator upgrade production-origin Docker": ("Verify operator prepare/apply/status with disposable Docker", "Bind native operator upgrade receipt"),
+    "Supervisor Integration Tests": ("Require every integration group to succeed",),
+}
+_SUPERVISOR_MATRIX_STEPS = {
+    "management-self-update": ("Verify authenticated management self-update", "Bind native management receipt"),
+    "fresh-host": ("Verify fresh initialization with host evidence", "Bind native fresh-host receipt"),
+    "isolated-containers": ("Verify isolated Supervisor containers", "Bind native container receipt"),
+}
+_SUPERVISOR_MATRIX_NAME = re.compile(r"Supervisor (management-self-update|fresh-host|isolated-containers) \\(shard ([1-9][0-9]*)\\)\\Z")
 
 
 class UpgradeUnavailable(RuntimeError):
@@ -324,37 +328,125 @@ def _source_authority(token_file: Path) -> TestedSourcePublisher:
     return TestedSourcePublisher(GitHubGitDataClient(token, MANAGEMENT_REPOSITORY), MANAGEMENT_REPOSITORY)
 
 
+def _source_proof_inputs(source_sha: str, run_id: int, attempt: int) -> tuple[Path, Path]:
+    """Read only operator-provisioned original source plan and native receipts."""
+    if _REVISION.fullmatch(source_sha) is None or type(run_id) is not int or run_id <= 0 or type(attempt) is not int or attempt <= 0:
+        raise UpgradeUnavailable("prerequisite-blocked", "invalid exact-source producing identity")
+    source_root = SOURCE_PROOF_ROOT / source_sha
+    attempt_root = source_root / f"{run_id}-{attempt}"
+    artifacts_root = attempt_root / "artifacts"
+    try:
+        for directory in (SOURCE_PROOF_ROOT, source_root, attempt_root, artifacts_root):
+            _protected_root(directory)
+        plan_path = attempt_root / "plan.json"
+        _read_record(plan_path)
+        for shard_dir in artifacts_root.iterdir():
+            if not re.fullmatch(rf"source-test-shard-{run_id}-{attempt}-[1-9][0-9]*", shard_dir.name):
+                raise ValueError("unexpected native source artifact")
+            _protected_root(shard_dir)
+            _read_record(shard_dir / "receipt.json")
+    except (OSError, ValueError) as error:
+        raise UpgradeUnavailable("prerequisite-blocked", "protected original source plan/receipts are unavailable") from error
+    return plan_path, artifacts_root
+
+
+def _supervisor_native_jobs_proven(client: GitHubGitDataClient, run_id: int, attempt: int) -> bool:
+    """Independently check every current producer job and mandatory native step.
+
+    The successful Supervisor aggregate remains responsible for validating
+    original plan and receipt bytes against the physical producing jobs.
+    """
+    total: int | None = None
+    jobs: list[dict[str, object]] = []
+    seen_ids: set[int] = set()
+    for page in range(1, 21):
+        response = client.request("GET", f"actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100&page={page}")
+        data = response.data if response.status == 200 else None
+        if not isinstance(data, dict) or type(data.get("total_count")) is not int or data["total_count"] < 1:
+            return False
+        if total is None:
+            total = data["total_count"]
+        if total != data["total_count"]:
+            return False
+        batch = data.get("jobs")
+        if not isinstance(batch, list) or not batch or len(batch) > 100:
+            return False
+        for raw in batch:
+            if not isinstance(raw, dict) or type(raw.get("id")) is not int or raw["id"] in seen_ids:
+                return False
+            seen_ids.add(raw["id"])
+            jobs.append(raw)
+        if len(jobs) >= total:
+            break
+    if total is None or len(jobs) != total:
+        return False
+
+    fixed_seen: set[str] = set()
+    matrix_seen: dict[str, set[int]] = {profile: set() for profile in _SUPERVISOR_MATRIX_STEPS}
+    for job in jobs:
+        name = job.get("name")
+        if not isinstance(name, str):
+            return False
+        if name in _SUPERVISOR_FIXED_STEPS:
+            if name in fixed_seen:
+                return False
+            fixed_seen.add(name)
+            required_steps = _SUPERVISOR_FIXED_STEPS[name]
+        else:
+            match = _SUPERVISOR_MATRIX_NAME.fullmatch(name)
+            if match is None:
+                return False
+            profile, number = match.group(1), int(match.group(2))
+            if number in matrix_seen[profile]:
+                return False
+            matrix_seen[profile].add(number)
+            required_steps = _SUPERVISOR_MATRIX_STEPS[profile]
+        if any(job.get(key) != value for key, value in {
+            "run_id": run_id, "run_attempt": attempt,
+            "status": "completed", "conclusion": "success",
+        }.items()):
+            return False
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            return False
+        for step_name in required_steps:
+            matches = [step for step in steps if isinstance(step, dict) and step.get("name") == step_name]
+            if len(matches) != 1 or matches[0].get("status") != "completed" or matches[0].get("conclusion") != "success":
+                return False
+    if fixed_seen != set(_SUPERVISOR_FIXED_STEPS):
+        return False
+    return all(nodes == set(range(1, len(nodes) + 1)) for nodes in matrix_seen.values() if nodes) and all(matrix_seen.values())
+
+
 def _source_proof(publisher: TestedSourcePublisher, source_sha: str) -> tuple[str, int, int]:
     proof = publisher.read(source_sha)
     if proof is None:
         raise UpgradeUnavailable("prerequisite-blocked", "tested source ref is unavailable")
     publisher.verify_run(proof.record, recorded_attempt=True)
-    verify_source_shard_attempt(publisher.client, proof.record.run_id, proof.record.run_attempt, source_sha)
+    plan_path, artifacts_root = _source_proof_inputs(source_sha, proof.record.run_id, proof.record.run_attempt)
+    try:
+        verify_source_shard_attempt(
+            publisher.client, proof.record.run_id, proof.record.run_attempt, source_sha,
+            plan_path=plan_path, artifacts_root=artifacts_root,
+        )
+    except TestedSourceError as error:
+        raise UpgradeUnavailable("prerequisite-blocked", "original exact-source native qualification refused") from error
     response = publisher.client.request("GET", f"actions/workflows/supervisor-integration-tests.yml/runs?head_sha={source_sha}&per_page=100")
     runs = response.data.get("workflow_runs") if response.status == 200 and isinstance(response.data, dict) else None
     if not isinstance(runs, list):
         raise UpgradeUnavailable("prerequisite-blocked", "fresh-host integration run evidence unavailable")
     for run in runs:
-        if not isinstance(run, dict) or run.get("head_sha") != source_sha or run.get("status") != "completed" or run.get("conclusion") != "success" or type(run.get("id")) is not int:
+        if not isinstance(run, dict) or run.get("head_sha") != source_sha or run.get("status") != "completed" or run.get("conclusion") != "success" or type(run.get("id")) is not int or type(run.get("run_attempt")) is not int:
             continue
-        jobs = publisher.client.request("GET", f"actions/runs/{run['id']}/attempts/{run.get('run_attempt', 1)}/jobs?per_page=100")
-        data = jobs.data if jobs.status == 200 else None
-        if not isinstance(data, dict) or not isinstance(data.get("jobs"), list) or data.get("total_count") != len(data["jobs"]):
+        attempt = run["run_attempt"]
+        if attempt < 1 or run.get("path") != ".github/workflows/supervisor-integration-tests.yml":
             continue
-        # The old single "Fresh host verification" job was split into three
-        # mandatory matrix jobs and a separate production-origin operator lane.
-        # Do not accept an aggregate green conclusion when any required job is
-        # missing, skipped, from another attempt, or not independently green.
-        observed = data["jobs"]
-        if len(observed) != len(_REQUIRED_SUPERVISOR_JOBS) or any(not isinstance(job, dict) for job in observed):
-            continue
-        if {job.get("name") for job in observed} != _REQUIRED_SUPERVISOR_JOBS:
-            continue
-        attempt = run.get("run_attempt", 1)
-        if all(job.get("status") == "completed" and job.get("conclusion") == "success" and job.get("run_attempt") == attempt and job.get("run_id") == run["id"] for job in observed):
+        # A successful native aggregate is necessary but never the sole proof.
+        # Require its current producer topology, every shard and the real
+        # operator and fresh-host pytest plus original receipt binding steps.
+        if _supervisor_native_jobs_proven(publisher.client, run["id"], attempt):
             return proof.tag_object_oid, run["id"], attempt
     raise UpgradeUnavailable("prerequisite-blocked", "required fresh-host/exclusion integration cases are not proven successful")
-
 
 def _watcher_binding(path: Path, manager: str, manager_image: str, proxy: str, proxy_image: str, config: Path) -> Path:
     raw = json.loads(_read_record(path))

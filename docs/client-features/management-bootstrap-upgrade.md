@@ -65,6 +65,47 @@ not stop an unknown process. The new watcher must have a **separate** protected
 state root. Review the host service manager's restart policy before accepting
 the upgrade; neither preparation nor this command changes service units.
 
+### Original native source evidence required before prepare
+
+The operator must separately obtain **the original GitHub Actions artifacts**
+from the exact immutable tested-source tag's recorded source run/attempt,
+not regenerate plans or author receipt JSON. Stage a read-only copy on the
+trusted host under owner-only (0700) directories:
+
+```text
+/var/lib/auto-coder/management-upgrade-source-evidence/
+  <exact-source-sha>/
+    <source-run-id>-<source-run-attempt>/
+      plan.json
+      artifacts/
+        source-test-shard-<source-run-id>-<source-run-attempt>-1/
+          receipt.json
+        ... one directory per originally executed planned shard
+```
+
+The plan and each native receipt are owner-only 0600 regular files. Extract
+`plan.json` from the original `source-test-plan-<run>-<attempt>` Actions
+artifact and the `receipt.json` from each matching original
+`source-test-shard-<run>-<attempt>-<n>` artifact. Do not put evidence
+inside `/var/lib/auto-coder/management-upgrades` (reserved for operation
+histories). A missing, unreadable, altered, wrong-run or wrong-attempt source
+bundle is a typed pre-effect refusal, not an excuse to accept the tag or
+the aggregate status alone. The consumer checks original immutable shard
+assignments, complete native receipts and read-only public Actions metadata
+using the installed production verifier. A locally synthesized test fixture
+is never acceptable operator provenance. Operator staging is a prerequisite,
+not an instruction to publish a ref, deploy an image, or touch live services.
+
+For Supervisor evidence, the consumer checks the exact source's successful
+native aggregate *and* every current planner, worker, operator and dynamically
+numbered matrix job on the original Actions run/attempt. The real mandatory
+pytest and receipt-binding steps must have completed successfully. The
+producer's native aggregate alone owns independent plan/receipt verification,
+including original producer identities and no-skip enforcement. The consumer
+does not mint evidence or convert local fixture metadata into public proof.
+A successful source check is still distinct from separately demonstrating the
+candidate's immutable image-to-source binding.
+
 ## Operator approval and commands
 
 The protected source credential is the already provisioned file

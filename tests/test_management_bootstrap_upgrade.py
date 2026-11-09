@@ -538,73 +538,102 @@ def test_watcher_must_not_start_if_real_proxy_namespace_is_unproven(tmp_path: Pa
 @pytest.mark.parametrize(
     "boundary",
     (
-        "complete",
-        "legacy-single-job",
-        "missing-operator",
-        "missing-aggregate",
-        "skipped-required",
-        "wrong-attempt",
-        "wrong-run",
-        "wrong-source",
+        "complete", "variable-matrix", "legacy-single-job", "missing-operator",
+        "missing-aggregate", "skipped-required", "skipped-step", "wrong-attempt",
+        "wrong-run", "wrong-source", "missing-shard", "duplicate-shard",
+        "missing-source-plan", "missing-source-receipt", "wrong-source-attempt",
     ),
 )
-def test_source_proof_requires_every_producer_job_at_exact_run_attempt(monkeypatch: pytest.MonkeyPatch, boundary: str) -> None:
-    """Synthetic API metadata exercises the verifier; it is not public CI proof."""
-    source = "a" * 40
+def test_source_proof_requires_every_producer_job_at_exact_run_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    """Use the real source receipt validator and native Supervisor step contract.
+
+    Fixture-local GitHub responses are not public source/Actions/image evidence.
+    """
+    from tests.test_tested_source_refs import FakeShardEvidence
+
+    remote = FakeShardEvidence(tmp_path / "source")
+    source = remote.source_sha
     run_id, attempt = 4242, 3
+    profiles = {
+        "management-self-update": 2 if boundary != "variable-matrix" else 4,
+        "fresh-host": 3 if boundary != "variable-matrix" else 2,
+        "isolated-containers": 1 if boundary != "variable-matrix" else 5,
+    }
+    fixed = upgrade._SUPERVISOR_FIXED_STEPS
+    matrix = upgrade._SUPERVISOR_MATRIX_STEPS
+    definitions = [(name, steps) for name, steps in fixed.items()]
+    for profile, count in profiles.items():
+        definitions.extend(
+            (f"Supervisor {profile} (shard {number})", matrix[profile])
+            for number in range(1, count + 1)
+        )
     jobs = [
         {
-            "name": name,
-            "run_id": run_id,
-            "run_attempt": attempt,
-            "status": "completed",
-            "conclusion": "success",
+            "id": 200 + n, "name": name, "run_id": run_id, "run_attempt": attempt,
+            "status": "completed", "conclusion": "success",
+            "steps": [
+                {"name": step, "status": "completed", "conclusion": "success"}
+                for step in steps
+            ],
         }
-        for name in sorted(upgrade._REQUIRED_SUPERVISOR_JOBS)
+        for n, (name, steps) in enumerate(definitions)
     ]
     if boundary == "legacy-single-job":
-        jobs = [{**jobs[0], "name": "Fresh host verification"}]
+        jobs = [dict(jobs[0], name="Fresh host verification")]
     elif boundary in {"missing-operator", "missing-aggregate"}:
         omitted = "Operator upgrade production-origin Docker" if boundary == "missing-operator" else "Supervisor Integration Tests"
         jobs = [job for job in jobs if job["name"] != omitted]
     elif boundary == "skipped-required":
         jobs[0]["conclusion"] = "skipped"
+    elif boundary == "skipped-step":
+        jobs[0]["steps"][0]["conclusion"] = "skipped"
     elif boundary == "wrong-attempt":
         jobs[0]["run_attempt"] = attempt - 1
     elif boundary == "wrong-run":
         jobs[0]["run_id"] = run_id + 1
+    elif boundary == "missing-shard":
+        jobs = [job for job in jobs if job["name"] != "Supervisor fresh-host (shard 2)"]
+    elif boundary == "duplicate-shard":
+        jobs.append(dict(jobs[-1], id=900))
+    elif boundary == "missing-source-plan":
+        remote.plan_path.unlink()
+    elif boundary == "missing-source-receipt":
+        (remote.artifacts_root / "source-test-shard-17-2-1" / "receipt.json").unlink()
+    elif boundary == "wrong-source-attempt":
+        remote.run_attempt = 1
+
+    run = {
+        "head_sha": "b" * 40 if boundary == "wrong-source" else source,
+        "status": "completed", "conclusion": "success",
+        "path": ".github/workflows/supervisor-integration-tests.yml",
+        "id": run_id, "run_attempt": attempt,
+    }
 
     observed_paths: list[str] = []
 
     def request(method: str, path: str) -> SimpleNamespace:
         assert method == "GET"
         observed_paths.append(path)
-        if "/workflows/" in path:
+        if "/workflows/supervisor-integration-tests.yml/runs?" in path:
+            return SimpleNamespace(status=200, data={"workflow_runs": [run]})
+        if path.startswith(f"actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100&page="):
+            page = int(path.rsplit("=", 1)[1])
             return SimpleNamespace(
                 status=200,
-                data={
-                    "workflow_runs": [
-                        {
-                            "head_sha": "b" * 40 if boundary == "wrong-source" else source,
-                            "status": "completed",
-                            "conclusion": "success",
-                            "id": run_id,
-                            "run_attempt": attempt,
-                        }
-                    ]
-                },
+                data={"jobs": jobs[(page - 1) * 100 : page * 100], "total_count": len(jobs)},
             )
-        assert path == f"actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100"
-        return SimpleNamespace(status=200, data={"jobs": jobs, "total_count": len(jobs)})
+        return remote.request(method, path)
 
-    source_shard_checks: list[tuple[object, ...]] = []
-    monkeypatch.setattr(
-        upgrade,
-        "verify_source_shard_attempt",
-        lambda *args: source_shard_checks.append(args),
+    class ControlledClient:
+        request = staticmethod(request)
+
+    client = ControlledClient()
+    proof = SimpleNamespace(
+        tag_object_oid="c" * 40,
+        record=SimpleNamespace(run_id=17, run_attempt=2),
     )
-    client = SimpleNamespace(request=request)
-    proof = SimpleNamespace(tag_object_oid="c" * 40, record=SimpleNamespace(run_id=17, run_attempt=1))
 
     def read(requested: str) -> SimpleNamespace:
         assert requested == source
@@ -614,20 +643,62 @@ def test_source_proof_requires_every_producer_job_at_exact_run_attempt(monkeypat
         assert record is proof.record and recorded_attempt
 
     authority = SimpleNamespace(client=client, read=read, verify_run=verify_run)
-    if boundary == "complete":
-        assert upgrade._source_proof(authority, source) == (
-            "c" * 40,
-            run_id,
-            attempt,
-        )
+    monkeypatch.setattr(upgrade, "_source_proof_inputs", lambda *_args: (remote.plan_path, remote.artifacts_root))
+    if boundary in {"complete", "variable-matrix"}:
+        assert upgrade._source_proof(authority, source) == ("c" * 40, run_id, attempt)
     else:
-        with pytest.raises(
-            upgrade.UpgradeUnavailable,
-            match="required fresh-host/exclusion integration cases",
-        ):
+        with pytest.raises(upgrade.UpgradeUnavailable, match="evidence|qualification|cases"):
             upgrade._source_proof(authority, source)
-    assert source_shard_checks == [(client, 17, 1, source)]
-    assert len(observed_paths) == (1 if boundary == "wrong-source" else 2)
+    # A real source verifier was called (the stub from the historical test is gone).
+    assert "actions/runs/17/attempts/2" in observed_paths
+
+
+def test_operator_source_proof_requires_private_original_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "provenance"
+    root.mkdir(mode=0o700)
+    monkeypatch.setattr(upgrade, "SOURCE_PROOF_ROOT", root)
+    source = "a" * 40
+    with pytest.raises(upgrade.UpgradeUnavailable, match="protected original source"):
+        upgrade._source_proof_inputs(source, 17, 2)
+    source_root = root / source
+    source_root.mkdir(mode=0o700)
+    attempt = source_root / "17-2"
+    attempt.mkdir(mode=0o700)
+    artifacts = attempt / "artifacts"
+    artifacts.mkdir(mode=0o700)
+    private_file(attempt / "plan.json", b"{}")
+    receipt_dir = artifacts / "source-test-shard-17-2-1"
+    receipt_dir.mkdir(mode=0o700)
+    private_file(receipt_dir / "receipt.json", b"{}")
+    assert upgrade._source_proof_inputs(source, 17, 2) == (attempt / "plan.json", artifacts)
+    (receipt_dir / "receipt.json").chmod(0o644)
+    with pytest.raises(upgrade.UpgradeUnavailable, match="protected original source"):
+        upgrade._source_proof_inputs(source, 17, 2)
+
+
+def test_supervisor_source_contract_matches_native_workflow_names() -> None:
+    import yaml
+
+    workflow = yaml.safe_load((Path(__file__).parents[1] / ".github/workflows/supervisor-integration-tests.yml").read_text())
+    jobs = workflow["jobs"]
+    names = {job["name"] for job in jobs.values()}
+    assert set(upgrade._SUPERVISOR_FIXED_STEPS) <= names
+    for profile, job_key in (
+        ("management-self-update", "management-self-update"),
+        ("fresh-host", "fresh-host"),
+        ("isolated-containers", "isolated-containers"),
+    ):
+        template = jobs[job_key]["name"]
+        assert template == f"Supervisor {profile} (shard ${{{{ matrix.shard }}}})"
+    required = {**upgrade._SUPERVISOR_FIXED_STEPS}
+    for profile, steps in upgrade._SUPERVISOR_MATRIX_STEPS.items():
+        required[jobs[profile]["name"]] = steps
+    job_by_name = {job["name"]: job for job in jobs.values()}
+    for name, steps in required.items():
+        assert set(steps) <= {step.get("name") for step in job_by_name[name]["steps"]}
+
 
 
 def test_fresh_status_asks_child_for_exact_authenticated_observation_without_claiming_outcome(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
