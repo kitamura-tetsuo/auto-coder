@@ -60,6 +60,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--context", type=Path, required=True, help="Explicit tested checkout, profile, selectors, harness/env and origin JSON")
     parser.add_argument("--duration-profile", type=Path, help="Optional immutable native duration snapshot; invalid/missing history uses fallback estimates")
     parser.add_argument("--cold-start-estimate-seconds", type=int, default=1, help="Conservative estimate for unknown cases; never substitutes for native duration evidence")
+    parser.add_argument("--duration-policy", choices=("legacy", "source-required-v1"), default="legacy")
+    parser.add_argument("--bootstrap-duration-snapshot", type=Path, help="Optional tracked non-native snapshot for source-only estimation")
+    parser.add_argument("--bootstrap-duration-provenance", type=Path, help="SHA/selector/unit companion to the tracked snapshot")
     parser.add_argument("--output", type=Path, required=True, help="New immutable output file")
     parser.add_argument("--log-dir", type=Path, required=True, help="Rotating diagnostic logs")
     args = parser.parse_args(arguments[:split])
@@ -68,16 +71,34 @@ def main(argv: list[str] | None = None) -> int:
         context = ShardContext.read(args.context)
         if tuple(arguments[split + 1 :]) != context.pytest_args:
             raise ShardPlanError("CLI pytest selectors/configuration differ from context.pytest_args")
+        if (args.bootstrap_duration_snapshot is None) != (args.bootstrap_duration_provenance is None):
+            raise ShardPlanError("bootstrap snapshot and provenance paths must be supplied together")
+        if args.duration_policy != "source-required-v1" and args.bootstrap_duration_snapshot is not None:
+            raise ShardPlanError("bootstrap duration inputs require source-required-v1")
         profile, nodeids = _collect(args.context, context)
-        plan = build_plan(context, profile, nodeids, args.duration_profile, cold_start_fallback_ms=args.cold_start_estimate_seconds * 1000)
+        plan = build_plan(
+            context,
+            profile,
+            nodeids,
+            args.duration_profile,
+            cold_start_fallback_ms=args.cold_start_estimate_seconds * 1000,
+            duration_policy=args.duration_policy,
+            snapshot_path=args.bootstrap_duration_snapshot,
+            provenance_path=args.bootstrap_duration_provenance,
+        )
         verified = verify_plan(plan)
-        protected = (args.context, *((args.duration_profile,) if args.duration_profile is not None else ()))
+        protected = tuple(path for path in (args.context, args.duration_profile, args.bootstrap_duration_snapshot, args.bootstrap_duration_provenance) if path is not None)
         write_plan(args.output, plan, protected)
         semantic = _object(plan["semantic"], "semantic")
         source = _object(semantic["duration_source"], "duration_source")
         logger.info("CI plan {} covers {} collected pytest nodes in {} shards; predicted work {} ms (effective capacity {} ms)", verified.digest, len(nodeids), len(verified.shards), semantic["predicted_total_ms"], semantic["effective_capacity_ms"])
         if source["status"] != "matched":
-            logger.warning("Duration history not used: {}", source["reason"])
+            logger.warning("Native duration history not used: {}", source["reason"])
+        if args.duration_policy == "source-required-v1":
+            snapshot_status = _object(semantic["snapshot_source"], "snapshot_source")
+            logger.info("Source estimator bootstrap status={} digest={} estimated pytest work={} ms (queue/setup not included)", snapshot_status["status"], snapshot_status["digest"], semantic["predicted_total_ms"])
+            if snapshot_status["status"] != "matched":
+                logger.warning("Non-native bootstrap estimates not used: {}", snapshot_status["reason"])
         if semantic["capacity_limited"]:
             logger.warning("Shard cap {} requires increasing effective capacity from 420000 to {} ms", semantic["shard_cap"], semantic["effective_capacity_ms"])
         if any(_object(shard, "shard")["over_budget_nodes"] for shard in cast(list[object], semantic["shards"])):

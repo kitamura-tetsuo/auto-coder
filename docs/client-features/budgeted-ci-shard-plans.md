@@ -147,3 +147,44 @@ worker setup, queue delay, matrix overhead and cancellation behavior.
 Console diagnostics use colored loguru; `ci-shard-plan.log` under `--log-dir`
 rotates at 10 MB with five retained backups. No GitHub credentials or mutable
 duration-history service are needed.
+
+## Source-only tracked-snapshot bootstrap
+
+Only the complete-source workflow opts in to `--duration-policy source-required-v1`,
+passing `tests/data/pr-test-durations.json` together with the tracked provenance
+document. Both are optional advisory estimation inputs. The planner checks the
+snapshot's exact raw SHA-256, node count, `not opencode_live` selector and
+seconds unit, rejects duplicate keys and invalid durations, and accepts only
+current-collected node IDs. The source revision recorded by the historical
+inter-result snapshot is not a native profile identity and need not equal HEAD.
+
+Estimates use validated exact-node native P95 first, exact-node snapshot duration
+second, the largest exact native/snapshot duration of **other current nodes in
+the same test file** third, and a minimum five-second source-only floor last
+(or a higher explicitly supplied cold-start estimate). Positive durations are
+rounded upward to milliseconds; valid zero-second historical measurements get
+a conservative positive millisecond. Every estimate records its provenance.
+A same-file fallback records the exact source node and origin of its maximum.
+Source status and reasons for unavailable/mismatched native or snapshot inputs,
+source floor and predicted work are included in the canonical immutable semantic
+plan and checked by the plan reader. Malformed optional data degrades prediction
+only; malformed authoritative collection or a plan still fails closed.
+
+A source CLI invocation includes the following options before the exact pytest
+selector following the separator:
+
+```shell
+--duration-policy source-required-v1 \
+--bootstrap-duration-snapshot tests/data/pr-test-durations.json \
+--bootstrap-duration-provenance tests/data/pr-test-durations.provenance.json
+```
+
+Native history remains usable only with its original validated complete
+configuration/Python identity, including compatible partial profiles. Neither
+source estimate type is a test-selection, cached-outcome or PASS authority.
+The existing twelve-shard contiguous allocation, 420-second target, fixed
+current-attempt plan and native receipt aggregate remain unchanged. Estimated
+pytest work excludes runner queue, fixture/browser setup, external stalls and
+observed critical path. Prior timing improvements are projections until verified
+in independent Actions runs. Unselected general and Supervisor callers retain
+their existing 1-second and explicit 120-second cold-start policies.
