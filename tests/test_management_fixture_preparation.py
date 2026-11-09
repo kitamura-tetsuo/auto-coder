@@ -40,7 +40,7 @@ def test_failed_fixture_never_exports_a_publishable_image(tmp_path, monkeypatch,
     monkeypatch.setattr(preparation, "serialize_build_identity", lambda _: '{"source_revision":"' + "a" * 40 + '"}')
     (tmp_path / "Dockerfile").write_text("FROM python:3.12-slim AS python-environment\n")
     build = Mock(side_effect=subprocess.CalledProcessError(1, ["docker", "build"]) if failure == "build" else None)
-    inspect = Mock(side_effect=["sha256:" + "a" * 64, json.dumps({"source_revision": {"value": "b" * 40}, "distribution_version": {"value": "1.0"}})]) if failure == "provenance_mismatch" else Mock(return_value="sha256:incomplete")
+    inspect = Mock(side_effect=["sha256:" + "a" * 64, "sha256:" + "a" * 64, json.dumps({"source_revision": {"value": "b" * 40}, "distribution_version": {"value": "1.0"}})]) if failure == "provenance_mismatch" else Mock(return_value="sha256:incomplete")
     monkeypatch.setattr(preparation.subprocess, "run", build)
     monkeypatch.setattr(preparation.subprocess, "check_output", inspect)
     output = tmp_path / "github-env"
@@ -62,3 +62,34 @@ def test_source_fixture_precedes_checkout_local_chromium_download():
     workflow = yaml.safe_load((Path(__file__).parents[1] / ".github/workflows/test-source-for-runtime.yml").read_text())
     commands = [step.get("run") for step in workflow["jobs"]["complete-source-shard"]["steps"]]
     assert commands.index("uv run python scripts/prepare_management_test_image.py") < commands.index("uv run playwright install --with-deps chromium")
+
+
+@pytest.mark.parametrize("failure", ["missing", "wrong_identity"])
+def test_consumer_rechecks_immutable_local_image_before_running_container(tmp_path, monkeypatch, failure):
+    expected = "sha256:" + "a" * 64
+    monkeypatch.setattr(preparation, "resolve_build_identity", lambda _: SimpleNamespace(state="clean", source_revision="a" * 40, version="1.0"))
+    inspect = Mock(
+        side_effect=subprocess.CalledProcessError(1, ["docker", "image", "inspect"]) if failure == "missing" else None,
+        return_value="sha256:" + "b" * 64,
+    )
+    monkeypatch.setattr(preparation.subprocess, "check_output", inspect)
+    with pytest.raises(subprocess.CalledProcessError if failure == "missing" else RuntimeError):
+        preparation.verify_image(tmp_path, expected)
+    assert inspect.call_count == 1
+    assert inspect.call_args.args[0] == ["docker", "image", "inspect", "--format", "{{.Id}}", expected]
+
+
+def test_consumer_rejects_nonimmutable_reference_before_docker(tmp_path, monkeypatch):
+    monkeypatch.setattr(preparation, "resolve_build_identity", lambda _: SimpleNamespace(state="clean", source_revision="a" * 40, version="1.0"))
+    inspect = Mock()
+    monkeypatch.setattr(preparation.subprocess, "check_output", inspect)
+    with pytest.raises(RuntimeError, match="malformed"):
+        preparation.verify_image(tmp_path, "auto-coder:management-local-abc65544")
+    inspect.assert_not_called()
+
+
+def test_real_retained_startup_cannot_fall_back_to_registry_pull():
+    source = (Path(__file__).parents[1] / "tests/test_management_retained_startup_container.py").read_text()
+    assert '"--pull",' in source
+    assert '"never",' in source
+    assert "verify_image(" in source

@@ -1,16 +1,25 @@
-"""Run explicitly with Docker; validates actual read-only bind and flock."""
+"""Real-container regression for retained startup, fixture identity and owner locking."""
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+from scripts.prepare_management_test_image import verify_image
 
 from auto_coder.management.operation_store import ManagementOperationStore
 
 
-@pytest.mark.supervisor_integration
-def test_retained_startup_uses_real_readonly_bind_and_shared_owner_lock(tmp_path: Path) -> None:
+def _fixture_image() -> str:
+    image = os.environ.get("AUTOCODER_FRESH_TEST_BASE_IMAGE", "auto-coder:management-local-abc65544")
+    if "AUTOCODER_FRESH_TEST_BASE_IMAGE" in os.environ:
+        # CI exports an immutable image ID after checked-source preparation.
+        verify_image(Path(__file__).resolve().parents[1], image)
+    return image
+
+
+def _exercise_real_retained_startup(tmp_path: Path, *, source: Path, image: str) -> None:
     root = tmp_path / "old"
     ManagementOperationStore(root).get("initialize")
     root.chmod(0o755)
@@ -19,7 +28,6 @@ def test_retained_startup_uses_real_readonly_bind_and_shared_owner_lock(tmp_path
     fence = tmp_path / "owner.lock"
     fence.touch(mode=0o644)
     db, lock = database.stat(), fence.stat()
-    source = Path(__file__).resolve().parents[1] / "src"
     code = """
 import fcntl, os
 from pathlib import Path
@@ -47,11 +55,12 @@ finally: os.close(fd)
 reader.close()
 print('readonly mount, identity and prior-owner fence verified')
 """
-    image = os.environ.get("AUTOCODER_FRESH_TEST_BASE_IMAGE", "auto-coder:management-local-abc65544")
     command = [
         "docker",
         "run",
         "--rm",
+        "--pull",
+        "never",
         "--network",
         "none",
         "--entrypoint",
@@ -94,4 +103,29 @@ print('readonly mount, identity and prior-owner fence verified')
     mount_index = writable.index(f"{root}:/management-prior-operations:ro")
     writable[mount_index] = f"{root}:/management-prior-operations:rw"
     refused = subprocess.run(writable, check=False, capture_output=True, text=True, timeout=30)
-    assert refused.returncode != 0 and "retained journal mount is not read-only" in refused.stderr
+    assert refused.returncode != 0, "writable retained-journal mount was accepted"
+    assert "retained journal mount is not read-only" in refused.stderr
+
+
+@pytest.mark.supervisor_integration
+def test_retained_startup_uses_real_readonly_bind_and_shared_owner_lock(tmp_path: Path) -> None:
+    _exercise_real_retained_startup(
+        tmp_path,
+        source=Path(__file__).resolve().parents[1] / "src",
+        image=_fixture_image(),
+    )
+
+
+@pytest.mark.supervisor_integration
+def test_retained_startup_detects_removed_readonly_guard(tmp_path: Path) -> None:
+    """A disposable source mutation must make the unchanged real-container oracle fail."""
+    source = tmp_path / "mutated-source"
+    shutil.copytree(Path(__file__).resolve().parents[1] / "src", source)
+    retained = source / "auto_coder" / "management" / "retained_startup.py"
+    original = "if root.is_symlink() or not root.is_dir() or not os.statvfs(root).f_flag & os.ST_RDONLY:"
+    assert retained.read_text().count(original) == 1
+    retained.write_text(retained.read_text().replace(original, "if root.is_symlink() or not root.is_dir():"))
+    mutable_probe = tmp_path / "probe"
+    mutable_probe.mkdir()
+    with pytest.raises(AssertionError, match="writable retained-journal mount was accepted"):
+        _exercise_real_retained_startup(mutable_probe, source=source, image=_fixture_image())

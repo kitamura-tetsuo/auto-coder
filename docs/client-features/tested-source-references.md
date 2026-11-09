@@ -39,6 +39,19 @@ selection; this is not an OpenCode live-runtime preparation or image publication
 The fixture is exported only after immutable Docker ID and installed source/version
 readback match the clean checkout. Missing Docker, failed build or mismatched
 provenance blocks the gate rather than skipping its readonly-bind test.
+The retained-startup consumer re-inspects the exact immutable Docker ID
+exported by the preparer and checks installed source revision/distribution
+version against the checked-out source before executing its real Docker mount
+and lock tests. The consumer forbids registry pulling (`--pull never`);
+missing, removed, mutable or wrong-source images fail before any success
+evidence can be emitted. The real-container regression also exercises the
+nonempty-WAL and writable-journal refusal cases. An isolated deliberate
+mutation removing the read-only mount guard makes this same real oracle reject
+the resulting false-success, without altering the required workflow selection.
+Fixture source SHA, immutable image ID and version are logged in the existing
+preparation/test steps, while the complete-source shard receipt and normal
+Actions/pytest logs record the actual selected and executed node outcomes.
+A passing fixture check alone does not prove unrelated CI or worker health.
 
 Nonfatal scheduled pytest diagnostics use an owned Python thread and the synchronous
 all-thread faulthandler API while holding the GIL. This avoids the demonstrated
