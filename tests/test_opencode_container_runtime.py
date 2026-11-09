@@ -6,6 +6,7 @@ import hashlib
 import http.server
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -182,8 +183,12 @@ def test_dockerfile_pins_opencode_release_and_explicit_architectures() -> None:
     assert "git" in content
     assert "ca-certificates" in content
 
-    # REQ-001: Binary copied to final image
-    assert "FROM node:24-slim AS build" in content
+    # REQ-001: The binary builder uses a supported even-numbered Node slim release.
+    node_stage = re.search(r"^FROM node:(\d+)-slim AS build$", content, flags=re.MULTILINE)
+    assert node_stage is not None
+    node_major = int(node_stage.group(1))
+    assert node_major >= 24
+    assert node_major % 2 == 0
     assert "opencode-linux-${OPENCODE_ARCH}@${OPENCODE_VERSION}" in content
     assert "--ignore-scripts --no-audit --no-fund --no-save" in content
     assert 'test "$(/usr/local/bin/opencode --version)" = "$OPENCODE_VERSION"' in content
