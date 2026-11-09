@@ -7,7 +7,7 @@ rejects invalid, revoked or expired access tokens (401 `invalid_token`),
 insufficient scopes (403 `insufficient_scope`), denied operator permission
 (403 `access_denied`), and unavailable authentication authority (503
 `temporarily_unavailable`). No target list is produced on those refusals.
-Any supplied tool argument is rejected as `invalid_request`.
+After successful bearer/grant admission, any supplied tool argument is rejected as a standard JSON-RPC error (`-32602`, `Invalid params`) retaining the request ID. Authentication refusals keep the existing HTTP statuses and OAuth challenge metadata, even when the call also contains invalid arguments.
 
 On success, the structured MCP tool result is:
 
