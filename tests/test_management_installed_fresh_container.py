@@ -75,6 +75,61 @@ def _bind_disposable_source_reader(package: Path) -> None:
     )
 
 
+# Only fixed exception *types* may leave the disposable worker log. Neither
+# traceback frames nor exception messages (which might contain credentials)
+# are published into GitHub Actions output.
+_ALLOWED_WORKER_EXCEPTION_TYPES = frozenset(
+    {
+        "assertionerror",
+        "attributeerror",
+        "calledprocesserror",
+        "connectionerror",
+        "filenotfounderror",
+        "httperror",
+        "httpstatuserror",
+        "importerror",
+        "integrityerror",
+        "jsondecodeerror",
+        "keyerror",
+        "modulenotfounderror",
+        "nameerror",
+        "operationalerror",
+        "oserror",
+        "permissionerror",
+        "runtimeerror",
+        "sslerror",
+        "systemexit",
+        "timeout",
+        "timeouterror",
+        "typeerror",
+        "validationerror",
+        "valueerror",
+    }
+)
+
+
+def _safe_worker_exception_types(log_text: str) -> list[str]:
+    """Return allowlisted exception class names only; never return log text."""
+    found: set[str] = set()
+    for line in log_text.lower().splitlines()[-500:]:
+        label = line.strip().partition(":")[0].rsplit(".", 1)[-1]
+        if label in _ALLOWED_WORKER_EXCEPTION_TYPES:
+            found.add(label)
+    return sorted(found)
+
+
+def test_disposable_worker_error_diagnostics_never_include_sensitive_messages() -> None:
+    log_text = "\n".join(
+        (
+            "Traceback (most recent call last):",
+            "  File /sensitive/path, line 1, in main",
+            "requests.exceptions.ConnectionError: token=do-not-publish-this-value",
+            "some.unknown.Exception: secret=also-private",
+        )
+    )
+    assert _safe_worker_exception_types(log_text) == ["connectionerror"]
+    assert _safe_worker_exception_types("unclassified secret=do-not-publish") == []
+
 class InstalledChain(Chain):
     def worker_compose_profile(self, profile: dict) -> dict:
         """Use the real producer only for opt-in installed worker coverage."""
@@ -482,6 +537,7 @@ class InstalledChain(Chain):
                     ("runtime-exception", ("runtimeerror", "keyerror", "valueerror", "typeerror")),
                 )
                 diagnostic["worker_log_observed"] = bool(worker_logs)
+                diagnostic["worker_exception_types"] = _safe_worker_exception_types(worker_logs)
                 diagnostic["worker_startup_signatures"] = [category for category, markers in startup_signatures if any(marker in worker_logs for marker in markers)]
             except (OSError, ValueError, subprocess.CalledProcessError) as log_error:
                 diagnostic["worker_log_status"] = type(log_error).__name__
