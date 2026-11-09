@@ -18,13 +18,7 @@ EXPECTED_GROUP_NAMES = {
 
 def _nested_python_projects(repository_root: Path) -> set[str]:
     """Inventory nested Python projects independently of Dependabot's entries."""
-    return {
-        f"/{manifest.parent.relative_to(repository_root).as_posix()}"
-        for manifest in repository_root.rglob("pyproject.toml")
-        if manifest.parent != repository_root
-        and ".git" not in manifest.parts
-        and ".venv" not in manifest.parts
-    }
+    return {f"/{manifest.parent.relative_to(repository_root).as_posix()}" for manifest in repository_root.rglob("pyproject.toml") if manifest.parent != repository_root and ".git" not in manifest.parts and ".venv" not in manifest.parts}
 
 
 def _load_document() -> dict[str, Any]:
@@ -39,56 +33,30 @@ def _load_updates() -> list[dict[str, Any]]:
 
 
 def _directories(update: dict[str, Any]) -> list[str]:
-    assert ("directory" in update) != ("directories" in update), (
-        "Dependabot entry must specify exactly one of directory and directories"
-    )
-    directories = (
-        update["directories"] if "directories" in update else [update["directory"]]
-    )
-    assert isinstance(directories, list) and directories, (
-        "Dependabot directories must be a nonempty list"
-    )
-    assert all(
-        isinstance(directory, str)
-        and directory.startswith("/")
-        and (directory == "/" or not directory.endswith("/"))
-        for directory in directories
-    ), "Dependabot directories must be absolute, canonical paths"
-    assert len(directories) == len(set(directories)), (
-        "duplicate Dependabot directories in an entry"
-    )
+    assert ("directory" in update) != ("directories" in update), "Dependabot entry must specify exactly one of directory and directories"
+    directories = update["directories"] if "directories" in update else [update["directory"]]
+    assert isinstance(directories, list) and directories, "Dependabot directories must be a nonempty list"
+    assert all(isinstance(directory, str) and directory.startswith("/") and (directory == "/" or not directory.endswith("/")) for directory in directories), "Dependabot directories must be absolute, canonical paths"
+    assert len(directories) == len(set(directories)), "duplicate Dependabot directories in an entry"
     return directories
 
 
-def _assert_manifest_coverage(
-    updates: list[dict[str, Any]], repository_root: Path
-) -> None:
-    required = {
-        ("uv", "/"),
-        ("docker", "/"),
-        ("github-actions", "/"),
-        *(("uv", directory) for directory in _nested_python_projects(repository_root)),
-    }
+def _assert_manifest_coverage(updates: list[dict[str, Any]], repository_root: Path) -> None:
+    required = {("uv", "/"), ("docker", "/"), ("github-actions", "/"), *(("uv", directory) for directory in _nested_python_projects(repository_root))}
     declared: list[tuple[str, str]] = []
 
     for update in updates:
         ecosystem = update["package-ecosystem"]
         for directory in _directories(update):
             target_directory = repository_root / directory.removeprefix("/")
-            assert target_directory.is_dir(), (
-                f"Dependabot directory does not exist: {directory}"
-            )
+            assert target_directory.is_dir(), f"Dependabot directory does not exist: {directory}"
             declared.append((ecosystem, directory))
 
     assert len(declared) == len(set(declared)), "duplicate Dependabot entries conflict"
     missing = required - set(declared)
-    assert not missing, (
-        f"Dependabot does not monitor required project {sorted(missing)}"
-    )
+    assert not missing, f"Dependabot does not monitor required project {sorted(missing)}"
     unexpected = set(declared) - required
-    assert not unexpected, (
-        f"Unexpected Dependabot monitoring entries: {sorted(unexpected)}"
-    )
+    assert not unexpected, f"Unexpected Dependabot monitoring entries: {sorted(unexpected)}"
 
     for ecosystem, directory in required:
         target_directory = repository_root / directory.removeprefix("/")
@@ -96,33 +64,22 @@ def _assert_manifest_coverage(
             assert (target_directory / ".github" / "workflows").is_dir()
         else:
             manifest_name = "Dockerfile" if ecosystem == "docker" else "pyproject.toml"
-            assert (target_directory / manifest_name).is_file(), (
-                f"{ecosystem} mapping does not monitor {directory}/{manifest_name}"
-            )
+            assert (target_directory / manifest_name).is_file(), f"{ecosystem} mapping does not monitor {directory}/{manifest_name}"
 
 
 def _assert_update_contract(updates: list[dict[str, Any]]) -> None:
     assert len(updates) == 3, "Expected exactly three Dependabot update entries"
-    assert {entry["package-ecosystem"] for entry in updates} == set(
-        EXPECTED_GROUP_NAMES
-    )
+    assert {entry["package-ecosystem"] for entry in updates} == set(EXPECTED_GROUP_NAMES)
 
     for update in updates:
         ecosystem = update["package-ecosystem"]
         assert update["schedule"]["interval"] == "weekly"
         assert set(update["schedule"]) == {"interval"}
         expected_group = EXPECTED_GROUP_NAMES[ecosystem]
-        assert update.get("groups") == {
-            expected_group: {
-                "applies-to": "version-updates",
-                "patterns": ["*"],
-            }
-        }, f"{ecosystem} must have one catch-all version-update group"
+        assert update.get("groups") == {expected_group: {"applies-to": "version-updates", "patterns": ["*"]}}, f"{ecosystem} must have one catch-all version-update group"
         if ecosystem == "uv":
             assert "directories" in update and "directory" not in update
-            assert update.get("ignore") == [
-                {"dependency-name": "fastcore", "versions": [">=2.0.0"]}
-            ], "Preserve the fastcore >=2.0.0 compatibility exclusion"
+            assert update.get("ignore") == [{"dependency-name": "fastcore", "versions": [">=2.0.0"]}], "Preserve the fastcore >=2.0.0 compatibility exclusion"
         else:
             assert _directories(update) == ["/"]
             assert "ignore" not in update
@@ -171,9 +128,7 @@ def test_new_nested_uv_project_is_rejected(tmp_path: Path) -> None:
 @pytest.mark.parametrize("change", ["missing", "narrow", "security"])
 def test_invalid_grouping_is_rejected(ecosystem: str, change: str) -> None:
     updates = deepcopy(_load_updates())
-    entry = next(
-        update for update in updates if update["package-ecosystem"] == ecosystem
-    )
+    entry = next(update for update in updates if update["package-ecosystem"] == ecosystem)
     name = EXPECTED_GROUP_NAMES[ecosystem]
     if change == "missing":
         entry.pop("groups")
