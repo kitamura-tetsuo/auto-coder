@@ -362,6 +362,13 @@ jobs:
       - *dependencies
       - *build
       - *host-prerequisites
+      - name: Verify and export retained-startup image identity
+        run: |
+          set -euo pipefail
+          image_id="$(docker image inspect --format '{{.Id}}' auto-coder:management-local-abc65544)"
+          test "$image_id" = "$AUTOCODER_OPENCODE_IMAGE_ID"
+          AUTOCODER_FRESH_TEST_BASE_IMAGE="$image_id" uv run python -c 'import os; from pathlib import Path; from scripts.prepare_management_test_image import verify_image; verify_image(Path.cwd(), os.environ["AUTOCODER_FRESH_TEST_BASE_IMAGE"])'
+          printf 'AUTOCODER_FRESH_TEST_BASE_IMAGE=%s\n' "$image_id" >> "$GITHUB_ENV"
       - name: Download immutable fresh-host plan
         uses: actions/download-artifact@v8
         with:
@@ -381,6 +388,7 @@ jobs:
           # Real kernel/proxy observations still run in a root interpreter.
           sudo env "PATH=$PATH" "PYTHONPATH=$GITHUB_WORKSPACE/src:$GITHUB_WORKSPACE/scripts" \
             "GIT_CONFIG_COUNT=1" "GIT_CONFIG_KEY_0=safe.directory" "GIT_CONFIG_VALUE_0=$GITHUB_WORKSPACE" \
+            "AUTOCODER_FRESH_TEST_BASE_IMAGE=$AUTOCODER_FRESH_TEST_BASE_IMAGE" \
             "AUTO_CODER_CI_TIMING_DIR=$AUTO_CODER_CI_TIMING_DIR" \
             "AUTO_CODER_CI_TIMING_INVOCATION=$AUTO_CODER_CI_TIMING_INVOCATION" \
             "AUTO_CODER_CI_TIMING_CHECKOUT_SHA=$checkout_sha" \

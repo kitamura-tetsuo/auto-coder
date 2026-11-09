@@ -12,11 +12,18 @@ from auto_coder.management.operation_store import ManagementOperationStore
 
 
 def _fixture_image() -> str:
-    image = os.environ.get("AUTOCODER_FRESH_TEST_BASE_IMAGE", "auto-coder:management-local-abc65544")
-    if "AUTOCODER_FRESH_TEST_BASE_IMAGE" in os.environ:
-        # CI exports an immutable image ID after checked-source preparation.
-        verify_image(Path(__file__).resolve().parents[1], image)
-    return image
+    """Always consume an inspected and provenance-verified immutable image ID."""
+    candidate = os.environ.get("AUTOCODER_FRESH_TEST_BASE_IMAGE") or "auto-coder:management-local-abc65544"
+    # A historical local tag is an input to inspection, never authority to execute.
+    image_id = (
+        candidate
+        if candidate.startswith("sha256:")
+        else subprocess.check_output(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", candidate],
+            text=True,
+        ).strip()
+    )
+    return verify_image(Path(__file__).resolve().parents[1], image_id)
 
 
 def _exercise_real_retained_startup(tmp_path: Path, *, source: Path, image: str) -> None:

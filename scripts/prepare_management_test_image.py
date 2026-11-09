@@ -21,7 +21,7 @@ def verify_image(repository: Path, image_id: str) -> str:
     """Recheck the immutable image actually used by a retained-startup consumer."""
     identity = resolve_build_identity(repository)
     if identity.state != "clean" or not identity.source_revision:
-        raise RuntimeError("Management test fixtures require a complete clean source identity")
+        raise RuntimeError(f"Management test fixtures require a complete clean source identity (state={identity.state}, reason={getattr(identity, 'reason', None)})")
     if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
         raise RuntimeError("Management fixture Docker identity is unavailable or malformed")
     inspected_id = subprocess.check_output(["docker", "image", "inspect", "--format", "{{.Id}}", image_id], text=True).strip()
@@ -58,7 +58,7 @@ def verify_image(repository: Path, image_id: str) -> str:
 def prepare_image(repository: Path, github_env: Path | None = None) -> str:
     identity = resolve_build_identity(repository)
     if identity.state != "clean" or not identity.source_revision:
-        raise RuntimeError("Management test fixtures require a complete clean source identity")
+        raise RuntimeError(f"Management test fixtures require a complete clean source identity (state={identity.state}, reason={getattr(identity, 'reason', None)})")
     encoded = base64.b64encode(serialize_build_identity(identity).encode()).decode()
     tag = f"auto-coder:management-fixture-{identity.source_revision[:12]}"
     dockerfile = (repository / "Dockerfile").read_text() + ("\nFROM python-environment AS management-test-fixture\n" "ARG AUTO_CODER_SOURCE_REVISION\n" "RUN AUTO_CODER_SOURCE_REVISION=$AUTO_CODER_SOURCE_REVISION /opt/auto-coder/.venv/bin/python -m auto_coder.build_provenance embed\n")

@@ -39,6 +39,12 @@ selection; this is not an OpenCode live-runtime preparation or image publication
 The fixture is exported only after immutable Docker ID and installed source/version
 readback match the clean checkout. Missing Docker, failed build or mismatched
 provenance blocks the gate rather than skipping its readonly-bind test.
+The Supervisor fresh-host workflow independently verifies the image built
+from its checkout, passes the inspected immutable ID to the retained-startup
+consumer through the privileged `sudo env` boundary, and refuses a stale tag.
+Manual execution using the historical tag similarly resolves that local tag to
+its immutable ID and verifies installed checkout/version before any assertion
+container starts. A tag alone cannot authorize the target test.
 The retained-startup consumer re-inspects the exact immutable Docker ID
 exported by the preparer and checks installed source revision/distribution
 version against the checked-out source before executing its real Docker mount

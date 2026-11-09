@@ -93,3 +93,56 @@ def test_real_retained_startup_cannot_fall_back_to_registry_pull():
     assert '"--pull",' in source
     assert '"never",' in source
     assert "verify_image(" in source
+
+
+def test_default_tag_consumer_resolves_verified_immutable_id(monkeypatch, tmp_path):
+    """The no-environment entry path must not consume a mutable tag."""
+    from tests import test_management_retained_startup_container as retained
+
+    monkeypatch.delenv("AUTOCODER_FRESH_TEST_BASE_IMAGE", raising=False)
+    image_id = "sha256:" + "a" * 64
+    inspect = Mock(return_value=image_id + "\n")
+    verify = Mock(return_value=image_id)
+    exercise = Mock()
+    monkeypatch.setattr(retained.subprocess, "check_output", inspect)
+    monkeypatch.setattr(retained, "verify_image", verify)
+    monkeypatch.setattr(retained, "_exercise_real_retained_startup", exercise)
+
+    retained.test_retained_startup_uses_real_readonly_bind_and_shared_owner_lock(tmp_path, None)
+
+    inspect.assert_called_once_with(
+        ["docker", "image", "inspect", "--format", "{{.Id}}", "auto-coder:management-local-abc65544"],
+        text=True,
+    )
+    assert verify.call_args.args[1] == image_id
+    assert exercise.call_args.kwargs["image"] == image_id
+
+
+def test_default_tag_consumer_rejects_wrong_source_before_assertion_docker(monkeypatch, tmp_path):
+    """Even a present historical tag must establish checkout provenance."""
+    from tests import test_management_retained_startup_container as retained
+
+    monkeypatch.delenv("AUTOCODER_FRESH_TEST_BASE_IMAGE", raising=False)
+    image_id = "sha256:" + "b" * 64
+    exercise = Mock()
+    monkeypatch.setattr(retained.subprocess, "check_output", Mock(return_value=image_id))
+    monkeypatch.setattr(retained, "verify_image", Mock(side_effect=RuntimeError("installed provenance differs")))
+    monkeypatch.setattr(retained, "_exercise_real_retained_startup", exercise)
+
+    with pytest.raises(RuntimeError, match="installed provenance differs"):
+        retained.test_retained_startup_uses_real_readonly_bind_and_shared_owner_lock(tmp_path, None)
+    exercise.assert_not_called()
+
+
+def test_fresh_host_workflow_passes_verified_image_across_sudo():
+    """Each executing shard independently binds the installed image to its source."""
+    workflow = yaml.safe_load((Path(__file__).parents[1] / ".github/workflows/supervisor-integration-tests.yml").read_text())
+    steps = workflow["jobs"]["fresh-host"]["steps"]
+    runs = [str(step.get("run", "")) for step in steps]
+    handoff = next(i for i, step in enumerate(steps) if step.get("name") == "Verify and export retained-startup image identity")
+    execution = next(i for i, step in enumerate(steps) if step.get("name") == "Verify fresh initialization with host evidence")
+    assert handoff < execution
+    assert "AUTOCODER_OPENCODE_IMAGE_ID" in runs[handoff]
+    assert "verify_image(" in runs[handoff]
+    assert "AUTOCODER_FRESH_TEST_BASE_IMAGE=$AUTOCODER_FRESH_TEST_BASE_IMAGE" in runs[execution]
+    assert "tests/test_management_retained_startup_container.py" in (Path(__file__).parents[1] / "scripts/supervisor_ci_profiles.py").read_text()
