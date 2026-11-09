@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from scripts.plan_ci_shards import _collect  # noqa: E402
 from supervisor_aggregate_evidence import REQUIRED_GROUPS, evaluate  # noqa: E402
-from supervisor_ci_profiles import CONTAINER_REQUIRED, FRESH_REQUIRED, HARNESS, PROFILES, REPOSITORY, SEMANTIC_ENV, check_plan
+from supervisor_ci_profiles import CONTAINER_REQUIRED, FRESH_REQUIRED, HARNESS, OPERATOR_REQUIRED, PROFILES, REPOSITORY, SEMANTIC_ENV, check_plan
 from supervisor_ci_profiles import context as profile_context  # noqa: E402
 from supervisor_ci_profiles import profile_args
 from supervisor_native_evidence import GitDataResponse, NativeEvidenceError, _inventory_ok, capture, native_job_name, original_producer  # noqa: E402
@@ -126,11 +126,14 @@ def _inventory(profile: str, shard: int | None, nodes: tuple[str, ...], plan: Ve
 
 
 def _artifact(base: Path, profile: str, shard: int | None, plan: VerifiedPlan | None, job: dict[str, object], attempt: int) -> Path:
-    name = "worker-bridge" if profile == "worker" else f"{profile}-shard-{shard}"
+    name = "worker-bridge" if profile == "worker" else "operator-upgrade" if profile == "operator-upgrade" else f"{profile}-shard-{shard}"
     folder = base / f"supervisor-integration-{name}-{RUN}-{attempt}"
     folder.mkdir()
     if profile == "worker":
         reports = {"worker-bridge.json": _inventory(profile, None, ("worker::test_bridge",), None, attempt, cast(int, job["runner_id"])), "worker-daemon.json": _inventory(profile, None, ("worker::test_daemon",), None, attempt, cast(int, job["runner_id"]))}
+    elif profile == "operator-upgrade":
+        assert plan is None and shard is None
+        reports = {"operator-upgrade.json": _inventory(profile, None, OPERATOR_REQUIRED, None, attempt, cast(int, job["runner_id"]))}
     else:
         assert plan is not None
         reports = {f"{profile}-{shard}.json": _inventory(profile, shard, plan.inventory, plan, attempt, cast(int, job["runner_id"]))}
@@ -179,6 +182,9 @@ def valid_native_evidence(tmp_path: Path):
     worker = _job(native_job_name("worker", None), 99, 2, start="2026-11-08T11:00:00Z", runner=99)
     current.append(worker)
     _artifact(artifacts_dir, "worker", None, None, worker, 2)
+    operator = _job(native_job_name("operator-upgrade", None), 98, 2, start="2026-11-08T11:00:00Z", runner=98)
+    current.append(operator)
+    _artifact(artifacts_dir, "operator-upgrade", None, None, operator, 2)
     return FakeGitHub({1: [previous], 2: current}), plans_dir, artifacts_dir
 
 
@@ -302,6 +308,26 @@ def test_privileged_profiles_reject_management_skip_reason(valid_native_evidence
     assert not receipt_file.exists()
 
 
+def test_operator_upgrade_missing_native_receipt_refuses_aggregate(valid_native_evidence) -> None:
+    _client, _plans, artifacts = valid_native_evidence
+    (artifacts / f"supervisor-integration-operator-upgrade-{RUN}-2" / "receipt.json").unlink()
+    with pytest.raises(NativeEvidenceError, match="missing original producing-job receipt"):
+        _evaluate(valid_native_evidence)
+
+
+@pytest.mark.parametrize("fault", ("missing-case", "skipped-case"))
+def test_operator_upgrade_original_inventory_never_accepts_missing_or_skipped_case(fault: str) -> None:
+    report = _inventory("operator-upgrade", None, OPERATOR_REQUIRED, None, 1, 1)
+    if fault == "missing-case":
+        report["collected"].remove(OPERATOR_REQUIRED[0])
+        report["outcomes"].pop(OPERATOR_REQUIRED[0])
+    else:
+        report["outcomes"][OPERATOR_REQUIRED[0]] = "skipped"
+        report["skip_reasons"][OPERATOR_REQUIRED[0]] = "Skipped: fabricated success"
+    with pytest.raises(NativeEvidenceError):
+        _inventory_ok(report, None, "operator-upgrade", None, SHA, RUN, 1)
+
+
 def test_native_rerun_alias_uses_original_successful_job_receipt(valid_native_evidence) -> None:
     selections, metrics = _evaluate(valid_native_evidence)
     management = next(item for item in selections if item.profile == "management-self-update")
@@ -309,6 +335,8 @@ def test_native_rerun_alias_uses_original_successful_job_receipt(valid_native_ev
     assert management.producing_job["id"] == 11
     assert management.producing_attempt == 1
     assert sum(item.profile == "worker" for item in selections) == 1
+    assert sum(item.profile == "operator-upgrade" for item in selections) == 1
+    assert metrics["operator-upgrade"]["shards"] == 1
     assert all(metrics[profile]["peak_overlapping_test_phases"] >= 1 for profile in PROFILES)
     duplicate = "tests/test_management_fresh_host_integration.py::test_real_prior_supervisor_binds_instance_and_published_port"
     assert duplicate in next(item for item in selections if item.profile == "fresh-host").inventories[0]["collected"]
@@ -547,6 +575,10 @@ def test_real_planned_pytest_shards_produce_complete_native_aggregate(tmp_path: 
             environ=run_env,
         )
         assert receipt["job_id"] == job["id"]
+
+    operator_job = _job(native_job_name("operator-upgrade", None), 13, 1, start="2026-11-08T10:00:00Z", runner=13)
+    jobs.append(operator_job)
+    _artifact(artifacts, "operator-upgrade", None, None, operator_job, 1)
 
     selected, metrics = evaluate(
         cast(GitHubGitDataClient, client),

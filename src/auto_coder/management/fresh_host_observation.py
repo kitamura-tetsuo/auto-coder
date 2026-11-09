@@ -20,6 +20,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Callable
 
 from loguru import logger
 
@@ -840,7 +841,18 @@ def assert_replacement_owner(intent: FreshInitializationIntent, incarnation: str
 
 
 def serve_one_fresh_grant(
-    socket_path: Path, intent: FreshInitializationIntent, management: PriorContainer, proxy: PriorContainer, fence_descriptor: int, network_descriptor: int, *, trusted_uid: int | None = None, timeout: float = 120, bootstrap_config: Path | None = None, exclusion_fences: tuple[int, ...] = ()
+    socket_path: Path,
+    intent: FreshInitializationIntent,
+    management: PriorContainer,
+    proxy: PriorContainer,
+    fence_descriptor: int,
+    network_descriptor: int,
+    *,
+    trusted_uid: int | None = None,
+    timeout: float = 120,
+    bootstrap_config: Path | None = None,
+    exclusion_fences: tuple[int, ...] = (),
+    on_listening: Callable[[], None] | None = None,
 ) -> None:
     """Serve one challenge only after fresh host and replacement checks.
 
@@ -900,6 +912,8 @@ def serve_one_fresh_grant(
         listener.listen(1)
         listener.settimeout(timeout)
         print(json.dumps({"status": "awaiting-replacement", "request_id": intent.request_id}), flush=True)
+        if on_listening is not None:
+            on_listening()
         connection, _ = listener.accept()
         with connection:
             connection.settimeout(10)

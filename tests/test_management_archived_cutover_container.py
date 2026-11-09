@@ -550,6 +550,10 @@ class Chain:
         assert result.returncode != 0 and "BlockingIOError" in result.stdout + result.stderr
         assert (generation.path("state") / "management-child.sqlite3").read_bytes() == before
 
+    def worker_compose_profile(self, profile: dict) -> dict:
+        """Customize only disposable worker setup before its first start."""
+        return profile
+
     def start_workers(self) -> None:
         root = self.root / "workers"
         for name in ("beta/home", "release/home", "agent-table/home", "beta-workspace", "release-workspace", "agent-table-workspace"):
@@ -577,6 +581,7 @@ class Chain:
         # published Caddy endpoint and the installed fixture's HTTP authority.
         # Reuse the canonical worker fixture; only its disposable IPAM changes.
         private_compose = worker_compose_profile(fixtures, f"10.252.{octet}.0/24", f"10.252.{octet}.1")
+        private_compose = self.worker_compose_profile(private_compose)
         compose_path = root / "compose.yml"
         compose_path.write_text(yaml.safe_dump(private_compose))
         self.worker_compose = ["docker", "compose", "--project-name", "ancestor-workers-" + uuid.uuid4().hex[:12], "-f", str(compose_path)]
@@ -602,6 +607,7 @@ class Chain:
             )
             self.docker("exec", self.worker_manager, "python", "-c", code, channel + "-worker")
         assert self.worker_posts() == {"beta": 1, "release": 1}
+        self.worker_post_baseline = self.worker_posts()
 
     def compose(self, *args: str) -> str:
         return subprocess.check_output([*self.worker_compose, *args], env=self.worker_environment, stderr=subprocess.STDOUT, text=True, timeout=90).strip()
@@ -660,7 +666,7 @@ class Chain:
                 {"target_id": channel + "-worker", "target_type": "issue", "number": 2603, "idempotency_key": record.intent.idempotency_key, "expected_process_run_id": record.intent.expected_incarnation, "expected_deployment_generation": record.intent.expected_artifact},
             )
             assert reply["status"] == "CONFLICT" and reply.get("operation_id") is None
-        assert self.worker_posts() == before == {"beta": 1, "release": 1}
+        assert self.worker_posts() == before == self.worker_post_baseline
         assert self.workers() == self.worker_baseline
 
     def reconnect_proxy(self, generation: Generation) -> None:

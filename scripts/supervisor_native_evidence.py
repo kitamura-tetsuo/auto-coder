@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import cast
 
 from loguru import logger
-from supervisor_ci_profiles import MANAGEMENT_SKIPS, PROFILES, REPOSITORY, check_plan
+from supervisor_ci_profiles import MANAGEMENT_SKIPS, OPERATOR_REQUIRED, PROFILES, REPOSITORY, check_plan
 
 from auto_coder.ci_shard_plan import VerifiedPlan, read_plan
 from auto_coder.util.gh_cache import GitDataResponse, GitHubGitDataClient
@@ -145,6 +145,9 @@ def _inventory_ok(report: dict[str, object], plan: VerifiedPlan | None, profile:
         raise NativeEvidenceError("native pytest collected inventory is empty or invalid")
     if len(set(collected)) != len(collected) or (expected is not None and collected != list(expected)):
         raise NativeEvidenceError("native pytest collected inventory differs from immutable assignment")
+    if profile == "operator-upgrade":
+        if plan is not None or shard is not None or not set(OPERATOR_REQUIRED).issubset(collected):
+            raise NativeEvidenceError("operator upgrade mandatory real-Docker cases are missing or wrongly planned")
     if not isinstance(outcomes, dict) or set(outcomes) != set(collected) or not set(outcomes.values()) <= {"passed", "skipped"}:
         raise NativeEvidenceError("native pytest outcomes are missing, extra, failed, cancelled or forbidden-skipped")
     if profile != "management-self-update" and any(value == "skipped" for value in outcomes.values()):
@@ -169,12 +172,17 @@ def _inventory_ok(report: dict[str, object], plan: VerifiedPlan | None, profile:
 
 
 def native_job_name(profile: str, shard: int | None) -> str:
-    return "Worker processes and bridge" if profile == "worker" else f"Supervisor {profile} (shard {shard})"
+    if profile == "worker":
+        return "Worker processes and bridge"
+    if profile == "operator-upgrade":
+        return "Operator upgrade production-origin Docker"
+    return f"Supervisor {profile} (shard {shard})"
 
 
 def capture(client: GitHubGitDataClient, *, profile: str, shard: int | None, plan_file: Path | None, inventories: tuple[Path, ...], destination: Path, environ: dict[str, str]) -> dict[str, object]:
-    if not inventories or (profile == "worker") != (plan_file is None):
-        raise NativeEvidenceError("worker and planned shard inventory parameters are inconsistent")
+    unplanned = profile in {"worker", "operator-upgrade"}
+    if not inventories or unplanned != (plan_file is None) or (unplanned and shard is not None):
+        raise NativeEvidenceError("unplanned native and planned shard inventory parameters are inconsistent")
     plan = read_plan(plan_file)[0] if plan_file is not None else None
     if plan is not None:
         check_plan(profile, plan_file)
@@ -233,7 +241,7 @@ def _logging(directory: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--profile", required=True, choices=(*PROFILES, "worker"))
+    parser.add_argument("--profile", required=True, choices=(*PROFILES, "worker", "operator-upgrade"))
     parser.add_argument("--shard", type=int)
     parser.add_argument("--plan", type=Path)
     parser.add_argument("--inventory", action="append", type=Path, required=True)

@@ -13,6 +13,23 @@ from auto_coder.ci_shard_plan import ShardContext, ShardPlanError, read_plan
 REPOSITORY = "kitamura-tetsuo/auto-coder"
 PROFILES = ("management-self-update", "fresh-host", "isolated-containers")
 
+OPERATOR_REQUIRED = (
+    "tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_prepare_apply_status_real_docker",
+    "tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[lost-stop]",
+    "tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[lost-start]",
+    "tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[postlaunch-proxy-failed]",
+    "tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[retained-unresolved-work]",
+    "tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[missing-source-credential]",
+    "tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[missing-source-evidence]",
+    "tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[missing-source-consent]",
+    "tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[changed-successor-config]",
+    "tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[changed-candidate-image]",
+    "tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[predecessor-generation]",
+    "tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[predecessor-management-generation]",
+    "tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[host-process-interrupted]",
+)
+
+
 MANAGEMENT_SKIPS = {
     f"tests/test_management_fresh_host_integration.py::{name}": "host root is required to observe the disposable Docker proxy"
     for name in (

@@ -13,6 +13,7 @@ import os
 import time
 from contextlib import ExitStack
 from pathlib import Path
+from typing import Callable
 
 from .archived_exclusions import acquire_exclusion_fences
 from .exclusion_host import check_exclusion_peer, check_host_archives, validate_successor
@@ -21,7 +22,9 @@ from .fresh_host_observation import HostObservationUnavailable, _assert_pid_floc
 from .fresh_initialization import FreshInitializationIntent, acquire_prior_owner_fence, claim_fresh_initialization
 
 
-def hold_claim_and_guard(intent: FreshInitializationIntent, evidence: Path, bootstrap: Path, prior_lock: Path, network_fd: int, guard_dir: Path, *, wait_seconds: float = 300) -> None:
+def hold_claim_and_guard(
+    intent: FreshInitializationIntent, evidence: Path, bootstrap: Path, prior_lock: Path, network_fd: int, guard_dir: Path, *, wait_seconds: float = 300, on_fenced: Callable[[], None] | None = None, on_stopped: Callable[[], None] | None = None, on_listening: Callable[[], None] | None = None
+) -> None:
     """Retain separately opened shared locks, never pass process authority."""
     if not math.isfinite(wait_seconds) or not 0 < wait_seconds <= 3600:
         raise ValueError("bounded stop wait required")
@@ -61,6 +64,8 @@ def hold_claim_and_guard(intent: FreshInitializationIntent, evidence: Path, boot
         if (after[1], after[2], after[3], after[13], after[14]) != expected:
             raise ValueError("predecessor changed during lock handoff observation")
         print(json.dumps({"status": "ancestors-fenced-awaiting-manual-stop", "request_id": intent.request_id}), flush=True)
+        if on_fenced is not None:
+            on_fenced()
         deadline = time.monotonic() + wait_seconds
         while True:
             values = _inspect(management.container_id)
@@ -84,8 +89,10 @@ def hold_claim_and_guard(intent: FreshInitializationIntent, evidence: Path, boot
             raise ValueError("ancestor set changed across stop")
         check_exclusion_peer(bindings, ancestors, os.getpid())
         check_host_archives(bindings)
+        if on_stopped is not None:
+            on_stopped()
         claim_fresh_initialization(Path(intent.host_state_root), intent)
-        serve_one_fresh_grant(guard_dir / "fresh-guard.sock", intent, management, proxy, direct, network_fd, bootstrap_config=bootstrap, exclusion_fences=ancestors)
+        serve_one_fresh_grant(guard_dir / "fresh-guard.sock", intent, management, proxy, direct, network_fd, bootstrap_config=bootstrap, exclusion_fences=ancestors, on_listening=on_listening)
 
 
 def main() -> None:

@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 import pytest
-from supervisor_ci_profiles import MANAGEMENT_SKIPS, anchors, check_plan
+from supervisor_ci_profiles import MANAGEMENT_SKIPS, OPERATOR_REQUIRED, anchors, check_plan
 
 from auto_coder.ci_shard_plan import VerifiedPlan, read_plan
 
@@ -117,7 +117,12 @@ def pytest_configure(config: pytest.Config) -> None:
         plan_path = os.environ.get("SUPERVISOR_PLAN_PATH")
         shard_value = os.environ.get("SUPERVISOR_SHARD_ID")
         profile = os.environ.get("SUPERVISOR_PROFILE")
-        if any((plan_path, shard_value, profile)) and not all((plan_path, shard_value, profile)):
+        if profile == "operator-upgrade" and plan_path is None and shard_value is None:
+            if tuple(json.loads(os.environ.get("SUPERVISOR_REQUIRED_NODEIDS", "[]"))) != OPERATOR_REQUIRED:
+                raise pytest.UsageError("Operator upgrade mandatory node registry differs from production profile")
+            if json.loads(os.environ.get("SUPERVISOR_ALLOWED_SKIPS", "{}")) != {}:
+                raise pytest.UsageError("Operator upgrade cannot authorize skipped tests")
+        elif any((plan_path, shard_value, profile)) and not all((plan_path, shard_value, profile)):
             raise pytest.UsageError("Supervisor plan/profile/shard binding is incomplete")
         if plan_path is not None and shard_value is not None and profile is not None:
             try:

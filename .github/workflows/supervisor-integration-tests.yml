@@ -415,6 +415,70 @@ jobs:
           path: supervisor-integration-logs/
           if-no-files-found: error
 
+  operator-upgrade:
+    name: Operator upgrade production-origin Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 85
+    env:
+      UV_LOCKED: "1"
+      AUTO_CODER_CI_TIMING_DIR: ${{ github.workspace }}/supervisor-integration-logs/timing
+      AUTO_CODER_CI_TIMING_EXPECTED_INVOCATIONS: operator-upgrade
+      SUPERVISOR_PROFILE: operator-upgrade
+      PYTHONPATH: ${{ github.workspace }}/src:${{ github.workspace }}/scripts
+      SUPERVISOR_REQUIRED_NODEIDS: '["tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_prepare_apply_status_real_docker","tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[lost-stop]","tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[lost-start]","tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[postlaunch-proxy-failed]","tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[retained-unresolved-work]","tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[missing-source-credential]","tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[missing-source-evidence]","tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[missing-source-consent]","tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[changed-successor-config]","tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[changed-candidate-image]","tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[predecessor-generation]","tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[predecessor-management-generation]","tests/test_management_bootstrap_upgrade_container.py::test_disposable_operator_failure_fences_real_docker[host-process-interrupted]"]'
+    steps:
+      - *checkout
+      - *python
+      - *uv
+      - *dependencies
+      - *build
+      - name: Verify operator prepare/apply/status with disposable Docker
+        timeout-minutes: 65
+        run: |
+          if ! command -v strace >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y strace
+          fi
+          docker tag "auto-coder:supervisor-${{ github.sha }}" auto-coder:management-local-abc65544
+          docker pull caddy@sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489
+          checkout_sha="$(git rev-parse HEAD)"
+          # Use the exact production-origin image, unmodified host commands,
+          # ephemeral Docker state and the required no-skip result inventory.
+          trap 'sudo chown -R "$(id -u):$(id -g)" supervisor-integration-logs' EXIT
+          sudo env "PATH=$PATH" "PYTHONPATH=$GITHUB_WORKSPACE/src:$GITHUB_WORKSPACE/scripts" \
+            "GIT_CONFIG_COUNT=1" "GIT_CONFIG_KEY_0=safe.directory" "GIT_CONFIG_VALUE_0=$GITHUB_WORKSPACE" \
+            "AUTO_CODER_CI_TIMING_DIR=$AUTO_CODER_CI_TIMING_DIR" \
+            "AUTO_CODER_CI_TIMING_INVOCATION=operator-upgrade" \
+            "AUTO_CODER_CI_TIMING_CHECKOUT_SHA=$checkout_sha" \
+            "GITHUB_SHA=$GITHUB_SHA" \
+            "GITHUB_WORKFLOW=$GITHUB_WORKFLOW" \
+            "GITHUB_RUN_ID=$GITHUB_RUN_ID" \
+            "GITHUB_RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT" \
+            "GITHUB_JOB=$GITHUB_JOB" \
+            "RUNNER_NAME=$RUNNER_NAME" \
+            "SUPERVISOR_PROFILE=$SUPERVISOR_PROFILE" \
+            "SUPERVISOR_REQUIRED_NODEIDS=$SUPERVISOR_REQUIRED_NODEIDS" \
+            "SUPERVISOR_RESULTS_PATH=$GITHUB_WORKSPACE/supervisor-integration-logs/operator-upgrade.json" \
+            "$GITHUB_WORKSPACE/.venv/bin/python" -m pytest -p supervisor_ci_results -q -vv -o timeout=240 \
+            tests/test_management_bootstrap_upgrade_container.py \
+            --junitxml=supervisor-integration-logs/operator-upgrade.xml
+      - name: Bind native operator upgrade receipt
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          uv run python scripts/supervisor_native_evidence.py --profile operator-upgrade \
+            --inventory supervisor-integration-logs/operator-upgrade.json \
+            --output supervisor-integration-logs/receipt.json
+      - *summarize-timing
+      - name: Upload operator upgrade diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: supervisor-integration-operator-upgrade-${{ github.run_id }}-${{ github.run_attempt }}
+          path: supervisor-integration-logs/
+          if-no-files-found: error
+
   isolated-containers:
     name: Supervisor isolated-containers (shard ${{ matrix.shard }})
     needs: prepare-containers
@@ -487,6 +551,7 @@ jobs:
       - prepare-containers
       - management-self-update
       - fresh-host
+      - operator-upgrade
       - isolated-containers
     steps:
       - *checkout

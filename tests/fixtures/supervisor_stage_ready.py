@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import uuid
 from dataclasses import asdict
@@ -12,7 +13,7 @@ from pathlib import Path
 from ci_timing import installer_span, recorder
 from integration_dependency_observation import mark_cache_population, observe_uv_sync
 
-from auto_coder.worker_versions import PrepareIntent, WorkerVersionConfig, WorkerVersionPreparer
+from auto_coder.worker_versions import PrepareIntent, WorkerVersionConfig, WorkerVersionError, WorkerVersionPreparer
 
 
 def main() -> None:
@@ -61,7 +62,31 @@ def main() -> None:
             cache_condition=os.environ.get("AUTO_CODER_DEPENDENCY_CACHE_CONDITION", "uncached"),
             execution_id=execution_id,
         ):
-            prepared = preparer.prepare(PrepareIntent(source_sha=sys.argv[1], attempt_id=attempt_id))
+            try:
+                prepared = preparer.prepare(PrepareIntent(source_sha=sys.argv[1], attempt_id=attempt_id))
+            except WorkerVersionError as exc:
+                # The production preparer intentionally redacts Git stderr, which
+                # may contain credentials. The disposable fixture reports only a
+                # fixed, allowlisted category for a failed local clone.
+                cause = exc.__cause__
+                if isinstance(cause, subprocess.CalledProcessError) and isinstance(cause.cmd, (list, tuple)) and list(cause.cmd[:2]) == ["git", "clone"]:
+                    diagnostic = (cause.stderr or "").lower()
+                    patterns = (
+                        ("untrusted-source", ("dubious ownership", "unsafe repository")),
+                        ("destination-exists", ("destination path", "already exists")),
+                        ("filesystem-permission", ("permission denied", "operation not permitted")),
+                        ("cross-filesystem", ("invalid cross-device link", "cross-device")),
+                        ("source-invalid", ("not a git repository", "does not appear to be a git repository")),
+                        ("source-inaccessible", ("cannot access", "could not read from remote repository")),
+                        ("storage-full", ("no space left", "disk quota")),
+                        ("missing-path", ("no such file or directory",)),
+                    )
+                    category = next(
+                        (name for name, phrases in patterns if any(phrase in diagnostic for phrase in phrases)),
+                        "other",
+                    )
+                    print(f"disposable-ready-local-clone-failure={category}", file=sys.stderr)
+                raise
     mark_cache_population(
         prepared.receipt.source_sha,
         prepared.receipt.lock_sha256,

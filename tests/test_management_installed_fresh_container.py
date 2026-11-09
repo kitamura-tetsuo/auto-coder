@@ -25,7 +25,9 @@ from pathlib import Path
 import pytest
 import yaml
 
+from auto_coder.beta_source_selection import BetaSelectionRecord
 from auto_coder.management.self_update_handoff import HandoffPhase, HandoffStore
+from auto_coder.tested_source_refs import tag_name
 from tests.test_management_archived_cutover_container import Chain
 from tests.test_management_fresh_end_to_end import _build_fixture_image
 from tests.test_management_self_update_integration import ExternalServices, _snapshot_source, _test_source
@@ -57,8 +59,174 @@ print(json.dumps({'receipts':[asdict(r) for r in receipts], 'runtimes':[{**asdic
 """
 
 
+def _bind_disposable_source_reader(package: Path) -> None:
+    """Bind only the fixture's source transport, not its evidence producer."""
+    lifecycle = package / "management" / "worker_lifecycle.py"
+    original = lifecycle.read_text()
+    constructor = "return BetaEvidenceReader(GitHubGitDataClient(secret, config.source_repository), config.source_repository)"
+    assert original.count(constructor) == 1
+    # The staged fixture source is committed and locally tested *after* this
+    # adapter; it never substitutes for public GitHub Actions provenance.
+    lifecycle.write_text(
+        original.replace(
+            constructor,
+            "external = json.loads((config.oauth.database_path.parent / 'external-services.json').read_text())\n" "        return BetaEvidenceReader(GitHubGitDataClient(secret, config.source_repository, api_url=external['url']), config.source_repository)",
+        )
+    )
+
+
+# Only fixed exception *types* may leave the disposable worker log. Neither
+# traceback frames nor exception messages (which might contain credentials)
+# are published into GitHub Actions output.
+_ALLOWED_WORKER_EXCEPTION_TYPES = frozenset(
+    {
+        "assertionerror",
+        "attributeerror",
+        "calledprocesserror",
+        "connectionerror",
+        "deploymentchannelerror",
+        "filenotfounderror",
+        "httperror",
+        "httpstatuserror",
+        "importerror",
+        "integrityerror",
+        "jsondecodeerror",
+        "keyerror",
+        "modulenotfounderror",
+        "nameerror",
+        "operationalerror",
+        "oserror",
+        "permissionerror",
+        "runtimeerror",
+        "sslerror",
+        "systemexit",
+        "timeout",
+        "timeouterror",
+        "typeerror",
+        "validationerror",
+        "valueerror",
+    }
+)
+
+
+def _safe_worker_exception_types(log_text: str) -> list[str]:
+    """Return allowlisted exception class names only; never return log text."""
+    found: set[str] = set()
+    for line in log_text.lower().splitlines()[-500:]:
+        label = line.strip().partition(":")[0].rsplit(".", 1)[-1]
+        if label in _ALLOWED_WORKER_EXCEPTION_TYPES:
+            found.add(label)
+    return sorted(found)
+
+
+def test_disposable_worker_error_diagnostics_never_include_sensitive_messages() -> None:
+    log_text = "\n".join(
+        (
+            "Traceback (most recent call last):",
+            "  File /sensitive/path, line 1, in main",
+            "requests.exceptions.ConnectionError: token=do-not-publish-this-value",
+            "some.unknown.Exception: secret=also-private",
+        )
+    )
+    assert _safe_worker_exception_types(log_text) == ["connectionerror"]
+    assert _safe_worker_exception_types("unclassified secret=do-not-publish") == []
+    diagnostic = "auto_coder.deployment_channel.DeploymentChannelError: private-path=not-for-output"
+    assert _safe_worker_exception_types(diagnostic) == ["deploymentchannelerror"]
+
+
 class InstalledChain(Chain):
-    def __init__(self, root: Path):
+    def worker_compose_profile(self, profile: dict) -> dict:
+        """Use the real producer only for opt-in installed worker coverage."""
+        if not self.installed_ready_beta:
+            return profile
+        # The installed process-issues child uses the production GitHub HTTP
+        # transport during startup reconciliation. Keep the HTTPS endpoint
+        # entirely inside this disposable worker network; unlike the bootstrap
+        # bridge fixture it must actually complete a real producer loop.
+        trust = self.root / "workers" / "ci-trust"
+        trust.mkdir(mode=0o700)
+        subprocess.run(
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
+                str(trust / "github.key"),
+                "-out",
+                str(trust / "github.crt"),
+                "-subj",
+                "/CN=api.github.com",
+                "-addext",
+                "subjectAltName=DNS:api.github.com",
+                "-days",
+                "1",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        (trust / "github.key").chmod(0o600)
+        profile["services"]["github-ci"] = {
+            "image": profile["services"]["beta"]["image"],
+            "entrypoint": ["python", "/fixtures/supervisor_fake_github_https.py"],
+            "user": f"{os.getuid()}:{os.getgid()}",
+            "cap_drop": ["ALL"],
+            "security_opt": ["no-new-privileges:true"],
+            "sysctls": ["net.ipv4.ip_unprivileged_port_start=0"],
+            "volumes": [
+                f"{trust}:/ci-trust:ro",
+                f"{Path(__file__).parent / 'fixtures'}:/fixtures:ro",
+            ],
+            "networks": {"private": {"aliases": ["api.github.com"]}},
+            "healthcheck": {
+                "test": [
+                    "CMD",
+                    "python",
+                    "-c",
+                    "import socket,ssl; ssl.create_default_context(cafile='/ci-trust/github.crt').wrap_socket(socket.create_connection(('127.0.0.1',443),timeout=3),server_hostname='api.github.com').close()",
+                ],
+                "interval": "1s",
+                "timeout": "5s",
+                "retries": 30,
+            },
+        }
+        beta = profile["services"]["beta"]
+        beta["depends_on"] = {"github-ci": {"condition": "service_healthy"}}
+        beta["entrypoint"] = ["python", "/fixtures/supervisor_offline_pid1.py"]
+        beta["environment"].update(
+            {
+                "AUTO_CODER_FIXTURE_HOLD_BOOTSTRAP": "1",
+                "AUTO_CODER_SOURCE_REPOSITORY_ROOT": "/source",
+                "AUTO_CODER_CONFIG_PATH": "/runtime/llm_config.toml",
+                "AUTO_CODER_OWNERSHIP_FILE": "/workspace/ownership.json",
+                "AUTO_CODER_ARTIFACT_DIGEST": "disposable-installed-ready",
+                "AUTO_CODER_HEALTH_LOG_ENABLED": "0",
+                "AUTO_CODER_DISABLE_AUTO_UPDATE": "1",
+                "GITHUB_TOKEN": "nonfunctional-disposable-worker-token",
+                "SSL_CERT_FILE": "/ci-trust/github.crt",
+                "REQUESTS_CA_BUNDLE": "/ci-trust/github.crt",
+                "NO_PROXY": "api.github.com,localhost,127.0.0.1",
+                "no_proxy": "api.github.com,localhost,127.0.0.1",
+            }
+        )
+        beta["volumes"].append(f"{Path(__file__).resolve().parents[1]}:/source:ro")
+        # A worker can read only the ephemeral test CA, not the HTTPS key.
+        beta["volumes"].append(f"{trust / 'github.crt'}:/ci-trust/github.crt:ro")
+        runtime = self.root / "workers" / "beta"
+        # DeploymentChannel requires the shared ownership registry to live
+        # outside the channel-private /runtime. The /workspace mount is
+        # writable and persistent for this disposable process only.
+        ownership = self.root / "workers" / "beta-workspace" / "ownership.json"
+        assert runtime not in ownership.parents
+        ownership.write_text(json.dumps({"fixture/beta": "beta"}))
+        (runtime / "llm_config.toml").write_text('[backend]\norder = ["jules"]\n\n[backends.jules]\nbackend_type = "jules"\nenabled = true\napi_key = "offline-unused"\n')
+        return profile
+
+    def __init__(self, root: Path, *, installed_ready_beta: bool = False):
+        self.installed_ready_beta = installed_ready_beta
         super().__init__(root, with_workers=True)
         source = root / "tested-source"
         source.mkdir()
@@ -73,7 +241,54 @@ class InstalledChain(Chain):
         fixture = self
 
         class Handler(original_handler):
+            def respond(self, code: int, body: object) -> None:
+                # The disposable HTTP service reports actually executed local
+                # fixture checks, not public GitHub Actions evidence.
+                if code == 200 and isinstance(body, dict) and "/actions/runs/" in self.path:
+                    if "/jobs?" in self.path and isinstance(body.get("jobs"), list):
+                        run_id = int(self.path.split("/actions/runs/", 1)[1].split("/", 1)[0])
+                        body = {
+                            **body,
+                            "jobs": [
+                                {
+                                    **job,
+                                    "id": index + 100,
+                                    "run_id": run_id,
+                                    "run_attempt": 1,
+                                    "completed_at": "2026-11-08T00:00:00Z",
+                                }
+                                for index, job in enumerate(body["jobs"])
+                            ],
+                        }
+                    elif "/jobs?" not in self.path:
+                        body = {**body, "head_branch": "main"}
+                super().respond(code, body)
+
             def do_GET(self):
+                # The beta pointer is a real direct commit ref; history and
+                # tested-source refs remain immutable annotated Git tags.
+                reference = "refs/tags/auto-coder-beta-current"
+                if self.path == f"/repos/{fixture.external['repository']}/git/ref/tags/auto-coder-beta-current":
+                    observed = subprocess.run(
+                        ["git", "rev-parse", "--verify", reference],
+                        cwd=fixture.services.repository,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if observed.returncode:
+                        self.respond(404, {})
+                    else:
+                        sha = observed.stdout.strip()
+                        kind = subprocess.run(
+                            ["git", "cat-file", "-t", sha],
+                            cwd=fixture.services.repository,
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                        ).stdout.strip()
+                        self.respond(200, {"ref": reference, "object": {"type": kind, "sha": sha}})
+                    return
+
                 if "/actions/runs/" in self.path and fixture.gate_database is not None and fixture.gate_phase is not None:
                     try:
                         with sqlite3.connect(fixture.gate_database.as_uri() + "?mode=ro", uri=True, timeout=1) as connection:
@@ -100,6 +315,7 @@ class InstalledChain(Chain):
             assert self.docker("run", "--rm", "--network", network, "--entrypoint", "python", self.image, "-c", probe, self.external["url"]).splitlines()[-1] == "fixture-authority-reachable"
 
         _snapshot_source(source, "source-scaffold")
+        _bind_disposable_source_reader(source / "src" / "auto_coder")
         cli = source / "src" / "auto_coder" / "cli.py"
         launch_log = """    with (settings.state_root / 'installed-launches.jsonl').open('a') as observed:
         observed.write(json.dumps({'pid': os.getpid(), 'runtime': os.environ.get('AUTO_CODER_MANAGEMENT_RUNTIME_ID'), 'revision': json.loads(Path(__file__).with_name('fixture_revision.json').read_text())['revision']}) + '\\n')
@@ -113,6 +329,41 @@ class InstalledChain(Chain):
         cli.write_text(cli.read_text().replace("class LocalCredential", "INSTALLED_REVISION = 'different-candidate-code'\n\nclass LocalCredential"))
         self.candidate_sha = _snapshot_source(source, "installed-candidate")
         _test_source(self.services, self.candidate_sha, 102)
+        # Genuine annotated history and commit refs select the locally tested
+        # fixture source. These records do not claim public Actions provenance.
+        tested_ref = tag_name(self.current_sha)
+        tested_oid = subprocess.run(
+            ["git", "rev-parse", f"refs/tags/{tested_ref}"],
+            cwd=source,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        selected = BetaSelectionRecord(
+            1,
+            self.external["repository"],
+            "r101",
+            self.current_sha,
+            101,
+            1,
+            "2026-11-08T00:00:00Z",
+            f"refs/tags/{tested_ref}",
+            tested_oid,
+            101,
+            1,
+            None,
+        )
+        history = "auto-coder-beta-selection-r101"
+        subprocess.run(["git", "tag", "-a", history, "-m", selected.serialize(), self.current_sha], cwd=source, check=True, capture_output=True, text=True)
+        history_oid = subprocess.run(
+            ["git", "rev-parse", f"refs/tags/{history}"],
+            cwd=source,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        subprocess.run(["git", "update-ref", "refs/tags/auto-coder-beta-current", self.current_sha], cwd=source, check=True)
+        subprocess.run(["git", "update-ref", "refs/tags/auto-coder-beta-selection-current", history_oid], cwd=source, check=True)
         # Constructor wiring for a private external HTTP service is a fixture
         # deployment adapter. Production stop/start and verification remain intact.
         context = root / "installed-image"
@@ -123,12 +374,191 @@ class InstalledChain(Chain):
         needle = "    raise SystemExit(ManagementBootstrapSupervisor(config, bootstrap_config_path=args.config, fresh_initialization=args.fresh_initialization).run())"
         assert original.count(needle) == 1
         bootstrap.write_text(original.replace(needle, _BOOTSTRAP_AUTHORITY + needle.replace("fresh_initialization=args.fresh_initialization)", "fresh_initialization=args.fresh_initialization, source_authority=authority)")))
+        _bind_disposable_source_reader(package)
         self.installed_tag = "auto-coder-installed-fresh:" + uuid.uuid4().hex
         _build_fixture_image(context, self.image, self.installed_tag, owner_token_gap=False)
         self.image = self.docker("image", "inspect", self.installed_tag, "--format", "{{.Id}}")
         probe = "from pathlib import Path;from auto_coder.management.fresh_initialization import application_tree_sha256;print(application_tree_sha256(Path('/opt/auto-coder/.venv/lib/python3.12/site-packages/auto_coder')))"
         self.application_digest = self.docker("run", "--rm", "--network", "none", "--read-only", "-e", "PYTHONDONTWRITEBYTECODE=1", "--entrypoint", "python", self.image, "-c", probe).splitlines()[-1]
         self.receipts = {}
+
+    def stage_real_ready_beta_worker(self) -> None:
+        """Stage a pinned worker READY and observe its own progressing heartbeat."""
+        assert self.installed_ready_beta
+        source = Path(__file__).resolve().parents[1]
+        revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=source,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        runtime = self.root / "workers" / "beta"
+        # The trusted local clone spawns git-upload-pack. Unlike rev-parse,
+        # that subprocess needs protected Git configuration for /source/.git.
+        # Keep trust restricted to this disposable, read-only checkout.
+        trusted_git = runtime / "source-safe.gitconfig"
+        trusted_git.write_text("[safe]\n\tdirectory = /source\n\tdirectory = /source/.git\n")
+        trusted_git.chmod(0o600)
+        staged = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "bridge",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges:true",
+                "--user",
+                f"{os.getuid()}:{os.getgid()}",
+                "--mount",
+                f"type=bind,src={source},dst=/source,readonly",
+                "--mount",
+                f"type=bind,src={runtime},dst=/runtime",
+                "--mount",
+                f"type=bind,src={Path(__file__).parent / 'fixtures'},dst=/fixtures,readonly",
+                # Read only the staging fixture's narrowly scoped global Git
+                # trust, including in the local-clone upload-pack subprocess.
+                "-e",
+                "GIT_CONFIG_GLOBAL=/runtime/source-safe.gitconfig",
+                "-e",
+                "HOME=/runtime/home",
+                "--entrypoint",
+                "python",
+                self.image,
+                "/fixtures/supervisor_stage_ready.py",
+                revision,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=1200,
+        )
+        assert staged.returncode == 0, (staged.stdout[-2000:], staged.stderr[-4000:])
+        prepared = json.loads(staged.stdout.splitlines()[-1])
+        receipt = prepared["receipt"]
+        assert receipt["source_sha"] == revision
+        assert receipt["installed_runtime_id"] != "bootstrap"
+        assert (runtime / Path(prepared["ready_path"]).relative_to("/runtime")).is_file()
+
+        def manager(*arguments: str) -> dict:
+            return json.loads(
+                self.docker(
+                    "exec",
+                    self.worker_manager,
+                    "python",
+                    "/fixtures/supervisor_network_client_fixture.py",
+                    *arguments,
+                    timeout=30,
+                )
+            )
+
+        stop_id = "installed-ready-stop-" + uuid.uuid4().hex
+        stopped = manager("stop-worker", "beta", stop_id)
+        assert stopped["result_code"] in {"DRAINING", "STOPPED"}, stopped
+        (runtime / "fixture-release").write_text("release bootstrap worker after real drain\n")
+        wait_for(
+            lambda: manager("read-operation", "beta", stop_id)["result_code"] == "STOPPED",
+            "original beta worker gracefully stopped",
+            timeout=90,
+        )
+        started = manager(
+            "start-staged",
+            "beta",
+            "installed-ready-start-" + uuid.uuid4().hex,
+            receipt["installed_runtime_id"],
+        )
+        assert started["result_code"] == "RUNNING", started
+
+        def ready_observation() -> dict | None:
+            try:
+                observed = manager("runtime-observe", "beta")
+            except (OSError, ValueError, subprocess.CalledProcessError):
+                return None
+            observation = observed.get("observation")
+            binding = observed.get("runtime_binding")
+            heartbeat = observation.get("heartbeat") if isinstance(observation, dict) else None
+            if (
+                observed.get("status") == "OK"
+                and observed.get("binding_status") == "VERIFIED"
+                and isinstance(binding, dict)
+                and binding.get("runtime_id") == receipt["installed_runtime_id"]
+                and isinstance(heartbeat, dict)
+                and heartbeat.get("available") is True
+                and type(heartbeat.get("sequence")) is int
+            ):
+                return observed
+            return None
+
+        try:
+            first = wait_for(ready_observation, "installed READY beta worker with producer heartbeat", timeout=120)
+        except AssertionError as error:
+            # Retain typed, bounded production observations for CI diagnosis.
+            # Never print raw worker logs, transport bodies or credentials.
+            try:
+                observed = manager("runtime-observe", "beta")
+                inspected = manager("inspect", "beta")
+                state = inspected.get("data")
+                state = state if isinstance(state, dict) else {}
+                worker = state.get("worker")
+                worker = worker if isinstance(worker, dict) else {}
+                observation = observed.get("observation")
+                observation = observation if isinstance(observation, dict) else {}
+                lifecycle = observation.get("lifecycle")
+                lifecycle = lifecycle if isinstance(lifecycle, dict) else {}
+                heartbeat = observation.get("heartbeat")
+                heartbeat = heartbeat if isinstance(heartbeat, dict) else {}
+                diagnostic = {
+                    "supervisor_result": inspected.get("result_code"),
+                    "supervisor_state": state.get("status"),
+                    "worker_alive": state.get("alive"),
+                    "selected_runtime_matches": state.get("selected_runtime_id") == receipt["installed_runtime_id"],
+                    "worker_runtime_matches": worker.get("runtime_id") == receipt["installed_runtime_id"],
+                    "service_status": observed.get("status"),
+                    "binding_status": observed.get("binding_status"),
+                    "startup_reconciled": lifecycle.get("startup_reconciled"),
+                    "daemon_serving": lifecycle.get("daemon_serving"),
+                    "heartbeat_available": heartbeat.get("available"),
+                }
+            except (OSError, ValueError, subprocess.CalledProcessError) as observation_error:
+                diagnostic = {"observation_error": type(observation_error).__name__}
+            # Docker logs include the genuine staged child's stderr even after
+            # the Supervisor loses its process lifetime. Never upload those
+            # unredacted logs: the real CLI may write credentials or request
+            # bodies. Report only fixed, allowlisted startup signatures.
+            try:
+                worker_container = self.compose("ps", "-q", "beta")
+                worker_logs = self.docker("logs", "--tail", "300", worker_container, timeout=15).lower()
+                startup_signatures = (
+                    ("python-traceback", ("traceback (most recent call last)",)),
+                    ("module-import", ("modulenotfounderror", "importerror:")),
+                    ("filesystem-permission", ("permissionerror", "permission denied")),
+                    ("missing-path", ("filenotfounderror", "no such file or directory")),
+                    ("git-repository", ("not a git repository", "unsafe repository", "dubious ownership")),
+                    ("github-tls", ("certificate_verify_failed", "sslerror", "certificate verify failed")),
+                    ("github-auth", ("badcredentials", "401 unauthorized", "bad credentials")),
+                    ("github-route", ("404 client error", "404 not found")),
+                    ("github-network", ("connectionerror", "name or service not known", "connection refused")),
+                    ("backend-prerequisite", ("ordinary backend candidate pool is empty", "backend prerequisite")),
+                    ("cli-usage", ("click.exceptions.usageerror", "error: no such option")),
+                    ("runtime-exception", ("runtimeerror", "keyerror", "valueerror", "typeerror")),
+                )
+                diagnostic["worker_log_observed"] = bool(worker_logs)
+                diagnostic["worker_exception_types"] = _safe_worker_exception_types(worker_logs)
+                diagnostic["worker_startup_signatures"] = [category for category, markers in startup_signatures if any(marker in worker_logs for marker in markers)]
+            except (OSError, ValueError, subprocess.CalledProcessError) as log_error:
+                diagnostic["worker_log_status"] = type(log_error).__name__
+            raise AssertionError(f"{error}; disposable-worker-observation={json.dumps(diagnostic, sort_keys=True)}") from error
+        first_sequence = first["observation"]["heartbeat"]["sequence"]
+        wait_for(
+            lambda: (latest if latest["observation"]["heartbeat"]["sequence"] > first_sequence else None) if (latest := ready_observation()) is not None else None,
+            "advancing producer-owned beta heartbeat",
+            timeout=90,
+        )
+        self.worker_baseline = self.workers()
+        self.worker_post_baseline = self.worker_posts()
 
     def configure_profile(self, name, root, config, runtime, management, mounts, *, fresh: bool):
         source = root / "bootstrap" / "source"
@@ -203,6 +633,22 @@ def wait_for(predicate, description, timeout=90):
             return value
         time.sleep(0.05)
     raise AssertionError("missing real installed-fresh evidence: " + description)
+
+
+@pytest.fixture
+def installed_ready_chain(tmp_path):
+    """Opt-in installed READY worker on an exclusively disposable host."""
+    if os.geteuid() != 0:
+        pytest.fail("root is required for mandatory disposable Docker verification")
+    fixture = InstalledChain.__new__(InstalledChain)
+    try:
+        fixture.__init__(tmp_path, installed_ready_beta=True)
+        yield fixture
+    finally:
+        if hasattr(fixture, "server"):
+            fixture.close()
+        elif hasattr(fixture, "names"):
+            Chain.close(fixture)
 
 
 @pytest.fixture

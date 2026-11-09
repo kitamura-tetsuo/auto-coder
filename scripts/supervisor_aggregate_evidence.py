@@ -26,8 +26,8 @@ from supervisor_native_evidence import (
 from auto_coder.ci_shard_plan import VerifiedPlan, read_plan
 from auto_coder.util.gh_cache import GitHubGitDataClient
 
-REQUIRED_GROUPS = {"worker-bridge", "prepare-management", "prepare-fresh-host", "prepare-containers", *PROFILES}
-ARTIFACT = re.compile(r"supervisor-integration-(worker-bridge|management-self-update-shard-[0-9]+|fresh-host-shard-[0-9]+|isolated-containers-shard-[0-9]+)-([0-9]+)-([0-9]+)\Z")
+REQUIRED_GROUPS = {"worker-bridge", "operator-upgrade", "prepare-management", "prepare-fresh-host", "prepare-containers", *PROFILES}
+ARTIFACT = re.compile(r"supervisor-integration-(worker-bridge|operator-upgrade|management-self-update-shard-[0-9]+|fresh-host-shard-[0-9]+|isolated-containers-shard-[0-9]+)-([0-9]+)-([0-9]+)\Z")
 
 
 def _status(results: object) -> None:
@@ -78,7 +78,14 @@ def _receipts(directory: Path, run_id: int, current_attempt: int) -> dict[tuple[
         shard = receipt.get("shard")
         if not isinstance(profile, str) or (shard is not None and type(shard) is not int):
             raise NativeEvidenceError("malformed native receipt profile/shard")
-        if description != ("worker-bridge" if profile == "worker" else f"{profile}-shard-{shard}"):
+        expected_description = (
+            "worker-bridge"
+            if profile == "worker"
+            else "operator-upgrade"
+            if profile == "operator-upgrade"
+            else f"{profile}-shard-{shard}"
+        )
+        if description != expected_description:
             raise NativeEvidenceError("native artifact label and receipt profile/shard differ")
         if receipt.get("schema_version") != RECEIPT_SCHEMA or receipt.get("repository") != REPOSITORY:
             raise NativeEvidenceError("foreign or malformed Supervisor receipt")
@@ -128,7 +135,12 @@ def _select(
     if receipt.get("job_key") != ("worker-bridge" if profile == "worker" else profile):
         raise NativeEvidenceError(f"{name}: original receipt logical Actions job key mismatch")
     files = _object(receipt.get("inventories"), "receipt.inventories")
-    expected_names = ("worker-bridge.json", "worker-daemon.json") if profile == "worker" else (f"{profile}-{shard}.json",)
+    if profile == "worker":
+        expected_names = ("worker-bridge.json", "worker-daemon.json")
+    elif profile == "operator-upgrade":
+        expected_names = ("operator-upgrade.json",)
+    else:
+        expected_names = (f"{profile}-{shard}.json",)
     if set(files) != set(expected_names):
         raise NativeEvidenceError(f"{name}: missing or extra original native pytest inventories")
     inventories = []
@@ -154,7 +166,7 @@ def _timestamp(value: object) -> float:
 
 def _metrics(selections: list[EvidenceSelection], plan_dir: Path) -> dict[str, object]:
     metrics: dict[str, object] = {}
-    for profile in (*PROFILES, "worker"):
+    for profile in (*PROFILES, "worker", "operator-upgrade"):
         group = [item for item in selections if item.profile == profile]
         phases = [(cast(float, report["first_case_phase_epoch"]), cast(float, report["last_case_phase_epoch"])) for item in group for report in item.inventories]
         jobs = [(_timestamp(item.producing_job.get("started_at")), _timestamp(item.producing_job.get("completed_at"))) for item in group]
@@ -172,7 +184,7 @@ def _metrics(selections: list[EvidenceSelection], plan_dir: Path) -> dict[str, o
                 waves[-1]["end_epoch"] = max(cast(float, waves[-1]["end_epoch"]), end)
                 waves[-1]["partitions"] = cast(int, waves[-1]["partitions"]) + 1
         queue = [max(0.0, start - _timestamp(item.producing_job["created_at"])) for item, (start, _end) in zip(group, jobs) if item.producing_job.get("created_at")]
-        plan_semantic = _object(_read(plan_dir / profile / "plan.json").get("semantic"), "plan semantic") if profile != "worker" else {}
+        plan_semantic = _object(_read(plan_dir / profile / "plan.json").get("semantic"), "plan semantic") if profile in PROFILES else {}
         metrics[profile] = {
             "shards": len(group),
             "queue_seconds": queue,
@@ -219,11 +231,14 @@ def evaluate(
         history.extend((number, job) for job in jobs)
         if number == attempt:
             current_jobs = jobs
-    expected = {native_job_name("worker", None): ("worker", None)}
+    expected = {
+        native_job_name("worker", None): ("worker", None),
+        native_job_name("operator-upgrade", None): ("operator-upgrade", None),
+    }
     for profile, plan in plans.items():
         for shard in range(1, len(plan.shards) + 1):
             expected[native_job_name(profile, shard)] = (profile, shard)
-    observed = [job.get("name") for job in current_jobs if isinstance(job.get("name"), str) and (job["name"] == "Worker processes and bridge" or any(cast(str, job["name"]).startswith(f"Supervisor {profile} (") for profile in PROFILES))]
+    observed = [job.get("name") for job in current_jobs if isinstance(job.get("name"), str) and (job["name"] in {"Worker processes and bridge", "Operator upgrade production-origin Docker"} or any(cast(str, job["name"]).startswith(f"Supervisor {profile} (") for profile in PROFILES))]
     if sorted(observed) != sorted(expected):
         raise NativeEvidenceError("missing/duplicate/extra native Supervisor matrix jobs")
     selections = [_select(name, profile, shard, current_jobs, history, receipts, plans, sha, event_sha, run_id, attempt) for name, (profile, shard) in expected.items()]

@@ -223,6 +223,18 @@ def main() -> None:
         result = client.prepare_version(sys.argv[3], sys.argv[4])
     elif command == "read-preparation":
         result = client.read_preparation(sys.argv[3])
+    elif command == "stop-worker":
+        if inspected.result_code != "OK" or inspected.data is None:
+            raise RuntimeError("Supervisor inspection is not authenticated")
+        assert inspected.data.get("selected_runtime_id") == "bootstrap"
+        observed = _observation(client)
+        result = client.dispatch_worker_operation(
+            sys.argv[3],
+            "REQUEST_GRACEFUL_STOP",
+            process_run_id=str(observed["process_run_id"]),
+            deployment_generation=str(observed["deployment_generation"]),
+            selected_runtime_id="bootstrap",
+        )
     elif command == "start-staged":
         if inspected.result_code != "OK" or inspected.data is None:
             raise RuntimeError("Supervisor inspection is not authenticated")

@@ -187,6 +187,41 @@ def _drive(app, operation_id: str, count: int = 16) -> None:
         runtime.lifecycle.process(record)
 
 
+def test_authenticated_beta_source_readback_uses_current_production_reader_without_deploy(real_boundary, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    base, _base_grants, identity, signed, _uids, state = real_boundary
+    origin = base.oauth.canonical_issuer
+    oauth = OAuthSettings(base.oauth.database_path, origin, base.oauth.firebase_project_id, (OAuthClient("alice-client", (origin + "/alice-callback",), allowed_scopes=(READ_SCOPE, DEPLOY_SCOPE)),), enabled_scopes=(READ_SCOPE, DEPLOY_SCOPE))
+    policy = tmp_path / "operator.yaml"
+    policy.write_text("profile: beta\ntargets:\n  beta-worker:\n    channel: beta\n    repositories: [fixture/beta]\n", encoding="utf-8")
+    token_path = tmp_path / "source-token"
+    token_path.write_text("x" * 40, encoding="utf-8")
+    settings = ManagementSettings(tmp_path, oauth, port=base.port, operating_policy_path=policy, operation_state_root=tmp_path / "journal", source_repository="owner/repo", source_evidence_token_file=token_path)
+    grants = OAuthGrantService(oauth, identity, clock=lambda: state["now"])
+    remote = GitEvidenceBoundary()
+    assert selector(remote).advance("r77", None).certainty is MutationCertainty.CONFIRMED
+    reader = BetaEvidenceReader(remote, "owner/repo")  # type: ignore[arg-type]
+    monkeypatch.setattr("auto_coder.management.worker_lifecycle.WorkerLifecycle._source", lambda _self: reader)
+    bridge = LifecycleBridge()
+    app = create_management_app(settings, grants, worker_clients={"beta": bridge})  # type: ignore[dict-item]
+    with TestClient(app, base_url=origin) as client:
+        bearer = _issue(client, settings, signed, "alice", "alice-client", READ_SCOPE)["access_token"]
+        observed = _call(client, bearer, "auto_coder_beta_source_readback", {"target_id": "beta-worker"})
+        exact = reader.read_current()
+        assert observed["status"] == "OK" and observed["reason"] == "configured_beta_source_verified"
+        assert observed["source_sha"] == exact.source_sha
+        assert observed["tested_source_oid"] == exact.tested_source_oid
+        assert observed["proof_run_id"] == exact.proof_run_id
+        assert observed["selection_oid"] == exact.selection_oid
+        assert observed["selection_operation_id"] == exact.selection_operation_id
+        assert observed["selected_run_id"] == exact.selected_run_id
+        assert bridge.actions == []
+
+        remote.refs.pop("refs/tags/auto-coder-beta-selection-current")
+        missing = _call(client, bearer, "auto_coder_beta_source_readback", {"target_id": "beta-worker"})
+        assert missing == {"status": "UNAVAILABLE", "reason": "configured_beta_source_evidence_unavailable"}
+        assert bridge.actions == []
+
+
 @pytest.mark.parametrize("intervention", ("none", "selection_changed", "source_unavailable", "policy_downgrade", "lost_stop_response", "supervisor_changed_after_unknown", "crash_after_start"))
 def test_authenticated_beta_deploy_replays_exact_evidence_and_only_stops_after_ready(real_boundary, tmp_path: Path, monkeypatch, intervention: str) -> None:
     base, _base_grants, identity, signed, _uids, state = real_boundary
