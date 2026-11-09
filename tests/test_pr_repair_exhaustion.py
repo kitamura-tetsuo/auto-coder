@@ -540,15 +540,13 @@ def test_config_pr_repair_max_failed_corrections(tmp_path: Path) -> None:
 
     # 2. Section default in config.toml
     config_file = tmp_path / "config.toml"
-    config_file.write_text(
-        """
+    config_file.write_text("""
 [pr_repair]
 max_failed_corrections = 5
 
 [repository."kitamura-tetsuo/auto-coder".pr_repair]
 max_failed_corrections = 8
-"""
-    )
+""")
 
     # Repository override takes precedence
     assert get_pr_repair_max_failed_corrections(config_path=config_file, repo_name="kitamura-tetsuo/auto-coder") == 8
@@ -557,12 +555,10 @@ max_failed_corrections = 8
 
     # 3. Invalid non-positive integer
     bad_config = tmp_path / "bad_config.toml"
-    bad_config.write_text(
-        """
+    bad_config.write_text("""
 [pr_repair]
 max_failed_corrections = 0
-"""
-    )
+""")
     with pytest.raises(ValueError) as exc:
         get_pr_repair_max_failed_corrections(config_path=bad_config)
     assert "> 0" in str(exc.value)

@@ -725,10 +725,8 @@ def test_socket_acceptance_rolls_back_every_database_write_when_receipt_insert_f
     assert waiter_claim is not None and engine.invalidations.begin_processing(waiter_claim)
     before_wait = engine.invalidations.defer(waiter_claim, "cached_dependency_wait", 10_000_000_000.0)
     with sqlite3.connect(database) as connection:
-        connection.execute(
-            """CREATE TRIGGER abort_management_receipt BEFORE INSERT ON management_reevaluations
-               BEGIN SELECT RAISE(ABORT, 'receipt insert unavailable'); END"""
-        )
+        connection.execute("""CREATE TRIGGER abort_management_receipt BEFORE INSERT ON management_reevaluations
+               BEGIN SELECT RAISE(ABORT, 'receipt insert unavailable'); END""")
 
     async def scenario() -> None:
         identity = configured_identity("owner/repo")

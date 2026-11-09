@@ -63,8 +63,7 @@ class ClaudeFollowupWaitStore:
         self._connection = sqlite3.connect(self.path, check_same_thread=False)
         self._lock = threading.RLock()
         self._connection.execute("PRAGMA journal_mode=WAL")
-        self._connection.execute(
-            """
+        self._connection.execute("""
             CREATE TABLE IF NOT EXISTS claude_followup_waits (
               repository TEXT NOT NULL, pr_number INTEGER NOT NULL,
               backend_name TEXT NOT NULL, credential_context TEXT NOT NULL,
@@ -75,15 +74,12 @@ class ClaudeFollowupWaitStore:
               PRIMARY KEY(repository, backend_name, credential_context,
                           task_id, purpose, work_identity)
             )
-            """
-        )
-        self._connection.execute(
-            """CREATE TABLE IF NOT EXISTS claude_followup_admissions (
+            """)
+        self._connection.execute("""CREATE TABLE IF NOT EXISTS claude_followup_admissions (
                  repository TEXT NOT NULL, backend_name TEXT NOT NULL,
                  credential_context TEXT NOT NULL, token TEXT NOT NULL,
                  refusal_epoch REAL NOT NULL, lease_until REAL NOT NULL,
-                 PRIMARY KEY(repository, backend_name, credential_context))"""
-        )
+                 PRIMARY KEY(repository, backend_name, credential_context))""")
         self._connection.commit()
 
     def active_hold(

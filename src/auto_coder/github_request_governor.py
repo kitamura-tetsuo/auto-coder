@@ -283,14 +283,12 @@ class GitHubRequestGovernor:
 
     def _create_waiter_store(self) -> None:
         assert self._connection is not None
-        self._connection.execute(
-            """CREATE TABLE admission_waiters (
+        self._connection.execute("""CREATE TABLE admission_waiters (
             ticket INTEGER PRIMARY KEY AUTOINCREMENT,
             origin TEXT NOT NULL, attempt_id TEXT NOT NULL, owner_id TEXT NOT NULL,
             kind TEXT NOT NULL CHECK(kind IN ('read','mutation')),
             deadline_utc REAL NOT NULL, UNIQUE(origin, attempt_id)
-        )"""
-        )
+        )""")
         self._connection.execute("CREATE INDEX admission_waiters_order ON admission_waiters(origin, ticket)")
 
     def _validate_waiter_store(self) -> None:

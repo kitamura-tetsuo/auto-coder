@@ -67,14 +67,12 @@ class SpeculativeCleanupStore:
         self._lock = threading.RLock()
         path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS cleanup (
+            connection.execute("""CREATE TABLE IF NOT EXISTS cleanup (
                 repository TEXT NOT NULL, issue_number INTEGER NOT NULL,
                 generation_id TEXT NOT NULL, candidate_id TEXT NOT NULL,
                 pr_number INTEGER NOT NULL, selected_pr INTEGER,
                 status TEXT NOT NULL, reason TEXT NOT NULL,
-                PRIMARY KEY(repository, generation_id, candidate_id, pr_number))"""
-            )
+                PRIMARY KEY(repository, generation_id, candidate_id, pr_number))""")
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(str(self.path), timeout=30)

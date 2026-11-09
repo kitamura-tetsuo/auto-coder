@@ -81,8 +81,7 @@ def _fixture(tmp_path: Path, *, serve: bool = True) -> tuple[ManagementRuntimeCo
     (package / "cli.py").write_text("import sys\ndef main():\n a=sys.argv[1:]\n if a==['management','--help']: return\n " + serve_case + "\n raise SystemExit(2)\n")
     (management / "oauth_config.py").write_text("from dataclasses import dataclass\nfrom pathlib import Path\n@dataclass(frozen=True)\nclass ManagementSettings:\n value:str\ndef load_management_settings(path:Path):\n return ManagementSettings(path.read_text())\n")
     (management / "app.py").write_text("def create_management_app(settings): return settings\n")
-    (repo / "pyproject.toml").write_text(
-        """[build-system]
+    (repo / "pyproject.toml").write_text("""[build-system]
 requires=['setuptools>=84.2.1']
 build-backend='setuptools.build_meta'
 [project]
@@ -96,8 +95,7 @@ auto-coder='auto_coder.cli:main'
 where=['src']
 [tool.setuptools.package-dir]
 ''='src'
-"""
-    )
+""")
     _run(["git", "init", "-q"], repo)
     _run(["git", "config", "user.email", "test@example.invalid"], repo)
     _run(["git", "config", "user.name", "Test"], repo)

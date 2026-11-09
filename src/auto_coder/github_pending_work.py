@@ -157,14 +157,12 @@ _WORK_COLUMNS = (
 
 
 def _create_work_schema(connection: sqlite3.Connection) -> None:
-    connection.execute(
-        """CREATE TABLE IF NOT EXISTS github_pending_work (
+    connection.execute("""CREATE TABLE IF NOT EXISTS github_pending_work (
         work_key TEXT PRIMARY KEY, repository TEXT NOT NULL, entity TEXT NOT NULL,
         stage TEXT NOT NULL, revision TEXT NOT NULL, reason TEXT NOT NULL,
         not_before REAL NOT NULL, unfinished_effects TEXT NOT NULL,
         throttle_attempts INTEGER NOT NULL, last_error TEXT NOT NULL,
-        updated_at REAL NOT NULL, status TEXT NOT NULL DEFAULT 'waiting')"""
-    )
+        updated_at REAL NOT NULL, status TEXT NOT NULL DEFAULT 'waiting')""")
 
 
 def _create_owner_schema(connection: sqlite3.Connection) -> None:

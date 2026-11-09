@@ -67,8 +67,7 @@ class CodexPRRecoveryStore:
 
     def _initialize(self) -> None:
         with self._connect() as connection:
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS codex_pr_recovery (
+            connection.execute("""CREATE TABLE IF NOT EXISTS codex_pr_recovery (
                     repository TEXT NOT NULL, provider TEXT NOT NULL,
                     task_id TEXT NOT NULL, purpose TEXT NOT NULL,
                     state TEXT NOT NULL, completion_turn TEXT NOT NULL DEFAULT '',
@@ -77,8 +76,7 @@ class CodexPRRecoveryStore:
                     reminder_user_turn TEXT NOT NULL DEFAULT '', reminder_sent_at REAL,
                     pr_number INTEGER, handoff_complete INTEGER NOT NULL DEFAULT 0,
                     reason TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL,
-                    PRIMARY KEY(repository, provider, task_id, purpose))"""
-            )
+                    PRIMARY KEY(repository, provider, task_id, purpose))""")
 
     def get(self, repository: str, task_id: str) -> Optional[RecoveryRecord]:
         with self._connect() as connection:

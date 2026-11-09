@@ -86,8 +86,7 @@ class RetryDispatchRepository:
             self._connection.execute("PRAGMA busy_timeout=30000")
             self._connection.execute("PRAGMA journal_mode=WAL")
             with self._connection:
-                self._connection.executescript(
-                    """
+                self._connection.executescript("""
                 CREATE TABLE IF NOT EXISTS retry_handoffs (
                     request_id TEXT PRIMARY KEY,
                     repository TEXT NOT NULL,
@@ -110,8 +109,7 @@ class RetryDispatchRepository:
                 CREATE UNIQUE INDEX IF NOT EXISTS retry_handoff_issue_attempt
                     ON retry_handoffs(repository, issue_number, numeric_attempt)
                     WHERE numeric_attempt IS NOT NULL;
-                """
-                )
+                """)
                 columns = {row[1] for row in self._connection.execute("PRAGMA table_info(retry_handoffs)")}
                 for name, declaration in (
                     ("predecessor_provider", "TEXT"),

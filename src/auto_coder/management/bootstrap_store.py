@@ -98,8 +98,7 @@ class BootstrapStore:
                 connection.close()
                 raise sqlite3.DatabaseError("unsupported management child schema")
             connection.execute("INSERT OR IGNORE INTO metadata VALUES('schema_version',?)", (SCHEMA_VERSION,))
-            connection.executescript(
-                """
+            connection.executescript("""
                 CREATE TABLE IF NOT EXISTS child_state(
                   instance_id TEXT PRIMARY KEY, record_json TEXT NOT NULL, updated_at REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS effects(
@@ -109,8 +108,7 @@ class BootstrapStore:
                 CREATE TABLE IF NOT EXISTS supervisor_presence(
                   instance_id TEXT PRIMARY KEY, incarnation TEXT NOT NULL, pid INTEGER NOT NULL,
                   start_token TEXT NOT NULL, updated_at REAL NOT NULL);
-                """
-            )
+                """)
         return connection
 
     def publish_supervisor(self, incarnation: str, pid: int, start_token: str) -> None:

@@ -299,8 +299,7 @@ class LocalJobStore:
     def __init__(self, path: Optional[Path] = None) -> None:
         self.path = path or default_local_job_db_path()
         with self._connect() as connection:
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS local_jobs (
+            connection.execute("""CREATE TABLE IF NOT EXISTS local_jobs (
                 job_id TEXT PRIMARY KEY, kind TEXT NOT NULL, repository TEXT NOT NULL,
                 target_number INTEGER NOT NULL, upstream_attempt TEXT NOT NULL,
                 upstream_incarnation TEXT NOT NULL, backend_name TEXT NOT NULL,
@@ -316,8 +315,7 @@ class LocalJobStore:
                 implementation_execution_id TEXT NOT NULL DEFAULT '',
                 workspace_device INTEGER NOT NULL DEFAULT 0,
                 workspace_inode INTEGER NOT NULL DEFAULT 0,
-                UNIQUE(kind, repository, target_number, upstream_attempt))"""
-            )
+                UNIQUE(kind, repository, target_number, upstream_attempt))""")
             columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(local_jobs)")}
             if "provider_entered" not in columns:
                 connection.execute("ALTER TABLE local_jobs ADD COLUMN provider_entered INTEGER NOT NULL DEFAULT 0")
@@ -334,70 +332,56 @@ class LocalJobStore:
                 connection.execute("ALTER TABLE local_jobs ADD COLUMN workspace_device INTEGER NOT NULL DEFAULT 0")
             if "workspace_inode" not in columns:
                 connection.execute("ALTER TABLE local_jobs ADD COLUMN workspace_inode INTEGER NOT NULL DEFAULT 0")
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS local_job_results (
+            connection.execute("""CREATE TABLE IF NOT EXISTS local_job_results (
                 artifact_id TEXT PRIMARY KEY, job_id TEXT NOT NULL,
                 execution_incarnation TEXT NOT NULL, outcome TEXT NOT NULL,
                 output TEXT NOT NULL, created_at REAL NOT NULL,
-                UNIQUE(job_id, execution_incarnation))"""
-            )
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS local_pr_repair_claims (
+                UNIQUE(job_id, execution_incarnation))""")
+            connection.execute("""CREATE TABLE IF NOT EXISTS local_pr_repair_claims (
                 job_id TEXT PRIMARY KEY, repository TEXT NOT NULL,
                 pr_number INTEGER NOT NULL, head_sha TEXT NOT NULL,
                 base_identity TEXT NOT NULL, repair_kind TEXT NOT NULL,
                 source_evidence_identity TEXT NOT NULL,
                 upstream_incarnation TEXT NOT NULL,
                 failed_check_identities_json TEXT NOT NULL,
-                created_at REAL NOT NULL)"""
-            )
+                created_at REAL NOT NULL)""")
             claim_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(local_pr_repair_claims)")}
             for name in ("head_repository", "head_ref", "base_repository", "base_ref"):
                 if name not in claim_columns:
                     connection.execute(f"ALTER TABLE local_pr_repair_claims ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")  # nosec B608: fixed names
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS local_job_effects (
+            connection.execute("""CREATE TABLE IF NOT EXISTS local_job_effects (
                 job_id TEXT NOT NULL, execution_incarnation TEXT NOT NULL,
                 name TEXT NOT NULL, state TEXT NOT NULL, evidence TEXT NOT NULL DEFAULT '',
                 updated_at REAL NOT NULL,
-                PRIMARY KEY(job_id, execution_incarnation, name))"""
-            )
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS local_job_workspace_reclamations (
+                PRIMARY KEY(job_id, execution_incarnation, name))""")
+            connection.execute("""CREATE TABLE IF NOT EXISTS local_job_workspace_reclamations (
                 job_id TEXT NOT NULL, execution_incarnation TEXT NOT NULL,
                 kind TEXT NOT NULL, repository TEXT NOT NULL,
                 workspace_root TEXT NOT NULL, artifact_id TEXT NOT NULL,
                 disposition TEXT NOT NULL, first_release_at REAL NOT NULL,
                 phase TEXT NOT NULL, device INTEGER NOT NULL, inode INTEGER NOT NULL,
                 diagnostic TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL,
-                PRIMARY KEY(job_id, execution_incarnation))"""
-            )
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS local_job_workspace_ownership (
+                PRIMARY KEY(job_id, execution_incarnation))""")
+            connection.execute("""CREATE TABLE IF NOT EXISTS local_job_workspace_ownership (
                 job_id TEXT NOT NULL, execution_incarnation TEXT NOT NULL,
                 workspace_root TEXT NOT NULL, anchor TEXT NOT NULL, version INTEGER NOT NULL,
-                PRIMARY KEY(job_id, execution_incarnation))"""
-            )
+                PRIMARY KEY(job_id, execution_incarnation))""")
             ownership_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(local_job_workspace_ownership)")}
             if "source_repository" not in ownership_columns:
                 connection.execute("ALTER TABLE local_job_workspace_ownership ADD COLUMN source_repository TEXT NOT NULL DEFAULT ''")
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS local_start_notifications (
+            connection.execute("""CREATE TABLE IF NOT EXISTS local_start_notifications (
                 job_id TEXT PRIMARY KEY, repository TEXT NOT NULL,
                 issue_number INTEGER NOT NULL, backend_name TEXT NOT NULL,
                 model_name TEXT NOT NULL, marker TEXT NOT NULL UNIQUE,
                 state TEXT NOT NULL, diagnostic TEXT NOT NULL DEFAULT '',
-                updated_at REAL NOT NULL)"""
-            )
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS local_job_continuations (
+                updated_at REAL NOT NULL)""")
+            connection.execute("""CREATE TABLE IF NOT EXISTS local_job_continuations (
                 job_id TEXT PRIMARY KEY, execution_incarnation TEXT NOT NULL,
                 executor_token TEXT NOT NULL, provider_session TEXT NOT NULL UNIQUE,
                 state TEXT NOT NULL, frontier INTEGER NOT NULL DEFAULT 0,
                 candidate_frontier INTEGER, candidate_output TEXT NOT NULL DEFAULT '',
                 final_output TEXT NOT NULL DEFAULT '', provider_position TEXT NOT NULL DEFAULT '',
-                observation_json TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL)"""
-            )
+                observation_json TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL)""")
             columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(local_job_continuations)")}
             if "observation_json" not in columns:
                 connection.execute("ALTER TABLE local_job_continuations ADD COLUMN observation_json TEXT NOT NULL DEFAULT ''")
@@ -408,21 +392,17 @@ class LocalJobStore:
                     connection.execute(f"ALTER TABLE local_job_continuations ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
             if "reconciliation_reason" not in columns:
                 connection.execute("ALTER TABLE local_job_continuations ADD COLUMN reconciliation_reason TEXT NOT NULL DEFAULT ''")
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS local_continuation_tasks (
+            connection.execute("""CREATE TABLE IF NOT EXISTS local_continuation_tasks (
                 job_id TEXT NOT NULL, task_id TEXT NOT NULL, lifecycle TEXT NOT NULL,
                 terminal_outcome TEXT NOT NULL DEFAULT '', result_reference TEXT NOT NULL DEFAULT '',
                 provider_position TEXT NOT NULL DEFAULT '', sequence INTEGER NOT NULL,
-                updated_at REAL NOT NULL, PRIMARY KEY(job_id, task_id))"""
-            )
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS local_continuation_intents (
+                updated_at REAL NOT NULL, PRIMARY KEY(job_id, task_id))""")
+            connection.execute("""CREATE TABLE IF NOT EXISTS local_continuation_intents (
                 intent_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, provider_session TEXT NOT NULL,
                 causal_frontier INTEGER NOT NULL, command_kind TEXT NOT NULL,
                 payload_identity TEXT NOT NULL, provider_turn TEXT NOT NULL DEFAULT '',
                 state TEXT NOT NULL, updated_at REAL NOT NULL,
-                UNIQUE(job_id, provider_session, causal_frontier, command_kind, payload_identity))"""
-            )
+                UNIQUE(job_id, provider_session, causal_frontier, command_kind, payload_identity))""")
 
     @staticmethod
     def _start_notification(row: sqlite3.Row) -> LocalStartNotification:

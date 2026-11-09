@@ -82,8 +82,7 @@ class JulesCandidateSubmissionAdapter:
         conn = sqlite3.connect(str(self._db_path), timeout=30, isolation_level=None)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS candidate_requests (
+        conn.execute("""CREATE TABLE IF NOT EXISTS candidate_requests (
                 repository TEXT NOT NULL, issue_number INTEGER NOT NULL,
                 generation_id TEXT NOT NULL, candidate_id TEXT NOT NULL,
                 logical_owner TEXT NOT NULL, source_branch TEXT NOT NULL,
@@ -91,8 +90,7 @@ class JulesCandidateSubmissionAdapter:
                 correlation_marker TEXT NOT NULL UNIQUE,
                 observed_session_ids TEXT NOT NULL DEFAULT '[]',
                 PRIMARY KEY(repository, generation_id, candidate_id)
-            )"""
-        )
+            )""")
         return conn
 
     @staticmethod

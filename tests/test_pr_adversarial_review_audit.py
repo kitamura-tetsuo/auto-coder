@@ -274,8 +274,7 @@ class TestReq010OneCallExecution:
         release = tmp_path / "muse-release"
         invocation_count = tmp_path / "muse-invocations"
         executable = tmp_path / "muse-reviewer"
-        executable.write_text(
-            """#!/usr/bin/env python3
+        executable.write_text("""#!/usr/bin/env python3
 import json
 import os
 import sys
@@ -305,8 +304,7 @@ for line in sys.stdin:
         emit({"jsonrpc":"2.0","id":frame["id"],"result":{"commandId":frame["params"]["commandId"],"status":"accepted","turnId":turn,"startedNewTurn":True,"disposition":"started"}})
         emit({"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"review-session","item":{"itemId":"answer","kind":"message","revision":1,"status":"completed","turnId":turn,"role":"assistant","text":os.environ["MUSE_VERDICT"]}}})
         emit({"jsonrpc":"2.0","method":"turn/completed","params":{"sessionId":"review-session","turnId":turn,"terminal":"completed"}})
-"""
-        )
+""")
         executable.chmod(0o700)
         backend_config = LLMBackendConfiguration(
             backends={

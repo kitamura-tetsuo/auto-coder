@@ -66,8 +66,7 @@ class ManagementOperationStore:
             connection.close()
             raise sqlite3.DatabaseError("unsupported management operation schema")
         connection.execute("INSERT OR IGNORE INTO metadata VALUES ('schema_version', ?)", (SCHEMA_VERSION,))
-        connection.executescript(
-            """
+        connection.executescript("""
         CREATE TABLE IF NOT EXISTS operations (
           sequence INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT UNIQUE NOT NULL,
           namespace_key TEXT UNIQUE NOT NULL, target_key TEXT NOT NULL, intent_json TEXT NOT NULL,
@@ -94,8 +93,7 @@ class ManagementOperationStore:
         CREATE TABLE IF NOT EXISTS legacy_worker_bindings (
           operation_id TEXT PRIMARY KEY, binding_digest TEXT NOT NULL,
           FOREIGN KEY(operation_id) REFERENCES operations(operation_id));
-        """
-        )
+        """)
         return connection
 
     def pin_legacy_worker_binding(self, operation_id: str, digest: str) -> bool:

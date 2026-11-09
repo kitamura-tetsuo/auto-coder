@@ -22,23 +22,19 @@ def test_jules_enabled_in_both_configs():
         os.makedirs(os.path.dirname(llm_config_path), exist_ok=True)
 
         with open(llm_config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [backends.jules]
 enabled = true
-"""
-            )
+""")
 
         # Create config.toml with Jules enabled
         config_path = os.path.join(temp_dir, ".auto-coder", "config.toml")
 
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [jules]
 enabled = true
-"""
-            )
+""")
 
         # Load configurations
         llm_config = LLMBackendConfiguration.load_from_file(llm_config_path)
@@ -59,23 +55,19 @@ def test_jules_disabled_in_llm_config_but_enabled_in_config_toml():
         os.makedirs(os.path.dirname(llm_config_path), exist_ok=True)
 
         with open(llm_config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [backends.jules]
 enabled = false
-"""
-            )
+""")
 
         # Create config.toml with Jules enabled
         config_path = os.path.join(temp_dir, ".auto-coder", "config.toml")
 
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [jules]
 enabled = true
-"""
-            )
+""")
 
         # Load configurations
         llm_config = LLMBackendConfiguration.load_from_file(llm_config_path)
@@ -96,23 +88,19 @@ def test_jules_enabled_in_llm_config_but_disabled_in_config_toml():
         os.makedirs(os.path.dirname(llm_config_path), exist_ok=True)
 
         with open(llm_config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [backends.jules]
 enabled = true
-"""
-            )
+""")
 
         # Create config.toml with Jules disabled
         config_path = os.path.join(temp_dir, ".auto-coder", "config.toml")
 
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [jules]
 enabled = false
-"""
-            )
+""")
 
         # Load configurations
         llm_config = LLMBackendConfiguration.load_from_file(llm_config_path)
@@ -133,23 +121,19 @@ def test_jules_disabled_in_both_configs():
         os.makedirs(os.path.dirname(llm_config_path), exist_ok=True)
 
         with open(llm_config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [backends.jules]
 enabled = false
-"""
-            )
+""")
 
         # Create config.toml with Jules disabled
         config_path = os.path.join(temp_dir, ".auto-coder", "config.toml")
 
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [jules]
 enabled = false
-"""
-            )
+""")
 
         # Load configurations
         llm_config = LLMBackendConfiguration.load_from_file(llm_config_path)
@@ -170,12 +154,10 @@ def test_jules_config_toml_only():
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
 
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [jules]
 enabled = false
-"""
-            )
+""")
 
         # Load configurations (no llm_config.toml Jules section)
         llm_config_path = os.path.join(temp_dir, ".auto-coder", "llm_config.toml")

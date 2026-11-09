@@ -155,8 +155,7 @@ def test_real_supervisor_holds_effects_during_missing_owner_lifetime(tmp_path: P
     observed = tmp_path / "unobservable-observed"
     blocked.touch()
     harness = tmp_path / "owner_observation_harness.py"
-    harness.write_text(
-        f"""import os
+    harness.write_text(f"""import os
 from pathlib import Path
 from auto_coder.management.bootstrap_supervisor import BootstrapConfig, ManagementBootstrapSupervisor, RuntimeSpec
 runtime = RuntimeSpec({runtime.reference!r}, {runtime.receipt!r}, Path({str(runtime.executable)!r}), {runtime.arguments!r}, (), Path({str(runtime.drain_ack)!r}), Path({str(runtime.source_root)!r}), {runtime.source_receipt!r}, Path({str(runtime.ready_receipt)!r}))
@@ -168,8 +167,7 @@ class ObserverUnavailable(ManagementBootstrapSupervisor):
             return ''
         return super()._start_token(pid)
 ObserverUnavailable(config).run()
-"""
-    )
+""")
     process = subprocess.Popen([sys.executable, str(harness)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     child_pid = 0
 
@@ -859,8 +857,7 @@ def test_supervisor_process_crash_after_spawn_never_duplicates_child(tmp_path: P
     runtime = replace(runtime, receipt=f"sha256:{hashlib.sha256(runtime.executable.read_bytes()).hexdigest()}")
     marker = tmp_path / "spawned.pid"
     harness = tmp_path / "crash_supervisor.py"
-    harness.write_text(
-        f"""from pathlib import Path
+    harness.write_text(f"""from pathlib import Path
 import time
 from auto_coder.management.bootstrap_supervisor import BootstrapConfig, ManagementBootstrapSupervisor, RuntimeSpec
 runtime = RuntimeSpec({runtime.reference!r}, {runtime.receipt!r}, Path({str(runtime.executable)!r}), {runtime.arguments!r}, (), Path({str(runtime.drain_ack)!r}), Path({str(runtime.source_root)!r}), {runtime.source_receipt!r}, Path({str(runtime.ready_receipt)!r}))
@@ -871,8 +868,7 @@ class CrashWindowSupervisor(ManagementBootstrapSupervisor):
         time.sleep(30)
         return super()._start_token(pid)
 CrashWindowSupervisor(config).start_selected('lost-start', 'attempt', 'one')
-"""
-    )
+""")
     process = subprocess.Popen([sys.executable, str(harness)])
     deadline = time.monotonic() + 5
     while (not marker.exists() or not marker.read_text()) and time.monotonic() < deadline:

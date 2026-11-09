@@ -566,8 +566,7 @@ def test_staging_timeout_reaps_real_container_and_descendant(tmp_path: Path, _us
     image = _image()
     stage_name = "smoke-stage-timeout-" + uuid.uuid4().hex[:12]
     scenario_id = "staging-timeout-" + uuid.uuid4().hex[:12]
-    descendant = dedent(
-        """\
+    descendant = dedent("""\
         import pathlib
         import time
 
@@ -578,8 +577,7 @@ def test_staging_timeout_reaps_real_container_and_descendant(tmp_path: Path, _us
             n += 1
             heartbeat.write_text(str(n))
             time.sleep(0.1)
-        """
-    )
+        """)
     program = "import pathlib, subprocess, sys, time; " "pathlib.Path('/owned/stage-started').write_text('started'); " f"subprocess.Popen([sys.executable, '-c', {descendant!r}]); " "print('real staging child entered', flush=True); time.sleep(45)"
     with tempfile.TemporaryDirectory(prefix="stage-timeout-", dir=tmp_path) as case_root:
         owned = Path(case_root)
