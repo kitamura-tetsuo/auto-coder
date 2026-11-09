@@ -14,6 +14,14 @@ The root `Dockerfile` pins the supported OpenCode CLI release to `1.18.31`:
 ARG OPENCODE_VERSION=1.18.31
 ```
 
+The intermediate CLI binary builder uses the `node:<major>-slim` stage. Its
+supported even-numbered major version (24 or newer) can be refreshed by
+Dependabot without changing the pinned OpenCode/Codex artifacts or the final
+Python runtime image. Static packaging tests verify the builder shape and
+supported major policy rather than fixing an unrelated Node patch/major tag;
+actual image assembly and binary execution remain independently tested in
+container-enabled CI.
+
 During the multi-stage build, the target architecture is resolved explicitly:
 - `amd64` (`x86_64`) installs `opencode-linux-x64@1.18.31` from the official npm registry.
 - `arm64` (`aarch64`) installs `opencode-linux-arm64@1.18.31` from the same registry.
