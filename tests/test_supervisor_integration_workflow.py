@@ -77,7 +77,13 @@ def test_operator_upgrade_keeps_its_complete_native_mandatory_gate() -> None:
 
 def test_operator_upgrade_executes_root_pytest_with_exact_profile(tmp_path: Path) -> None:
     """Execute the real workflow shell under inert commands, not just string checks."""
-    run = _step(_workflow()["jobs"]["operator-upgrade"], "Verify operator prepare/apply/status with disposable Docker")["run"]
+    run = _step(
+        _workflow()["jobs"]["operator-upgrade"],
+        "Verify operator prepare/apply/status with disposable Docker",
+    )["run"]
+    # Actions resolves this expression before running Bash.
+    run = run.replace("${{ github.sha }}", "a" * 40)
+    assert "${{" not in run
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
     scripts = {
