@@ -658,8 +658,12 @@ def test_source_proof_requires_every_producer_job_at_exact_run_attempt(tmp_path:
     else:
         with pytest.raises(upgrade.UpgradeUnavailable, match="evidence|qualification|cases"):
             upgrade._source_proof(authority, source)
-    # A real source verifier was called (the stub from the historical test is gone).
-    assert "actions/runs/17/attempts/2" in observed_paths
+    # The real verifier must reject a missing original plan before requesting
+    # any source-job evidence. Every other case reaches the native reader.
+    if boundary == "missing-source-plan":
+        assert observed_paths == []
+    else:
+        assert "actions/runs/17/attempts/2" in observed_paths
 
 
 def test_operator_source_proof_requires_private_original_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
