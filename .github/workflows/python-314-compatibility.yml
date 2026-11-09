@@ -24,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
+      UV_PYTHON: "3.14"
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
       AUTO_CODER_REQUIRE_BROWSER: "1"
       AUTO_CODER_IMMEDIATE_TEST_FAILURES: "1"

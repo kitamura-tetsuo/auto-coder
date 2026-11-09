@@ -11,7 +11,11 @@ lockfile. Stale or incompatible dependencies, missing Python 3.14 wheels,
 source-quality failures, and test failures remain visible red job outcomes.
 A failed or incomplete run is not compatibility evidence.
 
-The workflow verifies the selected interpreter and clean exact Git checkout,
+The workflow sets `UV_PYTHON=3.14` for uv sync and every uv run so the
+repository's default interpreter pin cannot silently create a Python 3.12
+virtual environment even after `setup-python` selects 3.14. A separate
+version assertion refuses an unexpected interpreter. The workflow verifies
+the selected interpreter and clean exact Git checkout,
 then runs Black, isort, Flake8 and package-wide mypy before the complete
 `not opencode_live` pytest selection. Like the required source workflow, it
 prepares the Python-only management Docker fixture from the tested source and

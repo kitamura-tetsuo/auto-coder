@@ -196,6 +196,7 @@ def test_python314_advisory_workflow_is_a_real_non_live_compatibility_check() ->
     assert list(workflow["jobs"]) == ["python314-compatibility"]
     job = workflow["jobs"]["python314-compatibility"]
     assert job["runs-on"] == "ubuntu-latest"
+    assert job["env"]["UV_PYTHON"] == "3.14"
     assert job["env"]["AUTO_CODER_REQUIRE_BROWSER"] == "1"
     steps = job["steps"]
     assert not any(step.get("continue-on-error", False) for step in steps)
