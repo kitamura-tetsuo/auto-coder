@@ -401,10 +401,15 @@ def _supervisor_native_jobs_proven(client: GitHubGitDataClient, run_id: int, att
                 return False
             matrix_seen[profile].add(number)
             required_steps = _SUPERVISOR_MATRIX_STEPS[profile]
-        if any(job.get(key) != value for key, value in {
-            "run_id": run_id, "run_attempt": attempt,
-            "status": "completed", "conclusion": "success",
-        }.items()):
+        if any(
+            job.get(key) != value
+            for key, value in {
+                "run_id": run_id,
+                "run_attempt": attempt,
+                "status": "completed",
+                "conclusion": "success",
+            }.items()
+        ):
             return False
         steps = job.get("steps")
         if not isinstance(steps, list):
@@ -426,8 +431,12 @@ def _source_proof(publisher: TestedSourcePublisher, source_sha: str) -> tuple[st
     plan_path, artifacts_root = _source_proof_inputs(source_sha, proof.record.run_id, proof.record.run_attempt)
     try:
         verify_source_shard_attempt(
-            publisher.client, proof.record.run_id, proof.record.run_attempt, source_sha,
-            plan_path=plan_path, artifacts_root=artifacts_root,
+            publisher.client,
+            proof.record.run_id,
+            proof.record.run_attempt,
+            source_sha,
+            plan_path=plan_path,
+            artifacts_root=artifacts_root,
         )
     except TestedSourceError as error:
         raise UpgradeUnavailable("prerequisite-blocked", "original exact-source native qualification refused") from error
@@ -447,6 +456,7 @@ def _source_proof(publisher: TestedSourcePublisher, source_sha: str) -> tuple[st
         if _supervisor_native_jobs_proven(publisher.client, run["id"], attempt):
             return proof.tag_object_oid, run["id"], attempt
     raise UpgradeUnavailable("prerequisite-blocked", "required fresh-host/exclusion integration cases are not proven successful")
+
 
 def _watcher_binding(path: Path, manager: str, manager_image: str, proxy: str, proxy_image: str, config: Path) -> Path:
     raw = json.loads(_read_record(path))
