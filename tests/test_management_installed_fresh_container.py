@@ -130,6 +130,7 @@ def test_disposable_worker_error_diagnostics_never_include_sensitive_messages() 
     assert _safe_worker_exception_types(log_text) == ["connectionerror"]
     assert _safe_worker_exception_types("unclassified secret=do-not-publish") == []
 
+
 class InstalledChain(Chain):
     def worker_compose_profile(self, profile: dict) -> dict:
         """Use the real producer only for opt-in installed worker coverage."""
@@ -537,7 +538,9 @@ class InstalledChain(Chain):
                     ("runtime-exception", ("runtimeerror", "keyerror", "valueerror", "typeerror")),
                 )
                 diagnostic["worker_log_observed"] = bool(worker_logs)
-                diagnostic["worker_exception_types"] = _safe_worker_exception_types(worker_logs)
+                diagnostic["worker_exception_types"] = _safe_worker_exception_types(
+                    worker_logs
+                )
                 diagnostic["worker_startup_signatures"] = [category for category, markers in startup_signatures if any(marker in worker_logs for marker in markers)]
             except (OSError, ValueError, subprocess.CalledProcessError) as log_error:
                 diagnostic["worker_log_status"] = type(log_error).__name__
