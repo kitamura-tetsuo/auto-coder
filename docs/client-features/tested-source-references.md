@@ -150,3 +150,10 @@ The after values come from the four constituent job and step timestamps; the
 aggregate then failed in four seconds after the last shard completed. Queue time
 is reported independently and is not counted as setup or runner work. A later
 green remote execution remains necessary before calling the partition qualified.
+
+The complete-source matrix may bootstrap its estimated shard work from the
+SHA/selector/unit-verified checked-in non-native duration snapshot when there is
+no compatible native profile or only partial native measurements. This affects
+packing, not collected membership, native pytest outcomes or exact-run/attempt
+receipt validation. Planning diagnostics distinguish snapshot estimates from
+native observations, runner queue, preparation and measured critical path.

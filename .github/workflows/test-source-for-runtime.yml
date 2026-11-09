@@ -82,6 +82,9 @@ jobs:
           uv run python scripts/plan_ci_shards.py
           --context "$RUNNER_TEMP/source-plan/context.json"
           --duration-profile "$RUNNER_TEMP/source-history/profile.json"
+          --duration-policy source-required-v1
+          --bootstrap-duration-snapshot tests/data/pr-test-durations.json
+          --bootstrap-duration-provenance tests/data/pr-test-durations.provenance.json
           --output "$RUNNER_TEMP/source-plan/plan.json"
           --log-dir "$RUNNER_TEMP/source-plan/logs" -- -m 'not opencode_live'
       - name: Export exact dynamic matrix

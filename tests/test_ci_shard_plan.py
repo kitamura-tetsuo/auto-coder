@@ -512,3 +512,366 @@ def test_canonical_digest_assignments_and_origin_separation(tmp_path: Path, monk
     with pytest.raises(ShardPlanError, match="assignments violate"):
         verify_plan({**plan, "semantic": tampered_semantic, "digest_sha256": _digest(tampered_semantic)})
     assert len(plan["semantic"]["shards"]) == 1
+
+
+def _bootstrap_snapshot(tmp_path: Path, durations: dict[str, float], *, selector: str = "not opencode_live") -> tuple[Path, Path]:
+    import hashlib
+
+    snapshot = tmp_path / "bootstrap-snapshot.json"
+    provenance = tmp_path / "bootstrap-provenance.json"
+    snapshot.write_text(json.dumps(durations), encoding="utf-8")
+    provenance.write_text(
+        json.dumps(
+            {
+                "snapshot_sha256": hashlib.sha256(snapshot.read_bytes()).hexdigest(),
+                "nodes": len(durations),
+                "selector": selector,
+                "unit": "seconds",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return snapshot, provenance
+
+
+@pytest.mark.parametrize("failure", ("sha", "node-count", "selector", "unit", "duplicate", "negative", "nonfinite", "boolean", "missing"))
+def test_source_bootstrap_never_accepts_unverified_estimates(tmp_path: Path, failure: str) -> None:
+    from auto_coder.ci_shard_plan import _snapshot_estimates
+
+    snapshot, provenance = _bootstrap_snapshot(tmp_path, {"tests/test_a.py::test_a": 2.15})
+    if failure in ("sha", "node-count", "selector", "unit"):
+        data = json.loads(provenance.read_text())
+        data[{"sha": "snapshot_sha256", "node-count": "nodes", "selector": "selector", "unit": "unit"}[failure]] = "invalid"
+        provenance.write_text(json.dumps(data))
+    elif failure in ("duplicate", "negative", "nonfinite", "boolean"):
+        contents = {
+            "duplicate": '{"tests/test_a.py::test_a": 1, "tests/test_a.py::test_a": 2}',
+            "negative": '{"tests/test_a.py::test_a": -1}',
+            "nonfinite": '{"tests/test_a.py::test_a": NaN}',
+            "boolean": '{"tests/test_a.py::test_a": true}',
+        }[failure]
+        snapshot.write_text(contents)
+        import hashlib
+
+        data = json.loads(provenance.read_text())
+        data["snapshot_sha256"] = hashlib.sha256(snapshot.read_bytes()).hexdigest()
+        provenance.write_text(json.dumps(data))
+    else:
+        snapshot.unlink()
+    weights, evidence = _snapshot_estimates(snapshot, provenance)
+    assert weights == {}
+    assert evidence["status"] == "unavailable" and evidence["reason"]
+    assert evidence["digest"] is None
+
+
+def test_source_exact_priority_same_file_and_source_only_floor(tmp_path: Path) -> None:
+    from auto_coder.ci_shard_plan import source_duration_estimates
+
+    inventory = (
+        "tests/test_a.py::test_native",
+        "tests/test_a.py::test_snapshot",
+        "tests/test_a.py::test_new[param]",
+        "tests/test_b.py::test_unknown",
+        "tests/test_c.py::test_snapshot_zero",
+    )
+    snapshot, provenance = _bootstrap_snapshot(
+        tmp_path,
+        {inventory[0]: 1.25, inventory[1]: 7.0000001, inventory[4]: 0.0, "tests/test_obsolete.py::test_old": 900.0},
+    )
+    weights, evidence = __import__("auto_coder.ci_shard_plan", fromlist=["_snapshot_estimates"])._snapshot_estimates(snapshot, provenance)
+    assert weights[inventory[1]] == 7001 and weights[inventory[4]] == 1
+    assert evidence["status"] == "matched"
+    # A validated snapshot is advisory and never decides which node IDs exist.
+    estimates, native_source, snapshot_source = source_duration_estimates(None, {}, inventory, snapshot, provenance, cold_start_fallback_ms=120_000)
+    assert [entry["nodeid"] for entry in estimates] == list(inventory)
+    assert [entry["provenance"] for entry in estimates] == ["snapshot_exact", "snapshot_exact", "same_file_max", "source_floor", "snapshot_exact"]
+    assert [entry["estimated_ms"] for entry in estimates] == [1250, 7001, 7001, 120000, 1]
+    assert estimates[2]["basis_nodeid"] == inventory[1]
+    assert native_source["status"] == "unavailable" and snapshot_source["status"] == "matched"
+
+
+def test_source_policy_actual_cli_full_collection_and_native_outcomes(tmp_path: Path) -> None:
+    project, context_path, context = _project(tmp_path)
+    selected = tuple(f"tests/test_sample.py::test_parameterized[{name}]" for name in ("zero", "one", "two", "three", "four"))
+    bootstrap, provenance = _bootstrap_snapshot(tmp_path, {selected[0]: 210, selected[2]: 800, selected[4]: 0.0, "old_test.py::old": 300.0})
+    plan = tmp_path / "source-plan.json"
+    result = _run(
+        project,
+        str(ROOT / "scripts/plan_ci_shards.py"),
+        "--context",
+        str(context_path),
+        "--duration-policy",
+        "source-required-v1",
+        "--bootstrap-duration-snapshot",
+        str(bootstrap),
+        "--bootstrap-duration-provenance",
+        str(provenance),
+        "--output",
+        str(plan),
+        "--log-dir",
+        str(tmp_path / "logs"),
+        "--",
+        *context.pytest_args,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    verified, _ = read_plan(plan)
+    assert Counter(verified.inventory) == Counter(selected)
+    payload = json.loads(plan.read_text())["semantic"]
+    assert payload["duration_policy"] == "source-required-v1"
+    assert payload["snapshot_source"]["status"] == "matched"
+    assert payload["duration_source"]["status"] == "unavailable"
+    assert set(payload["inventory"]) == set(selected) and len(verified.shards) <= 12
+    assert payload["estimates"][2]["estimated_ms"] == 800000
+    assert any(shard["over_budget_nodes"] for shard in payload["shards"])
+    assert Counter(node for shard in verified.shards for node in shard) == Counter(selected)
+    observed: list[str] = []
+    actual_results: list[subprocess.CompletedProcess[str]] = []
+    for number in range(1, len(verified.shards) + 1):
+        log = tmp_path / f"shard-{number}.log"
+        completed = _apply(project, plan, number, record=log)
+        assert completed.returncode in (0, 1), completed.stdout + completed.stderr
+        actual_results.append(completed)
+        observed.extend(log.read_text().splitlines())
+    assert Counter(observed) == Counter(selected)
+    assert selected[2] in observed and selected[4] in observed
+    assert any(item.returncode == 1 and "failed" in item.stdout for item in actual_results)
+    assert any("skipped" in item.stdout for item in actual_results)
+
+
+def test_source_policy_immutable_provenance_and_no_partial_cli_pair(tmp_path: Path) -> None:
+    project, context_path, context = _project(tmp_path)
+    snapshot, provenance = _bootstrap_snapshot(tmp_path, {"tests/test_sample.py::test_parameterized[zero]": 3.0})
+    cli = [
+        str(ROOT / "scripts/plan_ci_shards.py"),
+        "--context",
+        str(context_path),
+        "--duration-policy",
+        "source-required-v1",
+        "--bootstrap-duration-snapshot",
+        str(snapshot),
+        "--bootstrap-duration-provenance",
+        str(provenance),
+        "--log-dir",
+        str(tmp_path / "logs"),
+        "--output",
+        str(tmp_path / "source-plan.json"),
+        "--",
+        *context.pytest_args,
+    ]
+    created = _run(project, *cli)
+    assert created.returncode == 0, created.stdout + created.stderr
+    plan = json.loads((tmp_path / "source-plan.json").read_text())
+    semantic = plan["semantic"]
+    assert any(entry["provenance"] == "same_file_max" for entry in semantic["estimates"])
+    for field in ("basis_nodeid", "estimated_ms", "basis_provenance"):
+        corrupted = json.loads(json.dumps(plan))
+        entry = next(row for row in corrupted["semantic"]["estimates"] if row["provenance"] == "same_file_max")
+        entry[field] = "other.py::other" if field == "basis_nodeid" else ("native_p95" if field == "basis_provenance" else 123456)
+        corrupted["digest_sha256"] = _digest(corrupted["semantic"])
+        with pytest.raises(ShardPlanError):
+            verify_plan(corrupted)
+    paired = list(cli)
+    start = paired.index("--bootstrap-duration-provenance")
+    del paired[start : start + 2]
+    paired[paired.index(str(tmp_path / "source-plan.json"))] = str(tmp_path / "invalid-plan.json")
+    refused = _run(project, *paired)
+    assert refused.returncode != 0 and "must be supplied together" in (refused.stdout + refused.stderr)
+    assert not (tmp_path / "invalid-plan.json").exists()
+
+
+def test_source_policy_balances_weighted_long_files_without_changing_membership(tmp_path: Path) -> None:
+    from auto_coder.ci_shard_plan import source_duration_estimates
+
+    inventory = tuple(f"tests/test_fast.py::test_{x}" for x in range(20)) + tuple(f"tests/test_management.py::test_{x}" for x in range(5)) + tuple(f"tests/test_new.py::test_{x}" for x in range(3))
+    snapshot, provenance = _bootstrap_snapshot(tmp_path, {inventory[0]: 1.0, inventory[20]: 220.0, inventory[22]: 240.0})
+    estimates, _native, bootstrap = source_duration_estimates(None, {}, inventory, snapshot, provenance)
+    assert bootstrap["status"] == "matched"
+    shards, cap, limited = allocate(inventory, estimates)
+    assert cap == 420000 and not limited
+    assert Counter(node for shard in shards for node in shard["nodeids"]) == Counter(inventory)
+    assert sum(1 for shard in shards if any("test_management.py" in node for node in shard["nodeids"])) >= 3
+    assert all(sum("test_management.py" in node for node in shard["nodeids"]) <= 1 for shard in shards)
+    assert [entry["estimated_ms"] for entry in estimates[20:25]] == [220000, 240000, 240000, 240000, 240000]
+
+
+def test_source_workflow_opt_in_is_bounded_to_complete_source() -> None:
+    source = (ROOT / ".github/workflows/test-source-for-runtime.yml").read_text()
+    assert "--duration-policy source-required-v1" in source
+    assert "--bootstrap-duration-snapshot tests/data/pr-test-durations.json" in source
+    assert "--bootstrap-duration-provenance tests/data/pr-test-durations.provenance.json" in source
+    assert "--ci-shard=${{ matrix.shard }}" in source
+    assert "-m 'not opencode_live'" in source
+    assert "--source-ci-receipt=" in source
+    for path in (ROOT / ".github/workflows/pr-tests.yml", ROOT / ".github/workflows/supervisor-integration-tests.yml"):
+        assert "--duration-policy source-required-v1" not in path.read_text()
+
+
+def test_source_valid_partial_native_profile_and_invalid_history_preserve_current_collection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from auto_coder.ci_shard_plan import source_duration_estimates
+
+    project, context_path, context = _project(tmp_path)
+    profile, actual_nodes = _inventory(project, context_path, context, monkeypatch)
+    current = (actual_nodes[0], actual_nodes[1], "tests/test_unrelated.py::test_brand_new", "tests/test_other.py::test_param[new]")
+    history = tmp_path / "native-profile.json"
+    _history(history, profile, (current[0],), seconds=126)
+    snapshot, provenance = _bootstrap_snapshot(tmp_path, {current[1]: 2.5})
+    estimated, native_source, bootstrap = source_duration_estimates(history, profile, current, snapshot, provenance)
+    assert native_source["status"] == "matched"
+    assert bootstrap["status"] == "matched"
+    assert [entry["provenance"] for entry in estimated] == ["native_p95", "snapshot_exact", "source_floor", "source_floor"]
+    assert [entry["estimated_ms"] for entry in estimated] == [126000, 2500, 5000, 5000]
+    assert estimated[0]["sample_count"] == 1
+    assert sum("native_p95" in str(row) for row in estimated) == 1
+    # Foreign native identity cannot override validated non-native estimates or the full current inventory.
+    foreign = dict(profile)
+    foreign["configuration_digest"] = "sha256:" + "f" * 64
+    degraded, native_source, bootstrap = source_duration_estimates(history, foreign, current, snapshot, provenance)
+    assert native_source["status"] == "unavailable" and native_source["reason"]
+    assert bootstrap["status"] == "matched"
+    assert [row["nodeid"] for row in degraded] == list(current)
+    assert [row["provenance"] for row in degraded] == ["same_file_max", "snapshot_exact", "source_floor", "source_floor"]
+    assert [row["estimated_ms"] for row in degraded] == [2500, 2500, 5000, 5000]
+
+
+def test_source_policy_degraded_history_cli_applies_every_fresh_node_with_native_outcomes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cover partial/foreign/corrupt history through real collection, plan, and pytest shards."""
+    source = TEST_SOURCE + """
+@pytest.mark.parametrize("variant", ["recent"], ids=["new-parameter"])
+def test_added_parameter(variant):
+    assert variant == "recent"
+"""
+    project, context_path, original = _project(tmp_path, source=source)
+    (project / "tests/test_unseen.py").write_text(
+        """
+import os
+import pytest
+
+@pytest.mark.parametrize("variant", ["brand-new"], ids=["unseen-file"])
+def test_new_file(variant, request):
+    record = os.environ.get("CI_SHARD_TEST_RECORD")
+    if record:
+        with open(record, "a", encoding="utf-8") as stream:
+            stream.write(request.node.nodeid + "\\n")
+    assert variant == "brand-new"
+""",
+        encoding="utf-8",
+    )
+    for args in (("add", "-A"), ("commit", "-qm", "include new parameter and unseen file")):
+        subprocess.run(["git", *args], cwd=project, check=True, capture_output=True)
+    checkout = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=project, text=True).strip()
+    context = ShardContext(
+        original.repository,
+        original.profile_id,
+        checkout,
+        original.pytest_args,
+        original.harness_files,
+        original.semantic_environment,
+        original.origin,
+    )
+    context_path.write_text(json.dumps(context.json()), encoding="utf-8")
+    profile, selected = _inventory(project, context_path, context, monkeypatch)
+    assert len(selected) == 7
+    assert "tests/test_sample.py::test_added_parameter[new-parameter]" in selected
+    assert "tests/test_unseen.py::test_new_file[unseen-file]" in selected
+
+    # The unsharded native execution supplies an independent membership/outcome oracle.
+    baseline_record = tmp_path / "unsharded-record.txt"
+    baseline = _run(project, "-m", "pytest", "-m", "not slow", "-q", record=baseline_record)
+    assert baseline.returncode == 1, baseline.stdout + baseline.stderr
+    assert "1 failed" in baseline.stdout and "1 skipped" in baseline.stdout
+    assert Counter(baseline_record.read_text().splitlines()) == Counter(selected)
+
+    native_node = "tests/test_sample.py::test_parameterized[zero]"
+    snapshot_node = "tests/test_sample.py::test_parameterized[one]"
+    heavy_node = "tests/test_sample.py::test_parameterized[two]"
+    added_node = "tests/test_sample.py::test_added_parameter[new-parameter]"
+    unseen_node = "tests/test_unseen.py::test_new_file[unseen-file]"
+    valid_history = tmp_path / "native-partial.json"
+    _history(valid_history, profile, (native_node,), seconds=126)
+    foreign_history = tmp_path / "native-foreign.json"
+    foreign_identity = dict(profile)
+    foreign_identity["configuration_digest"] = "sha256:" + "f" * 64
+    _history(foreign_history, foreign_identity, (native_node,), seconds=126)
+    corrupt_history = tmp_path / "native-corrupt.json"
+    corrupt_history.write_text("{invalid-json", encoding="utf-8")
+
+    snapshot, provenance = _bootstrap_snapshot(
+        tmp_path,
+        {snapshot_node: 2.5, heavy_node: 801, "tests/test_retired.py::test_removed": 999},
+    )
+    bad_provenance = tmp_path / "bootstrap-bad-provenance.json"
+    mismatched = json.loads(provenance.read_text())
+    mismatched["selector"] = "not slow"
+    bad_provenance.write_text(json.dumps(mismatched), encoding="utf-8")
+    scenarios = (
+        ("partial", valid_history, snapshot, provenance, "matched", "matched"),
+        ("foreign", foreign_history, snapshot, provenance, "unavailable", "matched"),
+        ("corrupt", corrupt_history, snapshot, provenance, "unavailable", "matched"),
+        ("missing", tmp_path / "missing-native.json", tmp_path / "missing-snapshot.json", tmp_path / "missing-provenance.json", "unavailable", "unavailable"),
+        ("bad-provenance", corrupt_history, snapshot, bad_provenance, "unavailable", "unavailable"),
+    )
+    for name, history, bootstrap, provenance_file, native_status, snapshot_status in scenarios:
+        plan_file = tmp_path / f"source-{name}.json"
+        result = _run(
+            project,
+            str(ROOT / "scripts/plan_ci_shards.py"),
+            "--context",
+            str(context_path),
+            "--duration-policy",
+            "source-required-v1",
+            "--duration-profile",
+            str(history),
+            "--bootstrap-duration-snapshot",
+            str(bootstrap),
+            "--bootstrap-duration-provenance",
+            str(provenance_file),
+            "--output",
+            str(plan_file),
+            "--log-dir",
+            str(tmp_path / f"logs-{name}"),
+            "--",
+            *context.pytest_args,
+        )
+        assert result.returncode == 0, f"{name}: {result.stdout}{result.stderr}"
+        verified, _ = read_plan(plan_file)
+        semantic = json.loads(plan_file.read_text())["semantic"]
+        assert semantic["duration_policy"] == "source-required-v1"
+        assert semantic["duration_source"]["status"] == native_status
+        assert semantic["snapshot_source"]["status"] == snapshot_status
+        if native_status == "unavailable":
+            assert semantic["duration_source"]["reason"]
+        if snapshot_status == "unavailable":
+            assert semantic["snapshot_source"]["reason"]
+        assert Counter(verified.inventory) == Counter(selected)
+        assert Counter(node for shard in verified.shards for node in shard) == Counter(selected)
+        estimates = {row["nodeid"]: row for row in semantic["estimates"]}
+        assert set(estimates) == set(selected)
+        assert all(row["estimated_ms"] > 0 for row in estimates.values())
+        if snapshot_status == "matched":
+            assert estimates[snapshot_node]["provenance"] == "snapshot_exact"
+            assert estimates[heavy_node]["provenance"] == "snapshot_exact"
+            assert estimates[heavy_node]["estimated_ms"] == 801_000
+            assert estimates[added_node]["provenance"] == "same_file_max"
+            assert estimates[added_node]["basis_nodeid"] == heavy_node
+            assert estimates[unseen_node]["provenance"] == "source_floor"
+            assert any(heavy_node in shard["over_budget_nodes"] for shard in semantic["shards"])
+            if native_status == "matched":
+                assert estimates[native_node]["provenance"] == "native_p95"
+                assert estimates[native_node]["estimated_ms"] == 126_000
+            else:
+                assert estimates[native_node]["provenance"] == "same_file_max"
+        else:
+            assert {row["provenance"] for row in estimates.values()} == {"source_floor"}
+            assert {row["estimated_ms"] for row in estimates.values()} == {5_000}
+        observed: list[str] = []
+        shard_results: list[subprocess.CompletedProcess[str]] = []
+        for shard_number in range(1, len(verified.shards) + 1):
+            record = tmp_path / f"{name}-shard-{shard_number}.txt"
+            completed = _apply(project, plan_file, shard_number, record=record)
+            assert completed.returncode in (0, 1), f"{name} shard {shard_number}: {completed.stdout}{completed.stderr}"
+            shard_results.append(completed)
+            observed.extend(record.read_text().splitlines())
+        assert Counter(observed) == Counter(selected), name
+        assert Counter(observed) == Counter(baseline_record.read_text().splitlines()), name
+        assert any(completed.returncode == 1 and "failed" in completed.stdout for completed in shard_results), name
+        assert any("skipped" in completed.stdout for completed in shard_results), name

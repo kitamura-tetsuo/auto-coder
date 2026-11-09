@@ -285,6 +285,140 @@ def duration_estimates(
     return estimates, source
 
 
+SOURCE_POLICY = "source-required-v1"
+SNAPSHOT_SELECTOR = "not opencode_live"
+
+
+def _snapshot_estimates(snapshot_path: Path | None, provenance_path: Path | None) -> tuple[dict[str, int], dict[str, object]]:
+    """Validate advisory inter-result weights without using them as test inventory."""
+    unavailable: dict[str, object] = {"status": "unavailable", "digest": None, "reason": "no tracked snapshot/provenance supplied"}
+    if snapshot_path is None or provenance_path is None:
+        return {}, unavailable
+    try:
+        raw = snapshot_path.read_bytes()
+        provenance = _read(provenance_path)
+        fingerprint = hashlib.sha256(raw).hexdigest()
+        if provenance.get("snapshot_sha256") != fingerprint:
+            raise ShardPlanError("snapshot SHA-256 differs from companion provenance")
+        if provenance.get("selector") != SNAPSHOT_SELECTOR or provenance.get("unit") != "seconds":
+            raise ShardPlanError("snapshot selector/unit differs from required source profile")
+        data = _object(json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs, parse_constant=_constant), "duration snapshot")
+        if isinstance(provenance.get("nodes"), bool) or not isinstance(provenance.get("nodes"), int) or provenance.get("nodes") != len(data):
+            raise ShardPlanError("snapshot node count differs from provenance")
+        weights: dict[str, int] = {}
+        for node, seconds in data.items():
+            _string(node, "snapshot node ID")
+            if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+                raise ShardPlanError(f"invalid snapshot duration for {node}")
+            try:
+                number = float(seconds)
+            except (OverflowError, ValueError) as error:
+                raise ShardPlanError(f"invalid snapshot duration for {node}") from error
+            if not math.isfinite(number) or number < 0:
+                raise ShardPlanError(f"snapshot duration must be finite and nonnegative for {node}")
+            weights[node] = _weight(number) if number > 0 else 1
+        return weights, {"status": "matched", "digest": "sha256:" + fingerprint, "reason": None}
+    except (UnicodeError, OSError, ValueError, TypeError, ShardPlanError) as error:
+        return {}, {"status": "unavailable", "digest": None, "reason": f"snapshot ignored: {type(error).__name__}: {error}"}
+
+
+def source_duration_estimates(
+    native_path: Path | None,
+    profile: dict[str, object],
+    inventory: tuple[str, ...],
+    snapshot_path: Path | None,
+    provenance_path: Path | None,
+    *,
+    cold_start_fallback_ms: int = 1000,
+) -> tuple[list[dict[str, object]], dict[str, object], dict[str, object]]:
+    """Estimate each *current* source node; optional history never selects tests."""
+    legacy, native_source = duration_estimates(native_path, profile, inventory, cold_start_fallback_ms=cold_start_fallback_ms)
+    snapshot, snapshot_source = _snapshot_estimates(snapshot_path, provenance_path)
+    exact: dict[str, dict[str, object]] = {}
+    file_max: dict[str, dict[str, object]] = {}
+    for item in legacy:
+        node = cast(str, item["nodeid"])
+        if item["provenance"] == "native_p95":
+            entry = dict(item)
+        elif node in snapshot:
+            entry = {"nodeid": node, "estimated_ms": snapshot[node], "provenance": "snapshot_exact", "sample_count": 0}
+        else:
+            continue
+        exact[node] = entry
+        file_name = node.split("::", 1)[0]
+        prior = file_max.get(file_name)
+        # Lexical tie-break keeps the plan independent of input dictionary order.
+        if prior is None or (cast(int, entry["estimated_ms"]), node) > (cast(int, prior["estimated_ms"]), cast(str, prior["nodeid"])):
+            file_max[file_name] = entry
+    floor = max(5000, cold_start_fallback_ms)
+    estimates: list[dict[str, object]] = []
+    for node in inventory:
+        if node in exact:
+            estimates.append(exact[node])
+            continue
+        known = file_max.get(node.split("::", 1)[0])
+        if known is None:
+            estimates.append({"nodeid": node, "estimated_ms": floor, "provenance": "source_floor", "sample_count": 0})
+        else:
+            estimates.append({"nodeid": node, "estimated_ms": known["estimated_ms"], "provenance": "same_file_max", "sample_count": 0, "basis_nodeid": known["nodeid"], "basis_provenance": known["provenance"]})
+    return estimates, native_source, snapshot_source
+
+
+def _verify_source_estimates(semantic: dict[str, object], estimates: list[dict[str, object]], inventory: tuple[str, ...]) -> None:
+    source = _object(semantic.get("snapshot_source"), "snapshot_source")
+    native = _object(semantic.get("duration_source"), "duration_source")
+    for name, value in (("snapshot_source", source), ("duration_source", native)):
+        if value.get("status") not in ("matched", "unavailable"):
+            raise ShardPlanError(f"{name} has invalid status")
+        if value.get("status") == "matched":
+            if not isinstance(value.get("digest"), str) or not DIGEST_PATTERN.fullmatch(cast(str, value["digest"])) or value.get("reason") is not None:
+                raise ShardPlanError(f"{name} has invalid matched evidence")
+        elif value.get("digest") is not None or not isinstance(value.get("reason"), str):
+            raise ShardPlanError(f"{name} has invalid unavailable evidence")
+    floor = _number(semantic.get("source_floor_ms"), "source_floor_ms")
+    if floor < 5000:
+        raise ShardPlanError("source floor is below five seconds")
+    if len(estimates) != len(inventory):
+        raise ShardPlanError("source estimate count differs from inventory")
+    exact: dict[str, dict[str, object]] = {}
+    by_file: dict[str, list[dict[str, object]]] = {}
+    for node, entry in zip(inventory, estimates):
+        if entry.get("nodeid") != node:
+            raise ShardPlanError("source estimate order differs from inventory")
+        kind = entry.get("provenance")
+        count = entry.get("sample_count")
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ShardPlanError("source estimate has invalid sample count")
+        if kind in ("native_p95", "snapshot_exact"):
+            if (kind == "native_p95" and (count < 1 or native["status"] != "matched")) or (kind == "snapshot_exact" and (count != 0 or source["status"] != "matched")):
+                raise ShardPlanError("source exact estimate contradicts its evidence")
+            if set(entry) != {"nodeid", "estimated_ms", "provenance", "sample_count"}:
+                raise ShardPlanError("source exact estimate has unexpected fields")
+            exact[node] = entry
+            by_file.setdefault(node.split("::", 1)[0], []).append(entry)
+        elif kind in ("same_file_max", "source_floor"):
+            if count != 0:
+                raise ShardPlanError("source fallback cannot have native samples")
+            expected_keys = {"nodeid", "estimated_ms", "provenance", "sample_count"}
+            if kind == "same_file_max":
+                expected_keys |= {"basis_nodeid", "basis_provenance"}
+            if set(entry) != expected_keys:
+                raise ShardPlanError("source fallback has unexpected fields")
+        else:
+            raise ShardPlanError("unknown source estimate provenance")
+    for node, entry in zip(inventory, estimates):
+        file_name = node.split("::", 1)[0]
+        known = by_file.get(file_name, [])
+        if entry["provenance"] == "same_file_max":
+            if not known:
+                raise ShardPlanError("same-file estimate has no exact current-file evidence")
+            best = max(known, key=lambda item: (cast(int, item["estimated_ms"]), cast(str, item["nodeid"])))
+            if entry.get("basis_nodeid") != best["nodeid"] or entry.get("basis_provenance") != best["provenance"] or entry["estimated_ms"] != best["estimated_ms"]:
+                raise ShardPlanError("same-file estimate contradicts exact current-file maximum")
+        if entry["provenance"] == "source_floor" and (known or entry["estimated_ms"] != floor):
+            raise ShardPlanError("source floor contradicts current-file evidence")
+
+
 def _groups(weights: tuple[int, ...], capacity: int) -> list[tuple[int, int]]:
     groups: list[tuple[int, int]] = []
     start = 0
@@ -332,9 +466,19 @@ def build_plan(
     duration_path: Path | None,
     *,
     cold_start_fallback_ms: int = 1000,
+    duration_policy: str = "legacy",
+    snapshot_path: Path | None = None,
+    provenance_path: Path | None = None,
 ) -> dict[str, object]:
     validate_inventory(inventory)
-    estimates, source = duration_estimates(duration_path, profile, inventory, cold_start_fallback_ms=cold_start_fallback_ms)
+    if duration_policy == SOURCE_POLICY:
+        estimates, source, snapshot_source = source_duration_estimates(duration_path, profile, inventory, snapshot_path, provenance_path, cold_start_fallback_ms=cold_start_fallback_ms)
+    elif duration_policy == "legacy":
+        if snapshot_path is not None or provenance_path is not None:
+            raise ShardPlanError("bootstrap input requires source-required-v1")
+        estimates, source = duration_estimates(duration_path, profile, inventory, cold_start_fallback_ms=cold_start_fallback_ms)
+    else:
+        raise ShardPlanError("unknown duration estimation policy")
     shards, capacity, limited = allocate(inventory, estimates)
     semantic = {
         "context": context.semantic_json(),
@@ -350,6 +494,10 @@ def build_plan(
         "predicted_total_ms": sum(cast(int, entry["estimated_ms"]) for entry in estimates),
         "shards": shards,
     }
+    if duration_policy == SOURCE_POLICY:
+        semantic["duration_policy"] = SOURCE_POLICY
+        semantic["snapshot_source"] = snapshot_source
+        semantic["source_floor_ms"] = max(5000, cold_start_fallback_ms)
     return {"schema_version": PLAN_SCHEMA, "semantic": semantic, "digest_sha256": _digest(semantic), "origin": context.origin}
 
 
@@ -388,12 +536,19 @@ def verify_plan(data: dict[str, object]) -> VerifiedPlan:
     if not isinstance(estimates_raw, list):
         raise ShardPlanError("plan estimates missing")
     estimates = [_object(item, "estimate") for item in estimates_raw]
-    for estimate in estimates:
-        _number(estimate.get("estimated_ms"), "estimated_ms")
-        if estimate.get("provenance") not in ("native_p95", "fallback_current_max_p95", "fallback_one_second", "fallback_cold_start"):
-            raise ShardPlanError("unknown estimate provenance")
-        if isinstance(estimate.get("sample_count"), bool) or not isinstance(estimate.get("sample_count"), int) or cast(int, estimate["sample_count"]) < 0:
-            raise ShardPlanError("invalid estimate sample count")
+    if semantic.get("duration_policy") == SOURCE_POLICY:
+        for estimate in estimates:
+            _number(estimate.get("estimated_ms"), "estimated_ms")
+        _verify_source_estimates(semantic, estimates, inventory)
+    elif "duration_policy" in semantic or "snapshot_source" in semantic or "source_floor_ms" in semantic:
+        raise ShardPlanError("unknown duration estimation policy metadata")
+    else:
+        for estimate in estimates:
+            _number(estimate.get("estimated_ms"), "estimated_ms")
+            if estimate.get("provenance") not in ("native_p95", "fallback_current_max_p95", "fallback_one_second", "fallback_cold_start"):
+                raise ShardPlanError("unknown estimate provenance")
+            if isinstance(estimate.get("sample_count"), bool) or not isinstance(estimate.get("sample_count"), int) or cast(int, estimate["sample_count"]) < 0:
+                raise ShardPlanError("invalid estimate sample count")
     shards, capacity, limited = allocate(inventory, estimates)
     if semantic.get("shards") != shards or semantic.get("effective_capacity_ms") != capacity or semantic.get("capacity_limited") != limited:
         raise ShardPlanError("plan assignments violate deterministic complete partition")
