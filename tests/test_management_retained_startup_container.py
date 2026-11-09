@@ -108,7 +108,7 @@ print('readonly mount, identity and prior-owner fence verified')
 
 
 @pytest.mark.supervisor_integration
-def test_retained_startup_uses_real_readonly_bind_and_shared_owner_lock(tmp_path: Path) -> None:
+def test_retained_startup_uses_real_readonly_bind_and_shared_owner_lock(tmp_path: Path, _use_real_commands) -> None:
     _exercise_real_retained_startup(
         tmp_path,
         source=Path(__file__).resolve().parents[1] / "src",
@@ -117,7 +117,7 @@ def test_retained_startup_uses_real_readonly_bind_and_shared_owner_lock(tmp_path
 
 
 @pytest.mark.supervisor_integration
-def test_retained_startup_detects_removed_readonly_guard(tmp_path: Path) -> None:
+def test_retained_startup_detects_removed_readonly_guard(tmp_path: Path, _use_real_commands) -> None:
     """A disposable source mutation must make the unchanged real-container oracle fail."""
     source = tmp_path / "mutated-source"
     shutil.copytree(Path(__file__).resolve().parents[1] / "src", source)
