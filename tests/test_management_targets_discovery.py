@@ -191,7 +191,7 @@ def test_discovery_has_no_real_worker_http_across_result_classes(runtime_boundar
         assert len(_call(client, token, "auto_coder_targets", {}, 1)["targets"]) == 2
         _assert_no_worker_requests(requests)
 
-        _policy(policy, "  beta-worker:\\n    channel: beta\\n    repositories: [fixture/wrong]\\n")
+        _policy(policy, "  beta-worker:\n    channel: beta\n    repositories: [fixture/wrong]\n")
         assert _call(client, token, "auto_coder_targets", {}, 2)["targets"] == []
         _assert_no_worker_requests(requests)
 
@@ -222,7 +222,7 @@ def test_discovery_transport_observer_detects_regressed_worker_probes(runtime_bo
     monkeypatch.setattr(ManagementRuntime, "targets", regressed_targets)
     app = _transport_observed_app(runtime_boundary)
     requests = _observe_worker_http(monkeypatch)
-    with TestClient(app, base_url=settings.oauth.canonical_issuer) as client:
+    with TestClient(app, base_url=settings.oauth.canonical_issuer, raise_server_exceptions=False) as client:
         token = _issue(client, settings, signed, "alice", "alice-client")["access_token"]
         _mcp(client, token, "tools/call", 1, {"name": "auto_coder_targets", "arguments": {}})
     assert requests == [("GET", "/v1/supervisor")]
