@@ -99,12 +99,7 @@ def test_operator_upgrade_executes_root_pytest_with_exact_profile(tmp_path: Path
 
     executable = tmp_path / ".venv" / "bin" / "python"
     executable.parent.mkdir(parents=True)
-    executable.write_text(
-        '#!/bin/sh\n'
-        'printf "profile=%s\\nrunner=%s\\nrequired=%s\\nresults=%s\\n" '
-        '"$SUPERVISOR_PROFILE" "$RUNNER_NAME" "$SUPERVISOR_REQUIRED_NODEIDS" "$SUPERVISOR_RESULTS_PATH" > "$CAPTURE"\n'
-        'printf "arg=%s\\n" "$@" >> "$CAPTURE"\n'
-    )
+    executable.write_text("#!/bin/sh\n" 'printf "profile=%s\\nrunner=%s\\nrequired=%s\\nresults=%s\\n" ' '"$SUPERVISOR_PROFILE" "$RUNNER_NAME" "$SUPERVISOR_REQUIRED_NODEIDS" "$SUPERVISOR_RESULTS_PATH" > "$CAPTURE"\n' 'printf "arg=%s\\n" "$@" >> "$CAPTURE"\n')
     executable.chmod(0o755)
     (tmp_path / "supervisor-integration-logs").mkdir()
     captured = tmp_path / "invocation.txt"
@@ -142,8 +137,15 @@ def test_operator_upgrade_executes_root_pytest_with_exact_profile(tmp_path: Path
     ]
     arguments = [line.removeprefix("arg=") for line in lines[4:]]
     assert arguments == [
-        "-m", "pytest", "-p", "supervisor_ci_results", "-q", "-vv",
-        "-o", "timeout=240", "tests/test_management_bootstrap_upgrade_container.py",
+        "-m",
+        "pytest",
+        "-p",
+        "supervisor_ci_results",
+        "-q",
+        "-vv",
+        "-o",
+        "timeout=240",
+        "tests/test_management_bootstrap_upgrade_container.py",
         "--junitxml=supervisor-integration-logs/operator-upgrade.xml",
     ]
 
