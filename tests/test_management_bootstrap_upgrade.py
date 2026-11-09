@@ -613,7 +613,7 @@ def test_source_proof_requires_every_producer_job_at_exact_run_attempt(
 
     observed_paths: list[str] = []
 
-    def request(method: str, path: str) -> SimpleNamespace:
+    def github_request(method: str, path: str) -> SimpleNamespace:
         assert method == "GET"
         observed_paths.append(path)
         if "/workflows/supervisor-integration-tests.yml/runs?" in path:
@@ -627,7 +627,7 @@ def test_source_proof_requires_every_producer_job_at_exact_run_attempt(
         return remote.request(method, path)
 
     class ControlledClient:
-        request = staticmethod(request)
+        request = staticmethod(github_request)
 
     client = ControlledClient()
     proof = SimpleNamespace(
