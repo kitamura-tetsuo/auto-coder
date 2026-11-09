@@ -1,35 +1,36 @@
 version: 2
 updates:
   - package-ecosystem: "uv"
-    directory: "/"
+    directories:
+      - "/"
+      - "/scripts/process_issues_watcher"
+      - "/src/auto_coder/mcp_servers/test_watcher"
+      - "/utils/clone-issue"
+      - "/utils/github-sub-issue"
     schedule:
       interval: "weekly"
+    groups:
+      python-dependencies:
+        applies-to: version-updates
+        patterns: ["*"]
     ignore:
       # ghapi<2.0 calls fastcore.L.starmap(), which was removed in fastcore 2.0.
       # Keep receiving compatible fastcore 1.x updates until ghapi 2.x is adopted.
       - dependency-name: "fastcore"
         versions: [">=2.0.0"]
-  - package-ecosystem: "uv"
-    directory: "/scripts/process_issues_watcher"
-    schedule:
-      interval: "weekly"
-  - package-ecosystem: "uv"
-    directory: "/src/auto_coder/mcp_servers/test_watcher"
-    schedule:
-      interval: "weekly"
-  - package-ecosystem: "uv"
-    directory: "/utils/clone-issue"
-    schedule:
-      interval: "weekly"
-  - package-ecosystem: "uv"
-    directory: "/utils/github-sub-issue"
-    schedule:
-      interval: "weekly"
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      docker-dependencies:
+        applies-to: version-updates
+        patterns: ["*"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      github-actions-dependencies:
+        applies-to: version-updates
+        patterns: ["*"]
