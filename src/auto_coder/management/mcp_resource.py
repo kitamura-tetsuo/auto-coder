@@ -223,9 +223,7 @@ class ResourceAdmission:
             logger.info("Management MCP authentication outcome: authorized")
             context_token = _grant.set(grant)
             if discovery_argument_error:
-                response = JSONResponse(
-                    {"jsonrpc": "2.0", "id": discovery_request_id, "error": {"code": -32602, "message": "Invalid params"}}
-                )
+                response = JSONResponse({"jsonrpc": "2.0", "id": discovery_request_id, "error": {"code": -32602, "message": "Invalid params"}})
                 await response(scope, selected_receive, send)
                 return
             await self.app(scope, selected_receive, send)
