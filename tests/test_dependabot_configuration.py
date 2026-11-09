@@ -85,9 +85,13 @@ def _assert_manifest_coverage(
 
     assert len(declared) == len(set(declared)), "duplicate Dependabot entries conflict"
     missing = required - set(declared)
-    assert not missing, f"Dependabot does not monitor required project {sorted(missing)}"
+    assert not missing, (
+        f"Dependabot does not monitor required project {sorted(missing)}"
+    )
     unexpected = set(declared) - required
-    assert not unexpected, f"Unexpected Dependabot monitoring entries: {sorted(unexpected)}"
+    assert not unexpected, (
+        f"Unexpected Dependabot monitoring entries: {sorted(unexpected)}"
+    )
 
     for ecosystem, directory in required:
         target_directory = repository_root / directory.removeprefix("/")
