@@ -182,6 +182,59 @@ jobs:
             _assert_workflow_policy([valid_path, workflow_path])
 
 
+def test_python314_advisory_workflow_is_a_real_non_live_compatibility_check() -> None:
+    workflow_path = WORKFLOWS / "python-314-compatibility.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    assert set(workflow["on"]) == {"pull_request", "workflow_dispatch", "schedule"}
+    assert set(workflow["on"]["pull_request"]["paths"]) == {
+        ".github/workflows/python-314-compatibility.yml",
+        "pyproject.toml",
+        "uv.lock",
+        "tests/test_ci_uv_lock_policy.py",
+    }
+    assert workflow["permissions"] == {"contents": "read"}
+    assert list(workflow["jobs"]) == ["python314-compatibility"]
+    job = workflow["jobs"]["python314-compatibility"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["env"]["UV_PYTHON"] == "3.14"
+    assert job["env"]["AUTO_CODER_REQUIRE_BROWSER"] == "1"
+    steps = job["steps"]
+    assert not any(step.get("continue-on-error", False) for step in steps)
+    assert next(step for step in steps if step.get("uses") == "actions/setup-python@v7")["with"]["python-version"] == "3.14"
+    checkout = next(step for step in steps if step.get("uses") == "actions/checkout@v7")
+    assert checkout["with"]["fetch-depth"] == 0
+    assert checkout["with"]["ref"] == "${{ github.event.pull_request.head.sha || github.sha }}"
+    commands = [step.get("run", "") for step in steps]
+    assert "uv sync --locked --dev --extra test" in commands
+    assert any("sys.version_info[:2] == (3, 14)" in command for command in commands)
+    quality = next(command for command in commands if "uv run black --check" in command)
+    assert all(gate in quality for gate in ("isort --check-only", "flake8 src/ tests/", "mypy --config-file pyproject.toml -p auto_coder"))
+    fixture = commands.index("uv run python scripts/prepare_management_test_image.py")
+    browser = commands.index("uv run python scripts/browser_preflight.py")
+    tests = commands.index("uv run python -m pytest -m 'not opencode_live' -vv")
+    assert fixture < browser < tests
+    assert any("uv run playwright install --with-deps chromium" in command for command in commands)
+    assert _assert_workflow_policy([workflow_path]) == {"python-314-compatibility.yml:python314-compatibility"}
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement"),
+    [
+        ('version: "0.7.22"', 'version: "0.7.21"'),
+        ("astral-sh/setup-uv@v7", "astral-sh/setup-uv@v6"),
+        ("uv sync --locked --dev --extra test", "uv sync --dev --extra test"),
+        ("uv sync --locked --dev --extra test", "pip install ."),
+    ],
+)
+def test_python314_workflow_cannot_bypass_shared_uv_policy(tmp_path: Path, original: str, replacement: str) -> None:
+    workflow = (WORKFLOWS / "python-314-compatibility.yml").read_text(encoding="utf-8")
+    assert workflow.count(original) == 1
+    corrupted = tmp_path / "python-314-compatibility.yml"
+    corrupted.write_text(workflow.replace(original, replacement, 1), encoding="utf-8")
+    with pytest.raises(AssertionError):
+        _assert_workflow_policy([corrupted])
+
+
 def _write_lock_fixture(project: Path) -> None:
     dependency = project / "dependency"
     (dependency / "local_dependency").mkdir(parents=True)
@@ -236,7 +289,7 @@ def _assert_setup_fails_without_lock_change(project: Path, command: str) -> None
 
 @pytest.mark.parametrize(
     "workflow_name",
-    ["test-source-for-runtime.yml", "publish-beta.yml"],
+    ["test-source-for-runtime.yml", "publish-beta.yml", "python-314-compatibility.yml"],
 )
 def test_production_setup_rejects_stale_lock_before_tests_or_publication(tmp_path: Path, workflow_name: str, _use_real_commands: object) -> None:
     command = _sync_commands(WORKFLOWS / workflow_name)[0]
@@ -255,7 +308,7 @@ def test_production_setup_rejects_stale_lock_before_tests_or_publication(tmp_pat
 
 @pytest.mark.parametrize(
     "workflow_name",
-    ["test-source-for-runtime.yml", "publish-beta.yml"],
+    ["test-source-for-runtime.yml", "publish-beta.yml", "python-314-compatibility.yml"],
 )
 def test_production_setup_rejects_unavailable_locked_package_before_tests_or_publication(tmp_path: Path, workflow_name: str, _use_real_commands: object) -> None:
     command = _sync_commands(WORKFLOWS / workflow_name)[0]
