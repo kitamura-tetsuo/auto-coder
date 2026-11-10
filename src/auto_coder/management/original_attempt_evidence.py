@@ -91,7 +91,7 @@ def observe(binding: HistoryBinding) -> Iterator[int]:
         yield fd
 
 
-def _database(path: Path) -> None:
+def _require_settled_sqlite(path: Path) -> None:
     # Immutable SQLite readers ignore both uncheckpointed WAL data and hot
     # rollback journals. Either unresolved sidecar invalidates the original.
     # This observation never creates or cleans up sidecars.
@@ -99,6 +99,10 @@ def _database(path: Path) -> None:
         sidecar = path.with_name(path.name + suffix)
         if sidecar.is_symlink() or (sidecar.exists() and sidecar.stat().st_size):
             raise OriginalEvidenceUnavailable("original database " + description + " is unresolved")
+
+
+def _database(path: Path) -> None:
+    _require_settled_sqlite(path)
     with closing(sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)) as connection:
         if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
             raise OriginalEvidenceUnavailable("original database is corrupt")
@@ -111,6 +115,9 @@ def _database(path: Path) -> None:
         }[path.name]
         if not required <= tables:
             raise OriginalEvidenceUnavailable("original database schema incomplete")
+    # A writer may expose a new sidecar during the immutable database read.
+    # A clean pre-open observation does not prove settled original contents.
+    _require_settled_sqlite(path)
 
 
 def _check_owner_fence(path: Path, fd: int, expected: tuple[int, int]) -> None:

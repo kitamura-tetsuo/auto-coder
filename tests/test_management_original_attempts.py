@@ -931,3 +931,46 @@ def test_deliberately_reordered_grant_cannot_fool_original_consumer(tmp_path, _u
         claim_fresh_initialization(Path(intent.host_state_root), intent)
     assert _fingerprint(tmp_path) == original
     assert not (Path(intent.host_state_root) / "fresh-guard.sock").exists()
+
+
+@pytest.mark.parametrize(
+    "suffix, diagnostic",
+    [("-wal", "WAL"), ("-journal", "rollback journal")],
+)
+def test_original_sqlite_reader_refuses_sidecar_created_during_immutable_read(tmp_path, monkeypatch, suffix, diagnostic):
+    """A settled first scan is not proof that no pending original write appears."""
+    import sqlite3
+
+    from auto_coder.management import original_attempt_evidence as reader
+
+    path = tmp_path / "management-operations.sqlite3"
+    with sqlite3.connect(path) as connection:
+        for name in ("metadata", "operations", "operation_history"):
+            connection.execute(f"CREATE TABLE {name} (id INTEGER PRIMARY KEY)")
+    original = path.read_bytes()
+    pending = path.with_name(path.name + suffix)
+    actual_connect = sqlite3.connect
+
+    class InterleavedRead:
+        def __init__(self, delegate):
+            self.delegate = delegate
+
+        def execute(self, query):
+            result = self.delegate.execute(query)
+            if query == "PRAGMA quick_check":
+                # Test-only interleaving: a nonempty unresolved sidecar appears
+                # after the first filesystem scan, before the SQLite read ends.
+                pending.write_bytes(b"simulated unresolved sidecar")
+            return result
+
+        def close(self):
+            self.delegate.close()
+
+    def interleaved_connect(*args, **kwargs):
+        return InterleavedRead(actual_connect(*args, **kwargs))
+
+    monkeypatch.setattr(reader.sqlite3, "connect", interleaved_connect)
+    with pytest.raises(OriginalEvidenceUnavailable, match="original database " + diagnostic + " is unresolved"):
+        reader._database(path)
+    assert path.read_bytes() == original
+    assert pending.read_bytes() == b"simulated unresolved sidecar"

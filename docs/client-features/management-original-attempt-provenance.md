@@ -149,7 +149,10 @@ consumer's behalf.
 Exit 1 means unavailable or refused, including legacy absence, unsupported source
 or profile, corrupt/conflicting frontier, changed file/lock, unresolved outcome,
 nonempty WAL/rollback journal or omitted expected store. The reader uses immutable read-only
-SQLite connections, rejects unresolved WALs and rollback journals and does not create sidecars.
+SQLite connections, rejects unresolved WALs and rollback journals both before
+and after an immutable schema read, and does not create sidecars. A deterministic
+interleaving regression injects a sidecar during a real read; it is a bounded
+unit race oracle, not a live management/host writer acceptance claim.
 Observation resources close on refusal. Neither an earlier verification nor a
 released observation claims current exclusion; consumers still own their actual
 deployment fences and operation-history policy.
