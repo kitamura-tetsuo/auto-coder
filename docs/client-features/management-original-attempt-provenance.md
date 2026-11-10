@@ -49,6 +49,10 @@ intent, predecessor/target/container identities, expected store paths, mounted
 root device/inode identities and original producer PID, Linux start token, boot
 ID and nonce. Original events are immutable numbered files chained by digest.
 The atomically replaced, fsynced frontier commits the exact count and last digest.
+The authority, frontier and numbered events must retain their exact canonical
+producer encoding. In particular, event sequence numbers must be genuine
+integers, never JSON booleans that compare equal to zero or one. A rehashed
+but noncanonical original is unavailable rather than silently normalized.
 The independent reader validates the original anchor and grant-possible
 producer lifetime fields (positive PID, canonical Linux start token,
 canonical boot UUID and nonce) even when an event and its frontier

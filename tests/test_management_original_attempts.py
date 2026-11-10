@@ -18,7 +18,7 @@ import pytest
 from auto_coder.management.fresh_host_observation import serve_one_fresh_grant
 from auto_coder.management.fresh_initialization import claim_fresh_initialization, load_fresh_initialization
 from auto_coder.management.original_attempt_evidence import derive, observe, verify
-from auto_coder.management.original_attempts import HistoryBinding, OriginalEvidenceUnavailable, enroll, history_lock, read_frontier
+from auto_coder.management.original_attempts import HistoryBinding, OriginalEvidenceUnavailable, canonical, enroll, history_lock, read_frontier
 from tests.test_management_fresh_initialization import _intent
 
 
@@ -78,6 +78,43 @@ def test_original_origin_terminal_is_independently_verifiable_and_never_reusable
     assert _fingerprint(tmp_path) == original
     assert list(Path(intent.host_state_root).iterdir()) == []
     assert list(Path(intent.host_journal_root).iterdir()) == []
+
+
+@pytest.mark.parametrize("record", ["authority", "frontier", "event-sequence"])
+def test_independent_original_reader_refuses_nonproducer_bytes_and_boolean_sequence(tmp_path, record):
+    """An internally rehashed frontier must not normalize an altered original."""
+    binding = _history(tmp_path)
+    _terminal(tmp_path, binding, "failed")
+    root = Path(binding.root)
+    with observe(binding) as fence:
+        baseline = derive(binding, fence)
+        assert baseline.unavailable == ()
+        assert verify(baseline, binding, fence) == baseline
+
+    if record == "event-sequence":
+        event_path = root / "00000001.json"
+        event = json.loads(event_path.read_bytes())
+        assert event["sequence"] == 1
+        event["sequence"] = True
+        encoded = canonical(event)
+        event_path.write_bytes(encoded)
+        frontier_path = root / "frontier.json"
+        frontier = json.loads(frontier_path.read_bytes())
+        frontier["digest"] = hashlib.sha256(encoded).hexdigest()
+        frontier_path.write_bytes(canonical(frontier))
+        expected_error = "corrupt or cyclic original frontier"
+    else:
+        path = root / ("authority.json" if record == "authority" else "frontier.json")
+        path.write_text(json.dumps(json.loads(path.read_bytes()), indent=2))
+        expected_error = "unsupported history profile" if record == "authority" else "frontier is malformed or unbounded"
+
+    altered = _fingerprint(tmp_path)
+    with observe(binding) as fence:
+        evidence = derive(binding, fence)
+        assert evidence.unavailable == (expected_error,)
+        with pytest.raises(OriginalEvidenceUnavailable):
+            verify(evidence, binding, fence)
+    assert _fingerprint(tmp_path) == altered
 
 
 @pytest.mark.parametrize("name", ["history.lock", "authority.json", "frontier.json", "00000000.json"])
@@ -405,7 +442,7 @@ def test_producer_rejects_source_mismatch_missing_authority_and_aliases(tmp_path
     path = Path(binding.root) / "authority.json"
     raw = json.loads(path.read_bytes())
     raw["binding"]["source"] = "sha256:" + "0" * 64
-    path.write_text(json.dumps(raw))
+    path.write_bytes(canonical(raw))
     new = _covered(tmp_path, binding, "different-source")
     before = _fingerprint(tmp_path)
     with pytest.raises(OriginalEvidenceUnavailable, match="source"):

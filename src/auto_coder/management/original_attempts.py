@@ -158,13 +158,14 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
     """Validate the whole bounded append-only event namespace, never truncate."""
     raw, _ = read_original(root / "authority.json")
     authority = json.loads(raw)
-    if not isinstance(authority, dict) or set(authority) != {"binding", "profile", "root", "lock"} or authority["profile"] != PROFILE:
+    if not isinstance(authority, dict) or set(authority) != {"binding", "profile", "root", "lock"} or authority["profile"] != PROFILE or canonical(authority) != raw:
         raise OriginalEvidenceUnavailable("unsupported history profile")
     binding = HistoryBinding(**authority["binding"])
     if binding.root != str(root) or (expected is not None and binding != expected) or authority["root"] != list(identity(root, directory=True)) or authority["lock"] != list(identity(root / "history.lock")):
         raise OriginalEvidenceUnavailable("history/source/deployment identity differs")
-    frontier = json.loads(read_original(root / "frontier.json")[0])
-    if not isinstance(frontier, dict) or set(frontier) != {"count", "digest"} or type(frontier["count"]) is not int or not 0 <= frontier["count"] <= MAX_EVENTS:
+    frontier_raw, _ = read_original(root / "frontier.json")
+    frontier = json.loads(frontier_raw)
+    if not isinstance(frontier, dict) or set(frontier) != {"count", "digest"} or type(frontier["count"]) is not int or not 0 <= frontier["count"] <= MAX_EVENTS or canonical(frontier) != frontier_raw:
         raise OriginalEvidenceUnavailable("frontier is malformed or unbounded")
     names = {"history.lock", "authority.json", "frontier.json"} | {f"{i:08d}.json" for i in range(frontier["count"])}
     if {p.name for p in root.iterdir()} != names:
@@ -174,7 +175,7 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
     for index in range(frontier["count"]):
         encoded, _ = read_original(root / f"{index:08d}.json")
         event = json.loads(encoded)
-        if not isinstance(event, dict) or set(event) != {"previous", "sequence", "kind", "attempt", "value"} or event["previous"] != previous or event["sequence"] != index or canonical(event) != encoded:
+        if not isinstance(event, dict) or set(event) != {"previous", "sequence", "kind", "attempt", "value"} or event["previous"] != previous or type(event["sequence"]) is not int or event["sequence"] != index or canonical(event) != encoded:
             raise OriginalEvidenceUnavailable("corrupt or cyclic original frontier")
         previous = hashlib.sha256(encoded).hexdigest()
         events.append(HistoryEvent(event["previous"], index, event["kind"], event["attempt"], canonical(event["value"]).decode()))
