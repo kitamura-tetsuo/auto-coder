@@ -497,3 +497,187 @@ def test_upgrade_retains_typed_original_schema_refusal(tmp_path):
     assert caught.value.stage == "prerequisite-blocked"
     assert caught.value.reason == "fresh initialization intent differs"
     assert path.read_bytes() == b"{}"
+
+
+# Isolated process barriers wrap genuine writer syscalls. Neither writer nor
+# verifier is substituted; a barrier is not an assertion of power-loss durability.
+_DURABLE_CHILD = r"""
+import json
+import sys
+from pathlib import Path
+from auto_coder.management import original_attempts as origin
+from auto_coder.management.fresh_initialization import claim_fresh_initialization, parse_fresh_intent
+from auto_coder.management.fresh_host_observation import serve_one_fresh_grant
+
+intent = parse_fresh_intent(json.loads(Path(sys.argv[1]).read_bytes()))
+kind, checkpoint = sys.argv[2].split(":", 1)
+index = {"anchor": 0, "claimed": 1, "never-created": 1, "grant-possible": 2}[kind]
+target_event = f"{index:08d}.json"
+real_create = origin._create
+real_replace = origin.os.replace
+seen_event = False
+
+def stop_at(point):
+    if point == checkpoint:
+        print("BARRIER:" + point, flush=True)
+        sys.stdin.readline()
+
+def create_at_real_boundary(root, name, value):
+    global seen_event
+    if name == target_event:
+        stop_at("before-event")
+        real_create(root, name, value)
+        seen_event = True
+        stop_at("after-event")
+    elif name == "frontier.pending" and seen_event:
+        stop_at("before-pending")
+        real_create(root, name, value)
+        stop_at("after-pending")
+    else:
+        real_create(root, name, value)
+
+def replace_at_real_boundary(source, destination):
+    if seen_event and Path(source).name == "frontier.pending":
+        stop_at("before-replace")
+        real_replace(source, destination)
+        stop_at("after-replace")
+    else:
+        real_replace(source, destination)
+
+origin._create = create_at_real_boundary
+origin.os.replace = replace_at_real_boundary
+print("ENTERING", flush=True)
+sys.stdin.readline()
+if kind == "grant-possible":
+    serve_one_fresh_grant(Path(intent.host_state_root) / "fresh-guard.sock", intent, None, None, -1, -1)
+else:
+    claim_fresh_initialization(Path(intent.host_state_root), intent)
+"""
+
+
+@pytest.mark.parametrize("kind", ["anchor", "claimed", "never-created", "grant-possible"])
+@pytest.mark.parametrize("checkpoint", ["before-event", "after-event", "before-pending", "after-pending", "before-replace", "after-replace"])
+def test_real_writer_killed_inside_durable_publication(tmp_path, kind, checkpoint, _use_real_commands):
+    """Kill actual production admissions around original event/frontier writes."""
+    binding = _history(tmp_path)
+    intent = _covered(tmp_path, binding, "original")
+    if kind == "never-created":
+        intent = replace(intent, oauth_inode=intent.oauth_inode + 1)
+    if kind == "grant-possible":
+        claim_fresh_initialization(Path(intent.host_state_root), intent)
+
+    payload = tmp_path / "durable-input.json"
+    payload.write_text(json.dumps(asdict(intent)))
+    child = subprocess.Popen(
+        [sys.executable, "-B", "-c", _DURABLE_CHILD, str(payload), f"{kind}:{checkpoint}"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+    )
+    try:
+        assert child.stdout.readline().strip() == "ENTERING"
+        child.stdin.write("go\n")
+        child.stdin.flush()
+        assert child.stdout.readline().strip() == "BARRIER:" + checkpoint
+        child.kill()
+        _, stderr = child.communicate(timeout=10)
+        assert child.returncode != 0, stderr
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.communicate(timeout=10)
+
+    original = _fingerprint(tmp_path)
+    root = Path(binding.root)
+    with observe(binding) as fence:
+        evidence = derive(binding, fence)
+        if checkpoint in {"after-event", "before-pending", "after-pending", "before-replace"}:
+            # Real event bytes have been published without a matching final frontier.
+            with pytest.raises(OriginalEvidenceUnavailable, match="partial, omitted or conflicting"):
+                read_frontier(root, binding)
+            assert evidence.unavailable
+            with pytest.raises(OriginalEvidenceUnavailable):
+                verify(evidence, binding, fence)
+        elif kind == "never-created" and checkpoint == "after-replace":
+            # Process death is NOT a power-loss/fsync success oracle.
+            assert evidence.attempts[-1].state == "never-created"
+        else:
+            assert evidence.unavailable
+    assert _fingerprint(tmp_path) == original
+
+    if checkpoint in {"after-event", "before-pending", "after-pending", "before-replace"}:
+        # Reentry cannot heal a partially published original frontier.
+        contender = _covered(tmp_path, binding, "contender")
+        prior = _fingerprint(tmp_path)
+        with pytest.raises(OriginalEvidenceUnavailable, match="partial"):
+            claim_fresh_initialization(Path(contender.host_state_root), contender)
+        assert _fingerprint(tmp_path) == prior
+        if kind != "grant-possible":
+            with pytest.raises(OriginalEvidenceUnavailable):
+                serve_one_fresh_grant(tmp_path / "new-guard.sock", intent, None, None, -1, -1)
+        assert _fingerprint(tmp_path) == prior
+
+    assert not (tmp_path / "new-guard.sock").exists()
+    assert not (Path(intent.host_state_root) / "fresh-guard.sock").exists()
+    assert not (Path(intent.host_journal_root) / "management-operations.sqlite3").exists()
+
+
+_ORDERING_MUTATION_CHILD = r"""
+import json
+import sys
+from pathlib import Path
+from auto_coder.management import original_attempts as origin
+from auto_coder.management.fresh_initialization import parse_fresh_intent
+
+intent = parse_fresh_intent(json.loads(Path(sys.argv[1]).read_bytes()))
+real_create = origin._create
+real_replace = origin.os.replace
+
+def omit_publication(root, name, value):
+    if name == "frontier.pending":
+        return
+    real_create(root, name, value)
+
+def omit_frontier_replace(source, destination):
+    if Path(source).name != "frontier.pending":
+        real_replace(source, destination)
+
+origin._create = omit_publication
+origin.os.replace = omit_frontier_replace
+with origin.grant_boundary(intent):
+    print("MUTATED_GRANT_CROSSED_WITHOUT_FRONTIER", flush=True)
+"""
+
+
+def test_deliberately_reordered_grant_cannot_fool_original_consumer(tmp_path, _use_real_commands):
+    """Negative control: a deliberately broken append is not verified success."""
+    binding = _history(tmp_path)
+    intent = _covered(tmp_path, binding, "original")
+    claim_fresh_initialization(Path(intent.host_state_root), intent)
+    payload = tmp_path / "mutation-input.json"
+    payload.write_text(json.dumps(asdict(intent)))
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", _ORDERING_MUTATION_CHILD, str(payload)],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+        timeout=15,
+    )
+    # The deliberately corrupted writer crossed a nominal grant context; this
+    # outcome would be a forbidden false positive if a test trusted its log.
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "MUTATED_GRANT_CROSSED_WITHOUT_FRONTIER"
+
+    original = _fingerprint(tmp_path)
+    with observe(binding) as fence:
+        evidence = derive(binding, fence)
+        assert evidence.unavailable == ("partial, omitted or conflicting frontier",)
+        with pytest.raises(OriginalEvidenceUnavailable):
+            verify(evidence, binding, fence)
+    assert _fingerprint(tmp_path) == original
+    with pytest.raises(OriginalEvidenceUnavailable, match="partial"):
+        claim_fresh_initialization(Path(intent.host_state_root), intent)
+    assert _fingerprint(tmp_path) == original
+    assert not (Path(intent.host_state_root) / "fresh-guard.sock").exists()
