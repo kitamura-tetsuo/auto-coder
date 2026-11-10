@@ -146,3 +146,27 @@ def test_fresh_host_workflow_passes_verified_image_across_sudo():
     assert "verify_image(" in runs[handoff]
     assert "AUTOCODER_FRESH_TEST_BASE_IMAGE=$AUTOCODER_FRESH_TEST_BASE_IMAGE" in runs[execution]
     assert "tests/test_management_retained_startup_container.py" in (Path(__file__).parents[1] / "scripts/supervisor_ci_profiles.py").read_text()
+
+
+def test_dirty_consumer_reports_actual_checkout_changes_and_never_runs_docker(tmp_path, monkeypatch):
+    """A CI-dirtied checkout must identify the offender without running an image."""
+    monkeypatch.setattr(
+        preparation,
+        "resolve_build_identity",
+        lambda _: SimpleNamespace(state="dirty", source_revision="a" * 40, reason=None),
+    )
+    status = Mock(return_value=SimpleNamespace(stdout=" M src/auto_coder/example.py\n?? accidental-output/\n"))
+    inspect = Mock()
+    monkeypatch.setattr(preparation.subprocess, "run", status)
+    monkeypatch.setattr(preparation.subprocess, "check_output", inspect)
+    with pytest.raises(RuntimeError, match="git_status") as raised:
+        preparation.verify_image(tmp_path, "sha256:" + "a" * 64)
+    assert "src/auto_coder/example.py" in str(raised.value)
+    assert "accidental-output/" in str(raised.value)
+    status.assert_called_once_with(
+        ["git", "-C", str(tmp_path), "status", "--porcelain=v1", "--untracked-files=normal"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    inspect.assert_not_called()

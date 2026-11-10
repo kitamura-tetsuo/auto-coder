@@ -17,11 +17,29 @@ from auto_coder.logger_config import get_logger
 logger = get_logger(__name__)
 
 
+def _dirty_checkout_details(repository: Path) -> str:
+    """Report bounded Git status evidence without weakening clean-source admission."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repository), "status", "--porcelain=v1", "--untracked-files=normal"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return "git status unavailable"
+    entries = result.stdout.splitlines()
+    return f"git_status={entries[:20]!r}" + (" (truncated)" if len(entries) > 20 else "")
+
+
 def verify_image(repository: Path, image_id: str) -> str:
     """Recheck the immutable image actually used by a retained-startup consumer."""
     identity = resolve_build_identity(repository)
     if identity.state != "clean" or not identity.source_revision:
-        raise RuntimeError(f"Management test fixtures require a complete clean source identity (state={identity.state}, reason={getattr(identity, 'reason', None)})")
+        detail = f"state={identity.state}, reason={getattr(identity, 'reason', None)}"
+        if identity.state == "dirty":
+            detail += f"; {_dirty_checkout_details(repository)}"
+        raise RuntimeError(f"Management test fixtures require a complete clean source identity ({detail})")
     if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
         raise RuntimeError("Management fixture Docker identity is unavailable or malformed")
     inspected_id = subprocess.check_output(["docker", "image", "inspect", "--format", "{{.Id}}", image_id], text=True).strip()
