@@ -51,6 +51,21 @@ class OriginalAttemptEvidence:
     # There is deliberately no completeness boolean or authorization field.
 
 
+def _validate_original_lifetime(value: object) -> None:
+    """Require the exact original Linux lifetime encoding, not a claimed verdict."""
+    if not isinstance(value, dict) or set(value) != {"pid", "start", "boot", "nonce"}:
+        raise OriginalEvidenceUnavailable("original producer lifetime incomplete")
+    if type(value["pid"]) is not int or value["pid"] <= 0:
+        raise OriginalEvidenceUnavailable("original producer lifetime incomplete")
+    start = value["start"]
+    if not isinstance(start, str) or not start.isascii() or not start.isdecimal() or str(int(start)) != start or int(start) <= 0:
+        raise OriginalEvidenceUnavailable("original producer lifetime incomplete")
+    for field in ("boot", "nonce"):
+        token = value[field]
+        if not isinstance(token, str) or str(uuid.UUID(token)) != token:
+            raise OriginalEvidenceUnavailable("original producer lifetime incomplete")
+
+
 def _snapshot(path: Path) -> OriginalFile:
     data, (device, inode) = read_original(path)
     return OriginalFile(str(path), device, inode, hashlib.sha256(data).hexdigest())
@@ -156,11 +171,7 @@ def derive(binding: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = 
             protected_roots = [Path(value) for value in (intent.host_state_root, intent.host_journal_root, intent.host_oauth_root, intent.host_prior_journal_root) if value]
             if any(root == path or root in path.parents or path in root.parents for path in protected_roots):
                 raise OriginalEvidenceUnavailable("original history overlaps protected management stores")
-            lifetime = anchor["lifetime"]
-            if set(lifetime) != {"pid", "start", "boot", "nonce"} or type(lifetime["pid"]) is not int or lifetime["pid"] <= 0 or not str(lifetime["start"]).isdecimal() or int(lifetime["start"]) <= 0:
-                raise OriginalEvidenceUnavailable("original producer lifetime incomplete")
-            uuid.UUID(lifetime["boot"])
-            uuid.UUID(lifetime["nonce"])
+            _validate_original_lifetime(anchor["lifetime"])
             if baseline is None:
                 baseline = (intent.old_instance, intent.old_container_id)
             parent = targets.get(intent.old_instance)
@@ -185,6 +196,16 @@ def derive(binding: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = 
                 raise OriginalEvidenceUnavailable("conflicting original attempt boundaries")
             anchor = json.loads(branch[0].value_json)
             intent = parse_fresh_intent(anchor["intent"])
+            if kinds[-1] == "grant-possible":
+                grant = json.loads(branch[-1].value_json)
+                if not isinstance(grant, dict) or set(grant) != {"lifetime"}:
+                    raise OriginalEvidenceUnavailable("original grant lifetime incomplete")
+                try:
+                    _validate_original_lifetime(grant["lifetime"])
+                except (ValueError, TypeError) as error:
+                    raise OriginalEvidenceUnavailable("original grant lifetime incomplete") from error
+            elif kinds[-1] == "unresolved" and json.loads(branch[-1].value_json) != {}:
+                raise OriginalEvidenceUnavailable("original unresolved boundary malformed")
             expected_pairs = (
                 ("child", str(Path(intent.host_state_root) / "management-child.sqlite3")),
                 ("handoff", str(Path(intent.host_state_root) / "management-self-update.sqlite3")),

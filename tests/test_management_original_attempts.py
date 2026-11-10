@@ -99,6 +99,66 @@ def test_complete_frontier_retains_claim_and_reverse_failed_branch(tmp_path):
     assert _fingerprint(tmp_path) == original
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing", "extra", "boolean-pid", "numeric-start", "noncanonical-start", "bad-boot", "noncanonical-nonce"],
+)
+def test_independent_reader_refuses_forged_grant_lifetime_with_valid_frontier(tmp_path, mutation):
+    """A test-only forged digest chain is not original producer evidence."""
+    from auto_coder.management import original_attempts as producer
+
+    binding = _history(tmp_path)
+    intent = _covered(tmp_path, binding, "grant-lifetime")
+    claim_fresh_initialization(Path(intent.host_state_root), intent)
+    # This enters the real prospective original grant-history writer, not a host grant.
+    with producer.grant_boundary(intent):
+        pass
+    root = Path(binding.root)
+    with observe(binding) as fence:
+        produced = derive(binding, fence)
+        assert len(produced.attempts) == 1
+        assert produced.attempts[0].state == "grant-possible"
+        assert not any("lifetime incomplete" in reason for reason in produced.unavailable)
+
+    original_stores = _fingerprint(Path(intent.host_state_root))
+    event_path = root / "00000002.json"
+    event = json.loads(event_path.read_bytes())
+    assert event["kind"] == "grant-possible"
+    lifetime = event["value"]["lifetime"]
+    if mutation == "missing":
+        del event["value"]["lifetime"]
+    elif mutation == "extra":
+        lifetime["unapproved"] = "value"
+    elif mutation == "boolean-pid":
+        lifetime["pid"] = True
+    elif mutation == "numeric-start":
+        lifetime["start"] = 123
+    elif mutation == "noncanonical-start":
+        lifetime["start"] = "0" + lifetime["start"]
+    elif mutation == "bad-boot":
+        lifetime["boot"] = "invalid"
+    else:
+        lifetime["nonce"] = lifetime["nonce"].upper()
+
+    # Forge an internally valid file/hash frontier; detect semantic provenance
+    # corruption rather than relying on a broken hash as the refusal oracle.
+    event_bytes = producer.canonical(event)
+    event_path.write_bytes(event_bytes)
+    frontier_path = root / "frontier.json"
+    frontier = json.loads(frontier_path.read_bytes())
+    frontier["digest"] = hashlib.sha256(event_bytes).hexdigest()
+    frontier_path.write_bytes(producer.canonical(frontier))
+    before = _fingerprint(tmp_path)
+    assert len(read_frontier(root, binding)[1]) == 3
+    with observe(binding) as fence:
+        evidence = derive(binding, fence)
+        assert evidence.unavailable == ("original grant lifetime incomplete",)
+        with pytest.raises(OriginalEvidenceUnavailable):
+            verify(evidence, binding, fence)
+    assert _fingerprint(tmp_path) == before
+    assert _fingerprint(Path(intent.host_state_root)) == original_stores
+
+
 def test_derived_original_digest_and_consumed_bytes_share_one_read(tmp_path, monkeypatch):
     """Unit substitution: catch a second parse read after an original snapshot."""
     from auto_coder.management import original_attempt_evidence as reader

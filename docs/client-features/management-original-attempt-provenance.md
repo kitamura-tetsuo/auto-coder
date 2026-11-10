@@ -49,6 +49,12 @@ intent, predecessor/target/container identities, expected store paths, mounted
 root device/inode identities and original producer PID, Linux start token, boot
 ID and nonce. Original events are immutable numbered files chained by digest.
 The atomically replaced, fsynced frontier commits the exact count and last digest.
+The independent reader validates the original anchor and grant-possible
+producer lifetime fields (positive PID, canonical Linux start token,
+canonical boot UUID and nonce) even when an event and its frontier
+digest form an internally consistent chain. A malformed lifetime or
+unexpected terminal-boundary payload is unavailable, not a recorded
+grant or successful original attempt.
 Individual original files are bounded to 8 MiB; larger evidence is unavailable.
 The bounded namespace admits at most 4096 events and rejects overflow, extra
 files, gaps and incomplete writes instead of truncating or repairing them.
