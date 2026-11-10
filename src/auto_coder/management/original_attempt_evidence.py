@@ -163,6 +163,10 @@ def derive(binding: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = 
                     raise OriginalEvidenceUnavailable("uncovered original predecessor")
             elif parent.new_container_id != intent.old_container_id:
                 raise OriginalEvidenceUnavailable("conflicting predecessor alias")
+            elif [prior.kind for prior in by_attempt[parent.request_id]] not in (["anchor", "claimed"], ["anchor", "claimed", "grant-possible"]):
+                # Independent derivation must not accept a fabricated child of a
+                # failed/partial original attempt, even from a signed-looking frontier.
+                raise OriginalEvidenceUnavailable("refused or unproven original predecessor")
             keys = (intent.new_instance, intent.new_container_id, intent.host_state_root, intent.host_journal_root)
             if any(key in aliases for key in keys) or intent.new_instance == baseline[0] or intent.new_container_id == baseline[1]:
                 raise OriginalEvidenceUnavailable("cyclic or conflicting target aliases")

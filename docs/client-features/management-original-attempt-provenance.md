@@ -54,6 +54,12 @@ The bounded namespace admits at most 4096 events and rejects overflow, extra
 files, gaps and incomplete writes instead of truncating or repairing them.
 Concurrent admission reports `history admission contested` before writing an
 intent. Previously anchored request IDs, target aliases and cycles refuse replay.
+An original target whose own admission ended `never-created`, `unresolved`, or
+only anchored without a durable claim is not a valid predecessor for a new
+covered attempt. Both the original producer and independent evidence consumer
+refuse such a lineage instead of promoting a failed branch into an ancestor.
+This check is limited to prospective capture and does not assert that a merely
+claimed predecessor was successfully launched or ready.
 
 An original refusal after affirmative pristine-root observation can durably
 record `never-created` only while the same exclusive history lock is held, the

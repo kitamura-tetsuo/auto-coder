@@ -81,7 +81,7 @@ def identity(path: Path, *, directory: bool = False) -> tuple[int, int]:
     info = path.lstat()
     expected = stat.S_ISDIR if directory else stat.S_ISREG
     mode = stat.S_IMODE(info.st_mode)
-    if not expected(info.st_mode) or info.st_uid != os.geteuid() or (mode != 0o700 if directory else bool(mode & 0o133)):
+    if not expected(info.st_mode) or info.st_uid != os.geteuid() or (mode != 0o700 if directory else mode != 0o600):
 
         raise OriginalEvidenceUnavailable("unprotected original evidence: " + str(path))
     return info.st_dev, info.st_ino
@@ -234,9 +234,16 @@ def capture_claim(intent: FreshInitializationIntent) -> Iterator[None]:
             raise OriginalEvidenceUnavailable("original attempt or target already anchored; no replay")
         if anchors:
             baseline = json.loads(anchors[0].value_json)["intent"]
-            predecessors = [(baseline["old_instance"], baseline["old_container_id"])] + [(prior["new_instance"], prior["new_container_id"]) for prior in prior_targets]
+            predecessors = [(baseline["old_instance"], baseline["old_container_id"])]
+            for prior_event in anchors:
+                prior_kinds = [event.kind for event in events if event.attempt == prior_event.attempt]
+                # A refused, interrupted or merely anchored attempt never established
+                # the next usable original predecessor, even if its target was named.
+                if prior_kinds in (["anchor", "claimed"], ["anchor", "claimed", "grant-possible"]):
+                    prior = json.loads(prior_event.value_json)["intent"]
+                    predecessors.append((prior["new_instance"], prior["new_container_id"]))
             if (intent.old_instance, intent.old_container_id) not in predecessors or intent.new_instance == baseline["old_instance"] or intent.new_container_id == baseline["old_container_id"]:
-                raise OriginalEvidenceUnavailable("uncovered or cyclic original predecessor")
+                raise OriginalEvidenceUnavailable("uncovered, refused or cyclic original predecessor")
         if any(prior["old_instance"] == intent.new_instance for prior in prior_targets):
             raise OriginalEvidenceUnavailable("attempt would cycle covered ancestry")
         stores = expected_stores(intent)
