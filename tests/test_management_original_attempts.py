@@ -345,6 +345,39 @@ def test_partial_original_write_is_unavailable_and_not_repaired(tmp_path):
     assert _fingerprint(tmp_path) == before
 
 
+@pytest.mark.parametrize("filename", ["history.lock", "authority.json", "frontier.json", "00000000.json"])
+@pytest.mark.parametrize("permissive_mode", [0o640, 0o644])
+def test_original_authority_refuses_group_or_other_read_access(tmp_path, filename, permissive_mode):
+    """Protected original history must never be readable by another principal."""
+    binding = _history(tmp_path)
+    _terminal(tmp_path, binding, "original")
+    root = Path(binding.root)
+    with observe(binding) as fence:
+        assert derive(binding, fence).unavailable == ()
+
+    target = root / filename
+    assert target.stat().st_mode & 0o777 == 0o600
+    target.chmod(permissive_mode)
+    before = _fingerprint(tmp_path)
+    contender = _covered(tmp_path, binding, "contender")
+    if filename == "history.lock":
+        with pytest.raises(OriginalEvidenceUnavailable, match="unprotected original evidence"):
+            with observe(binding):
+                pass
+    else:
+        with observe(binding) as fence:
+            unavailable = derive(binding, fence)
+            assert unavailable.unavailable
+            with pytest.raises(OriginalEvidenceUnavailable):
+                verify(unavailable, binding, fence)
+    with pytest.raises(OriginalEvidenceUnavailable, match="unprotected original evidence"):
+        claim_fresh_initialization(Path(contender.host_state_root), contender)
+    assert _fingerprint(tmp_path) == before
+    assert target.stat().st_mode & 0o777 == permissive_mode
+    assert list(Path(contender.host_state_root).iterdir()) == []
+    assert list(Path(contender.host_journal_root).iterdir()) == []
+
+
 def test_native_store_identity_receipt_is_once_only_and_missing_store_refuses(tmp_path):
     """Native store boundary unit check, never a positive host-launch oracle."""
     from contextlib import closing
