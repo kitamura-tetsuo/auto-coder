@@ -1,9 +1,10 @@
-# Read-only NEW-instance initialization preflight (DRAFT)
+# NEW-instance assessment and durable origin (DRAFT)
 
 Issue #2672's Objective remains: “Allow an operator to initialize a new management
 bootstrap while retaining existing OAuth state.” This checkpoint implements only
-an independent read-only assessment. It does not complete any of REQ-001–005 or
-authorize initialization, launch, recovery, deployment or rollback.
+an independent read-only assessment and a separate, explicit one-use protected
+origin record. It does not complete REQ-001–005 or authorize a first launch,
+recovery, deployment or rollback.
 
 A trusted local operator can invoke the existing host boundary:
 
@@ -73,15 +74,55 @@ permissions, not a promise of unchanged access-time metadata. The operator must
 keep sources stable; observations are bounded snapshots, not reservations
 against later changes, bind mounts or a malicious same-UID writer.
 
+## One-use protected origin recording — not a launch claim
+
+An operator can separately record the assessed NEW origin and independently
+inspect it in another process through the **existing trusted-local host
+boundary**:
+
+```sh
+python -B -m auto_coder.management.fresh_host begin \
+  --request-file /private/new-instance-request.json
+python -B -m auto_coder.management.fresh_host inspect-begin \
+  --request-file /private/new-instance-request.json
+```
+
+The begin producer re-runs the strict read-only assessment, verifies empty
+private roots and writes exactly one `new-instance-origin.json` into the new
+0700 guard root using owner-only 0600, O_EXCL, file fsync and directory fsync.
+The record retains exact assessed identities/hashes, request provenance and
+actual Linux producer PID/start-token/boot lifetime. Any interrupted/partial
+record prevents replay and is never unlinked or repaired automatically. A
+second process reopens the original request, source/configuration/application
+closure, protected roots and original guard record; it refuses conflicting
+records, changed bytes, altered permissions or an inconsistent digest.
+
+An accepted begin reports `status=origin-recorded-only` and
+`launch_authorized=false`. This is a **prospective fact of an explicitly
+requested original intent**, not evidence that original owner/guard fences,
+installed runtime provenance, current OAuth read authority, absence of a prior
+listener, durable first-launch admission or authenticated readiness were
+verified. It intentionally does **not** create operational stores, cross a
+first-launch grant, start processes, access OAuth contents or mutate a Docker
+controller. No consumer may treat a recorded origin as a completed NEW
+initialization or as old-history continuity.
+
+Independent native Linux subprocess tests hold two writers immediately before
+the real O_EXCL call to establish one winner, and SIGKILL a producer immediately
+after the actual open to establish a non-reusable partial origin. These are
+positive tests of the bounded durable-origin producer, **not** the required
+positive first-launch/owner/OAuth acceptance scenarios.
+
 ## Missing normative gates and acceptance evidence
 
-- REQ-001: actual explicit provisioning through the host initialization boundary,
-  durable protected records and admission-bound root validation are missing. An
+- REQ-001: a protected origin record now exists at the host boundary, but
+  provisioning actual new state/operation/guard stores and admission-bound
+  root verification for first launch remain missing. An
   assessment neither proves unused instance identity nor OAuth grant usability.
-- REQ-002: durable intent/provenance, actual installed runtime/configuration
-  agreement, immediately-before-launch identity comparison, atomic first-launch
-  claims, crash fencing and explicit evidence-preserving reconciliation are
-  missing. The JSON output is not a durable initialization intent, consumable
+- REQ-002: a one-use original intent record now exists, but actual installed
+  runtime/configuration agreement, immediately-before-launch identity checks,
+  atomic first-launch claims, crash fencing and evidence-preserving launch
+  reconciliation remain missing. The JSON output is not a durable initialization intent, consumable
   claim, or evidence of independently verified no-launch state. Never feed it
   into the existing cutover claim path as prior-history evidence.
 - REQ-003: authoritative prior process/listener absence, relevant namespace
@@ -95,8 +136,9 @@ against later changes, bind mounts or a malicious same-UID writer.
   separate-UID admission, live prior process/listener and evidence failures,
   actual overlapping owner/admission/claim contention, crash reconstruction,
   independent OS application-launch counts and authenticated readback remain
-  unverified. The process regressions here establish only read-only assessment,
-  overlapping scans, a killed scan and in-flight root replacement refusal.
+  unverified. The process regressions establish read-only assessment plus a one-use
+  origin file with real origin-write contention and interrupted publication,
+  not a validated actual launch or retained OAuth grant.
 
 The first three Issue acceptance scenarios remain unresolved: there is no
 admitted initialization, first launch or authenticated end-to-end proof here.
@@ -111,13 +153,13 @@ normative gates.
 ## Verification and observability
 
 Run `bash scripts/test.sh --ci-tests-only
-tests/test_management_new_instance_preflight.py` for real subprocess/filesystem
+tests/test_management_new_instance_preflight.py
+tests/test_management_new_instance_begin.py` for real subprocess/filesystem
 coverage. Audit-hook barriers pause actual configuration opens to demonstrate
 simultaneously in-flight scans and crash/replacement behavior; they do not
 fabricate owner contention, grant authority or authenticated application success.
 
-This host-only diagnostic is observability-neutral for production: it creates no
-job, admission, launch, outcome, durable resumption path or structured dashboard
-event. Its stdout assessment is never translated into dashboard readiness or
+This host-only diagnostic is observability-neutral for production: it creates a protected local origin record but no job, deployment admission,
+launch, outcome, authorized resumption path or structured dashboard event. Its stdout assessment is never translated into dashboard readiness or
 worker success. The existing production trace emissions and dashboard contract
 remain unchanged; see `docs/dashboard-observability.md`.

@@ -90,6 +90,10 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     preflight = commands.add_parser("preflight", help="Read-only NEW-instance assessment; never launch authority")
     preflight.add_argument("--request-file", required=True, type=Path)
+    begin = commands.add_parser("begin", help="Record a protected NEW origin; no launch or grant")
+    begin.add_argument("--request-file", required=True, type=Path)
+    inspect = commands.add_parser("inspect-begin", help="Independent read-only verification of a NEW origin")
+    inspect.add_argument("--request-file", required=True, type=Path)
     capture = commands.add_parser("capture")
     for option in ("management-id", "management-image", "proxy-id", "proxy-image", "mounts-file", "guard-dir"):
         capture.add_argument("--" + option, required=True)
@@ -112,6 +116,14 @@ def main() -> None:
             from .fresh_preflight import assess_new_instance
 
             print(json.dumps(asdict(assess_new_instance(args.request_file)), sort_keys=True))
+        elif args.command == "begin":
+            from .fresh_begin import begin_new_instance
+
+            print(json.dumps(asdict(begin_new_instance(args.request_file)), sort_keys=True))
+        elif args.command == "inspect-begin":
+            from .fresh_begin import inspect_new_instance_origin
+
+            print(json.dumps(asdict(inspect_new_instance_origin(args.request_file)), sort_keys=True))
         elif args.command == "capture":
             mounts = json.loads(_protected_file(Path(args.mounts_file)))
             if not isinstance(mounts, dict) or set(mounts) != {"management", "proxy"}:
