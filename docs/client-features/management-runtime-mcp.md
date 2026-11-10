@@ -80,9 +80,12 @@ new effect, and it does not erase a previously committed receipt.
 | `auto_coder_stop_worker` | `auto-coder.read` and `auto-coder.deploy` | `target_id`, `idempotency_key`, `expected_supervisor_generation`, `expected_process_run_id`, `expected_deployment_generation`, `expected_runtime_id` | Request graceful stop and await terminal receipt plus OS exit |
 | `auto_coder_restart_worker` | `auto-coder.read` and `auto-coder.deploy` | The same generation-fenced arguments as `stop_worker` | Gracefully stop and start the selected runtime using separate journaled effects |
 | `auto_coder_deploy_beta_source` | `auto-coder.read` and `auto-coder.deploy` | `target_id`, `selected_git_sha`, `idempotency_key`, `expected_supervisor_generation`, optional `expected_process_run_id`, `expected_deployment_generation`, `expected_runtime_id` | Stage and activate only the exactly selected tested beta source |
+| `auto_coder_deploy_release_source` | `auto-coder.read` and `auto-coder.deploy` | `target_id`, `selected_git_sha`, original `promotion_operation_id`, `catalog_ref`, `catalog_oid`, `acceptance_ref`, `acceptance_oid`, `idempotency_key`, `expected_supervisor_generation`, optional `expected_process_run_id`, `expected_deployment_generation`, `expected_runtime_id` | Stage and activate only an exactly selected accepted Git-source release under the configured full release policy; real-host acceptance remains required |
 
 See [`in-container-worker-source-updates.md`](in-container-worker-source-updates.md)
 for deployment evidence, credentials, operation progress and recovery limitations.
+For the distinct release authority and current operation-selection evidence,
+see [`release-worker-source-deployment.md`](release-worker-source-deployment.md).
 
 The MCP tool schema rejects unknown arguments. The service also rejects Boolean
 or nonpositive item numbers, invalid identity/key characters and out-of-range

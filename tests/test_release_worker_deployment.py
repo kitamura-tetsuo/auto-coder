@@ -371,6 +371,45 @@ def test_release_selection_changed_during_durable_pre_effect_write_never_dispatc
         assert _call(client, token, "auto_coder_deploy_release_source", {**_release_arguments(d, promotion), "idempotency_key": "other"})["status"] == "BUSY"
 
 
+def test_release_recovery_unknown_receipt_retains_lane_and_recovers_original_step(release_flow, monkeypatch):
+    d = release_flow
+    d.bridge.crash_new = True
+    original_dispatch = d.bridge.dispatch_worker_operation
+    original_read = d.bridge.read_worker_operation
+    allow_readback = {"value": False}
+
+    def lose_recovery_reply(operation_id: str, operation: str, **kwargs) -> WorkerNetworkResult:
+        response = original_dispatch(operation_id, operation, **kwargs)
+        if operation == "RECOVER_PREVIOUS":
+            return WorkerNetworkResult(0, "UNKNOWN", None, response.supervisor_generation, response.request_id)
+        return response
+
+    def withhold_recovery_receipt(operation_id: str) -> WorkerNetworkResult:
+        if operation_id.startswith("r-") and not allow_readback["value"]:
+            return d.bridge._result("UNKNOWN", {"status": "UNKNOWN", "operation_id": operation_id})
+        return original_read(operation_id)
+
+    monkeypatch.setattr(d.bridge, "dispatch_worker_operation", lose_recovery_reply)
+    monkeypatch.setattr(d.bridge, "read_worker_operation", withhold_recovery_receipt)
+    with TestClient(d.app, base_url=d.settings.oauth.canonical_issuer) as client:
+        token = _token(client, d)
+        promotion = _call(client, token, MCP_PROMOTION_ACTION, d.args)
+        args = _release_arguments(d, promotion)
+        admitted = _call(client, token, "auto_coder_deploy_release_source", args)
+        operation_id = str(admitted["operation_id"])
+        _drive(d.app, operation_id, 40)
+        held = _call(client, token, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
+        assert held["status"] == "RESTORING" and held["recovery_state"] == "UNKNOWN", held
+        assert held["recovery_attempts"] == 1
+        assert [name for name, _ in d.bridge.actions].count("RECOVER_PREVIOUS") == 1
+        assert _call(client, token, "auto_coder_deploy_release_source", {**args, "idempotency_key": "competing"})["status"] == "BUSY"
+        allow_readback["value"] = True
+        _drive(d.app, operation_id, 20)
+        recovered = _call(client, token, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
+        assert recovered["status"] == "FAILED" and recovered["recovery_state"] == "CONFIRMED", recovered
+        assert [name for name, _ in d.bridge.actions].count("RECOVER_PREVIOUS") == 1
+
+
 @pytest.mark.parametrize("intervention", ("policy_downgrade", "missing_selection", "lost_drain_reply", "crash_new", "wrong_artifact_origin", "wrong_version_origin", "unreadable_supervisor_receipt"))
 def test_release_deploy_rechecks_policy_reconciles_lost_replies_and_refuses_unverified_activation(release_flow, monkeypatch, intervention):
     d = release_flow

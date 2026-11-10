@@ -439,6 +439,8 @@ class WorkerLifecycle:
                     return self._finish(record, version, snapshot, "SUPERSEDED", reason)
             effect_id = {"prepare": "p", "drain": "d", "start": "s", "recovery": "r"}[name] + "-" + record.operation_id
             steps[name] = {"operation_id": effect_id, "state": "SENT_UNKNOWN", "sent_at": time.time(), "observation": None, "owner_generation": record.effect.owner_generation, "attempt_id": record.effect.attempt_id, "correlation_identity": record.effect.correlation_identity}
+            if name == "recovery":
+                snapshot["recovery_state"] = "UNKNOWN"
             if name != "prepare":
                 from auto_coder.worker_supervisor import WorkerSupervisor
 

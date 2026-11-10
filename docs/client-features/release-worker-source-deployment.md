@@ -91,7 +91,8 @@ If the new child fails after activation, recovery may start **at most one**
 previously verified prepared runtime, with a separately persisted step,
 after actual new-child exit and with current authority. The readback exposes
 `recovery_attempts`, `recovery_state` (`NOT_ATTEMPTED`, `ATTEMPTED`,
-`CONFIRMED`) and `restored_worker`. Confirmed recovery ends new-source
+`UNKNOWN` for an unsettled step, `CONFIRMED`) and `restored_worker`.
+Confirmed recovery ends new-source
 deployment as `FAILED`, not `SUCCEEDED`. Unknown recovery is not
 automatically retried. Restoring Python cannot undo migrations, database
 state, provider effects or publication; those require explicit operator
