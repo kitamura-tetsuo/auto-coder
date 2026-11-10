@@ -103,58 +103,64 @@ class RetainedJournal:
         # verified; immutable mode must never hide unapplied WAL transactions.
         query = "?mode=ro&immutable=1" if readonly_mount else "?mode=ro"
         with closing(sqlite3.connect(self.database.as_uri() + query, uri=True, isolation_level=None)) as connection:
-            connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA query_only=ON")
-            connection.execute("BEGIN")
-            check = connection.execute("PRAGMA quick_check").fetchall()
-            if len(check) != 1 or check[0][0] != "ok":
-                raise ValueError("retained journal integrity check failed")
-            version = connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
-            if version is None or version[0] != SCHEMA_VERSION or connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
-                raise ValueError("retained journal schema or references differ")
-            records: list[tuple[OperationRecord, dict[str, object] | None]] = []
-            active: set[str] = set()
-            for row in connection.execute("SELECT * FROM operations ORDER BY sequence"):
-                record = ManagementOperationStore._record(row)
-                validate_authority(record.authority)
-                if record.intent.fingerprint() != row["fingerprint"] or record.intent.target.key() != row["target_key"] or ManagementOperationStore._namespace(record.intent, record.authority) != row["namespace_key"] or type(record.revision) is not int or record.revision < 0:
-                    raise ValueError("retained operation binding differs")
-                if record.phase in ACTIVE_PHASES:
-                    if row["target_key"] in active:
-                        raise ValueError("duplicate retained active target")
-                    active.add(row["target_key"])
-                history = connection.execute("SELECT * FROM operation_history WHERE operation_id=? ORDER BY sequence", (record.operation_id,)).fetchall()
-                parsed = [ManagementOperationStore._history(entry) for entry in history]
-                if (
-                    not parsed
-                    or len(parsed) != record.revision + 1
-                    or any(item.revision != index for index, item in enumerate(parsed))
-                    or parsed[-1].phase != record.phase
-                    or parsed[-1].owner_attempt_id != record.owner_attempt_id
-                    or parsed[-1].effect_state != record.effect.state
-                    or parsed[-1].effect_owner_generation != record.effect.owner_generation
-                    or parsed[-1].effect_attempt_id != record.effect.attempt_id
-                    or parsed[-1].correlation_identity != record.effect.correlation_identity
-                    or parsed[-1].safe_category != record.safe_error_category
-                    or parsed[-1].receipt != record.effect.receipt
-                ):
-                    raise ValueError("retained operation history incomplete")
-                snapshot = connection.execute("SELECT revision,snapshot_json FROM worker_lifecycle WHERE operation_id=?", (record.operation_id,)).fetchone()
-                if record.intent.action in {"start_worker", "stop_worker", "restart_worker", "deploy_beta_source"} and snapshot is None:
-                    raise ValueError("retained lifecycle evidence missing")
-                value: dict[str, object] | None = None
-                if snapshot is not None:
-                    value = json.loads(snapshot["snapshot_json"])
-                    if type(snapshot["revision"]) is not int or snapshot["revision"] < 0 or not isinstance(value, dict):
-                        raise ValueError("retained lifecycle evidence invalid")
-                    ManagementOperationStore._encode_lifecycle(value)
-                records.append((record, value))
+            records = self._validated_records(connection)
             self._check_file(self.fence, self.fence_identity, self._fd)
             self._check_file(self.database, self.database_identity)
             if readonly_mount and self._empty_wal_identity() != wal_before:
                 raise ValueError("retained write-ahead log changed while reading")
             connection.rollback()
-            return tuple(records)
+            return records
+
+    @staticmethod
+    def _validated_records(connection: sqlite3.Connection) -> tuple[tuple[OperationRecord, dict[str, object] | None], ...]:
+        """Validate a SQLite snapshot without creating or opening its original files."""
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("BEGIN")
+        check = connection.execute("PRAGMA quick_check").fetchall()
+        if len(check) != 1 or check[0][0] != "ok":
+            raise ValueError("retained journal integrity check failed")
+        version = connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+        if version is None or version[0] != SCHEMA_VERSION or connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise ValueError("retained journal schema or references differ")
+        records: list[tuple[OperationRecord, dict[str, object] | None]] = []
+        active: set[str] = set()
+        for row in connection.execute("SELECT * FROM operations ORDER BY sequence"):
+            record = ManagementOperationStore._record(row)
+            validate_authority(record.authority)
+            if record.intent.fingerprint() != row["fingerprint"] or record.intent.target.key() != row["target_key"] or ManagementOperationStore._namespace(record.intent, record.authority) != row["namespace_key"] or type(record.revision) is not int or record.revision < 0:
+                raise ValueError("retained operation binding differs")
+            if record.phase in ACTIVE_PHASES:
+                if row["target_key"] in active:
+                    raise ValueError("duplicate retained active target")
+                active.add(row["target_key"])
+            history = connection.execute("SELECT * FROM operation_history WHERE operation_id=? ORDER BY sequence", (record.operation_id,)).fetchall()
+            parsed = [ManagementOperationStore._history(entry) for entry in history]
+            if (
+                not parsed
+                or len(parsed) != record.revision + 1
+                or any(item.revision != index for index, item in enumerate(parsed))
+                or parsed[-1].phase != record.phase
+                or parsed[-1].owner_attempt_id != record.owner_attempt_id
+                or parsed[-1].effect_state != record.effect.state
+                or parsed[-1].effect_owner_generation != record.effect.owner_generation
+                or parsed[-1].effect_attempt_id != record.effect.attempt_id
+                or parsed[-1].correlation_identity != record.effect.correlation_identity
+                or parsed[-1].safe_category != record.safe_error_category
+                or parsed[-1].receipt != record.effect.receipt
+            ):
+                raise ValueError("retained operation history incomplete")
+            snapshot = connection.execute("SELECT revision,snapshot_json FROM worker_lifecycle WHERE operation_id=?", (record.operation_id,)).fetchone()
+            if record.intent.action in {"start_worker", "stop_worker", "restart_worker", "deploy_beta_source"} and snapshot is None:
+                raise ValueError("retained lifecycle evidence missing")
+            value: dict[str, object] | None = None
+            if snapshot is not None:
+                value = json.loads(snapshot["snapshot_json"])
+                if type(snapshot["revision"]) is not int or snapshot["revision"] < 0 or not isinstance(value, dict):
+                    raise ValueError("retained lifecycle evidence invalid")
+                ManagementOperationStore._encode_lifecycle(value)
+            records.append((record, value))
+        return tuple(records)
 
     def admission(self, intent: OperationIntent, authority: AcceptedAuthority) -> AdmissionResult | None:
         """Return a prior result or block an active target; never send an effect.
