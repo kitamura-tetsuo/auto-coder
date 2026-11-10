@@ -785,6 +785,24 @@ def test_real_second_cutover_preserves_all_owner_and_key_exclusions(chain: Chain
     old_b = chain.seed(b)
     original_a = chain.snapshot(a)
     c = chain.prepare("manager-c", b, omit_archive=boundary == "omitted-ancestor")
+    if boundary == "original-lineage":
+        assert c.intent is not None
+        # The real host preflight must reject a covered B -> unbound C before
+        # writing any successor state, even with valid ancestor exclusions.
+        original_intent_bytes = c.intent.read_bytes()
+        unbound_intent = json.loads(original_intent_bytes)
+        unbound_intent["original_history"] = ""
+        unbound_intent["original_history_id"] = ""
+        c.intent.write_text(json.dumps(unbound_intent))
+        try:
+            refused = subprocess.run(chain.command(c), pass_fds=(c.network_fd,), capture_output=True, text=True, timeout=30)
+            assert refused.returncode != 0
+            assert "covered original history cannot be omitted or replaced" in refused.stderr
+            assert not (c.path("state") / "fresh-initialization.json").exists()
+            assert not (c.path("state") / "management-child.sqlite3").exists()
+            assert not list(c.path("journal").iterdir())
+        finally:
+            c.intent.write_bytes(original_intent_bytes)
     if boundary in {"omitted-ancestor", "stopped-prior"}:
         if boundary == "stopped-prior":
             chain.stop(b)

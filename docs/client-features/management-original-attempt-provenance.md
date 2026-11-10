@@ -260,6 +260,16 @@ unchanged originals after restoration. Original A and its earlier attempts
 are *outside* the prospectively enrolled history; the test does not turn
 their historical completeness into a positive claim.
 
+For a predecessor with a sealed fresh-initialization intent already bound to
+this prospective original history, the next real `exclusion_cutover` host
+preflight requires the successor's `original_history` root and history UUID to
+match the protected predecessor intent. An omitted or substituted binding is
+refused before the successor's fresh intent, child journal or grant is created.
+Both synthetic negative controls and a real Docker B→C negative preflight
+precede the unchanged positive cutover. This continuity guard does **not**
+enroll a legacy A or prevent an independent unenrolled/sibling deployment
+entrypoint from bypassing the profile entirely.
+
 These are **positive isolated production-origin tests within a selected
 prospective profile**, not proof of enrollment of every deployment sibling
 origin, complete pre-enrollment/failed-generation history, or authorization
