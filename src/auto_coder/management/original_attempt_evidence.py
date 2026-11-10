@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import stat
 import uuid
 from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass
@@ -241,11 +242,18 @@ def derive(binding: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = 
                     if list(identity(Path(store_path))) != receipt["stores"][name]:
                         raise OriginalEvidenceUnavailable("original store identity changed")
                     _database(Path(store_path))
-                # Retain every original file in these bounded protected roots,
-                # including effect/intent/SQLite identities, not just happy-path rows.
+                # Retain authoritative root-level state and journal records.
+                # The Supervisor's exact state/logs directory is diagnostic,
+                # not an original attempt/store or grant boundary. It must be
+                # a real same-UID directory, never a symlink or aliased file.
                 for directory in (state, journal):
                     for path in sorted(directory.iterdir()):
-                        if path.is_dir():
+                        if directory == state and path.name == "logs":
+                            info = path.lstat()
+                            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+                                raise OriginalEvidenceUnavailable("unsupported original diagnostics directory")
+                            continue
+                        if path.is_symlink() or path.is_dir():
                             raise OriginalEvidenceUnavailable("unsupported nested evidence profile")
                         retain(path)
                 status = read_fresh_status(state, host=True)

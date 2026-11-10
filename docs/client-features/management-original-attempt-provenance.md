@@ -106,8 +106,14 @@ complete frontier, original intents, native store receipts, databases and retain
 fresh records. It compares exact protected identities and SHA-256 digests and
 rejects stale, truncated, forged, cross-deployment or mutated evidence. A returned
 object contains every covered attempted branch, explicit unavailable reasons,
-expected stores and source/history bindings. It has no completeness Boolean or
-launch/epoch authorization. Earlier history remains unavailable even when the
+expected stores and source/history bindings. The only supported nested path
+is the Supervisor's same-UID, nonsymlink `state/logs` directory: its contents
+are explicitly diagnostic, not original authoritative admission or grant
+records. Any other nested directory or symlink in the original roots refuses.
+Expected SQLite stores, intent/claim/receipt files and all other root-level
+originals remain mandatory, fingerprinted and independently reopened; missing
+or uncheckpointed native WAL evidence still refuses. It has no completeness
+Boolean or launch/epoch authorization. Earlier history remains unavailable even when the
 bounded submitted object matches.
 
 The independently retained binding can also be supplied to a separate process:
@@ -138,6 +144,9 @@ tests/test_management_original_predecessor_guard.py
 tests/test_management_original_bootstrap_integration.py
 tests/test_management_original_native_process.py
 tests/test_management_fresh_launch_exclusions.py`
+for bounded tests, then run the selected `supervisor_integration` Docker case
+`test_management_fresh_end_to_end.py::test_fresh_first_launch_via_host_guard_and_authenticated_http[False-False-None-True-False-False-True]`
+on an authorized root-enabled disposable Linux/Docker host.
 for real isolated production-origin claims/refusals, original-byte fingerprints,
 separate-process verification, and observable process/flock contention. The
 isolated native bootstrap integration invokes the actual Supervisor
@@ -162,6 +171,42 @@ The fixture still substitutes the host-guard challenge transport and the
 installed management executable's physical argv with a disposable gate:
 **this does not establish original host-grant, closed deployment/controller
 authority, actual application readiness, AS-L01 success or Docker acceptance**.
+
+### Isolated real Docker original admission and consumer
+
+A separately marked **real Docker/host-root** case in
+`tests/test_management_fresh_end_to_end.py` exercises the supported original
+history profile through the actual `fresh_host claim` and foreground
+`fresh_host guard` entrypoints, the real isolated replacement Supervisor,
+first-launch claim, four protected native stores, application child, protected
+HTTP endpoint, retained OAuth token and authenticated exact-child readiness.
+The host-side original frontier records real `anchor`, `claimed` and
+`grant-possible` events. The application reports a genuine
+`fresh-original-stores.json` tied to that attempted source and owner lifetime.
+A second real original `claim_fresh_initialization` writer then refuses a
+distinct successor with a deliberately mismatched retained OAuth root and
+durably records `never-created` without an intent, grant or launch. The
+resulting reverse frontier includes both the successful launch's original
+admission and the separate failed successor.
+
+A **cleanly stopped** disposable Supervisor releases its owner lock and
+checkpoints the SQLite WALs. A separate process inherits the currently held
+shared owner lock, independently reopens the original root, exact native
+databases and protected file digests, and verifies the complete covered
+frontier. A forced Docker stop that leaves a nonempty WAL **remains
+unavailable**, not retrospectively repaired, and a diagnostic log directory
+is never treated as original grant authority. The fixture's local identity
+provider controls only its disposable test OAuth login; real OAuth token
+issuance/usage, Docker process/lifetime, host guard and API responses are
+observable independently.
+
+This is **positive isolated production-origin capture and verification for
+one covered successful first launch plus a genuinely refused successor**,
+not a proof of enrollment of all deployment sibling origins, a complete
+pre-enrollment/failed-generation history, a second real successful A-to-B-to-C
+cutover, or authorization for #2824, #2825 or the present incident.
+No production/beta management, OAuth, worker or Docker controller state is
+modified by this disposable fixture.
 
 Production
 Loguru boundary emissions supply barriers after actual fsync, allowing an owner

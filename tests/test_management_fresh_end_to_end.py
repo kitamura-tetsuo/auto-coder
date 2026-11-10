@@ -32,12 +32,14 @@ import yaml
 from auto_coder.management.action_scopes import DEPLOY_SCOPE, OPERATE_SCOPE, READ_SCOPE
 from auto_coder.management.fresh_host import _write_evidence
 from auto_coder.management.fresh_host_observation import capture_prior_container
-from auto_coder.management.fresh_initialization import FreshInitializationIntent
+from auto_coder.management.fresh_initialization import FreshInitializationIntent, claim_fresh_initialization
 from auto_coder.management.identity import AdmissionResult, AdmissionStatus, ReasonCode, VerifiedPrincipal
 from auto_coder.management.oauth_config import OAuthClient, OAuthSettings
 from auto_coder.management.oauth_grants import AuthorizationRequest, OAuthGrantService
 from auto_coder.management.operation_store import ManagementOperationStore
 from auto_coder.management.operations import AcceptedAuthority, ActionParameter, ManagedTarget, OperationIntent, OperationPhase
+from auto_coder.management.original_attempt_evidence import derive, observe, verify
+from auto_coder.management.original_attempts import OriginalEvidenceUnavailable, enroll, read_frontier
 from auto_coder.operating_policy import MANAGEMENT_REPOSITORY
 
 pytestmark = [pytest.mark.supervisor_integration, pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep")]
@@ -171,20 +173,21 @@ def test_mutable_base_tag_cannot_change_digest_or_derived_image(tmp_path: Path) 
 
 
 @pytest.mark.parametrize(
-    "owner_token_gap, contention, crash_at, restart_after, prior_owner_locked, retained_history",
+    "owner_token_gap, contention, crash_at, restart_after, prior_owner_locked, retained_history, original_history",
     [
-        (False, False, None, False, False, False),
-        (True, False, None, False, False, False),
-        (False, True, None, False, False, False),
-        (False, False, "before-claim", False, False, False),
-        (False, False, "after-claim", False, False, False),
-        (False, False, "after-launch", False, False, False),
-        (False, False, None, True, False, False),
-        (False, False, None, True, True, False),
-        (False, False, None, True, False, True),
+        (False, False, None, False, False, False, False),
+        (True, False, None, False, False, False, False),
+        (False, True, None, False, False, False, False),
+        (False, False, "before-claim", False, False, False, False),
+        (False, False, "after-claim", False, False, False, False),
+        (False, False, "after-launch", False, False, False, False),
+        (False, False, None, True, False, False, False),
+        (False, False, None, True, True, False, False),
+        (False, False, None, True, False, True, False),
+        (False, False, None, True, False, False, True),
     ],
 )
-def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path, owner_token_gap: bool, contention: bool, crash_at: str | None, restart_after: bool, prior_owner_locked: bool, retained_history: bool, record_property) -> None:
+def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path, owner_token_gap: bool, contention: bool, crash_at: str | None, restart_after: bool, prior_owner_locked: bool, retained_history: bool, original_history: bool, record_property) -> None:
     if os.geteuid() != 0:
         pytest.skip("host root is required to observe the disposable Docker proxy and namespace evidence")
     root = tmp_path
@@ -389,6 +392,11 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
         probe = "from pathlib import Path; from auto_coder.management.fresh_initialization import application_tree_sha256; print(application_tree_sha256(Path('/opt/auto-coder/.venv/lib/python3.12/site-packages/auto_coder')))"
         app_digest = subprocess.check_output(["docker", "run", "--rm", "--network", "none", "--read-only", "-e", "PYTHONDONTWRITEBYTECODE=1", "--entrypoint", "python", image, "-c", probe], text=True).strip().splitlines()[-1]
         s, j, o, g, lock = (path.stat() for path in (state, journal, oauth, guard, old_lock))
+        history_binding = None
+        if original_history:
+            history_root = root / "original-history"
+            history_root.mkdir(mode=0o700)
+            history_binding = enroll(history_root, "isolated-real-original-fresh-cutover")
         intent = FreshInitializationIntent(
             str(uuid.uuid4()),
             "old-fixture",
@@ -423,6 +431,8 @@ def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path
         if retained_history:
             old_db = (old_journal / "management-operations.sqlite3").stat()
             intent = replace(intent, host_prior_journal_root=str(old_journal), prior_journal_root="/management-prior-operations", prior_journal_device=old_db.st_dev, prior_journal_inode=old_db.st_ino)
+        if history_binding is not None:
+            intent = replace(intent, original_history=history_binding.root, original_history_id=history_binding.history)
         intent_file = root / "intent.json"
         intent_file.write_text(json.dumps(asdict(intent)))
         intent_file.chmod(0o600)
@@ -449,6 +459,9 @@ fresh_host.main()
             timeout=30,
         )
         assert claim_result.returncode == 0, claim_result.stderr
+        if history_binding is not None:
+            _, original_events = read_frontier(Path(history_binding.root), history_binding)
+            assert [event.kind for event in original_events] == ["anchor", "claimed"]
         if owner_token_gap or contention or crash_at:
             (state / "logs").mkdir()
         if owner_token_gap:
@@ -543,6 +556,9 @@ fresh_host.main()
         if len(categories) == 1 and categories[0] in {"identical", "order-only", "content-changed", "unavailable"}:
             record_property("mount_comparison", categories[0])
         assert guard_process.returncode == 0, (out, err)
+        if history_binding is not None:
+            _, original_events = read_frontier(Path(history_binding.root), history_binding)
+            assert [event.kind for event in original_events] == ["anchor", "claimed", "grant-possible"]
 
         if crash_at:
 
@@ -861,10 +877,108 @@ except urllib.error.HTTPError as e: print(json.dumps({'status':e.code,'body':''}
             proof = subprocess.check_output(["docker", "exec", new_id, "python", "-c", proof_probe, observation_id, str(observation_start)], text=True, timeout=15).strip()
             assert proof != "UNAVAILABLE" and proof.startswith(str(new["pid"]) + ":" + new["start_token"] + ":")
             assert status_inside_container()["status"] == "succeeded"
+        if history_binding is not None:
+            native_receipt = state / "fresh-original-stores.json"
+            assert native_receipt.is_file() and native_receipt.stat().st_mode & 0o777 == 0o600
+            receipt = json.loads(native_receipt.read_bytes())
+            assert receipt["request_id"] == intent.request_id
+            assert receipt["history"] == history_binding.history
+            assert receipt["source"] == history_binding.source
+            assert set(receipt["stores"]) == {"child", "handoff", "recovery", "operations"}
+            for db in (*state.glob("*.sqlite3"), *journal.glob("*.sqlite3")):
+                assert db.stat().st_mode & 0o777 == 0o600
         if unreaped_child is not None:
             assert (Path("/proc") / str(unreaped_child.pid) / "stat").read_text().rsplit(")", 1)[1].split()[0] == "Z"
         assert grant_history() == retained_grants
         assert {str(path.relative_to(old_state)): hashlib.sha256(path.read_bytes()).hexdigest() for path in old_state.rglob("*") if path.is_file()} == old_history
+        if history_binding is not None:
+            # Stop only this uniquely named disposable child, retaining its
+            # original ledgers. A separate consumer must re-read the actual
+            # source/intent/grant/native-store chain under the current locks.
+            subprocess.run(["docker", "stop", "--time", "30", new_id], check=True, capture_output=True, timeout=45)
+            # A distinct *real original admission* refuses before any grant:
+            # retain that failed successor in the covered reverse frontier,
+            # rather than letting the successful ancestor hide it.
+            failed_state, failed_journal, failed_guard = (root / name for name in ("failed-state", "failed-journal", "failed-guard"))
+            for directory in (failed_state, failed_journal, failed_guard):
+                directory.mkdir(mode=0o700)
+            fs, fj, fg = (directory.stat() for directory in (failed_state, failed_journal, failed_guard))
+            rejected = replace(
+                intent,
+                request_id=str(uuid.uuid4()),
+                old_instance=intent.new_instance,
+                old_container_id=intent.new_container_id,
+                new_instance="refused-original-successor",
+                new_container_id=hashlib.sha256(b"refused-original-successor").hexdigest(),
+                state_root=str(failed_state),
+                journal_root=str(failed_journal),
+                host_state_root=str(failed_state),
+                host_journal_root=str(failed_journal),
+                state_device=fs.st_dev,
+                state_inode=fs.st_ino,
+                journal_device=fj.st_dev,
+                journal_inode=fj.st_ino,
+                guard_device=fg.st_dev,
+                guard_inode=fg.st_ino,
+                oauth_inode=intent.oauth_inode + 1,
+            )
+            with pytest.raises(ValueError, match="retained OAuth root identity differs"):
+                claim_fresh_initialization(failed_state, rejected)
+            assert not list(failed_state.iterdir()) and not list(failed_journal.iterdir())
+            assert grant_history() == retained_grants
+            with (state / ".supervisor-owner.lock").open("rb") as owner:
+                fcntl.flock(owner.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+                with observe(history_binding) as history_fence:
+                    original_evidence = derive(history_binding, history_fence, (owner.fileno(),))
+                    assert original_evidence.unavailable == (), original_evidence.unavailable
+                    assert [(item.target, item.state) for item in original_evidence.attempts] == [
+                        ("fresh-fixture", "grant-possible"),
+                        ("refused-original-successor", "never-created"),
+                    ]
+                    assert verify(original_evidence, history_binding, history_fence, (owner.fileno(),)) == original_evidence
+                    binding_file = root / "original-binding.json"
+                    submitted_file = root / "original-evidence.json"
+                    binding_file.write_text(json.dumps(asdict(history_binding), sort_keys=True))
+                    submitted_file.write_text(json.dumps(asdict(original_evidence), sort_keys=True))
+                    consumer = subprocess.run(
+                        [
+                            sys.executable,
+                            "-B",
+                            "-m",
+                            "auto_coder.management.original_attempt_evidence",
+                            "--binding",
+                            str(binding_file),
+                            "--submitted",
+                            str(submitted_file),
+                            "--owner-fd",
+                            str(owner.fileno()),
+                        ],
+                        pass_fds=(owner.fileno(),),
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        check=False,
+                    )
+                    assert consumer.returncode == 0, consumer.stderr
+                    assert json.loads(consumer.stdout) == json.loads(submitted_file.read_bytes())
+                    # Mutation negative control: even the non-authoritative
+                    # diagnostics path cannot become a symlinked alias while
+                    # an earlier positive original object is being replayed.
+                    logs = state / "logs"
+                    parked = state / "logs-preserved-for-test"
+                    assert logs.is_dir() and not logs.is_symlink() and not parked.exists()
+                    logs.rename(parked)
+                    try:
+                        logs.symlink_to(parked, target_is_directory=True)
+                        changed = derive(history_binding, history_fence, (owner.fileno(),))
+                        assert any("unsupported original diagnostics directory" in reason for reason in changed.unavailable)
+                        with pytest.raises(OriginalEvidenceUnavailable):
+                            verify(original_evidence, history_binding, history_fence, (owner.fileno(),))
+                    finally:
+                        logs.unlink()
+                        parked.rename(logs)
+                    assert verify(original_evidence, history_binding, history_fence, (owner.fileno(),)) == original_evidence
+                    assert grant_history() == retained_grants
     finally:
         if unreaped_child is not None:
             unreaped_child.wait(timeout=5)
