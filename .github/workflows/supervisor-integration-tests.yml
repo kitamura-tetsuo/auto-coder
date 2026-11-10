@@ -353,7 +353,7 @@ jobs:
       AUTO_CODER_CI_TIMING_INVOCATION: fresh-host-shard-${{ matrix.shard }}
       SUPERVISOR_PROFILE: fresh-host
       SUPERVISOR_SHARD_ID: ${{ matrix.shard }}
-      SUPERVISOR_PLAN_PATH: supervisor-plan/fresh-host/plan.json
+      SUPERVISOR_PLAN_PATH: /tmp/auto-coder-supervisor-plan-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}/plan.json
       SUPERVISOR_RESULTS_PATH: supervisor-integration-logs/fresh-host-${{ matrix.shard }}.json
     steps:
       - *checkout
@@ -362,11 +362,18 @@ jobs:
       - *dependencies
       - *build
       - *host-prerequisites
+      - name: Verify and export retained-startup image identity
+        run: |
+          set -euo pipefail
+          image_id="$(docker image inspect --format '{{.Id}}' auto-coder:management-local-abc65544)"
+          test "$image_id" = "$AUTOCODER_OPENCODE_IMAGE_ID"
+          AUTOCODER_FRESH_TEST_BASE_IMAGE="$image_id" uv run python -c 'import os; from pathlib import Path; from scripts.prepare_management_test_image import verify_image; verify_image(Path.cwd(), os.environ["AUTOCODER_FRESH_TEST_BASE_IMAGE"])'
+          printf 'AUTOCODER_FRESH_TEST_BASE_IMAGE=%s\n' "$image_id" >> "$GITHUB_ENV"
       - name: Download immutable fresh-host plan
         uses: actions/download-artifact@v8
         with:
           name: ${{ needs.prepare-fresh-host.outputs.artifact_name }}
-          path: supervisor-plan/fresh-host
+          path: /tmp/auto-coder-supervisor-plan-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
       - name: Configure complete fresh-host profile
         run: uv run python scripts/supervisor_ci_profiles.py configure --profile fresh-host --github-env "$GITHUB_ENV"
       - name: Verify fresh initialization with host evidence
@@ -381,6 +388,7 @@ jobs:
           # Real kernel/proxy observations still run in a root interpreter.
           sudo env "PATH=$PATH" "PYTHONPATH=$GITHUB_WORKSPACE/src:$GITHUB_WORKSPACE/scripts" \
             "GIT_CONFIG_COUNT=1" "GIT_CONFIG_KEY_0=safe.directory" "GIT_CONFIG_VALUE_0=$GITHUB_WORKSPACE" \
+            "AUTOCODER_FRESH_TEST_BASE_IMAGE=$AUTOCODER_FRESH_TEST_BASE_IMAGE" \
             "AUTO_CODER_CI_TIMING_DIR=$AUTO_CODER_CI_TIMING_DIR" \
             "AUTO_CODER_CI_TIMING_INVOCATION=$AUTO_CODER_CI_TIMING_INVOCATION" \
             "AUTO_CODER_CI_TIMING_CHECKOUT_SHA=$checkout_sha" \

@@ -39,6 +39,32 @@ selection; this is not an OpenCode live-runtime preparation or image publication
 The fixture is exported only after immutable Docker ID and installed source/version
 readback match the clean checkout. Missing Docker, failed build or mismatched
 provenance blocks the gate rather than skipping its readonly-bind test.
+The Supervisor fresh-host workflow independently verifies the image built
+from its checkout, passes the inspected immutable ID to the retained-startup
+consumer through the privileged `sudo env` boundary, and refuses a stale tag.
+Manual execution using the historical tag similarly resolves that local tag to
+its immutable ID and verifies installed checkout/version before any assertion
+container starts. A tag alone cannot authorize the target test.
+The retained-startup consumer re-inspects the exact immutable Docker ID
+exported by the preparer and checks installed source revision/distribution
+version against the checked-out source before executing its real Docker mount
+and lock tests. The consumer forbids registry pulling (`--pull never`);
+missing, removed, mutable or wrong-source images fail before any success
+evidence can be emitted. The real-container regression also exercises the
+nonempty-WAL and writable-journal refusal cases. An isolated deliberate
+mutation removing the read-only mount guard makes this same real oracle reject
+the resulting false-success, without altering the required workflow selection.
+Fixture source SHA, immutable image ID and version are logged in the existing
+preparation/test steps, while the complete-source shard receipt and normal
+Actions/pytest logs record the actual selected and executed node outcomes.
+A passing fixture check alone does not prove unrelated CI or worker health.
+When the consumer refuses a dirty working tree, the error includes a bounded
+read-only porcelain Git status excerpt to identify modified or untracked paths.
+The excerpt is diagnostic only: the checkout remains rejected, and no image or
+retained-startup assertion runs on a dirty source.
+The complete-source Chromium installation and fresh-host downloaded plan
+are located under the runner's temporary directory, not inside the source
+worktree, so their generated files cannot falsely dirty the checkout.
 
 Nonfatal scheduled pytest diagnostics use an owned Python thread and the synchronous
 all-thread faulthandler API while holding the GIL. This avoids the demonstrated

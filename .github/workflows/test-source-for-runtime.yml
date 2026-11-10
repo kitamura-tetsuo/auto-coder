@@ -109,7 +109,7 @@ jobs:
       matrix: ${{ fromJSON(needs.source-plan.outputs.matrix) }}
     runs-on: ubuntu-latest
     env:
-      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+      PLAYWRIGHT_BROWSERS_PATH: /tmp/auto-coder-playwright-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
       AUTO_CODER_REQUIRE_BROWSER: "1"
       AUTO_CODER_IMMEDIATE_TEST_FAILURES: "1"
       AUTO_CODER_CI_TIMING_INVOCATION: source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}

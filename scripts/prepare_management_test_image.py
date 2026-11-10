@@ -17,10 +17,66 @@ from auto_coder.logger_config import get_logger
 logger = get_logger(__name__)
 
 
+def _dirty_checkout_details(repository: Path) -> str:
+    """Report bounded Git status evidence without weakening clean-source admission."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repository), "status", "--porcelain=v1", "--untracked-files=normal"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return "git status unavailable"
+    entries = result.stdout.splitlines()
+    return f"git_status={entries[:20]!r}" + (" (truncated)" if len(entries) > 20 else "")
+
+
+def verify_image(repository: Path, image_id: str) -> str:
+    """Recheck the immutable image actually used by a retained-startup consumer."""
+    identity = resolve_build_identity(repository)
+    if identity.state != "clean" or not identity.source_revision:
+        detail = f"state={identity.state}, reason={getattr(identity, 'reason', None)}"
+        if identity.state == "dirty":
+            detail += f"; {_dirty_checkout_details(repository)}"
+        raise RuntimeError(f"Management test fixtures require a complete clean source identity ({detail})")
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
+        raise RuntimeError("Management fixture Docker identity is unavailable or malformed")
+    inspected_id = subprocess.check_output(["docker", "image", "inspect", "--format", "{{.Id}}", image_id], text=True).strip()
+    if inspected_id != image_id:
+        raise RuntimeError("Management fixture consumed image differs from inspected immutable identity")
+    observation = json.loads(
+        subprocess.check_output(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--pull",
+                "never",
+                "--network",
+                "none",
+                "--read-only",
+                "--entrypoint",
+                "/opt/auto-coder/.venv/bin/python",
+                image_id,
+                "-m",
+                "auto_coder.build_provenance",
+            ],
+            text=True,
+        )
+    )
+    source = observation.get("source_revision") if isinstance(observation, dict) else None
+    version = observation.get("distribution_version") if isinstance(observation, dict) else None
+    if not isinstance(source, dict) or not isinstance(version, dict) or source.get("value") != identity.source_revision or version.get("value") != identity.version:
+        raise RuntimeError("Management fixture installed provenance differs from the clean source")
+    logger.info("Verified management fixture checkout={} image={} version={}", identity.source_revision, image_id, identity.version)
+    return image_id
+
+
 def prepare_image(repository: Path, github_env: Path | None = None) -> str:
     identity = resolve_build_identity(repository)
     if identity.state != "clean" or not identity.source_revision:
-        raise RuntimeError("Management test fixtures require a complete clean source identity")
+        raise RuntimeError(f"Management test fixtures require a complete clean source identity (state={identity.state}, reason={getattr(identity, 'reason', None)})")
     encoded = base64.b64encode(serialize_build_identity(identity).encode()).decode()
     tag = f"auto-coder:management-fixture-{identity.source_revision[:12]}"
     dockerfile = (repository / "Dockerfile").read_text() + ("\nFROM python-environment AS management-test-fixture\n" "ARG AUTO_CODER_SOURCE_REVISION\n" "RUN AUTO_CODER_SOURCE_REVISION=$AUTO_CODER_SOURCE_REVISION /opt/auto-coder/.venv/bin/python -m auto_coder.build_provenance embed\n")
@@ -31,18 +87,7 @@ def prepare_image(repository: Path, github_env: Path | None = None) -> str:
         check=True,
     )
     image_id = subprocess.check_output(["docker", "image", "inspect", "--format", "{{.Id}}", tag], text=True).strip()
-    if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
-        raise RuntimeError("Management fixture Docker identity is unavailable or malformed")
-    observation = json.loads(
-        subprocess.check_output(
-            ["docker", "run", "--rm", "--network", "none", "--read-only", "--entrypoint", "/opt/auto-coder/.venv/bin/python", image_id, "-m", "auto_coder.build_provenance"],
-            text=True,
-        )
-    )
-    source = observation.get("source_revision") if isinstance(observation, dict) else None
-    version = observation.get("distribution_version") if isinstance(observation, dict) else None
-    if not isinstance(source, dict) or not isinstance(version, dict) or source.get("value") != identity.source_revision or version.get("value") != identity.version:
-        raise RuntimeError("Management fixture installed provenance differs from the clean source")
+    verify_image(repository, image_id)
     if github_env is not None:
         with github_env.open("a", encoding="utf-8") as output:
             output.write(f"AUTOCODER_FRESH_TEST_BASE_IMAGE={image_id}\n")
