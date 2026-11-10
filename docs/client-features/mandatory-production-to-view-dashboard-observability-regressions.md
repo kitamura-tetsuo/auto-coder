@@ -203,3 +203,11 @@ fetch failure through the production runner and mounted detail: failed fetch
 shows FAILED with no provider entry or publication, while successful publication
 is checked against the fetched remote parent commit. See the local Issue entries
 in `docs/dashboard-observability.md`; no renderer change is needed.
+
+Authenticated accepted-source release dispatch remains in the standalone management
+operation journal, outside Issue/PR trace collection. Its authenticated projection
+keeps workflow HEAD, selected source, verified source promotion and worker deployment
+separate, including after lost replies and restart. No dashboard deployment success
+is emitted. The production-boundary regression command and concrete neutrality
+assessment are recorded in `docs/dashboard-observability.md` and the action schema
+in `management-source-release-dispatch.md`.

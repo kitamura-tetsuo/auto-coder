@@ -108,6 +108,11 @@ class SourceReleasePolicy:
             document = _json(path.read_text(encoding="utf-8"), 8192)
         except OSError as exc:
             raise SourceReleaseError("operator-owned promotion policy is unavailable") from exc
+        return cls.from_document(document)
+
+    @classmethod
+    def from_document(cls, document: object) -> SourceReleasePolicy:
+        """Validate a persisted original policy using the same strict parser."""
         if not isinstance(document, dict) or set(document) != set(cls.__dataclass_fields__):
             raise SourceReleaseError("operator-owned promotion policy has unsupported fields")
         raw_profiles = document.get("accepted_profiles")
@@ -156,7 +161,9 @@ class SourceReleasePolicy:
 
 
 @dataclass(frozen=True)
-class SourceReleaseRequest:
+class SourceReleaseCandidate:
+    """Exact immutable candidate, before an Actions dispatch identity exists."""
+
     operation_id: str
     source_repository: str
     source_sha: str
@@ -168,8 +175,6 @@ class SourceReleaseRequest:
     acceptance_ref: str
     acceptance_oid: str
     release_target: str
-    promotion_run_id: int
-    promotion_run_attempt: int
 
     def validate(self, policy: SourceReleasePolicy) -> None:
         release_tag(self.operation_id)
@@ -186,7 +191,18 @@ class SourceReleaseRequest:
         name = self.acceptance_ref.removeprefix("refs/tags/auto-coder-beta-acceptance-")
         if not name or len(name) > 128 or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", name) is None:
             raise SourceReleaseError("acceptance operation identity is invalid")
-        if any(type(value) is not int or value <= 0 for value in (self.ci_run_id, self.ci_run_attempt, self.promotion_run_id, self.promotion_run_attempt)):
+        if any(type(value) is not int or value <= 0 for value in (self.ci_run_id, self.ci_run_attempt)):
+            raise SourceReleaseError("original CI run ID and attempt must be positive integers")
+
+
+@dataclass(frozen=True)
+class SourceReleaseRequest(SourceReleaseCandidate):
+    promotion_run_id: int
+    promotion_run_attempt: int
+
+    def validate(self, policy: SourceReleasePolicy) -> None:
+        super().validate(policy)
+        if any(type(value) is not int or value <= 0 for value in (self.promotion_run_id, self.promotion_run_attempt)):
             raise SourceReleaseError("original Actions run IDs and attempts must be positive integers")
 
 
