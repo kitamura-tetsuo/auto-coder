@@ -52,7 +52,7 @@ python -m auto_coder.management.containment_observation verify \
 ```
 
 Both commands return exit status **2**, even if every available sub-observation
-matches. Output is JSON. `current-containment-prerequisites-v2` includes the full
+matches. Output is JSON. `current-containment-prerequisites-v3` includes the full
 proposed scope and its hash, a new observation UUID, current boot ID, observer PID
 and process-start token, monotonic observation interval, observed file identities,
 available Docker identities and explicit unavailable authorities/reasons.
@@ -138,7 +138,7 @@ the corresponding production trace-to-view obligations.
 
 ## Complete current Docker inventory sub-observation
 
-The `current-containment-prerequisites-v2` report replaces v1. A v1 saved report
+The `current-containment-prerequisites-v3` report replaces v1/v2. A v1/v2 saved report
 is refused; it did not bind the complete engine inventory. `docker` now includes
 **every** container returned by unfiltered `docker container ls --all --quiet
 --no-trunc`, sorted by full ID, rather than only the proposed manager/proxy pair.
@@ -194,8 +194,92 @@ adds an unselected object with a configured restarter and substitutes selected
 source bytes. This validates only the Docker inventory and file sub-observations;
 it does not run the exact original controller or qualify AS-T01–AS-T05 as passed.
 
-In the current revision session, 30 ordinary tests passed. The real Docker case
+In the prior v2 revision session, 30 ordinary tests passed. The real Docker case
 failed at its first `docker info` call with socket permission denied, before
 creating any fixture object; it was not skipped. Host UID was 1000. Thus positive
 Docker/controller acceptance remains unverified in this environment, and Issue
 #2827/PR #2829 remain incomplete. No production or beta deployment is performed.
+
+
+## Current Linux process observation component (bounded REQ-402/REQ-406 work)
+
+The v3 prerequisite report adds `processes`: current `/proc` observations for
+positive PIDs in the Docker inventory. A stopped object's PID 0 supplies no task
+absence evidence. Docker PIDs only select proposed current processes; this does
+not correlate them to original manager/proxy lifetimes or discover escaped tasks.
+The full entrypoint still returns unavailable and exit status 2.
+
+The same read-only component can be exercised without Docker for explicitly
+selected thread-group leaders, independently of deployment authorization:
+
+```sh
+.venv/bin/python -m auto_coder.management.proc_observation observe --pid 1234 > .agent-tmp/process-facts.json
+.venv/bin/python -m auto_coder.management.proc_observation verify --pid 1234 --previous .agent-tmp/process-facts.json
+```
+
+Both commands always return status 2 and `status: unavailable` under the separate
+`current-proc-facts-v1` schema. Supply the consumer's intended PIDs explicitly;
+saved objects never choose its scope. The consumer reopens procfs and pidfds and
+compares fresh complete process facts, including boot ID and task start tokens,
+without trusting signatures, saved success claims or numeric PID stability.
+The full v3 verifier likewise compares newly read `processes`; v1/v2 reports are
+refused as unsupported rather than upgraded into authority.
+
+Each selected process records every currently enumerated thread's TID, start
+token, state, cgroup membership, current namespace links and socket FD inodes.
+Network tables record TCP/TCP6 listening sockets, bound UDP/UDP6 sockets and Unix
+listening socket inodes in that process's current network namespace. These tables
+include other processes' listeners in the same namespace; an inode in a task's
+FD list supplies a current ownership correlation, not exclusivity. Unix paths
+are omitted. Different network namespaces among threads refuse because their
+individual tables cannot be independently inspected by this reader. Namespace
+strings are current facts only, never historical pins or namespace-absence proof.
+
+A pidfd brackets two task/socket reads; observed lifetime, task-set, namespace,
+cgroup, FD/socket or boot changes refuse. Zombies/dead tasks preserve their
+observed lifetime/state and explicitly refuse instead of becoming absence.
+Missing, inaccessible, oversized, malformed and raced reads retain explicit
+unavailable diagnostics. Reads are bounded to 1 MiB per file, 4096 tasks, 8192
+FDs per task and 32 explicitly selected processes in the standalone interface.
+All descriptors are closed on return, including refusal. Procfs sampling is not
+atomic and cannot rule out a change and restoration between samples.
+
+This component requires Linux procfs visibility and pidfd support for inspected
+live tasks; missing privileges or inspectability never become an empty successful
+scan. It neither validates initial host namespace/root authority nor scans the
+whole host, enumerates all cgroup tasks, retains namespace pins, reserves endpoints,
+closes ordinary launch routes, or establishes approved installation/enrollment.
+Those missing authorities remain full-observation blockers. Current namespace
+occupancy by selected tasks can be observed, but complete deployment-wide absence
+cannot be inferred from selected processes, even when all subreads agree.
+
+Run the bounded component regressions with:
+
+```sh
+.venv/bin/python -m pytest tests/test_management_proc_observation.py tests/test_management_containment_observation.py -m 'not supervisor_integration'
+```
+
+These include real subprocesses with nonleader threads, zombies synchronized by
+`waitid(WNOWAIT)`, real thread creation between reads, producer/target exit and
+separate consumers, plus bounded/malformed OS table fixtures and explicit unit
+fault interleavings. The real disposable Unix-listener regression requires bind
+permission: sandbox EPERM is a failing prerequisite, never a skip or fake pass.
+It must also run on an authorized disposable host. None of these component tests
+qualifies AS-T01–AS-T05 or exact original-source/controller acceptance as passed.
+No operation admission, dispatch, recovery-success or dashboard event is created.
+
+
+V3 sandbox validation ran both test files excluding the Docker integration marker:
+43 tests passed and the disposable Unix-listener test failed at `bind()` with
+`PermissionError: [Errno 1] Operation not permitted`. After fixture synchronization
+was tightened, the 43 runnable cases passed again with that already demonstrated
+bind-blocked case excluded from the bounded rerun. The listener assertions remain
+intact. Execute the blocked test on an authorized disposable Linux host with:
+
+```sh
+.venv/bin/python -m pytest tests/test_management_proc_observation.py::test_real_unix_listener_inode_is_observed_and_consumer_detects_release -q
+```
+
+Black, isort, flake8, package-wide mypy (330 source files), and `git diff --check`
+passed. Real Docker/controller/profile acceptance was not executed in this v3
+sandbox session, and no AS-T01–AS-T05 success or full Issue completion is claimed.

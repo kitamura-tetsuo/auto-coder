@@ -119,11 +119,16 @@ operation admission/dispatch, worker effects, recovery outcomes or Issue/PR trac
 events. It has no successful containment profile yet. The independent-process
 refusal/readback regressions run with `bash scripts/test.sh --ci-tests-only
 tests/test_management_containment_observation.py -m 'not supervisor_integration'`;
-they do not substitute for root/Docker/controller containment acceptance. The v2
+they do not substitute for root/Docker/controller containment acceptance. The v3
 report additionally inventories every Docker container and its configured restart
 route. Its real Docker separate-consumer regression is a required node in the
 Supervisor isolated-containers profile; current inventory agreement remains local
-diagnostic evidence without granting closure, admission or recovery success. See
+diagnostic evidence without granting closure, admission or recovery success.
+The v3 process facts and standalone `proc_observation` reader remain local,
+non-authorizing diagnostics: neither emits operation/worker/recovery trace events
+nor adds a dashboard processing origin. Run their real process and OS fixture
+regressions with `.venv/bin/python -m pytest tests/test_management_proc_observation.py`;
+the disposable listener case requires authorized OS bind permission. See
 [`management-current-containment-observation.md`](client-features/management-current-containment-observation.md)
 for the missing authorities and remaining acceptance scenarios. Any later
 integration into recovery issuance must assess its own production trace-to-view

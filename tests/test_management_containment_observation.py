@@ -54,7 +54,7 @@ def test_production_entrypoint_refuses_operator_scope_as_authority(tmp_path: Pat
     source = ROOT / "src/auto_coder/management/bootstrap_supervisor.py"
     original = source.read_bytes()
     report = _command(tmp_path, _scope((source,), profile))
-    assert report["schema"] == "current-containment-prerequisites-v2"
+    assert report["schema"] == "current-containment-prerequisites-v3"
     assert report["scope"]["profile"] == profile
     assert report["files"][0]["sha256"] == hashlib.sha256(original).hexdigest()
     assert report["files"][0]["inode"] == source.stat().st_ino
@@ -352,3 +352,31 @@ def test_real_docker_inventory_and_separate_consumer(tmp_path: Path) -> None:
         # No selected production manager/proxy, image, volume or network is changed.
         for name in reversed(names):
             docker("rm", "-f", name)
+
+
+def test_adapter_reobserves_real_docker_selected_process_without_claiming_closure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Docker protocol unit boundary plus real procfs; not Docker acceptance."""
+    child = subprocess.Popen([sys.executable, "-u", "-c", "import sys; print('ready', flush=True); sys.stdin.read()"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout.readline().strip() == "ready"
+        objects, _ = _engine_boundary(monkeypatch)
+        objects["a" * 64]["State"].update(Running=True, Pid=child.pid, Status="running")
+        saved = observation.observe(_scope())
+        assert len(saved.processes) == 1
+        assert saved.processes[0].pid == child.pid
+        assert saved.processes[0].unavailable == ()
+        assert saved.processes[0].tasks[0].start_token == saved.processes[0].start_token
+        # Keep Docker's selected numeric PID unchanged, as with stale engine data.
+        child.kill()
+        child.communicate(timeout=10)
+        current = observation.verify(_scope(), json.loads(json.dumps(asdict(saved))))
+        assert current.processes[0].unavailable
+        assert current.processes[0].tasks == ()
+        reasons = {item.authority: item.reason for item in current.unavailable}
+        assert reasons["saved-report:processes"] == "Independent current observation differs from saved report."
+        assert {"kernel-containment", "deployment-enrollment", "ordinary-route-closure"} <= set(reasons)
+        assert current.status == "unavailable"
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.communicate(timeout=10)

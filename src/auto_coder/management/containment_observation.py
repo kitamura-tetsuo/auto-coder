@@ -22,6 +22,7 @@ from pathlib import Path
 
 from .archived_exclusions import unique_pairs
 from .fresh_host_observation import _validate_host_proc_profile
+from .proc_observation import ProcessObservation, observe_process
 
 PROFILES = ("ordinary-v1", "quarantined-original-v1")
 _LIMIT = 1024 * 1024
@@ -110,6 +111,7 @@ class PrerequisiteReport:
     files: tuple[FileObservation, ...]
     docker: tuple[DockerObservation, ...]
     unavailable: tuple[Unavailable, ...]
+    processes: tuple[ProcessObservation, ...] = ()
     resource_limit: str = "All read descriptors are released before return; no namespace pin or owner fence is retained."
 
 
@@ -265,7 +267,10 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
                 raise ValueError("file identity or content changed during observation")
         except (OSError, ValueError) as exc:
             unavailable.append(Unavailable("file:" + observed.path, str(exc)))
-    return PrerequisiteReport("current-containment-prerequisites-v2", "unavailable", scope, _digest(asdict(scope)), str(uuid.uuid4()), boot_id, os.getpid(), start_token, started, time.monotonic_ns(), tuple(files), docker, tuple(unavailable))
+    # Docker PIDs select current facts only; they do not identify escaped tasks
+    # or establish correspondence with an original manager/proxy lifetime.
+    processes = tuple(observe_process(pid) for pid in sorted({item.pid for item in docker if item.pid > 0}))
+    return PrerequisiteReport("current-containment-prerequisites-v3", "unavailable", scope, _digest(asdict(scope)), str(uuid.uuid4()), boot_id, os.getpid(), start_token, started, time.monotonic_ns(), tuple(files), docker, tuple(unavailable), processes)
 
 
 def verify(scope: ProposedScope, previous: object) -> PrerequisiteReport:
@@ -276,7 +281,7 @@ def verify(scope: ProposedScope, previous: object) -> PrerequisiteReport:
         reasons.append(Unavailable("saved-report", "Unsupported or authorizing saved report; no containment success schema exists."))
     else:
         current_value = json.loads(json.dumps(asdict(current)))
-        for field in ("scope", "scope_sha256", "boot_id", "files", "docker", "resource_limit"):
+        for field in ("scope", "scope_sha256", "boot_id", "files", "docker", "processes", "resource_limit"):
             if previous[field] != current_value[field]:
                 reasons.append(Unavailable("saved-report:" + field, "Independent current observation differs from saved report."))
     return replace(current, unavailable=tuple(reasons))
