@@ -136,6 +136,7 @@ deployment fences and operation-history policy.
 Run `bash scripts/test.sh --ci-tests-only tests/test_management_original_attempts.py
 tests/test_management_original_predecessor_guard.py
 tests/test_management_original_bootstrap_integration.py
+tests/test_management_original_native_process.py
 tests/test_management_fresh_launch_exclusions.py`
 for real isolated production-origin claims/refusals, original-byte fingerprints,
 separate-process verification, and observable process/flock contention. The
@@ -148,6 +149,20 @@ prior owner refuses. Its host grant transport and physical child response
 are deliberately substituted: the resulting `claimed` frontier still reports
 `original grant boundary not crossed` and is **not** AS-L01, successful
 first-launch, external container evidence or a verified recovery epoch.
+
+The additional `test_management_original_native_process.py` fixture drives the
+actual Supervisor **CLI**, exclusive owner-fence opening, four native SQLite
+stores, original receipt, durable first-launch claim, and a real disposable
+Linux child process through the genuine `Popen` owner. The physical child
+exits early and is independently counted as a single launch. Its original
+`original-history` profile is installed by the fixture's actual
+`claim_fresh_initialization` writer. A distinct verification process checks
+the retained attempt while reporting `original grant boundary not crossed`.
+The fixture still substitutes the host-guard challenge transport and the
+installed management executable's physical argv with a disposable gate:
+**this does not establish original host-grant, closed deployment/controller
+authority, actual application readiness, AS-L01 success or Docker acceptance**.
+
 Production
 Loguru boundary emissions supply barriers after actual fsync, allowing an owner
 to be interrupted at anchor, claim, terminal and possible-grant boundaries while
