@@ -313,6 +313,84 @@ def test_real_midread_mutation_of_earlier_journal_refuses(tmp_path: Path, monkey
     assert mutated
 
 
+@pytest.mark.parametrize("action", ["inspect", "decide"])
+@pytest.mark.parametrize("journal_count", [1, 2])
+def test_midread_owner_fence_replacement_refuses_current_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str, journal_count: int) -> None:
+    """An unfenced replacement pathname must not validate an earlier held inode."""
+    from auto_coder.management import quarantine_history
+
+    first, old = _store(tmp_path / "first", "m1")
+    journals = (first,)
+    if journal_count == 2:
+        second, _ = _store(tmp_path / "second", "m2")
+        journals = (first, second)
+    trigger = journals[-1].database
+    originals = {journal.database: journal.database.read_bytes() for journal in journals}
+    retained_path = first.fence.with_suffix(".held-original")
+
+    child = """
+import fcntl
+import os
+import sys
+from pathlib import Path
+
+named, retained = Path(sys.argv[1]), Path(sys.argv[2])
+named.rename(retained)
+new_fd = os.open(named, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+try:
+    fcntl.flock(new_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with retained.open("rb") as contender:
+        try:
+            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("replacement-exclusive-while-original-shared")
+        else:
+            raise AssertionError("original held fence was not locked")
+finally:
+    os.close(new_fd)
+"""
+    original_read = quarantine_history._read_protected
+    injected = False
+
+    with QuarantineHistory(journals) as reader:
+
+        def read_and_replace(
+            path: Path,
+            *,
+            identity: tuple[int, int] | None = None,
+            ctime_ns: int | None = None,
+            limit: int,
+        ) -> tuple[bytes, tuple[int, ...]]:
+            nonlocal injected
+            if path == trigger and not injected:
+                injected = True
+                result = subprocess.run(
+                    [sys.executable, "-c", child, str(first.fence), str(retained_path)],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                assert result.stdout.strip() == "replacement-exclusive-while-original-shared"
+            return original_read(path, identity=identity, ctime_ns=ctime_ns, limit=limit)
+
+        monkeypatch.setattr(quarantine_history, "_read_protected", read_and_replace)
+        with pytest.raises((QuarantineUnavailable, FileNotFoundError)):
+            if action == "inspect":
+                reader.inspect()
+            else:
+                reader.decide(old, AUTHORITY)
+        assert injected
+        assert first.fence.stat().st_ino != first.fence_inode
+        with retained_path.open("rb") as old_contender:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(old_contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    for journal in journals:
+        assert journal.database.read_bytes() == originals[journal.database]
+    with retained_path.open("rb") as after_close:
+        fcntl.flock(after_close, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
 def test_sent_unknown_and_accepted_origins_retain_exclusion(tmp_path: Path) -> None:
     original, old = _store(tmp_path / "unknown", "m1", phase=OperationPhase.RECONCILING, sent_unknown=True)
     accepted, fresh = _store(tmp_path / "accepted", "m2", phase=OperationPhase.ACCEPTED, management=True)

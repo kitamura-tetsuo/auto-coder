@@ -257,17 +257,31 @@ class QuarantineHistory:
         self._locks.clear()
         self._closed = True
 
+    @staticmethod
+    def _revalidate_fence(journal: QuarantineJournal, descriptor: int) -> None:
+        """Require the original held owner fence and its pathname to remain identical."""
+        held = os.fstat(descriptor)
+        if not stat.S_ISREG(held.st_mode) or (held.st_mode & 0o077) != 0 or held.st_uid != os.geteuid() or (held.st_dev, held.st_ino, held.st_ctime_ns) != (journal.fence_device, journal.fence_inode, journal.fence_ctime_ns):
+            raise QuarantineUnavailable("held fence identity or permissions changed")
+        current = _open_protected(
+            journal.fence,
+            identity=(journal.fence_device, journal.fence_inode),
+            ctime_ns=journal.fence_ctime_ns,
+        )
+        try:
+            named = os.fstat(current)
+            if (named.st_dev, named.st_ino, named.st_ctime_ns) != (held.st_dev, held.st_ino, held.st_ctime_ns):
+                raise QuarantineUnavailable("named fence differs from held owner fence")
+        finally:
+            os.close(current)
+
     def _snapshot(self) -> tuple[tuple[QuarantineJournal, tuple[OperationRecord, ...]], ...]:
         if self._closed or len(self._locks) != len(self._journals):
             raise QuarantineUnavailable("quarantine fence no longer held")
         collected: list[tuple[QuarantineJournal, tuple[OperationRecord, ...]]] = []
         snapshots: list[tuple[QuarantineJournal, tuple[int, ...], tuple[tuple[str, tuple[int, ...] | None], ...]]] = []
         for journal, fence_fd in zip(self._journals, self._locks):
-            original = os.fstat(fence_fd)
-            if (original.st_dev, original.st_ino, original.st_ctime_ns) != (journal.fence_device, journal.fence_inode, journal.fence_ctime_ns):
-                raise QuarantineUnavailable("held fence identity changed")
-            check = _open_protected(journal.fence, identity=(journal.fence_device, journal.fence_inode), ctime_ns=journal.fence_ctime_ns)
-            os.close(check)
+            self._revalidate_fence(journal, fence_fd)
             sidecars = _sidecars(journal.database)
             content, fingerprint = _read_protected(
                 journal.database,
@@ -318,6 +332,10 @@ class QuarantineHistory:
                 raise QuarantineUnavailable("earlier journal changed during inspection")
             if _sidecars(journal.database) != sidecars:
                 raise QuarantineUnavailable("earlier sidecar changed during inspection")
+        # An earlier owner pathname may have been replaced while a later database
+        # was read. Check all still-held descriptors and named fences last.
+        for journal, fence_fd in zip(self._journals, self._locks):
+            self._revalidate_fence(journal, fence_fd)
         return tuple(collected)
 
     def inspect(self) -> InspectionReport:

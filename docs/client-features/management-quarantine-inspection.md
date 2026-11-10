@@ -43,7 +43,12 @@ nonzero with `status=unavailable` for missing, inconsistent or changing
 protected evidence. For in-process API use,
 `QuarantineHistory(load_manifest(path))` holds separate shared owner-flock
 descriptors during its lifetime, revalidates the **entire** supplied journal
-set on every `inspect` or `decide` call, and releases them on close.
+set on every `inspect` or `decide` call. After all database and sidecar
+reads, it also rechecks each original held descriptor and its named owner fence
+against the manifest, including earlier fences after later journals. If a fence
+is replaced mid-inspection, the call refuses even if the databases are unchanged;
+a new pathname's lock cannot substitute for the original hold. Descriptors are
+released on close, including after partial-acquisition failure.
 The three bounded decisions are `key_excluded`, `target_blocked`, and
 `no_conflict_in_supplied_journals`. No old row, replay permission, complete
 lineage or executable operation is exposed by these decisions.
