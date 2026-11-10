@@ -3483,3 +3483,24 @@ loss; no test-only authority flag or canned successful run is the promotion
 oracle. See `client-features/management-source-release-dispatch.md` for the schema
 and safe uncertainty projection. This is an observability-neutral management
 addition: it introduces no production-to-dashboard event or deployment outcome.
+
+### Draft release-worker provenance join
+
+`management/release_worker_deployment.py` is an internal read-only evidence
+consumer. It does not register a tool, admit an operation, change durable
+resumption, dispatch a worker effect, or produce a deployment outcome. It reuses
+the existing catalog/acceptance producers and original management journal;
+all returned facts explicitly retain `deployment_authorized=false` and
+`worker_deployed=false`. A matching release source SHA cannot establish the
+identity of the latest same-SHA promotion. No dashboard event, renderer or
+production trace schema changes are required because this reader supplies no
+production-to-view status and leaves the authenticated operation projection
+unchanged. Existing admission logs keep their established Loguru sinks.
+
+Run `bash scripts/test.sh --ci-tests-only tests/test_release_worker_deployment.py
+tests/test_management_source_release_dispatch.py`. Component regressions verify
+original producer linkage, real isolated Git objects and journal reconstruction,
+read-only refusal on changed or unavailable evidence, and explicit absence of
+activation authority even after a second same-SHA promotion. This is not evidence
+of real worker deployment or the normative release lifecycle acceptance tests.
+See `client-features/release-worker-source-deployment.md` for pending gates.
