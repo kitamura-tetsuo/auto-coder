@@ -211,3 +211,13 @@ separate, including after lost replies and restart. No dashboard deployment succ
 is emitted. The production-boundary regression command and concrete neutrality
 assessment are recorded in `docs/dashboard-observability.md` and the action schema
 in `management-source-release-dispatch.md`.
+
+Prospective original management-attempt capture is a host diagnostic origin with
+no Issue/PR execution or dashboard job. Its structured Loguru boundary facts are
+covered by `test_original_admission_trace_retains_boundaries_without_recovery_success`
+in `tests/test_management_original_attempts.py`; the real producer preserves
+`evidence_only=true`, exact history/attempt/boundary and source locations. The
+production-to-view assessment in `docs/dashboard-observability.md` leaves the
+view/schema unchanged: enrollment, possible grants and unavailable legacy
+coverage cannot appear as recovery success. Run `bash scripts/test.sh
+--ci-tests-only tests/test_management_original_attempts.py`.

@@ -19,7 +19,7 @@ from .archived_exclusions import acquire_exclusion_fences
 from .exclusion_host import check_exclusion_peer, check_host_archives, validate_successor
 from .fresh_host import _evidence, _protected_file
 from .fresh_host_observation import HostObservationUnavailable, _assert_pid_flock, _inspect, assert_host_listener_absent, assert_known_prior_stack_stopped, assert_prior_network_pin, assert_prior_network_unreferenced, assert_retained_journal_source, assert_retained_oauth_mount, serve_one_fresh_grant
-from .fresh_initialization import FreshInitializationIntent, acquire_prior_owner_fence, claim_fresh_initialization
+from .fresh_initialization import FreshInitializationIntent, acquire_prior_owner_fence, claim_fresh_initialization, parse_fresh_intent
 
 
 def hold_claim_and_guard(
@@ -104,11 +104,7 @@ def main() -> None:
     args = parser.parse_args()
     try:
         raw = json.loads(_protected_file(args.intent_file))
-        optional = {"host_prior_journal_root", "prior_journal_root", "prior_journal_device", "prior_journal_inode"}
-        fields = set(FreshInitializationIntent.__dataclass_fields__)
-        if not isinstance(raw, dict) or set(raw) not in (fields, fields - optional):
-            raise ValueError("initialization intent fields differ")
-        intent = FreshInitializationIntent(**raw)
+        intent = parse_fresh_intent(raw)
         intent.validate()
         hold_claim_and_guard(intent, args.evidence_file, args.bootstrap_config, args.prior_lock, args.prior_network_fd, args.guard_dir, wait_seconds=args.wait_seconds)
     except (OSError, ValueError, TypeError, KeyError, HostObservationUnavailable) as error:

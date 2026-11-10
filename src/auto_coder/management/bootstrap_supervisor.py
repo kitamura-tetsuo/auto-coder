@@ -1044,6 +1044,9 @@ class ManagementBootstrapSupervisor:
             with closing(HandoffStore(self.config.state_root, self.config.instance_id)._connect()):
                 pass
             RecoveryMailbox(self.config.state_root, self.config.instance_id).initialize()
+            from .original_attempts import record_original_stores
+
+            record_original_stores(self.config.state_root, intent)
             if self.config.fresh_runtime_binding is not None:
                 verify_installed_fresh_binding(self.config, self.bootstrap_config_path, intent, settings, source_authority=self.source_authority, bootstrap_application=application_root)
             else:
