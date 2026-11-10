@@ -18,6 +18,7 @@ from pathlib import Path
 
 from .archived_exclusions import unique_pairs
 from .fresh_host import _evidence
+from .fresh_host_observation import _validate_host_proc_profile
 
 ENROLLMENT_ROOT = Path("/var/lib/auto-coder/approved-containment-enrollments")
 _MAX_BYTES = 65536
@@ -186,6 +187,19 @@ def _approved_directory(root: Path, *, uid: int) -> None:
 
 def observe_approved_enrollment(proposed: object) -> EnrollmentObservation:
     """Read only the fixed trusted-host enrollment store; no caller override."""
+    try:
+        if os.geteuid() != 0:
+            raise ValueError("trusted initial host root is required")
+        for namespace in ("pid", "user", "mnt", "net"):
+            if os.readlink("/proc/self/ns/" + namespace) != os.readlink("/proc/1/ns/" + namespace):
+                raise ValueError("observer is not in the original host namespaces")
+        _validate_host_proc_profile(
+            os.readlink("/proc/self/ns/pid"),
+            Path("/proc/self/uid_map").read_text(encoding="ascii"),
+            Path("/proc/self/mountinfo").read_text(encoding="ascii"),
+        )
+    except (OSError, ValueError) as exc:
+        raise EnrollmentUnavailable("approved enrollment host-root observation is unavailable") from exc
     return _observe_approved_enrollment(proposed, root=ENROLLMENT_ROOT, expected_uid=0)
 
 

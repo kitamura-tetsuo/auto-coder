@@ -18,6 +18,7 @@ from auto_coder.management.containment_enrollment import (
     EnrollmentUnavailable,
     OriginalFile,
     _observe_approved_enrollment,
+    observe_approved_enrollment,
 )
 from auto_coder.management.fresh_host_observation import PriorContainer, PriorTask
 
@@ -193,3 +194,19 @@ def test_protected_reader_never_creates_missing_approval() -> None:
             _observe_approved_enrollment(selection, root=root, expected_uid=os.geteuid())
         assert not approval.exists()
         assert list(root.iterdir()) == []
+
+
+def test_public_reader_refuses_a_different_mount_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+
+    def namespace_link(path: str) -> str:
+        name = path.rsplit("/", 1)[-1]
+        if name == "mnt" and path.startswith("/proc/self/"):
+            return "mnt:[1]"
+        if name == "mnt" and path.startswith("/proc/1/"):
+            return "mnt:[2]"
+        return name + ":[1]"
+
+    monkeypatch.setattr(os, "readlink", namespace_link)
+    with pytest.raises(EnrollmentUnavailable, match="host-root observation is unavailable"):
+        observe_approved_enrollment(None)

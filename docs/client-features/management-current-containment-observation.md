@@ -94,7 +94,9 @@ operator lists is insufficient. No enrollment or controller mutation is performe
 The v4 report optionally includes `approved_enrollment`, a bounded component
 readback from the fixed trusted-local path
 `/var/lib/auto-coder/approved-containment-enrollments/<enrollment-id>.json`.
-The observer never writes to that path. Host root and an existing private
+The observer never writes to that path. Initial-namespace host root (matching
+PID, user, mount and network namespaces to host PID 1, with unrestricted procfs)
+and an existing private
 root-owned directory (mode 0700), private regular file (mode 0600), canonical
 paths, exact deployment IDs, original image IDs and independently reopened
 protected original source/configuration and prior-evidence file identities are
@@ -266,7 +268,7 @@ Both commands always return status 2 and `status: unavailable` under the separat
 saved objects never choose its scope. The consumer reopens procfs and pidfds and
 compares fresh complete process facts, including boot ID and task start tokens,
 without trusting signatures, saved success claims or numeric PID stability.
-The full v3 verifier likewise compares newly read `processes`; v1/v2 reports are
+The full v4 verifier likewise compares newly read `processes`; v1/v2/v3 reports are
 refused as unsupported rather than upgraded into authority.
 
 Each selected process records every currently enumerated thread's TID, start
