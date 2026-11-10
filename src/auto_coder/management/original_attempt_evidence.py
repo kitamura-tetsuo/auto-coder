@@ -135,6 +135,7 @@ def derive(binding: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = 
     attempts: list[AttemptEvidence] = []
     unavailable: list[str] = []
     held_owners: list[tuple[Path, int, tuple[int, int]]] = []
+    scanned_namespaces: dict[Path, tuple[tuple[int, int], tuple[str, ...]]] = {}
     frontier = ""
 
     def retain(path: Path) -> bytes:
@@ -223,8 +224,15 @@ def derive(binding: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = 
             try:
                 state = Path(intent.host_state_root)
                 journal = Path(intent.host_journal_root)
-                if list(identity(state, directory=True)) != anchor["state"] or list(identity(journal, directory=True)) != anchor["journal"]:
+                state_id = identity(state, directory=True)
+                journal_id = identity(journal, directory=True)
+                if list(state_id) != anchor["state"] or list(journal_id) != anchor["journal"]:
                     raise OriginalEvidenceUnavailable("original target directory replaced")
+                # A valid original may not silently acquire new records after its
+                # roots were inspected. Bind the entire top-level namespace as
+                # well as each file's retained bytes and identity.
+                scanned_namespaces[state] = (state_id, tuple(sorted(path.name for path in state.iterdir())))
+                scanned_namespaces[journal] = (journal_id, tuple(sorted(path.name for path in journal.iterdir())))
                 # Independently derive the fixed stores, never trust supplied lists.
                 expected = {
                     "child": str(state / "management-child.sqlite3"),
@@ -235,7 +243,7 @@ def derive(binding: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = 
                 if anchor["stores"] != expected:
                     raise OriginalEvidenceUnavailable("omitted or retargeted expected stores")
                 if kinds[-1] == "never-created":
-                    if anchor["pristine"] is not True or json.loads(branch[-1].value_json) != {"lifetime": anchor["lifetime"], "stores": expected} or any(state.iterdir()) or any(journal.iterdir()):
+                    if anchor["pristine"] is not True or json.loads(branch[-1].value_json) != {"lifetime": anchor["lifetime"], "stores": expected} or scanned_namespaces[state][1] or scanned_namespaces[journal][1]:
                         raise OriginalEvidenceUnavailable("never-created original boundary conflicts with effects")
                     continue
                 if "claimed" not in kinds:
@@ -306,6 +314,9 @@ def derive(binding: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = 
                 raise OriginalEvidenceUnavailable("original evidence mutated during observation")
         if read_frontier(root, binding) != (authority, events):
             raise OriginalEvidenceUnavailable("frontier advanced during observation")
+        for directory, (expected_id, expected_names) in scanned_namespaces.items():
+            if identity(directory, directory=True) != expected_id or tuple(sorted(path.name for path in directory.iterdir())) != expected_names:
+                raise OriginalEvidenceUnavailable("original store namespace changed during derivation")
         _check_fence(binding, fence)
         for owner_path, owner_fd, owner_identity in held_owners:
             _check_owner_fence(owner_path, owner_fd, owner_identity)

@@ -80,6 +80,35 @@ def test_original_origin_terminal_is_independently_verifiable_and_never_reusable
     assert list(Path(intent.host_journal_root).iterdir()) == []
 
 
+@pytest.mark.parametrize("root_name", ["state", "journal"])
+def test_original_never_created_refuses_namespace_inserted_during_verification(tmp_path, monkeypatch, root_name):
+    """A fresh file after the pristine-root scan must not produce a clean verdict."""
+    from auto_coder.management import original_attempt_evidence as reader
+
+    binding = _history(tmp_path)
+    intent = _terminal(tmp_path, binding, "failed")
+    target = Path(intent.host_state_root if root_name == "state" else intent.host_journal_root)
+    added = target / "concurrent-original-record.json"
+    original_snapshot = reader._snapshot
+    inserted = False
+
+    def insert_after_original_snapshot(path):
+        nonlocal inserted
+        result = original_snapshot(path)
+        if not inserted:
+            added.write_bytes(b'{"unverified":"concurrent"}')
+            added.chmod(0o600)
+            inserted = True
+        return result
+
+    with observe(binding) as fence:
+        monkeypatch.setattr(reader, "_snapshot", insert_after_original_snapshot)
+        evidence = derive(binding, fence)
+
+    assert inserted and added.read_bytes() == b'{"unverified":"concurrent"}'
+    assert "original store namespace changed during derivation" in evidence.unavailable
+
+
 @pytest.mark.parametrize("record", ["authority", "frontier", "event-sequence"])
 def test_independent_original_reader_refuses_nonproducer_bytes_and_boolean_sequence(tmp_path, record):
     """An internally rehashed frontier must not normalize an altered original."""

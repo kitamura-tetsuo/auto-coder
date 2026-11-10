@@ -125,7 +125,14 @@ second unsynchronized read attributed to an earlier digest. The verifier checks
 this exact open file description's current kernel READ flock and reopens the
 original authority, complete frontier, original intents, native store receipts,
 databases and retained fresh records. It compares exact protected identities and SHA-256 digests and
-rejects stale, truncated, forged, cross-deployment or mutated evidence. Malformed submitted JSON structures are uniformly refused at the CLI boundary without a Python traceback; they never authorize a result. A returned
+rejects stale, truncated, forged, cross-deployment or mutated evidence.
+Each observed original attempt also binds its state and journal root-level entry
+names and directory identities before the evidence reads and rechecks them
+after the final file and frontier reads. A concurrent insertion into a
+previously pristine never-created root refuses as unavailable rather than
+producing a clean original boundary. This detects a bounded namespace race;
+it is not continuous writer exclusion or historical completeness.
+Malformed submitted JSON structures are uniformly refused at the CLI boundary without a Python traceback; they never authorize a result. A returned
 object contains every covered attempted branch, explicit unavailable reasons,
 expected stores and source/history bindings. The only supported nested path
 is the Supervisor's same-UID, nonsymlink `state/logs` directory: its contents
