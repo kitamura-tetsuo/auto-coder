@@ -101,6 +101,49 @@ def test_independent_verifier_rejects_stale_or_conflicting_origin(request_file: 
     assert not (root / "LAUNCHED").exists()
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing", "extra", "pid-bool", "pid-zero", "start-bool", "start-zero", "start-noncanonical", "boot-type", "boot-malformed", "boot-noncanonical"],
+)
+def test_independent_origin_consumer_refuses_invalid_producer_lifetime(request_file: Path, mutation: str) -> None:
+    assert _run("begin", request_file).returncode == 0
+    root = request_file.parent
+    record = root / "guard/new-instance-origin.json"
+    original = json.loads(record.read_bytes())
+    lifetime = original["producer_lifetime"]
+    if mutation == "missing":
+        lifetime.pop("start_token")
+    elif mutation == "extra":
+        lifetime["self_reported_launch"] = True
+    elif mutation == "pid-bool":
+        lifetime["pid"] = True
+    elif mutation == "pid-zero":
+        lifetime["pid"] = 0
+    elif mutation == "start-bool":
+        lifetime["start_token"] = True
+    elif mutation == "start-zero":
+        lifetime["start_token"] = "0"
+    elif mutation == "start-noncanonical":
+        lifetime["start_token"] = "0001"
+    elif mutation == "boot-type":
+        lifetime["boot_id"] = 5
+    elif mutation == "boot-malformed":
+        lifetime["boot_id"] = "not-a-boot-uuid"
+    else:
+        lifetime["boot_id"] = "{" + lifetime["boot_id"] + "}"
+    record.write_bytes(json.dumps(original, sort_keys=True, separators=(",", ":")).encode())
+    changed = _bytes(root)
+
+    result = _run("inspect-begin", request_file)
+    assert result.returncode == 1, result.stdout
+    assert "original producer" in result.stderr
+    assert result.stdout == ""
+    assert _run("begin", request_file).returncode == 1
+    assert _bytes(root) == changed
+    assert all(list((root / name).iterdir()) == [] for name in ("state", "operations"))
+    assert not (root / "LAUNCHED").exists()
+
+
 _BARRIER = """
 import os
 import runpy

@@ -96,6 +96,10 @@ record prevents replay and is never unlinked or repaired automatically. A
 second process reopens the original request, source/configuration/application
 closure, protected roots and original guard record; it refuses conflicting
 records, changed bytes, altered permissions or an inconsistent digest.
+The independent verifier also refuses malformed original Linux producer
+PID/start-token/boot-ID facts in otherwise canonically encoded records. It
+checks retained fact structure, not whether that past PID is currently live;
+neither result establishes current host ownership or launch authority.
 
 An accepted begin reports `status=origin-recorded-only` and
 `launch_authorized=false`. This is a **prospective fact of an explicitly

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import stat
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -49,6 +50,27 @@ def _lifetime() -> dict[str, object]:
         "start_token": start,
         "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
     }
+
+
+def _verify_origin_lifetime(value: object) -> None:
+    """Check the retained Linux origin fact's shape, not current process liveness."""
+    if not isinstance(value, dict) or set(value) != {"pid", "start_token", "boot_id"}:
+        raise ValueError("original producer lifetime fields differ")
+    pid = value["pid"]
+    token = value["start_token"]
+    boot = value["boot_id"]
+    if type(pid) is not int or pid <= 0:
+        raise ValueError("original producer PID is invalid")
+    if not isinstance(token, str) or not 0 < len(token) <= 32 or not token.isascii() or not token.isdecimal() or int(token) <= 0 or token != str(int(token)):
+        raise ValueError("original producer start token is invalid")
+    if not isinstance(boot, str):
+        raise ValueError("original producer boot ID is invalid")
+    try:
+        canonical_boot = str(uuid.UUID(boot))
+    except ValueError as error:
+        raise ValueError("original producer boot ID is invalid") from error
+    if boot != canonical_boot:
+        raise ValueError("original producer boot ID is not canonical")
 
 
 def _root_binding_matches(assessment: NewInstanceAssessment, fd: int) -> None:
@@ -138,6 +160,7 @@ def inspect_new_instance_origin(request_file: Path) -> NewOriginReceipt:
         value = json.loads(encoded)
         if not isinstance(value, dict) or set(value) != {"schema_version", "kind", "assessment", "producer_lifetime"} or value["schema_version"] != 1 or value["kind"] != "new-instance-origin-only" or _canonical(value) != encoded:
             raise ValueError("new origin record is not canonical")
+        _verify_origin_lifetime(value["producer_lifetime"])
         saved = value["assessment"]
         if not isinstance(saved, dict) or set(saved) != set(NewInstanceAssessment.__dataclass_fields__) or saved["request"] != current_request or saved["original_request"] != asdict(original) or saved["status"] != "assessed-only" or saved["launch_authorized"] is not False:
             raise ValueError("original NEW assessment differs")
