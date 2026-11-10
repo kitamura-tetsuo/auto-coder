@@ -131,8 +131,8 @@ consumer's behalf.
 
 Exit 1 means unavailable or refused, including legacy absence, unsupported source
 or profile, corrupt/conflicting frontier, changed file/lock, unresolved outcome,
-nonempty WAL or omitted expected store. The reader uses immutable read-only
-SQLite connections, rejects unresolved WALs and does not create sidecars.
+nonempty WAL/rollback journal or omitted expected store. The reader uses immutable read-only
+SQLite connections, rejects unresolved WALs and rollback journals and does not create sidecars.
 Observation resources close on refusal. Neither an earlier verification nor a
 released observation claims current exclusion; consumers still own their actual
 deployment fences and operation-history policy.

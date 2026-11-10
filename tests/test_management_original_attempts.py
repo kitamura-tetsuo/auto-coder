@@ -429,6 +429,17 @@ def test_native_store_identity_receipt_is_once_only_and_missing_store_refuses(tm
         evidence = derive(binding, fence, (owner_fd,))
         assert evidence.unavailable == (intent.request_id + ": original outcome remains unknown",)
     operations = Path(intent.journal_root) / "management-operations.sqlite3"
+    rollback = operations.with_name(operations.name + "-journal")
+    rollback.write_bytes(b"unresolved rollback transaction")
+    rollback.chmod(0o600)
+    before_rollback = _fingerprint(tmp_path)
+    with observe(binding) as fence:
+        evidence = derive(binding, fence, (owner_fd,))
+        assert evidence.unavailable == (intent.request_id + ": original database rollback journal is unresolved",)
+        with pytest.raises(OriginalEvidenceUnavailable):
+            verify(evidence, binding, fence, (owner_fd,))
+    assert _fingerprint(tmp_path) == before_rollback
+    rollback.unlink()
     operations.unlink()
     before = _fingerprint(tmp_path)
     with observe(binding) as fence:

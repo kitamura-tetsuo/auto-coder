@@ -77,11 +77,13 @@ def observe(binding: HistoryBinding) -> Iterator[int]:
 
 
 def _database(path: Path) -> None:
-    # No SQLite sidecars may be created by an observation. The consumer's
-    # deployment fences must exclude writers; nonempty WALs are unavailable.
-    wal = path.with_name(path.name + "-wal")
-    if wal.is_symlink() or (wal.exists() and wal.stat().st_size):
-        raise OriginalEvidenceUnavailable("original database WAL is unresolved")
+    # Immutable SQLite readers ignore both uncheckpointed WAL data and hot
+    # rollback journals. Either unresolved sidecar invalidates the original.
+    # This observation never creates or cleans up sidecars.
+    for suffix, description in (("-wal", "WAL"), ("-journal", "rollback journal")):
+        sidecar = path.with_name(path.name + suffix)
+        if sidecar.is_symlink() or (sidecar.exists() and sidecar.stat().st_size):
+            raise OriginalEvidenceUnavailable("original database " + description + " is unresolved")
     with closing(sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)) as connection:
         if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
             raise OriginalEvidenceUnavailable("original database is corrupt")
