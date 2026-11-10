@@ -81,8 +81,7 @@ def identity(path: Path, *, directory: bool = False) -> tuple[int, int]:
     info = path.lstat()
     expected = stat.S_ISDIR if directory else stat.S_ISREG
     mode = stat.S_IMODE(info.st_mode)
-    if not expected(info.st_mode) or info.st_uid != os.geteuid() or (mode != 0o700 if directory else mode != 0o600):
-
+    if not expected(info.st_mode) or info.st_uid != os.geteuid() or (mode != 0o700 if directory else mode != 0o600) or (not directory and info.st_nlink != 1):
         raise OriginalEvidenceUnavailable("unprotected original evidence: " + str(path))
     return info.st_dev, info.st_ino
 
@@ -97,7 +96,7 @@ def read_original(path: Path) -> tuple[bytes, tuple[int, int]]:
         with os.fdopen(os.dup(fd), "rb") as stream:
             data = stream.read(8 * 1024 * 1024 + 1)
         after = os.fstat(fd)
-        stable_fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_size", "st_mtime_ns", "st_ctime_ns")
+        stable_fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
         if any(getattr(before, field) != getattr(after, field) for field in stable_fields) or identity(path) != expected or len(data) != before.st_size:
             raise OriginalEvidenceUnavailable("original evidence changed while reading")
         return data, expected

@@ -56,6 +56,12 @@ digest form an internally consistent chain. A malformed lifetime or
 unexpected terminal-boundary payload is unavailable, not a recorded
 grant or successful original attempt.
 Individual original files are bounded to 8 MiB; larger evidence is unavailable.
+Protected original regular files, including the history lock, authority,
+frontier, events, intent and native stores, must have exactly one hard link.
+An otherwise matching digest/inode with an additional writable filesystem
+name refuses independent verification; link-count changes during a read
+also refuse. This is an original-byte alias guard, not evidence of complete
+historical coverage or a recovery authorization.
 The bounded namespace admits at most 4096 events and rejects overflow, extra
 files, gaps and incomplete writes instead of truncating or repairing them.
 Concurrent admission reports `history admission contested` before writing an

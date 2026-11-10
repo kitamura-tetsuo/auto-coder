@@ -80,6 +80,58 @@ def test_original_origin_terminal_is_independently_verifiable_and_never_reusable
     assert list(Path(intent.host_journal_root).iterdir()) == []
 
 
+@pytest.mark.parametrize("name", ["history.lock", "authority.json", "frontier.json", "00000000.json"])
+def test_original_history_refuses_hardlinked_authority_without_mutation(tmp_path, name):
+    binding = _history(tmp_path)
+    _terminal(tmp_path, binding, "failed")
+    protected = Path(binding.root) / name
+    alias = tmp_path / "unapproved-history-alias"
+    os.link(protected, alias)
+    before = _fingerprint(tmp_path)
+
+    # A matching path, digest and inode do not exclude another writable name.
+    with pytest.raises(OriginalEvidenceUnavailable, match="unprotected original evidence"):
+        read_frontier(Path(binding.root), binding)
+    if name == "history.lock":
+        with pytest.raises(OriginalEvidenceUnavailable, match="unprotected original evidence"):
+            with observe(binding):
+                pytest.fail("hardlinked history lock was accepted")
+    else:
+        with observe(binding) as fence:
+            evidence = derive(binding, fence)
+            assert evidence.unavailable
+            with pytest.raises(OriginalEvidenceUnavailable):
+                verify(evidence, binding, fence)
+    assert _fingerprint(tmp_path) == before
+
+    alias.unlink()
+    with observe(binding) as fence:
+        evidence = derive(binding, fence)
+        assert evidence.unavailable == ()
+        assert verify(evidence, binding, fence) == evidence
+
+
+def test_independent_original_claim_consumer_refuses_hardlinked_intent(tmp_path):
+    binding = _history(tmp_path)
+    intent = _covered(tmp_path, binding, "claimed")
+    claim_fresh_initialization(Path(intent.host_state_root), intent)
+    alias = tmp_path / "unapproved-intent-alias"
+    os.link(Path(intent.host_state_root) / "fresh-initialization.json", alias)
+    before = _fingerprint(tmp_path)
+
+    with observe(binding) as fence:
+        evidence = derive(binding, fence)
+        assert any("unprotected original evidence" in reason for reason in evidence.unavailable)
+        with pytest.raises(OriginalEvidenceUnavailable):
+            verify(evidence, binding, fence)
+    assert _fingerprint(tmp_path) == before
+
+    alias.unlink()
+    with observe(binding) as fence:
+        evidence = derive(binding, fence)
+        assert evidence.unavailable == (intent.request_id + ": original grant boundary not crossed",)
+
+
 def test_complete_frontier_retains_claim_and_reverse_failed_branch(tmp_path):
     binding = _history(tmp_path)
     first = _covered(tmp_path, binding, "first")
