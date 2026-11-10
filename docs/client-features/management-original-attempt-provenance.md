@@ -15,8 +15,9 @@ The initial predecessor is an external boundary, not proof that its missing
 history was empty. `earlier_history` is always `UNAVAILABLE: before prospective
 enrollment`. In particular this profile cannot make the current incident's
 missing failed-generation journal recoverable. Deployment-wide enrollment
-continuity and complete positive host acceptance remain unverified; do not use
-this implementation as a recovery completeness prerequisite.
+continuity, every possible admission bypass, and authentic earlier history
+remain unverified; do not use this implementation as a recovery completeness
+prerequisite.
 
 ## Original producer and lifetime
 
@@ -177,6 +178,8 @@ tests/test_management_original_native_process.py
 tests/test_management_fresh_launch_exclusions.py`
 for bounded tests, then run the selected `supervisor_integration` Docker case
 `test_management_fresh_end_to_end.py::test_fresh_first_launch_via_host_guard_and_authenticated_http[False-False-None-True-False-False-True]`
+and the two-successor
+`test_management_archived_cutover_container.py::test_real_second_cutover_preserves_all_owner_and_key_exclusions[original-lineage]`
 on an authorized root-enabled disposable Linux/Docker host.
 for real isolated production-origin claims/refusals, original-byte fingerprints,
 separate-process verification, and observable process/flock contention. The
@@ -231,22 +234,36 @@ checks that reconstruction cannot relaunch the child and the independent
 original reader still reports incomplete evidence. These are real Docker/OS
 observations, not hand-authored successful grant records.
 
-A **cleanly stopped** disposable Supervisor releases its owner lock and
-checkpoints the SQLite WALs. A separate process inherits the currently held
+A **cleanly stopped** disposable Supervisor releases its owner lock, but the
+second-cutover fixture may still retain a nonempty child SQLite WAL. Its
+explicitly isolated test finalizes the *stopped* B/C child ledgers with a
+SQLite WAL checkpoint before taking original evidence snapshots; the regular
+original reader never performs such a checkpoint or changes original bytes.
+An unresolved WAL remains unavailable, including after a forced Docker stop.
+A separate process inherits the currently held
 shared owner lock, independently reopens the original root, exact native
 databases and protected file digests, and verifies the complete covered
-frontier. A forced Docker stop that leaves a nonempty WAL **remains
-unavailable**, not retrospectively repaired, and a diagnostic log directory
+frontier. A diagnostic log directory
 is never treated as original grant authority. The fixture's local identity
 provider controls only its disposable test OAuth login; real OAuth token
 issuance/usage, Docker process/lifetime, host guard and API responses are
 observable independently.
 
-This is **positive isolated production-origin capture and verification for
-one covered successful first launch plus a genuinely refused successor**,
-not a proof of enrollment of all deployment sibling origins, a complete
-pre-enrollment/failed-generation history, a second real successful A-to-B-to-C
-cutover, or authorization for #2824, #2825 or the present incident.
+The separate `original-lineage` test uses the actual continuous
+`exclusion_cutover` host adapter and Docker supervisors to reach authenticated
+readiness at both A→B and B→C, carrying A's retained journal, owner fences and
+worker exclusions forward. It then drives the genuine original admission for
+a deliberately refused D, proving that a different consumer process can
+reconstruct **both successful covered B/C attempts and failed D**. It refuses
+a submitted list omitting D and a missing C journal, and reaccepts the
+unchanged originals after restoration. Original A and its earlier attempts
+are *outside* the prospectively enrolled history; the test does not turn
+their historical completeness into a positive claim.
+
+These are **positive isolated production-origin tests within a selected
+prospective profile**, not proof of enrollment of every deployment sibling
+origin, complete pre-enrollment/failed-generation history, or authorization
+for #2824, #2825 or the present incident.
 No production/beta management, OAuth, worker or Docker controller state is
 modified by this disposable fixture.
 
@@ -256,9 +273,9 @@ to be interrupted at anchor, claim, terminal and possible-grant boundaries while
 a contender demonstrably refuses. Hand-written malformed files are negative
 fault controls only. They are never positive original-history evidence.
 
-These tests do not demonstrate a successful Docker-host A→B→C cutover, complete
-retained bootstrap/ancestor record derivation or deployment-wide enforcement
-against an unenrolled sibling origin. The native host socket/namespace and
+The A→B→C result does not demonstrate complete retained history before A,
+exhaustive original bootstrap/ancestor coverage across all deployments, or
+deployment-wide enforcement against an unenrolled sibling origin. The native host socket/namespace and
 upgrade tests can fail in restricted execution environments; unavailable host
 behavior is not a successful acceptance result. No real management host, OAuth,
 workers or controller configuration is changed by this test selection.
