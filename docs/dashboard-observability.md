@@ -3483,3 +3483,17 @@ loss; no test-only authority flag or canned successful run is the promotion
 oracle. See `client-features/management-source-release-dispatch.md` for the schema
 and safe uncertainty projection. This is an observability-neutral management
 addition: it introduces no production-to-dashboard event or deployment outcome.
+
+### NEW-instance read-only host preflight (Issue #2672 DRAFT)
+
+`fresh_host preflight --request-file PATH` emits only a local `assessed-only`
+JSON diagnostic with `launch_authorized: false`. It has no production admission,
+launch, process ownership, durable resumption or dashboard-event producer; it
+cannot report authenticated readiness or success. No production trace or view
+schema changes are required because no processing path consumes this assessment.
+The existing fresh initialization/recovery emissions retain their meaning.
+See `docs/client-features/management-new-instance-preflight.md` for the bounded
+subset and missing REQ-001–005 gates. Run `bash scripts/test.sh --ci-tests-only
+tests/test_management_new_instance_preflight.py` to verify host output/refusal,
+original byte preservation and real overlapping/crashed assessment scans. These
+are diagnostic regressions, not production authenticated launch evidence.

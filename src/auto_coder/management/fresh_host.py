@@ -88,6 +88,8 @@ def _evidence(path: Path) -> tuple[PriorContainer, PriorContainer, str]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Fresh management host evidence; no Docker mutation")
     commands = parser.add_subparsers(dest="command", required=True)
+    preflight = commands.add_parser("preflight", help="Read-only NEW-instance assessment; never launch authority")
+    preflight.add_argument("--request-file", required=True, type=Path)
     capture = commands.add_parser("capture")
     for option in ("management-id", "management-image", "proxy-id", "proxy-image", "mounts-file", "guard-dir"):
         capture.add_argument("--" + option, required=True)
@@ -106,7 +108,11 @@ def main() -> None:
     guard.add_argument("--bootstrap-config", type=Path)
     args = parser.parse_args()
     try:
-        if args.command == "capture":
+        if args.command == "preflight":
+            from .fresh_preflight import assess_new_instance
+
+            print(json.dumps(asdict(assess_new_instance(args.request_file)), sort_keys=True))
+        elif args.command == "capture":
             mounts = json.loads(_protected_file(Path(args.mounts_file)))
             if not isinstance(mounts, dict) or set(mounts) != {"management", "proxy"}:
                 raise ValueError("approved mount profile is malformed")
