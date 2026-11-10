@@ -82,7 +82,23 @@ def test_bootstrap_producer_generates_original_store_receipt_and_native_database
         )
 
     monkeypatch.setattr(case.supervisor, "start_selected", accepted_child)
-    assert case.supervisor._start_fresh_initialization()
+    # Capture the exact fail-closed boundary for a CI runner whose process,
+    # filesystem or source provenance differs from the isolated host.
+    # Reporting an exception never converts it into a successful admission.
+    boundaries = []
+
+    def original_boundary_trace(frame, event, args):
+        if event == "exception" and frame.f_code.co_name == "_start_fresh_initialization":
+            boundaries.append((frame.f_lineno, type(args[1]).__name__, str(args[1])))
+        return original_boundary_trace
+
+    prior_trace = sys.gettrace()
+    sys.settrace(original_boundary_trace)
+    try:
+        accepted = case.supervisor._start_fresh_initialization()
+    finally:
+        sys.settrace(prior_trace)
+    assert accepted, boundaries
     assert len(case.grants) == 1 and len(dispatches) == 1
 
     # This original receipt was produced by the real native Supervisor path.
