@@ -25,7 +25,8 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from dataclasses import asdict, dataclass
+from contextlib import ExitStack
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -35,13 +36,15 @@ from auto_coder.management.action_scopes import DEPLOY_SCOPE, OPERATE_SCOPE, REA
 from auto_coder.management.exclusion_host import required_exclusions
 from auto_coder.management.fresh_host import _write_evidence
 from auto_coder.management.fresh_host_observation import capture_prior_container
-from auto_coder.management.fresh_initialization import FreshInitializationIntent
+from auto_coder.management.fresh_initialization import FreshInitializationIntent, claim_fresh_initialization
 from auto_coder.management.identity import AdmissionResult, AdmissionStatus, ReasonCode, VerifiedPrincipal
 from auto_coder.management.mcp_runtime_tools import ManagementRuntime
 from auto_coder.management.oauth_config import OAuthClient, OAuthSettings
 from auto_coder.management.oauth_grants import AuthorizationRequest, OAuthGrantService
 from auto_coder.management.operation_store import ManagementOperationStore
 from auto_coder.management.operations import ActionParameter, EffectReceipt, ManagedTarget, OperationIntent, OperationPhase
+from auto_coder.management.original_attempt_evidence import derive, observe, verify
+from auto_coder.management.original_attempts import OriginalEvidenceUnavailable, enroll, read_frontier
 from auto_coder.operating_policy import MANAGEMENT_REPOSITORY
 from tests.test_management_fresh_end_to_end import _build_fixture_image, _fixture_executable_digest, _resolve_fixture_base
 
@@ -144,7 +147,7 @@ class Generation:
 
 
 class Chain:
-    def __init__(self, root: Path, *, with_workers: bool = False):
+    def __init__(self, root: Path, *, with_workers: bool = False, original_history: bool = False):
         self.root = root
         self.names: list[str] = []
         self.generations: list[Generation] = []
@@ -160,6 +163,11 @@ class Chain:
             self.port = reservation.getsockname()[1]
         self.oauth = root / "oauth"
         self.oauth.mkdir(mode=0o700)
+        self.history_binding = None
+        if original_history:
+            history = root / "original-history"
+            history.mkdir(mode=0o700)
+            self.history_binding = enroll(history, "isolated-authentic-A-B-C-cutover")
         self.origin = "http://127.0.0.1:8081"
         base = _resolve_fixture_base(os.environ.get("AUTOCODER_FRESH_TEST_BASE_IMAGE", "auto-coder:management-local-abc65544"))
         self.executable_digest = _fixture_executable_digest(base)
@@ -381,6 +389,8 @@ class Chain:
                 db.st_dev,
                 db.st_ino,
             )
+            if self.history_binding is not None:
+                intent = replace(intent, original_history=self.history_binding.root, original_history_id=self.history_binding.history)
             generation.intent = root / "intent.json"
             generation.intent.write_text(json.dumps(asdict(intent)))
             generation.intent.chmod(0o600)
@@ -743,13 +753,14 @@ def chain(tmp_path: Path, request):
         pytest.skip("host root is required for disposable namespace and proxy evidence")
     fixture = Chain.__new__(Chain)
     try:
-        fixture.__init__(tmp_path, with_workers=request.node.callspec.params["boundary"] == "complete")
+        boundary = request.node.callspec.params["boundary"]
+        fixture.__init__(tmp_path, with_workers=boundary in {"complete", "original-lineage"}, original_history=boundary == "original-lineage")
         yield fixture
     finally:
         fixture.close()
 
 
-@pytest.mark.parametrize("boundary", ["complete", "host-interrupted", "omitted-ancestor", "stopped-prior"])
+@pytest.mark.parametrize("boundary", ["complete", "host-interrupted", "omitted-ancestor", "stopped-prior", "original-lineage"])
 def test_real_second_cutover_preserves_all_owner_and_key_exclusions(chain: Chain, boundary: str) -> None:
     a = chain.prepare("manager-a")
     chain.docker("start", a.container)
@@ -851,5 +862,104 @@ def test_real_second_cutover_preserves_all_owner_and_key_exclusions(chain: Chain
         assert chain.snapshot(b) == original_b
         response = chain.call(c, "auto_coder_update_management_service", {"source_sha": "a" * 40, "idempotency_key": old_a.intent.idempotency_key})
         assert response["status"] == "CONFLICT"
+        if boundary == "original-lineage":
+            assert chain.history_binding is not None
+            binding = chain.history_binding
+            # A deliberately refused, independently admitted child of C must
+            # survive in the complete reverse frontier alongside successful B/C.
+            chain.stop(c)
+            # The isolated cutover fixture stops Docker but its child SQLite WAL
+            # remains nonempty. Settle only these stopped disposable ledgers
+            # before immutable original-byte observation, as for its journals.
+            for predecessor in (b, c):
+                chain.checkpoint(predecessor.path("state") / "management-child.sqlite3")
+            refused_root = chain.root / "manager-d-refused"
+            refused_root.mkdir(mode=0o700)
+            for part in ("state", "journal", "guard"):
+                (refused_root / part).mkdir(mode=0o700)
+            d_state, d_journal, d_guard = (refused_root / part for part in ("state", "journal", "guard"))
+            ss, sj, sg = (directory.stat() for directory in (d_state, d_journal, d_guard))
+            c_lock = c.path("state") / ".supervisor-owner.lock"
+            lock = c_lock.stat()
+            c_db = (c.path("journal") / "management-operations.sqlite3").stat()
+            raw_c = json.loads(c.intent.read_bytes())
+            rejected = replace(
+                FreshInitializationIntent(**raw_c),
+                request_id=str(uuid.uuid4()),
+                old_instance=c.name,
+                old_container_id=c.container,
+                new_instance="manager-d-refused",
+                new_container_id=hashlib.sha256(b"manager-d-refused").hexdigest(),
+                host_state_root=str(d_state),
+                host_journal_root=str(d_journal),
+                host_prior_journal_root=str(c.path("journal")),
+                prior_journal_device=c_db.st_dev,
+                prior_journal_inode=c_db.st_ino,
+                state_device=ss.st_dev,
+                state_inode=ss.st_ino,
+                journal_device=sj.st_dev,
+                journal_inode=sj.st_ino,
+                guard_device=sg.st_dev,
+                guard_inode=sg.st_ino,
+                owner_lock_device=lock.st_dev,
+                owner_lock_inode=lock.st_ino,
+                oauth_inode=raw_c["oauth_inode"] + 1,
+            )
+            with pytest.raises(ValueError, match="retained OAuth root identity differs"):
+                claim_fresh_initialization(d_state, rejected)
+            assert not list(d_state.iterdir()) and not list(d_journal.iterdir())
+            assert chain.grants() == chain.grants_before
+            with ExitStack() as stack:
+                owner_fds = []
+                for predecessor in (b, c):
+                    owner = stack.enter_context((predecessor.path("state") / ".supervisor-owner.lock").open("rb"))
+                    fcntl.flock(owner.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    owner_fds.append(owner.fileno())
+                with observe(binding) as fence:
+                    evidence = derive(binding, fence, tuple(owner_fds))
+                    assert evidence.unavailable == (), evidence.unavailable
+                    assert [(attempt.predecessor, attempt.target, attempt.state) for attempt in evidence.attempts] == [
+                        (a.name, b.name, "grant-possible"),
+                        (b.name, c.name, "grant-possible"),
+                        (c.name, "manager-d-refused", "never-created"),
+                    ]
+                    assert verify(evidence, binding, fence, tuple(owner_fds)) == evidence
+                    binding_path = chain.root / "original-binding.json"
+                    evidence_path = chain.root / "original-evidence.json"
+                    binding_path.write_text(json.dumps(asdict(binding), sort_keys=True))
+                    evidence_path.write_text(json.dumps(asdict(evidence), sort_keys=True))
+                    consumer = subprocess.run(
+                        [
+                            sys.executable,
+                            "-B",
+                            "-m",
+                            "auto_coder.management.original_attempt_evidence",
+                            "--binding",
+                            str(binding_path),
+                            "--submitted",
+                            str(evidence_path),
+                            *(option for fd in owner_fds for option in ("--owner-fd", str(fd))),
+                        ],
+                        pass_fds=tuple(owner_fds),
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    assert consumer.returncode == 0, consumer.stderr
+                    assert json.loads(consumer.stdout) == json.loads(evidence_path.read_text())
+                    assert [event.kind for event in read_frontier(Path(binding.root), binding)[1]] == ["anchor", "claimed", "grant-possible", "anchor", "claimed", "grant-possible", "anchor", "never-created"]
+                    # Re-submitting a forged list with the failed branch omitted
+                    # cannot establish the completeness of the original frontier.
+                    with pytest.raises(OriginalEvidenceUnavailable):
+                        verify(replace(evidence, attempts=evidence.attempts[:-1]), binding, fence, tuple(owner_fds))
+                    parked = chain.root / "parked-original-journal"
+                    original_db = c.path("journal") / "management-operations.sqlite3"
+                    original_db.rename(parked)
+                    try:
+                        with pytest.raises(OriginalEvidenceUnavailable):
+                            verify(evidence, binding, fence, tuple(owner_fds))
+                    finally:
+                        parked.rename(original_db)
+                    assert verify(evidence, binding, fence, tuple(owner_fds)) == evidence
     assert chain.snapshot(a) == original_a
     assert chain.grants() == chain.grants_before
