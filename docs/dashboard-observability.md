@@ -3460,3 +3460,26 @@ deferred outcome; a foreign-author reply receipt instead leaves the diagnostic
 unclassified. Both cases prove no receipt-file creation, no reconciliation of
 excluded IDs, no send and no GitHub mutation. The public fact allowlist and
 renderer remain unchanged.
+
+## Authenticated accepted-source release workflow dispatch
+
+`management/source_release_dispatch.py` uses the independent management journal
+and fixed GitHub REST boundary. Admission and bounded observation use the existing
+Loguru sinks with operation ID and fixed outcome categories; Actions run identity
+is exposed separately from source commit in authenticated operation readback.
+There is no Issue/PR execution, scheduler admission, LLM/provider routing, or
+structured dashboard event in this path. Consequently the existing dashboard
+projection is unchanged: a workflow run, including success, must not imply source
+promotion or installed-worker deployment. Confirmed source catalog/Release/ref
+readback is exposed only as `SOURCE_PROMOTION_CONFIRMED` or
+`COMPLETED_BUT_SUPERSEDED`, always with `worker_deployed=false`.
+
+Run `bash scripts/test.sh --ci-tests-only tests/test_management_source_release_dispatch.py`.
+The suite crosses production HTTPS MCP admission, real OAuth consent/current
+policy, persistent SQLite, the actual acceptance validator/catalog publisher and
+controlled GitHub workflow transport. It checks response loss/restart, unresolved
+listings, immutable run/evidence mismatches, partial artifacts and policy/grant
+loss; no test-only authority flag or canned successful run is the promotion
+oracle. See `client-features/management-source-release-dispatch.md` for the schema
+and safe uncertainty projection. This is an observability-neutral management
+addition: it introduces no production-to-dashboard event or deployment outcome.

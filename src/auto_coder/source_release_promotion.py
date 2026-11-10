@@ -16,6 +16,7 @@ from .management.source_evidence import BetaEvidenceReader, SourceEvidenceError
 from .source_release_catalog import (
     RELEASE_WORKFLOW,
     SHA,
+    SourceReleaseCandidate,
     SourceReleaseCatalog,
     SourceReleaseConflict,
     SourceReleaseError,
@@ -70,7 +71,7 @@ class AcceptedSourceValidator:
     def __init__(self, client: GitHubGitDataClient, policy: SourceReleasePolicy, *, clock: Callable[[], float] = time.time) -> None:
         self.client, self.policy, self.clock = client, policy, clock
 
-    def validate(self, request: SourceReleaseRequest) -> ValidatedAcceptance:
+    def validate(self, request: SourceReleaseCandidate) -> ValidatedAcceptance:
         request.validate(self.policy)
         proofs = TestedSourcePublisher(self.client, self.policy.source_repository)
         proof = proofs.read(request.source_sha)
@@ -150,7 +151,7 @@ class AcceptedSourceValidator:
         self._samples(local, worker, captured_profile, opened, deadline, completed)
         return ValidatedAcceptance(local_id, local_digest, instance_id, captured_profile.profile_id, captured_profile.content_revision)
 
-    def _source(self, source: dict[str, object], request: SourceReleaseRequest, proof: object) -> None:
+    def _source(self, source: dict[str, object], request: SourceReleaseCandidate, proof: object) -> None:
         record = proof.record  # type: ignore[attr-defined]
         expected = {
             "repository": self.policy.source_repository,

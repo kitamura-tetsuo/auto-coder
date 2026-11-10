@@ -93,8 +93,47 @@ class ManagementOperationStore:
         CREATE TABLE IF NOT EXISTS legacy_worker_bindings (
           operation_id TEXT PRIMARY KEY, binding_digest TEXT NOT NULL,
           FOREIGN KEY(operation_id) REFERENCES operations(operation_id));
+        CREATE TABLE IF NOT EXISTS source_release_identities (
+          operation_id TEXT NOT NULL, kind TEXT NOT NULL, run_json TEXT NOT NULL,
+          PRIMARY KEY(operation_id,kind),
+          FOREIGN KEY(operation_id) REFERENCES operations(operation_id));
         """)
         return connection
+
+    def source_release_run(self, operation_id: str, *, kind: str = "run") -> dict[str, object] | None:
+        """Read the write-once original Actions identity; never select latest."""
+        connection = self._connect()
+        try:
+            row = connection.execute("SELECT run_json FROM source_release_identities WHERE operation_id=? AND kind=?", (operation_id, kind)).fetchone()
+            return None if row is None else json.loads(row[0])
+        finally:
+            connection.close()
+
+    def bind_source_release_run(self, record: OperationRecord, run: dict[str, object], *, kind: str = "run") -> bool:
+        """CAS-bind an exact run once while the original possible-send owns its lane."""
+        encoded = json.dumps(run, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        if len(encoded) > 4096 or kind not in {"response", "run"}:
+            raise ValueError("unbounded source release run")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM operations WHERE operation_id=?", (record.operation_id,)).fetchone()
+            if row is None or self._record(row) != record or record.effect.state is not EffectState.SENT_UNKNOWN:
+                connection.rollback()
+                return False
+            previous = connection.execute("SELECT run_json FROM source_release_identities WHERE operation_id=? AND kind=?", (record.operation_id, kind)).fetchone()
+            if previous is not None:
+                connection.rollback()
+                return previous[0] == encoded
+            connection.execute("INSERT INTO source_release_identities VALUES (?,?,?)", (record.operation_id, kind, encoded))
+            category = "source_release_" + kind + "_bound"
+            now = time.time()
+            connection.execute("UPDATE operations SET revision=?,safe_error_category=?,updated_at=? WHERE operation_id=? AND revision=?", (record.revision + 1, category, now, record.operation_id, record.revision))
+            self._append_history(connection, record.operation_id, record.phase, record.revision + 1, record.owner_attempt_id, record.effect, category, now)
+            connection.commit()
+            return True
+        finally:
+            connection.close()
 
     def pin_legacy_worker_binding(self, operation_id: str, digest: str) -> bool:
         """Pin a pre-registry operation once, across subsequent restarts.
@@ -249,7 +288,12 @@ class ManagementOperationStore:
             if connection.execute("SELECT 1 FROM operations WHERE operation_id=?", (operation_id,)).fetchone() is None:
                 connection.rollback()
                 return False
-            current = connection.execute("SELECT revision FROM worker_lifecycle WHERE operation_id=?", (operation_id,)).fetchone()
+            current = connection.execute("SELECT revision,snapshot_json FROM worker_lifecycle WHERE operation_id=?", (operation_id,)).fetchone()
+            if current is not None and json.loads(current["snapshot_json"]).get("kind") == "promote_accepted_source_release":
+                # Source dispatch admission binds original evidence permanently;
+                # later run observations live in a separate write-once table.
+                connection.rollback()
+                return False
             if current is None and expected_revision == -1:
                 connection.execute("INSERT INTO worker_lifecycle VALUES (?,?,?,?)", (operation_id, 0, encoded, time.time()))
             elif current is not None and current["revision"] == expected_revision:
