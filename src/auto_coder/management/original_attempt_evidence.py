@@ -295,18 +295,43 @@ def verify(submitted: OriginalAttemptEvidence, expected: HistoryBinding, fence: 
 
 
 def parse_evidence(data: bytes) -> OriginalAttemptEvidence:
+    """Reject malformed submitted shapes before independent re-observation."""
     raw = json.loads(data)
     if not isinstance(raw, dict) or set(raw) != set(OriginalAttemptEvidence.__dataclass_fields__):
         raise OriginalEvidenceUnavailable("unsupported submitted evidence schema")
-    if any(not isinstance(item, dict) or set(item) != set(AttemptEvidence.__dataclass_fields__) for item in raw["attempts"]):
-        raise OriginalEvidenceUnavailable("unsupported submitted attempt schema")
+    binding = raw["binding"]
+    if not isinstance(binding, dict) or set(binding) != set(HistoryBinding.__dataclass_fields__) or any(not isinstance(value, str) for value in binding.values()):
+        raise OriginalEvidenceUnavailable("unsupported submitted binding schema")
+    if any(not isinstance(raw[field], str) for field in ("profile", "earlier_history", "frontier")):
+        raise OriginalEvidenceUnavailable("unsupported submitted evidence fields")
+    if not isinstance(raw["attempts"], list) or not isinstance(raw["originals"], list) or not isinstance(raw["unavailable"], list):
+        raise OriginalEvidenceUnavailable("unsupported submitted evidence collections")
+    if any(not isinstance(reason, str) for reason in raw["unavailable"]):
+        raise OriginalEvidenceUnavailable("unsupported submitted unavailable reasons")
+    attempts = []
+    for item in raw["attempts"]:
+        if not isinstance(item, dict) or set(item) != set(AttemptEvidence.__dataclass_fields__):
+            raise OriginalEvidenceUnavailable("unsupported submitted attempt schema")
+        if any(not isinstance(item[field], str) for field in ("request_id", "predecessor", "target", "state")):
+            raise OriginalEvidenceUnavailable("unsupported submitted attempt fields")
+        pairs = item["expected_stores"]
+        if not isinstance(pairs, list) or any(not isinstance(pair, list) or len(pair) != 2 or any(not isinstance(value, str) for value in pair) for pair in pairs):
+            raise OriginalEvidenceUnavailable("unsupported submitted expected stores")
+        attempts.append(AttemptEvidence(item["request_id"], item["predecessor"], item["target"], item["state"], tuple(tuple(pair) for pair in pairs)))
+    originals = []
+    for item in raw["originals"]:
+        if not isinstance(item, dict) or set(item) != set(OriginalFile.__dataclass_fields__):
+            raise OriginalEvidenceUnavailable("unsupported submitted original file schema")
+        if not isinstance(item["path"], str) or not isinstance(item["sha256"], str) or any(type(item[field]) is not int for field in ("device", "inode")):
+            raise OriginalEvidenceUnavailable("unsupported submitted original file fields")
+        originals.append(OriginalFile(**item))
     return OriginalAttemptEvidence(
-        binding=HistoryBinding(**raw["binding"]),
+        binding=HistoryBinding(**binding),
         profile=raw["profile"],
         earlier_history=raw["earlier_history"],
         frontier=raw["frontier"],
-        attempts=tuple(AttemptEvidence(item["request_id"], item["predecessor"], item["target"], item["state"], tuple(tuple(pair) for pair in item["expected_stores"])) for item in raw["attempts"]),
-        originals=tuple(OriginalFile(**item) for item in raw["originals"]),
+        attempts=tuple(attempts),
+        originals=tuple(originals),
         unavailable=tuple(raw["unavailable"]),
     )
 

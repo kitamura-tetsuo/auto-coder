@@ -106,7 +106,7 @@ second unsynchronized read attributed to an earlier digest. The verifier checks
 this exact open file description's current kernel READ flock and reopens the
 original authority, complete frontier, original intents, native store receipts,
 databases and retained fresh records. It compares exact protected identities and SHA-256 digests and
-rejects stale, truncated, forged, cross-deployment or mutated evidence. A returned
+rejects stale, truncated, forged, cross-deployment or mutated evidence. Malformed submitted JSON structures are uniformly refused at the CLI boundary without a Python traceback; they never authorize a result. A returned
 object contains every covered attempted branch, explicit unavailable reasons,
 expected stores and source/history bindings. The only supported nested path
 is the Supervisor's same-UID, nonsymlink `state/logs` directory: its contents

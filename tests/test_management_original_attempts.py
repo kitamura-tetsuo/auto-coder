@@ -325,6 +325,39 @@ def test_separate_process_verifies_originals_and_rejects_stale_frontier(tmp_path
     assert _fingerprint(tmp_path) == before
 
 
+@pytest.mark.parametrize("malformation", ["missing-original-field", "bad-original-list", "bad-attempt-list", "bad-store-pair", "bad-binding", "bad-unavailable", "bad-json"])
+def test_separate_consumer_refuses_malformed_submitted_evidence_without_traceback(tmp_path, malformation, _use_real_commands):
+    binding = _history(tmp_path)
+    _terminal(tmp_path, binding, "first")
+    with observe(binding) as fence:
+        evidence = derive(binding, fence)
+    payload = asdict(evidence)
+    if malformation == "missing-original-field":
+        del payload["originals"][0]["inode"]
+    elif malformation == "bad-original-list":
+        payload["originals"] = {"unexpected": "object"}
+    elif malformation == "bad-attempt-list":
+        payload["attempts"] = "not a list"
+    elif malformation == "bad-store-pair":
+        payload["attempts"][0]["expected_stores"] = [["child"]]
+    elif malformation == "bad-binding":
+        payload["binding"] = ["not", "a", "binding"]
+    elif malformation == "bad-unavailable":
+        payload["unavailable"] = [False]
+    binding_file = tmp_path / "binding.json"
+    binding_file.write_text(json.dumps(asdict(binding)))
+    submitted_file = tmp_path / "malformed-evidence.json"
+    submitted_file.write_text("{" if malformation == "bad-json" else json.dumps(payload))
+    original = _fingerprint(tmp_path)
+    command = [sys.executable, "-B", "-m", "auto_coder.management.original_attempt_evidence", "--binding", str(binding_file), "--submitted", str(submitted_file)]
+    result = subprocess.run(command, capture_output=True, text=True, env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}, timeout=15)
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "original attempt coverage unavailable:" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert _fingerprint(tmp_path) == original
+
+
 def test_current_held_fence_is_required_and_released_on_refusal(tmp_path):
     binding = _history(tmp_path)
     _terminal(tmp_path, binding, "first")
