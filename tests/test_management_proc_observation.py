@@ -83,8 +83,16 @@ def test_real_nonleader_task_lifetimes_namespaces_and_cgroups(tmp_path: Path) ->
         current = _command(tmp_path, child.pid, saved)
         assert current["observer_pid"] != saved["observer_pid"]
         assert current["observation_id"] != saved["observation_id"]
-        assert current["processes"] == saved["processes"]
-        assert len(current["unavailable"]) == 1
+        assert current["processes"][0]["boot_id"] == saved["processes"][0]["boot_id"]
+        assert current["processes"][0]["start_token"] == saved["processes"][0]["start_token"]
+        assert current["processes"][0]["tasks"] == saved["processes"][0]["tasks"]
+        if current["processes"][0]["listeners"] != saved["processes"][0]["listeners"]:
+            # The shared network namespace may gain unrelated listeners between
+            # two real CLI processes; this must be reported as changed evidence.
+            assert "Independent current observation differs: processes" in current["unavailable"]
+        else:
+            assert current["processes"] == saved["processes"]
+            assert "Independent current observation differs: processes" not in current["unavailable"]
 
 
 def test_consumer_reobserves_exited_target_and_refuses_forged_lifetime(tmp_path: Path) -> None:
@@ -187,6 +195,19 @@ def test_proc_fixture_access_failure_and_observable_race_are_unavailable(tmp_pat
         result = proc.observe_process(child.pid)
         assert calls == 2
         assert result.unavailable == ("ValueError: process/task/namespace/socket observation changed",)
+
+
+def test_independent_consumer_refuses_removed_or_forged_unavailable_reasons(tmp_path: Path) -> None:
+    with _child("import sys\nprint('ready', flush=True)\nsys.stdin.read()") as child:
+        saved = _command(tmp_path, child.pid)
+        assert saved["unavailable"]
+        for replacement in ([], ["fabricated complete containment"]):
+            tampered = json.loads(json.dumps(saved))
+            tampered["unavailable"] = replacement
+            current = _command(tmp_path, child.pid, tampered)
+            assert "Independent current observation differs: unavailable" in current["unavailable"]
+            assert current["processes"] == saved["processes"]
+            assert current["status"] == "unavailable"
 
 
 def test_old_boot_namespace_and_authorizing_replay_are_not_authority(tmp_path: Path) -> None:

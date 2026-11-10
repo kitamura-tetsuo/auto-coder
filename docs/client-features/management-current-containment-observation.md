@@ -69,12 +69,15 @@ Two independent complete engine reads must agree. This inventory includes every
 listed container; it does **not** establish deployment enrollment, close launch
 routes or prove task absence.
 
-The verifier independently reads the selected current files and Docker facts;
-it never accepts a saved success assertion. It compares scope, boot, file and
-Docker observations and resource limits, and reports discrepancies. Its fresh
-process and observation identities differ from the producer. Agreement does not
-remove any missing prerequisite. A saved object remains unavailable after the
-producer exits, and is never a launch grant, historical completeness claim,
+The verifier independently reads the selected current files, Docker facts and
+selected Linux process facts; it never accepts a saved success assertion. It
+compares scope, boot, file, Docker, process and resource-limit observations,
+including all prior explicit unavailable reasons. Removing or replacing missing
+prerequisite reasons in a saved report is detected even though the reobserved
+result always remains unavailable. Its fresh process and observation identities
+differ from the producer. Agreement does not remove any missing prerequisite.
+A saved object remains unavailable after the producer exits, and is never a
+launch grant, historical completeness claim,
 continuous exclusion, or reservation of a listener/namespace.
 
 ## Missing authoritative prerequisites

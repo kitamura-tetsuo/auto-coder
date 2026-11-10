@@ -200,7 +200,7 @@ def verify(pids: tuple[int, ...], previous: object) -> ProcReport:
         issues.append("Unsupported or authorizing saved process report")
     else:
         value = json.loads(json.dumps(asdict(current)))
-        for field in ("processes", "resource_limit"):
+        for field in ("processes", "unavailable", "resource_limit"):
             if previous[field] != value[field]:
                 issues.append("Independent current observation differs: " + field)
     return replace(current, unavailable=tuple(issues))

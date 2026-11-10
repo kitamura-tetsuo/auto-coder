@@ -122,6 +122,19 @@ def test_replayed_or_authorizing_claim_never_survives_current_verification(tmp_p
     assert current["boot_id"] == Path("/proc/sys/kernel/random/boot_id").read_text().strip()
 
 
+@pytest.mark.parametrize("replacement", [[], [{"authority": "fabricated-closure", "reason": "contained"}]])
+def test_independent_consumer_refuses_changed_unavailability_evidence(tmp_path: Path, replacement: list[dict[str, str]]) -> None:
+    scope = _scope()
+    saved = _command(tmp_path, scope)
+    assert saved["unavailable"]
+    saved["unavailable"] = replacement
+    current = _command(tmp_path, scope, saved)
+    reasons = _reasons(current)
+    assert reasons["saved-report:unavailable"] == "Independent current observation differs from saved report."
+    assert "deployment-enrollment" in reasons
+    assert current["status"] == "unavailable"
+
+
 def test_original_stores_and_owner_file_are_only_fingerprinted(tmp_path: Path) -> None:
     paths = tuple(tmp_path / name for name in (".supervisor-owner.lock", "oauth.sqlite3", "management-operations.sqlite3", "watcher.json"))
     for path in paths:

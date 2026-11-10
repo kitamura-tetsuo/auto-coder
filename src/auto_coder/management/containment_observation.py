@@ -281,7 +281,7 @@ def verify(scope: ProposedScope, previous: object) -> PrerequisiteReport:
         reasons.append(Unavailable("saved-report", "Unsupported or authorizing saved report; no containment success schema exists."))
     else:
         current_value = json.loads(json.dumps(asdict(current)))
-        for field in ("scope", "scope_sha256", "boot_id", "files", "docker", "processes", "resource_limit"):
+        for field in ("scope", "scope_sha256", "boot_id", "files", "docker", "processes", "unavailable", "resource_limit"):
             if previous[field] != current_value[field]:
                 reasons.append(Unavailable("saved-report:" + field, "Independent current observation differs from saved report."))
     return replace(current, unavailable=tuple(reasons))
