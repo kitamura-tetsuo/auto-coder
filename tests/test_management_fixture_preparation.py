@@ -170,3 +170,19 @@ def test_dirty_consumer_reports_actual_checkout_changes_and_never_runs_docker(tm
         check=True,
     )
     inspect.assert_not_called()
+
+
+def test_consumer_identity_ci_artifacts_live_outside_checkout():
+    """Test-time caches and downloaded shard plans may not dirty source identity."""
+    root = Path(__file__).parents[1]
+    source = yaml.safe_load((root / ".github/workflows/test-source-for-runtime.yml").read_text())
+    shard = source["jobs"]["complete-source-shard"]
+    assert shard["env"]["PLAYWRIGHT_BROWSERS_PATH"] == "/tmp/auto-coder-playwright-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}"
+    assert shard["env"]["PLAYWRIGHT_BROWSERS_PATH"] != "${{ github.workspace }}/.playwright-browsers"
+
+    supervisor = yaml.safe_load((root / ".github/workflows/supervisor-integration-tests.yml").read_text())
+    fresh_host = supervisor["jobs"]["fresh-host"]
+    assert fresh_host["env"]["SUPERVISOR_PLAN_PATH"] == "/tmp/auto-coder-supervisor-plan-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}/plan.json"
+    download = next(step for step in fresh_host["steps"] if step.get("name") == "Download immutable fresh-host plan")
+    assert download["with"]["path"] == "/tmp/auto-coder-supervisor-plan-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}"
+    assert "tests/test_management_retained_startup_container.py" in (root / "scripts/supervisor_ci_profiles.py").read_text()

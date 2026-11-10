@@ -353,7 +353,7 @@ jobs:
       AUTO_CODER_CI_TIMING_INVOCATION: fresh-host-shard-${{ matrix.shard }}
       SUPERVISOR_PROFILE: fresh-host
       SUPERVISOR_SHARD_ID: ${{ matrix.shard }}
-      SUPERVISOR_PLAN_PATH: supervisor-plan/fresh-host/plan.json
+      SUPERVISOR_PLAN_PATH: /tmp/auto-coder-supervisor-plan-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}/plan.json
       SUPERVISOR_RESULTS_PATH: supervisor-integration-logs/fresh-host-${{ matrix.shard }}.json
     steps:
       - *checkout
@@ -373,7 +373,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: ${{ needs.prepare-fresh-host.outputs.artifact_name }}
-          path: supervisor-plan/fresh-host
+          path: /tmp/auto-coder-supervisor-plan-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
       - name: Configure complete fresh-host profile
         run: uv run python scripts/supervisor_ci_profiles.py configure --profile fresh-host --github-env "$GITHUB_ENV"
       - name: Verify fresh initialization with host evidence

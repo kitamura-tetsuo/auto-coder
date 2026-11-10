@@ -62,6 +62,9 @@ When the consumer refuses a dirty working tree, the error includes a bounded
 read-only porcelain Git status excerpt to identify modified or untracked paths.
 The excerpt is diagnostic only: the checkout remains rejected, and no image or
 retained-startup assertion runs on a dirty source.
+The complete-source Chromium installation and fresh-host downloaded plan
+are located under the runner's temporary directory, not inside the source
+worktree, so their generated files cannot falsely dirty the checkout.
 
 Nonfatal scheduled pytest diagnostics use an owned Python thread and the synchronous
 all-thread faulthandler API while holding the GIL. This avoids the demonstrated
