@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 
@@ -53,7 +54,7 @@ def test_production_entrypoint_refuses_operator_scope_as_authority(tmp_path: Pat
     source = ROOT / "src/auto_coder/management/bootstrap_supervisor.py"
     original = source.read_bytes()
     report = _command(tmp_path, _scope((source,), profile))
-    assert report["schema"] == "current-containment-prerequisites-v1"
+    assert report["schema"] == "current-containment-prerequisites-v2"
     assert report["scope"]["profile"] == profile
     assert report["files"][0]["sha256"] == hashlib.sha256(original).hexdigest()
     assert report["files"][0]["inode"] == source.stat().st_ino
@@ -194,3 +195,160 @@ def test_unit_boundary_file_race_is_not_silently_accepted(tmp_path: Path, monkey
     reasons = {item.authority: item.reason for item in report.unavailable}
     assert reasons["file:" + str(source)] == "file identity or content changed during observation"
     assert report.status == "unavailable"
+
+
+def _engine_boundary(monkeypatch: pytest.MonkeyPatch) -> tuple[dict, list[tuple[str, ...]]]:
+    """Unit protocol fixture, explicitly not Docker/profile acceptance evidence."""
+    objects = {
+        key
+        * 64: {
+            "Id": key * 64,
+            "Image": "sha256:" + "d" * 64,
+            "State": {"Running": False, "Pid": 0, "Status": "exited", "StartedAt": "2026-11-10T00:00:00Z", "FinishedAt": "2026-11-10T00:01:00Z"},
+            "HostConfig": {"RestartPolicy": {"Name": "no", "MaximumRetryCount": 0}},
+            "RestartCount": 0,
+            "Mounts": [],
+            "Config": {"Env": ["SECRET=must-not-be-emitted"]},
+        }
+        for key in "abc"
+    }
+    calls: list[tuple[str, ...]] = []
+
+    def run(arguments: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess:
+        calls.append(arguments)
+        if arguments == ("docker", "container", "ls", "--all", "--quiet", "--no-trunc"):
+            output = "\n".join(reversed(objects)) + "\n"
+        elif arguments == ("docker", "context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"):
+            output = json.dumps("unix:///var/run/docker.sock")
+        elif arguments == ("docker", "info", "--format", "{{json .ID}}"):
+            output = json.dumps("unit-engine")
+        else:
+            assert arguments[:4] == ("docker", "inspect", "--type", "container")
+            output = json.dumps([objects[arguments[4]]])
+        return subprocess.CompletedProcess(arguments, 0, output, "")
+
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
+    monkeypatch.setattr(observation.subprocess, "run", run)
+    return objects, calls
+
+
+def test_engine_inventory_includes_unselected_objects_and_exact_restart_facts(monkeypatch: pytest.MonkeyPatch) -> None:
+    objects, calls = _engine_boundary(monkeypatch)
+    objects["c" * 64]["HostConfig"]["RestartPolicy"] = {"Name": "on-failure", "MaximumRetryCount": 4}
+    result = observation._docker(_scope())
+    assert [item.container_id for item in result] == [key * 64 for key in "abc"]
+    assert result[2] == observation.DockerObservation("unit-engine", "c" * 64, "sha256:" + "d" * 64, observation._digest([objects["c" * 64]]), "on-failure", 4, False, "exited", 0, "2026-11-10T00:00:00Z", "2026-11-10T00:01:00Z", 0, observation._digest([]))
+    assert calls.count(("docker", "container", "ls", "--all", "--quiet", "--no-trunc")) == 2
+    assert "must-not-be-emitted" not in json.dumps([asdict(item) for item in result])
+
+
+def test_verifier_reinspects_unselected_restart_route_and_mounts(monkeypatch: pytest.MonkeyPatch) -> None:
+    objects, calls = _engine_boundary(monkeypatch)
+    saved = json.loads(json.dumps(asdict(observation.observe(_scope()))))
+    assert len(saved["docker"]) == 3
+    assert not any(item["authority"].startswith("docker-restart:") for item in saved["unavailable"])
+    # Selected IDs and installed files stay identical. The unselected route changes.
+    objects["c" * 64]["HostConfig"]["RestartPolicy"]["Name"] = "unless-stopped"
+    objects["c" * 64]["Mounts"] = [{"Type": "bind", "Source": "/alternate-root", "Destination": "/bootstrap", "RW": True}]
+    calls.clear()
+    current = observation.verify(_scope(), saved)
+    reasons = {item.authority: item.reason for item in current.unavailable}
+    assert "unless-stopped" in reasons["docker-restart:" + "c" * 64]
+    assert reasons["saved-report:docker"] == "Independent current observation differs from saved report."
+    assert calls.count(("docker", "inspect", "--type", "container", "c" * 64)) == 2
+    assert current.status == "unavailable"
+    assert "ordinary-route-closure" in reasons and "deployment-enrollment" in reasons
+
+
+@pytest.mark.parametrize("policy", [None, {}, {"Name": "", "MaximumRetryCount": 0}, {"Name": "unknown", "MaximumRetryCount": 0}, {"Name": "no", "MaximumRetryCount": True}, {"Name": "no", "MaximumRetryCount": -1}])
+def test_unknown_engine_restart_policy_refuses_entire_inventory(monkeypatch: pytest.MonkeyPatch, policy: object) -> None:
+    objects, _ = _engine_boundary(monkeypatch)
+    objects["c" * 64]["HostConfig"]["RestartPolicy"] = policy
+    current = observation.observe(_scope())
+    assert current.docker == ()
+    assert {item.authority: item.reason for item in current.unavailable}["docker"] == "Docker restart policy unavailable or unsupported"
+
+
+def test_engine_inventory_change_during_inspection_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
+    _engine_boundary(monkeypatch)
+    original = observation.subprocess.run
+    enumerations = 0
+
+    def raced(arguments: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess:
+        nonlocal enumerations
+        result = original(arguments, **kwargs)
+        if arguments[1:3] == ("container", "ls"):
+            enumerations += 1
+            if enumerations == 2:
+                result.stdout += "e" * 64 + "\n"
+        return result
+
+    monkeypatch.setattr(observation.subprocess, "run", raced)
+    current = observation.observe(_scope())
+    assert current.docker == ()
+    assert {item.authority: item.reason for item in current.unavailable}["docker"] == "Docker engine inventory changed during observation"
+
+
+@pytest.mark.parametrize("listing", ["abc\n", "a" * 64 + "\n" + "a" * 64 + "\n", ("a" * 64 + "\n") * 513])
+def test_engine_inventory_ambiguous_or_oversized_refuses(monkeypatch: pytest.MonkeyPatch, listing: str) -> None:
+    def run(arguments: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(arguments, 0, listing, "")
+
+    monkeypatch.setattr(observation.subprocess, "run", run)
+    with pytest.raises(ValueError, match="Docker inventory"):
+        observation._docker_ids()
+
+
+@pytest.mark.supervisor_integration
+def test_real_docker_inventory_and_separate_consumer(tmp_path: Path) -> None:
+    """Real Docker sub-observation only; no closed-profile/controller acceptance."""
+
+    def docker(*arguments: str) -> str:
+        return subprocess.run(("docker", *arguments), check=True, capture_output=True, text=True, timeout=30).stdout.strip()
+
+    # Deliberately fail rather than skip when the required engine is inaccessible.
+    docker("info", "--format", "{{json .ID}}")
+    image = docker("image", "inspect", os.environ.get("AUTOCODER_CONTAINMENT_TEST_IMAGE", os.environ.get("AUTOCODER_SUPERVISOR_IMAGE", "python:3.12-slim")), "--format", "{{.Id}}")
+    names: list[str] = []
+    retained = tmp_path / "retained-evidence"
+    retained.write_bytes(b"original evidence must survive")
+    before = observation._file(retained)[1]
+    source = tmp_path / "bootstrap_supervisor.py"
+    source.write_bytes((ROOT / "src/auto_coder/management/bootstrap_supervisor.py").read_bytes())
+
+    def create() -> str:
+        name = "ac-containment-test-" + uuid.uuid4().hex
+        container = docker("create", "--name", name, "--network", "none", "--restart", "no", "--mount", f"type=bind,src={source},dst=/bootstrap/bootstrap_supervisor.py,readonly", "--entrypoint", "/bin/sleep", image, "120")
+        names.append(name)
+        return container
+
+    try:
+        manager, proxy = create(), create()
+        scope = observation.ProposedScope("fixture-deployment", "proposed-enrollment", "proposed-authorization", "ordinary-v1", manager, proxy, (str(source),))
+        saved = _command(tmp_path, scope)
+        assert {manager, proxy} <= {item["container_id"] for item in saved["docker"]}
+        for item in saved["docker"]:
+            if item["container_id"] in (manager, proxy):
+                assert (item["restart_policy"], item["running"], item["status"], item["pid"]) == ("no", False, "created", 0)
+        current = _command(tmp_path, scope, saved)
+        assert current["docker"] == saved["docker"]
+        assert "saved-report:docker" not in _reasons(current)
+        assert current["observer_pid"] != saved["observer_pid"]
+        assert "ordinary-route-closure" in _reasons(current)
+        # Omitted from proposed scope, yet included in the independent inventory.
+        alternate = create()
+        docker("update", "--restart", "unless-stopped", alternate)
+        changed = _command(tmp_path, scope, saved)
+        routes = {item["container_id"]: item for item in changed["docker"]}
+        assert routes[alternate]["restart_policy"] == "unless-stopped"
+        assert "docker-restart:" + alternate in _reasons(changed)
+        assert "saved-report:docker" in _reasons(changed)
+        source.write_bytes(source.read_bytes() + b"\n# substituted installed fixture source\n")
+        substituted = _command(tmp_path, scope, changed)
+        assert "saved-report:files" in _reasons(substituted)
+        assert observation._file(retained)[1] == before
+    finally:
+        # No selected production manager/proxy, image, volume or network is changed.
+        for name in reversed(names):
+            docker("rm", "-f", name)

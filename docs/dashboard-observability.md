@@ -118,8 +118,12 @@ read-only `containment_observation` CLI produces local unavailable JSON without
 operation admission/dispatch, worker effects, recovery outcomes or Issue/PR trace
 events. It has no successful containment profile yet. The independent-process
 refusal/readback regressions run with `bash scripts/test.sh --ci-tests-only
-tests/test_management_containment_observation.py`; they do not substitute for
-root/Docker/controller containment acceptance. See
+tests/test_management_containment_observation.py -m 'not supervisor_integration'`;
+they do not substitute for root/Docker/controller containment acceptance. The v2
+report additionally inventories every Docker container and its configured restart
+route. Its real Docker separate-consumer regression is a required node in the
+Supervisor isolated-containers profile; current inventory agreement remains local
+diagnostic evidence without granting closure, admission or recovery success. See
 [`management-current-containment-observation.md`](client-features/management-current-containment-observation.md)
 for the missing authorities and remaining acceptance scenarios. Any later
 integration into recovery issuance must assess its own production trace-to-view

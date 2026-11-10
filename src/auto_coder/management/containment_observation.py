@@ -78,6 +78,15 @@ class DockerObservation:
     container_id: str
     image_id: str
     inspection_sha256: str
+    restart_policy: str
+    maximum_retry_count: int
+    running: bool
+    status: str
+    pid: int
+    started_at: str
+    finished_at: str
+    restart_count: int
+    mounts_sha256: str
 
 
 @dataclass(frozen=True)
@@ -149,22 +158,52 @@ def _docker(scope: ProposedScope) -> tuple[DockerObservation, ...]:
     if endpoint != "unix:///var/run/docker.sock":
         raise ValueError("Docker context is not the supported local engine socket")
     engine = _docker_read(("info", "--format", "{{json .ID}}"))
-    if not isinstance(engine, str) or not engine:
+    if not isinstance(engine, str) or not engine or len(engine) > 128:
         raise ValueError("Docker engine identity unavailable")
+    # Enumerate the engine, not an operator/label-filtered selection. Unknown
+    # objects remain visible; enumeration does not establish their enrollment.
+    containers = _docker_ids()
+    if not {scope.management_id, scope.proxy_id} <= set(containers):
+        raise ValueError("Selected Docker objects are absent from the complete engine inventory")
     observations = []
-    for container in (scope.management_id, scope.proxy_id):
+    for container in containers:
         raw = _docker_read(("inspect", "--type", "container", container))
         if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], dict) or raw[0].get("Id") != container:
             raise ValueError("Docker container identity differs")
         image = raw[0].get("Image")
         if not isinstance(image, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
             raise ValueError("Docker image identity unavailable")
+        state, host, mounts = raw[0].get("State"), raw[0].get("HostConfig"), raw[0].get("Mounts")
+        if not isinstance(state, dict) or not isinstance(host, dict) or not isinstance(mounts, list):
+            raise ValueError("Docker state, host configuration or mounts unavailable")
+        policy = host.get("RestartPolicy")
+        if not isinstance(policy, dict) or policy.get("Name") not in ("no", "always", "unless-stopped", "on-failure") or type(policy.get("MaximumRetryCount")) is not int or policy["MaximumRetryCount"] < 0:
+            raise ValueError("Docker restart policy unavailable or unsupported")
+        if type(state.get("Running")) is not bool or type(state.get("Pid")) is not int or state["Pid"] < 0 or state.get("Status") not in ("created", "running", "paused", "restarting", "removing", "exited", "dead"):
+            raise ValueError("Docker lifetime state unavailable or unsupported")
+        if any(not isinstance(state.get(key), str) or not state[key] or len(state[key]) > 128 for key in ("StartedAt", "FinishedAt")) or type(raw[0].get("RestartCount")) is not int or raw[0]["RestartCount"] < 0:
+            raise ValueError("Docker lifetime identity unavailable")
         # Bind the complete inspection, including command, security, mounts,
         # restart policy, and lifetime, without exposing environment secrets.
-        observations.append(DockerObservation(engine, container, image, _digest(raw)))
+        observations.append(DockerObservation(engine, container, image, _digest(raw), policy["Name"], policy["MaximumRetryCount"], state["Running"], state["Status"], state["Pid"], state["StartedAt"], state["FinishedAt"], raw[0]["RestartCount"], _digest(mounts)))
+    if _docker_ids() != containers:
+        raise ValueError("Docker engine inventory changed during observation")
     if _docker_read(("info", "--format", "{{json .ID}}")) != engine:
         raise ValueError("Docker engine changed during observation")
+    if _docker_read(("context", "inspect", "--format", "{{json .Endpoints.docker.Host}}")) != endpoint:
+        raise ValueError("Docker context changed during observation")
     return tuple(observations)
+
+
+def _docker_ids() -> tuple[str, ...]:
+    result = subprocess.run(("docker", "container", "ls", "--all", "--quiet", "--no-trunc"), capture_output=True, text=True, timeout=10, check=True)
+    # Keep the serialized evidence readable within the verifier's 1 MiB bound.
+    if len(result.stdout) > 512 * 65:
+        raise ValueError("Docker inventory exceeds size limit")
+    ids = result.stdout.splitlines()
+    if len(ids) > 512 or len(set(ids)) != len(ids) or any(not re.fullmatch(r"[0-9a-f]{64}", container) for container in ids):
+        raise ValueError("Docker inventory contains ambiguous container identities")
+    return tuple(sorted(ids))
 
 
 def observe(scope: ProposedScope) -> PrerequisiteReport:
@@ -203,6 +242,9 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
         if _docker(scope) != before_docker:
             raise ValueError("Docker configuration or lifetime changed during observation")
         docker = before_docker
+        for item in docker:
+            if item.restart_policy != "no":
+                unavailable.append(Unavailable("docker-restart:" + item.container_id, "Engine inventory contains a configured " + item.restart_policy + " restart route; stopped state does not prove inhibition or authorize exclusion from deployment scope."))
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         # Do not print raw Docker stderr, environment or configuration bytes.
         reason = "Docker read-only inspection unavailable (" + type(exc).__name__ + ")"
@@ -223,7 +265,7 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
                 raise ValueError("file identity or content changed during observation")
         except (OSError, ValueError) as exc:
             unavailable.append(Unavailable("file:" + observed.path, str(exc)))
-    return PrerequisiteReport("current-containment-prerequisites-v1", "unavailable", scope, _digest(asdict(scope)), str(uuid.uuid4()), boot_id, os.getpid(), start_token, started, time.monotonic_ns(), tuple(files), docker, tuple(unavailable))
+    return PrerequisiteReport("current-containment-prerequisites-v2", "unavailable", scope, _digest(asdict(scope)), str(uuid.uuid4()), boot_id, os.getpid(), start_token, started, time.monotonic_ns(), tuple(files), docker, tuple(unavailable))
 
 
 def verify(scope: ProposedScope, previous: object) -> PrerequisiteReport:

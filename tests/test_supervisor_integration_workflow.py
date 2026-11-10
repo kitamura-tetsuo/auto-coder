@@ -297,6 +297,9 @@ def test_all_baseline_selectors_and_execution_contexts_are_preserved() -> None:
         assert any(path in value for value in profile_args("isolated-containers"))
     assert profile_args("isolated-containers")[2:4] == ("-m", "supervisor_integration")
     assert workflow["jobs"]["isolated-containers"]["env"]["AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION"] == "1"
+    containment = "tests/test_management_containment_observation.py::test_real_docker_inventory_and_separate_consumer"
+    assert containment in profile_args("isolated-containers")
+    assert containment in CONTAINER_REQUIRED
     required = CONTAINER_REQUIRED
     assert len(required) == len(set(required))
     assert set(OTHER_REQUIRED_NODEIDS) | {f"tests/test_beta_runtime_smoke_container.py::{name}" for name in SMOKE_CASES} <= set(required)
