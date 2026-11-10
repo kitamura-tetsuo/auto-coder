@@ -18,20 +18,30 @@ from pathlib import Path
 import pytest
 
 from auto_coder.management.operation_store import ManagementOperationStore
-from auto_coder.management.operations import AcceptedAuthority, AdmissionStatus, EffectReceipt, ManagedTarget, OperationIntent, OperationPhase
+from auto_coder.management.operations import AcceptedAuthority, AdmissionStatus, EffectReceipt, EffectState, ManagedTarget, OperationIntent, OperationPhase
 from auto_coder.management.quarantine_history import QuarantineHistory, QuarantineJournal, QuarantineUnavailable, load_manifest
 
 AUTHORITY = AcceptedAuthority("issuer", "resource", "project", "uid", "client", "grant", ("read", "deploy"), 1, 1)
 
 
-def _store(root: Path, instance: str, *, management: bool = False, phase: OperationPhase = OperationPhase.NEEDS_ATTENTION, key: str = "key") -> tuple[QuarantineJournal, OperationIntent]:
+def _store(root: Path, instance: str, *, management: bool = False, phase: OperationPhase = OperationPhase.NEEDS_ATTENTION, key: str = "key", sent_unknown: bool = False) -> tuple[QuarantineJournal, OperationIntent]:
     root.mkdir(parents=True)
     store = ManagementOperationStore(root)
     target = ManagedTarget(instance, "management", "kitamura-tetsuo/auto-coder") if management else ManagedTarget("shared-worker", "beta", "org/repo")
     intent = OperationIntent(target, "management-service-self-update" if management else "start_worker", (), key)
     admitted = store.admit(intent, AUTHORITY, lifecycle_snapshot=None if management else {"schema_version": 1})
     assert admitted.status is AdmissionStatus.CREATED and admitted.record is not None
-    if phase != OperationPhase.ACCEPTED:
+    if sent_unknown:
+        assert phase is OperationPhase.RECONCILING
+        effect = store.begin_effect(
+            admitted.record.operation_id,
+            0,
+            owner_attempt_id="actual-owner",
+            attempt_id="attempt-1",
+            correlation_identity="durable-correlation",
+        )
+        assert effect.record is not None and effect.record.effect.state is EffectState.SENT_UNKNOWN
+    elif phase != OperationPhase.ACCEPTED:
         evidence = EffectReceipt("correlation", "test-producer", 1.0, "observed") if phase in {OperationPhase.SUCCEEDED, OperationPhase.FAILED} else None
         assert store.transition(admitted.record.operation_id, 0, phase, evidence=evidence).record is not None
     database = root / "management-operations.sqlite3"
@@ -301,3 +311,15 @@ def test_real_midread_mutation_of_earlier_journal_refuses(tmp_path: Path, monkey
     with pytest.raises(QuarantineUnavailable):
         QuarantineHistory((first, second))
     assert mutated
+
+
+def test_sent_unknown_and_accepted_origins_retain_exclusion(tmp_path: Path) -> None:
+    original, old = _store(tmp_path / "unknown", "m1", phase=OperationPhase.RECONCILING, sent_unknown=True)
+    accepted, fresh = _store(tmp_path / "accepted", "m2", phase=OperationPhase.ACCEPTED, management=True)
+    with QuarantineHistory((original, accepted)) as reader:
+        report = reader.inspect()
+        assert report.inspected_journals == 2
+        assert report.historical_keys == 2 and report.unresolved_targets == 2
+        assert reader.decide(replace(old, idempotency_key="different"), AUTHORITY).status == "target_blocked"
+        candidate = replace(fresh, target=ManagedTarget("future", "management", "kitamura-tetsuo/auto-coder"))
+        assert reader.decide(candidate, AUTHORITY).status == "key_excluded"
