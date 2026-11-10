@@ -1,0 +1,266 @@
+"""Non-authorizing, read-only prerequisite observations for current containment.
+
+There is deliberately no successful containment verdict in this adapter yet.
+The repository has no authoritative closed deployment enrollment reader or
+reviewed original quarantine profile. Partial observations must not hide either
+missing prerequisite behind operator-supplied IDs, lists, or source hashes.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import stat
+import subprocess
+import time
+import uuid
+from dataclasses import asdict, dataclass, replace
+from pathlib import Path
+
+from .archived_exclusions import unique_pairs
+from .fresh_host_observation import _validate_host_proc_profile
+
+PROFILES = ("ordinary-v1", "quarantined-original-v1")
+_LIMIT = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class ProposedScope:
+    """Selection only; none of these strings constitute enrollment authority."""
+
+    deployment_id: str
+    enrollment_id: str
+    authorization_id: str
+    profile: str
+    management_id: str
+    proxy_id: str
+    files: tuple[str, ...] = ()
+
+    @classmethod
+    def parse(cls, value: object) -> ProposedScope:
+        if not isinstance(value, dict) or set(value) != set(cls.__dataclass_fields__):
+            raise ValueError("proposed scope fields differ")
+        for name in ("deployment_id", "enrollment_id", "authorization_id"):
+            if not isinstance(value[name], str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", value[name]):
+                raise ValueError("invalid proposed " + name)
+        if not isinstance(value["profile"], str) or value["profile"] not in PROFILES:
+            raise ValueError("unsupported observation profile")
+        for name in ("management_id", "proxy_id"):
+            if not isinstance(value[name], str) or not re.fullmatch(r"[0-9a-f]{64}", value[name]):
+                raise ValueError("exact proposed container ID required")
+        if value["management_id"] == value["proxy_id"]:
+            raise ValueError("distinct proposed container IDs required")
+        files = value["files"]
+        if not isinstance(files, list) or len(files) > 32 or any(not isinstance(path, str) or len(path) > 4096 or not Path(path).is_absolute() for path in files):
+            raise ValueError("bounded absolute proposed file paths required")
+        if len(set(files)) != len(files) or files != sorted(files):
+            raise ValueError("proposed file paths must be unique and sorted")
+        return cls(value["deployment_id"], value["enrollment_id"], value["authorization_id"], value["profile"], value["management_id"], value["proxy_id"], tuple(files))
+
+
+@dataclass(frozen=True)
+class FileObservation:
+    path: str
+    device: int
+    inode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+    sha256: str
+
+
+@dataclass(frozen=True)
+class DockerObservation:
+    engine_id: str
+    container_id: str
+    image_id: str
+    inspection_sha256: str
+
+
+@dataclass(frozen=True)
+class Unavailable:
+    authority: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class PrerequisiteReport:
+    schema: str
+    status: str
+    scope: ProposedScope
+    scope_sha256: str
+    observation_id: str
+    boot_id: str
+    observer_pid: int
+    observer_start_token: str
+    started_monotonic_ns: int
+    finished_monotonic_ns: int
+    files: tuple[FileObservation, ...]
+    docker: tuple[DockerObservation, ...]
+    unavailable: tuple[Unavailable, ...]
+    resource_limit: str = "All read descriptors are released before return; no namespace pin or owner fence is retained."
+
+
+def _digest(value: object) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _file(path: Path) -> tuple[bytes, FileObservation]:
+    if not path.is_absolute() or path != path.resolve(strict=True):
+        raise ValueError("file path is not canonical or has a symlink component")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(descriptor, "rb") as stream:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("observation source is not a regular file")
+        content = stream.read(_LIMIT + 1)
+        after = os.fstat(stream.fileno())
+    if len(content) > _LIMIT:
+        raise ValueError("observation source exceeds size limit")
+
+    def identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+    if identity(before) != identity(after) or identity(after) != identity(path.lstat()) or path != path.resolve(strict=True):
+        raise ValueError("observation source changed during read")
+    return content, FileObservation(str(path), *identity(after), hashlib.sha256(content).hexdigest())
+
+
+def read_scope(path: Path) -> ProposedScope:
+    content, _ = _file(path)
+    return ProposedScope.parse(json.loads(content, object_pairs_hook=unique_pairs))
+
+
+def _docker_read(arguments: tuple[str, ...]) -> object:
+    result = subprocess.run(("docker", *arguments), capture_output=True, text=True, timeout=10, check=True)
+    if len(result.stdout) > 8 * _LIMIT:
+        raise ValueError("Docker observation exceeds size limit")
+    return json.loads(result.stdout, object_pairs_hook=unique_pairs)
+
+
+def _docker(scope: ProposedScope) -> tuple[DockerObservation, ...]:
+    # A remote context cannot supply this host's kernel/Docker correlation.
+    if os.environ.get("DOCKER_HOST") or os.environ.get("DOCKER_CONTEXT"):
+        raise ValueError("Docker endpoint override is unsupported for local observation")
+    endpoint = _docker_read(("context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"))
+    if endpoint != "unix:///var/run/docker.sock":
+        raise ValueError("Docker context is not the supported local engine socket")
+    engine = _docker_read(("info", "--format", "{{json .ID}}"))
+    if not isinstance(engine, str) or not engine:
+        raise ValueError("Docker engine identity unavailable")
+    observations = []
+    for container in (scope.management_id, scope.proxy_id):
+        raw = _docker_read(("inspect", "--type", "container", container))
+        if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], dict) or raw[0].get("Id") != container:
+            raise ValueError("Docker container identity differs")
+        image = raw[0].get("Image")
+        if not isinstance(image, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
+            raise ValueError("Docker image identity unavailable")
+        # Bind the complete inspection, including command, security, mounts,
+        # restart policy, and lifetime, without exposing environment secrets.
+        observations.append(DockerObservation(engine, container, image, _digest(raw)))
+    if _docker_read(("info", "--format", "{{json .ID}}")) != engine:
+        raise ValueError("Docker engine changed during observation")
+    return tuple(observations)
+
+
+def observe(scope: ProposedScope) -> PrerequisiteReport:
+    """Observe available facts without converting partial evidence into closure."""
+    scope = ProposedScope.parse(json.loads(json.dumps(asdict(scope))))
+    started = time.monotonic_ns()
+    unavailable = [
+        Unavailable("deployment-enrollment", "No authoritative original deployment provenance or separately approved present-time enrollment reader is implemented; supplied identities and file lists select scope only."),
+        Unavailable("ordinary-route-closure", "No authoritative installed-route inventory is available for watcher/reconcile, services/timers, socket activation, Docker restart, configured local/remote scripts, repair/recreate and alternative roots; none are excluded from scope."),
+        Unavailable("original-source-profile", "No reviewed exact original source/configuration binding is registered for " + scope.profile + "; current installation bytes cannot establish original lock-before-launch evidence."),
+        Unavailable("kernel-containment", "No original task/boot lifetime capture with retained namespace object pins and exact owner-file fence is supplied; stopped Docker state and saved namespace inode strings cannot establish absence."),
+    ]
+    if scope.profile == "quarantined-original-v1":
+        unavailable.append(Unavailable("quarantined-original-profile", "Exact original bootstrap file mounts, no-new-privileges setting and support-mount purpose/source/destination/read-only execution binding are not registered; replacement admission is unchanged."))
+    boot_id, start_token = "", ""
+    try:
+        boot_id = str(uuid.UUID(Path("/proc/sys/kernel/random/boot_id").read_text().strip()))
+        fields = Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()
+        start_token = fields[19]
+        if not start_token.isdecimal() or int(start_token) <= 0:
+            raise ValueError("observer start token unavailable")
+        if os.geteuid() != 0:
+            raise ValueError("initial-namespace host root is required")
+        _validate_host_proc_profile(os.readlink("/proc/self/ns/pid"), Path("/proc/self/uid_map").read_text(), Path("/proc/self/mountinfo").read_text())
+    except (OSError, ValueError, IndexError) as exc:
+        unavailable.append(Unavailable("host-observation", str(exc)))
+    files = []
+    for path in scope.files:
+        try:
+            files.append(_file(Path(path))[1])
+        except (OSError, ValueError) as exc:
+            unavailable.append(Unavailable("file:" + path, str(exc)))
+    docker: tuple[DockerObservation, ...] = ()
+    try:
+        before_docker = _docker(scope)
+        if _docker(scope) != before_docker:
+            raise ValueError("Docker configuration or lifetime changed during observation")
+        docker = before_docker
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        # Do not print raw Docker stderr, environment or configuration bytes.
+        reason = "Docker read-only inspection unavailable (" + type(exc).__name__ + ")"
+        if isinstance(exc, ValueError):
+            reason = str(exc)
+        elif isinstance(exc, subprocess.CalledProcessError):
+            diagnostic = (exc.stderr or "").lower()
+            if "permission denied" in diagnostic:
+                reason = "Local Docker inspection permission denied; access to the authoritative engine is required."
+            elif "cannot connect" in diagnostic or "is the docker daemon running" in diagnostic:
+                reason = "Local Docker engine is unavailable; an inspectable authoritative engine is required."
+            elif "no such" in diagnostic:
+                reason = "Selected Docker context or container object is unavailable; exact inspectable original objects are required."
+        unavailable.append(Unavailable("docker", reason))
+    for observed in files:
+        try:
+            if _file(Path(observed.path))[1] != observed:
+                raise ValueError("file identity or content changed during observation")
+        except (OSError, ValueError) as exc:
+            unavailable.append(Unavailable("file:" + observed.path, str(exc)))
+    return PrerequisiteReport("current-containment-prerequisites-v1", "unavailable", scope, _digest(asdict(scope)), str(uuid.uuid4()), boot_id, os.getpid(), start_token, started, time.monotonic_ns(), tuple(files), docker, tuple(unavailable))
+
+
+def verify(scope: ProposedScope, previous: object) -> PrerequisiteReport:
+    """Reobserve independently; a saved report is never a current verdict."""
+    current = observe(scope)
+    reasons = list(current.unavailable)
+    if not isinstance(previous, dict) or set(previous) != set(PrerequisiteReport.__dataclass_fields__) or previous.get("schema") != current.schema or previous.get("status") != "unavailable":
+        reasons.append(Unavailable("saved-report", "Unsupported or authorizing saved report; no containment success schema exists."))
+    else:
+        current_value = json.loads(json.dumps(asdict(current)))
+        for field in ("scope", "scope_sha256", "boot_id", "files", "docker", "resource_limit"):
+            if previous[field] != current_value[field]:
+                reasons.append(Unavailable("saved-report:" + field, "Independent current observation differs from saved report."))
+    return replace(current, unavailable=tuple(reasons))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Read-only current containment prerequisites; never a launch grant or containment success")
+    parser.add_argument("command", choices=("observe", "verify"))
+    parser.add_argument("--scope", required=True, type=Path)
+    parser.add_argument("--previous", type=Path)
+    args = parser.parse_args()
+    if (args.command == "verify") != (args.previous is not None):
+        parser.error("verify requires --previous; observe does not accept it")
+    try:
+        scope = read_scope(args.scope)
+        if args.command == "verify":
+            previous = json.loads(_file(args.previous)[0], object_pairs_hook=unique_pairs)
+            result = verify(scope, previous)
+        else:
+            result = observe(scope)
+        print(json.dumps(asdict(result), sort_keys=True, separators=(",", ":")))
+        return 2
+    except (OSError, ValueError, TypeError) as exc:
+        print(json.dumps({"status": "unavailable", "reason": str(exc)}, sort_keys=True))
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

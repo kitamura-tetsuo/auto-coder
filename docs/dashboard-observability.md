@@ -113,6 +113,18 @@ isolation and durable Supervisor operation readback across manager restart.
 Registry validation and journal fencing are checked by
 `tests/test_management_worker_registry.py`.
 
+Current containment prerequisite observation is observability-neutral: the
+read-only `containment_observation` CLI produces local unavailable JSON without
+operation admission/dispatch, worker effects, recovery outcomes or Issue/PR trace
+events. It has no successful containment profile yet. The independent-process
+refusal/readback regressions run with `bash scripts/test.sh --ci-tests-only
+tests/test_management_containment_observation.py`; they do not substitute for
+root/Docker/controller containment acceptance. See
+[`management-current-containment-observation.md`](client-features/management-current-containment-observation.md)
+for the missing authorities and remaining acceptance scenarios. Any later
+integration into recovery issuance must assess its own production trace-to-view
+contract.
+
 Local management recovery uses a private Supervisor mailbox rather than the
 management operation journal or worker Issue/PR trace lifecycle. The owning
 Supervisor logs the bounded request ID and transition status; the complete local
