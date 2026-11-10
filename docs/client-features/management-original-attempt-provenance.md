@@ -82,7 +82,10 @@ That conservative boundary does not mean a grant was delivered. A failed or
 interrupted adapter cannot be retried. After native store creation and before
 child launch, the real bootstrap writes `fresh-original-stores.json` once, binding
 the intent digest, source, bootstrap producer lifetime, history/request, owner
-fence and exact four database identities. Receipt production checks the current
+fence and exact four database identities. The independent consumer also
+validates the receipt's canonical PID, Linux start token, boot UUID and nonce;
+malformed receipt lifetimes remain unavailable even with unchanged store inodes.
+Receipt production checks the current
 bootstrap PID actually holds the original owner WRITE flock. Missing receipts or expected databases remain
 unavailable. No original store is initialized by an evidence reader.
 

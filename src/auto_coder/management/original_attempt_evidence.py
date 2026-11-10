@@ -243,6 +243,10 @@ def derive(binding: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = 
                     unavailable.append(attempt + ": original grant boundary not crossed")
                     continue
                 receipt = json.loads(retain(state / "fresh-original-stores.json"))
+                try:
+                    _validate_original_lifetime(receipt["lifetime"])
+                except (KeyError, TypeError, ValueError) as error:
+                    raise OriginalEvidenceUnavailable("original bootstrap receipt lifetime incomplete") from error
                 if (
                     set(receipt) != {"request_id", "history", "source", "intent_sha256", "lifetime", "owner_fence", "stores"}
                     or receipt["source"] != binding.source

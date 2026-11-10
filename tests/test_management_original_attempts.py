@@ -559,6 +559,29 @@ def test_native_store_identity_receipt_is_once_only_and_missing_store_refuses(tm
     with observe(binding) as fence:
         evidence = derive(binding, fence, (owner_fd,))
         assert evidence.unavailable == (intent.request_id + ": original outcome remains unknown",)
+    receipt_path = state / "fresh-original-stores.json"
+    original_receipt = receipt_path.read_bytes()
+    for mutation in ("missing", "boolean-pid", "noncanonical-start", "invalid-boot", "extra-field"):
+        receipt = json.loads(original_receipt)
+        if mutation == "missing":
+            del receipt["lifetime"]
+        elif mutation == "boolean-pid":
+            receipt["lifetime"]["pid"] = True
+        elif mutation == "noncanonical-start":
+            receipt["lifetime"]["start"] = "0" + receipt["lifetime"]["start"]
+        elif mutation == "invalid-boot":
+            receipt["lifetime"]["boot"] = "not-a-boot-id"
+        else:
+            receipt["lifetime"]["unexpected"] = "forged"
+        receipt_path.write_text(json.dumps(receipt, sort_keys=True))
+        altered_originals = _fingerprint(tmp_path)
+        with observe(binding) as fence:
+            malformed = derive(binding, fence, (owner_fd,))
+            assert malformed.unavailable == (intent.request_id + ": original bootstrap receipt lifetime incomplete",)
+            with pytest.raises(OriginalEvidenceUnavailable, match="bootstrap receipt lifetime incomplete"):
+                verify(malformed, binding, fence, (owner_fd,))
+        assert _fingerprint(tmp_path) == altered_originals
+    receipt_path.write_bytes(original_receipt)
     operations = Path(intent.journal_root) / "management-operations.sqlite3"
     rollback = operations.with_name(operations.name + "-journal")
     rollback.write_bytes(b"unresolved rollback transaction")
