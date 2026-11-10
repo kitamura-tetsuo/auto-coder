@@ -185,6 +185,8 @@ def test_mutable_base_tag_cannot_change_digest_or_derived_image(tmp_path: Path) 
         (False, False, None, True, True, False, False),
         (False, False, None, True, False, True, False),
         (False, False, None, True, False, False, True),
+        (False, True, None, True, False, False, True),
+        (False, False, "after-claim", False, False, False, True),
     ],
 )
 def test_fresh_first_launch_via_host_guard_and_authenticated_http(tmp_path: Path, owner_token_gap: bool, contention: bool, crash_at: str | None, restart_after: bool, prior_owner_locked: bool, retained_history: bool, original_history: bool, record_property) -> None:
@@ -608,6 +610,13 @@ fresh_host.main()
             assert retained_status()["status"] == "unknown"
             assert grant_history() == retained_grants
             assert {str(path.relative_to(old_state)): hashlib.sha256(path.read_bytes()).hexdigest() for path in old_state.rglob("*") if path.is_file()} == old_history
+            if history_binding is not None:
+                with observe(history_binding) as historic_fence:
+                    interrupted = derive(history_binding, historic_fence)
+                    assert [(item.target, item.state) for item in interrupted.attempts] == [("fresh-fixture", "grant-possible")]
+                    assert interrupted.unavailable, "Original interrupted launch must not become complete evidence"
+                    with pytest.raises(OriginalEvidenceUnavailable):
+                        verify(interrupted, history_binding, historic_fence)
             return
 
         def assert_refused_competitor(label: str) -> None:

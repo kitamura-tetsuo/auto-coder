@@ -189,6 +189,17 @@ durably records `never-created` without an intent, grant or launch. The
 resulting reverse frontier includes both the successful launch's original
 admission and the separate failed successor.
 
+An additional same-source disposable case establishes actual original-profile
+first-launch-owner contention at a held durable claim barrier: an independent
+Supervisor competes while the first owner holds its exact lock, is refused
+without an additional child transition, and the original owner later completes
+authenticated readiness and independently verifiable lineage. Another
+disposable case interrupts the original-profile owner **after** its actual
+durable first-launch claim, kills/restarts the exact Docker instance, and
+checks that reconstruction cannot relaunch the child and the independent
+original reader still reports incomplete evidence. These are real Docker/OS
+observations, not hand-authored successful grant records.
+
 A **cleanly stopped** disposable Supervisor releases its owner lock and
 checkpoints the SQLite WALs. A separate process inherits the currently held
 shared owner lock, independently reopens the original root, exact native
