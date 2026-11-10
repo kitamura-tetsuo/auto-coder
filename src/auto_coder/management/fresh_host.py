@@ -10,9 +10,12 @@ import argparse
 import hashlib
 import json
 import os
+import sqlite3
 import stat
 from dataclasses import asdict
 from pathlib import Path
+
+import yaml
 
 from .fresh_host_observation import (
     HostObservationUnavailable,
@@ -94,6 +97,8 @@ def main() -> None:
     begin.add_argument("--request-file", required=True, type=Path)
     inspect = commands.add_parser("inspect-begin", help="Independent read-only verification of a NEW origin")
     inspect.add_argument("--request-file", required=True, type=Path)
+    inspect_profile = commands.add_parser("inspect-profile", help="Independent read-only NEW runtime/configuration/OAuth profile verification; no launch")
+    inspect_profile.add_argument("--request-file", required=True, type=Path)
     capture = commands.add_parser("capture")
     for option in ("management-id", "management-image", "proxy-id", "proxy-image", "mounts-file", "guard-dir"):
         capture.add_argument("--" + option, required=True)
@@ -124,6 +129,10 @@ def main() -> None:
             from .fresh_begin import inspect_new_instance_origin
 
             print(json.dumps(asdict(inspect_new_instance_origin(args.request_file)), sort_keys=True))
+        elif args.command == "inspect-profile":
+            from .fresh_new_profile import inspect_new_instance_profile
+
+            print(json.dumps(asdict(inspect_new_instance_profile(args.request_file)), sort_keys=True))
         elif args.command == "capture":
             mounts = json.loads(_protected_file(Path(args.mounts_file)))
             if not isinstance(mounts, dict) or set(mounts) != {"management", "proxy"}:
@@ -185,7 +194,7 @@ def main() -> None:
                 serve_one_fresh_grant(args.guard_dir / "fresh-guard.sock", intent, management, proxy, fence, args.prior_network_fd, bootstrap_config=args.bootstrap_config)
             finally:
                 os.close(fence)
-    except (OSError, ValueError, TypeError, KeyError, HostObservationUnavailable) as exc:
+    except (OSError, ValueError, TypeError, KeyError, sqlite3.Error, yaml.YAMLError, HostObservationUnavailable) as exc:
         parser.exit(1, f"fresh host observation unavailable: {exc}\n")
 
 

@@ -111,6 +111,38 @@ first-launch grant, start processes, access OAuth contents or mutate a Docker
 controller. No consumer may treat a recorded origin as a completed NEW
 initialization or as old-history continuity.
 
+### Independent selected-profile check (non-authorizing)
+
+After `begin`, the operator can use another host process to verify a **bounded
+source-script management profile** against the retained origin:
+
+```sh
+python -B -m auto_coder.management.fresh_host inspect-profile \
+  --request-file /private/new-instance-request.json
+```
+
+This second consumer checks the original request and record, then uses the
+production bootstrap and management configuration parsers to bind the selected
+new instance, distinct roots, initial runtime reference, executable digest,
+application source root, exact `management serve --config` command and private
+loopback `/mcp` endpoint. It requires the management configuration to select the
+same bootstrap, OAuth root, operation root and an enabled read scope. It also
+verifies an already-existing retained OAuth database in immutable read-only
+mode against the expected schema, issuer, resource and project. It does not
+initialize that database, migrate it, open token material for output, or
+reconfigure permissions. Missing or malformed OAuth data and unsupported
+selected runtime profiles refuse without writing or launching anything. A
+second origin inspection after these checks detects changed original inputs.
+
+The bounded profile requires the selected runtime's `source_root` to name the
+same immutable application closure supplied in the origin request. Installed
+runtime profiles, archived exclusions and container-only runtime bindings are
+not yet supported by this check. The result is `profile-verified-only` with
+`launch_authorized=false`: neither configuration parsing nor a valid retained
+OAuth database proves an active grant, current owner, host-guard challenge,
+first-launch claim, authenticated readback or any readiness. A separate actual
+admission and first-launch consumer is still required under REQ-001–005.
+
 Independent native Linux subprocess tests hold two writers immediately before
 the real O_EXCL call to establish one winner, and SIGKILL a producer immediately
 after the actual open to establish a non-reusable partial origin. These are
@@ -123,12 +155,16 @@ positive first-launch/owner/OAuth acceptance scenarios.
   provisioning actual new state/operation/guard stores and admission-bound
   root verification for first launch remain missing. An
   assessment neither proves unused instance identity nor OAuth grant usability.
+  The optional profile check verifies retained schema/configuration selection,
+  not a currently authorized read grant.
 - REQ-002: a one-use original intent record now exists, but actual installed
   runtime/configuration agreement, immediately-before-launch identity checks,
   atomic first-launch claims, crash fencing and evidence-preserving launch
   reconciliation remain missing. The JSON output is not a durable initialization intent, consumable
   claim, or evidence of independently verified no-launch state. Never feed it
   into the existing cutover claim path as prior-history evidence.
+  The optional bounded profile check is an independent read-only selection
+  comparison, not a held admission-time identity guarantee.
 - REQ-003: authoritative prior process/listener absence, relevant namespace
   evidence, continuous exclusive owner/prior-owner fences, and a fresh protected
   host-guard peer/challenge binding are missing from this NEW assessment path.
@@ -158,7 +194,8 @@ normative gates.
 
 Run `bash scripts/test.sh --ci-tests-only
 tests/test_management_new_instance_preflight.py
-tests/test_management_new_instance_begin.py` for real subprocess/filesystem
+tests/test_management_new_instance_begin.py
+tests/test_management_new_instance_profile.py` for real subprocess/filesystem
 coverage. Audit-hook barriers pause actual configuration opens to demonstrate
 simultaneously in-flight scans and crash/replacement behavior; they do not
 fabricate owner contention, grant authority or authenticated application success.
