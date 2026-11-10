@@ -52,7 +52,7 @@ python -m auto_coder.management.containment_observation verify \
 ```
 
 Both commands return exit status **2**, even if every available sub-observation
-matches. Output is JSON. `current-containment-prerequisites-v3` includes the full
+matches. Output is JSON. `current-containment-prerequisites-v4` includes the full
 proposed scope and its hash, a new observation UUID, current boot ID, observer PID
 and process-start token, monotonic observation interval, observed file identities,
 available Docker identities and explicit unavailable authorities/reasons.
@@ -85,9 +85,44 @@ continuous exclusion, or reservation of a listener/namespace.
 An accepted production observer still requires initial-namespace Linux host root,
 unrestricted host procfs/cgroup visibility and local Docker authority. More
 importantly, it requires original authoritative deployment provenance or a
-separately approved present-time enrollment and an implemented reader for that
-authority. Merely naming an enrollment or supplying operator lists is insufficient.
-No enrollment or controller mutation is performed here.
+separately approved present-time enrollment and independent original installed
+source/controller/route authority. Merely naming an enrollment or supplying
+operator lists is insufficient. No enrollment or controller mutation is performed here.
+
+### Protected enrollment component (v4)
+
+The v4 report optionally includes `approved_enrollment`, a bounded component
+readback from the fixed trusted-local path
+`/var/lib/auto-coder/approved-containment-enrollments/<enrollment-id>.json`.
+The observer never writes to that path. Host root and an existing private
+root-owned directory (mode 0700), private regular file (mode 0600), canonical
+paths, exact deployment IDs, original image IDs and independently reopened
+protected original source/configuration and prior-evidence file identities are
+required. The observer reopens the record and originals after reading them.
+Absent, mismatched, mutable and uninspectable records contribute
+`approved-enrollment-component` refusal reasons. Unit-level fixtures use a
+separate explicitly injected private directory and their own UID, never the
+production CLI path.
+
+An installed record only establishes that a protected *candidate approval
+component* can be inspected. File hashes and root ownership do **not** establish
+that bytes were the original running program, that an enrollment was separately
+approved, that its scope covers all ordinary restart/launch routes, or that
+Docker/kernel/owner-fence containment holds. The report therefore continues
+to carry the independent `deployment-enrollment`, `original-source-profile`,
+`ordinary-route-closure` and `kernel-containment` unavailable reasons and
+always returns status 2. There is no accepted profile, authority to launch or
+full-scope positive fixture yet.
+
+Run the new bounded protected-record regressions with:
+
+```sh
+bash scripts/test.sh --ci-tests-only tests/test_management_containment_enrollment.py
+```
+
+These tests use owner-private disposable files and real file identities, but
+the test-created approval record and prior facts are deliberately not accepted
+as original deployment authority or positive controller containment.
 
 The installed route inventory must independently cover the actual watcher and
 explicit reconciliation, services/timers, socket activation, Docker restart
@@ -141,8 +176,8 @@ the corresponding production trace-to-view obligations.
 
 ## Complete current Docker inventory sub-observation
 
-The `current-containment-prerequisites-v3` report replaces v1/v2. A v1/v2 saved report
-is refused; it did not bind the complete engine inventory. `docker` now includes
+The `current-containment-prerequisites-v4` report replaces v1/v2/v3. Older saved reports
+are refused; they did not bind the complete engine inventory. `docker` now includes
 **every** container returned by unfiltered `docker container ls --all --quiet
 --no-trunc`, sorted by full ID, rather than only the proposed manager/proxy pair.
 Both selected objects must occur in that inventory. Each object records the engine,
@@ -212,7 +247,7 @@ Docker/controller acceptance remains unverified in this environment, and Issue
 
 ## Current Linux process observation component (bounded REQ-402/REQ-406 work)
 
-The v3 prerequisite report adds `processes`: current `/proc` observations for
+The v4 prerequisite report retains `processes`: current `/proc` observations for
 positive PIDs in the Docker inventory. A stopped object's PID 0 supplies no task
 absence evidence. Docker PIDs only select proposed current processes; this does
 not correlate them to original manager/proxy lifetimes or discover escaped tasks.

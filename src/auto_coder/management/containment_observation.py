@@ -21,6 +21,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from .archived_exclusions import unique_pairs
+from .containment_enrollment import EnrollmentObservation, EnrollmentUnavailable, observe_approved_enrollment
 from .fresh_host_observation import _validate_host_proc_profile
 from .proc_observation import ProcessObservation, observe_process
 
@@ -113,6 +114,7 @@ class PrerequisiteReport:
     unavailable: tuple[Unavailable, ...]
     processes: tuple[ProcessObservation, ...] = ()
     resource_limit: str = "All read descriptors are released before return; no namespace pin or owner fence is retained."
+    approved_enrollment: EnrollmentObservation | None = None
 
 
 def _digest(value: object) -> str:
@@ -220,6 +222,14 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
         Unavailable("original-source-profile", "No reviewed exact original source/configuration binding is registered for " + scope.profile + "; current installation bytes cannot establish original lock-before-launch evidence."),
         Unavailable("kernel-containment", "No original task/boot lifetime capture with retained namespace object pins and exact owner-file fence is supplied; stopped Docker state and saved namespace inode strings cannot establish absence."),
     ]
+    approved_enrollment = None
+    try:
+        # A protected enrollment is evidence of a separately installed record.
+        # The original installed execution, route and kernel facts still need
+        # independent verification; never remove those refusal reasons here.
+        approved_enrollment = observe_approved_enrollment(scope)
+    except (EnrollmentUnavailable, OSError, ValueError) as exc:
+        unavailable.append(Unavailable("approved-enrollment-component", str(exc)))
     if scope.profile == "quarantined-original-v1":
         unavailable.append(Unavailable("quarantined-original-profile", "Exact original bootstrap file mounts, no-new-privileges setting and support-mount purpose/source/destination/read-only execution binding are not registered; replacement admission is unchanged."))
     boot_id, start_token = "", ""
@@ -279,7 +289,7 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
         process = process_by_pid[container.pid]
         if process.unavailable or not process.start_token or not process.boot_id or (boot_id and process.boot_id != boot_id):
             unavailable.append(Unavailable("docker-process:" + container.container_id, "Docker-selected live process could not be independently correlated to an inspectable current Linux lifetime."))
-    return PrerequisiteReport("current-containment-prerequisites-v3", "unavailable", scope, _digest(asdict(scope)), str(uuid.uuid4()), boot_id, os.getpid(), start_token, started, time.monotonic_ns(), tuple(files), docker, tuple(unavailable), processes)
+    return PrerequisiteReport("current-containment-prerequisites-v4", "unavailable", scope, _digest(asdict(scope)), str(uuid.uuid4()), boot_id, os.getpid(), start_token, started, time.monotonic_ns(), tuple(files), docker, tuple(unavailable), processes, approved_enrollment=approved_enrollment)
 
 
 def verify(scope: ProposedScope, previous: object) -> PrerequisiteReport:
@@ -290,7 +300,7 @@ def verify(scope: ProposedScope, previous: object) -> PrerequisiteReport:
         reasons.append(Unavailable("saved-report", "Unsupported or authorizing saved report; no containment success schema exists."))
     else:
         current_value = json.loads(json.dumps(asdict(current)))
-        for field in ("scope", "scope_sha256", "boot_id", "files", "docker", "processes", "unavailable", "resource_limit"):
+        for field in ("scope", "scope_sha256", "boot_id", "files", "docker", "processes", "approved_enrollment", "unavailable", "resource_limit"):
             if previous[field] != current_value[field]:
                 reasons.append(Unavailable("saved-report:" + field, "Independent current observation differs from saved report."))
     return replace(current, unavailable=tuple(reasons))

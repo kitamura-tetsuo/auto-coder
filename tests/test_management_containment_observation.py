@@ -54,7 +54,7 @@ def test_production_entrypoint_refuses_operator_scope_as_authority(tmp_path: Pat
     source = ROOT / "src/auto_coder/management/bootstrap_supervisor.py"
     original = source.read_bytes()
     report = _command(tmp_path, _scope((source,), profile))
-    assert report["schema"] == "current-containment-prerequisites-v3"
+    assert report["schema"] == "current-containment-prerequisites-v4"
     assert report["scope"]["profile"] == profile
     assert report["files"][0]["sha256"] == hashlib.sha256(original).hexdigest()
     assert report["files"][0]["inode"] == source.stat().st_ino
@@ -111,8 +111,11 @@ def test_new_alternative_root_is_observed_and_refused_not_ignored(tmp_path: Path
     assert "alternative roots; none are excluded from scope" in _reasons(current)["ordinary-route-closure"]
 
 
-@pytest.mark.parametrize("field,value", [("status", "contained"), ("boot_id", "00000000-0000-0000-0000-000000000000"), ("resource_limit", "continuous exclusion")])
-def test_replayed_or_authorizing_claim_never_survives_current_verification(tmp_path: Path, field: str, value: str) -> None:
+@pytest.mark.parametrize(
+    "field,value",
+    [("status", "contained"), ("boot_id", "00000000-0000-0000-0000-000000000000"), ("resource_limit", "continuous exclusion"), ("approved_enrollment", {"schema": "forged-positive"})],
+)
+def test_replayed_or_authorizing_claim_never_survives_current_verification(tmp_path: Path, field: str, value: object) -> None:
     scope = _scope()
     saved = _command(tmp_path, scope)
     saved[field] = value
