@@ -309,7 +309,7 @@ def test_real_docker_inventory_and_separate_consumer(tmp_path: Path) -> None:
 
     # Deliberately fail rather than skip when the required engine is inaccessible.
     docker("info", "--format", "{{json .ID}}")
-    image = docker("image", "inspect", os.environ.get("AUTOCODER_CONTAINMENT_TEST_IMAGE", os.environ.get("AUTOCODER_SUPERVISOR_IMAGE", "python:3.12-slim")), "--format", "{{.Id}}")
+    image = docker("image", "inspect", os.environ.get("AUTOCODER_CONTAINMENT_TEST_IMAGE", os.environ.get("AUTOCODER_FRESH_TEST_BASE_IMAGE", os.environ.get("AUTOCODER_SUPERVISOR_IMAGE", "python:3.12-slim"))), "--format", "{{.Id}}")
     names: list[str] = []
     retained = tmp_path / "retained-evidence"
     retained.write_bytes(b"original evidence must survive")
