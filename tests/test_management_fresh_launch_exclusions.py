@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import sys
 from contextlib import closing
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -32,6 +33,11 @@ from tests.test_management_fresh_initialization import _intent
 @pytest.fixture
 def first_launch_case(tmp_path: Path, monkeypatch, request):
     legacy = getattr(request, "param", None) == "legacy"
+    if getattr(request, "param", None) == "original-history":
+        # Match the protected runtime's no-bytecode-write source closure.
+        # Fresh CI worktrees otherwise acquire new import-time .pyc files
+        # between the original digest and the actual Supervisor recheck.
+        monkeypatch.setattr(sys, "dont_write_bytecode", True)
     intent = _intent(tmp_path)
     a, b = tmp_path / "a", tmp_path / "b"
     generation(a, "manager-a", management=True)
