@@ -99,6 +99,44 @@ def test_complete_frontier_retains_claim_and_reverse_failed_branch(tmp_path):
     assert _fingerprint(tmp_path) == original
 
 
+def test_derived_original_digest_and_consumed_bytes_share_one_read(tmp_path, monkeypatch):
+    """Unit substitution: catch a second parse read after an original snapshot."""
+    from auto_coder.management import original_attempt_evidence as reader
+
+    binding = _history(tmp_path)
+    intent = _covered(tmp_path, binding, "single-read")
+    claim_fresh_initialization(Path(intent.host_state_root), intent)
+    target = Path(intent.host_state_root) / "fresh-initialization.json"
+    baseline = _fingerprint(tmp_path)
+    original_snapshot = reader._snapshot
+    original_read = reader.read_original
+    armed = False
+    substituted = 0
+
+    def snapshot(path):
+        nonlocal armed
+        result = original_snapshot(path)
+        if path == target:
+            armed = True
+        return result
+
+    def read(path):
+        nonlocal armed, substituted
+        if path == target and armed:
+            armed = False
+            substituted += 1
+            return b"{}", original_read(path)[1]
+        return original_read(path)
+
+    monkeypatch.setattr(reader, "_snapshot", snapshot)
+    monkeypatch.setattr(reader, "read_original", read)
+    with observe(binding) as fence:
+        evidence = reader.derive(binding, fence)
+    assert substituted == 0
+    assert evidence.unavailable == (intent.request_id + ": original grant boundary not crossed",)
+    assert _fingerprint(tmp_path) == baseline
+
+
 def test_missing_legacy_histories_and_new_enrollment_are_unavailable_without_writes(tmp_path):
     legacy = _intent(tmp_path)
     claim_fresh_initialization(Path(legacy.host_state_root), legacy)

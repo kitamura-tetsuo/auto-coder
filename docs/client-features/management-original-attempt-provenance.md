@@ -100,10 +100,12 @@ passes its returned descriptor to `derive(binding, descriptor, owner_fences)` or
 the native store boundary, `owner_fences` must contain exactly one currently
 held shared descriptor matching each original owner fence. These are the
 consumer's own read-only observation resources, not an asserted Boolean. The
-reader rechecks their file identities and kernel locks before returning. The verifier checks this exact open
-file description's current kernel READ flock and reopens the original authority,
-complete frontier, original intents, native store receipts, databases and retained
-fresh records. It compares exact protected identities and SHA-256 digests and
+reader rechecks their file identities and kernel locks before returning. Each
+original is parsed from the same read whose bytes are hashed, never from a
+second unsynchronized read attributed to an earlier digest. The verifier checks
+this exact open file description's current kernel READ flock and reopens the
+original authority, complete frontier, original intents, native store receipts,
+databases and retained fresh records. It compares exact protected identities and SHA-256 digests and
 rejects stale, truncated, forged, cross-deployment or mutated evidence. A returned
 object contains every covered attempted branch, explicit unavailable reasons,
 expected stores and source/history bindings. The only supported nested path

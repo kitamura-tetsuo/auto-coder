@@ -116,13 +116,16 @@ def derive(binding: HistoryBinding, fence: int, owner_fences: tuple[int, ...] = 
     frontier = ""
 
     def retain(path: Path) -> bytes:
-        snapshot = _snapshot(path)
+        # Hash the exact bytes consumed by this derivation. A second read
+        # could parse changed bytes under the first read's digest.
+        data, (device, inode) = read_original(path)
+        snapshot = OriginalFile(str(path), device, inode, hashlib.sha256(data).hexdigest())
         if str(path) in files and files[str(path)] != snapshot:
             raise OriginalEvidenceUnavailable("original changed during derivation")
         if any(item.path != snapshot.path and (item.device, item.inode) == (snapshot.device, snapshot.inode) for item in files.values()):
             raise OriginalEvidenceUnavailable("conflicting original file aliases")
         files[str(path)] = snapshot
-        return read_original(path)[0]
+        return data
 
     try:
         _check_fence(binding, fence)
