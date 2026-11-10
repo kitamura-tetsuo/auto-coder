@@ -143,6 +143,38 @@ OAuth database proves an active grant, current owner, host-guard challenge,
 first-launch claim, authenticated readback or any readiness. A separate actual
 admission and first-launch consumer is still required under REQ-001–005.
 
+### Transient NEW admission serialization (non-authorizing)
+
+Once an original origin and selected management/OAuth profile have been
+verified, an operator can probe an exclusive admission fence on the exact
+original, owner-only guard directory:
+
+```sh
+python -B -m auto_coder.management.fresh_host probe-admission-fence \
+  --request-file /private/new-instance-request.json
+```
+
+The production `hold_new_admission_fence` context manager obtains a real Linux
+nonblocking exclusive `flock` on the directory descriptor, then re-verifies
+the original source files, application closure, configuration, OAuth schema
+and guard identity **while retaining the lock**. Another process attempting
+the same guard concurrently is refused by the kernel. The CLI releases the
+lock before it exits and reports `admission-fence-observed-only` with
+`launch_authorized=false`; its receipt cannot be reused as launch authority.
+Killing a holder releases only this transient kernel lock, not a consumed
+first-launch claim. Original state/operation roots stay empty and retained
+OAuth is not modified.
+
+This primitive is only local serialization for a future admission consumer.
+It is **not** the supervisor's `.supervisor-owner.lock`, and does not exclude
+any earlier manager or startup path unless that path is actually constrained
+by independently verified host authority. Issue #2672's no-prior-lock profile
+requires affirmative trusted host proof that no prior configured owner,
+child or listener exists **and** continuous enforceable exclusion of prior
+startup through first launch. A missing lock, scan or operator assertion
+alone does not prove this. The authoritative host producer is not yet
+integrated, so the probe cannot authorize launch even when it obtains the lock.
+
 Independent native Linux subprocess tests hold two writers immediately before
 the real O_EXCL call to establish one winner, and SIGKILL a producer immediately
 after the actual open to establish a non-reusable partial origin. These are
@@ -166,8 +198,10 @@ positive first-launch/owner/OAuth acceptance scenarios.
   The optional bounded profile check is an independent read-only selection
   comparison, not a held admission-time identity guarantee.
 - REQ-003: authoritative prior process/listener absence, relevant namespace
-  evidence, continuous exclusive owner/prior-owner fences, and a fresh protected
-  host-guard peer/challenge binding are missing from this NEW assessment path.
+  evidence, known-prior or genuinely-NEW host profile and continuous exclusion
+  of old startup sources, live supervisor owner fence, and fresh protected
+  host-guard peer/challenge binding are missing. The transient guard-lock
+  probe is not a replacement for these checks.
 - REQ-004: new child/operation/handoff/recovery stores, first launch, exact-child
   observation, Bearer challenge and authorized fresh readback with current grant
   revalidation are missing. Existing #2668 recovery remains unchanged and refuses
@@ -195,10 +229,15 @@ normative gates.
 Run `bash scripts/test.sh --ci-tests-only
 tests/test_management_new_instance_preflight.py
 tests/test_management_new_instance_begin.py
-tests/test_management_new_instance_profile.py` for real subprocess/filesystem
+tests/test_management_new_instance_profile.py
+tests/test_management_new_instance_admission_fence.py` for real subprocess/filesystem
 coverage. Audit-hook barriers pause actual configuration opens to demonstrate
 simultaneously in-flight scans and crash/replacement behavior; they do not
 fabricate owner contention, grant authority or authenticated application success.
+The additional guard-lock tests establish overlapping attempts at the same
+Linux `flock` inode and show that normal or SIGKILL-released locks cannot
+confer first-launch eligibility. They do not establish first-launch-claim
+contention or authenticated application readiness.
 
 This host-only diagnostic is observability-neutral for production: it creates a protected local origin record but no job, deployment admission,
 launch, outcome, authorized resumption path or structured dashboard event. Its stdout assessment is never translated into dashboard readiness or

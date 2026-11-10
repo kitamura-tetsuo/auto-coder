@@ -99,6 +99,8 @@ def main() -> None:
     inspect.add_argument("--request-file", required=True, type=Path)
     inspect_profile = commands.add_parser("inspect-profile", help="Independent read-only NEW runtime/configuration/OAuth profile verification; no launch")
     inspect_profile.add_argument("--request-file", required=True, type=Path)
+    probe_fence = commands.add_parser("probe-admission-fence", help="Probe transient exclusive NEW admission serialization; no launch authority")
+    probe_fence.add_argument("--request-file", required=True, type=Path)
     capture = commands.add_parser("capture")
     for option in ("management-id", "management-image", "proxy-id", "proxy-image", "mounts-file", "guard-dir"):
         capture.add_argument("--" + option, required=True)
@@ -133,6 +135,11 @@ def main() -> None:
             from .fresh_new_profile import inspect_new_instance_profile
 
             print(json.dumps(asdict(inspect_new_instance_profile(args.request_file)), sort_keys=True))
+        elif args.command == "probe-admission-fence":
+            from .fresh_new_admission_fence import hold_new_admission_fence
+
+            with hold_new_admission_fence(args.request_file) as observation:
+                print(json.dumps(asdict(observation), sort_keys=True))
         elif args.command == "capture":
             mounts = json.loads(_protected_file(Path(args.mounts_file)))
             if not isinstance(mounts, dict) or set(mounts) != {"management", "proxy"}:
