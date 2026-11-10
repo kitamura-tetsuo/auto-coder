@@ -106,6 +106,14 @@ def first_launch_case(tmp_path: Path, monkeypatch, request):
         prior_journal_device=0 if legacy else database.st_dev,
         prior_journal_inode=0 if legacy else database.st_ino,
     )
+    original_binding = None
+    if getattr(request, "param", None) == "original-history":
+        from auto_coder.management.original_attempts import enroll
+
+        original_root = tmp_path / "original-history"
+        original_root.mkdir(mode=0o700)
+        original_binding = enroll(original_root, "isolated-original-bootstrap-producer")
+        intent = replace(intent, original_history=original_binding.root, original_history_id=original_binding.history)
     claim_fresh_initialization(state, intent)
     fixed = {
         "/management-initialization/fresh-guard.sock": guard / "fresh-guard.sock",
@@ -141,7 +149,20 @@ def first_launch_case(tmp_path: Path, monkeypatch, request):
     # run() normally holds this exclusive lock before entering first launch.
     own = (state / ".supervisor-owner.lock").open("w")
     fcntl.flock(own, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    case = N(a=a, b=b, state=state, operations=operations, oauth=oauth, intent=intent, supervisor=supervisor, owner=own, grants=grants, listener_checks=listener_checks, paths=(config_path, management, executable, state / "fresh-initialization.json", oauth / "oauth.sqlite3"))
+    case = N(
+        a=a,
+        b=b,
+        state=state,
+        operations=operations,
+        oauth=oauth,
+        intent=intent,
+        supervisor=supervisor,
+        owner=own,
+        grants=grants,
+        listener_checks=listener_checks,
+        original_binding=original_binding,
+        paths=(config_path, management, executable, state / "fresh-initialization.json", oauth / "oauth.sqlite3"),
+    )
     try:
         yield case
     finally:

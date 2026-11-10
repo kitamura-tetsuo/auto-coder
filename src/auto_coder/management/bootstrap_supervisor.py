@@ -9,16 +9,17 @@ import json
 import os
 import signal
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
 import time
 import uuid
-from contextlib import AbstractContextManager, closing, nullcontext
+from contextlib import AbstractContextManager, closing, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import IO, TYPE_CHECKING, Callable, Iterator
 
 from loguru import logger
 
@@ -364,6 +365,29 @@ class ManagementBootstrapSupervisor:
         self.incarnation = incarnation or str(uuid.uuid4())
         self._lock = threading.RLock()
         self._children: dict[int, subprocess.Popen[bytes]] = {}
+
+    @contextmanager
+    def _owner_file(self) -> Iterator[IO[bytes]]:
+        """Protect the original-lineage owner inode even under a permissive umask.
+
+        An existing unprotected owner record is refused, not rewritten. Other
+        unenrolled Supervisor profiles keep their existing opening behavior.
+        """
+        path = self.config.state_root / ".supervisor-owner.lock"
+        if self.fresh_initialization and (self.config.state_root / "fresh-initialization.json").is_file():
+            from .fresh_initialization import load_fresh_initialization
+
+            intent, _ = load_fresh_initialization(self.config.state_root)
+            if intent.original_history:
+                descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(descriptor, "a+b") as owner:
+                    info = os.fstat(owner.fileno())
+                    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1:
+                        raise PermissionError("original-lineage Supervisor owner lock must be protected")
+                    yield owner
+                return
+        with path.open("a+b") as owner:
+            yield owner
 
     def _release_prior_fences(self) -> None:
         for descriptor in self._archived_owner_fences:
@@ -791,7 +815,7 @@ class ManagementBootstrapSupervisor:
         for signum in launch_handlers:
             signal.signal(signum, launch_shutdown)
         try:
-            with (self.config.state_root / ".supervisor-owner.lock").open("a+b") as ownership:
+            with self._owner_file() as ownership:
                 fcntl.flock(ownership.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 try:
                     return self._run_owned()
@@ -1036,17 +1060,25 @@ class ManagementBootstrapSupervisor:
             if any(item.name not in allowed or item.is_symlink() for item in self.config.state_root.iterdir()) or any(self.config.journal_root.iterdir()):
                 raise ValueError("fresh initialization state is not empty")
             self._acquire_prior_fences(intent)
-            self.store.publish_supervisor(self.incarnation, os.getpid(), self._await_owner_start_token())
-            self.store.require_existing = True
-            request_and_claim_first_launch(self.config.state_root, self.config.fresh_guard_path, owner_incarnation=self.incarnation)
-            with closing(ManagementOperationStore(self.config.journal_root)._connect()):
-                pass
-            with closing(HandoffStore(self.config.state_root, self.config.instance_id)._connect()):
-                pass
-            RecoveryMailbox(self.config.state_root, self.config.instance_id).initialize()
-            from .original_attempts import record_original_stores
+            # The original-lineage producer requires protected owner-only
+            # SQLite identities. The native initializers honor the process
+            # umask; never make their protection depend on an operator shell.
+            previous_umask = os.umask(0o077) if intent.original_history else None
+            try:
+                self.store.publish_supervisor(self.incarnation, os.getpid(), self._await_owner_start_token())
+                self.store.require_existing = True
+                request_and_claim_first_launch(self.config.state_root, self.config.fresh_guard_path, owner_incarnation=self.incarnation)
+                with closing(ManagementOperationStore(self.config.journal_root)._connect()):
+                    pass
+                with closing(HandoffStore(self.config.state_root, self.config.instance_id)._connect()):
+                    pass
+                RecoveryMailbox(self.config.state_root, self.config.instance_id).initialize()
+                from .original_attempts import record_original_stores
 
-            record_original_stores(self.config.state_root, intent)
+                record_original_stores(self.config.state_root, intent)
+            finally:
+                if previous_umask is not None:
+                    os.umask(previous_umask)
             if self.config.fresh_runtime_binding is not None:
                 verify_installed_fresh_binding(self.config, self.bootstrap_config_path, intent, settings, source_authority=self.source_authority, bootstrap_application=application_root)
             else:

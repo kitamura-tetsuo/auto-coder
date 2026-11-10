@@ -80,6 +80,17 @@ fence and exact four database identities. Receipt production checks the current
 bootstrap PID actually holds the original owner WRITE flock. Missing receipts or expected databases remain
 unavailable. No original store is initialized by an evidence reader.
 
+For this explicitly enrolled original-history profile, the real Supervisor
+opens its own owner-lock inode with creation mode 0600 even if the invoking
+operator process has a permissive umask. An existing owner inode that is
+symlinked, multiply linked, non-owned, or not already 0600 is refused without
+permission repair. While creating the first four native protected SQLite
+stores and their original receipt, the Supervisor temporarily constrains the
+creation umask to 0077 and restores the previous value on every exit.
+Unenrolled/legacy Supervisor opening and startup semantics are unchanged.
+A claim or grant failure still preserves partial native stores rather than
+clearing them for retry.
+
 ## Read-only evidence interface
 
 `HistoryBinding`, `OriginalAttemptEvidence`, `observe`, `derive` and `verify`
@@ -122,9 +133,22 @@ deployment fences and operation-history policy.
 
 ## Evidence and remaining limits
 
-Run `bash scripts/test.sh --ci-tests-only tests/test_management_original_attempts.py`
+Run `bash scripts/test.sh --ci-tests-only tests/test_management_original_attempts.py
+tests/test_management_original_predecessor_guard.py
+tests/test_management_original_bootstrap_integration.py
+tests/test_management_fresh_launch_exclusions.py`
 for real isolated production-origin claims/refusals, original-byte fingerprints,
-separate-process verification, and observable process/flock contention. Production
+separate-process verification, and observable process/flock contention. The
+isolated native bootstrap integration invokes the actual Supervisor
+`_start_fresh_initialization` producer and its four native SQLite
+initializers on Linux, then independently reopens their original 0600 files
+and owner inode. The separate store consumer checks actual database schemas,
+original source/history/intent and retained OAuth bytes, and an incompatible
+prior owner refuses. Its host grant transport and physical child response
+are deliberately substituted: the resulting `claimed` frontier still reports
+`original grant boundary not crossed` and is **not** AS-L01, successful
+first-launch, external container evidence or a verified recovery epoch.
+Production
 Loguru boundary emissions supply barriers after actual fsync, allowing an owner
 to be interrupted at anchor, claim, terminal and possible-grant boundaries while
 a contender demonstrably refuses. Hand-written malformed files are negative
