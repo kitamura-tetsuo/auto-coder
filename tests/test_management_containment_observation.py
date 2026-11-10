@@ -274,6 +274,17 @@ def test_verifier_reinspects_unselected_restart_route_and_mounts(monkeypatch: py
     assert "ordinary-route-closure" in reasons and "deployment-enrollment" in reasons
 
 
+@pytest.mark.parametrize("running,pid", [(True, 0), (False, 12345)])
+def test_contradictory_docker_running_pid_refuses_entire_inventory(monkeypatch: pytest.MonkeyPatch, running: bool, pid: int) -> None:
+    """Protocol boundary: contradictory Docker state cannot select a host lifetime."""
+    objects, _ = _engine_boundary(monkeypatch)
+    objects["a" * 64]["State"].update(Running=running, Pid=pid, Status="running" if running else "exited")
+    result = observation.observe(_scope())
+    assert result.docker == ()
+    assert result.processes == ()
+    assert _reasons(json.loads(json.dumps(asdict(result))))["docker"] == "Docker running/PID relationship is contradictory"
+
+
 @pytest.mark.parametrize("policy", [None, {}, {"Name": "", "MaximumRetryCount": 0}, {"Name": "unknown", "MaximumRetryCount": 0}, {"Name": "no", "MaximumRetryCount": True}, {"Name": "no", "MaximumRetryCount": -1}])
 def test_unknown_engine_restart_policy_refuses_entire_inventory(monkeypatch: pytest.MonkeyPatch, policy: object) -> None:
     objects, _ = _engine_boundary(monkeypatch)
@@ -379,6 +390,7 @@ def test_adapter_reobserves_real_docker_selected_process_without_claiming_closur
         assert saved.processes[0].pid == child.pid
         assert saved.processes[0].unavailable == ()
         assert saved.processes[0].tasks[0].start_token == saved.processes[0].start_token
+        assert "docker-process:" + "a" * 64 not in {item.authority for item in saved.unavailable}
         # Keep Docker's selected numeric PID unchanged, as with stale engine data.
         child.kill()
         child.communicate(timeout=10)
@@ -386,7 +398,9 @@ def test_adapter_reobserves_real_docker_selected_process_without_claiming_closur
         assert current.processes[0].unavailable
         assert current.processes[0].tasks == ()
         reasons = {item.authority: item.reason for item in current.unavailable}
+        assert reasons["docker-process:" + "a" * 64] == "Docker-selected live process could not be independently correlated to an inspectable current Linux lifetime."
         assert reasons["saved-report:processes"] == "Independent current observation differs from saved report."
+        assert reasons["saved-report:unavailable"] == "Independent current observation differs from saved report."
         assert {"kernel-containment", "deployment-enrollment", "ordinary-route-closure"} <= set(reasons)
         assert current.status == "unavailable"
     finally:

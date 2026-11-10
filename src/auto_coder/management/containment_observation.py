@@ -183,6 +183,8 @@ def _docker(scope: ProposedScope) -> tuple[DockerObservation, ...]:
             raise ValueError("Docker restart policy unavailable or unsupported")
         if type(state.get("Running")) is not bool or type(state.get("Pid")) is not int or state["Pid"] < 0 or state.get("Status") not in ("created", "running", "paused", "restarting", "removing", "exited", "dead"):
             raise ValueError("Docker lifetime state unavailable or unsupported")
+        if (state["Pid"] > 0) != state["Running"]:
+            raise ValueError("Docker running/PID relationship is contradictory")
         if any(not isinstance(state.get(key), str) or not state[key] or len(state[key]) > 128 for key in ("StartedAt", "FinishedAt")) or type(raw[0].get("RestartCount")) is not int or raw[0]["RestartCount"] < 0:
             raise ValueError("Docker lifetime identity unavailable")
         # Bind the complete inspection, including command, security, mounts,
@@ -270,6 +272,13 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
     # Docker PIDs select current facts only; they do not identify escaped tasks
     # or establish correspondence with an original manager/proxy lifetime.
     processes = tuple(observe_process(pid) for pid in sorted({item.pid for item in docker if item.pid > 0}))
+    process_by_pid = {item.pid: item for item in processes}
+    for container in docker:
+        if not container.running:
+            continue
+        process = process_by_pid[container.pid]
+        if process.unavailable or not process.start_token or not process.boot_id or (boot_id and process.boot_id != boot_id):
+            unavailable.append(Unavailable("docker-process:" + container.container_id, "Docker-selected live process could not be independently correlated to an inspectable current Linux lifetime."))
     return PrerequisiteReport("current-containment-prerequisites-v3", "unavailable", scope, _digest(asdict(scope)), str(uuid.uuid4()), boot_id, os.getpid(), start_token, started, time.monotonic_ns(), tuple(files), docker, tuple(unavailable), processes)
 
 

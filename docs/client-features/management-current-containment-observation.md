@@ -154,11 +154,17 @@ not emitted.
 
 Enumeration occurs before and after inspection; the entire read is then repeated.
 Engine/context changes, additions/removals, differing inspections, missing selected
-objects, unsupported/missing restart policies or lifetime fields, duplicate/short
-IDs, inspection failure and inventories over 512 containers refuse the Docker
-sub-observation. The bound keeps saved reports within the verifier's file-size
-limit. The verifier repeats all these reads, including objects omitted from the
-proposed scope, and compares the full inventory. Any configured `always`,
+objects, unsupported/missing restart policies or lifetime fields, contradictory
+Docker running/PID state, duplicate/short IDs, inspection failure and inventories
+over 512 containers refuse the Docker sub-observation. For a Docker-running
+object whose selected positive PID is independently unreadable, exited or lacks
+a current Linux boot/start lifetime, the adapter emits a container-specific
+`docker-process:<full-id>` unavailable reason; the separate consumer reobserves
+and compares that reason. A consistent selected PID remains only a partial
+observation, not proof that other escaped tasks or restarters are absent.
+The bound keeps saved reports within the verifier's file-size limit. The verifier
+repeats all these reads, including objects omitted from the proposed scope,
+and compares the full inventory. Any configured `always`,
 `unless-stopped` or `on-failure` policy produces a container-specific
 `docker-restart:<full-id>` unavailable reason, even for a stopped container.
 A `no` policy is a positive observation of Docker's current configuration only;
