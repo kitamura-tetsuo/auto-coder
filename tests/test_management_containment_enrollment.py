@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import pwd
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
@@ -30,7 +31,7 @@ def _protected_file(path: Path, content: bytes) -> OriginalFile:
 
 class _approved_fixture:
     def __enter__(self) -> tuple[Path, ApprovedEnrollment, SimpleNamespace]:
-        self.directory = tempfile.TemporaryDirectory(prefix="ac-enrollment-", dir=Path.home())
+        self.directory = tempfile.TemporaryDirectory(prefix="ac-enrollment-", dir=pwd.getpwuid(os.geteuid()).pw_dir)
         self.base = Path(self.directory.name)
         root = self.base / "approved"
         root.mkdir(mode=0o700)
