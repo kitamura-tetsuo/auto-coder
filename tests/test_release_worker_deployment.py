@@ -1,9 +1,9 @@
-"""Read-only provenance component tests, not authenticated activation evidence.
+"""Release provenance and authenticated activation contract regressions.
 
 Actual acceptance/catalog/publication and dispatch readback producers execute
 against controlled GitHub transport and SQLite. The real_git case uses real
 isolated annotated objects/refs. Worker observations and Actions remain controlled
-test boundaries; these tests cannot satisfy release-worker lifecycle acceptance.
+test boundaries; genuine OS-lifetime or installed-package acceptance is separate.
 """
 
 from __future__ import annotations
@@ -12,14 +12,21 @@ from dataclasses import asdict, replace
 from types import SimpleNamespace
 
 import pytest
+from starlette.testclient import TestClient
 
+from auto_coder.management.app import create_management_app
 from auto_coder.management.operation_store import ManagementOperationStore
 from auto_coder.management.operations import ActionParameter, AdmissionStatus, ManagedTarget, MutationStatus, OperationIntent, OperationPhase
 from auto_coder.management.release_worker_deployment import ReleaseWorkerEvidenceIdentity, ReleaseWorkerEvidenceReader
 from auto_coder.management.source_release_dispatch import ACTION, INPUT_FIELDS, SourceReleaseDispatch
+from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkResult
 from auto_coder.source_release_catalog import SourceReleaseError
 from auto_coder.source_release_promotion import AcceptedSourceValidator
-from tests.test_management_source_release_dispatch import WORKFLOW_ID, WorkflowBoundary, WorkflowGit
+from auto_coder.tested_source_refs import TestedSourcePublisher
+from tests.test_management_mcp import real_boundary
+from tests.test_management_source_release_dispatch import ACTION as MCP_PROMOTION_ACTION
+from tests.test_management_source_release_dispatch import WORKFLOW_ID, WorkflowBoundary, WorkflowGit, _call, _token, dispatch
+from tests.test_management_worker_lifecycle import LifecycleBridge, _drive
 from tests.test_source_release_promotion import OTHER_SHA, RELEASE_REF, RealReleaseGit, _harness
 
 
@@ -94,7 +101,7 @@ def test_real_git_producer_join_survives_journal_reconstruction_without_authoriz
     assert facts.acceptance.local_evidence_content_sha256 == facts.catalog.record.local_evidence_content_sha256
     assert facts.current_source_sha == identity.source_sha != OTHER_SHA
     assert facts.promotion_intent_fingerprint == original.intent_fingerprint
-    assert facts.release_operation_selection_proven is False
+    assert facts.release_operation_selection_proven is True
     assert facts.deployment_authorized is False
     assert facts.worker_deployed is False
     assert calls
@@ -164,9 +171,11 @@ def test_pending_promotion_and_same_sha_new_publication_never_establish_deploy_a
     assert other.promotion_operation_id != identity.promotion_operation_id
     assert other.catalog_oid != identity.catalog_oid
     assert len(d.remote.dispatches) == 2
-    facts = d.reader().read(identity)
-    assert facts.current_source_sha == identity.source_sha
-    assert facts.release_operation_selection_proven is False
+    with pytest.raises(SourceReleaseError, match="SUPERSEDED"):
+        d.reader().read(identity)
+    facts = d.reader().read(other)
+    assert facts.current_source_sha == other.source_sha
+    assert facts.release_operation_selection_proven is True
     assert facts.deployment_authorized is False
     pending = d.publish("pending-promotion", complete=False)
     d.remote.calls.clear()
@@ -183,3 +192,245 @@ def test_original_snapshot_is_immutable_through_journal_api(joined):
     snapshot["accepted"]["local_evidence_content_sha256"] = "f" * 64
     assert d.journal.lifecycle_save(identity.promotion_operation_id, version, snapshot) is False
     assert d.reader().read(identity).acceptance.local_evidence_content_sha256 == original_digest
+
+
+@pytest.fixture
+def release_flow(dispatch, monkeypatch):
+    """Authenticated MCP plus original Git producers and a controlled bridge.
+
+    These cases verify contract/fencing, not genuine OS lifecycle acceptance.
+    The independent process suite must still verify the Supervisor producers.
+    """
+    d = dispatch
+    d.operating.write_text(
+        "profile: full\ntargets:\n  release-source:\n    channel: release\n    repositories: [owner/repo]\n  release-worker:\n    channel: release\n    repositories: [owner/repo]\n",
+        encoding="utf-8",
+    )
+    tested = TestedSourcePublisher(d.remote, "owner/repo").read(d.smoke.worker.source_sha)
+    assert tested is not None
+
+    class ReleaseBridge(LifecycleBridge):
+        def __init__(self):
+            super().__init__()
+            self.config = WorkerEndpointConfig("release-worker", "release", "owner/repo", "10.23.10.13", 17891, b"r" * 48, target_id="release-worker")
+            self.artifact_origin = "build_embedded"
+            self.artifact_version_origin = "installed_distribution_metadata"
+
+        def prepare_version(self, operation_id: str, source_sha: str) -> WorkerNetworkResult:
+            result = super().prepare_version(operation_id, source_sha)
+            assert self.preparation is not None
+            self.preparation.update(lock_sha256=tested.record.lock_sha256, distribution_version=tested.record.distribution_version)
+            return result
+
+        def observe_worker(self, nonce: str | None = None) -> WorkerNetworkResult:
+            result = super().observe_worker(nonce)
+            assert result.data is not None
+            observed = result.data["observation"]
+            binding = result.data["runtime_binding"]
+            assert isinstance(observed, dict) and isinstance(binding, dict)
+            if self.selected == "runtime-new":
+                binding.update(lock_sha256=tested.record.lock_sha256, distribution_version=tested.record.distribution_version)
+                observed["artifact"] = {
+                    "source_revision": {"available": True, "value": tested.record.source_sha, "origin": self.artifact_origin},
+                    "distribution_version": {"available": True, "value": tested.record.distribution_version, "origin": self.artifact_version_origin},
+                }
+            return result
+
+    bridge = ReleaseBridge()
+    original_init = ReleaseWorkerEvidenceReader.__init__
+
+    def fixed_observation_clock(self, *args, **kwargs):
+        kwargs["clock"] = d.remote.clock
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(ReleaseWorkerEvidenceReader, "__init__", fixed_observation_clock)
+    app = create_management_app(d.settings, d.grants, worker_clients={"release": bridge})
+
+    async def no_background_monitor() -> None:
+        pass
+
+    monkeypatch.setattr(app.state.management_runtime, "start_monitor", no_background_monitor)
+    return SimpleNamespace(**{**vars(d), "bridge": bridge, "app": app})
+
+
+def _release_arguments(d, promotion: dict[str, object], *, key: str = "release-deploy-1") -> dict[str, object]:
+    operation_id = str(promotion["operation_id"])
+    catalog = d.remote.request("GET", f"git/ref/tags/auto-coder-source-release-{operation_id}")
+    assert catalog.status == 200 and isinstance(catalog.data, dict)
+    return {
+        "target_id": "release-worker",
+        "selected_git_sha": d.smoke.worker.source_sha,
+        "promotion_operation_id": operation_id,
+        "catalog_ref": f"refs/tags/auto-coder-source-release-{operation_id}",
+        "catalog_oid": catalog.data["object"]["sha"],
+        "acceptance_ref": d.args["acceptance_ref"],
+        "acceptance_oid": d.args["acceptance_oid"],
+        "idempotency_key": key,
+        "expected_supervisor_generation": "supervisor-a",
+        "expected_runtime_id": "runtime-old",
+        "expected_process_run_id": "run-old",
+        "expected_deployment_generation": "generation-old",
+    }
+
+
+def test_authenticated_release_deployment_reuses_original_producer_and_journal(release_flow):
+    d = release_flow
+    with TestClient(d.app, base_url=d.settings.oauth.canonical_issuer) as client:
+        token = _token(client, d)
+        promotion = _call(client, token, MCP_PROMOTION_ACTION, d.args)
+        assert promotion["status"] == "SUCCEEDED"
+        arguments = _release_arguments(d, promotion)
+        first = _call(client, token, "auto_coder_deploy_release_source", arguments)
+        assert first.get("action") == "deploy_release_source" and first["status"] in {"PREPARING", "ACCEPTED"}, first
+        operation_id = str(first["operation_id"])
+        # Original readback precedes fresh Git resolution for identical replay.
+        assert _call(client, token, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
+        assert _call(client, token, "auto_coder_deploy_release_source", {**arguments, "selected_git_sha": "b" * 40})["status"] == "CONFLICT"
+        competing = _call(client, token, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing-key"})
+        assert competing["status"] == "BUSY" and competing["operation_id"] == operation_id
+        _drive(d.app, operation_id, 50)
+        finished = _call(client, token, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
+        assert finished["status"] == "SUCCEEDED", finished
+        assert finished["source_sha"] == d.smoke.worker.source_sha
+        assert finished["release_identity"]["catalog_oid"] == arguments["catalog_oid"]
+        assert len(finished["heartbeats"]) == 2
+        assert finished["steps"]["drain"]["expected_digest"] == d.bridge.receipts["d-" + operation_id]["intent_digest"]
+        assert [name for name, _ in d.bridge.actions] == ["PREPARE", "REQUEST_GRACEFUL_STOP", "START"]
+        assert len(d.remote.dispatches) == 1 and d.remote.release_pointer_writes == 1
+
+
+def test_same_sha_new_release_supersedes_staged_but_not_replacement_effect(release_flow):
+    d = release_flow
+    with TestClient(d.app, base_url=d.settings.oauth.canonical_issuer) as client:
+        token = _token(client, d)
+        promotion = _call(client, token, MCP_PROMOTION_ACTION, d.args)
+        arguments = _release_arguments(d, promotion)
+        admitted = _call(client, token, "auto_coder_deploy_release_source", arguments)
+        assert admitted["status"] in {"PREPARING", "ACCEPTED"}, admitted
+        operation_id = str(admitted["operation_id"])
+        for _ in range(12):
+            record = d.app.state.management_runtime.journal.get(operation_id).record
+            assert record is not None
+            d.app.state.management_runtime.lifecycle.process(record)
+            current = d.app.state.management_runtime.journal.lifecycle_snapshot(operation_id)
+            if current is not None and current[1]["stage"] == "DRAINING":
+                break
+        else:
+            raise AssertionError("release staging did not reach the replacement boundary")
+        next_promotion = _call(client, token, MCP_PROMOTION_ACTION, {**d.args, "idempotency_key": "same-sha-new-release"})
+        assert next_promotion["status"] == "SUCCEEDED"
+        assert d.remote.release_pointer_writes == 1 and d.remote.release_selection_writes == 2
+        _drive(d.app, operation_id, 12)
+        status = _call(client, token, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
+        assert status["status"] == "SUPERSEDED" and status["reason"] == "original_release_operation_superseded"
+        assert [name for name, _ in d.bridge.actions] == ["PREPARE"]
+
+
+def test_stopped_release_incumbent_requires_independent_absence_before_start(release_flow):
+    d = release_flow
+    d.bridge.worker = None
+    with TestClient(d.app, base_url=d.settings.oauth.canonical_issuer) as client:
+        token = _token(client, d)
+        promotion = _call(client, token, MCP_PROMOTION_ACTION, d.args)
+        args = _release_arguments(d, promotion)
+        args.pop("expected_process_run_id")
+        args.pop("expected_deployment_generation")
+        admitted = _call(client, token, "auto_coder_deploy_release_source", args)
+        assert admitted["status"] in {"ACCEPTED", "PREPARING"}, admitted
+        operation_id = str(admitted["operation_id"])
+        _drive(d.app, operation_id, 50)
+        outcome = _call(client, token, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
+        assert outcome["status"] == "SUCCEEDED", outcome
+        assert [name for name, _ in d.bridge.actions] == ["PREPARE", "START"]
+
+
+def test_release_selection_changed_during_durable_pre_effect_write_never_dispatches(release_flow, monkeypatch):
+    from auto_coder.source_release_catalog import RELEASE_SELECTION_REF
+
+    d = release_flow
+    with TestClient(d.app, base_url=d.settings.oauth.canonical_issuer) as client:
+        token = _token(client, d)
+        promotion = _call(client, token, MCP_PROMOTION_ACTION, d.args)
+        admitted = _call(client, token, "auto_coder_deploy_release_source", _release_arguments(d, promotion))
+        operation_id = str(admitted["operation_id"])
+        lifecycle = d.app.state.management_runtime.lifecycle
+        old_save = lifecycle._save
+
+        def change_after_durable_step(record, revision, snapshot):
+            saved = old_save(record, revision, snapshot)
+            steps = snapshot.get("steps")
+            if saved and record.operation_id == operation_id and isinstance(steps, dict) and "drain" in steps:
+                d.remote.refs[RELEASE_SELECTION_REF] = ("tag", OTHER_SHA)
+            return saved
+
+        monkeypatch.setattr(lifecycle, "_save", change_after_durable_step)
+        _drive(d.app, operation_id, 25)
+        outcome = _call(client, token, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
+        assert outcome["status"] == "DRAINING" and outcome["steps"]["drain"]["state"] == "SENT_UNKNOWN", outcome
+        assert [name for name, _ in d.bridge.actions] == ["PREPARE"]
+        assert _call(client, token, "auto_coder_deploy_release_source", {**_release_arguments(d, promotion), "idempotency_key": "other"})["status"] == "BUSY"
+
+
+@pytest.mark.parametrize("intervention", ("policy_downgrade", "missing_selection", "lost_drain_reply", "crash_new", "wrong_artifact_origin", "wrong_version_origin", "unreadable_supervisor_receipt"))
+def test_release_deploy_rechecks_policy_reconciles_lost_replies_and_refuses_unverified_activation(release_flow, monkeypatch, intervention):
+    d = release_flow
+    with TestClient(d.app, base_url=d.settings.oauth.canonical_issuer) as client:
+        token = _token(client, d)
+        promotion = _call(client, token, MCP_PROMOTION_ACTION, d.args)
+        assert promotion["status"] == "SUCCEEDED"
+        arguments = _release_arguments(d, promotion)
+        admitted = _call(client, token, "auto_coder_deploy_release_source", arguments)
+        operation_id = str(admitted["operation_id"])
+        runtime = d.app.state.management_runtime
+        for _ in range(15):
+            record = runtime.journal.get(operation_id).record
+            assert record is not None
+            runtime.lifecycle.process(record)
+            snapshot = runtime.journal.lifecycle_snapshot(operation_id)
+            if snapshot is not None and snapshot[1]["stage"] == "DRAINING":
+                break
+        else:
+            raise AssertionError("release staging did not reach drain boundary")
+        if intervention == "policy_downgrade":
+            d.operating.write_text(d.operating.read_text().replace("profile: full", "profile: observe"))
+        elif intervention == "missing_selection":
+            from auto_coder.source_release_catalog import RELEASE_SELECTION_REF
+
+            d.remote.refs.pop(RELEASE_SELECTION_REF)
+        elif intervention == "lost_drain_reply":
+            d.bridge.lost_stop_response = True
+        elif intervention == "crash_new":
+            d.bridge.crash_new = True
+        elif intervention == "wrong_artifact_origin":
+            d.bridge.artifact_origin = "manager_reported"
+        elif intervention == "wrong_version_origin":
+            d.bridge.artifact_version_origin = "unverified"
+        elif intervention == "unreadable_supervisor_receipt":
+            original_read = d.bridge.read_worker_operation
+
+            def unreadable_stop(effect_id: str) -> WorkerNetworkResult:
+                if effect_id.startswith("d-"):
+                    return d.bridge._result("UNKNOWN", {"status": "UNKNOWN", "operation_id": effect_id})
+                return original_read(effect_id)
+
+            monkeypatch.setattr(d.bridge, "read_worker_operation", unreadable_stop)
+        _drive(d.app, operation_id, 40)
+        outcome = _call(client, token, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
+        actions = [name for name, _ in d.bridge.actions]
+        if intervention in {"policy_downgrade", "missing_selection"}:
+            assert outcome["status"] in {"NEEDS_ATTENTION", "SUPERSEDED"}, outcome
+            assert actions == ["PREPARE"]
+        elif intervention == "lost_drain_reply":
+            assert outcome["status"] == "SUCCEEDED", outcome
+            assert actions == ["PREPARE", "REQUEST_GRACEFUL_STOP", "START"]
+        elif intervention == "crash_new":
+            assert outcome["status"] == "FAILED" and outcome["recovery_state"] == "CONFIRMED", outcome
+            assert actions == ["PREPARE", "REQUEST_GRACEFUL_STOP", "START", "RECOVER_PREVIOUS"]
+            assert outcome["recovery_attempts"] == 1
+        elif intervention in {"wrong_artifact_origin", "wrong_version_origin"}:
+            assert outcome["status"] == "RECONCILING" and outcome["heartbeats"] == [], outcome
+            assert actions == ["PREPARE", "REQUEST_GRACEFUL_STOP", "START"]
+        else:
+            assert outcome["status"] == "DRAINING" and outcome["steps"]["drain"]["state"] == "SENT_UNKNOWN", outcome
+            assert actions == ["PREPARE", "REQUEST_GRACEFUL_STOP"]
+            assert _call(client, token, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "different"})["status"] == "BUSY"

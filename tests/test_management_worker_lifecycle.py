@@ -126,19 +126,20 @@ class LifecycleBridge:
 
     def dispatch_worker_operation(self, operation_id: str, operation: str, *, process_run_id: str | None, deployment_generation: str | None, selected_runtime_id: str | None, runtime_id: str | None = None) -> WorkerNetworkResult:
         self.actions.append((operation, operation_id))
+        digest = WorkerSupervisor._digest({"operation": operation, "expected_supervisor_incarnation": self.supervisor_generation, "expected_process_run_id": process_run_id, "expected_generation": deployment_generation, "expected_runtime_id": selected_runtime_id, "runtime_id": runtime_id})
         if operation == "REQUEST_GRACEFUL_STOP":
-            receipt = {"status": "STOPPED", "operation_id": operation_id}
+            receipt = {"status": "STOPPED", "operation_id": operation_id, "intent_digest": digest}
             self.worker = None
             result = self._result("UNKNOWN", {}) if self.lost_stop_response else self._result("DRAINING", {"status": "DRAINING", "operation_id": operation_id})
         elif operation == "START":
             self.selected = runtime_id or "runtime-old"
             self.worker = {"process_run_id": "run-new", "deployment_generation": "generation-new", "runtime_id": self.selected, "binding_status": "VERIFIED"}
-            receipt = {"status": "RUNNING", "operation_id": operation_id, "worker": self.worker}
+            receipt = {"status": "RUNNING", "operation_id": operation_id, "worker": self.worker, "intent_digest": digest}
             result = self._result("RUNNING", receipt)
         elif operation == "RECOVER_PREVIOUS":
             self.selected = "runtime-old"
             self.worker = {"process_run_id": "run-restored", "deployment_generation": "generation-restored", "runtime_id": self.selected, "binding_status": "VERIFIED"}
-            receipt = {"status": "RUNNING", "operation_id": operation_id, "worker": self.worker}
+            receipt = {"status": "RUNNING", "operation_id": operation_id, "worker": self.worker, "intent_digest": digest}
             result = self._result("RUNNING", receipt)
         else:
             raise AssertionError(operation)
@@ -307,7 +308,7 @@ def test_authenticated_beta_deploy_replays_exact_evidence_and_only_stops_after_r
             assert completed["steps"]["drain"]["state"] == "SENT_UNKNOWN"
             return
         if intervention == "crash_after_start":
-            assert completed["status"] == "FAILED" and completed["reason"] == "new_beta_worker_failed_previous_runtime_restored"
+            assert completed["status"] == "FAILED" and completed["reason"] == "new_worker_failed_previous_runtime_restored"
             assert completed["recovery_attempts"] == 1
             assert [name for name, _id in bridge.actions] == ["PREPARE", "REQUEST_GRACEFUL_STOP", "START", "RECOVER_PREVIOUS"]
             return

@@ -7,9 +7,9 @@ import hashlib
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from pydantic import StrictInt
 
@@ -19,8 +19,10 @@ from auto_coder.util.gh_cache import GitHubGitDataClient
 from .action_scopes import DEPLOY_SCOPE, READ_SCOPE
 from .action_scopes import AcceptedAuthority as GrantAuthority
 from .action_scopes import PendingAuthorityStatus
-from .operations import ActionParameter, AdmissionStatus, EffectReceipt, EffectState, MutationStatus, OperationIntent, OperationPhase, OperationRecord, ReadStatus
+from .operations import ActionParameter, AdmissionStatus, EffectReceipt, EffectState, MutationStatus, OperationIntent, OperationPhase, OperationRecord, QueryStatus, ReadStatus
+from .release_worker_deployment import ReleaseWorkerEvidenceIdentity, ReleaseWorkerEvidenceReader
 from .source_evidence import BetaEvidenceReader, SourceEvidenceError
+from .source_release_dispatch import SourceReleaseError
 from .worker_network_client import WorkerNetworkClient, WorkerNetworkResult
 
 if TYPE_CHECKING:
@@ -28,7 +30,8 @@ if TYPE_CHECKING:
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _SHA = re.compile(r"[a-f0-9]{40}\Z")
-LIFECYCLE_ACTIONS = frozenset({"start_worker", "stop_worker", "restart_worker", "deploy_beta_source"})
+LIFECYCLE_ACTIONS = frozenset({"start_worker", "stop_worker", "restart_worker", "deploy_beta_source", "deploy_release_source"})
+SOURCE_ACTIONS = frozenset({"deploy_beta_source", "deploy_release_source"})
 TERMINAL_STAGES = frozenset({"SUCCEEDED", "FAILED", "SUPERSEDED"})
 
 
@@ -62,6 +65,38 @@ class WorkerLifecycle:
             raise SourceEvidenceError("source evidence credential is invalid")
         return BetaEvidenceReader(GitHubGitDataClient(secret, config.source_repository), config.source_repository)
 
+    def _release(self) -> ReleaseWorkerEvidenceReader:
+        producer = self.runtime.source_release
+        policy = producer.configuration()
+        return ReleaseWorkerEvidenceReader(
+            self.runtime.journal,
+            producer.transport(policy),
+            policy,
+            promotion_target_id=self.runtime.settings.source_release_target_id,
+            workflow_id=self.runtime.settings.source_release_workflow_id,
+        )
+
+    @staticmethod
+    def _release_evidence(facts: object) -> str:
+        from .release_worker_deployment import ReleaseWorkerPromotionFacts
+
+        if not isinstance(facts, ReleaseWorkerPromotionFacts) or not facts.release_operation_selection_proven:
+            raise SourceReleaseError("the original promotion is not the selected release")
+        return json.dumps(
+            {
+                "source_sha": facts.identity.source_sha,
+                "lock_sha256": facts.lock_sha256,
+                "distribution_version": facts.distribution_version,
+                "promotion_operation_id": facts.identity.promotion_operation_id,
+                "catalog_oid": facts.identity.catalog_oid,
+                "acceptance_oid": facts.identity.acceptance_oid,
+                "policy_revision": facts.policy_revision,
+                "promotion_intent_fingerprint": facts.promotion_intent_fingerprint,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
     def _authority_refusal(self, record: OperationRecord) -> str | None:
         authority = record.authority
         settings = self.runtime.settings
@@ -77,7 +112,7 @@ class WorkerLifecycle:
             return "recorded_target_invalid"
         from .mcp_runtime_tools import ResolvedWorker
 
-        action = ActionClass.DEPLOYMENT if record.intent.action == "deploy_beta_source" else ActionClass.WORKER_CONTROL
+        action = ActionClass.DEPLOYMENT if record.intent.action in SOURCE_ACTIONS else ActionClass.WORKER_CONTROL
         current = self.runtime._resolve(target_id, action)
         if not isinstance(current, ResolvedWorker) or current.target != record.intent.target or self.runtime._record_client(record) is None:
             return "current_policy_unavailable" if isinstance(current, dict) and current.get("status") == "UNAVAILABLE" else "current_policy_denied"
@@ -112,6 +147,7 @@ class WorkerLifecycle:
         expected_deployment_generation: str | None,
         expected_runtime_id: str | None,
         selected_git_sha: str | None = None,
+        release_identity: ReleaseWorkerEvidenceIdentity | None = None,
     ) -> dict[str, object]:
         from .mcp_runtime_tools import ResolvedWorker
 
@@ -122,14 +158,24 @@ class WorkerLifecycle:
             or any(not isinstance(value, str) or _ID.fullmatch(value) is None for value in values)
             or (expected_process_run_id is None) != (expected_deployment_generation is None)
             or any(value is not None and (not isinstance(value, str) or _ID.fullmatch(value) is None) for value in (expected_process_run_id, expected_deployment_generation, expected_runtime_id))
-            or (action == "deploy_beta_source") != (isinstance(selected_git_sha, str) and _SHA.fullmatch(selected_git_sha) is not None)
+            or (action in SOURCE_ACTIONS) != (isinstance(selected_git_sha, str) and _SHA.fullmatch(selected_git_sha) is not None)
+            or (action == "deploy_release_source") != (release_identity is not None)
         ):
             return self._answer("INVALID_REQUEST", "invalid_worker_lifecycle_request")
+        if release_identity is not None:
+            try:
+                release_identity.validate()
+            except SourceReleaseError:
+                return self._answer("INVALID_REQUEST", "invalid_release_provenance_identity")
+            if release_identity.source_sha != selected_git_sha:
+                return self._answer("INVALID_REQUEST", "release_source_sha_mismatch")
         resolved = self.runtime._resolve(target_id, ActionClass.INSPECT)
         if not isinstance(resolved, ResolvedWorker):
             return resolved
         if action == "deploy_beta_source" and resolved.target.channel != "beta":
             return self._answer("DENIED", "release_source_deployment_not_authorized")
+        if action == "deploy_release_source" and resolved.target.channel != "release":
+            return self._answer("DENIED", "configured_release_worker_required")
         if action in {"stop_worker", "restart_worker"} and expected_process_run_id is None:
             return self._answer("INVALID_REQUEST", "running_worker_identity_required")
         if action == "start_worker" and expected_process_run_id is not None:
@@ -140,7 +186,7 @@ class WorkerLifecycle:
             ActionParameter("supervisor_generation", expected_supervisor_generation),
             ActionParameter("runtime_id", expected_runtime_id or "-"),
             ActionParameter("source_sha", selected_git_sha or "-"),
-        )
+        ) + (tuple(ActionParameter(key, value) for key, value in asdict(release_identity).items() if key != "source_sha") if release_identity is not None else ())
         intent = OperationIntent(resolved.target, action, params, idempotency_key, expected_process_run_id or "-", expected_deployment_generation or "-")
         original = self.runtime._journal_authority(grant, self.runtime.grants.accepted_authority(grant))
         retained = await asyncio.to_thread(self.runtime.retained_admission, intent, original, target_id)
@@ -154,9 +200,23 @@ class WorkerLifecycle:
                 return self._answer("CONFLICT", "idempotency_key_conflict", operation_id=old.record.operation_id)
             updated = await self.runtime.dispatcher.submit(old.record.operation_id)
             return self.project(updated or old.record)
-        mutation = self.runtime._resolve(target_id, ActionClass.DEPLOYMENT if action == "deploy_beta_source" else ActionClass.WORKER_CONTROL)
+        # A different key must see the existing lane owner even when its
+        # requested release selection has since become stale or unavailable.
+        outstanding = await asyncio.to_thread(self.runtime.journal.list_operations, outstanding_only=True, target=resolved.target)
+        if outstanding.status is not QueryStatus.OK:
+            return self._answer("UNAVAILABLE", "journal_unavailable")
+        if outstanding.records:
+            return self._answer("BUSY", "journal_busy", operation_id=outstanding.records[0].operation_id)
+        mutation = self.runtime._resolve(target_id, ActionClass.DEPLOYMENT if action in SOURCE_ACTIONS else ActionClass.WORKER_CONTROL)
         if not isinstance(mutation, ResolvedWorker):
             return mutation
+
+        if release_identity is not None:
+            try:
+                if self.runtime.source_release.configuration().source_repository != mutation.target.repository:
+                    return self._answer("DENIED", "release_worker_repository_mismatch")
+            except (SourceReleaseError, OSError, ValueError):
+                return self._answer("UNAVAILABLE", "trusted_release_configuration_unavailable")
 
         def inspect_locked() -> tuple[WorkerFence, dict[str, object]] | None:
             with self.runtime._worker_locks[mutation.target_id]:
@@ -171,6 +231,17 @@ class WorkerLifecycle:
                 evidence = await asyncio.to_thread(lambda: self._source().read(str(selected_git_sha)).canonical())
             except (SourceEvidenceError, RuntimeError, OSError, ValueError):
                 return self._answer("UNAVAILABLE", "beta_source_evidence_unavailable_or_ineligible")
+        elif release_identity is not None:
+            try:
+                evidence = await asyncio.to_thread(lambda: self._release_evidence(self._release().read(release_identity)))
+            except (SourceReleaseError, RuntimeError, OSError, ValueError, TypeError):
+                return self._answer("UNAVAILABLE", "release_source_evidence_unavailable_or_superseded")
+        # The entire original authority and configured full/release policy must
+        # remain current even if evidence retrieval or inspection was slow.
+        if self.runtime.grants.check_pending_authority(self.runtime.grants.accepted_authority(grant), (READ_SCOPE, DEPLOY_SCOPE)).status is not PendingAuthorityStatus.PERMITTED or not isinstance(
+            self.runtime._resolve(target_id, ActionClass.DEPLOYMENT if action in SOURCE_ACTIONS else ActionClass.WORKER_CONTROL), ResolvedWorker
+        ):
+            return self._answer("DENIED", "current_authority_or_policy_denied")
         now = time.time()
         incumbent_worker = inspected[1].get("worker")
         incumbent = incumbent_worker if isinstance(incumbent_worker, dict) else {}
@@ -179,6 +250,7 @@ class WorkerLifecycle:
             "stage": "ACCEPTED",
             "action": action,
             "accepted_evidence": evidence,
+            "release_identity": asdict(release_identity) if release_identity is not None else None,
             "revalidation_observation": None,
             "source_sha": selected_git_sha,
             "incumbent": {
@@ -234,6 +306,9 @@ class WorkerLifecycle:
             steps=snapshot.get("steps"),
             heartbeats=snapshot.get("heartbeats"),
             recovery_attempts=snapshot.get("recovery_attempts"),
+            recovery_state=snapshot.get("recovery_state", "NOT_ATTEMPTED"),
+            restored_worker=snapshot.get("restored_worker"),
+            release_identity=snapshot.get("release_identity"),
             original_deadline=snapshot.get("original_deadline"),
             deadline=snapshot.get("deadline"),
         )
@@ -330,19 +405,40 @@ class WorkerLifecycle:
             if refusal is not None:
                 return self._finish(record, version, snapshot, "NEEDS_ATTENTION", refusal)
             first_replacement = name == "drain" or (name == "start" and "drain" not in steps)
-            if first_replacement and record.intent.action == "deploy_beta_source":
+            if name == "start":
+                observed = self._inspection(client)
+                if observed is None or observed[0].process_run_id is not None or observed[1].get("worker") is not None or observed[1].get("status") != "STOPPED":
+                    return self._finish(record, version, snapshot, "NEEDS_ATTENTION", "old_os_lifetime_exit_unproven")
+                if observed[0].runtime_id != fence["runtime_id"]:
+                    return self._finish(record, version, snapshot, "NEEDS_ATTENTION", "old_runtime_selection_changed")
+            if first_replacement and record.intent.action in SOURCE_ACTIONS:
                 try:
-                    original = json.loads(str(snapshot["accepted_evidence"]))
-                    currently_selected = self._source().read(str(original["source_sha"])).canonical()
+                    if record.intent.action == "deploy_beta_source":
+                        original = json.loads(str(snapshot["accepted_evidence"]))
+                        currently_selected = self._source().read(str(original["source_sha"])).canonical()
+                        selection = json.loads(currently_selected)["selection_oid"]
+                    else:
+                        identity_data = snapshot.get("release_identity")
+                        if not isinstance(identity_data, dict) or any(not isinstance(value, str) for value in identity_data.values()):
+                            raise SourceReleaseError("original release identity unavailable")
+                        release_identity = ReleaseWorkerEvidenceIdentity(**cast(dict[str, str], identity_data))
+                        currently_selected = self._release_evidence(self._release().read(release_identity))
+                        selection = json.loads(currently_selected)["catalog_oid"]
+                except SourceReleaseError as exc:
+                    if str(exc).startswith("SUPERSEDED"):
+                        return self._finish(record, version, snapshot, "SUPERSEDED", "original_release_operation_superseded")
+                    snapshot["revalidation_observation"] = {"checked_at": time.time(), "availability": "unavailable"}
+                    return self._finish(record, version, snapshot, "NEEDS_ATTENTION", "source_selection_revalidation_unavailable")
                 except (SourceEvidenceError, RuntimeError, OSError, KeyError, ValueError, TypeError):
                     snapshot["revalidation_observation"] = {"checked_at": time.time(), "availability": "unavailable"}
-                    return self._finish(record, version, snapshot, "NEEDS_ATTENTION", "beta_selection_revalidation_unavailable")
-                current_record = json.loads(currently_selected)
-                snapshot["revalidation_observation"] = {"checked_at": time.time(), "availability": "confirmed", "selection_oid": current_record["selection_oid"], "matched": currently_selected == snapshot["accepted_evidence"]}
+                    reason = "beta_selection_revalidation_unavailable" if record.intent.action == "deploy_beta_source" else "source_selection_revalidation_unavailable"
+                    return self._finish(record, version, snapshot, "NEEDS_ATTENTION", reason)
+                snapshot["revalidation_observation"] = {"checked_at": time.time(), "availability": "confirmed", "selection_oid": selection, "matched": currently_selected == snapshot["accepted_evidence"]}
                 if currently_selected != snapshot["accepted_evidence"]:
-                    return self._finish(record, version, snapshot, "SUPERSEDED", "original_beta_selection_or_proof_changed")
+                    reason = "original_beta_selection_or_proof_changed" if record.intent.action == "deploy_beta_source" else "original_source_selection_or_proof_changed"
+                    return self._finish(record, version, snapshot, "SUPERSEDED", reason)
             effect_id = {"prepare": "p", "drain": "d", "start": "s", "recovery": "r"}[name] + "-" + record.operation_id
-            steps[name] = {"operation_id": effect_id, "state": "SENT_UNKNOWN", "sent_at": time.time(), "observation": None}
+            steps[name] = {"operation_id": effect_id, "state": "SENT_UNKNOWN", "sent_at": time.time(), "observation": None, "owner_generation": record.effect.owner_generation, "attempt_id": record.effect.attempt_id, "correlation_identity": record.effect.correlation_identity}
             if name != "prepare":
                 from auto_coder.worker_supervisor import WorkerSupervisor
 
@@ -355,8 +451,23 @@ class WorkerLifecycle:
                 steps[name]["expected_digest"] = WorkerSupervisor._digest(request)
             if not self._save(record, version, snapshot):
                 return record
-            if not self.runtime.retained_effect_permitted(record):
+            # Once the possibly-sent step is durable, an authority loss must
+            # leave its original lane owned, not treat it as retryable work.
+            if not self.runtime.retained_effect_permitted(record) or self._authority_refusal(record) is not None:
                 return record
+            if first_replacement and record.intent.action == "deploy_release_source":
+                # Close the journal-write window before the first worker effect.
+                # A changed or unreadable selection leaves the persisted
+                # possibly-sent step owned; it is never dispatched speculatively.
+                try:
+                    identity_data = snapshot.get("release_identity")
+                    if not isinstance(identity_data, dict) or any(not isinstance(value, str) for value in identity_data.values()):
+                        return record
+                    selected = self._release_evidence(self._release().read(ReleaseWorkerEvidenceIdentity(**cast(dict[str, str], identity_data))))
+                    if selected != snapshot["accepted_evidence"]:
+                        return record
+                except (SourceReleaseError, RuntimeError, OSError, ValueError, TypeError):
+                    return record
             if name == "prepare":
                 response = client.prepare_version(effect_id, str(snapshot["source_sha"]))
             else:
@@ -380,6 +491,10 @@ class WorkerLifecycle:
             steps = snapshot["steps"]
             assert isinstance(steps, dict)
             step = steps[name]
+            if name != "prepare" and response.data.get("intent_digest") != step.get("expected_digest"):
+                # A POST acknowledgement has no durable Supervisor digest.
+                # Only its original read_operation receipt can settle a step.
+                return record
             if response.result_code in {"READY", "STOPPED", "RUNNING", "FAILED"}:
                 step.update(state="CONFIRMED", observation=response.data, observed_at=time.time())
             elif response.result_code in {"CONFLICT", "UNAVAILABLE", "UNKNOWN", "NEEDS_ATTENTION"}:
@@ -433,7 +548,7 @@ class WorkerLifecycle:
                     return begun.record or record
                 record = begun.record
             if stage == "ACCEPTED":
-                snapshot["stage"] = "PREPARING" if record.intent.action == "deploy_beta_source" else "DRAINING" if record.intent.action in {"stop_worker", "restart_worker"} else "STARTING"
+                snapshot["stage"] = "PREPARING" if record.intent.action in SOURCE_ACTIONS else "DRAINING" if record.intent.action in {"stop_worker", "restart_worker"} else "STARTING"
                 self._save(record, version, snapshot)
                 return record
             deadline = snapshot.get("deadline")
@@ -515,7 +630,7 @@ class WorkerLifecycle:
                     self._save(record, version, snapshot)
                     return record
                 if (
-                    record.intent.action == "deploy_beta_source"
+                    record.intent.action in SOURCE_ACTIONS
                     and snapshot.get("previous_runtime_verified") is True
                     and snapshot.get("recovery_attempts") == 0
                     and isinstance(observed_worker, dict)
@@ -524,10 +639,15 @@ class WorkerLifecycle:
                 ):
                     # Confirm the failed child lifetime through the actual
                     # Supervisor's OS observation before reserving recovery.
-                    snapshot.update(stage="RESTORING", recovery_attempts=1, deadline=time.time() + 150)
+                    snapshot.update(stage="RESTORING", recovery_attempts=1, recovery_state="ATTEMPTED", deadline=time.time() + 150)
                     self._save(record, version, snapshot)
                     return record
-                if not isinstance(observed_worker, dict) or any(observed_worker.get(key) != new_worker.get(key) for key in ("deployment_generation", "runtime_id")) or inspected.data.get("alive") is not True:
+                if (
+                    not isinstance(observed_worker, dict)
+                    or any(observed_worker.get(key) != new_worker.get(key) for key in ("deployment_generation", "runtime_id"))
+                    or (new_worker.get("process_run_id") is not None and observed_worker.get("process_run_id") != new_worker.get("process_run_id"))
+                    or inspected.data.get("alive") is not True
+                ):
                     return record
                 observation = client.observe_worker()
                 if not isinstance(observation.data, dict):
@@ -558,6 +678,21 @@ class WorkerLifecycle:
                         or any(binding.get(key) != staged.get(other) for key, other in (("runtime_id", "installed_runtime_id"), ("content_identity", "content_identity"), ("lock_sha256", "lock_sha256"), ("source_sha", "source_sha"), ("distribution_version", "distribution_version")))
                     ):
                         return record
+                    if record.intent.action == "deploy_release_source":
+                        artifact = worker.get("artifact")
+                        source = artifact.get("source_revision") if isinstance(artifact, dict) else None
+                        artifact_version = artifact.get("distribution_version") if isinstance(artifact, dict) else None
+                        if (
+                            not isinstance(source, dict)
+                            or source.get("origin") != "build_embedded"
+                            or source.get("available") is not True
+                            or source.get("value") != staged["source_sha"]
+                            or not isinstance(artifact_version, dict)
+                            or artifact_version.get("origin") != "installed_distribution_metadata"
+                            or artifact_version.get("available") is not True
+                            or artifact_version.get("value") != staged["distribution_version"]
+                        ):
+                            return record
                 beats = snapshot["heartbeats"]
                 assert isinstance(beats, list)
                 if not beats or heartbeat["sequence"] > beats[-1]:
@@ -617,11 +752,12 @@ class WorkerLifecycle:
                 if not beats or heartbeat["sequence"] > beats[-1]:
                     beats.append(heartbeat["sequence"])
                     if len(beats) >= 2:
-                        return self._finish(record, version, snapshot, "FAILED", "new_beta_worker_failed_previous_runtime_restored")
+                        snapshot["recovery_state"] = "CONFIRMED"
+                        return self._finish(record, version, snapshot, "FAILED", "new_worker_failed_previous_runtime_restored")
                     self._save(record, version, snapshot)
                 return record
             return record
-        except (RuntimeError, OSError, ValueError, KeyError, TypeError):
+        except (RuntimeError, OSError, ValueError, KeyError, TypeError) as exc:
             # Never erase the original pre-effect snapshot on a transient error.
             return record
 

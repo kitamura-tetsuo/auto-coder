@@ -1,9 +1,7 @@
-"""Read-only release provenance join; this module cannot authorize activation.
+"""Original accepted-release evidence for the configured worker lifecycle.
 
-The release source pointer names a commit, not a promotion operation. Matching
-it does not prove that an operation remains the latest same-SHA selection.
-Until that boundary and lifecycle acceptance gates are implemented, no release
-worker deployment action is registered.
+The source commit ref and independent operation-selection tag must both match.
+These historical facts alone never authorize a worker mutation.
 """
 
 from __future__ import annotations
@@ -16,6 +14,7 @@ from typing import Callable
 
 from auto_coder.source_release_catalog import CatalogReadback, SourceReleaseError, SourceReleasePolicy, SourceReleaseRequest, _sha, canonical, release_tag
 from auto_coder.source_release_promotion import AcceptedSourceValidator, SourceReleasePromotion, ValidatedAcceptance
+from auto_coder.tested_source_refs import TestedSourcePublisher
 from auto_coder.util.gh_cache import GitHubGitDataClient
 
 from .operation_store import ManagementOperationStore
@@ -52,8 +51,10 @@ class ReleaseWorkerPromotionFacts:
     policy_revision: str
     promotion_intent_fingerprint: str
     current_source_sha: str
+    lock_sha256: str
+    distribution_version: str
     observed_at: float
-    release_operation_selection_proven: bool = field(default=False, init=False)
+    release_operation_selection_proven: bool = field(default=True, init=False)
     deployment_authorized: bool = field(default=False, init=False)
     worker_deployed: bool = field(default=False, init=False)
 
@@ -62,9 +63,9 @@ class ReleaseWorkerEvidenceReader:
     """Join exact existing producer records without staging or journal mutation.
 
     All dependencies and target/workflow identities come from trusted controller
-    configuration. A future authenticated consumer must independently enforce its
-    original grant, full policy, instance lane and pre-effect revalidation. This
-    reader deliberately supplies no eligibility/authorization Boolean.
+    configuration. The authenticated lifecycle consumer independently enforces
+    its original grant, full policy, instance lane and pre-effect revalidation.
+    This reader deliberately supplies no deployment-authorization Boolean.
     """
 
     def __init__(self, journal: ManagementOperationStore, client: GitHubGitDataClient, policy: SourceReleasePolicy, *, promotion_target_id: str, workflow_id: int, clock: Callable[[], float] = time.time) -> None:
@@ -135,6 +136,9 @@ class ReleaseWorkerEvidenceReader:
         # Use the existing publication producer's repeated independent readback,
         # never execute(), which can publish or change the release source ref.
         promotion._confirmed(catalog.record, identity.catalog_oid, "CONFIRMED")
+        tested = TestedSourcePublisher(self.client, self.policy.source_repository).read(identity.source_sha)
+        if tested is None or tested.tag_ref != request.tested_source_ref or tested.tag_object_oid != request.tested_source_oid or (tested.record.run_id, tested.record.run_attempt) != (request.ci_run_id, request.ci_run_attempt):
+            raise SourceReleaseError("exact tested source runtime metadata is unavailable")
         if self.journal.get(record.operation_id).record != record or self.journal.lifecycle_snapshot(record.operation_id) != saved or self.journal.source_release_run(record.operation_id) != bound:
             raise SourceReleaseError("original promotion evidence changed during observation")
-        return ReleaseWorkerPromotionFacts(identity, catalog, accepted, self.policy.revision, record.intent_fingerprint, identity.source_sha, observed_at)
+        return ReleaseWorkerPromotionFacts(identity, catalog, accepted, self.policy.revision, record.intent_fingerprint, identity.source_sha, tested.record.lock_sha256, tested.record.distribution_version, observed_at)

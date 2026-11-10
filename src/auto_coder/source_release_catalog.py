@@ -18,6 +18,7 @@ REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 OPERATION = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\Z")
 INSTANCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 RELEASE_WORKFLOW = ".github/workflows/promote-accepted-source-release.yml"
+RELEASE_SELECTION_REF = "refs/tags/auto-coder-release-source-selection-current"
 MAX_RECORD_BYTES = 16 * 1024
 
 

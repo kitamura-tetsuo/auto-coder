@@ -1,95 +1,123 @@
-# Release worker source deployment: draft provenance join
+# Authenticated release worker source deployment (pending real-host acceptance)
 
-Issue #2613 is **incomplete and must remain draft**. There is no authenticated
-release-worker deployment tool in this change. Accepted source promotion and
-worker activation remain separate authority and evidence boundaries. No worker,
-original host, container or release has been deployed or verified by this work.
+The `auto_coder_deploy_release_source` management MCP action is implemented as
+an explicit, instance-bound request using the existing OAuth read+deploy grant,
+the operator-owned `full` release policy, the shared per-instance operation
+journal, immutable version preparer and signed Supervisor control lane. It is
+not an automatic consequence of promotion or an OCI/Docker deployment.
+**PR #2832 remains draft until genuine independent release-worker and
+previous-version host acceptance is recorded.** Controlled tests do not
+establish that a real release worker has been deployed or is healthy.
 
-`management/release_worker_deployment.py` supplies an internal, read-only
-`ReleaseWorkerEvidenceReader`. Its trusted dependencies are the existing
-management operation journal, configured GitHub transport, source-release policy,
-promotion target alias and workflow ID. Its exact request contains the original
-management promotion operation ID, full lowercase Git SHA, immutable catalog
-ref/object OID, and acceptance ref/object OID. It accepts no endpoint, repository,
-credential, executable, path, Docker name, OCI image or command from the caller.
+## Trust boundaries and request
 
-The reader requires a successful, confirmed original management promotion and its
-unchanged intent, persisted admission snapshot, original bound Actions identity
-and correlated source-publication receipt. It independently reads the successful
-original Actions attempt, reuses `AcceptedSourceValidator` for original CI and
-published acceptance, verifies the exact schema-2 catalog through the existing
-promotion producer, and repeats catalog/Release/current-source readback. New
-observation uses the current evidence clock, so historical promotion success
-cannot make expired acceptance eligible for a new deployment. Missing, stale,
-unpublished, mismatched, superseded or unavailable evidence raises
-`SourceReleaseError`. The reader neither dispatches effects nor updates journal
-operations, accepted authority, source refs or catalogs.
+The operator configures the release worker target, fixed repository, private
+Supervisor endpoint and secret, promotion workflow ID, source-release policy
+and GitHub credential file. The MCP caller cannot select any of those, or a
+command, shell, runtime path, image, Docker container or executable. The
+target must have channel `release`, match the promotion repository and remain
+permitted for `ActionClass.DEPLOYMENT` by the current `full` policy. The
+original accepted OAuth grant must still include management read and deploy
+scopes before each newly dispatched worker effect.
 
-These are provenance facts only. The direct release source ref identifies a
-commit; it does not identify the selecting promotion operation. A later accepted
-promotion of the same commit leaves that pointer equal. Consequently every
-returned record explicitly has `release_operation_selection_proven=false`,
-`deployment_authorized=false` and `worker_deployed=false`. Consumers must not
-treat source equality, a successful workflow or this readback as activation
-authority. This change does not introduce a new trust assumption about external
-Git-ref writers or certify an atomic multi-resource selection.
+Supply all these parameters to the authenticated MCP tool:
 
-## Pending implementation and acceptance gates
+| Argument | Required identity |
+| --- | --- |
+| `target_id` | Operator-configured release worker instance alias |
+| `selected_git_sha` | Exact lowercase 40-hex Git commit |
+| `promotion_operation_id` | Original successful accepted-source promotion management operation |
+| `catalog_ref`, `catalog_oid` | Immutable `auto-coder-source-release-<operation_id>` annotated catalog ref and object OID |
+| `acceptance_ref`, `acceptance_oid` | Original exact published source-acceptance ref/object |
+| `idempotency_key` | Stable key; reuse unchanged after lost replies |
+| `expected_supervisor_generation` | Current signed Supervisor incarnation |
+| `expected_process_run_id`, `expected_deployment_generation` | Current running child's signed OS-lifetime identity, or both omitted when stopped |
+| `expected_runtime_id` | Current selected installed runtime identity |
 
-No REQ-001 through REQ-011 is claimed complete. The reader contributes the
-immutable provenance join to REQ-003/004; the following work remains:
+The read-only `ReleaseWorkerEvidenceReader` joins the original succeeded
+management promotion, its immutable journal intent/admission, bound successful
+Actions attempt, published acceptance, tested source record, schema-2 catalog,
+GitHub Release and source-channel current selection. Independent observations
+are repeated before acceptance. Expired evidence, stale or missing refs, a
+different repository, changed policy or original operation, and a later
+promotion of **the same SHA** fail closed. This reader by itself never grants
+deployment permission or dispatches worker effects.
 
-* REQ-001/002/004: register the bounded authenticated action with the configured
-  release instance and existing shared per-instance journal lane. Recover
-  immutable same-key intent before resolving selection, conflict on changed
-  intent, retain BUSY for another key, and recheck the original OAuth read+deploy
-  grant and current full operator policy before every new worker-changing effect.
-* REQ-003/004: establish operation-specific current-release selection, including
-  later same-SHA promotion, without substituting a newer release. Revalidate the
-  exact binding immediately before first drain or stopped-child pointer/start;
-  never reinterpret a possibly sent effect as unsent after selection changes.
-* REQ-005/006: integrate the established immutable version preparer and Supervisor
-  algorithm, including prepared-runtime reconstruction. Durably confirm original
-  operation/owner generation/attempt/action correlation before each dispatch.
-  Reconcile exact evidence after lost replies or manager/Supervisor restart;
-  unknown effects retain ownership without timeout-based lane release. Preserve
-  genuine terminal drain plus exact old OS lifetime exit before a successor and
-  independently prove absence for an originally stopped child. No force-kill or
-  unsettled-invocation cancellation is authorized.
-* REQ-007/008: implement at most one newly authorized prior-prepared-runtime
-  recovery, report attempted/confirmed/unknown separately, and establish actual
-  installed package source, Supervisor/worker generation, startup reconciliation,
-  daemon serving and genuine advancing producer heartbeat before success.
-* REQ-009/010: prove peer beta preservation, unchanged ownership/publication gates,
-  and no Docker/runtime-host access through production-origin tests with a real
-  independent worker and prior version. Required positive scenarios include held
-  drain and held OS exit, failed activation/recovery, lost effects, unconfirmed
-  pre-effect persistence, selection changes after staging, original replay,
-  changed-intent conflict, competing-key BUSY, and independent manager/Supervisor
-  reconstruction. The current component tests do not supply those verdicts.
-* REQ-011: complete the operator activation/readback/escalation procedure after
-  the action and its normative tests exist. Keep the work draft until then.
+The release source commit ref
+`refs/tags/auto-coder-release-source-current` is paired with
+`refs/tags/auto-coder-release-source-selection-current`, whose target is the
+annotated catalog object identifying the selecting promotion operation. Every
+promotion advances the operation-selection ref after confirming the direct
+source commit ref. The release writer must remain serialized through the
+existing `release-channel` Actions concurrency lane. GitHub does not offer
+an atomic transaction across those refs, GitHub Releases and the journal:
+ambiguous writes, unrelated external writers and incomplete postconditions
+require operator investigation, never optimistic replay.
 
-Restoring a Python runtime cannot undo persistent state, database migrations,
-remote provider effects or published changes. Unsupported native dependencies,
-one-way migrations, missing original evidence, unproven process exit and ambiguous
-recovery require explicit operator investigation/bootstrap/restore. Do not clear
-an unresolved operation, retry with a new key to bypass ownership, change policy
-automatically or grant Docker access as a workaround.
+## Lifecycle and readback
 
-Run `bash scripts/test.sh --ci-tests-only tests/test_release_worker_deployment.py
-tests/test_management_source_release_dispatch.py` for the bounded component
-regressions. The new reader tests exercise the acceptance/promotion and dispatch
-readback producers against controlled GitHub transport and a real SQLite journal;
-their original authority metadata and worker/Actions observations are fixture
-inputs, not authenticated worker evidence. The real-Git case creates isolated
-annotated objects/refs and reconstructs the journal. The existing dispatch suite
-separately exercises production HTTPS MCP/OAuth admission. GitHub Actions and
-worker execution remain independent acceptance gates; these tests contact no live
-management service and dispatch no live GitHub workflow.
+1. Complete the separately authorized accepted-source promotion. Verify its
+   `SUCCEEDED` management operation, immutable catalog and original acceptance
+   OIDs. Record the release worker's signed Supervisor, process and selected
+   runtime identities.
+2. Invoke `auto_coder_deploy_release_source` with the original facts and a
+   stable idempotency key. Identical same-key requests return the original
+   operation; changed-intent reuse returns `CONFLICT`. A competing key for the
+   active release instance returns `BUSY`, even if source selection changes.
+3. Poll `auto_coder_operation_get` with the exact `target_id` and returned
+   `operation_id`. `PREPARING` stages the candidate before any drain. Exact
+   accepted SHA, lock digest and version must equal the immutable preparer's
+   durable `READY` artifact. The exact selected promotion and original
+   authority are checked again immediately before the **first** replacement.
+4. `DRAINING` requires the original Supervisor's correlated terminal graceful
+   receipt and independent observation of the incumbent's real OS exit.
+   `STARTING` verifies the old lifetime is gone and selects only the
+   independently installed runtime ID. No force kill, container restart,
+   host reboot or peer beta worker mutation is authorized.
+5. `RECONCILING` accepts only the genuine new process run and generation,
+   verified runtime binding, build-embedded source SHA, installed distribution
+   metadata, startup reconciliation, serving daemon, running invocation gate
+   and at least two strictly advancing producer-origin heartbeat sequences.
+   A launch receipt alone never establishes `SUCCEEDED`.
 
-This internal reader introduces no scheduler/provider/dashboard event or
-deployment status. Existing management admission logging continues through the
-application's Loguru standard-output and rotating-file sinks; no new logger or
-credential logging is added. See `docs/dashboard-observability.md` for the
-observability-neutral rationale and runnable coverage.
+Each possibly sent step persists the original journal attempt, owner
+generation, correlation, fixed Supervisor operation ID and digest **before**
+dispatch. Lost replies are reconciled by the original durable receipt.
+Current policy/grant loss, missing selection, ambiguous process exit and
+unresolved original operations retain the same journal lane; no timeout
+permits replacing them with a different request.
+
+If the new child fails after activation, recovery may start **at most one**
+previously verified prepared runtime, with a separately persisted step,
+after actual new-child exit and with current authority. The readback exposes
+`recovery_attempts`, `recovery_state` (`NOT_ATTEMPTED`, `ATTEMPTED`,
+`CONFIRMED`) and `restored_worker`. Confirmed recovery ends new-source
+deployment as `FAILED`, not `SUCCEEDED`. Unknown recovery is not
+automatically retried. Restoring Python cannot undo migrations, database
+state, provider effects or publication; those require explicit operator
+rollback/bootstrap investigation.
+
+## Verification boundary
+
+`tests/test_release_worker_deployment.py` exercises original promotion
+and acceptance, authenticated MCP admission, same-SHA supersession,
+replay/CONFLICT/BUSY, policy changes, lost stop receipts, prior-runtime
+recovery and rejection of worker artifact fields with a controlled
+Supervisor bridge. `tests/test_management_worker_lifecycle.py` and
+`tests/test_worker_supervisor_bridge.py` separately exercise actual
+subprocess, UDS, HTTP, held drain, OS exit and Supervisor reconstruction.
+These are **not** a substitute for a complete production-origin release run
+with a real installed candidate, an independently running prior version,
+held exit/recovery and peer beta isolation. Record the exact original
+positive-control evidence, CI results and operator acceptance against
+Issue #2613 before marking the PR ready to merge.
+
+A bounded regression command is:
+
+```bash
+uv run pytest tests/test_release_worker_deployment.py tests/test_management_source_release_dispatch.py tests/test_source_release_promotion.py
+```
+
+There is no new dashboard scheduler/provider event, Docker socket or runtime
+host authority. Existing management Loguru sinks record admission and
+reconciliation. Related observability is in `docs/dashboard-observability.md`.
