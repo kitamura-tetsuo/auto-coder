@@ -29,7 +29,13 @@ class NewProfileReceipt:
     launch_authorized: bool = False
 
 
-def inspect_new_instance_profile(request_file: Path) -> NewProfileReceipt:
+def inspect_new_instance_profile(
+    request_file: Path,
+    *,
+    guard_entries: frozenset[str] = frozenset(),
+    state_entries: frozenset[str] = frozenset(),
+    operation_entries: frozenset[str] = frozenset(),
+) -> NewProfileReceipt:
     """Reject a semantically mismatched, unsupported or changed NEW profile.
 
     This is a separate-process proof of configuration selection only. A
@@ -41,7 +47,7 @@ def inspect_new_instance_profile(request_file: Path) -> NewProfileReceipt:
     from .fresh_oauth import validate_retained_oauth
     from .oauth_config import load_management_settings
 
-    origin = inspect_new_instance_origin(request_file)
+    origin = inspect_new_instance_origin(request_file, guard_entries=guard_entries, state_entries=state_entries, operation_entries=operation_entries)
     _, encoded = _file(request_file, private=True, limit=65536)
     selected = NewInstanceRequest(**json.loads(encoded, object_pairs_hook=_unique))
     bootstrap_path = Path(selected.bootstrap_config)
@@ -83,7 +89,7 @@ def inspect_new_instance_profile(request_file: Path) -> NewProfileReceipt:
     validate_retained_oauth(settings.oauth)
     # The independent file and mounted-root receipts must remain identical
     # after the production configuration and OAuth checks have completed.
-    if inspect_new_instance_origin(request_file) != origin:
+    if inspect_new_instance_origin(request_file, guard_entries=guard_entries, state_entries=state_entries, operation_entries=operation_entries) != origin:
         raise ValueError("NEW origin changed during profile verification")
     return NewProfileReceipt(
         request_id=selected.request_id,

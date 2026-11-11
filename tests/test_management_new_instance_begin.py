@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from auto_coder.management.fresh_begin import inspect_new_instance_origin
 from tests.test_management_new_instance_preflight import _bytes, _environment, request_file
 
 pytestmark = pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep")
@@ -75,6 +76,33 @@ def test_real_host_begin_and_separate_process_verifier_preserve_oauth(request_fi
     assert "existing or partial state" in replay.stderr
     assert _run("preflight", request_file).returncode == 1
     assert _bytes(root) == recorded
+
+
+def test_transition_inspection_requires_exact_new_names_and_original_roots(request_file: Path) -> None:
+    assert _run("begin", request_file).returncode == 0
+    root = request_file.parent
+    receipt = inspect_new_instance_origin(request_file)
+    guard = root / "guard/new-docker-first-start.json"
+    state = root / "state/.supervisor-owner.lock"
+    operations = root / "operations/management-operations.sqlite3"
+    for path in (guard, state, operations):
+        path.write_bytes(b"synthetic non-authorizing transition entry")
+    with pytest.raises(ValueError, match="missing, partial or conflicting"):
+        inspect_new_instance_origin(request_file)
+    additions = {
+        "guard_entries": frozenset({guard.name}),
+        "state_entries": frozenset({state.name}),
+        "operation_entries": frozenset({operations.name}),
+    }
+    assert inspect_new_instance_origin(request_file, **additions) == receipt
+    extra = root / "state/unknown-effect.json"
+    extra.write_bytes(b"unknown")
+    with pytest.raises(ValueError, match="namespace differs"):
+        inspect_new_instance_origin(request_file, **additions)
+    extra.unlink()
+    (root / "app/main.py").write_bytes(b"different application bytes")
+    with pytest.raises(ValueError, match="application identity changed"):
+        inspect_new_instance_origin(request_file, **additions)
 
 
 @pytest.mark.parametrize("mutation", ["request", "application", "mode", "record", "extra"])

@@ -105,6 +105,15 @@ observation, not continuous host fencing. It
 checks retained fact structure, not whether that past PID is currently live;
 neither result establishes current host ownership or launch authority.
 
+For an eventual first-start consumer, the same independent origin reader accepts
+explicitly named additional guard, state and operation entries as an internal API,
+while preserving the original directory device/inode/UID/mode and rechecking
+the original request, inputs, and application bytes. It rejects unexpected
+entries. Those permitted new entries must be verified independently by their
+own original producer; an allowlisted name here is **never** proof of its
+content, a consumed claim, a host grant or a successful launch. The public
+`inspect-begin` command retains the stricter no-additions behavior.
+
 An accepted begin reports `status=origin-recorded-only` and
 `launch_authorized=false`. This is a **prospective fact of an explicitly
 requested original intent**, not evidence that original owner/guard fences,

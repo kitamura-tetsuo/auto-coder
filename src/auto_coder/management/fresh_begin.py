@@ -146,8 +146,18 @@ def begin_new_instance(request_file: Path) -> NewOriginReceipt:
     )
 
 
-def inspect_new_instance_origin(request_file: Path) -> NewOriginReceipt:
-    """Independently re-read original files; no assertion of current launch eligibility."""
+def inspect_new_instance_origin(
+    request_file: Path,
+    *,
+    guard_entries: frozenset[str] = frozenset(),
+    state_entries: frozenset[str] = frozenset(),
+    operation_entries: frozenset[str] = frozenset(),
+) -> NewOriginReceipt:
+    """Re-read original inputs across explicitly named, non-authorizing additions.
+
+    Additional entries must be independently verified by their producer and
+    consumer. Naming them here is not a claim, grant, owner lock or launch proof.
+    """
     # No restoration, rewriting, lock acquisition or silent conversion of a
     # partial record is allowed. Inspection is a separate read-only process.
     original, request_bytes = _file(request_file, private=True, limit=65536)
@@ -156,7 +166,7 @@ def inspect_new_instance_origin(request_file: Path) -> NewOriginReceipt:
         raise ValueError("invalid original request")
     guard_path = Path(current_request["guard_root"])
     with _open(guard_path, directory=True) as directory:
-        if os.listdir(directory) != [RECORD]:
+        if set(os.listdir(directory)) != {RECORD} | guard_entries:
             raise ValueError("new origin is missing, partial or conflicting")
         snapshot, encoded = _file(guard_path / RECORD, private=True, limit=1024 * 1024)
         value = json.loads(encoded)
@@ -170,16 +180,24 @@ def inspect_new_instance_origin(request_file: Path) -> NewOriginReceipt:
         if not isinstance(roots, list) or len(roots) != 4:
             raise ValueError("original NEW root scope differs")
         for index, path in enumerate((current_request["state_root"], current_request["operation_root"], current_request["guard_root"], current_request["oauth_root"])):
-            now = _root(Path(path), private=index < 3, empty=index < 2)
+            additions = (state_entries, operation_entries, guard_entries, frozenset())[index]
+            now = _root(Path(path), private=index < 3, empty=index < 2 and not additions)
             expected = roots[index]
-            if index == 2:
-                # Guard mtime/ctime necessarily change with record creation.
+            if index == 2 or additions:
+                # A newly created record changes the directory mtime/ctime.
+                # Only the fixed original device/inode/ownership is retained;
+                # consumers must verify every expected new entry themselves.
                 for field in ("path", "device", "inode", "uid", "mode"):
                     if getattr(now, field) != expected[field]:
-                        raise ValueError("original guard identity replaced")
-                _root_binding_matches_for_record(expected, directory)
+                        raise ValueError("original NEW root identity replaced")
+                if index == 2:
+                    _root_binding_matches_for_record(expected, directory)
             elif asdict(now) != expected:
                 raise ValueError("original NEW root identity changed")
+            if index < 2:
+                with _open(Path(path), directory=True) as root_descriptor:
+                    if _identity(Path(path), root_descriptor) != now or set(os.listdir(root_descriptor)) != additions:
+                        raise ValueError("new state or operation namespace differs")
         inputs = [_file(Path(current_request[field]), private=index < 2)[0] for index, field in enumerate(("bootstrap_config", "management_config", "executable"))]
         if [asdict(item) for item in inputs] != saved["inputs"]:
             raise ValueError("original selected inputs changed")
