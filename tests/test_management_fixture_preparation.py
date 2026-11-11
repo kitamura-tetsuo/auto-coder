@@ -40,7 +40,8 @@ def test_source_fixture_exports_buildable_tag_only_after_immutable_verification(
     monkeypatch.setattr(preparation, "resolve_build_identity", lambda _: identity)
     monkeypatch.setattr(preparation, "serialize_build_identity", lambda _: '{"source_revision":"' + identity.source_revision + '"}')
     monkeypatch.setattr(preparation.subprocess, "run", Mock())
-    monkeypatch.setattr(preparation.subprocess, "check_output", Mock(return_value=image_id))
+    check_output = Mock(side_effect=[image_id, "/opt/auto-coder/.venv\n"])
+    monkeypatch.setattr(preparation.subprocess, "check_output", check_output)
     verify = Mock(return_value=image_id)
     monkeypatch.setattr(preparation, "verify_image", verify)
     (tmp_path / "Dockerfile").write_text("FROM python:3.12-slim AS python-environment\n")
@@ -48,7 +49,25 @@ def test_source_fixture_exports_buildable_tag_only_after_immutable_verification(
 
     assert preparation.prepare_image(tmp_path, github_env) == image_id
     verify.assert_called_once_with(tmp_path, image_id)
+    assert check_output.call_count == 2
+    assert check_output.call_args.args[0][check_output.call_args.args[0].index("--entrypoint") + 1] == "python3"
     assert github_env.read_text() == "AUTOCODER_FRESH_TEST_BASE_IMAGE=auto-coder:management-fixture-aaaaaaaaaaaa\n"
+
+
+def test_source_fixture_refuses_system_python_without_export(tmp_path, monkeypatch):
+    identity = SimpleNamespace(state="clean", source_revision="a" * 40, version="1.0")
+    image_id = "sha256:" + "b" * 64
+    monkeypatch.setattr(preparation, "resolve_build_identity", lambda _: identity)
+    monkeypatch.setattr(preparation, "serialize_build_identity", lambda _: '{"source_revision":"' + identity.source_revision + '"}')
+    monkeypatch.setattr(preparation.subprocess, "run", Mock())
+    monkeypatch.setattr(preparation.subprocess, "check_output", Mock(side_effect=[image_id, "/usr/local\n"]))
+    monkeypatch.setattr(preparation, "verify_image", Mock(return_value=image_id))
+    (tmp_path / "Dockerfile").write_text("FROM python:3.12-slim AS python-environment\n")
+    github_env = tmp_path / "github-env"
+
+    with pytest.raises(RuntimeError, match="installed runtime dependencies"):
+        preparation.prepare_image(tmp_path, github_env)
+    assert not github_env.exists()
 
 
 @pytest.mark.parametrize("failure", ["build", "malformed_identity", "provenance_mismatch"])
@@ -71,6 +90,7 @@ def test_failed_fixture_never_exports_a_publishable_image(tmp_path, monkeypatch,
 
     dockerfile = build.call_args.kwargs["input"]
     assert "FROM python-environment AS management-test-fixture" in dockerfile
+    assert 'ENV PATH="/opt/auto-coder/.venv/bin:${PATH}"' in dockerfile
     assert "build_provenance embed" in dockerfile
     assert build.call_args.kwargs["text"] is True
 
