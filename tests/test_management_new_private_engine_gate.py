@@ -19,7 +19,7 @@ import pytest
 
 from auto_coder.management.fresh_host_observation import HostObservationUnavailable
 from auto_coder.management.fresh_new_host_start import _LocalDockerConnection
-from auto_coder.management.fresh_private_engine_gate import hold_one_start_api_gate
+from auto_coder.management.fresh_private_engine_gate import _assert_only_original_engine_connection, hold_one_start_api_gate
 
 SELECTED = "c" * 64
 
@@ -83,7 +83,7 @@ def test_original_socket_sealed_and_only_original_process_can_start(short_unix_r
         original_thread.start()
         os.chmod(raw, 0o600)
         try:
-            with hold_one_start_api_gate(root, SELECTED, daemon_net_pid=os.getpid()) as gate:
+            with hold_one_start_api_gate(root, SELECTED, daemon_net_pid=os.getpid(), daemon_net_namespace=os.readlink("/proc/self/ns/net")) as gate:
                 assert stat.S_IMODE(raw.stat().st_mode) == 0
                 assert stat.S_IMODE(gate.stat().st_mode) == 0o600
                 assert _api(gate, "GET", "/v1.41/info")[0] == 200
@@ -146,7 +146,7 @@ def test_unattempted_start_unseals_and_refuses_success(short_unix_root: Path) ->
         os.chmod(raw, 0o600)
         try:
             with pytest.raises(Exception, match="first-start effect was never attempted"):
-                with hold_one_start_api_gate(short_unix_root, SELECTED, daemon_net_pid=os.getpid()) as gate:
+                with hold_one_start_api_gate(short_unix_root, SELECTED, daemon_net_pid=os.getpid(), daemon_net_namespace=os.readlink("/proc/self/ns/net")) as gate:
                     assert _api(gate, "GET", "/v1.41/info")[0] == 200
             assert stat.S_IMODE(raw.stat().st_mode) == 0o600
             assert not (socket_dir / "first-start-gate.sock").exists()
@@ -171,7 +171,7 @@ def test_preconnected_independent_client_refused_before_first_start(short_unix_r
             outsider.request("GET", "/v1.41/info")
             assert outsider.getresponse().status == 200
             with pytest.raises(HostObservationUnavailable, match="another preconnected"):
-                with hold_one_start_api_gate(short_unix_root, SELECTED, daemon_net_pid=os.getpid()):
+                with hold_one_start_api_gate(short_unix_root, SELECTED, daemon_net_pid=os.getpid(), daemon_net_namespace=os.readlink("/proc/self/ns/net")):
                     pytest.fail("a held independent Engine client must exclude first start")
             assert stat.S_IMODE(raw.stat().st_mode) == 0o600
             assert not (socket_dir / "first-start-gate.sock").exists()
@@ -180,3 +180,31 @@ def test_preconnected_independent_client_refused_before_first_start(short_unix_r
             outsider.close()
             engine.shutdown()
             original_thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("independent_state", ["none", "accepted", "pending"])
+def test_cross_namespace_unix_oracle_counts_listeners_and_peers_once(monkeypatch: pytest.MonkeyPatch, independent_state: str) -> None:
+    """An accepted peer can live in a different netns from its listener."""
+    original = Path("/tmp/ac-cross-namespace/docker.sock")
+    header = "Num RefCount Protocol Flags Type St Inode Path\n"
+    listener = f"0000000000000000: 00000002 00000000 00010000 0001 01 1234 {original}\n"
+    guardian = f"0000000000000000: 00000003 00000000 00000000 0001 03 1235 {original}\n"
+    additional = ""
+    if independent_state != "none":
+        state = "03" if independent_state == "accepted" else "02"
+        additional = f"0000000000000000: 00000003 00000000 00000000 0001 {state} 1236 {original}\n"
+
+    def read_unix_table(path: Path, *_args: object, **_kwargs: object) -> str:
+        if str(path) == "/proc/49152/net/unix":
+            return header + listener
+        if str(path) == "/proc/self/net/unix":
+            return header + guardian + additional
+        raise AssertionError("unexpected Unix table namespace")
+
+    monkeypatch.setattr(Path, "read_text", read_unix_table)
+    monkeypatch.setattr(os, "readlink", lambda path: "net:[200]" if path == "/proc/self/ns/net" else "net:[100]")
+    if independent_state == "none":
+        _assert_only_original_engine_connection(original, 49152, "net:[100]")
+    else:
+        with pytest.raises(HostObservationUnavailable, match="another preconnected"):
+            _assert_only_original_engine_connection(original, 49152, "net:[100]")

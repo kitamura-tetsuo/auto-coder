@@ -27,25 +27,33 @@ _SELECTED_START = re.compile(r"/v[0-9]+(?:\.[0-9]+)?/containers/[0-9a-f]{64}/sta
 _MAX_RESPONSE = 4 * 1024 * 1024
 
 
-def _assert_only_original_engine_connection(socket_path: Path, daemon_net_pid: int) -> None:
+def _assert_only_original_engine_connection(socket_path: Path, daemon_net_pid: int, daemon_net_namespace: str) -> None:
     """Fail closed on preconnected clients in the original daemon netns.
 
     Sealing the pathname prevents ordinary *new* connects, but does not
-    revoke a client that connected before chmod. Linux exposes both accepted
-    and not-yet-accepted AF_UNIX stream connections under the daemon's network
-    namespace. The guardian's warmed connection must be the only one left.
+    revoke a client that connected before chmod. An AF_UNIX listener belongs
+    to the daemon's namespace, but an accepted or pending pathname connection
+    can appear in the connecting host operator's namespace instead. Inspect
+    both independently identified namespaces, without double counting when
+    they are the same. The guardian's warmed channel must be the only client.
     """
     if type(daemon_net_pid) is not int or daemon_net_pid <= 0:
         raise HostObservationUnavailable("NEW private Engine daemon namespace PID is unavailable")
     try:
-        entries = (Path("/proc") / str(daemon_net_pid) / "net/unix").read_text().splitlines()
+        host_net_namespace = os.readlink("/proc/self/ns/net")
+        if not daemon_net_namespace.startswith("net:[") or daemon_net_namespace == "net:[]":
+            raise HostObservationUnavailable("NEW private Engine original network namespace is invalid")
+        tables = [(Path("/proc") / str(daemon_net_pid) / "net/unix").read_text().splitlines()]
+        if host_net_namespace != daemon_net_namespace:
+            tables.append(Path("/proc/self/net/unix").read_text().splitlines())
     except OSError as error:
         raise HostObservationUnavailable("NEW private Engine Unix connection evidence is unavailable") from error
     matching: list[tuple[str, str, str]] = []
-    for entry in entries[1:]:
-        columns = entry.split(maxsplit=7)
-        if len(columns) == 8 and columns[7] == str(socket_path):
-            matching.append((columns[3], columns[4], columns[5]))
+    for entries in tables:
+        for entry in entries[1:]:
+            columns = entry.split(maxsplit=7)
+            if len(columns) == 8 and columns[7] == str(socket_path):
+                matching.append((columns[3], columns[4], columns[5]))
     # The listening socket is state 01 with the accept flag; the one warmed
     # guardian channel has state 03. A pending connect is state 02 and must
     # also poison admission, even if dockerd has not accepted it yet.
@@ -155,7 +163,7 @@ class _GateRequestHandler(http.server.BaseHTTPRequestHandler):
 
 
 @contextmanager
-def hold_one_start_api_gate(private_root: Path, container_id: str, *, daemon_net_pid: int) -> Iterator[Path]:
+def hold_one_start_api_gate(private_root: Path, container_id: str, *, daemon_net_pid: int, daemon_net_namespace: str) -> Iterator[Path]:
     """Exclude independent Docker starts until the original child is observed.
 
     Connections to the actual Engine are opened before its socket is sealed.
@@ -200,7 +208,7 @@ def hold_one_start_api_gate(private_root: Path, container_id: str, *, daemon_net
                 current = os.stat(original, follow_symlinks=False)
                 if (current.st_dev, current.st_ino, stat.S_IMODE(current.st_mode)) != (info.st_dev, info.st_ino, 0):
                     raise HostObservationUnavailable("NEW Docker original API socket was not continuously sealed")
-                _assert_only_original_engine_connection(original, daemon_net_pid)
+                _assert_only_original_engine_connection(original, daemon_net_pid, daemon_net_namespace)
                 yield gate_path
                 current = os.stat(original, follow_symlinks=False)
                 if (current.st_dev, current.st_ino, stat.S_IMODE(current.st_mode)) != (info.st_dev, info.st_ino, 0):

@@ -309,7 +309,7 @@ def start_new_docker_once(
             # The engine socket remains inaccessible to other new clients
             # across the physical start, authenticated host guard, and first
             # child receipt. This is not a durable management API endpoint.
-            with hold_one_start_api_gate(private_root, container_id, daemon_net_pid=source.parent_pid) as gate_socket:
+            with hold_one_start_api_gate(private_root, container_id, daemon_net_pid=source.parent_pid, daemon_net_namespace=source.parent_net_namespace) as gate_socket:
                 inspection_socket = gate_socket
                 os.environ["DOCKER_HOST"] = f"unix://{gate_socket}"
                 try:

@@ -479,7 +479,11 @@ daemon-network-namespace Unix socket table and requires exactly one listening
 socket and exactly one accepted stream: its own warmed persistent connection.
 Both other accepted clients and pending pre-seal `connect()` calls refuse
 before any Docker first-start effect, leaving the durable claim consumed.
-Missing or ambiguous kernel connection evidence refuses. The gate's closure
+The listener is observed in the daemon network namespace, while connected
+and pending peer endpoints may appear in the separately verified guardian
+host network namespace; the admission oracle reads both without counting a
+shared namespace twice. Missing or ambiguous kernel connection evidence
+refuses. The gate's closure
 and the original socket mode restoration happen
 only after the physical first-child receipt or an explicit failure. The
 private source lock, NEW guard lock, and verified parent lifetime remain held
