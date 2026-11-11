@@ -220,3 +220,12 @@ required supervisor integration CI jobs. Local non-root/procfs-restricted
 environments cannot establish native `/proc/locks` or Docker host proof, and a
 skipped local integration test does not authorize a live cutover. Check the
 exact candidate SHA's required CI jobs/cases before review or operator use.
+
+A newly prepared fresh intent may explicitly select the prospective original
+attempt profile described in `management-original-attempt-provenance.md`. Its
+claim is captured through the same production admission function, and the host
+guard commits the possible-grant boundary before its existing `on_listening`
+callback can dispatch candidate start. Existing upgrade plan/effect records are
+not rewritten or replayed. This optional evidence profile is not deployment-wide
+legacy coverage or recovery authority, and its positive host cutover acceptance
+remains unavailable until independently exercised on a supported isolated host.

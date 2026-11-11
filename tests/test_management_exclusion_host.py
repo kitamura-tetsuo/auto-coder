@@ -16,6 +16,7 @@ from auto_coder.management.archived_exclusions import parse_exclusions
 from auto_coder.management.bootstrap_supervisor import BootstrapConfig, ManagementBootstrapSupervisor
 from auto_coder.management.exclusion_host import check_host_archives, inherited_support, required_exclusions, validate_successor
 from auto_coder.management.fresh_initialization import claim_fresh_initialization
+from auto_coder.management.original_attempts import enroll
 from tests.test_management_archived_exclusions import generation, identity
 from tests.test_management_fresh_initialization import _intent
 
@@ -131,6 +132,41 @@ def test_complete_ancestry_and_legacy_bytes_are_preserved(host_case):
     assert validate_successor(case.prior, case.intent, case.bootstrap) == case.bindings
     assert inherited_support(case.mounts)[1] == {"/management-prior-owner.lock", "/management-prior-operations", "/management-initialization"}
     assert intent_file.read_bytes() == original
+
+
+@pytest.mark.parametrize("scope", ["missing", "different-history", "different-root"])
+def test_covered_original_predecessor_cannot_become_unenrolled_successor(host_case, scope: str):
+    """Unit fault control: a sealed covered B cannot admit an unbound C."""
+    case = host_case
+    history_root = case.b.parent / "covered-original-history"
+    history_root.mkdir(mode=0o700)
+    binding = enroll(history_root, "synthetic-unit-continuity")
+    # This fixture's B is synthetic, not an original producer acceptance case.
+    previous = replace(case.intent_b, original_history=binding.root, original_history_id=binding.history)
+    intent_path = case.b / "state" / "fresh-initialization.json"
+    write(intent_path, asdict(previous))
+    claim_path = case.b / "state" / "fresh-launch-claimed.json"
+    claim = json.loads(claim_path.read_bytes())
+    claim["intent_sha256"] = hashlib.sha256(intent_path.read_bytes()).hexdigest()
+    write(claim_path, claim)
+
+    if scope == "missing":
+        unbound = case.intent
+    elif scope == "different-history":
+        unbound = replace(case.intent, original_history=binding.root, original_history_id=str(uuid.uuid4()))
+    else:
+        alternate = case.b.parent / "unrelated-original-history"
+        alternate.mkdir(mode=0o700)
+        unbound = replace(case.intent, original_history=str(alternate), original_history_id=binding.history)
+    intent_before = intent_path.read_bytes()
+    c_before = tuple((case.c / "state").iterdir())
+    with pytest.raises(ValueError, match="covered original history cannot be omitted or replaced"):
+        validate_successor(case.prior, unbound, case.bootstrap)
+    assert intent_path.read_bytes() == intent_before
+    assert tuple((case.c / "state").iterdir()) == c_before
+
+    matching = replace(case.intent, original_history=binding.root, original_history_id=binding.history)
+    assert validate_successor(case.prior, matching, case.bootstrap) == case.bindings
 
 
 @pytest.mark.parametrize("fault", ["omitted", "changed", "symlink", "shadow", "changed_config", "partial_fresh"])
