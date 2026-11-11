@@ -82,6 +82,17 @@ The bounded namespace admits at most 4096 events and rejects overflow, extra
 files, gaps and incomplete writes instead of truncating or repairing them.
 Concurrent admission reports `history admission contested` before writing an
 intent. Previously anchored request IDs, target aliases and cycles refuse replay.
+Before admitting another attempt or entering a host grant, the shared frontier
+reader additionally validates the complete forward graph of covered anchors,
+including failed siblings: each historical predecessor must be the initial
+baseline or a previously claimed target with the matching container ID. Reused
+target names, container identities, state/journal paths or root identities,
+and cycles refuse even if the corrupted anchor's individual intent schema and
+the rehashed frontier are otherwise valid. No historical byte is repaired.
+This changes refusal eligibility only: it introduces no new trace schema,
+dashboard success state, management process transition or grant event.
+The existing boundary logger records only events actually durably appended,
+while an unavailable graph refuses before another boundary is recorded.
 Before admitting another attempt or entering a host grant, the producer also
 rejects unknown event kinds, impossible per-attempt boundary sequences, and
 terminal facts that contradict the matching original anchor. Every historical

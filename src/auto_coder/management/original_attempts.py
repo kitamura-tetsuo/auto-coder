@@ -285,6 +285,38 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
         raise OriginalEvidenceUnavailable("conflicting original attempt boundaries")
     if any("claimed" in kinds and anchors[attempt]["pristine"] is not True for attempt, kinds in branches.items()):
         raise OriginalEvidenceUnavailable("original anchor was not pristine before claim")
+
+    # All prior anchors must form one admissible forward history, including
+    # failed branches. Checking only a new claim against its immediate parent
+    # would accept an unrelated rewritten ancestor elsewhere in the frontier.
+    baseline: tuple[str, str] | None = None
+    known_predecessors: set[tuple[str, str]] = set()
+    seen_targets: set[str] = set()
+    seen_roots: set[tuple[int, int]] = set()
+    earlier_predecessor_names: set[str] = set()
+    for event in events:
+        if event.kind != "anchor":
+            continue
+        anchor = anchors[event.attempt]
+        intent = parse_fresh_intent(anchor["intent"])
+        if baseline is None:
+            baseline = (intent.old_instance, intent.old_container_id)
+            known_predecessors.add(baseline)
+        if (intent.old_instance, intent.old_container_id) not in known_predecessors:
+            raise OriginalEvidenceUnavailable("original lineage has uncovered or refused predecessor")
+        target_keys = {intent.new_instance, intent.new_container_id, intent.host_state_root, intent.host_journal_root}
+        if target_keys & seen_targets or intent.new_instance == baseline[0] or intent.new_container_id == baseline[1] or intent.new_instance in earlier_predecessor_names:
+            raise OriginalEvidenceUnavailable("original target aliases or cycles covered history")
+        state_id = (intent.state_device, intent.state_inode)
+        journal_id = (intent.journal_device, intent.journal_inode)
+        if state_id == journal_id or state_id in seen_roots or journal_id in seen_roots:
+            raise OriginalEvidenceUnavailable("original target reuses a protected root")
+        seen_targets.update(target_keys)
+        seen_roots.update((state_id, journal_id))
+        earlier_predecessor_names.add(intent.old_instance)
+        if "claimed" in branches[event.attempt]:
+            known_predecessors.add((intent.new_instance, intent.new_container_id))
+
     if previous != frontier["digest"]:
         raise OriginalEvidenceUnavailable("truncated original frontier")
     return HistoryAuthority(binding, authority["profile"], tuple(authority["root"]), tuple(authority["lock"])), events

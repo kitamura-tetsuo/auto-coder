@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from auto_coder.management.fresh_host_observation import serve_one_fresh_grant
-from auto_coder.management.fresh_initialization import claim_fresh_initialization, load_fresh_initialization
+from auto_coder.management.fresh_initialization import claim_fresh_initialization, load_fresh_initialization, parse_fresh_intent
 from auto_coder.management.original_attempt_evidence import derive, observe, verify
 from auto_coder.management.original_attempts import HistoryBinding, OriginalEvidenceUnavailable, canonical, enroll, history_lock, read_frontier
 from tests.test_management_fresh_initialization import _intent
@@ -1408,13 +1408,25 @@ def test_original_boundaries_refuse_rehashed_historical_graph(tmp_path, boundary
             intent["original_history"] = str(tmp_path / "foreign-history")
         elif corruption == "uncovered-predecessor":
             intent["old_instance"] = "invented-predecessor"
-            intent["old_container_id"] = "invented-container"
+            intent["old_container_id"] = "d" * 64
         else:
+            intent["old_instance"] = "old-instance"
+            intent["old_container_id"] = "a" * 64
             intent["new_instance"] = prior.new_instance
+        # Each mutation must pass the intent schema; only its lineage is invalid.
+        assert parse_fresh_intent(intent).request_id == failed.request_id
 
     _rewrite_rehashed_original_event(Path(binding.root), 2, mutate)
+    refusal = {
+        "foreign-history": "original anchor history identity differs",
+        "foreign-root": "original anchor history identity differs",
+        "uncovered-predecessor": "original lineage has uncovered or refused predecessor",
+        "duplicate-target": "original target aliases or cycles covered history",
+    }[corruption]
     before = _fingerprint(tmp_path)
-    with pytest.raises(OriginalEvidenceUnavailable, match="original (anchor|lineage|target)"):
+    with pytest.raises(OriginalEvidenceUnavailable, match=refusal):
+        read_frontier(Path(binding.root), binding)
+    with pytest.raises(OriginalEvidenceUnavailable, match=refusal):
         if boundary == "admission":
             claim_fresh_initialization(Path(current.host_state_root), current)
         else:
