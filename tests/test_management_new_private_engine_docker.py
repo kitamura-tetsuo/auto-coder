@@ -23,6 +23,7 @@ from auto_coder.management.fresh_private_engine import (
     create_private_engine,
     hold_private_engine_source,
 )
+from tests.test_management_new_instance_preflight import request_file
 from tests.test_management_new_instance_profile import configured_request
 
 pytestmark = pytest.mark.skipif(
