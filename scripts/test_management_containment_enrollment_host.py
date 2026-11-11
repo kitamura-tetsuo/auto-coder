@@ -115,6 +115,21 @@ def _authorities(report: dict[str, object]) -> set[str]:
     return authorities
 
 
+def _verify_expected(scope: Path, previous: Path, expected: set[str]) -> dict[str, object]:
+    """Require explicit evidence, retrying only unrelated Docker inventory races."""
+    report: dict[str, object] = {}
+    for _ in range(8):
+        report = _call_cli("verify", scope, previous)
+        authorities = _authorities(report)
+        if expected <= authorities:
+            return report
+        if "docker" not in authorities:
+            break
+        time.sleep(0.2)
+    safe_reasons = [(item["authority"], item["reason"]) for item in report.get("unavailable", []) if isinstance(item, dict) and item.get("authority") in ("docker", "saved-report:docker", "kernel-subcomponent")]
+    raise AssertionError("required independent refusal was not observed: " + repr({"expected": sorted(expected), "actual": sorted(_authorities(report)), "diagnostics": safe_reasons}))
+
+
 def _assert_component(report: dict[str, object], *, present: bool) -> None:
     if (report.get("approved_enrollment") is not None) != present:
         raise AssertionError("protected enrollment component state differs")
@@ -268,7 +283,13 @@ def run_fixture() -> None:
         _write_private(
             scope, json.dumps({"deployment_id": approved.deployment_id, "enrollment_id": approved.enrollment_id, "authorization_id": approved.authorization_id, "profile": approved.profile, "management_id": approved.management_id, "proxy_id": approved.proxy_id, "files": []}, sort_keys=True).encode()
         )
-        first = _call_cli("observe", scope)
+        for _ in range(8):
+            first = _call_cli("observe", scope)
+            if "kernel-subcomponent" in _authorities(first):
+                break
+            if "docker" not in _authorities(first):
+                break
+            time.sleep(0.2)
         _assert_component(first, present=True)
         _assert_kernel_subcomponent(first, present=False)
         logger.info("Original manager and proxy exited, but the independently identified live fixture namespace holder prevents kernel sub-observation")
@@ -288,28 +309,14 @@ def run_fixture() -> None:
         _assert_kernel_subcomponent(verified, present=True)
         logger.info("Real stopped Docker manager/proxy and separately invoked verifier observed the protected test-only enrollment component")
         _docker("update", "--restart=unless-stopped", proxy)
-        changed_restart = _call_cli("verify", scope, previous)
-        if "docker-restart:" + proxy not in _authorities(changed_restart) or "saved-report:docker" not in _authorities(changed_restart):
-            raise AssertionError("selected fixture Docker restart policy was not independently refused")
+        _verify_expected(scope, previous, {"docker-restart:" + proxy, "saved-report:docker"})
         _docker("update", "--restart=no", proxy)
         logger.info("Enabled and restored a restart policy on the stopped fixture proxy only; separate consumer rejected changed Docker authority")
         alternative = _docker("create", "--name", fixture_id + "-alternate-manager", "--network", "none", "--entrypoint", "/bin/sleep", image, "120")
         if not re.fullmatch(r"[0-9a-f]{64}", alternative):
             raise AssertionError("fixture Docker returned an ambiguous alternative identity")
         created_containers.append(alternative)
-        for _ in range(5):
-            with_alternative = _call_cli("verify", scope, previous)
-            if "docker-alternative-management:" + alternative in _authorities(with_alternative):
-                break
-            # Other host-controlled, unrelated Docker objects can change
-            # between the two full-engine inventory reads. Such races must
-            # refuse; retrying an isolated acceptance probe is not acceptance.
-            if "docker" not in _authorities(with_alternative):
-                break
-            time.sleep(0.2)
-        if "docker-alternative-management:" + alternative not in _authorities(with_alternative) or "saved-report:docker" not in _authorities(with_alternative):
-            reasons = {item["authority"]: item["reason"] for item in with_alternative["unavailable"]}
-            raise AssertionError("unselected real Docker management-image candidate was not refused: " + repr(reasons))
+        _verify_expected(scope, previous, {"docker-alternative-management:" + alternative, "saved-report:docker"})
         _docker("rm", alternative)
         created_containers.remove(alternative)
         logger.info("Unselected stopped management-image alternative was detected and rejected without touching unrelated Docker objects")
@@ -317,10 +324,8 @@ def run_fixture() -> None:
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind(("127.0.0.1", prior_manager.published_port))
             listener.listen(1)
-            conflict = _call_cli("verify", scope, previous)
+            conflict = _verify_expected(scope, previous, {"kernel-subcomponent", "saved-report:kernel_subobservation"})
             _assert_kernel_subcomponent(conflict, present=False)
-            if "saved-report:kernel_subobservation" not in _authorities(conflict):
-                raise AssertionError("separate consumer did not reject a real conflicting host TCP listener")
         logger.info("Real loopback listener on the disposable published port caused kernel refusal; it was released")
         changed = private / "proxy-config"
         changed.write_bytes(b"substituted fixture proxy configuration\n")
