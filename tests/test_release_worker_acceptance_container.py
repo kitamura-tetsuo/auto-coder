@@ -160,7 +160,7 @@ def _ready(client: WorkerNetworkClient, source_sha: str) -> dict[str, object] | 
 
 
 @contextmanager
-def _installed_release(system: _SmokeSystem, root: Path, scenario: str, *, fail_candidate: bool = False, reconstruct_supervisor: bool = False, hold_terminal_exit: bool = False, hold_terminal_after_recovery: bool = False, start_prior: bool = True) -> Iterator[_InstalledRelease]:
+def _installed_release(system: _SmokeSystem, root: Path, scenario: str, *, fail_candidate: bool = False, reconstruct_supervisor: bool = False, hold_terminal_exit: bool = False, hold_terminal_after_recovery: bool = False, stop_prior_before_deployment: bool = False) -> Iterator[_InstalledRelease]:
     """Independently install both release versions, then start the prior one."""
     image = _image()
     source = Path(os.environ.get("GITHUB_WORKSPACE", str(Path(__file__).parents[1]))).resolve()
@@ -260,13 +260,27 @@ def _installed_release(system: _SmokeSystem, root: Path, scenario: str, *, fail_
             client = WorkerNetworkClient(WorkerEndpointConfig("release-worker", "release", "owner/repo", address, 8843, secret))
             stopped = client.inspect_supervisor()
             assert stopped.result_code == "OK" and stopped.data["alive"] is False
-            if start_prior:
-                # External bootstrap selects the first real installed runtime through
-                # the production Supervisor UDS. The authenticated deployment below
-                # starts only after this independent incumbent is actually serving.
-                started = _control(name, {"operation_id": "fixture-prior-runtime", "operation": "START", "runtime_id": str(previous["installed_runtime_id"])})
-                assert started["status"] == "RUNNING", started
-                _wait_for(lambda: _ready(client, str(previous["source_sha"])), timeout=90)
+            # External bootstrap selects a real prior installed runtime through
+            # the production Supervisor UDS and observes its readiness.
+            started = _control(name, {"operation_id": "fixture-prior-runtime", "operation": "START", "runtime_id": str(previous["installed_runtime_id"])})
+            assert started["status"] == "RUNNING", started
+            _wait_for(lambda: _ready(client, str(previous["source_sha"])), timeout=90)
+            if stop_prior_before_deployment:
+                # A never-started Supervisor is UNKNOWN, not proven STOPPED.
+                # Establish genuine terminal evidence and OS exit before admission.
+                prior = client.inspect_supervisor().data["worker"]
+                prior_os = json.loads((runtime / "supervisor" / "state.json").read_text())["worker"]
+                stopped_operation = "fixture-stopped-prior-runtime"
+                request = client.dispatch_worker_operation(
+                    stopped_operation,
+                    "REQUEST_GRACEFUL_STOP",
+                    process_run_id=prior["process_run_id"],
+                    deployment_generation=prior["deployment_generation"],
+                    selected_runtime_id=prior["runtime_id"],
+                )
+                assert request.result_code in {"DRAINING", "STOPPED"}, request
+                _wait_for(lambda: state if (state := client.inspect_supervisor()).result_code == "OK" and state.data["status"] == "STOPPED" and state.data["alive"] is False and client.read_worker_operation(stopped_operation).result_code == "STOPPED" else None, timeout=90)
+                _assert_lifetime_gone(name, prior_os)
             yield _InstalledRelease(client, runtime, name, candidate, previous)
         finally:
             logs = _docker("logs", name, check=False)
@@ -430,7 +444,7 @@ def _exercise_installed_release_join(
                     reconstruct_supervisor=lose_start_reconstruct or reconstruct_recovery_supervisor or hold_terminal_after_recovery,
                     hold_terminal_exit=hold_terminal_exit,
                     hold_terminal_after_recovery=hold_terminal_after_recovery,
-                    start_prior=not supersede_stopped_after_stage,
+                    stop_prior_before_deployment=supersede_stopped_after_stage,
                 ) as release,
                 _source_http(system.remote) as endpoint,
                 ExitStack() as processes,
@@ -553,6 +567,9 @@ def _exercise_installed_release_join(
                     if supersede_stopped_after_stage:
                         assert old is None and previous.data["alive"] is False and previous.data["status"] == "STOPPED"
                         old_os = None
+                        stopped_launches = (release.runtime / "fixture-launches.jsonl").read_bytes()
+                        stopped_posts = (release.runtime / "fixture-posts").read_bytes()
+                        assert len(stopped_launches.splitlines()) == 1
                     else:
                         assert isinstance(old, dict)
                         old_os = json.loads((release.runtime / "supervisor" / "state.json").read_text())["worker"]
@@ -624,11 +641,11 @@ def _exercise_installed_release_join(
                         assert stopped_boundary["staged"]["source_sha"] == system.revisions[0]
                         assert "start" not in stopped_boundary["steps"]
                         preparer_posts = (release.runtime / "fixture-posts").read_bytes()
-                        assert preparer_posts == b"post\n", "only signed PREPARE may have been dispatched"
+                        assert preparer_posts == stopped_posts + b"post\n", "only signed PREPARE may follow the verified initial STOP"
                         before_start = release.client.inspect_supervisor()
                         assert before_start.data["alive"] is False and before_start.data["status"] == "STOPPED"
                         assert before_start.data["selected_runtime_id"] == previous.data["selected_runtime_id"]
-                        assert not (release.runtime / "fixture-launches.jsonl").exists()
+                        assert (release.runtime / "fixture-launches.jsonl").read_bytes() == stopped_launches
                         later = _call(http, system.bearer, PROMOTE_ACTION, {**promotion_arguments, "idempotency_key": "later-stopped-same-sha-selection"})
                         assert later["status"] == "SUCCEEDED" and later["operation_id"] != promotion_id
                         assert system.remote._git("rev-parse", "refs/tags/auto-coder-release-source-selection-current") != catalog_oid
@@ -636,7 +653,7 @@ def _exercise_installed_release_join(
                         superseded = _wait_for(lambda: status if (status := _call(http, system.bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id}))["status"] == "SUPERSEDED" else None, timeout=50)
                         assert superseded["reason"] == "original_release_operation_superseded"
                         assert (release.runtime / "fixture-posts").read_bytes() == preparer_posts
-                        assert not (release.runtime / "fixture-launches.jsonl").exists()
+                        assert (release.runtime / "fixture-launches.jsonl").read_bytes() == stopped_launches
                         after_start = release.client.inspect_supervisor()
                         assert after_start.data["alive"] is False and after_start.data["status"] == "STOPPED"
                         assert after_start.data["selected_runtime_id"] == before_start.data["selected_runtime_id"]
