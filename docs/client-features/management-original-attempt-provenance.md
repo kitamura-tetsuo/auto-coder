@@ -93,7 +93,11 @@ grants for that attempt refuse. Interruption before that terminal commit,
 non-pristine roots or a partial intent remains unresolved. No reader creates a
 terminal fact from an absent claim, database, process or row.
 
-A completed claim records the original intent's identity and digest. The host
+A completed claim records the original intent's identity and digest. The original
+admission producer and the host grant boundary independently parse and match
+the exact canonical claimed intent bytes to the anchored intent; a valid
+claim-file digest alone never permits granting a different target. A mismatch
+leaves an unresolved original attempt without issuing an additional grant. The host
 adapter durably records `grant-possible` before entering its existing checks or
 launch callback, and holds the history lock for the entire adapter invocation.
 That conservative boundary does not mean a grant was delivered. A failed or

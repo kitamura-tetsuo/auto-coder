@@ -104,6 +104,16 @@ def read_original(path: Path) -> tuple[bytes, tuple[int, int]]:
         os.close(fd)
 
 
+def require_claimed_intent(encoded: bytes, expected: FreshInitializationIntent) -> None:
+    """Reject a claim whose original bytes do not name the anchored intent."""
+    try:
+        claimed = parse_fresh_intent(json.loads(encoded))
+    except (ValueError, TypeError, KeyError) as error:
+        raise OriginalEvidenceUnavailable("original claim intent differs") from error
+    if claimed != expected or encoded != canonical(asdict(expected)):
+        raise OriginalEvidenceUnavailable("original claim intent differs")
+
+
 def _sync(root: Path) -> None:
     fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -282,6 +292,7 @@ def capture_claim(intent: FreshInitializationIntent) -> Iterator[None]:
             raise
         else:
             encoded, file_id = read_original(Path(intent.host_state_root) / "fresh-initialization.json")
+            require_claimed_intent(encoded, intent)
             _append(root, "claimed", intent.request_id, {"identity": file_id, "sha256": hashlib.sha256(encoded).hexdigest()})
 
 
@@ -300,6 +311,7 @@ def grant_boundary(intent: FreshInitializationIntent) -> Iterator[None]:
         if [event.kind for event in branch] != ["anchor", "claimed"] or json.loads(branch[0].value_json)["intent"] != asdict(intent):
             raise OriginalEvidenceUnavailable("grant has no original complete one-time admission")
         encoded, file_id = read_original(Path(intent.host_state_root) / "fresh-initialization.json")
+        require_claimed_intent(encoded, intent)
         if json.loads(branch[-1].value_json) != {"identity": list(file_id), "sha256": hashlib.sha256(encoded).hexdigest()}:
             raise OriginalEvidenceUnavailable("original claim changed before grant")
         # Persist before any supported callback can launch a supervisor or grant.

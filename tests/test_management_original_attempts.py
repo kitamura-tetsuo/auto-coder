@@ -1083,3 +1083,56 @@ def test_new_original_claim_refuses_corrupt_anchor_with_rehashed_frontier(tmp_pa
     assert _fingerprint(tmp_path) == original
     assert list(Path(successor.host_state_root).iterdir()) == []
     assert list(Path(successor.host_journal_root).iterdir()) == []
+
+
+def test_original_capture_rejects_claimed_bytes_for_different_target(tmp_path):
+    """A durable claim cannot bind bytes for a different original target."""
+    from auto_coder.management import original_attempts as producer
+
+    binding = _history(tmp_path)
+    intent = _covered(tmp_path, binding, "claim-content")
+    altered = replace(intent, new_instance="different-target")
+    state = Path(intent.host_state_root)
+
+    with pytest.raises(OriginalEvidenceUnavailable, match="original claim intent differs"):
+        with producer.capture_claim(intent):
+            claim = state / "fresh-initialization.json"
+            claim.write_bytes(producer.canonical(asdict(altered)))
+            claim.chmod(0o600)
+
+    authority, events = read_frontier(Path(binding.root), binding)
+    assert authority.binding == binding
+    assert [event.kind for event in events] == ["anchor"]
+    assert json.loads((state / "fresh-initialization.json").read_bytes()) == asdict(altered)
+
+
+def test_original_grant_refuses_matching_hash_of_wrong_claimed_target(tmp_path):
+    """A self-consistent digest chain cannot authorize a different intent."""
+    from auto_coder.management import original_attempts as producer
+
+    binding = _history(tmp_path)
+    intent = _covered(tmp_path, binding, "grant-content")
+    claim_fresh_initialization(Path(intent.host_state_root), intent)
+    altered = replace(intent, new_instance="different-target")
+    claim = Path(intent.host_state_root) / "fresh-initialization.json"
+    forged_claim = producer.canonical(asdict(altered))
+    claim.write_bytes(forged_claim)
+    event_path = Path(binding.root) / "00000001.json"
+    event = json.loads(event_path.read_bytes())
+    assert event["kind"] == "claimed"
+    event["value"]["sha256"] = hashlib.sha256(forged_claim).hexdigest()
+    forged_event = producer.canonical(event)
+    event_path.write_bytes(forged_event)
+    frontier_path = Path(binding.root) / "frontier.json"
+    frontier = json.loads(frontier_path.read_bytes())
+    frontier["digest"] = hashlib.sha256(forged_event).hexdigest()
+    frontier_path.write_bytes(producer.canonical(frontier))
+    assert [event.kind for event in read_frontier(Path(binding.root), binding)[1]] == ["anchor", "claimed"]
+    before = _fingerprint(tmp_path)
+
+    with pytest.raises(OriginalEvidenceUnavailable, match="original claim intent differs"):
+        with producer.grant_boundary(intent):
+            pytest.fail("wrong target reached the original grant boundary")
+
+    assert [event.kind for event in read_frontier(Path(binding.root), binding)[1]] == ["anchor", "claimed"]
+    assert _fingerprint(tmp_path) == before
