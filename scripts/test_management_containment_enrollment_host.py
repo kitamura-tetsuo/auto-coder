@@ -25,7 +25,10 @@ from pathlib import Path
 
 from loguru import logger
 
-from auto_coder.management.containment_enrollment import ApprovedEnrollment, OriginalFile, OriginalNetworkPin
+from auto_coder.management.containment_enrollment import ApprovedEnrollment, OriginalFile, OriginalNetworkPin, observe_approved_enrollment
+from auto_coder.management.containment_observation import _docker as inspect_complete_docker
+from auto_coder.management.containment_observation import read_scope
+from auto_coder.management.containment_route_manifest import propose_unapproved_route_draft
 from auto_coder.management.fresh_host import _write_evidence
 from auto_coder.management.fresh_host_observation import HostObservationUnavailable, PriorContainer, capture_prior_container
 
@@ -159,7 +162,19 @@ def _assert_kernel_subcomponent(report: dict[str, object], *, present: bool, pin
         raise AssertionError("kernel refusal did not identify its unavailable component")
 
 
-def run_fixture() -> None:
+def _assert_route_component(report: dict[str, object]) -> None:
+    component = report.get("route_manifest")
+    if not isinstance(component, dict) or not isinstance(component.get("systemd"), list) or not component["systemd"]:
+        raise AssertionError("test-only root route component was not observed by the real CLI")
+    if component.get("manifest", {}).get("complete_ordinary_routes_attested") is not True:
+        raise AssertionError("test-only fixture root attestation was not read")
+    if "approved-route-manifest" in _authorities(report):
+        raise AssertionError("separately inspected test-only route component was refused")
+    if not {"deployment-enrollment", "ordinary-route-closure", "original-source-profile", "kernel-containment"} <= _authorities(report):
+        raise AssertionError("test-generated route component incorrectly removed normative full-profile refusals")
+
+
+def run_fixture(*, exercise_test_route_manifest: bool = False) -> None:
     if os.geteuid() != 0 or os.readlink("/proc/self/ns/pid") != os.readlink("/proc/1/ns/pid"):
         raise PermissionError("host root is required for this isolated fixture")
     image = _docker("image", "inspect", IMAGE_TAG, "--format", "{{.Id}}")
@@ -172,6 +187,7 @@ def run_fixture() -> None:
     private = FIXTURE_ROOT / fixture_id
     private.mkdir(mode=0o700)
     enrollment_file = APPROVAL_ROOT / (fixture_id + ".json")
+    test_route_file = APPROVAL_ROOT / (fixture_id + ".routes.json")
     manager_name = fixture_id + "-manager"
     proxy_name = fixture_id + "-proxy"
     created_containers: list[str] = []
@@ -315,11 +331,28 @@ def run_fixture() -> None:
                 break
             time.sleep(0.2)
         _assert_kernel_subcomponent(first, present=True, pinned=True)
+        if exercise_test_route_manifest:
+            # This is an isolated test-only root fixture simulating review;
+            # neither auto-generated source classification nor this flag is
+            # original-production route authority or a containment verdict.
+            selected_scope = read_scope(scope)
+            enrolled = observe_approved_enrollment(selected_scope)
+            draft = propose_unapproved_route_draft(enrolled, inspect_complete_docker(selected_scope))
+            if draft["complete_ordinary_routes_attested"] is not False or draft["remote_script_origins"] or draft["local_script_routes"]:
+                raise AssertionError("route proposal unexpectedly self-authorized or invented unreviewed controller origins")
+            draft["complete_ordinary_routes_attested"] = True
+            _write_private(test_route_file, json.dumps(draft, sort_keys=True).encode())
+            first = _call_cli("observe", scope)
+            _assert_route_component(first)
         previous = private / "previous.json"
         _write_private(previous, json.dumps(first, sort_keys=True).encode())
         verified = _call_cli("verify", scope, previous)
         _assert_component(verified, present=True)
         _assert_kernel_subcomponent(verified, present=True, pinned=True)
+        if exercise_test_route_manifest:
+            _assert_route_component(verified)
+            logger.info("Test-only root route manifest was independently re-read by the real observe and verify CLI; full containment remained unavailable")
+            test_route_file.unlink()
         logger.info("Real stopped Docker manager/proxy and separate verifier independently reopened the same live original namespace pin")
         _docker("update", "--restart=unless-stopped", proxy)
         _verify_expected(scope, previous, {"docker-restart:" + proxy, "saved-report:docker"})
@@ -361,6 +394,8 @@ def run_fixture() -> None:
             subprocess.run(("docker", "rm", "-f", container), capture_output=True, check=False, timeout=30)
         if enrollment_file.exists():
             enrollment_file.unlink()
+        if test_route_file.exists():
+            test_route_file.unlink()
         if private.exists():
             shutil.rmtree(private)
         for root, created in ((FIXTURE_ROOT, created_fixture_root), (APPROVAL_ROOT, created_approval_root)):
@@ -371,10 +406,11 @@ def run_fixture() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Test-only host Docker enrollment component; never full containment acceptance")
     parser.add_argument("--confirm-test-only-fixture", action="store_true")
+    parser.add_argument("--exercise-test-route-manifest", action="store_true", help="also simulate one test-only root route authority and separately read it back")
     arguments = parser.parse_args()
     if not arguments.confirm_test_only_fixture:
         parser.error("explicit --confirm-test-only-fixture is required")
-    run_fixture()
+    run_fixture(exercise_test_route_manifest=arguments.exercise_test_route_manifest)
 
 
 if __name__ == "__main__":

@@ -278,6 +278,15 @@ authorized Linux/Docker test host with the preexisting image
 python scripts/test_management_containment_enrollment_host.py --confirm-test-only-fixture
 ```
 
+An additional manual integration check is available with
+`--exercise-test-route-manifest`. It temporarily simulates a **test-only**
+root-approved complete-route declaration, reads the actual whole systemd,
+cron/at and Docker inventories, then requires both real CLI processes to
+re-read the same protected route component. The generated test declaration is
+not independent production review, and this check cannot establish an
+original-production positive closed-profile verdict. It always removes the
+test-only route file, leaving production approvals unchanged.
+
 This probe does not pull images. It creates uniquely named test containers and
 only its own files under `/var/lib/auto-coder/containment-readback-fixtures` and
 the fixed approval directory, and cleans up those resources after completion or
