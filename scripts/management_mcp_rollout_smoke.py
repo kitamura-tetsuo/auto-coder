@@ -44,6 +44,10 @@ class OperatorScopeError(ValueError):
     """A saved operator selection is not proof of present operator authority."""
 
 
+class EffectfulReadError(ValueError):
+    """A nominally read-only service tool may advance existing operations."""
+
+
 @dataclass(frozen=True)
 class DotCheckpoint:
     """Operator-owned reminder, never an admission grant or current evidence."""
@@ -288,8 +292,17 @@ def read_plan(checkpoint: DotCheckpoint, target: str, operation_id: str) -> tupl
     return plan
 
 
+def checked_live_plan(plan: tuple[tuple[str, dict[str, object]], ...]) -> None:
+    """Refuse server-side dispatch through an existing operation-get API."""
+    for name, arguments in plan:
+        checked_tool(name, arguments)
+        if name == "auto_coder_operation_get":
+            raise EffectfulReadError("Original operation_get may dispatch an existing effect; " "a verified non-dispatching operation reader is required")
+
+
 async def observe_live(endpoint: str, bearer: str, plan: tuple[tuple[str, dict[str, object]], ...], stage: str) -> RolloutReport:
     """Capture hashes of actual MCP read responses, not claimed deployment PASS."""
+    checked_live_plan(plan)
     from mcp import ClientSession
     from mcp.client.streamable_http import streamablehttp_client
 
@@ -350,6 +363,9 @@ def main() -> int:
         logger.info("Dot rollout observation stage={} verdict={} remote_effect=false", report.stage, report.verdict)
     except OperatorScopeError as error:
         logger.warning("Original operator scope differs from current selection; no MCP request sent")
+        report = RolloutReport("BLOCKED", checkpoint.stage, str(error))
+    except EffectfulReadError as error:
+        logger.warning("Potential server-side operation dispatch refused before transport")
         report = RolloutReport("BLOCKED", checkpoint.stage, str(error))
     except (OSError, ValueError, TypeError, RuntimeError) as error:
         logger.warning("Dot rollout evidence unavailable: {}", type(error).__name__)

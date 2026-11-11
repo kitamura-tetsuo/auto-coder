@@ -1,5 +1,6 @@
 """Offline policy/transport planning only; NOT a fake live MCP acceptance test."""
 
+import asyncio
 import json
 import os
 import subprocess
@@ -349,6 +350,43 @@ def test_transport_does_not_send_bearer_to_unapproved_origin_profile(url):
 def test_read_only_transport_allows_explicit_https_or_loopback():
     assert smoke.checked_endpoint("https://fixture.example/mcp") == "https://fixture.example/mcp"
     assert smoke.checked_endpoint("http://127.0.0.1:8790/mcp") == "http://127.0.0.1:8790/mcp"
+
+
+@pytest.mark.parametrize("pending", ["SENT_UNKNOWN", "NEEDS_ATTENTION", ""])
+def test_pretransport_plan_refuses_server_side_operation_dispatch(pending):
+    original = checkpoint(
+        beta_target="fixture-beta",
+        beta_operation_id="operation-original",
+        pending_effect_state=pending,
+        pending_operation_id="operation-original" if pending else "",
+    )
+    plan = smoke.read_plan(original, "fixture-beta", "operation-original")
+    assert any(name == "auto_coder_operation_get" for name, _ in plan)
+    with pytest.raises(smoke.EffectfulReadError, match="may dispatch"):
+        smoke.checked_live_plan(plan)
+
+
+def test_effectful_service_operation_read_is_refused_before_import_or_transport():
+    original = checkpoint(
+        beta_target="fixture-beta",
+        beta_operation_id="pending-original",
+        pending_effect_state="SENT_UNKNOWN",
+        pending_operation_id="pending-original",
+    )
+    plan = smoke.read_plan(original, "fixture-beta", "pending-original")
+    with pytest.raises(smoke.EffectfulReadError, match="may dispatch"):
+        asyncio.run(smoke.observe_live("https://must-not-resolve.invalid/mcp", "synthetic-not-a-real-token", plan, "observe"))
+
+
+def test_pretransport_status_reads_are_still_effect_free():
+    original = checkpoint(beta_target="fixture-beta")
+    plan = smoke.read_plan(original, "fixture-beta", "")
+    assert [name for name, _ in plan] == [
+        "auto_coder_whoami",
+        "auto_coder_status",
+        "auto_coder_deployment_status",
+    ]
+    assert smoke.checked_live_plan(plan) is None
 
 
 @pytest.mark.parametrize(

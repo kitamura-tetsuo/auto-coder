@@ -162,7 +162,17 @@ AUTO_CODER_MCP_ACCESS_TOKEN=... python scripts/management_mcp_rollout_smoke.py \
 
 The example domain and IDs are placeholders, not usable configured resources.
 The client refuses unknown tool names or mutation requests and never issues
-effects. It reports `BLOCKED` for invalid/missing authority or uncertain
+effects. The service's existing `auto_coder_operation_get` can advance a
+pending worker/source operation via the dispatcher, despite its read-facing
+name and scope. Therefore the observer only **plans** original-ID reconciliation:
+any live plan containing that tool is refused with `BLOCKED` **before**
+opening MCP transport. A verified non-dispatching original-operation reader is
+required before automatic read-only reconciliation can be enabled; fetching
+status/deployment alone is not substitute evidence that an unknown effect
+settled. This is an explicit additional REQ-004/007/008 implementation blocker,
+not a completed acceptance scenario.
+
+The observer reports `BLOCKED` for invalid/missing authority or uncertain
 original state and `NOT_RUN` for a diagnostic-only observation; digests
 of actual structured MCP read responses identify the observed bytes without
 leaking raw credentials or implying installed readiness. `positive_deployment_proven`
