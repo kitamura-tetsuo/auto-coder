@@ -173,9 +173,9 @@ def required_next_observation(checkpoint: DotCheckpoint) -> RolloutReport:
         return RolloutReport("BLOCKED", checkpoint.stage, "Original work identity or operator stage revision is missing; never infer authority from current HEAD or stage name")
     if checkpoint.stage == "observe":
         return RolloutReport("NOT_RUN", checkpoint.stage, "Current authenticated status, original operation and child evidence require an independent live read")
+    if not (checkpoint.source_sha and checkpoint.ci_run_id and checkpoint.ci_run_attempt and checkpoint.tested_source_ref and checkpoint.tested_source_oid and checkpoint.beta_target):
+        return RolloutReport("BLOCKED", checkpoint.stage, "Exact tested Git source SHA/ref/OID, original CI run/attempt and configured beta target are required")
     if checkpoint.stage == "beta":
-        if not (checkpoint.source_sha and checkpoint.ci_run_id and checkpoint.tested_source_ref):
-            return RolloutReport("BLOCKED", checkpoint.stage, "Exact tested Git source and original CI evidence are missing")
         return RolloutReport("NOT_RUN", checkpoint.stage, "Beta mutation and installed worker acceptance require disposable original producers and current operator authority")
     if not (checkpoint.beta_acceptance_ref and checkpoint.beta_acceptance_oid and checkpoint.promotion_operation_id and checkpoint.promotion_catalog_oid):
         return RolloutReport("BLOCKED", checkpoint.stage, "Current beta acceptance and distinct release promotion evidence are missing")

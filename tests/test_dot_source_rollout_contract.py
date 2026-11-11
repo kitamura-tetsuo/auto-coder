@@ -264,6 +264,8 @@ def test_checkpoint_roundtrips_all_immutable_identifiers_without_elevation(tmp_p
         ci_run_id="452",
         ci_run_attempt="2",
         tested_source_ref="refs/tags/auto-coder-tested-" + "a" * 40,
+        tested_source_oid="a" * 40,
+        beta_target="fixture-beta",
         beta_acceptance_ref="refs/tags/beta-accepted",
         beta_acceptance_oid="b" * 40,
         promotion_operation_id="promotion-original",
@@ -371,6 +373,8 @@ def test_checkpoint_preserves_original_work_and_stage_revision_across_cli_resume
         stage_revision="operator-decision-20261111-rev2",
         source_sha="a" * 40,
         tested_source_ref="refs/heads/original-reviewed-feature",
+        tested_source_oid="a" * 40,
+        beta_target="fixture-beta",
         ci_run_id="43010413128",
         ci_run_attempt="1",
     )
@@ -445,3 +449,41 @@ def test_diagnostic_operation_read_accepts_exact_original_binding_without_dispat
         {"target_id": "fixture-beta", "operation_id": "real-original"},
     )
     assert all(name in smoke.READ_TOOLS for name, _ in plan)
+
+
+@pytest.mark.parametrize("missing", ["ci_run_attempt", "tested_source_oid", "beta_target"])
+def test_beta_refuses_incomplete_original_ci_or_selected_target(missing):
+    evidence = {
+        "stage": "beta",
+        "task_id": "original-task",
+        "repository": "kitamura-tetsuo/auto-coder",
+        "issue_number": "2608",
+        "stage_revision": "operator-revision",
+        "source_sha": "a" * 40,
+        "ci_run_id": "43010413128",
+        "ci_run_attempt": "1",
+        "tested_source_ref": "refs/heads/reviewed-source",
+        "tested_source_oid": "a" * 40,
+        "beta_target": "fixture-beta",
+    }
+    evidence[missing] = ""
+    report = smoke.required_next_observation(checkpoint(**evidence))
+    assert report.verdict == "BLOCKED"
+    assert not report.effect_dispatched
+
+
+def test_full_cannot_skip_original_beta_and_tested_source_lineage():
+    evidence = checkpoint(
+        stage="full",
+        task_id="original-task",
+        repository="kitamura-tetsuo/auto-coder",
+        issue_number="2608",
+        stage_revision="operator-revision",
+        beta_acceptance_ref="refs/tags/accepted-beta",
+        beta_acceptance_oid="b" * 40,
+        promotion_operation_id="promotion-original",
+        promotion_catalog_oid="c" * 40,
+    )
+    report = smoke.required_next_observation(evidence)
+    assert report.verdict == "BLOCKED"
+    assert not report.effect_dispatched

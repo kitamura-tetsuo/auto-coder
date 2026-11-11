@@ -70,7 +70,11 @@ operation/run/catalog ref/OID, stable original idempotency key, and
 `pending_effect_state`, exact `pending_operation_id`, immutable failure signature and its recovery count.
 This is a **reminder**, never a grant, proof of an effect or a current worker
 observation. Beta/full work without the original task, repository, Issue/PR
-identity or stage revision is BLOCKED. These retained values must be compared
+identity or stage revision is BLOCKED. Before a beta or full stage can
+report even a diagnostic-only `NOT_RUN`, the checkpoint must also retain the
+selected source SHA and ref/OID, original CI run/attempt and configured beta
+target; absent upstream lineage is `BLOCKED` rather than silently skipped in
+full mode. These retained values must be compared
 with fresh operator authorization before any future mutation; current MCP read
 diagnostics cannot attest to a dot stage revision and never elevate it.
 The worker and original journal MUST be re-queried after
