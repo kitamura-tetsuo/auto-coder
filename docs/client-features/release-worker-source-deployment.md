@@ -267,9 +267,8 @@ A separate stopped-incumbent variant first obtains the prior installed worker's
 real graceful terminal receipt and independently verifies its exact OS lifetime
 is absent before admission. With no unresolved stop, it stages the candidate and
 holds the first START boundary. A second same-SHA promotion must supersede the
-original before any runtime-pointer/start effect. Only PREPARE may reach the
-signed bridge, the selected prior runtime stays stopped, and no new interpreter
-launches. The deployment must preserve all refs produced by the deliberate
+original before any runtime-pointer/start effect. Only PREPARE may follow the verified signed initial STOP, the selected prior
+runtime stays stopped, and no new interpreter launches. The deployment must preserve all refs produced by the deliberate
 second promotion, both original immutable evidence objects, beta and ownership.
 
 The terminal-exit case runs the installed prior worker's actual CLI, wraps only
@@ -324,16 +323,12 @@ Another app-only variant changes the Supervisor incarnation while retaining
 the original unknown recovery receipt. It uses a fresh manager app/client,
 not a separate manager OS process.
 
-Additional installed acceptance cases exercise two distinct effect boundaries:
-one starts from an initially empty release Supervisor with no former child,
-replaces the source selection with a later same-SHA promotion after PREPARE but before START, and
-requires the original deployment to be superseded without launching any child.
-The other starts with a failed candidate that genuinely recovers the prior
+Another installed acceptance case starts with a failed candidate that genuinely recovers the prior
 installed worker, then attempts another authenticated deployment while the
 restored prior's actual terminal receipt is held ahead of OS exit. After
 manager-app and Supervisor reconstruction, the original running lifetime must
-remain fenced until that OS exit is observed. Neither test fabricates a
-successful terminal receipt or prior child identity. The latter is a second
+remain fenced until that OS exit is observed. This test fabricates no
+terminal receipt or prior child identity. It is a second
 deployment after the first has already finished FAILED with recovery CONFIRMED;
 it is not a held child during the original recovery direction.
 
