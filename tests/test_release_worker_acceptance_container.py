@@ -478,7 +478,9 @@ def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch,
                         assert _container_identity(system.worker_name) == beta_identity
                         assert _container_identity(release.container) == release_identity
                         assert all(path.read_bytes() == original for path, original in ownership)
-                        assert len(system.remote.dispatches) == 1
+                        assert len(system.remote.dispatches) == 2
+                        assert [dispatch["inputs"]["operation_id"] for dispatch in system.remote.dispatches] == [promotion_id, next_promotion["operation_id"]]
+                        assert all(dispatch["inputs"]["source_sha"] == system.revisions[0] for dispatch in system.remote.dispatches)
                         return
 
                     if lose_start_reconstruct:
