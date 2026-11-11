@@ -1,0 +1,383 @@
+"""Installed release acceptance through original authenticated producers.
+
+Git objects, local beta acceptance, version installation, journal, signed bridge,
+Supervisor and worker evidence are real. Only the external GitHub Actions and
+Release HTTP service is controlled; this is not a live GitHub publication test.
+Docker belongs to the external fixture, never either exercising worker.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+import tempfile
+import time
+import uuid
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass, replace
+from pathlib import Path
+from typing import Iterator
+
+import httpx
+import pytest
+from starlette.testclient import TestClient
+
+from auto_coder.management.app import create_management_app
+from auto_coder.management.beta_runtime_smoke import SmokeProfile
+from auto_coder.management.source_acceptance import SourceAcceptancePublisher
+from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkClient
+from auto_coder.source_release_catalog import canonical, digest
+from auto_coder.tested_source_refs import TestedSourcePublisher as SourceProofPublisher
+from auto_coder.util.gh_cache import GitDataResponse
+from tests.fixtures.ci_timing import docker_timing_arguments
+from tests.test_beta_runtime_smoke_container import _owned_staging, _smoke_system, _SmokeSystem, _source_http, _SourceService
+from tests.test_management_mcp import real_boundary  # noqa: F401
+from tests.test_management_runtime_mcp import _call
+from tests.test_management_source_release_dispatch import ACTION as PROMOTE_ACTION
+from tests.test_management_source_release_dispatch import WORKFLOW_ID, WorkflowBoundary
+from tests.test_source_release_promotion import policy
+from tests.test_supervisor_container_integration import _container_facts, _control, _docker, _image, _preparation_cache_arguments, _wait_for
+
+pytestmark = pytest.mark.supervisor_integration
+
+
+class _ReleaseSourceService(WorkflowBoundary, _SourceService):
+    """Actual bare Git and production promotion with controlled Actions/Release."""
+
+    def __init__(self, source: Path, root: Path) -> None:
+        super().__init__(source, root)
+        self.releases: dict[str, dict[str, object]] = {}
+        self.configured = policy(SmokeProfile(total_seconds=180, interval_seconds=2).content_revision)
+        self.clock = time.time
+
+    def request(self, method: str, path: str, payload: dict[str, object] | None = None) -> GitDataResponse:
+        if method == "GET" and path.startswith("releases/tags/"):
+            found = self.releases.get(path.removeprefix("releases/tags/"))
+            return GitDataResponse(200, found) if found else GitDataResponse(404)
+        if method == "POST" and path == "releases" and payload:
+            name = str(payload["tag_name"])
+            assert self._git("cat-file", "-t", self._git("rev-parse", f"refs/tags/{name}")) == "tag"
+            if name in self.releases:
+                return GitDataResponse(422)
+            self.releases[name] = {"id": len(self.releases) + 1, "tag_name": name, "draft": False, "prerelease": False, "html_url": f"https://github.com/owner/repo/releases/tag/{name}"}
+            return GitDataResponse(201, self.releases[name])
+        return super().request(method, path, payload)
+
+
+class _SourceHTTPTransport(httpx.BaseTransport):
+    """Route canonical provider HTTP to the disposable real HTTP/Git server."""
+
+    def __init__(self, endpoint: str) -> None:
+        self.endpoint = httpx.URL(endpoint)
+        self.transport = httpx.HTTPTransport()
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "api.github.com"
+        assert request.url.path.startswith("/repos/owner/repo/")
+        local = request.url.copy_with(scheme=self.endpoint.scheme, host=self.endpoint.host, port=self.endpoint.port)
+        return self.transport.handle_request(httpx.Request(request.method, local, headers=request.headers, content=request.content, extensions=request.extensions))
+
+    def close(self) -> None:
+        self.transport.close()
+
+
+@dataclass
+class _InstalledRelease:
+    client: WorkerNetworkClient
+    runtime: Path
+    container: str
+    candidate: dict[str, object]
+    previous: dict[str, object]
+
+
+def _ready(client: WorkerNetworkClient, source_sha: str) -> dict[str, object] | None:
+    client.inspect_supervisor()
+    result = client.observe_worker()
+    if result.result_code != "OK" or not isinstance(result.data, dict):
+        return None
+    observed = result.data.get("observation", {})
+    lifecycle = observed.get("lifecycle", {})
+    binding = result.data.get("runtime_binding", {})
+    return result.data if result.data.get("binding_status") == "VERIFIED" and binding.get("source_sha") == source_sha and lifecycle.get("startup_reconciled") is True and lifecycle.get("daemon_serving") is True else None
+
+
+@contextmanager
+def _installed_release(system: _SmokeSystem, root: Path, scenario: str) -> Iterator[_InstalledRelease]:
+    """Independently install both release versions, then start the prior one."""
+    image = _image()
+    source = Path(os.environ.get("GITHUB_WORKSPACE", str(Path(__file__).parents[1]))).resolve()
+    fixtures = Path(__file__).parent / "fixtures"
+    runtime, workspace, routing = (root / name for name in ("runtime", "workspace", "routing"))
+    for folder in (runtime, workspace, routing, runtime / "home", runtime / "logs"):
+        folder.mkdir(parents=True)
+    (routing / "ownership.json").write_text(json.dumps({"owner/repo": "release"}), encoding="utf-8")
+    (runtime / "llm_config.toml").write_text((system.runtime / "llm_config.toml").read_text(), encoding="utf-8")
+    secret = os.urandom(48)
+    (runtime / "bridge-secret").write_bytes(base64.b64encode(secret) + b"\n")
+    host_user = f"{os.getuid()}:{os.getgid()}"
+    stage_name = "release-stage-" + uuid.uuid4().hex[:12]
+    with _owned_staging(stage_name, scenario, root):
+        staged = _docker(
+            "run",
+            "--rm",
+            "--name",
+            stage_name,
+            "--network",
+            "bridge",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges:true",
+            "--user",
+            host_user,
+            "-v",
+            f"{source}:/source:ro",
+            "-v",
+            f"{runtime}:/runtime",
+            "-v",
+            f"{fixtures}:/fixtures:ro",
+            *_preparation_cache_arguments(),
+            *docker_timing_arguments(),
+            "-e",
+            "HOME=/runtime/home",
+            "--entrypoint",
+            "python",
+            image,
+            "/fixtures/beta_smoke_stage.py",
+            *system.revisions,
+            timeout=1200,
+        )
+        installed = json.loads(staged.stdout.strip().splitlines()[-1])
+        assert all(item["installed"]["editable"] is False for item in installed)
+        candidate, previous = [item["receipt"] for item in installed[:2]]
+        assert candidate["source_sha"] == system.revisions[0] != previous["source_sha"]
+        assert previous["installed_runtime_id"] != candidate["installed_runtime_id"]
+        assert candidate["content_identity"] != system.installations[0]["receipt"]["content_identity"]
+        address = system.client.config.address.rsplit(".", 1)[0] + ".12"
+        name = "release-worker-" + uuid.uuid4().hex[:12]
+        trust = system.runtime.parent / "ci-trust"
+        environment = {
+            "AUTO_CODER_SUPERVISOR_INSTANCE_ID": "release-worker",
+            "AUTO_CODER_CHANNEL": "release",
+            "AUTO_CODER_REPOSITORY": "owner/repo",
+            "AUTO_CODER_RUNTIME_ROOT": "/runtime",
+            "AUTO_CODER_WORKSPACE_ROOT": "/workspace",
+            "AUTO_CODER_OWNERSHIP_FILE": "/routing/ownership.json",
+            "AUTO_CODER_ARTIFACT_DIGEST": "ci-local-release",
+            "AUTO_CODER_SUPERVISOR_AUTO_START": "0",
+            "AUTO_CODER_SOURCE_REPOSITORY_ROOT": "/source",
+            "AUTO_CODER_BRIDGE_BIND_ADDRESS": address,
+            "AUTO_CODER_BRIDGE_PORT": "8843",
+            "AUTO_CODER_BRIDGE_SECRET_FILE": "/runtime/bridge-secret",
+            "AUTO_CODER_CONFIG_PATH": "/runtime/llm_config.toml",
+            "AUTO_CODER_HEALTH_LOG_ENABLED": "0",
+            "AUTO_CODER_DISABLE_AUTO_UPDATE": "1",
+            "AUTO_CODER_TEST_LAUNCH_AUDIT": "1",
+            "AUTO_CODER_TEST_REQUEST_AUDIT": "1",
+            "GITHUB_TOKEN": "nonfunctional-ci-placeholder",
+            "SSL_CERT_FILE": "/ci-trust/github.crt",
+            "REQUESTS_CA_BUNDLE": "/ci-trust/github.crt",
+            "NO_PROXY": "api.github.com,localhost,127.0.0.1",
+            "no_proxy": "api.github.com,localhost,127.0.0.1",
+            "HOME": "/runtime/home",
+        }
+        launch = ["run", "-d", "--rm", "--name", name, "--network", system.network, "--ip", address, "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--user", host_user, "--entrypoint", "python"]
+        for host, guest, mode in ((runtime, "/runtime", ""), (workspace, "/workspace", ""), (routing, "/routing", ""), (fixtures, "/fixtures", "ro"), (trust, "/ci-trust", "ro"), (source, "/source", "ro")):
+            launch.extend(["-v", f"{host}:{guest}" + (f":{mode}" if mode else "")])
+        for key, value in environment.items():
+            launch.extend(["-e", f"{key}={value}"])
+        try:
+            _docker(*launch, image, "/fixtures/supervisor_offline_pid1.py", timeout=60)
+            facts = _wait_for(lambda: facts if (facts := _container_facts(name))["socket"] else None, timeout=30)
+            assert facts["docker_socket"] is False and facts["docker_binary"] is None
+            client = WorkerNetworkClient(WorkerEndpointConfig("release-worker", "release", "owner/repo", address, 8843, secret))
+            stopped = client.inspect_supervisor()
+            assert stopped.result_code == "OK" and stopped.data["alive"] is False
+            # External bootstrap selects the first real installed runtime through
+            # the production Supervisor UDS. The authenticated deployment below
+            # starts only after this independent incumbent is actually serving.
+            started = _control(name, {"operation_id": "fixture-prior-runtime", "operation": "START", "runtime_id": str(previous["installed_runtime_id"])})
+            assert started["status"] == "RUNNING", started
+            _wait_for(lambda: _ready(client, str(previous["source_sha"])), timeout=90)
+            yield _InstalledRelease(client, runtime, name, candidate, previous)
+        finally:
+            logs = _docker("logs", name, check=False)
+            destination = Path(os.environ.get("GITHUB_WORKSPACE", str(Path(__file__).parents[1]))) / "supervisor-integration-logs" / scenario
+            destination.mkdir(parents=True, exist_ok=True)
+            (destination / "release-worker.log").write_text(logs.stdout + logs.stderr, encoding="utf-8")
+            _docker("rm", "-f", name, check=False)
+
+
+def _published_acceptance(system: _SmokeSystem):
+    inspected = system.client.inspect_supervisor()
+    worker = inspected.data["worker"]
+    accepted = _call(
+        system.http,
+        system.bearer,
+        "auto_coder_run_beta_acceptance",
+        {
+            "target_id": "beta-worker",
+            "selected_git_sha": system.revisions[0],
+            "installed_runtime_id": worker["runtime_id"],
+            "process_run_id": worker["process_run_id"],
+            "deployment_generation": worker["deployment_generation"],
+            "supervisor_generation": inspected.supervisor_generation,
+            "deployment_operation_id": system.deployed_id,
+            "idempotency_key": "release-original-beta-acceptance",
+        },
+    )
+    operation_id = str(accepted["operation_id"])
+    _wait_for(lambda: result if (result := _call(system.http, system.bearer, "auto_coder_beta_acceptance_get", {"target_id": "beta-worker", "operation_id": operation_id}))["status"] == "PASS_PUBLISHED" else None, timeout=200)
+    published = SourceAcceptancePublisher(system.remote, "owner/repo").read(operation_id)
+    assert published is not None
+    evidence = json.loads(published.annotation)["local_evidence"]
+    samples = [sample for sample in evidence["samples"] if sample["qualifying"]]
+    assert len(samples) >= 2
+    assert all(left["heartbeat"]["sequence"] < right["heartbeat"]["sequence"] for left, right in zip(samples, samples[1:]))
+    assert all(sample["artifact"]["source_revision"]["origin"] == "build_embedded" for sample in samples)
+    assert all(sample["runtime_binding"]["content_identity"] == system.installations[0]["receipt"]["content_identity"] for sample in samples)
+    return published
+
+
+def _container_identity(name: str) -> dict[str, object]:
+    facts = json.loads(_docker("inspect", name).stdout)[0]
+    return {"id": facts["Id"], "pid": facts["State"]["Pid"], "started": facts["State"]["StartedAt"], "mounts": facts["Mounts"]}
+
+
+@pytest.mark.timeout(2400)
+def test_authenticated_release_joins_published_acceptance_and_independent_installed_workers(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None) -> None:
+    scenario = "release-installed-join-" + uuid.uuid4().hex[:12]
+    with tempfile.TemporaryDirectory(prefix="release-join-", dir=tmp_path) as directory:
+        root = Path(directory)
+        beta_root = root / "beta"
+        beta_root.mkdir()
+        stage = "release-beta-stage-" + uuid.uuid4().hex[:12]
+        with _owned_staging(stage, scenario, beta_root), _smoke_system(real_boundary, beta_root, scenario, stage, source_service_type=_ReleaseSourceService) as system:
+            acceptance = _published_acceptance(system)
+            service = system.app.state.management_runtime
+            system.http.portal.call(service.stop_monitor)
+            system.http.portal.call(service.dispatcher.stop)
+            with _installed_release(system, root / "release", scenario) as release, _source_http(system.remote) as endpoint:
+
+                @contextmanager
+                def source_http_client(**_kwargs):
+                    with httpx.Client(transport=_SourceHTTPTransport(endpoint)) as client:
+                        yield client
+
+                monkeypatch.setattr("auto_coder.util.gh_cache.github_http_client", source_http_client)
+                policy_path = root / "release-policy.json"
+                policy_path.write_text(canonical(asdict(system.remote.configured)), encoding="utf-8")
+                token_path = root / "source-token"
+                token_path.write_text("controlled-external-source-credential", encoding="utf-8")
+                operating = root / "full-policy.yaml"
+                operating.write_text("profile: full\ntargets:\n  beta-worker:\n    channel: beta\n    repositories: [fixture/beta]\n  release-worker:\n    channel: release\n    repositories: [owner/repo]\n  release-source:\n    channel: release\n    repositories: [owner/repo]\n", encoding="utf-8")
+                settings = replace(service.settings, operating_policy_path=operating, source_release_policy_path=policy_path, source_release_token_file=token_path, source_release_target_id="release-source", source_release_workflow_id=WORKFLOW_ID)
+                app = create_management_app(settings, service.grants, worker_clients={"release": release.client})
+                with TestClient(app, base_url=settings.oauth.canonical_issuer) as http:
+                    tested = SourceProofPublisher(system.remote, "owner/repo").read(system.revisions[0])
+                    assert tested is not None
+                    promoted = _call(
+                        http,
+                        system.bearer,
+                        PROMOTE_ACTION,
+                        {
+                            "target_id": "release-source",
+                            "source_sha": system.revisions[0],
+                            "ci_run_id": tested.record.run_id,
+                            "ci_run_attempt": tested.record.run_attempt,
+                            "tested_source_ref": tested.tag_ref,
+                            "tested_source_oid": tested.tag_object_oid,
+                            "tested_source_record_sha256": digest(asdict(tested.record)),
+                            "acceptance_ref": acceptance.tag_ref,
+                            "acceptance_oid": acceptance.tag_object_oid,
+                            "idempotency_key": "release-promotion",
+                        },
+                    )
+                    assert promoted["status"] == "SUCCEEDED", promoted
+                    assert promoted["worker_deployed"] is False
+                    promotion_id = str(promoted["operation_id"])
+                    catalog_ref = f"refs/tags/auto-coder-source-release-{promotion_id}"
+                    catalog_oid = system.remote._git("rev-parse", catalog_ref)
+                    assert system.remote._git("cat-file", "-t", catalog_oid) == "tag"
+                    previous = release.client.inspect_supervisor()
+                    old = previous.data["worker"]
+                    old_os = json.loads((release.runtime / "supervisor" / "state.json").read_text())["worker"]
+                    assert _ready(release.client, system.revisions[1]) is not None
+                    assert old["runtime_id"] == release.previous["installed_runtime_id"]
+                    beta_before = system.client.inspect_supervisor()
+                    beta_identity = _container_identity(system.worker_name)
+                    release_identity = _container_identity(release.container)
+                    ownership = [(path, path.read_bytes()) for path in (system.runtime.parent / "routing" / "ownership.json", release.runtime.parent / "routing" / "ownership.json")]
+                    refs_before = system.remote._git("for-each-ref", "--format=%(refname) %(objectname)", "refs/tags")
+                    arguments = {
+                        "target_id": "release-worker",
+                        "selected_git_sha": system.revisions[0],
+                        "promotion_operation_id": promotion_id,
+                        "catalog_ref": catalog_ref,
+                        "catalog_oid": catalog_oid,
+                        "acceptance_ref": acceptance.tag_ref,
+                        "acceptance_oid": acceptance.tag_object_oid,
+                        "idempotency_key": "release-deploy",
+                        "expected_supervisor_generation": previous.supervisor_generation,
+                        "expected_runtime_id": old["runtime_id"],
+                        "expected_process_run_id": old["process_run_id"],
+                        "expected_deployment_generation": old["deployment_generation"],
+                    }
+                    deployed = _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)
+                    assert deployed["status"] in {"ACCEPTED", "PREPARING"}, deployed
+                    operation_id = str(deployed["operation_id"])
+                    assert _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
+                    assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "selected_git_sha": system.revisions[1]})["status"] == "CONFLICT"
+                    competing = _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing"})
+                    assert competing["status"] == "BUSY" and competing["operation_id"] == operation_id
+
+                    independent_samples = []
+                    observer = WorkerNetworkClient(release.client.config)
+
+                    def completed():
+                        live = _ready(observer, system.revisions[0])
+                        if live is not None:
+                            heartbeat = live["observation"]["heartbeat"]
+                            if heartbeat["stage"].startswith("producer:") and (not independent_samples or heartbeat["sequence"] > independent_samples[-1]["observation"]["heartbeat"]["sequence"]):
+                                independent_samples.append(live)
+                        result = _call(http, system.bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
+                        assert result["status"] not in {"FAILED", "SUPERSEDED", "NEEDS_ATTENTION"}, result
+                        return result if result["status"] == "SUCCEEDED" else None
+
+                    done = _wait_for(completed, timeout=210)
+                    observed = _ready(release.client, system.revisions[0])
+                    assert observed is not None
+                    binding = observed["runtime_binding"]
+                    for field in ("source_sha", "content_identity", "lock_sha256", "distribution_version"):
+                        assert binding[field] == release.candidate[field]
+                    assert binding["runtime_id"] == release.candidate["installed_runtime_id"]
+                    assert done["release_identity"]["catalog_oid"] == catalog_oid
+                    assert len(done["heartbeats"]) == 2
+                    assert done["heartbeats"][0] < done["heartbeats"][1]
+                    assert len(independent_samples) >= 2, "manager success needs independently observed producer progress"
+                    assert done["heartbeats"][-1] in {sample["observation"]["heartbeat"]["sequence"] for sample in independent_samples}
+                    assert len({(sample["observation"]["process_run_id"], sample["observation"]["deployment_generation"]) for sample in independent_samples}) == 1
+                    assert all(sample["observation"]["artifact"]["source_revision"] == {"available": True, "value": system.revisions[0], "origin": "build_embedded", "reason": None} for sample in independent_samples)
+                    current = release.client.inspect_supervisor()
+                    assert current.data["worker"]["process_run_id"] != old["process_run_id"]
+                    assert current.data["worker"]["deployment_generation"] != old["deployment_generation"]
+                    terminal = json.loads((release.runtime / "last-terminal.json").read_text())
+                    assert all(terminal[key] == value for key, value in {"process_run_id": old["process_run_id"], "deployment_generation": old["deployment_generation"], "lifecycle_state": "stopped", "is_graceful_ready": True, "unsettled_count": 0}.items())
+                    lifetime = _docker("exec", release.container, "python", "-c", "from pathlib import Path; import sys; p=Path('/proc/'+sys.argv[1]+'/stat'); print(p.read_text() if p.exists() else 'ABSENT')", str(old_os["pid"])).stdout.strip()
+                    assert lifetime == "ABSENT" or lifetime.rsplit(") ", 1)[1].split()[19] != old_os["start_token"]
+                    launches = [json.loads(line) for line in (release.runtime / "fixture-launches.jsonl").read_text().splitlines()]
+                    assert len(launches) == 2
+                    assert [item["environment"] for item in launches] == [release.previous["environment_path"], release.candidate["environment_path"]]
+                    assert len({item["pid"] for item in launches}) == 2
+                    assert _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
+                    assert len((release.runtime / "fixture-launches.jsonl").read_text().splitlines()) == 2
+                    beta_after = system.client.inspect_supervisor()
+                    assert beta_after.supervisor_generation == beta_before.supervisor_generation
+                    assert all(beta_after.data["worker"][key] == beta_before.data["worker"][key] for key in ("process_run_id", "deployment_generation", "runtime_id", "binding_status"))
+                    assert all(beta_after.data["worker"]["runtime_binding"][key] == beta_before.data["worker"]["runtime_binding"][key] for key in ("runtime_id", "content_identity", "source_sha", "start_token"))
+                    assert _container_identity(system.worker_name) == beta_identity
+                    assert _container_identity(release.container) == release_identity
+                    assert all(path.read_bytes() == original for path, original in ownership)
+                    assert system.remote._git("for-each-ref", "--format=%(refname) %(objectname)", "refs/tags") == refs_before
+                    assert len(system.remote.dispatches) == 1

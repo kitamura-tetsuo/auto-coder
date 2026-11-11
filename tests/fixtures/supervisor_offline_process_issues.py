@@ -7,6 +7,7 @@ Only production CLI options are used; no application functions are replaced.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -14,6 +15,14 @@ from pathlib import Path
 
 
 def main() -> None:
+    if os.environ.get("AUTO_CODER_TEST_LAUNCH_AUDIT") == "1":
+        # External acceptance counts actual selected-interpreter processes.
+        # This records launch facts only, never readiness or drain evidence.
+        audit = Path(os.environ["AUTO_CODER_RUNTIME_ROOT"]) / "fixture-launches.jsonl"
+        with audit.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"pid": os.getpid(), "interpreter": sys.executable, "environment": os.environ.get("VIRTUAL_ENV")}) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
     if os.environ.get("AUTO_CODER_FIXTURE_HOLD_BOOTSTRAP") == "1" and "/worker-versions/" not in os.environ.get("VIRTUAL_ENV", ""):
         # The disposable bootstrap incumbent holds a genuine UDS/OS drain;
         # the subsequently selected locked-uv runtime still executes the

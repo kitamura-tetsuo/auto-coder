@@ -169,3 +169,31 @@ Transient live-binding unavailability waits within the original lifecycle deadli
 without dispatch or lane release; fresh matching evidence can then continue the
 same operation. Expiry remains NEEDS_ATTENTION. Beta source reconstruction is
 unchanged by this release-specific extension.
+
+### Installed acceptance join regression
+
+`tests/test_release_worker_acceptance_container.py` joins authenticated beta
+acceptance and source promotion to authenticated `auto_coder_deploy_release_source`
+admission against a separately running release worker. The external fixture
+independently installs the prior and candidate full Git revisions with the
+existing locked version preparer. Actual beta process observations produce
+`PASS_PUBLISHED`; the acceptance and release catalog are real annotated Git
+objects in a disposable repository. The authenticated deployment retains those
+exact identities while the signed Supervisor drains the prior installed worker
+and starts the candidate. Independent signed samples check installed provenance,
+startup reconciliation, daemon serving and producer heartbeat advancement.
+Actual process launches, container identities, beta identity, ownership files
+and source refs are observed separately from management success readback.
+
+The external Actions/Release transport is controlled and executes the production
+promotion publisher against real Git; it is not a live GitHub Actions acceptance
+claim. Neither worker has a Docker binary or socket. The test belongs to the
+required `isolated-containers` Supervisor profile rather than ordinary unit CI.
+
+This bounded successful join, replay, changed-source conflict and competing-key
+busy coverage does not complete REQ-010. Integrated installed-release held
+invocation/terminal-exit barriers, failed candidate and one-time prior recovery,
+lost responses across independent manager/Supervisor reconstruction, unconfirmed
+pre-effect durability and post-stage supersession remain separate required
+acceptance scenarios. Preserve the unresolved acceptance gate until those exact
+scenarios and clean-revision CI are demonstrated.

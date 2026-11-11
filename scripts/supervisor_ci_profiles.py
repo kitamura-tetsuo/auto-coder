@@ -58,6 +58,7 @@ CONTAINER_REQUIRED = (
     + (
         "tests/test_worker_network_integration.py::test_three_target_manager_restart_peer_isolation_and_lost_response",
         "tests/test_management_beta_deploy_container.py::test_authenticated_beta_source_installs_real_version_and_reconciles_after_lost_reply",
+        "tests/test_release_worker_acceptance_container.py::test_authenticated_release_joins_published_acceptance_and_independent_installed_workers",
     )
     + tuple(
         f"tests/test_beta_runtime_smoke_container.py::{name}"
@@ -102,6 +103,7 @@ SELECTORS = {
         "tests/test_worker_network_integration.py",
         "tests/test_management_beta_deploy_container.py",
         "tests/test_beta_runtime_smoke_container.py",
+        "tests/test_release_worker_acceptance_container.py",
     ),
 }
 
