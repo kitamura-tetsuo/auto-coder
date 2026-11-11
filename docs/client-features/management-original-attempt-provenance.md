@@ -80,7 +80,14 @@ Concurrent admission reports `history admission contested` before writing an
 intent. Previously anchored request IDs, target aliases and cycles refuse replay.
 Before admitting another attempt or entering a host grant, the producer also
 rejects unknown event kinds, impossible per-attempt boundary sequences, and
-terminal facts that contradict the matching original anchor.
+terminal facts that contradict the matching original anchor. Every historical
+`claimed` event must retain the exact producer payload shape, a real device/inode
+identity and canonical SHA-256 digest. The admission/grant frontier reader
+reopens each protected claimed intent and matches its original canonical bytes,
+inode and digest to its anchor and event before permitting a later attempt or
+grant. A plausible but incorrect rehashed claim remains unavailable even if
+the frontier checksums are internally consistent; missing or unprotected
+original claim files do not become assumed-successful ancestors.
 It checks every earlier original anchor against its exact producer lifetime,
 fixed expected store paths, original state/journal device-inode identities and
 pristine boolean before advancing the frontier or issuing another grant. A

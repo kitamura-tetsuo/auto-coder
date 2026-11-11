@@ -227,6 +227,34 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
             if anchor["stores"] != expected_stores(original_intent) or anchor["state"] != [original_intent.state_device, original_intent.state_inode] or anchor["journal"] != [original_intent.journal_device, original_intent.journal_inode] or type(anchor["pristine"]) is not bool:
                 raise OriginalEvidenceUnavailable("original anchor binding invalid")
             anchors[event["attempt"]] = anchor
+        elif event["kind"] == "claimed":
+            claim = event["value"]
+            if (
+                not isinstance(claim, dict)
+                or set(claim) != {"identity", "sha256"}
+                or not isinstance(claim["identity"], list)
+                or len(claim["identity"]) != 2
+                or any(type(value) is not int or value < 0 for value in claim["identity"])
+                or claim["identity"][1] == 0
+                or not isinstance(claim["sha256"], str)
+                or len(claim["sha256"]) != 64
+                or any(char not in "0123456789abcdef" for char in claim["sha256"])
+            ):
+                raise OriginalEvidenceUnavailable("original claimed boundary is malformed")
+            anchor = anchors.get(event["attempt"])
+            if anchor is None:
+                raise OriginalEvidenceUnavailable("original claimed boundary has no anchor")
+            try:
+                original_intent = parse_fresh_intent(anchor["intent"])
+                encoded_claim, original_id = read_original(Path(original_intent.host_state_root) / "fresh-initialization.json")
+                require_claimed_intent(encoded_claim, original_intent)
+            except (OSError, ValueError, TypeError, KeyError) as error:
+                raise OriginalEvidenceUnavailable("original claimed boundary source unavailable: " + str(error)) from error
+            if claim != {
+                "identity": list(original_id),
+                "sha256": hashlib.sha256(encoded_claim).hexdigest(),
+            }:
+                raise OriginalEvidenceUnavailable("original claimed boundary differs from source")
         elif event["kind"] == "never-created":
             anchor = anchors.get(event["attempt"])
             if anchor is None or anchor["pristine"] is not True or event["value"] != {"lifetime": anchor["lifetime"], "stores": anchor["stores"]}:

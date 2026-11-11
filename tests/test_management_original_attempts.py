@@ -1128,14 +1128,14 @@ def test_original_grant_refuses_matching_hash_of_wrong_claimed_target(tmp_path):
     frontier = json.loads(frontier_path.read_bytes())
     frontier["digest"] = hashlib.sha256(forged_event).hexdigest()
     frontier_path.write_bytes(producer.canonical(frontier))
-    assert [event.kind for event in read_frontier(Path(binding.root), binding)[1]] == ["anchor", "claimed"]
     before = _fingerprint(tmp_path)
+    with pytest.raises(OriginalEvidenceUnavailable, match="original claimed boundary"):
+        read_frontier(Path(binding.root), binding)
 
-    with pytest.raises(OriginalEvidenceUnavailable, match="original claim intent differs"):
+    with pytest.raises(OriginalEvidenceUnavailable, match="original claimed boundary"):
         with producer.grant_boundary(intent):
             pytest.fail("wrong target reached the original grant boundary")
 
-    assert [event.kind for event in read_frontier(Path(binding.root), binding)[1]] == ["anchor", "claimed"]
     assert _fingerprint(tmp_path) == before
 
 
@@ -1164,7 +1164,7 @@ def test_original_admission_refuses_corrupt_prior_event_branch(tmp_path, corrupt
 
     successor = _covered(tmp_path, binding, "new-after-corrupt-prior")
     before = _fingerprint(tmp_path)
-    with pytest.raises(OriginalEvidenceUnavailable, match="original event|original attempt boundaries"):
+    with pytest.raises(OriginalEvidenceUnavailable, match="original event|original attempt boundaries|original claimed boundary"):
         claim_fresh_initialization(Path(successor.host_state_root), successor)
     assert _fingerprint(tmp_path) == before
     assert not list(Path(successor.host_state_root).iterdir())
@@ -1279,6 +1279,41 @@ def _rewrite_rehashed_original_event(root: Path, index: int, mutate) -> None:
         previous = hashlib.sha256(encoded).hexdigest()
     frontier["digest"] = previous
     frontier_path.write_bytes(canonical(frontier))
+
+
+@pytest.mark.parametrize("boundary", ["admission", "grant"])
+@pytest.mark.parametrize("corruption", ["invalid-identity", "invalid-digest", "unexpected-payload", "wrong-identity", "wrong-digest"])
+def test_original_boundaries_refuse_rehashed_invalid_historical_claim(tmp_path, boundary, corruption):
+    """A forged claimed event is not original producer evidence even with valid hashes."""
+    binding = _history(tmp_path)
+    prior = _covered(tmp_path, binding, "original-predecessor")
+    claim_fresh_initialization(Path(prior.host_state_root), prior)
+    current = _covered(tmp_path, binding, "subsequent-attempt")
+    if boundary == "grant":
+        claim_fresh_initialization(Path(current.host_state_root), current)
+
+    def mutate(event):
+        assert event["kind"] == "claimed"
+        if corruption == "invalid-identity":
+            event["value"]["identity"] = [True, 1]
+        elif corruption == "invalid-digest":
+            event["value"]["sha256"] = "invalid"
+        elif corruption == "wrong-identity":
+            event["value"]["identity"][1] += 1
+        elif corruption == "wrong-digest":
+            event["value"]["sha256"] = "0" * 64
+        else:
+            event["value"]["unexpected"] = True
+
+    _rewrite_rehashed_original_event(Path(binding.root), 1, mutate)
+    before = _fingerprint(tmp_path)
+    with pytest.raises(OriginalEvidenceUnavailable, match="original claimed boundary"):
+        if boundary == "admission":
+            claim_fresh_initialization(Path(current.host_state_root), current)
+        else:
+            serve_one_fresh_grant(tmp_path / "fresh-guard.sock", current, None, None, -1, -1)
+    assert _fingerprint(tmp_path) == before
+    assert not (tmp_path / "fresh-guard.sock").exists()
 
 
 @pytest.mark.parametrize("corruption", ["anchor-lifetime", "anchor-store", "anchor-root", "claimed-nonpristine"])
