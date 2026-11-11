@@ -680,3 +680,85 @@ def test_read_diagnostics_respect_stage_but_preserve_original_pending_reconcilia
         "auto_coder_operation_get",
         {"target_id": "fixture-release", "operation_id": "old-release"},
     )
+
+
+def test_checkpoint_cannot_conflate_beta_and_release_targets(tmp_path):
+    original = checkpoint(
+        stage="full",
+        beta_target="same-worker",
+        release_target="same-worker",
+    )
+    path = tmp_path / "checkpoint.json"
+    path.write_text(json.dumps(asdict(original)))
+    with pytest.raises(ValueError, match="distinct beta and release"):
+        smoke.load_checkpoint(path)
+
+
+def test_full_stage_read_plan_refuses_same_beta_and_release_target():
+    original = checkpoint(stage="full", beta_target="same-worker", release_target="same-worker")
+    with pytest.raises(ValueError, match="distinct beta and release"):
+        smoke.read_plan(original, "same-worker", "")
+
+
+def test_full_stage_offline_preflight_refuses_same_beta_and_release_target():
+    original = checkpoint(
+        stage="full",
+        task_id="original-task",
+        repository="kitamura-tetsuo/auto-coder",
+        issue_number="2608",
+        stage_revision="operator-revision",
+        source_sha="a" * 40,
+        ci_run_id="43010413128",
+        ci_run_attempt="1",
+        tested_source_ref="refs/heads/reviewed",
+        tested_source_oid="a" * 40,
+        beta_target="same-worker",
+        release_target="same-worker",
+        beta_acceptance_ref="refs/tags/beta",
+        beta_acceptance_oid="b" * 40,
+        promotion_operation_id="original-promotion",
+        promotion_catalog_oid="c" * 40,
+    )
+    report = smoke.required_next_observation(original)
+    assert report.verdict == "BLOCKED"
+    assert "distinct beta and release" in report.reason
+    assert not report.effect_dispatched
+
+
+def test_live_beta_refuses_incomplete_tested_git_provenance_before_transport(tmp_path):
+    original = checkpoint(
+        stage="beta",
+        task_id="original-task",
+        repository="kitamura-tetsuo/auto-coder",
+        issue_number="2608",
+        stage_revision="operator-revision",
+        beta_target="fixture-beta",
+    )
+    path = tmp_path / "checkpoint.json"
+    path.write_text(json.dumps(asdict(original)))
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(Path(smoke.__file__)),
+            "--checkpoint",
+            str(path),
+            "--operator-stage",
+            "beta",
+            "--operator-stage-revision",
+            "operator-revision",
+            "--endpoint",
+            "https://never-contacted-fixture.invalid/mcp",
+            "--target-id",
+            "fixture-beta",
+        ],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "XDG_STATE_HOME": str(tmp_path), "AUTO_CODER_MCP_ACCESS_TOKEN": "unused-disposable-token"},
+        timeout=15,
+    )
+    assert result.returncode == 2
+    report = json.loads(result.stdout.splitlines()[-1])
+    assert report["verdict"] == "BLOCKED"
+    assert "Exact tested Git source" in report["reason"]
+    assert report["observations"] == []
+    assert not report["effect_dispatched"]

@@ -143,6 +143,8 @@ def load_checkpoint(path: Path | None) -> DotCheckpoint:
         raise ValueError("immutable failure-signature recovery budget exceeded")
     if raw["recovery_attempts"] and not raw["failure_signature"]:
         raise ValueError("recovery attempt requires its immutable failure signature")
+    if raw["beta_target"] and raw["release_target"] and raw["beta_target"] == raw["release_target"]:
+        raise ValueError("distinct beta and release targets are required")
     if raw["pending_effect_state"] not in UNKNOWN_EFFECTS | {""}:
         raise ValueError("unsupported pending effect state: refuse unknown-operation reconciliation")
     if raw["pending_effect_state"]:
@@ -172,6 +174,8 @@ def _original_operation_target(checkpoint: DotCheckpoint, operation_id: str) -> 
 
 def required_next_observation(checkpoint: DotCheckpoint) -> RolloutReport:
     """Never promote a checkpoint into live success or release unknown effects."""
+    if checkpoint.beta_target and checkpoint.release_target and checkpoint.beta_target == checkpoint.release_target:
+        return RolloutReport("BLOCKED", checkpoint.stage, "distinct beta and release targets are required")
     if checkpoint.pending_effect_state:
         if checkpoint.pending_effect_state not in UNKNOWN_EFFECTS:
             return RolloutReport("BLOCKED", checkpoint.stage, "Unsupported pending effect state; never assume no original effect")
@@ -245,6 +249,8 @@ def checked_tool(name: str, arguments: dict[str, object]) -> None:
 
 def read_plan(checkpoint: DotCheckpoint, target: str, operation_id: str) -> tuple[tuple[str, dict[str, object]], ...]:
     """Produce an explicit allowlist, not a caller-controlled arbitrary MCP tool."""
+    if checkpoint.beta_target and checkpoint.release_target and checkpoint.beta_target == checkpoint.release_target:
+        raise ValueError("distinct beta and release targets are required")
     if not target or SAFE_ID.fullmatch(target) is None:
         raise ValueError("an exact configured target is required")
     if operation_id and SAFE_ID.fullmatch(operation_id) is None:
@@ -352,6 +358,10 @@ def main() -> int:
             endpoint = checked_endpoint(args.endpoint)
             current_stage = args.operator_stage or ("observe" if checkpoint.stage == "observe" else None)
             confirm_operator_scope(checkpoint, current_stage, args.operator_stage_revision)
+            if checkpoint.stage != "observe" and not checkpoint.pending_effect_state:
+                preflight = required_next_observation(checkpoint)
+                if preflight.verdict == "BLOCKED":
+                    raise OperatorScopeError(preflight.reason)
             plan = read_plan(checkpoint, args.target_id or "", args.operation_id)
             bearer = os.environ.get("AUTO_CODER_MCP_ACCESS_TOKEN", "")
             if not bearer:

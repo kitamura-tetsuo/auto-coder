@@ -75,6 +75,10 @@ malformed checkpoint identifiers fail closed before any request.
 Full-stage diagnostics additionally require the distinct original configured
 release worker target: a promotion record without a selected release target
 cannot even establish which installed runtime remains to be checked.
+The beta and release target identities must be distinct whenever both are
+recorded. A shared target cannot be interpreted as separate release-worker
+activation, even with valid Git promotion evidence. Saved checkpoints,
+offline planning and live read plans refuse this configuration.
 Beta/full work without the original task, repository, Issue/PR
 identity or stage revision is BLOCKED. Before a beta or full stage can
 report even a diagnostic-only `NOT_RUN`, the checkpoint must also retain the
@@ -133,7 +137,11 @@ service during disposable tests. Before any live diagnostic using a beta/full
 checkpoint, the operator must newly supply `--operator-stage` and
 `--operator-stage-revision`. They must exactly match the original saved stage
 and revision; missing, changed, or invalid revisions are `BLOCKED` before
-network access. The observe-only default needs no fresh revision. This check
+network access. The live beta/full client also checks the checkpoint's original work, tested
+source SHA/ref/OID, CI run/attempt, configured beta target and remaining
+recovery budget **before opening network transport**. Without these original
+bindings it returns BLOCKED, not a live read against an incomplete plan.
+The observe-only default needs no fresh revision. This check
 prevents a stale checkpoint from silently selecting a different stage; it is
 not server attestation or an authorization grant. Read-only target diagnostics
 are limited to the checkpoint's selected beta target in beta stage and its
