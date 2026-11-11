@@ -185,17 +185,19 @@ def _create_real_new_container(root: Path, request_file: Path, request: dict[str
     return container_id, image_id, tag
 
 
-def _authorized_readback(container_id: str, token: str, observation_id: str) -> subprocess.CompletedProcess[str]:
+def _authorized_readback(container_id: str, token: str, observation_id: str, *, expected_status: int = 200) -> subprocess.CompletedProcess[str]:
     code = (
         "import http.client,json,os;"
         f"obs={observation_id!r};"
+        f"expected={expected_status!r};"
         "payload=json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call',"
         "'params':{'name':'auto_coder_whoami','arguments':{'observation_id':obs}}}).encode();"
         "c=http.client.HTTPConnection('127.0.0.1',18881,timeout=3);"
         "c.request('POST','/mcp',payload,headers={'Authorization':'Bearer '+os.environ['SYNTHETIC_TOKEN'],"
         "'Content-Type':'application/json','Accept':'application/json, text/event-stream'});"
-        "r=c.getresponse();data=json.loads(r.read(65537));"
-        "assert r.status==200 and data['result']['structuredContent']['uid']=='new-operator'"
+        "r=c.getresponse();data=r.read(65537);"
+        "assert r.status==expected,(r.status,data);"
+        "assert expected!=200 or json.loads(data)['result']['structuredContent']['uid']=='new-operator'"
     )
     return subprocess.run(["docker", "exec", "--env", "SYNTHETIC_TOKEN=" + token, container_id, "python3", "-B", "-c", code], capture_output=True, text=True, timeout=20)
 
@@ -287,6 +289,64 @@ def test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback
         assert after_crash.returncode == 1 and after_crash.stdout == ""
         assert len(counter.read_text().splitlines()) == 1
         assert json.loads((root / "state/new-first-outcome.json").read_bytes())["status"] == "succeeded"
+    finally:
+        if container_id:
+            subprocess.run(["docker", "rm", "--force", container_id], capture_output=True, timeout=30)
+        if tag:
+            subprocess.run(["docker", "image", "rm", tag], capture_output=True, timeout=30)
+
+
+@pytest.mark.parametrize("unacceptable_readback", ["revoked-grant", "stale-observation"])
+def test_real_new_first_launch_never_reports_readiness_from_invalid_readback(request_file: Path, unacceptable_readback: str) -> None:
+    root = request_file.parent
+    token, request = _prepare_real_new_source(request_file)
+    bootstrap_path = Path(str(request["bootstrap_config"]))
+    bootstrap = json.loads(bootstrap_path.read_bytes())
+    bootstrap["verification_timeout"] = 25
+    bootstrap_path.write_text(json.dumps(bootstrap))
+    if unacceptable_readback == "revoked-grant":
+        with closing(sqlite3.connect(root / "oauth/oauth.sqlite3")) as connection:
+            connection.execute("UPDATE grants SET revoked=? WHERE client_id=?", (time.time(), "new-client"))
+            connection.commit()
+            assert connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
+    retained_oauth = (root / "oauth/oauth.sqlite3").read_bytes()
+    assert _run_host("begin", "--request-file", str(request_file)).returncode == 0
+
+    tag = ""
+    container_id = ""
+    try:
+        container_id, image_id, tag = _create_real_new_container(root, request_file, request)
+        original = _run_host("inspect-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id)
+        assert original.returncode == 0, original.stderr
+        launched = _run_host("start-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id, timeout=150)
+        assert launched.returncode == 0, launched.stderr
+        assert json.loads(launched.stdout)["status"] == "first-child-observed-awaiting-authenticated-readback"
+        actual_id = json.loads((root / "state/new-first-launched.json").read_bytes())["observation_id"]
+        tested_id = "0" * 32 if unacceptable_readback == "stale-observation" else actual_id
+        assert tested_id != actual_id or unacceptable_readback == "revoked-grant"
+        expected_status = 401 if unacceptable_readback == "revoked-grant" else 200
+
+        deadline = time.monotonic() + 25
+        while time.monotonic() < deadline:
+            readback = _authorized_readback(container_id, token, tested_id, expected_status=expected_status)
+            if readback.returncode == 0:
+                break
+            time.sleep(0.25)
+        else:
+            raise AssertionError("real NEW invalid readback could not be tested: " + readback.stderr[-1200:])
+
+        outcome_file = root / "state/new-first-outcome.json"
+        deadline = time.monotonic() + 35
+        while time.monotonic() < deadline and not outcome_file.exists():
+            time.sleep(0.1)
+        assert outcome_file.is_file(), "NEW owner did not record the readback timeout"
+        assert json.loads(outcome_file.read_bytes())["status"] == "unknown"
+        assert len((root / "state/physical-child-invocations").read_text().splitlines()) == 1
+        assert (root / "oauth/oauth.sqlite3").read_bytes() == retained_oauth
+
+        retry = _run_host("start-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id, timeout=20)
+        assert retry.returncode == 1
+        assert len((root / "state/physical-child-invocations").read_text().splitlines()) == 1
     finally:
         if container_id:
             subprocess.run(["docker", "rm", "--force", container_id], capture_output=True, timeout=30)
