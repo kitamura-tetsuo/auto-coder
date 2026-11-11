@@ -102,7 +102,7 @@ def _dedicated_network_id(name: str, *, expected_container: str | None = None) -
     except (OSError, subprocess.SubprocessError, ValueError) as error:
         raise HostObservationUnavailable("NEW dedicated Docker network evidence unavailable") from error
     members = fields.get("Containers")
-    expected_members = {} if expected_container is None else {expected_container}
+    expected_members: set[str] = set() if expected_container is None else {expected_container}
     if (
         fields.get("Name") != name
         or re.fullmatch(r"[0-9a-f]{64}", str(fields.get("Id"))) is None
