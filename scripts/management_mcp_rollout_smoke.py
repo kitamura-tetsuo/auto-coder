@@ -35,6 +35,8 @@ STAGES = frozenset({"observe", "beta", "full"})
 UNKNOWN_EFFECTS = frozenset({"SENT_UNKNOWN", "NEEDS_ATTENTION"})
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\Z")
+ISSUE_NUMBER = re.compile(r"[1-9][0-9]{0,8}\Z")
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,11 @@ class DotCheckpoint:
 
     schema: int
     stage: str
+    task_id: str = ""
+    repository: str = ""
+    issue_number: str = ""
+    pr_number: str = ""
+    stage_revision: str = ""
     source_sha: str = ""
     ci_run_id: str = ""
     ci_run_attempt: str = ""
@@ -101,6 +108,17 @@ def load_checkpoint(path: Path | None) -> DotCheckpoint:
         value = raw[field]
         if not isinstance(value, str) or len(value) > 256 or "\x00" in value:
             raise ValueError("invalid checkpoint field: " + field)
+    if raw["task_id"] and SAFE_ID.fullmatch(raw["task_id"]) is None:
+        raise ValueError("invalid original task identity")
+    if raw["repository"] and REPOSITORY.fullmatch(raw["repository"]) is None:
+        raise ValueError("invalid original repository identity")
+    for field in ("issue_number", "pr_number"):
+        if raw[field] and ISSUE_NUMBER.fullmatch(raw[field]) is None:
+            raise ValueError("invalid original GitHub work identity: " + field)
+        if raw[field] and not raw["repository"]:
+            raise ValueError("original Issue/PR identity requires its repository")
+    if raw["stage_revision"] and SAFE_ID.fullmatch(raw["stage_revision"]) is None:
+        raise ValueError("invalid original operator stage revision")
     if raw["source_sha"] and SHA.fullmatch(raw["source_sha"]) is None:
         raise ValueError("checkpoint source SHA must be exact full lowercase Git SHA")
     if raw["idempotency_key"] and SAFE_ID.fullmatch(raw["idempotency_key"]) is None:
@@ -122,6 +140,8 @@ def required_next_observation(checkpoint: DotCheckpoint) -> RolloutReport:
         return RolloutReport("BLOCKED", checkpoint.stage, "Reconcile the original unknown effect by original operation ID; never allocate another key")
     if checkpoint.recovery_attempts == 1 and checkpoint.failure_signature:
         return RolloutReport("BLOCKED", checkpoint.stage, "The unchanged failure signature has exhausted its one permitted recovery attempt")
+    if checkpoint.stage != "observe" and not (checkpoint.task_id and checkpoint.repository and (checkpoint.issue_number or checkpoint.pr_number) and checkpoint.stage_revision):
+        return RolloutReport("BLOCKED", checkpoint.stage, "Original work identity or operator stage revision is missing; never infer authority from current HEAD or stage name")
     if checkpoint.stage == "observe":
         return RolloutReport("NOT_RUN", checkpoint.stage, "Current authenticated status, original operation and child evidence require an independent live read")
     if checkpoint.stage == "beta":
@@ -165,7 +185,9 @@ def read_plan(checkpoint: DotCheckpoint, target: str, operation_id: str) -> tupl
         raise ValueError("invalid original operation ID")
     if checkpoint.pending_effect_state and checkpoint.pending_effect_state not in UNKNOWN_EFFECTS:
         raise ValueError("unsupported pending effect state")
-    original_read = ("auto_coder_operation_get", {"target_id": target, "operation_id": operation_id})
+    original_read: tuple[str, dict[str, object]] = ("auto_coder_operation_get", {"target_id": target, "operation_id": operation_id})
+    status_read: tuple[str, dict[str, object]] = ("auto_coder_status", {"target_id": target})
+    deployment_read: tuple[str, dict[str, object]] = ("auto_coder_deployment_status", {"target_id": target})
     if checkpoint.pending_effect_state in UNKNOWN_EFFECTS:
         if not operation_id:
             raise ValueError("unknown original effect requires its original operation ID")
@@ -186,14 +208,14 @@ def read_plan(checkpoint: DotCheckpoint, target: str, operation_id: str) -> tupl
         plan: tuple[tuple[str, dict[str, object]], ...] = (
             ("auto_coder_whoami", {}),
             original_read,
-            ("auto_coder_status", {"target_id": target}),
-            ("auto_coder_deployment_status", {"target_id": target}),
+            status_read,
+            deployment_read,
         )
     else:
         plan = (
             ("auto_coder_whoami", {}),
-            ("auto_coder_status", {"target_id": target}),
-            ("auto_coder_deployment_status", {"target_id": target}),
+            status_read,
+            deployment_read,
         )
         if operation_id:
             plan += (original_read,)

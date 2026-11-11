@@ -1,6 +1,11 @@
 {
   "schema": 1,
   "stage": "observe",
+  "task_id": "",
+  "repository": "",
+  "issue_number": "",
+  "pr_number": "",
+  "stage_revision": "",
   "source_sha": "",
   "ci_run_id": "",
   "ci_run_attempt": "",

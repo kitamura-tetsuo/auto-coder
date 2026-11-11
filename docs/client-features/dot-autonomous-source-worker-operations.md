@@ -62,13 +62,18 @@ supersede an earlier selection.
 ## Resumable checkpoint and finite recovery
 
 The [schema-1 example checkpoint](../examples/management-mcp/dot-rollout-checkpoint.example.json) lists every required field. Copy it only into an operator-owned private location, populate original identifiers from verified sources, and never include bearer/refresh credentials.\nThe `schema=1` operator checkpoint contains only nonsecret identifiers:
-operator `stage`, exact source SHA and selected CI run/attempt/tested ref and
-OID, configured beta/release targets, original management operation IDs,
+operator `stage`, original task ID, repository and Issue/PR numbers, immutable
+operator-selected stage revision, exact source SHA and selected CI run/attempt/tested
+ref and OID, configured beta/release targets, original management operation IDs,
 installed runtime IDs and generations, acceptance ref/OID, promotion
 operation/run/catalog ref/OID, stable original idempotency key, and
 `pending_effect_state`, immutable failure signature and its recovery count.
 This is a **reminder**, never a grant, proof of an effect or a current worker
-observation. The worker and original journal MUST be re-queried after
+observation. Beta/full work without the original task, repository, Issue/PR
+identity or stage revision is BLOCKED. These retained values must be compared
+with fresh operator authorization before any future mutation; current MCP read
+diagnostics cannot attest to a dot stage revision and never elevate it.
+The worker and original journal MUST be re-queried after
 interruption; no current HEAD substitution, changed-intent same-key replay
 or new idempotency key after an unknown send.
 

@@ -157,6 +157,12 @@ def test_one_recovery_attempt_is_terminal_for_unchanged_failure():
         {"idempotency_key": "invalid key"},
         {"beta_target": 123},
         {"beta_target": "bad\x00target"},
+        {"task_id": "bad task"},
+        {"repository": "https://github.com/owner/repo"},
+        {"repository": "owner/repo", "issue_number": "00042"},
+        {"issue_number": "2608"},
+        {"repository": "owner/repo", "pr_number": "-42"},
+        {"stage_revision": "invalid revision"},
     ],
 )
 def test_checkpoint_refuses_invalid_authority_and_identity(tmp_path, updates):
@@ -181,6 +187,11 @@ def test_checkpoint_refuses_secret_or_unsupported_fields(tmp_path, field):
 def test_checkpoint_roundtrips_all_immutable_identifiers_without_elevation(tmp_path):
     original = checkpoint(
         stage="full",
+        task_id="task-2608-original",
+        repository="kitamura-tetsuo/auto-coder",
+        issue_number="2608",
+        pr_number="2835",
+        stage_revision="operator-stage-rev-04",
         source_sha="a" * 40,
         ci_run_id="452",
         ci_run_attempt="2",
@@ -279,3 +290,53 @@ def test_missing_token_refuses_before_any_transport(tmp_path):
 def test_read_only_transport_refuses_missing_original_operation_during_unknown():
     with pytest.raises(ValueError, match="original operation ID"):
         smoke.read_plan(checkpoint(pending_effect_state="SENT_UNKNOWN"), "beta-worker", "")
+
+
+def test_checkpoint_preserves_original_work_and_stage_revision_across_cli_resume(tmp_path):
+    original = checkpoint(
+        stage="beta",
+        task_id="dot-issue-2608",
+        repository="kitamura-tetsuo/auto-coder",
+        issue_number="2608",
+        pr_number="2835",
+        stage_revision="operator-decision-20261111-rev2",
+        source_sha="a" * 40,
+        tested_source_ref="refs/heads/original-reviewed-feature",
+        ci_run_id="43010413128",
+        ci_run_attempt="1",
+    )
+    path = tmp_path / "checkpoint.json"
+    path.write_text(json.dumps(asdict(original)))
+    assert smoke.load_checkpoint(path) == original
+    result = subprocess.run(
+        [sys.executable, str(Path(smoke.__file__)), "--checkpoint", str(path)],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "XDG_STATE_HOME": str(tmp_path)},
+        timeout=15,
+    )
+    assert result.returncode == 3
+    report = json.loads(result.stdout.splitlines()[-1])
+    assert report["verdict"] == "NOT_RUN" and report["effect_dispatched"] is False
+    assert smoke.load_checkpoint(path).task_id == "dot-issue-2608"
+    assert smoke.load_checkpoint(path).stage_revision == "operator-decision-20261111-rev2"
+    assert smoke.load_checkpoint(path).tested_source_ref == "refs/heads/original-reviewed-feature"
+
+
+@pytest.mark.parametrize("missing", ["task_id", "repository", "issue_number", "stage_revision"])
+def test_beta_rollout_cannot_proceed_without_original_work_identity_or_stage_revision(missing):
+    values = {
+        "stage": "beta",
+        "task_id": "original-task",
+        "repository": "kitamura-tetsuo/auto-coder",
+        "issue_number": "2608",
+        "stage_revision": "operator-stage-rev2",
+        "source_sha": "a" * 40,
+        "ci_run_id": "43010413128",
+        "tested_source_ref": "refs/heads/original-reviewed-feature",
+    }
+    values[missing] = ""
+    report = smoke.required_next_observation(checkpoint(**values))
+    assert report.verdict == "BLOCKED"
+    assert "work identity or operator stage revision" in report.reason
+    assert not report.effect_dispatched
