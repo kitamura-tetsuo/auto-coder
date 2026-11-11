@@ -31,6 +31,7 @@ from auto_coder.management.containment_observation import read_scope
 from auto_coder.management.containment_route_manifest import propose_unapproved_route_draft
 from auto_coder.management.fresh_host import _write_evidence
 from auto_coder.management.fresh_host_observation import HostObservationUnavailable, PriorContainer, capture_prior_container
+from auto_coder.management.installed_bootstrap_source import _REVIEWED_ORDINARY_SOURCE_SHA256
 
 APPROVAL_ROOT = Path("/var/lib/auto-coder/approved-containment-enrollments")
 FIXTURE_ROOT = Path("/var/lib/auto-coder/containment-readback-fixtures")
@@ -174,10 +175,23 @@ def _assert_route_component(report: dict[str, object]) -> None:
         raise AssertionError("test-generated route component incorrectly removed normative full-profile refusals")
 
 
-def run_fixture(*, exercise_test_route_manifest: bool = False) -> None:
+def _assert_reviewed_ordinary_source(report: dict[str, object]) -> None:
+    """Require a real installed image source matching the fixed reviewed bytes."""
+    component = report.get("installed_bootstrap_source")
+    if not isinstance(component, dict) or component.get("reviewed_lock_before_launch") is not True or component.get("source_sha256") != _REVIEWED_ORDINARY_SOURCE_SHA256 or type(component.get("source_bytes")) is not int or component["source_bytes"] <= 0:
+        reasons = [item for item in report.get("unavailable", []) if isinstance(item, dict) and item.get("authority") == "installed-bootstrap-source"]
+        raise AssertionError("reviewed original-source readback is unavailable: " + repr(reasons))
+    if "installed-bootstrap-source" in _authorities(report):
+        raise AssertionError("reviewed installed source produced contradictory refusal")
+
+
+def run_fixture(*, exercise_test_route_manifest: bool = False, test_image: str = IMAGE_TAG, require_reviewed_ordinary_source: bool = False) -> None:
     if os.geteuid() != 0 or os.readlink("/proc/self/ns/pid") != os.readlink("/proc/1/ns/pid"):
         raise PermissionError("host root is required for this isolated fixture")
-    image = _docker("image", "inspect", IMAGE_TAG, "--format", "{{.Id}}")
+    # The image must already exist locally; never pull or replace an image tag.
+    if not isinstance(test_image, str) or not 1 <= len(test_image) <= 200 or not re.fullmatch(r"(?:sha256:[0-9a-f]{64}|[A-Za-z0-9._/-]+:[A-Za-z0-9._-]+)", test_image):
+        raise ValueError("test image selection is not an exact local image reference")
+    image = _docker("image", "inspect", test_image, "--format", "{{.Id}}")
     if not image.startswith("sha256:") or len(image) != 71:
         raise ValueError("preinstalled test image identity is unavailable")
 
@@ -344,11 +358,15 @@ def run_fixture(*, exercise_test_route_manifest: bool = False) -> None:
             _write_private(test_route_file, json.dumps(draft, sort_keys=True).encode())
             first = _call_cli("observe", scope)
             _assert_route_component(first)
+        if require_reviewed_ordinary_source:
+            _assert_reviewed_ordinary_source(first)
         previous = private / "previous.json"
         _write_private(previous, json.dumps(first, sort_keys=True).encode())
         verified = _call_cli("verify", scope, previous)
         _assert_component(verified, present=True)
         _assert_kernel_subcomponent(verified, present=True, pinned=True)
+        if require_reviewed_ordinary_source:
+            _assert_reviewed_ordinary_source(verified)
         if exercise_test_route_manifest:
             _assert_route_component(verified)
             logger.info("Test-only root route manifest was independently re-read by the real observe and verify CLI; full containment remained unavailable")
@@ -407,10 +425,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Test-only host Docker enrollment component; never full containment acceptance")
     parser.add_argument("--confirm-test-only-fixture", action="store_true")
     parser.add_argument("--exercise-test-route-manifest", action="store_true", help="also simulate one test-only root route authority and separately read it back")
+    parser.add_argument("--test-image", default=IMAGE_TAG, help="select an already-present local image tag or exact sha256 ID; never pull images")
+    parser.add_argument("--require-reviewed-ordinary-source", action="store_true", help="require actual reviewed bootstrap image-source readback in both CLI processes")
     arguments = parser.parse_args()
     if not arguments.confirm_test_only_fixture:
         parser.error("explicit --confirm-test-only-fixture is required")
-    run_fixture(exercise_test_route_manifest=arguments.exercise_test_route_manifest)
+    run_fixture(exercise_test_route_manifest=arguments.exercise_test_route_manifest, test_image=arguments.test_image, require_reviewed_ordinary_source=arguments.require_reviewed_ordinary_source)
 
 
 if __name__ == "__main__":
