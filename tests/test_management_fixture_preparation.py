@@ -10,6 +10,8 @@ import pytest
 import yaml
 from scripts import prepare_management_test_image as preparation
 
+from tests.support.ci_browser_install import assert_conditional_chromium_install
+
 
 @pytest.mark.parametrize("name,selection", [("publish-beta.yml", 'bash scripts/test.sh -m "not opencode_live"'), ("test-source-for-runtime.yml", "uv run python -m pytest -p scripts.ci_shard_plugin -p scripts.source_ci_receipt_plugin")])
 def test_complete_workflow_prepares_python_fixture_before_unchanged_tests(name, selection):
@@ -97,8 +99,15 @@ def test_failed_fixture_never_exports_a_publishable_image(tmp_path, monkeypatch,
 
 def test_source_fixture_precedes_checkout_local_chromium_download():
     workflow = yaml.safe_load((Path(__file__).parents[1] / ".github/workflows/test-source-for-runtime.yml").read_text())
-    commands = [step.get("run") for step in workflow["jobs"]["complete-source-shard"]["steps"]]
-    assert commands.index("uv run python scripts/prepare_management_test_image.py") < commands.index("uv run playwright install --with-deps chromium")
+    steps = workflow["jobs"]["complete-source-shard"]["steps"]
+    names = [step.get("name") for step in steps]
+    fixture = names.index("Prepare Python-only management test fixture")
+    install = names.index("Install Chromium")
+    preflight = names.index("Verify real headless Chromium")
+    selection = names.index("Run complete required source selection")
+    assert fixture < install < preflight < selection
+    assert_conditional_chromium_install(steps[install])
+    assert steps[preflight] == {"name": "Verify real headless Chromium", "run": "uv run python scripts/browser_preflight.py"}
 
 
 @pytest.mark.parametrize("failure", ["missing", "wrong_identity"])

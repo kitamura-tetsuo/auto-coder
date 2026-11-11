@@ -4,6 +4,8 @@ from pathlib import Path
 
 import yaml
 
+from tests.support.ci_browser_install import assert_conditional_chromium_install
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = {
     "PR Tests": ROOT / ".github/workflows/pr-tests.yml",
@@ -83,7 +85,7 @@ def test_existing_trigger_checkout_and_check_identities_are_preserved() -> None:
 def test_required_profiles_and_fail_closed_prerequisites_are_unchanged() -> None:
     """REQ-003/REQ-005/REQ-006: the scheduling policy cannot weaken test or cleanup gates."""
     browser_steps = {step.get("name", ""): step for step in _load("Browser Tests")["jobs"]["browser-tests"]["steps"]}
-    assert "playwright install --with-deps chromium" in browser_steps["Install Playwright Chromium"]["run"]
+    assert_conditional_chromium_install(browser_steps["Install Playwright Chromium"])
     assert "scripts/browser_preflight.py" in browser_steps["Preflight - verify a real headless Chromium launches"]["run"]
     assert browser_steps["Run browser-marked tests"]["env"]["AUTO_CODER_REQUIRE_BROWSER"] == "1"
     assert "pytest -m browser" in browser_steps["Run browser-marked tests"]["run"]
@@ -109,7 +111,8 @@ def test_required_profiles_and_fail_closed_prerequisites_are_unchanged() -> None
     assert source_job["env"]["AUTO_CODER_REQUIRE_BROWSER"] == "1"
     source_steps = {step.get("name", ""): step for step in source_job["steps"]}
     assert "scripts/prepare_management_test_image.py" in source_steps["Prepare Python-only management test fixture"]["run"]
-    assert "scripts/browser_preflight.py" in source_steps["Verify real headless Chromium"]["run"]
+    assert_conditional_chromium_install(source_steps["Install Chromium"])
+    assert source_steps["Verify real headless Chromium"] == {"name": "Verify real headless Chromium", "run": "uv run python scripts/browser_preflight.py"}
     assert "-m 'not opencode_live'" in source_steps["Run complete required source selection"]["run"]
 
     runner = (ROOT / "scripts/run_pr_test_shard.py").read_text(encoding="utf-8")
