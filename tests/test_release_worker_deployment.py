@@ -228,6 +228,8 @@ def release_flow(dispatch, monkeypatch):
             observed = result.data["observation"]
             binding = result.data["runtime_binding"]
             assert isinstance(observed, dict) and isinstance(binding, dict)
+            observed["artifact"]["source_revision"]["origin"] = self.artifact_origin
+            observed["artifact"]["distribution_version"]["origin"] = self.artifact_version_origin
             if self.selected == "runtime-new":
                 binding.update(lock_sha256=tested.record.lock_sha256, distribution_version=tested.record.distribution_version)
                 observed["artifact"] = {
@@ -592,3 +594,312 @@ def test_release_reconstruction_waits_for_same_child_binding_to_become_observabl
         assert finished["status"] == "SUCCEEDED", finished
         assert _call(client, token, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
         assert d.bridge.actions == actions
+
+
+@pytest.fixture
+def pending_release_recovery(release_flow, monkeypatch, request):
+    """Controlled transport regression, not installed/OS acceptance evidence."""
+    d = release_flow
+    d.bridge.crash_new = True
+    gate = {"readable": False}
+    dispatch_original = d.bridge.dispatch_worker_operation
+    read_original = d.bridge.read_worker_operation
+
+    def lose_recovery_reply(operation_id, operation, **kwargs):
+        result = dispatch_original(operation_id, operation, **kwargs)
+        return WorkerNetworkResult(0, "UNKNOWN", None, result.supervisor_generation, result.request_id) if operation == "RECOVER_PREVIOUS" else result
+
+    def read_recovery(operation_id):
+        if operation_id.startswith("r-") and not gate["readable"]:
+            return WorkerNetworkResult(0, "UNAVAILABLE", None, d.bridge.supervisor_generation, "unavailable")
+        return read_original(operation_id)
+
+    monkeypatch.setattr(d.bridge, "dispatch_worker_operation", lose_recovery_reply)
+    monkeypatch.setattr(d.bridge, "read_worker_operation", read_recovery)
+    with TestClient(d.app, base_url=d.settings.oauth.canonical_issuer) as client:
+        token = _token(client, d)
+        promotion = _call(client, token, MCP_PROMOTION_ACTION, d.args)
+        args = _release_arguments(d, promotion)
+        operation_id = str(_call(client, token, "auto_coder_deploy_release_source", args)["operation_id"])
+        _drive(d.app, operation_id, 40)
+        journal = d.app.state.management_runtime.journal
+        phase, receipt_run_missing = getattr(request, "param", ("RESTORING", False))
+        if receipt_run_missing:
+            receipt = d.bridge.receipts["r-" + operation_id]
+            receipt["worker"] = {**receipt["worker"], "process_run_id": None}
+        if phase == "RECONCILING_PRIOR":
+            gate["readable"] = True
+            for _ in range(4):
+                _drive(d.app, operation_id, 1)
+                if journal.lifecycle_snapshot(operation_id)[1]["stage"] == phase:
+                    break
+            gate["readable"] = False
+        original = journal.get(operation_id).record
+        snapshot = journal.lifecycle_snapshot(operation_id)[1]
+        assert snapshot["stage"] == phase and snapshot["recovery_state"] == "UNKNOWN"
+        assert snapshot["steps"]["recovery"]["state"] == ("CONFIRMED" if phase == "RECONCILING_PRIOR" else "SENT_UNKNOWN")
+        assert snapshot["recovery_attempts"] == 1
+        actions = list(d.bridge.actions)
+        assert [action for action, _ in actions] == ["PREPARE", "REQUEST_GRACEFUL_STOP", "START", "RECOVER_PREVIOUS"]
+        d.bridge.supervisor_generation = "supervisor-after-recovery"
+        yield SimpleNamespace(**vars(d), client=client, token=token, arguments=args, operation_id=operation_id, original=original, snapshot=snapshot, journal=journal, actions=actions, recovery_gate=gate)
+
+
+def _assert_recovery_lane_retained(d, stage):
+    result = _call(d.client, d.token, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": d.operation_id})
+    assert result["status"] == stage and result["recovery_state"] == "UNKNOWN", result
+    assert result["recovery_attempts"] == 1
+    assert d.bridge.actions == d.actions
+    replay = _call(d.client, d.token, "auto_coder_deploy_release_source", d.arguments)
+    assert replay["operation_id"] == d.operation_id and replay["status"] == stage
+    assert _call(d.client, d.token, "auto_coder_deploy_release_source", {**d.arguments, "selected_git_sha": "b" * 40})["status"] == "CONFLICT"
+    assert _call(d.client, d.token, "auto_coder_deploy_release_source", {**d.arguments, "catalog_oid": "f" * 40})["status"] == "CONFLICT"
+    competing = _call(d.client, d.token, "auto_coder_deploy_release_source", {**d.arguments, "idempotency_key": "competing-recovery-owner"})
+    assert competing["status"] == "BUSY" and competing["operation_id"] == d.operation_id
+    record = d.journal.get(d.operation_id).record
+    snapshot = d.journal.lifecycle_snapshot(d.operation_id)[1]
+    assert record.intent == d.original.intent and record.authority == d.original.authority
+    for field in ("steps", "deadline", "original_deadline", "new_worker", "previous_binding", "incumbent", "accepted_evidence"):
+        assert snapshot[field] == d.snapshot[field], field
+
+
+@pytest.mark.parametrize("pending_release_recovery", (("RESTORING", False), ("RESTORING", True), ("RECONCILING_PRIOR", False), ("RECONCILING_PRIOR", True)), indirect=True)
+def test_release_unknown_recovery_rebinds_only_its_original_receipt(pending_release_recovery):
+    d = pending_release_recovery
+    _drive(d.app, d.operation_id, 8)
+    _assert_recovery_lane_retained(d, d.snapshot["stage"])
+    d.recovery_gate["readable"] = True
+    _drive(d.app, d.operation_id, 30)
+    result = _call(d.client, d.token, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": d.operation_id})
+    assert result["status"] == "FAILED" and result["recovery_state"] == "CONFIRMED", result
+    assert result["reason"] == "new_worker_failed_previous_runtime_restored"
+    assert result["recovery_attempts"] == 1 and d.bridge.actions == d.actions
+    assert result["restored_worker"]["runtime_id"] == d.snapshot["previous_binding"]["runtime_id"]
+    assert result["new_worker"] == d.snapshot["new_worker"]
+    assert result["original_deadline"] == d.snapshot["original_deadline"]
+    for field in ("operation_id", "expected_digest", "owner_generation", "attempt_id", "correlation_identity", "sent_at"):
+        assert result["steps"]["recovery"][field] == d.snapshot["steps"]["recovery"][field]
+    assert result["steps"]["start"] == d.snapshot["steps"]["start"]
+    assert d.journal.lifecycle_snapshot(d.operation_id)[1]["current_supervisor_generation"] == d.bridge.supervisor_generation
+    record = d.journal.get(d.operation_id).record
+    assert record.phase is OperationPhase.FAILED and record.intent == d.original.intent and record.authority == d.original.authority
+    assert _call(d.client, d.token, "auto_coder_deploy_release_source", d.arguments)["operation_id"] == d.operation_id
+    assert d.bridge.actions == d.actions
+
+
+@pytest.mark.parametrize("fault", ("receipt-id", "start-digest", "receipt-worker", "selected-runtime", "failed-generation", "incumbent-generation", "failed-fence", "runtime_id", "content_identity", "source_sha", "lock_sha256", "distribution_version", "source-origin", "version-origin"))
+def test_release_recovery_reconstruction_rejects_conflicting_evidence(pending_release_recovery, monkeypatch, fault):
+    d = pending_release_recovery
+    d.recovery_gate["readable"] = True
+    receipt = d.bridge.receipts["r-" + d.operation_id]
+    if fault == "receipt-id":
+        receipt["operation_id"] = "s-" + d.operation_id
+    elif fault == "start-digest":
+        receipt["intent_digest"] = d.snapshot["steps"]["start"]["expected_digest"]
+    elif fault == "receipt-worker":
+        receipt["worker"] = {**receipt["worker"], "deployment_generation": "unrelated"}
+    elif fault == "selected-runtime":
+        d.bridge.selected = "unrelated"
+    elif fault in {"failed-generation", "incumbent-generation"}:
+        fence = d.snapshot["new_worker"] if fault == "failed-generation" else d.snapshot["incumbent"]
+        d.bridge.worker["deployment_generation"] = fence["deployment_generation"]
+    elif fault == "failed-fence":
+        revision, snapshot = d.journal.lifecycle_snapshot(d.operation_id)
+        snapshot["new_worker"] = None
+        assert d.journal.lifecycle_save(d.operation_id, revision, snapshot)
+        d.snapshot = snapshot
+    elif fault in {"source-origin", "version-origin"}:
+        setattr(d.bridge, "artifact_origin" if fault == "source-origin" else "artifact_version_origin", "declared_configuration")
+    else:
+        observe_original = d.bridge.observe_worker
+
+        def wrong_binding(nonce=None):
+            result = observe_original(nonce)
+            result.data["runtime_binding"][fault] = "unrelated"
+            return result
+
+        monkeypatch.setattr(d.bridge, "observe_worker", wrong_binding)
+    _drive(d.app, d.operation_id, 12)
+    _assert_recovery_lane_retained(d, "NEEDS_ATTENTION")
+
+
+@pytest.mark.parametrize("unavailability", ("receipt", "inspection", "observation", "binding"))
+def test_release_recovery_reconstruction_waits_without_changing_deadline(pending_release_recovery, monkeypatch, unavailability):
+    d = pending_release_recovery
+    d.recovery_gate["readable"] = unavailability != "receipt"
+    original_inspect = d.bridge.inspect_supervisor
+    original_observe = d.bridge.observe_worker
+
+    def unavailable_observation(nonce=None):
+        if unavailability == "observation":
+            return WorkerNetworkResult(0, "UNKNOWN", None, d.bridge.supervisor_generation, "unavailable")
+        result = original_observe(nonce)
+        result.data.update(binding_status="UNAVAILABLE", runtime_binding=None)
+        return result
+
+    if unavailability == "inspection":
+        monkeypatch.setattr(d.bridge, "inspect_supervisor", lambda: WorkerNetworkResult(0, "UNAVAILABLE", None, d.bridge.supervisor_generation, "unavailable"))
+    elif unavailability != "receipt":
+        monkeypatch.setattr(d.bridge, "observe_worker", unavailable_observation)
+    _drive(d.app, d.operation_id, 8)
+    _assert_recovery_lane_retained(d, "RESTORING")
+    monkeypatch.setattr(d.bridge, "inspect_supervisor", original_inspect)
+    monkeypatch.setattr(d.bridge, "observe_worker", original_observe)
+    d.recovery_gate["readable"] = True
+    _drive(d.app, d.operation_id, 30)
+    result = _call(d.client, d.token, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": d.operation_id})
+    assert result["status"] == "FAILED" and result["recovery_state"] == "CONFIRMED", result
+    assert d.bridge.actions == d.actions
+
+
+@pytest.fixture
+def expired_release_recovery(pending_release_recovery):
+    d = pending_release_recovery
+    revision, snapshot = d.journal.lifecycle_snapshot(d.operation_id)
+    snapshot["deadline"] = snapshot["accepted_at"] - 1
+    # A candidate sample must never count as restored-runtime forward progress.
+    snapshot["heartbeats"] = [900]
+    assert d.journal.lifecycle_save(d.operation_id, revision, snapshot)
+    d.snapshot = snapshot
+    d.bridge.supervisor_generation = snapshot["incumbent"]["supervisor_generation"]
+    _drive(d.app, d.operation_id, 1)
+    assert d.journal.get(d.operation_id).record.phase is OperationPhase.NEEDS_ATTENTION
+    assert d.journal.lifecycle_snapshot(d.operation_id)[1]["reason"] == "lifecycle_deadline_exceeded"
+    d.bridge.supervisor_generation = "supervisor-after-deadline"
+    yield d
+
+
+def _assert_recovery_terminal_proof(d):
+    record = d.journal.get(d.operation_id).record
+    snapshot = d.journal.lifecycle_snapshot(d.operation_id)[1]
+    assert record.phase is OperationPhase.FAILED and record.effect.state.value == "confirmed"
+    assert record.effect.receipt is not None
+    assert record.effect.receipt.correlation_identity == d.original.effect.correlation_identity
+    assert record.effect.receipt.observation_source == "supervisor-and-worker-lifecycle-journal"
+    assert record.intent == d.original.intent and record.authority == d.original.authority
+    assert snapshot["stage"] == "FAILED" and snapshot["recovery_state"] == "CONFIRMED"
+    assert snapshot["recovery_attempts"] == 1
+    assert snapshot["deadline"] == d.snapshot["deadline"] and snapshot["original_deadline"] == d.snapshot["original_deadline"]
+    assert snapshot["new_worker"] == d.snapshot["new_worker"]
+    assert snapshot["accepted_evidence"] == d.snapshot["accepted_evidence"]
+    for field in ("operation_id", "owner_generation", "attempt_id", "correlation_identity", "expected_digest", "sent_at"):
+        assert snapshot["steps"]["recovery"][field] == d.snapshot["steps"]["recovery"][field]
+    assert d.bridge.actions == d.actions
+    return snapshot
+
+
+def test_release_expired_unknown_recovery_resolves_only_after_original_readiness_and_progress(expired_release_recovery, monkeypatch):
+    d = expired_release_recovery
+    _drive(d.app, d.operation_id, 6)
+    _assert_recovery_lane_retained(d, "NEEDS_ATTENTION")
+    progress = {"serving": False, "sequence": 100}
+    observe_original = d.bridge.observe_worker
+
+    def observe(nonce=None):
+        result = observe_original(nonce)
+        result.data["observation"]["lifecycle"]["daemon_serving"] = progress["serving"]
+        result.data["observation"]["heartbeat"]["sequence"] = progress["sequence"]
+        return result
+
+    monkeypatch.setattr(d.bridge, "observe_worker", observe)
+    d.recovery_gate["readable"] = True
+    _drive(d.app, d.operation_id, 6)
+    _assert_recovery_lane_retained(d, "NEEDS_ATTENTION")
+    progress["serving"] = True
+    _drive(d.app, d.operation_id, 6)
+    pending = d.journal.lifecycle_snapshot(d.operation_id)[1]
+    assert pending["stage"] == "NEEDS_ATTENTION" and pending["recovery_state"] == "UNKNOWN"
+    assert pending["recovery_read_only_heartbeats"] == pending["heartbeats"] == [100]
+    assert pending["restored_worker"]["process_run_id"] == "run-restored"
+    assert d.journal.get(d.operation_id).record.effect.state.value == "sent_unknown"
+    assert _call(d.client, d.token, "auto_coder_deploy_release_source", d.arguments)["operation_id"] == d.operation_id
+    assert _call(d.client, d.token, "auto_coder_deploy_release_source", {**d.arguments, "idempotency_key": "competing-frozen-recovery"})["status"] == "BUSY"
+    assert d.bridge.actions == d.actions
+    progress["sequence"] = 101
+    _drive(d.app, d.operation_id, 1)
+    settled = _assert_recovery_terminal_proof(d)
+    assert settled["heartbeats"] == [100, 101]
+    assert _call(d.client, d.token, "auto_coder_deploy_release_source", d.arguments)["operation_id"] == d.operation_id
+    assert d.bridge.actions == d.actions
+
+
+@pytest.mark.parametrize("blocker", ("receipt", "digest", "selected-runtime", "binding", "policy", "producer-origin"))
+def test_release_expired_recovery_keeps_lane_until_original_evidence_and_authority_return(expired_release_recovery, monkeypatch, blocker):
+    d = expired_release_recovery
+    d.recovery_gate["readable"] = blocker != "receipt"
+    receipt = d.bridge.receipts["r-" + d.operation_id]
+    digest = receipt["intent_digest"]
+    selected = d.bridge.selected
+    original_policy = d.settings.operating_policy_path.read_bytes()
+    observe_original = d.bridge.observe_worker
+    if blocker == "digest":
+        receipt["intent_digest"] = d.snapshot["steps"]["start"]["expected_digest"]
+    elif blocker == "selected-runtime":
+        d.bridge.selected = "unrelated"
+    elif blocker == "policy":
+        assert b"profile: full" in original_policy
+        d.settings.operating_policy_path.write_bytes(original_policy.replace(b"profile: full", b"profile: observe"))
+    elif blocker in {"binding", "producer-origin"}:
+
+        def unavailable(nonce=None):
+            result = observe_original(nonce)
+            if blocker == "binding":
+                result.data.update(binding_status="UNAVAILABLE", runtime_binding=None)
+            else:
+                result.data["observation"]["heartbeat"]["stage"] = "diagnostic:read"
+            return result
+
+        monkeypatch.setattr(d.bridge, "observe_worker", unavailable)
+    _drive(d.app, d.operation_id, 8)
+    _assert_recovery_lane_retained(d, "NEEDS_ATTENTION")
+    receipt["intent_digest"] = digest
+    d.bridge.selected = selected
+    d.settings.operating_policy_path.write_bytes(original_policy)
+    monkeypatch.setattr(d.bridge, "observe_worker", observe_original)
+    d.recovery_gate["readable"] = True
+    _drive(d.app, d.operation_id, 8)
+    _assert_recovery_terminal_proof(d)
+
+
+@pytest.mark.parametrize("failure", ("snapshot", "terminal-transition"))
+def test_release_expired_recovery_does_not_release_lane_before_durable_terminal_proof(expired_release_recovery, monkeypatch, failure):
+    from auto_coder.management.operations import MutationResult
+
+    d = expired_release_recovery
+    d.recovery_gate["readable"] = True
+    lifecycle = d.app.state.management_runtime.lifecycle
+    save_original = lifecycle._save
+    resolve_original = d.journal.resolve_needs_attention
+    if failure == "snapshot":
+
+        def deny_terminal(record, revision, snapshot):
+            return False if snapshot.get("stage") == "FAILED" else save_original(record, revision, snapshot)
+
+        monkeypatch.setattr(lifecycle, "_save", deny_terminal)
+    else:
+        monkeypatch.setattr(d.journal, "resolve_needs_attention", lambda *args, **kwargs: MutationResult(MutationStatus.UNAVAILABLE))
+    _drive(d.app, d.operation_id, 8)
+    record = d.journal.get(d.operation_id).record
+    assert record.phase is OperationPhase.NEEDS_ATTENTION and record.effect.state.value == "sent_unknown"
+    assert record.effect.receipt is None
+    assert d.journal.lifecycle_snapshot(d.operation_id)[1]["stage"] == ("NEEDS_ATTENTION" if failure == "snapshot" else "FAILED")
+    assert _call(d.client, d.token, "auto_coder_deploy_release_source", {**d.arguments, "idempotency_key": "competing-undurable-terminal"})["status"] == "BUSY"
+    assert d.bridge.actions == d.actions
+    monkeypatch.setattr(lifecycle, "_save", save_original)
+    monkeypatch.setattr(d.journal, "resolve_needs_attention", resolve_original)
+    _drive(d.app, d.operation_id, 8)
+    _assert_recovery_terminal_proof(d)
+
+
+def test_release_expired_recovery_new_login_cannot_replace_revoked_original_authority(expired_release_recovery):
+    d = expired_release_recovery
+    original_token = d.token
+    d.token = _token(d.client, d)
+    d.grants.revoke("alice-client", original_token)
+    d.recovery_gate["readable"] = True
+    _drive(d.app, d.operation_id, 12)
+    _assert_recovery_lane_retained(d, "NEEDS_ATTENTION")
+    record = d.journal.get(d.operation_id).record
+    assert record.phase is OperationPhase.NEEDS_ATTENTION and record.effect.receipt is None
+    assert record.authority == d.original.authority
+    assert "recovery_read_only_heartbeats" not in d.journal.lifecycle_snapshot(d.operation_id)[1]

@@ -158,12 +158,39 @@ Each later mutation still passes original grant/policy and source-selection gate
 
 Missing/mismatched receipts, a live old child, a different installed binding or
 an unconfirmed observation retain the original operation/lane without a new
-transition. Recovery steps cannot adopt a reconstructed owner using the previous
-start receipt; that distinct recovery remains unresolved until separately
-supported correlated evidence is available. Preparation-only reconstruction is
-also not admitted by this drain/start rule. Controlled signed-boundary regression
-cases cover these checks but do not replace the required integrated independently
-installed release-worker acceptance described above.
+transition. A retained recovery uses only its original `RECOVER_PREVIOUS` effect
+ID and intent digest, which binds the original failed-child fence and selected
+prior runtime. It additionally requires exactly one recorded recovery attempt,
+the original verified prior binding, a distinct restored child matching the
+receipt, the same freshly observed Supervisor incarnation and the prior runtime's
+verified source/content/version/lock identity with production artifact origins.
+The failed candidate or original incumbent cannot be adopted as the restored
+child. An earlier candidate START receipt never substitutes for recovery evidence.
+Only the current owner observation changes; operation, authority, attempted-effect
+identity and deadlines remain original, and adoption dispatches nothing.
+
+Unavailable recovery receipt/inspection/binding observations wait within the
+original deadline. Conflicting evidence retains `NEEDS_ATTENTION` and the busy
+lane. Once original correlated evidence is observable, the normal prior-runtime
+readiness/progress checks can finish the original deployment as `FAILED` with
+recovery `CONFIRMED`. This does not add recovery of a still-running failed
+candidate or permission to infer failure from missing readiness or timeout.
+Preparation-only reconstruction is not admitted by this rule. Controlled
+signed-boundary regression cases cover recovery reconstruction and its negative
+cases; they are not independent installed-worker acceptance for that combination.
+If expiry has already moved a release recovery to `NEEDS_ATTENTION`, a separate
+recovery-only read path can still verify that original effect. It never resumes
+a dispatch-capable stage or changes either deadline. It requires the original
+actor's current grant/policy, the same exact receipt/prior-runtime evidence and
+two newly observed, strictly advancing producer heartbeats from one restored
+child, together with startup reconciliation and daemon serving. Candidate or
+pre-expiry samples cannot count. Missing/mismatched evidence, nonadvancing or
+diagnostic-only activity and original authority loss retain the lane; a new login
+does not substitute for a revoked original grant. Only after the full proof is
+durable does the existing evidence-bearing journal resolution finish the same
+operation as `FAILED` with recovery `CONFIRMED`. Failed snapshot or terminal-row
+persistence does not release the lane. Other uncertain lifecycle effects are not
+made resumable by this narrow recovery path.
 
 Transient live-binding unavailability waits within the original lifecycle deadline,
 without dispatch or lane release; fresh matching evidence can then continue the
