@@ -356,14 +356,33 @@ were unchanged, then require that commit's CI and review disposition. An
 unknown recovery, unverified installed binding or incomplete original receipt
 must never be promoted to `SUCCEEDED` merely to clear the release lane.
 
-These bounded cases do not complete REQ-010. Integrated held active invocations
-and independent Supervisor OS-process reconstruction remain separate required
-acceptance scenarios. The live failed-startup case below is added but still needs
-its exact clean-revision host run; its implementation alone does not establish
-that remaining acceptance boundary.
-Killing/restarting the current PID1 container destroys its worker PID namespace; the same-process listener reconstruction does not establish
-child survival across that OS boundary. Preserve the unresolved acceptance gate
-until the remaining exact scenarios and clean-revision CI are demonstrated.
+These descriptions and required selectors are not passing acceptance evidence.
+Acceptance remains gated on the relevant exact clean-revision host results, CI
+and review disposition, including the original live failed-startup recovery
+transition below.
+
+The installed release cases reconstruct a fresh Supervisor owner/listener and
+signed incarnation from persisted state while retaining the actual worker in
+the same PID1 process. They do not establish survival across a Supervisor
+OS-process crash. The separate component case
+`test_release_beta_held_drain_replay_restart_and_crash_reconstruction` exercises
+an actual beta PID1/container crash, reconstructs the persisted worker identity as
+`UNKNOWN` and refuses another START. Killing the current PID1 destroys its
+worker PID namespace, so a retained live child must not be inferred at that
+boundary. That crash combined with the full accepted-release join remains an
+untested composed fault model, not an additional standalone requirement beyond
+the specified manager/Supervisor reconstruction boundary.
+
+Held invocation/checkpoint ownership is separately exercised through the actual
+daemon and UDS in
+`test_actual_release_daemon_abandons_startup_but_owns_checkpoint_until_graceful_terminal`.
+It admits a real invocation-gate handle, holds an unconfirmed checkpoint and
+requires ordinary drain to wait until that original handle settles before the
+worker emits its terminal receipt. The installed release join independently
+holds the genuine terminal receipt ahead of exact OS exit. These are
+complementary producer and integrated transition checks; they do not claim the
+full combination of active invocation, every reconstruction fault and installed
+release recovery in one scenario.
 
 ### Live failed-startup recovery
 
