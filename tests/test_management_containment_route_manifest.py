@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import pwd
+import subprocess
 import tempfile
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -18,6 +19,44 @@ import pytest
 
 from auto_coder.management import containment_route_manifest as routes
 from auto_coder.management.containment_enrollment import EnrollmentUnavailable
+
+
+def test_systemd_unit_names_allow_safe_systemd_hex_escapes_without_path_selection() -> None:
+    assert routes._UNIT_NAME.fullmatch(r"systemd-fsck@dev-disk-by\x2duuid-BC0B\x2dD22A.service")
+    assert not routes._UNIT_NAME.fullmatch("../../untrusted.service")
+    assert not routes._UNIT_NAME.fullmatch("untrusted.service;systemctl start manager")
+
+
+def test_systemd_timer_without_service_main_pid_is_fingerprinted(monkeypatch: pytest.MonkeyPatch) -> None:
+    shown = "Id=apt-daily.timer\nLoadState=loaded\nUnitFileState=enabled\nActiveState=active\nSubState=waiting\nFragmentPath=/usr/lib/systemd/system/apt-daily.timer\nNeedDaemonReload=no\n"
+    monkeypatch.setattr(routes, "_command", lambda *args, **kwargs: shown if args[1] == "show" else "[Timer]\nOnCalendar=daily\n")
+    fact = routes._systemd_unit("apt-daily.timer")
+    assert fact.main_pid == 0
+    assert fact.unit_file_state == "enabled"
+    assert fact.inhibited is False
+
+
+def test_systemd_template_file_is_read_without_pretending_to_observe_an_instance(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(routes, "_command", lambda *args, **kwargs: "[Service]\nExecStart=/bin/true\n")
+    monkeypatch.setattr(routes.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "static\n", ""))
+    fact = routes._systemd_unit("alsa-card-wait@.service")
+    assert fact.unit_file_state == "static"
+    assert fact.active_state == "inactive"
+    assert fact.inhibited is False
+
+
+def test_removed_loaded_systemd_unit_is_only_an_unrelated_current_fact(monkeypatch: pytest.MonkeyPatch) -> None:
+    shown = "Id=auto-cpufreq.service\nLoadState=not-found\nUnitFileState=\nActiveState=inactive\nSubState=dead\nFragmentPath=\nNeedDaemonReload=no\nMainPID=0\n"
+
+    def command(*args: str, **kwargs: object) -> str:
+        if args[1] == "show":
+            return shown
+        raise subprocess.CalledProcessError(1, args)
+
+    monkeypatch.setattr(routes, "_command", command)
+    fact = routes._systemd_unit("auto-cpufreq.service")
+    assert fact.unit_file_state == ""
+    assert fact.inhibited is False
 
 
 class _closed_routes:
