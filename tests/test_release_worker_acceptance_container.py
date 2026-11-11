@@ -14,7 +14,7 @@ import os
 import tempfile
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Iterator
@@ -27,7 +27,7 @@ from auto_coder.management.app import create_management_app
 from auto_coder.management.beta_runtime_smoke import SmokeProfile
 from auto_coder.management.operations import OperationPhase
 from auto_coder.management.source_acceptance import SourceAcceptancePublisher
-from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkClient
+from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkClient, WorkerNetworkResult
 from auto_coder.source_release_catalog import canonical, digest
 from auto_coder.tested_source_refs import TestedSourcePublisher as SourceProofPublisher
 from auto_coder.util.gh_cache import GitDataResponse
@@ -104,7 +104,7 @@ def _ready(client: WorkerNetworkClient, source_sha: str) -> dict[str, object] | 
 
 
 @contextmanager
-def _installed_release(system: _SmokeSystem, root: Path, scenario: str, *, fail_candidate: bool = False) -> Iterator[_InstalledRelease]:
+def _installed_release(system: _SmokeSystem, root: Path, scenario: str, *, fail_candidate: bool = False, reconstruct_supervisor: bool = False) -> Iterator[_InstalledRelease]:
     """Independently install both release versions, then start the prior one."""
     image = _image()
     source = Path(os.environ.get("GITHUB_WORKSPACE", str(Path(__file__).parents[1]))).resolve()
@@ -185,6 +185,8 @@ def _installed_release(system: _SmokeSystem, root: Path, scenario: str, *, fail_
         }
         if fail_candidate:
             environment["AUTO_CODER_FIXTURE_FAIL_STAGED_ONCE"] = "1"
+        if reconstruct_supervisor:
+            environment["AUTO_CODER_TEST_RECONSTRUCT_SUPERVISOR"] = "1"
         launch = ["run", "-d", "--rm", "--name", name, "--network", system.network, "--ip", address, "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--user", host_user, "--entrypoint", "python"]
         for host, guest, mode in ((runtime, "/runtime", ""), (workspace, "/workspace", ""), (routing, "/routing", ""), (fixtures, "/fixtures", "ro"), (trust, "/ci-trust", "ro"), (source, "/source", "ro")):
             launch.extend(["-v", f"{host}:{guest}" + (f":{mode}" if mode else "")])
@@ -263,8 +265,14 @@ def test_failed_installed_release_recovers_original_prior_runtime_once(real_boun
     _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=True)
 
 
-def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch, *, fail_candidate: bool) -> None:
-    scenario = ("release-failed-candidate-" if fail_candidate else "release-installed-join-") + uuid.uuid4().hex[:12]
+@pytest.mark.timeout(2400)
+def test_installed_release_lost_start_reply_recovers_after_manager_and_supervisor_reconstruction(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None) -> None:
+    _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=False, lose_start_reconstruct=True)
+
+
+def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch, *, fail_candidate: bool, lose_start_reconstruct: bool = False) -> None:
+    prefix = "release-lost-start-" if lose_start_reconstruct else "release-failed-candidate-" if fail_candidate else "release-installed-join-"
+    scenario = prefix + uuid.uuid4().hex[:12]
     with tempfile.TemporaryDirectory(prefix="release-join-", dir=tmp_path) as directory:
         root = Path(directory)
         beta_root = root / "beta"
@@ -275,7 +283,7 @@ def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch,
             service = system.app.state.management_runtime
             system.http.portal.call(service.stop_monitor)
             system.http.portal.call(service.dispatcher.stop)
-            with _installed_release(system, root / "release", scenario, fail_candidate=fail_candidate) as release, _source_http(system.remote) as endpoint:
+            with _installed_release(system, root / "release", scenario, fail_candidate=fail_candidate, reconstruct_supervisor=lose_start_reconstruct) as release, _source_http(system.remote) as endpoint:
 
                 @contextmanager
                 def source_http_client(**_kwargs):
@@ -291,7 +299,28 @@ def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch,
                 operating.write_text("profile: full\ntargets:\n  beta-worker:\n    channel: beta\n    repositories: [fixture/beta]\n  release-worker:\n    channel: release\n    repositories: [owner/repo]\n  release-source:\n    channel: release\n    repositories: [owner/repo]\n", encoding="utf-8")
                 settings = replace(service.settings, operating_policy_path=operating, source_release_policy_path=policy_path, source_release_token_file=token_path, source_release_target_id="release-source", source_release_workflow_id=WORKFLOW_ID)
                 app = create_management_app(settings, service.grants, worker_clients={"release": release.client})
-                with TestClient(app, base_url=settings.oauth.canonical_issuer) as http:
+                start_dispatches: list[str] = []
+                if lose_start_reconstruct:
+                    original_dispatch = release.client.dispatch_worker_operation
+                    original_read = release.client.read_worker_operation
+
+                    def lose_real_start_reply(operation_id: str, operation: str, **kwargs):
+                        response = original_dispatch(operation_id, operation, **kwargs)
+                        if operation == "START":
+                            start_dispatches.append(operation_id)
+                            return WorkerNetworkResult(0, "UNKNOWN", None, response.supervisor_generation, response.request_id)
+                        return response
+
+                    def withhold_original_start_receipt(operation_id: str):
+                        if operation_id in start_dispatches:
+                            return WorkerNetworkResult(0, "UNAVAILABLE", None, release.client.supervisor_generation or "", uuid.uuid4().hex)
+                        return original_read(operation_id)
+
+                    monkeypatch.setattr(release.client, "dispatch_worker_operation", lose_real_start_reply)
+                    monkeypatch.setattr(release.client, "read_worker_operation", withhold_original_start_receipt)
+
+                with ExitStack() as clients:
+                    http = clients.enter_context(TestClient(app, base_url=settings.oauth.canonical_issuer))
                     tested = SourceProofPublisher(system.remote, "owner/repo").read(system.revisions[0])
                     assert tested is not None
                     promoted = _call(
@@ -358,6 +387,35 @@ def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch,
                     competing = _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing"})
                     assert competing["status"] == "BUSY" and competing["operation_id"] == operation_id
 
+                    if lose_start_reconstruct:
+                        assert not fail_candidate
+                        _wait_for(lambda: start_dispatches[0] if start_dispatches else None, timeout=180)
+                        assert start_dispatches == ["s-" + operation_id]
+                        independent = WorkerNetworkClient(release.client.config)
+                        _wait_for(lambda: _ready(independent, str(release.candidate["source_sha"])), timeout=90)
+                        unsettled = journal.lifecycle_snapshot(operation_id)
+                        assert unsettled is not None
+                        assert unsettled[1]["steps"]["start"]["state"] == "SENT_UNKNOWN"
+                        assert "recovery" not in unsettled[1]["steps"]
+                        assert len((release.runtime / "fixture-launches.jsonl").read_text().splitlines()) == 2
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "selected_git_sha": system.revisions[1]})["status"] == "CONFLICT"
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing-reconstruct"})["status"] == "BUSY"
+                        actual_before = independent.inspect_supervisor()
+                        old_dispatch_posts = (release.runtime / "fixture-posts").read_bytes()
+                        clients.close()
+                        _docker("kill", "--signal=SIGUSR1", release.container)
+                        fresh = WorkerNetworkClient(release.client.config)
+                        _wait_for(lambda: observed if (observed := fresh.inspect_supervisor()).result_code == "OK" and observed.supervisor_generation != actual_before.supervisor_generation else None, timeout=30)
+                        assert (release.runtime / "fixture-supervisor-reconstructions").read_text() == "1"
+                        assert (release.runtime / "fixture-posts").read_bytes() == old_dispatch_posts
+                        reconstructed = create_management_app(settings, service.grants, worker_clients={"release": fresh})
+                        http = clients.enter_context(TestClient(reconstructed, base_url=settings.oauth.canonical_issuer))
+                        journal = reconstructed.state.management_runtime.journal
+                        recovered = journal.get(operation_id).record
+                        assert recovered is not None and recovered.intent == original.intent and recovered.authority == original.authority
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
+
                     independent_samples = []
                     failed_observations = []
                     expected = release.previous if fail_candidate else release.candidate
@@ -390,6 +448,10 @@ def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch,
                         assert binding[field] == expected[field]
                     assert binding["runtime_id"] == expected["installed_runtime_id"]
                     assert done["release_identity"]["catalog_oid"] == catalog_oid
+                    if lose_start_reconstruct:
+                        assert done["steps"]["start"]["operation_id"] == start_dispatches[0]
+                        assert done["steps"]["start"]["expected_digest"] == journal.lifecycle_snapshot(operation_id)[1]["steps"]["start"]["expected_digest"]
+                        assert (release.runtime / "fixture-supervisor-reconstructions").read_text() == "1"
                     assert len(done["heartbeats"]) == 2
                     assert done["heartbeats"][0] < done["heartbeats"][1]
                     assert len(independent_samples) >= 2, "manager success needs independently observed producer progress"

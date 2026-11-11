@@ -60,6 +60,7 @@ CONTAINER_REQUIRED = (
         "tests/test_management_beta_deploy_container.py::test_authenticated_beta_source_installs_real_version_and_reconciles_after_lost_reply",
         "tests/test_release_worker_acceptance_container.py::test_authenticated_release_joins_published_acceptance_and_independent_installed_workers",
         "tests/test_release_worker_acceptance_container.py::test_failed_installed_release_recovers_original_prior_runtime_once",
+        "tests/test_release_worker_acceptance_container.py::test_installed_release_lost_start_reply_recovers_after_manager_and_supervisor_reconstruction",
     )
     + tuple(
         f"tests/test_beta_runtime_smoke_container.py::{name}"
