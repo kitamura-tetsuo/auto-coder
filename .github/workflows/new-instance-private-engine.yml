@@ -14,7 +14,7 @@ jobs:
   private-engine:
     name: NEW private Engine first-launch probe
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 60
     env:
       UV_LOCKED: "1"
       PYTHONPATH: ${{ github.workspace }}/src
@@ -35,81 +35,14 @@ jobs:
         run: uv sync --locked --dev --extra test
       - name: Build immutable management test image
         run: uv run python scripts/prepare_management_test_image.py
-      - name: Prove trusted-host private Engine producer and one-way receipts
-        timeout-minutes: 18
+      - name: Prove private Engine parent, excluded API starts, and retained first child
+        timeout-minutes: 48
         env:
           AUTO_CODER_PRIVATE_ENGINE_ACCEPTANCE: "1"
           DOCKER_HOST: unix:///var/run/docker.sock
         run: |
           set -euo pipefail
           docker --host=unix:///var/run/docker.sock pull docker:29-dind
-          uv run pytest -q -vv --basetemp="$(mktemp -d /tmp/acne-XXXXXX)" tests/test_management_new_private_engine_docker.py
-      - name: Start a networkless disposable Docker-in-Docker daemon
-        id: private-engine
-        timeout-minutes: 5
-        run: |
-          set -euo pipefail
-          # Unix guard sockets inside pytest must stay below sun_path's limit.
-          private_root="$(mktemp -d /tmp/acn-XXXXXX)"
-          chmod 0700 "$private_root"
-          container_id="$(docker --host=unix:///var/run/docker.sock run --detach --pull=always \
-            --privileged --pid=host --network none --restart no --init \
-            --name "$(basename "$private_root")" \
-            --mount "type=bind,src=$private_root,dst=$private_root" \
-            --entrypoint dockerd docker:29-dind \
-            --host="unix://$private_root/docker.sock" \
-            --iptables=false --bridge=none --ip-forward=false --ip-masq=false --storage-driver=vfs)"
-          printf 'container_id=%s\n' "$container_id" >> "$GITHUB_OUTPUT"
-          for attempt in $(seq 1 60); do
-            if test -S "$private_root/docker.sock"; then
-              break
-            fi
-            if test "$(docker --host=unix:///var/run/docker.sock inspect --format '{{.State.Running}}' "$container_id")" != true; then
-              docker --host=unix:///var/run/docker.sock logs --tail 40 "$container_id"
-              exit 1
-            fi
-            sleep 1
-          done
-          test -S "$private_root/docker.sock"
-          # The socket remains inside a runner-owned 0700 directory.
-          sudo chmod 0666 "$private_root/docker.sock"
-          docker --host="unix://$private_root/docker.sock" info --format '{{.ID}}|{{.ServerVersion}}'
-          test -z "$(docker --host="unix://$private_root/docker.sock" ps --all --quiet)"
-          # Verify the independently started Engine is not a host-network or
-          # automatically restarting Docker service.
-          parent_policy="$(docker --host=unix:///var/run/docker.sock inspect \
-            --format '{{.HostConfig.NetworkMode}}|{{.HostConfig.PidMode}}|{{.HostConfig.RestartPolicy.Name}}|{{.HostConfig.Privileged}}|{{.State.Running}}' "$container_id")"
-          test "$parent_policy" = 'none|host|no|true|true'
-          mkdir -m 0700 "$private_root/fixtures"
-          printf 'DOCKER_HOST=unix://%s/docker.sock\n' "$private_root" >> "$GITHUB_ENV"
-          printf 'TMPDIR=%s/fixtures\n' "$private_root" >> "$GITHUB_ENV"
-      - name: Load the checked-out fixture into the private Engine
-        run: |
-          set -euo pipefail
-          docker --host=unix:///var/run/docker.sock image save "$AUTOCODER_FRESH_TEST_BASE_IMAGE" |
-            docker --host="$DOCKER_HOST" image load
-          docker --host="$DOCKER_HOST" image inspect "$AUTOCODER_FRESH_TEST_BASE_IMAGE" --format '{{.Id}}'
-      - name: Prove one real first child and authenticated readback
-        timeout-minutes: 15
-        run: |
-          set -euo pipefail
-          uv run pytest -q -vv --basetemp="$TMPDIR/pytest" \
-            'tests/test_management_new_instance_first_launch_docker.py::test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback[False]'
-      - name: Exercise real owner contention and independent startup-source interference
-        timeout-minutes: 15
-        run: |
-          set -euo pipefail
-          uv run pytest -q -vv --basetemp="$TMPDIR/races" \
-            'tests/test_management_new_instance_first_launch_docker.py::test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback[True]' \
-            'tests/test_management_new_instance_first_launch_docker.py::test_new_docker_refuses_external_first_start_racing_final_engine_command' \
-            'tests/test_management_new_instance_first_launch_docker.py::test_new_docker_rejects_restart_policy_added_after_durable_claim'
-      - name: Confirm parent Engine still has no restart path
-        run: |
-          set -euo pipefail
-          container_id='${{ steps.private-engine.outputs.container_id }}'
-          parent_policy="$(docker --host=unix:///var/run/docker.sock inspect \
-            --format '{{.HostConfig.NetworkMode}}|{{.HostConfig.PidMode}}|{{.HostConfig.RestartPolicy.Name}}|{{.HostConfig.Privileged}}|{{.State.Running}}' "$container_id")"
-          test "$parent_policy" = 'none|host|no|true|true'
-      - name: Stop only this disposable CI daemon
-        if: always() && steps.private-engine.outputs.container_id != ''
-        run: docker --host=unix:///var/run/docker.sock rm --force '${{ steps.private-engine.outputs.container_id }}'
+          uv run pytest -q -vv --basetemp="$(mktemp -d /tmp/acne-XXXXXX)" \
+            tests/test_management_new_private_engine_docker.py \
+            tests/test_management_new_private_engine_gate.py

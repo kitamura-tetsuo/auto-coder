@@ -252,22 +252,24 @@ def start_new_docker_once(
     """
     if not 1 <= timeout <= 3600:
         raise ValueError("NEW start timeout is invalid")
+    if private_root is None:
+        raise HostObservationUnavailable("NEW original start requires a verified independent private Docker Engine (--private-root)")
     with ExitStack() as stack:
         source = None
         source_recheck: Callable[[], None] | None = None
-        if private_root is not None:
-            from .fresh_private_engine import assert_private_engine_live, hold_private_engine_source
+        from .fresh_private_engine import assert_private_engine_live, hold_private_engine_source
 
-            source = stack.enter_context(hold_private_engine_source(request_file, private_root, outer_socket, expected_container_id=container_id))
-            expected_host = f"unix://{private_root / 'socket' / 'docker.sock'}"
-            if os.environ.get("DOCKER_HOST") != expected_host:
-                raise HostObservationUnavailable("NEW selected Engine socket is not the recorded isolated host")
+        source = stack.enter_context(hold_private_engine_source(request_file, private_root, outer_socket, expected_container_id=container_id))
+        expected_host = f"unix://{private_root / 'socket' / 'docker.sock'}"
+        if os.environ.get("DOCKER_HOST") != expected_host:
+            raise HostObservationUnavailable("NEW selected Engine socket is not the recorded isolated host")
+        inspection_socket: Path | None = None
 
-            def recheck_source() -> None:
-                assert source is not None
-                assert_private_engine_live(request_file, private_root, outer_socket, source, container_id=container_id)
+        def recheck_source() -> None:
+            assert source is not None
+            assert_private_engine_live(request_file, private_root, outer_socket, source, container_id=container_id, inspection_socket=inspection_socket)
 
-            source_recheck = recheck_source
+        source_recheck = recheck_source
         fence = stack.enter_context(hold_new_guard_flock(request_file))
         created = _inspect_created_scope(request_file, container_id, image_id)
         if source is not None and created.engine_id != source.private_engine_id:
@@ -302,6 +304,18 @@ def start_new_docker_once(
                     raise HostObservationUnavailable("NEW Docker dedicated network changed before first start")
             if source_recheck is not None:
                 source_recheck()
-            _start_docker_container_once(container_id, created.engine_id)
-            _serve_one_new_guard(listener, request_file, container_id, image_id, claim, original_docker_fields, timeout=timeout, source_sha256=observed.private_source_sha256, assert_source_live=source_recheck)
-            return _await_observed_first_child(Path(request["state_root"]), observed.origin.request_id, claim, container_id, timeout=timeout)
+            from .fresh_private_engine_gate import hold_one_start_api_gate
+
+            # The engine socket remains inaccessible to other new clients
+            # across the physical start, authenticated host guard, and first
+            # child receipt. This is not a durable management API endpoint.
+            with hold_one_start_api_gate(private_root, container_id) as gate_socket:
+                inspection_socket = gate_socket
+                os.environ["DOCKER_HOST"] = f"unix://{gate_socket}"
+                try:
+                    source_recheck()
+                    _start_docker_container_once(container_id, created.engine_id)
+                    _serve_one_new_guard(listener, request_file, container_id, image_id, claim, original_docker_fields, timeout=timeout, source_sha256=observed.private_source_sha256, assert_source_live=source_recheck)
+                    return _await_observed_first_child(Path(request["state_root"]), observed.origin.request_id, claim, container_id, timeout=timeout)
+                finally:
+                    os.environ["DOCKER_HOST"] = expected_host

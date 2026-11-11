@@ -242,6 +242,7 @@ def _observe_source(
     require_empty_private_engine: bool,
     original: PrivateEngineEvidence | None = None,
     expected_container_id: str | None = None,
+    inspection_socket: Path | None = None,
 ) -> PrivateEngineEvidence:
     """Independently recheck parent policy, kernel lifetime and private Engine."""
     private_root, socket_dir, data_dir = _private_paths(private_root, request_file)
@@ -253,7 +254,7 @@ def _observe_source(
     # entry through a held no-follow parent directory descriptor instead.
     with _open(socket_dir, directory=True) as descriptor:
         socket_info = os.stat("docker.sock", dir_fd=descriptor, follow_symlinks=False)
-        if not stat.S_ISSOCK(socket_info.st_mode) or socket_info.st_uid != os.geteuid() or socket_info.st_gid != os.getegid() or socket_info.st_mode & 0o007:
+        if not stat.S_ISSOCK(socket_info.st_mode) or socket_info.st_uid != os.geteuid() or socket_info.st_gid != os.getegid() or stat.S_IMODE(socket_info.st_mode) != 0o600:
             raise HostObservationUnavailable("private Engine socket is not owner-scope protected")
     if not _IMAGE_ID.fullmatch(parent_image_id):
         raise ValueError("immutable parent image ID required")
@@ -317,11 +318,14 @@ def _observe_source(
     if type(pid) is not int or pid <= 0:
         raise HostObservationUnavailable("private Engine parent host PID is unavailable")
     token, pid_ns, net_ns, boot_id = _lifetime(pid, outer_socket=outer_socket, parent_id=parent_id)
-    private_id = _engine_id(private_socket)
+    # During the one-start API gate, the raw socket is chmod(000). Only
+    # read-only observations may use the original host's temporary gate.
+    read_socket = inspection_socket if inspection_socket is not None else private_socket
+    private_id = _engine_id(read_socket)
     if private_id == outer_id:
         raise HostObservationUnavailable("private Engine is the outer production Docker Engine")
     if require_empty_private_engine or expected_container_id is not None:
-        children = _docker(private_socket, "ps", "--all", "--quiet", "--no-trunc").splitlines()
+        children = _docker(read_socket, "ps", "--all", "--quiet", "--no-trunc").splitlines()
         if require_empty_private_engine and children:
             raise HostObservationUnavailable("private Engine has existing container startup sources")
         if expected_container_id is not None and children != [expected_container_id]:
@@ -337,7 +341,7 @@ def _observe_source(
                 changed_fields = sorted(key for key in prior_state if prior_state[key] != current_state[key])
                 changed.append("State." + ",".join(changed_fields))
         raise HostObservationUnavailable("private Engine parent or daemon changed during observation (fields: " + ",".join(changed) + ")")
-    if _engine_id(outer_socket) != outer_id or _engine_id(private_socket) != private_id:
+    if _engine_id(outer_socket) != outer_id or _engine_id(read_socket) != private_id:
         raise HostObservationUnavailable("private Engine parent or daemon changed during observation (Engine ID)")
     if _lifetime(pid, outer_socket=outer_socket, parent_id=parent_id) != (token, pid_ns, net_ns, boot_id):
         raise HostObservationUnavailable("private Engine parent lifetime changed during observation")
@@ -369,7 +373,7 @@ def _observe_source(
     )
 
 
-def assert_private_engine_live(request_file: Path, private_root: Path, outer_socket: Path, expected: PrivateEngineEvidence, *, container_id: str) -> None:
+def assert_private_engine_live(request_file: Path, private_root: Path, outer_socket: Path, expected: PrivateEngineEvidence, *, container_id: str, inspection_socket: Path | None = None) -> None:
     """Recheck one held source at the launch and host-guard effect boundaries."""
     observed = _observe_source(
         request_file,
@@ -380,6 +384,7 @@ def assert_private_engine_live(request_file: Path, private_root: Path, outer_soc
         require_empty_private_engine=False,
         original=expected,
         expected_container_id=container_id,
+        inspection_socket=inspection_socket,
     )
     if observed != expected:
         raise HostObservationUnavailable("private Engine parent/namespace/source changed before child launch")
@@ -461,9 +466,15 @@ def _grant_original_socket_owner(outer_socket: Path, parent_id: str, private_soc
             time.sleep(0.25)
     else:
         raise HostObservationUnavailable("private Engine private socket did not appear")
-    _docker(outer_socket, "exec", "--user", "0:0", parent_id, "chown", f"{os.geteuid()}:{os.getegid()}", str(private_socket), timeout=timeout)
+    _docker(
+        outer_socket,
+        "exec", "--user", "0:0", parent_id,
+        "sh", "-eu", "-c", 'chown "$1" "$2" && chmod 0600 "$2"', "socket-custody",
+        f"{os.geteuid()}:{os.getegid()}", str(private_socket),
+        timeout=timeout,
+    )
     info = os.stat(private_socket, follow_symlinks=False)
-    if not stat.S_ISSOCK(info.st_mode) or (info.st_uid, info.st_gid) != (os.geteuid(), os.getegid()) or info.st_mode & 0o007:
+    if not stat.S_ISSOCK(info.st_mode) or (info.st_uid, info.st_gid) != (os.geteuid(), os.getegid()) or stat.S_IMODE(info.st_mode) != 0o600:
         raise HostObservationUnavailable("private Engine host operator socket custody was not established")
 
 

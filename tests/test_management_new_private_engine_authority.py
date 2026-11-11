@@ -344,12 +344,12 @@ def test_private_engine_socket_custody_is_one_explicit_parent_exec(source: tuple
 
     def custody(_host: Path, *arguments: str, **_kwargs: object) -> str:
         commands.append(arguments)
-        source[4].chmod(0o660)
+        source[4].chmod(0o600)
         return ""
 
     monkeypatch.setattr(authority, "_docker", custody)
     authority._grant_original_socket_owner(source[2], PARENT_ID, source[4], timeout=2)
-    assert commands == [("exec", "--user", "0:0", PARENT_ID, "chown", f"{os.geteuid()}:{os.getegid()}", str(source[4]))]
+    assert commands == [("exec", "--user", "0:0", PARENT_ID, "sh", "-eu", "-c", 'chown "$1" "$2" && chmod 0600 "$2"', "socket-custody", f"{os.geteuid()}:{os.getegid()}", str(source[4]))]
     source[4].chmod(0o666)
     monkeypatch.setattr(authority, "_docker", lambda *_args, **_kwargs: "")
     with pytest.raises(HostObservationUnavailable, match="custody was not established"):
@@ -430,3 +430,13 @@ def test_private_engine_launch_refuses_wrong_selected_socket_without_claim(sourc
     with pytest.raises(HostObservationUnavailable, match="selected Engine socket"):
         start_new_docker_once(source[0], selected_child, "sha256:" + "4" * 64, private_root=source[1], outer_socket=source[2])
     assert not (source[0].parent / "guard" / HOST_FIRST_START).exists()
+
+
+def test_original_start_without_independent_source_refuses_before_any_effect(configured_request: Path) -> None:
+    begin_new_instance(configured_request)
+    guard = configured_request.parent / "guard"
+    original_origin = (guard / "new-instance-origin.json").read_bytes()
+    with pytest.raises(HostObservationUnavailable, match="requires a verified independent private Docker Engine"):
+        start_new_docker_once(configured_request, "3" * 64, "sha256:" + "4" * 64)
+    assert (guard / "new-instance-origin.json").read_bytes() == original_origin
+    assert not (guard / HOST_FIRST_START).exists()

@@ -452,12 +452,13 @@ full container IDs, rather than display abbreviations, are compared.
 The parent selects `--entrypoint dockerd` (as in the existing disposable CI
 fixture), disables its bridge/firewall and avoids the DinD script's extra
 default TCP listener. After the one-way parent-created record, a
-single root-in-parent `chown` transfers only the dedicated Unix socket to the
-original host operator; incomplete custody is not retried. The private Engine
+single root-in-parent shell effect `chown` plus `chmod 0600` transfers only the
+dedicated Unix socket to the original host operator and seals group access;
+incomplete custody is not retried. The private Engine
 has separate Docker data and no outer Engine socket mount, but the privileged
 parent is **not** a security sandbox against a compromised Docker daemon.
 
-An opt-in `fresh_host start-new-container --private-root PATH --outer-socket
+The required `fresh_host start-new-container --private-root PATH --outer-socket
 PATH` first holds the private source root's kernel lock and its original
 living parent evidence, then holds the NEW admission guard through the
 existing one-use Docker start. A private-source identity is included in the
@@ -466,14 +467,35 @@ rechecks the source before the Engine effect and the child guard response.
 Only the trusted host process has the outer/private Docker authority. The
 management container never receives either Engine socket.
 
-**Not yet sufficient for merging:** the original `start-new-container` without
-`--private-root` remains in place for existing integration fixtures, so the
-new source is not yet a mandatory admission condition. The new host producer
-has unit-level fail-closed evidence tests but has not yet passed the full
-privileged-host parent creation and re-admission regression on the exact new
-head. Production deployment, privilege acceptance, and all remaining
-reconciliation/REQ-003 evidence are outside this code-only approval. Do not
-interpret an opt-in source receipt or these unit tests as full REQ-003 proof.
+After the original claim and last unsealed recheck, the host opens one
+persistent HTTP channel to the selected inner Engine, binds a transient
+owner-only Unix API gate and removes **all new connect permission** from the
+real daemon socket. The gate forwards GET/HEAD evidence calls and accepts
+exactly one `POST /v1.41/containers/{selected-id}/start` only from the
+guardian's kernel-authenticated PID and UID. Its effect bit is consumed
+before the request goes upstream. Other API mutations and independent client
+starts are denied; its closure and the original socket mode restoration happen
+only after the physical first-child receipt or an explicit failure. The
+private source lock, NEW guard lock, and verified parent lifetime remain held
+through this interval. If the guardian crashes, the consumed claim remains
+poisoned and the source socket may remain sealed until explicit host recovery;
+there is no automatic retry or authority reconstruction.
+
+The former unguarded start is now rejected before any side effect, even if a
+read-only Docker CREATED snapshot succeeds. Real positive launch and retained
+OAuth readback acceptance have moved to the private-Engine-only disposable
+runner job. Legacy host-Docker first-launch fixtures cannot be interpreted
+as valid positive admission tests under this mandatory profile.
+
+**Still subject to review:** the kernel permission gate prevents new ordinary
+untrusted client connections, but does not revoke an already-open Docker API
+connection or protect against a hostile same-UID operator changing socket
+permissions. Those adversaries are not granted a new in-scope bypass by this
+code and are outside the project's default trusted-host model. Continuous
+exclusion of any independently authorized controller sharing such a pre-opened
+connection must be decided explicitly before deployment. No production host
+Docker service, worker, real credential, or standing privilege is changed by
+this code-only CI evaluation. Independent exact-head review remains mandatory.
 
 ## Remaining normative gates and acceptance limits
 
@@ -484,9 +506,10 @@ interpret an opt-in source receipt or these unit tests as full REQ-003 proof.
   implemented, and a synthetic new container cannot establish that some
   unrelated pre-existing installation has no hidden historical startup path.
 - REQ-003: real Docker CREATED/never-started facts, private network/PID
-  namespaces, no Docker auto-restart, the host guard challenge and new owner
-  flock are verified in the isolated profile. This does not exclude arbitrary
-  external operators or host-level services with independent Docker authority.
+  namespaces, no Docker auto-restart, the host guard challenge, new owner
+  flock, mandatory private source and temporary OS-socket/API exclusion
+  are verified by the disposable isolated-source profile. These do not exclude
+  arbitrary hostile host operators or pre-opened Docker Engine connections.
   Existing prior-installed manager cutovers require the separate known-prior
   fence/profile; no prior lifetime is invented here.
 - REQ-004: the isolated NEW child and real retained *synthetic* OAuth grant

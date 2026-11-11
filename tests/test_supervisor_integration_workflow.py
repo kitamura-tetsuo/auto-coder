@@ -301,7 +301,7 @@ def test_all_baseline_selectors_and_execution_contexts_are_preserved() -> None:
         "test_beta_runtime_smoke_container.py",
         "test_management_new_instance_docker_created.py",
         "test_management_new_docker_network_policy.py",
-        "test_management_new_instance_first_launch_docker.py",
+        "test_management_new_instance_docker_created.py",
         "test_management_new_instance_profile.py",
     ):
         assert any(path in value for value in profile_args("isolated-containers"))
@@ -313,23 +313,12 @@ def test_all_baseline_selectors_and_execution_contexts_are_preserved() -> None:
     assert all(node.split("::", 1)[0] in profile_args("isolated-containers") for node in required)
     assert set(OTHER_REQUIRED_NODEIDS) | {f"tests/test_beta_runtime_smoke_container.py::{name}" for name in SMOKE_CASES} <= set(required)
     assert {
-        "tests/test_management_new_instance_first_launch_docker.py::test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback[False]",
-        "tests/test_management_new_instance_first_launch_docker.py::test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback[True]",
-        "tests/test_management_new_instance_first_launch_docker.py::test_new_docker_loopback_mcp_reaches_original_authenticated_child_from_host",
-        "tests/test_management_new_instance_first_launch_docker.py::test_new_docker_loopback_refuses_live_prior_host_listener_without_first_claim",
-        "tests/test_management_new_instance_first_launch_docker.py::test_real_different_os_uid_cannot_claim_original_new_docker_first_start",
-        "tests/test_management_new_instance_first_launch_docker.py::test_new_docker_loopback_refuses_live_prior_network_listener_without_claim",
-        "tests/test_management_new_instance_first_launch_docker.py::test_new_docker_rejects_prior_process_joining_network_after_durable_claim",
-        "tests/test_management_new_instance_first_launch_docker.py::test_new_docker_refuses_external_first_start_racing_final_engine_command",
-        "tests/test_management_new_instance_first_launch_docker.py::test_new_docker_rejects_restart_policy_added_after_durable_claim",
+        "tests/test_management_new_instance_docker_created.py::test_unisolated_docker_source_can_never_consume_a_new_first_start",
         "tests/test_management_new_instance_profile.py::test_host_management_serve_refuses_new_docker_wildcard_without_live_pid1_owner[config-only]",
         "tests/test_management_new_instance_profile.py::test_host_management_serve_refuses_new_docker_wildcard_without_live_pid1_owner[stale-owner]",
         "tests/test_management_new_instance_profile.py::test_host_management_serve_refuses_new_docker_wildcard_without_live_pid1_owner[mismatched-owner]",
         "tests/test_management_new_docker_network_policy.py::test_loopback_publication_refuses_legacy_or_unverifiable_docker_engine[27.5.1-False]",
         "tests/test_management_new_docker_network_policy.py::test_dedicated_new_bridge_rejects_ipv6_even_with_masquerading_disabled[True]",
-        "tests/test_management_new_instance_first_launch_docker.py::test_real_new_first_launch_never_reports_readiness_from_invalid_readback[revoked-grant]",
-        "tests/test_management_new_instance_first_launch_docker.py::test_real_new_first_launch_never_reports_readiness_from_invalid_readback[stale-observation]",
-        "tests/test_management_new_instance_first_launch_docker.py::test_killed_first_host_preserves_consumed_claim_without_docker_start",
     } <= set(required)
     assert all(nodeid.startswith("tests/") for nodeid in required)
 

@@ -113,8 +113,27 @@ def test_real_private_engine_parent_preserves_original_and_seals_independent_sou
         _remove_disposable_engine_root(root)
 
 
-@pytest.mark.parametrize("competing_source_during_claim", [False, True])
-def test_private_source_first_launch_and_retained_grant_readback(request_file: Path, competing_source_during_claim: bool) -> None:
+_PAUSE_DURING_SEALED_API_GATE = """
+import json, os, sys, time
+from pathlib import Path
+from auto_coder.management import fresh_new_host_start as host
+original = host._start_docker_container_once
+def pause_after_sealing(*args, **kwargs):
+    print('private-api-gate-sealed', flush=True)
+    release = Path(sys.argv[6])
+    deadline = time.monotonic() + 30
+    while not release.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if not release.exists():
+        raise RuntimeError('private API gate barrier was not released')
+    return original(*args, **kwargs)
+host._start_docker_container_once = pause_after_sealing
+print(json.dumps(host.start_new_docker_once(Path(sys.argv[1]), sys.argv[2], sys.argv[3], private_root=Path(sys.argv[4]), outer_socket=Path(sys.argv[5]))), flush=True)
+"""
+
+
+@pytest.mark.parametrize("race", ["none", "pre-gate-sibling", "sealed-gate-outside-client"])
+def test_private_source_first_launch_and_retained_grant_readback(request_file: Path, race: str) -> None:
     """Cross the private source, host challenge, and real OAuth child boundary."""
     token, request = _prepare_real_new_source(request_file)
     original_oauth = (request_file.parent / "oauth/oauth.sqlite3").read_bytes()
@@ -169,7 +188,7 @@ def test_private_source_first_launch_and_retained_grant_readback(request_file: P
             "--outer-socket",
             str(outer_socket),
         )
-        if competing_source_during_claim:
+        if race == "pre-gate-sibling":
             # A second trusted Docker client can reach the socket while the
             # original host holds the guard. The guard-to-effect recheck must
             # refuse any later configured sibling and permanently consume
@@ -219,7 +238,46 @@ def test_private_source_first_launch_and_retained_grant_readback(request_file: P
                 if suspended.poll() is None:
                     suspended.kill()
                     suspended.communicate(timeout=10)
-        launch = _run_host(*arguments, timeout=150)
+        if race == "sealed-gate-outside-client":
+            release = request_file.parent / "release-original-gate"
+            suspended = subprocess.Popen(
+                [sys.executable, "-B", "-c", _PAUSE_DURING_SEALED_API_GATE, str(request_file), child_id, image_id, str(root), str(outer_socket), str(release)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=_environment(),
+            )
+            try:
+                assert suspended.stdout is not None
+                assert select.select([suspended.stdout], [], [], 35)[0], "private API gate never became active"
+                assert suspended.stdout.readline() == "private-api-gate-sealed\n"
+                assert (root / "socket/docker.sock").stat().st_mode & 0o777 == 0
+                gate_host = f"unix://{root / 'socket/first-start-gate.sock'}"
+                # Independent Docker CLI sources cannot mutate either the
+                # original raw socket or the read-only proxy during the gap.
+                blocked_raw = subprocess.run(
+                    ["docker", "--host", selected_host, "container", "create", "--entrypoint", "/bin/sh", image_id, "-c", "true"],
+                    capture_output=True, text=True, timeout=15,
+                )
+                assert blocked_raw.returncode != 0, blocked_raw.stdout
+                blocked_gateway = subprocess.run(
+                    ["docker", "--host", gate_host, "container", "create", "--entrypoint", "/bin/sh", image_id, "-c", "true"],
+                    capture_output=True, text=True, timeout=15,
+                )
+                assert blocked_gateway.returncode != 0, blocked_gateway.stdout
+                assert not (request_file.parent / "state/physical-child-invocations").exists()
+                assert (request_file.parent / "oauth/oauth.sqlite3").read_bytes() == original_oauth
+                release.touch(mode=0o600)
+                stdout, stderr = suspended.communicate(timeout=150)
+                assert suspended.returncode == 0, stderr
+                launch = subprocess.CompletedProcess(arguments, suspended.returncode, stdout, stderr)
+            finally:
+                release.touch(mode=0o600)
+                if suspended.poll() is None:
+                    suspended.kill()
+                    suspended.communicate(timeout=10)
+        else:
+            launch = _run_host(*arguments, timeout=150)
         assert launch.returncode == 0, (launch.stderr, subprocess.run(["docker", "logs", child_id], capture_output=True, text=True).stdout)
         assert json.loads(launch.stdout)["status"] == "first-child-observed-awaiting-authenticated-readback"
         claim = json.loads((request_file.parent / "guard/new-docker-first-start.json").read_bytes())

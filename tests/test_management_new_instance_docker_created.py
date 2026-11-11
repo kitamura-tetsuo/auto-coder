@@ -118,6 +118,28 @@ def test_real_docker_created_scope_produces_non_authorizing_snapshot(configured_
         subprocess.run(["docker", "rm", "-f", name], check=True, capture_output=True, timeout=30)
 
 
+def test_unisolated_docker_source_can_never_consume_a_new_first_start(configured_request: Path, isolated_image: tuple[str, str]) -> None:
+    """A positive CREATED snapshot never licenses the formerly optional path."""
+    _begin(configured_request)
+    _, image_id = isolated_image
+    container_id, name = _create(configured_request, image_id)
+    try:
+        assert _inspect(configured_request, container_id, image_id).returncode == 0
+        original_oauth = (configured_request.parent / "oauth/oauth.sqlite3").read_bytes()
+        denied = subprocess.run(
+            [sys.executable, "-B", "-m", "auto_coder.management.fresh_host", "start-new-container", "--request-file", str(configured_request), "--container-id", container_id, "--image-id", image_id],
+            env=_environment(), capture_output=True, text=True, timeout=20,
+        )
+        assert denied.returncode != 0 and denied.stdout == ""
+        assert "--private-root" in denied.stderr
+        assert subprocess.check_output(["docker", "inspect", "--format", "{{.State.Status}}", container_id], text=True).strip() == "created"
+        assert not (configured_request.parent / "guard/new-docker-first-start.json").exists()
+        assert not (configured_request.parent / "state/new-first-launch-claimed.json").exists()
+        assert (configured_request.parent / "oauth/oauth.sqlite3").read_bytes() == original_oauth
+    finally:
+        subprocess.run(["docker", "rm", "-f", name], check=True, capture_output=True, timeout=30)
+
+
 @pytest.mark.parametrize("variant", ["network", "root-writable", "wrong-user", "restart", "missing-mount", "extra-mount"])
 def test_real_docker_created_scope_refuses_unsafe_configuration(configured_request: Path, isolated_image: tuple[str, str], variant: str) -> None:
     _begin(configured_request)

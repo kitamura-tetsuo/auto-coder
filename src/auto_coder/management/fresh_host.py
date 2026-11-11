@@ -113,7 +113,7 @@ def main() -> None:
     docker_start.add_argument("--container-id", required=True)
     docker_start.add_argument("--image-id", required=True)
     docker_start.add_argument("--timeout", type=float, default=120)
-    docker_start.add_argument("--private-root", type=Path)
+    docker_start.add_argument("--private-root", type=Path, required=True)
     docker_start.add_argument("--outer-socket", type=Path, default=Path("/var/run/docker.sock"))
     capture = commands.add_parser("capture")
     for option in ("management-id", "management-image", "proxy-id", "proxy-image", "mounts-file", "guard-dir"):
