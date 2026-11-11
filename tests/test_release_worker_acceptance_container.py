@@ -270,8 +270,14 @@ def test_installed_release_lost_start_reply_recovers_after_manager_and_superviso
     _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=False, lose_start_reconstruct=True)
 
 
-def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch, *, fail_candidate: bool, lose_start_reconstruct: bool = False) -> None:
-    prefix = "release-lost-start-" if lose_start_reconstruct else "release-failed-candidate-" if fail_candidate else "release-installed-join-"
+@pytest.mark.timeout(2400)
+def test_installed_release_rejects_later_same_sha_selection_after_staging_before_drain(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None) -> None:
+    _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=False, supersede_after_stage=True)
+
+
+def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch, *, fail_candidate: bool, lose_start_reconstruct: bool = False, supersede_after_stage: bool = False) -> None:
+    assert not (lose_start_reconstruct and supersede_after_stage)
+    prefix = "release-superseded-" if supersede_after_stage else "release-lost-start-" if lose_start_reconstruct else "release-failed-candidate-" if fail_candidate else "release-installed-join-"
     scenario = prefix + uuid.uuid4().hex[:12]
     with tempfile.TemporaryDirectory(prefix="release-join-", dir=tmp_path) as directory:
         root = Path(directory)
@@ -299,6 +305,29 @@ def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch,
                 operating.write_text("profile: full\ntargets:\n  beta-worker:\n    channel: beta\n    repositories: [fixture/beta]\n  release-worker:\n    channel: release\n    repositories: [owner/repo]\n  release-source:\n    channel: release\n    repositories: [owner/repo]\n", encoding="utf-8")
                 settings = replace(service.settings, operating_policy_path=operating, source_release_policy_path=policy_path, source_release_token_file=token_path, source_release_target_id="release-source", source_release_workflow_id=WORKFLOW_ID)
                 app = create_management_app(settings, service.grants, worker_clients={"release": release.client})
+                original_lifecycle_save = app.state.management_runtime.journal.lifecycle_save
+                hold_drain_save = {"value": lose_start_reconstruct}
+                denied_drain_saves: list[str] = []
+
+                def guarded_lifecycle_save(operation_id: str, revision: int, snapshot: dict[str, object]) -> bool:
+                    steps = snapshot.get("steps")
+                    if hold_drain_save["value"] and isinstance(steps, dict) and "drain" in steps:
+                        denied_drain_saves.append(operation_id)
+                        return False
+                    return original_lifecycle_save(operation_id, revision, snapshot)
+
+                if lose_start_reconstruct:
+                    monkeypatch.setattr(app.state.management_runtime.journal, "lifecycle_save", guarded_lifecycle_save)
+                postpone_drain = {"value": supersede_after_stage}
+                original_step = app.state.management_runtime.lifecycle._step
+
+                def held_drain_boundary(record, revision, snapshot, name, client, operation, runtime_id):
+                    if name == "drain" and postpone_drain["value"]:
+                        return record
+                    return original_step(record, revision, snapshot, name, client, operation, runtime_id)
+
+                if supersede_after_stage:
+                    monkeypatch.setattr(app.state.management_runtime.lifecycle, "_step", held_drain_boundary)
                 start_dispatches: list[str] = []
                 if lose_start_reconstruct:
                     original_dispatch = release.client.dispatch_worker_operation
@@ -323,22 +352,23 @@ def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch,
                     http = clients.enter_context(TestClient(app, base_url=settings.oauth.canonical_issuer))
                     tested = SourceProofPublisher(system.remote, "owner/repo").read(system.revisions[0])
                     assert tested is not None
+                    promotion_arguments = {
+                        "target_id": "release-source",
+                        "source_sha": system.revisions[0],
+                        "ci_run_id": tested.record.run_id,
+                        "ci_run_attempt": tested.record.run_attempt,
+                        "tested_source_ref": tested.tag_ref,
+                        "tested_source_oid": tested.tag_object_oid,
+                        "tested_source_record_sha256": digest(asdict(tested.record)),
+                        "acceptance_ref": acceptance.tag_ref,
+                        "acceptance_oid": acceptance.tag_object_oid,
+                        "idempotency_key": "release-promotion",
+                    }
                     promoted = _call(
                         http,
                         system.bearer,
                         PROMOTE_ACTION,
-                        {
-                            "target_id": "release-source",
-                            "source_sha": system.revisions[0],
-                            "ci_run_id": tested.record.run_id,
-                            "ci_run_attempt": tested.record.run_attempt,
-                            "tested_source_ref": tested.tag_ref,
-                            "tested_source_oid": tested.tag_object_oid,
-                            "tested_source_record_sha256": digest(asdict(tested.record)),
-                            "acceptance_ref": acceptance.tag_ref,
-                            "acceptance_oid": acceptance.tag_object_oid,
-                            "idempotency_key": "release-promotion",
-                        },
+                        promotion_arguments,
                     )
                     assert promoted["status"] == "SUCCEEDED", promoted
                     assert promoted["worker_deployed"] is False
@@ -387,7 +417,53 @@ def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch,
                     competing = _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing"})
                     assert competing["status"] == "BUSY" and competing["operation_id"] == operation_id
 
+                    if supersede_after_stage:
+
+                        def staged_before_drain():
+                            pending = journal.lifecycle_snapshot(operation_id)
+                            if pending is None:
+                                return None
+                            state = pending[1]
+                            return state if state["stage"] == "DRAINING" and isinstance(state.get("staged"), dict) else None
+
+                        stopped_at_boundary = _wait_for(staged_before_drain, timeout=150)
+                        assert stopped_at_boundary["staged"]["source_sha"] == system.revisions[0]
+                        assert "drain" not in stopped_at_boundary["steps"]
+                        assert not (release.runtime / "fixture-posts").exists()
+                        assert _ready(release.client, system.revisions[1]) is not None
+                        next_promotion = _call(
+                            http,
+                            system.bearer,
+                            PROMOTE_ACTION,
+                            {**promotion_arguments, "idempotency_key": "later-same-sha-selection"},
+                        )
+                        assert next_promotion["status"] == "SUCCEEDED", next_promotion
+                        assert next_promotion["operation_id"] != promotion_id
+                        assert system.remote._git("rev-parse", "refs/tags/auto-coder-release-source-selection-current") != catalog_oid
+                        postpone_drain["value"] = False
+                        superseded = _wait_for(lambda: result if (result := _call(http, system.bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id}))["status"] == "SUPERSEDED" else None, timeout=50)
+                        assert superseded["reason"] == "original_release_operation_superseded"
+                        assert not (release.runtime / "fixture-posts").exists(), "superseded selection must not send a replacement effect"
+                        assert len((release.runtime / "fixture-launches.jsonl").read_text().splitlines()) == 1
+                        assert _ready(release.client, system.revisions[1]) is not None
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "selected_git_sha": system.revisions[1]})["status"] == "CONFLICT"
+                        assert _container_identity(system.worker_name) == beta_identity
+                        assert _container_identity(release.container) == release_identity
+                        assert all(path.read_bytes() == original for path, original in ownership)
+                        assert len(system.remote.dispatches) == 1
+                        return
+
                     if lose_start_reconstruct:
+                        _wait_for(lambda: denied_drain_saves[0] if denied_drain_saves else None, timeout=150)
+                        assert all(item == operation_id for item in denied_drain_saves)
+                        not_durable = journal.lifecycle_snapshot(operation_id)
+                        assert not_durable is not None and "drain" not in not_durable[1]["steps"]
+                        assert not (release.runtime / "fixture-posts").exists(), "no signed effect before confirmed durable boundary"
+                        assert len((release.runtime / "fixture-launches.jsonl").read_text().splitlines()) == 1
+                        assert _ready(release.client, system.revisions[1]) is not None
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing-undurable"})["status"] == "BUSY"
+                        hold_drain_save["value"] = False
                         assert not fail_candidate
                         _wait_for(lambda: start_dispatches[0] if start_dispatches else None, timeout=180)
                         assert start_dispatches == ["s-" + operation_id]
