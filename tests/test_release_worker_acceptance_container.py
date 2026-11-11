@@ -327,7 +327,27 @@ def _published_acceptance(system: _SmokeSystem):
 
 def _container_identity(name: str) -> dict[str, object]:
     facts = json.loads(_docker("inspect", name).stdout)[0]
-    return {"id": facts["Id"], "pid": facts["State"]["Pid"], "started": facts["State"]["StartedAt"], "mounts": facts["Mounts"]}
+    # Docker does not promise a stable enumeration order for bind mounts.
+    # Compare every mount attribute while ignoring order-only differences.
+    mounts = sorted(facts["Mounts"], key=lambda mount: json.dumps(mount, sort_keys=True))
+    return {"id": facts["Id"], "pid": facts["State"]["Pid"], "started": facts["State"]["StartedAt"], "mounts": mounts}
+
+
+def test_container_identity_ignores_mount_order_but_detects_changes(monkeypatch: pytest.MonkeyPatch) -> None:
+    mounts = [{"Destination": "/workspace", "RW": True}, {"Destination": "/fixtures", "RW": False}]
+    baseline = {"Id": "fixed", "State": {"Pid": 123, "StartedAt": "fixed-time"}, "Mounts": mounts}
+    reordered = {**baseline, "Mounts": list(reversed(mounts))}
+    altered = {**baseline, "Mounts": [{**mounts[0], "RW": False}, mounts[1]]}
+    inspections = iter((baseline, reordered, altered))
+
+    def inspect_fixture(*args: str) -> subprocess.CompletedProcess[str]:
+        assert args == ("inspect", "fixture")
+        return subprocess.CompletedProcess(args, 0, stdout=json.dumps([next(inspections)]), stderr="")
+
+    monkeypatch.setattr(sys.modules[__name__], "_docker", inspect_fixture)
+    identity = _container_identity("fixture")
+    assert _container_identity("fixture") == identity
+    assert _container_identity("fixture") != identity
 
 
 def _assert_lifetime_gone(container: str, lifetime: dict[str, object]) -> None:
