@@ -1373,3 +1373,51 @@ def test_original_host_grant_refuses_rehashed_malformed_ancestor(tmp_path, corru
         serve_one_fresh_grant(tmp_path / "fresh-guard.sock", current, None, None, -1, -1)
     assert _fingerprint(tmp_path) == before
     assert not (tmp_path / "fresh-guard.sock").exists()
+
+
+@pytest.mark.parametrize("boundary", ["admission", "grant"])
+@pytest.mark.parametrize("corruption", ["foreign-history", "foreign-root", "uncovered-predecessor", "duplicate-target"])
+def test_original_boundaries_refuse_rehashed_historical_graph(tmp_path, boundary, corruption):
+    """An earlier failed branch cannot be rewritten into a different lineage."""
+    binding = _history(tmp_path)
+    prior = _covered(tmp_path, binding, "valid-predecessor")
+    claim_fresh_initialization(Path(prior.host_state_root), prior)
+    failed = replace(
+        _covered(tmp_path, binding, "original-failed-branch"),
+        old_instance=prior.new_instance,
+        old_container_id=prior.new_container_id,
+    )
+    failed = replace(failed, oauth_inode=failed.oauth_inode + 1)
+    with pytest.raises(ValueError, match="retained OAuth root identity differs"):
+        claim_fresh_initialization(Path(failed.host_state_root), failed)
+
+    current = replace(
+        _covered(tmp_path, binding, "valid-current-attempt"),
+        old_instance=prior.new_instance,
+        old_container_id=prior.new_container_id,
+    )
+    if boundary == "grant":
+        claim_fresh_initialization(Path(current.host_state_root), current)
+
+    def mutate(event):
+        assert event["kind"] == "anchor" and event["attempt"] == failed.request_id
+        intent = event["value"]["intent"]
+        if corruption == "foreign-history":
+            intent["original_history_id"] = "00000000-0000-4000-8000-000000000001"
+        elif corruption == "foreign-root":
+            intent["original_history"] = str(tmp_path / "foreign-history")
+        elif corruption == "uncovered-predecessor":
+            intent["old_instance"] = "invented-predecessor"
+            intent["old_container_id"] = "invented-container"
+        else:
+            intent["new_instance"] = prior.new_instance
+
+    _rewrite_rehashed_original_event(Path(binding.root), 2, mutate)
+    before = _fingerprint(tmp_path)
+    with pytest.raises(OriginalEvidenceUnavailable, match="original (anchor|lineage|target)"):
+        if boundary == "admission":
+            claim_fresh_initialization(Path(current.host_state_root), current)
+        else:
+            serve_one_fresh_grant(tmp_path / "fresh-guard.sock", current, None, None, -1, -1)
+    assert _fingerprint(tmp_path) == before
+    assert not (tmp_path / "fresh-guard.sock").exists()

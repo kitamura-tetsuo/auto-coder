@@ -65,8 +65,12 @@ the producer also checks its complete canonical intent schema and requires
 its request ID to match the anchor event. A rehashed chain with a missing,
 partial or cross-attempt original anchor refuses as unavailable instead of
 throwing an unhandled field lookup; it never creates another intent or grant.
-This schema check does not authenticate rewritten original bytes or fill a
-pre-enrollment historical gap.
+Every historical anchor must also bind the exact enrolled original history
+root and history UUID before the producer admits another original claim or
+opens its host grant. A terminal failed branch with a rehashed foreign-history
+intent is unavailable even when its hash chain and terminal store payload
+remain internally consistent. This schema check does not authenticate
+rewritten original bytes or fill a pre-enrollment historical gap.
 Individual original files are bounded to 8 MiB; larger evidence is unavailable.
 Protected original regular files, including the history lock, authority,
 frontier, events, intent and native stores, must have exactly one hard link.

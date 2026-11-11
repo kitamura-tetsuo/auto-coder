@@ -220,6 +220,8 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
                 raise OriginalEvidenceUnavailable("incomplete original anchor") from error
             if original_intent.request_id != event["attempt"]:
                 raise OriginalEvidenceUnavailable("original anchor attempt mismatch")
+            if original_intent.original_history != binding.root or original_intent.original_history_id != binding.history:
+                raise OriginalEvidenceUnavailable("original anchor history identity differs")
             try:
                 validate_original_lifetime(anchor["lifetime"])
             except (ValueError, TypeError, KeyError) as error:
