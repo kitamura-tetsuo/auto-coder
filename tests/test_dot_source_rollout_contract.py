@@ -270,6 +270,7 @@ def test_checkpoint_roundtrips_all_immutable_identifiers_without_elevation(tmp_p
         beta_acceptance_oid="b" * 40,
         promotion_operation_id="promotion-original",
         promotion_catalog_oid="c" * 40,
+        release_target="fixture-release",
         release_operation_id="release-original",
         idempotency_key="stable-unchanged-key",
     )
@@ -280,6 +281,52 @@ def test_checkpoint_roundtrips_all_immutable_identifiers_without_elevation(tmp_p
     report = smoke.required_next_observation(loaded)
     assert report.verdict == "NOT_RUN"
     assert report.stage == "full"
+    assert report.positive_deployment_proven is False
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("ci_run_id", "not-a-run"),
+        ("ci_run_id", "0"),
+        ("ci_run_attempt", "0"),
+        ("ci_run_attempt", "2.0"),
+        ("tested_source_oid", "not-an-object-id"),
+        ("beta_acceptance_oid", "NOT-A-GIT-OID"),
+        ("promotion_catalog_oid", "c" * 39),
+    ],
+)
+def test_loaded_checkpoint_refuses_unverifiable_original_git_identifiers(tmp_path, field, value):
+    raw = asdict(checkpoint())
+    raw[field] = value
+    path = tmp_path / "checkpoint.json"
+    path.write_text(json.dumps(raw))
+    with pytest.raises(ValueError, match="original Git|original CI"):
+        smoke.load_checkpoint(path)
+
+
+def test_full_stage_refuses_missing_distinct_release_target_even_with_prior_promotion():
+    original = checkpoint(
+        stage="full",
+        task_id="task-2608",
+        repository="owner/repo",
+        issue_number="2608",
+        stage_revision="operator-v1",
+        source_sha="a" * 40,
+        ci_run_id="123",
+        ci_run_attempt="1",
+        tested_source_ref="refs/heads/tested",
+        tested_source_oid="a" * 40,
+        beta_target="fixture-beta",
+        beta_acceptance_ref="refs/tags/accepted",
+        beta_acceptance_oid="b" * 40,
+        promotion_operation_id="promotion-original",
+        promotion_catalog_oid="c" * 40,
+    )
+    report = smoke.required_next_observation(original)
+    assert report.verdict == "BLOCKED"
+    assert "release target" in report.reason
+    assert report.effect_dispatched is False
     assert report.positive_deployment_proven is False
 
 

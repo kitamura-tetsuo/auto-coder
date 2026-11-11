@@ -69,7 +69,13 @@ installed runtime IDs and generations, acceptance ref/OID, promotion
 operation/run/catalog ref/OID, stable original idempotency key, and
 `pending_effect_state`, exact `pending_operation_id`, immutable failure signature and its recovery count.
 This is a **reminder**, never a grant, proof of an effect or a current worker
-observation. Beta/full work without the original task, repository, Issue/PR
+observation. The original CI run/attempt are positive canonical decimal identifiers and the tested,
+accepted-beta and promotion Git OIDs are exact 40-character lowercase object IDs;
+malformed checkpoint identifiers fail closed before any request.
+Full-stage diagnostics additionally require the distinct original configured
+release worker target: a promotion record without a selected release target
+cannot even establish which installed runtime remains to be checked.
+Beta/full work without the original task, repository, Issue/PR
 identity or stage revision is BLOCKED. Before a beta or full stage can
 report even a diagnostic-only `NOT_RUN`, the checkpoint must also retain the
 selected source SHA and ref/OID, original CI run/attempt and configured beta

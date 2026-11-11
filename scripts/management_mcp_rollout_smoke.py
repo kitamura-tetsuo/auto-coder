@@ -37,6 +37,7 @@ SHA = re.compile(r"[0-9a-f]{40}\Z")
 SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\Z")
 ISSUE_NUMBER = re.compile(r"[1-9][0-9]{0,8}\Z")
+POSITIVE_CI_NUMBER = re.compile(r"[1-9][0-9]{0,18}\Z")
 
 
 class OperatorScopeError(ValueError):
@@ -126,6 +127,12 @@ def load_checkpoint(path: Path | None) -> DotCheckpoint:
         raise ValueError("invalid original operator stage revision")
     if raw["source_sha"] and SHA.fullmatch(raw["source_sha"]) is None:
         raise ValueError("checkpoint source SHA must be exact full lowercase Git SHA")
+    for field in ("ci_run_id", "ci_run_attempt"):
+        if raw[field] and POSITIVE_CI_NUMBER.fullmatch(raw[field]) is None:
+            raise ValueError("invalid original CI run or attempt: " + field)
+    for field in ("tested_source_oid", "beta_acceptance_oid", "promotion_catalog_oid"):
+        if raw[field] and SHA.fullmatch(raw[field]) is None:
+            raise ValueError("invalid original Git object ID: " + field)
     if raw["idempotency_key"] and SAFE_ID.fullmatch(raw["idempotency_key"]) is None:
         raise ValueError("invalid original idempotency key")
     if type(raw["recovery_attempts"]) is not int or not 0 <= raw["recovery_attempts"] <= 1:
@@ -183,6 +190,8 @@ def required_next_observation(checkpoint: DotCheckpoint) -> RolloutReport:
         return RolloutReport("NOT_RUN", checkpoint.stage, "Beta mutation and installed worker acceptance require disposable original producers and current operator authority")
     if not (checkpoint.beta_acceptance_ref and checkpoint.beta_acceptance_oid and checkpoint.promotion_operation_id and checkpoint.promotion_catalog_oid):
         return RolloutReport("BLOCKED", checkpoint.stage, "Current beta acceptance and distinct release promotion evidence are missing")
+    if not checkpoint.release_target:
+        return RolloutReport("BLOCKED", checkpoint.stage, "Distinct configured release target is missing; promotion evidence cannot prove worker deployment")
     return RolloutReport("NOT_RUN", checkpoint.stage, "Release installed-worker lifecycle and original receipt cannot be certified by a checkpoint")
 
 
