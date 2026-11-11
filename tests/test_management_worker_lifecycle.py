@@ -521,19 +521,22 @@ def test_authenticated_real_bridge_held_drain_lost_reply_and_management_reconstr
             supervisor.child.wait(timeout=5)
 
 
+@pytest.mark.parametrize("channel", ("beta", "release"))
 @pytest.mark.parametrize("restart", (False, True))
-def test_authenticated_bootstrap_start_reply_loss_survives_supervisor_reconstruction(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None, restart: bool) -> None:
+def test_authenticated_bootstrap_start_reply_loss_survives_supervisor_reconstruction(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None, restart: bool, channel: str) -> None:
     base, _base_grants, identity, signed, _uids, state = real_boundary
     origin = base.oauth.canonical_issuer
     oauth = OAuthSettings(base.oauth.database_path, origin, base.oauth.firebase_project_id, (OAuthClient("alice-client", (origin + "/alice-callback",), allowed_scopes=(READ_SCOPE, DEPLOY_SCOPE)),), enabled_scopes=(READ_SCOPE, DEPLOY_SCOPE))
     policy = tmp_path / "operator.yaml"
-    policy.write_text("profile: beta\ntargets:\n  beta-worker:\n    channel: beta\n    repositories: [fixture/beta]\n", encoding="utf-8")
+    profile = "full" if channel == "release" else "beta"
+    target = f"{channel}-worker"
+    policy.write_text(f"profile: {profile}\ntargets:\n  {target}:\n    channel: {channel}\n    repositories: [fixture/{channel}]\n", encoding="utf-8")
     settings = ManagementSettings(tmp_path, oauth, port=base.port, operating_policy_path=policy, operation_state_root=tmp_path / "journal")
     grants = OAuthGrantService(oauth, identity, clock=lambda: state["now"])
     monkeypatch.setenv("AUTO_CODER_TEST_CONFIG_REPORT", "1")
     monkeypatch.delenv("AUTO_CODER_ISSUE_ALLOWLIST", raising=False)
     monkeypatch.delenv("AUTO_CODER_PR_ALLOWLIST", raising=False)
-    supervisor = _supervisor(tmp_path / "child")
+    supervisor = _supervisor(tmp_path / "child", channel)
     config_dir = supervisor.config.workspace_root / ".auto-coder"
     config_dir.mkdir()
     config_file = config_dir / "config.toml"
@@ -570,10 +573,10 @@ def test_authenticated_bootstrap_start_reply_loss_survives_supervisor_reconstruc
             return result
 
         monkeypatch.setattr(worker_client, "dispatch_worker_operation", lose_start)
-        app = create_management_app(settings, grants, worker_clients={"beta": worker_client})
+        app = create_management_app(settings, grants, worker_clients={channel: worker_client})
         with TestClient(app, base_url=origin) as client:
             bearer = _issue(client, settings, signed, "alice", "alice-client", READ_SCOPE + " " + DEPLOY_SCOPE)["access_token"]
-            arguments = {"target_id": "beta-worker", "idempotency_key": "lost-start", "expected_supervisor_generation": supervisor.incarnation, "expected_runtime_id": "bootstrap"}
+            arguments = {"target_id": target, "idempotency_key": "lost-start", "expected_supervisor_generation": supervisor.incarnation, "expected_runtime_id": "bootstrap"}
             tool = "auto_coder_restart_worker" if restart else "auto_coder_start_worker"
             if restart:
                 arguments.update(expected_process_run_id=worker["process_run_id"], expected_deployment_generation=worker["deployment_generation"])
@@ -596,7 +599,7 @@ def test_authenticated_bootstrap_start_reply_loss_survives_supervisor_reconstruc
         supervisor = WorkerSupervisor(supervisor.config)
         listener, reconstructed_client = _bridge(supervisor, b"s" * 48, port=worker_client.config.port)
         assert reconstructed_client.config.binding_digest == worker_client.config.binding_digest
-        reconstructed = create_management_app(settings, grants, worker_clients={"beta": reconstructed_client})
+        reconstructed = create_management_app(settings, grants, worker_clients={channel: reconstructed_client})
         with TestClient(reconstructed, base_url=origin) as client:
             for _ in range(300):
                 _drive(reconstructed, operation_id, 1)
@@ -610,7 +613,7 @@ def test_authenticated_bootstrap_start_reply_loss_survives_supervisor_reconstruc
             assert current["pid"] == pid and current["deployment_generation"] == generation
             assert _call(client, bearer, tool, arguments)["operation_id"] == operation_id
             assert len(dispatches) == 1
-            assert _call(client, bearer, "auto_coder_operation_get", {"target_id": "beta-worker", "operation_id": operation_id})["status"] != "SUCCEEDED"
+            assert _call(client, bearer, "auto_coder_operation_get", {"target_id": target, "operation_id": operation_id})["status"] != "SUCCEEDED"
     finally:
         (tmp_path / "child" / "fixture-release").write_text("release")
         listener.close()

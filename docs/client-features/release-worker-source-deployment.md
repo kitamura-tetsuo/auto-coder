@@ -125,3 +125,14 @@ uv run pytest tests/test_release_worker_deployment.py tests/test_management_sour
 There is no new dashboard scheduler/provider event, Docker socket or runtime
 host authority. Existing management Loguru sinks record admission and
 reconciliation. Related observability is in `docs/dashboard-observability.md`.
+
+### Native release bootstrap reconstruction regression
+
+The authenticated bootstrap START and RESTART lost-response regression also runs
+with a release target under the full operator policy. It crosses the real signed
+HTTP bridge, Supervisor, worker Unix socket and OS child boundary, then reconstructs
+the manager and Supervisor and verifies that the original operation and exact
+child lifetime are retained without a second START dispatch. A bootstrap-only
+child still cannot report SUCCEEDED: this is not installed accepted-source
+release activation evidence and does not replace the remaining integrated
+REQ-009/010/011 acceptance gates.
