@@ -71,6 +71,21 @@ def test_production_entrypoint_refuses_operator_scope_as_authority(tmp_path: Pat
     assert report["boot_id"] == Path("/proc/sys/kernel/random/boot_id").read_text().strip()
 
 
+def test_approved_component_has_precise_non_authorizing_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A successful protected record read must not claim missing enrollment support."""
+    protected_component = object()
+    monkeypatch.setattr(observation, "observe_approved_enrollment", lambda _scope: protected_component)
+    monkeypatch.setattr(observation, "_docker", lambda _scope: ())
+    report = observation.observe(_scope())
+    reasons = {item.authority: item.reason for item in report.unavailable}
+    assert report.approved_enrollment is protected_component
+    assert report.status == "unavailable"
+    assert "protected present-time enrollment was read" in reasons["deployment-enrollment"]
+    assert "complete installed controller membership" in reasons["deployment-enrollment"]
+    assert "approved-enrollment-component" not in reasons
+    assert {"ordinary-route-closure", "original-source-profile", "kernel-containment"} <= set(reasons)
+
+
 def test_separate_consumer_after_producer_exit_reobserves_real_source_and_complete_scope(tmp_path: Path) -> None:
     source = tmp_path / "controller.py"
     source.write_bytes((ROOT / "src/auto_coder/management/proxy_watch_cli.py").read_bytes())

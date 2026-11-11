@@ -217,7 +217,6 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
     scope = ProposedScope.parse(json.loads(json.dumps(asdict(scope))))
     started = time.monotonic_ns()
     unavailable = [
-        Unavailable("deployment-enrollment", "No authoritative original deployment provenance or separately approved present-time enrollment reader is implemented; supplied identities and file lists select scope only."),
         Unavailable("ordinary-route-closure", "No authoritative installed-route inventory is available for watcher/reconcile, services/timers, socket activation, Docker restart, configured local/remote scripts, repair/recreate and alternative roots; none are excluded from scope."),
         Unavailable("original-source-profile", "No reviewed exact original source/configuration binding is registered for " + scope.profile + "; current installation bytes cannot establish original lock-before-launch evidence."),
         Unavailable("kernel-containment", "No original task/boot lifetime capture with retained namespace object pins and exact owner-file fence is supplied; stopped Docker state and saved namespace inode strings cannot establish absence."),
@@ -230,6 +229,22 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
         approved_enrollment = observe_approved_enrollment(scope)
     except (EnrollmentUnavailable, OSError, ValueError) as exc:
         unavailable.append(Unavailable("approved-enrollment-component", str(exc)))
+    if approved_enrollment is None:
+        unavailable.insert(
+            0,
+            Unavailable(
+                "deployment-enrollment",
+                "No protected approved present-time enrollment or authoritative original deployment provenance was verified; supplied identities and file lists select scope only.",
+            ),
+        )
+    else:
+        unavailable.insert(
+            0,
+            Unavailable(
+                "deployment-enrollment",
+                "The protected present-time enrollment was read, but independent original execution, complete installed controller membership and current technical closure are not established by that record.",
+            ),
+        )
     if scope.profile == "quarantined-original-v1":
         unavailable.append(Unavailable("quarantined-original-profile", "Exact original bootstrap file mounts, no-new-privileges setting and support-mount purpose/source/destination/read-only execution binding are not registered; replacement admission is unchanged."))
     boot_id, start_token = "", ""
