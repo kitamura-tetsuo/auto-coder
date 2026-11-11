@@ -530,3 +530,44 @@ def test_async_stage_operation_has_one_intent_and_only_producer_ready_evidence(t
     finally:
         release.set()
         listener.close()
+
+
+@pytest.mark.parametrize("mismatch", [None, "beta", "run", "generation", "runtime", "exited"])
+def test_signed_reboot_route_requires_exact_live_release_candidate(tmp_path: Path, mismatch) -> None:
+    """Real signed HTTP with a controlled Supervisor inspection, not host acceptance."""
+    supervisor = _supervisor(tmp_path, "beta" if mismatch == "beta" else "release")
+    state = supervisor.store.read()
+    state["selected_runtime_id"] = "preparedNew"
+    supervisor.store.write(state)
+    worker = {"process_run_id": None, "deployment_generation": "candidate-generation", "runtime_id": "preparedNew"}
+    inspection = {"supervisor_incarnation": supervisor.incarnation, "status": "RUNNING", "alive": mismatch != "exited", "worker": worker, "selected_runtime_id": "preparedNew"}
+    listener, client = _bridge(supervisor, os.urandom(48))
+    try:
+        with patch.object(supervisor, "inspect", return_value=inspection), patch.object(supervisor, "apply", return_value={"status": "RESTARTING"}) as apply:
+            assert client.inspect_supervisor().result_code == "OK"
+            result = client.dispatch_worker_operation(
+                "original-reboot",
+                "RECOVER_PREVIOUS_REBOOT",
+                process_run_id="different-run" if mismatch == "run" else None,
+                deployment_generation="different-generation" if mismatch == "generation" else "candidate-generation",
+                selected_runtime_id="different-runtime" if mismatch == "runtime" else "preparedNew",
+                runtime_id="preparedOld",
+            )
+            if mismatch is not None:
+                assert result.result_code == "CONFLICT"
+                apply.assert_not_called()
+            else:
+                assert result.result_code == "RESTARTING"
+                apply.assert_called_once_with(
+                    {
+                        "operation_id": "original-reboot",
+                        "operation": "RECOVER_PREVIOUS_REBOOT",
+                        "expected_supervisor_incarnation": supervisor.incarnation,
+                        "expected_process_run_id": None,
+                        "expected_generation": "candidate-generation",
+                        "expected_runtime_id": "preparedNew",
+                        "runtime_id": "preparedOld",
+                    }
+                )
+    finally:
+        listener.close()

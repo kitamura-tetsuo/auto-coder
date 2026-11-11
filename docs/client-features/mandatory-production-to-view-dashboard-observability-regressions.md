@@ -203,3 +203,21 @@ fetch failure through the production runner and mounted detail: failed fetch
 shows FAILED with no provider entry or publication, while successful publication
 is checked against the fetched remote parent commit. See the local Issue entries
 in `docs/dashboard-observability.md`; no renderer change is needed.
+
+Authenticated accepted-source release dispatch remains in the standalone management
+operation journal, outside Issue/PR trace collection. Its authenticated projection
+keeps workflow HEAD, selected source, verified source promotion and worker deployment
+separate, including after lost replies and restart. No dashboard deployment success
+is emitted. The production-boundary regression command and concrete neutrality
+assessment are recorded in `docs/dashboard-observability.md` and the action schema
+in `management-source-release-dispatch.md`.
+
+Prospective original management-attempt capture is a host diagnostic origin with
+no Issue/PR execution or dashboard job. Its structured Loguru boundary facts are
+covered by `test_original_admission_trace_retains_boundaries_without_recovery_success`
+in `tests/test_management_original_attempts.py`; the real producer preserves
+`evidence_only=true`, exact history/attempt/boundary and source locations. The
+production-to-view assessment in `docs/dashboard-observability.md` leaves the
+view/schema unchanged: enrollment, possible grants and unavailable legacy
+coverage cannot appear as recovery success. Run `bash scripts/test.sh
+--ci-tests-only tests/test_management_original_attempts.py`.

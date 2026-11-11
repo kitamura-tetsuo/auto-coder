@@ -151,7 +151,7 @@ class RetainedJournal:
             ):
                 raise ValueError("retained operation history incomplete")
             snapshot = connection.execute("SELECT revision,snapshot_json FROM worker_lifecycle WHERE operation_id=?", (record.operation_id,)).fetchone()
-            if record.intent.action in {"start_worker", "stop_worker", "restart_worker", "deploy_beta_source"} and snapshot is None:
+            if record.intent.action in {"start_worker", "stop_worker", "restart_worker", "deploy_beta_source", "deploy_release_source"} and snapshot is None:
                 raise ValueError("retained lifecycle evidence missing")
             value: dict[str, object] | None = None
             if snapshot is not None:

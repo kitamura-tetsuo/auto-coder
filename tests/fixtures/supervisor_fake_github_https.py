@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 class FixtureGitHub(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         target = urlsplit(self.path)
-        if target.path not in {"/repos/fixture/beta/pulls", "/repos/fixture/beta/issues"}:
+        if target.path not in {"/repos/fixture/beta/pulls", "/repos/fixture/beta/issues", "/repos/owner/repo/pulls", "/repos/owner/repo/issues"}:
             self._send(404, {"message": "fixture endpoint not available"})
             return
         self._send(200, [])

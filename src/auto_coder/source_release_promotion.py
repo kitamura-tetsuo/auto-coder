@@ -14,8 +14,10 @@ from .management.beta_runtime_smoke import PROFILE_ID, REQUIRED_PREDICATES, Smok
 from .management.source_acceptance import SourceAcceptanceError, SourceAcceptancePublisher
 from .management.source_evidence import BetaEvidenceReader, SourceEvidenceError
 from .source_release_catalog import (
+    RELEASE_SELECTION_REF,
     RELEASE_WORKFLOW,
     SHA,
+    SourceReleaseCandidate,
     SourceReleaseCatalog,
     SourceReleaseConflict,
     SourceReleaseError,
@@ -70,7 +72,7 @@ class AcceptedSourceValidator:
     def __init__(self, client: GitHubGitDataClient, policy: SourceReleasePolicy, *, clock: Callable[[], float] = time.time) -> None:
         self.client, self.policy, self.clock = client, policy, clock
 
-    def validate(self, request: SourceReleaseRequest) -> ValidatedAcceptance:
+    def validate(self, request: SourceReleaseCandidate) -> ValidatedAcceptance:
         request.validate(self.policy)
         proofs = TestedSourcePublisher(self.client, self.policy.source_repository)
         proof = proofs.read(request.source_sha)
@@ -150,7 +152,7 @@ class AcceptedSourceValidator:
         self._samples(local, worker, captured_profile, opened, deadline, completed)
         return ValidatedAcceptance(local_id, local_digest, instance_id, captured_profile.profile_id, captured_profile.content_revision)
 
-    def _source(self, source: dict[str, object], request: SourceReleaseRequest, proof: object) -> None:
+    def _source(self, source: dict[str, object], request: SourceReleaseCandidate, proof: object) -> None:
         record = proof.record  # type: ignore[attr-defined]
         expected = {
             "repository": self.policy.source_repository,
@@ -378,6 +380,17 @@ class SourceReleasePromotion:
             raise SourceReleaseError("current release pointer is not a direct Git commit")
         return _sha(target.get("sha"), "current release commit")
 
+    def _selection_oid(self) -> str | None:
+        """Identify the selected promotion, including a later same-SHA release."""
+        response = self.client.request("GET", f"git/ref/{RELEASE_SELECTION_REF.removeprefix('refs/')}")
+        if response.status == 404:
+            return None
+        data = _object(response, "current release operation selection")
+        target = _mapping(data.get("object"), "current release operation target")
+        if data.get("ref") != RELEASE_SELECTION_REF or target.get("type") != "tag":
+            raise SourceReleaseError("release operation selection is not an annotated catalog tag")
+        return _sha(target.get("sha"), "current release catalog object")
+
     def _record(self, request: SourceReleaseRequest, acceptance: ValidatedAcceptance, previous: str | None) -> SourceReleaseRecord:
         return SourceReleaseRecord(
             2,
@@ -431,14 +444,14 @@ class SourceReleasePromotion:
         if observed is None or observed.record != record or observed.tag_object_oid != oid:
             raise SourceReleaseError("NEEDS_ATTENTION: immutable release catalog is unreadable or changed")
         current = self._pointer()
-        if current != record.source_sha:
-            raise SourceReleaseError("SUPERSEDED: current release source differs from the operation")
+        if current != record.source_sha or self._selection_oid() != oid:
+            raise SourceReleaseError("SUPERSEDED: current release source or operation selection differs")
         release = self._read_release(record)
         if release is None:
             raise SourceReleaseError("NEEDS_ATTENTION: GitHub Release publication is unconfirmed")
         # Read each authority again after observing the release. An API success
         # response is neither a publication receipt nor a multi-resource CAS.
-        if self._pointer() != record.source_sha or self.catalog.read(record.operation_id) != observed or self._read_release(record) != release:
+        if self._pointer() != record.source_sha or self._selection_oid() != oid or self.catalog.read(record.operation_id) != observed or self._read_release(record) != release:
             raise SourceReleaseError("NEEDS_ATTENTION: release state changed during final readback")
         return SourceReleaseOutcome(record, status, oid, release)
 
@@ -495,6 +508,24 @@ class SourceReleasePromotion:
         if self._pointer() != record.source_sha:
             raise SourceReleaseError("NEEDS_ATTENTION: release pointer write is unconfirmed or superseded")
 
+    def _advance_selection(self, catalog_oid: str, previously_selected_oid: str | None) -> None:
+        """Commit the operation identity after the source pointer is confirmed.
+
+        The governed release-channel writer serializes updates. GitHub provides
+        no cross-ref CAS: a surprising prestate or poststate fails closed.
+        """
+        if self._selection_oid() != previously_selected_oid:
+            raise SourceReleaseError("SUPERSEDED: release operation selection changed before update")
+        try:
+            if previously_selected_oid is None:
+                self.client.request("POST", "git/refs", {"ref": RELEASE_SELECTION_REF, "sha": catalog_oid})
+            else:
+                self.client.request("PATCH", f"git/refs/{RELEASE_SELECTION_REF.removeprefix('refs/')}", {"sha": catalog_oid, "force": True})
+        except RuntimeError:
+            pass
+        if self._selection_oid() != catalog_oid:
+            raise SourceReleaseError("NEEDS_ATTENTION: release operation selection is unconfirmed")
+
     def execute(self, request: SourceReleaseRequest) -> SourceReleaseOutcome:
         request.validate(self.policy)
         # Always inspect the original immutable operation before sampling any
@@ -508,19 +539,21 @@ class SourceReleasePromotion:
         if existing is not None:
             self._verify_original(existing.record, request, accepted)
             current = self._pointer()
-            if current != existing.record.source_sha:
-                raise SourceReleaseError("NEEDS_ATTENTION: existing catalog has no provable intended current source; no replayed ref write")
+            if current != existing.record.source_sha or self._selection_oid() != existing.tag_object_oid:
+                raise SourceReleaseError("NEEDS_ATTENTION: existing catalog is not the selected promotion; no replayed ref write")
             self._publish(existing.record)
             return self._confirmed(existing.record, existing.tag_object_oid, "ALREADY_COMPLETED")
 
         if request.promotion_run_attempt != 1:
             raise SourceReleaseError("NEEDS_ATTENTION: retried Actions attempt has no original immutable operation record")
         previous = self._pointer()
+        previous_operation = self._selection_oid()
         record = self._record(request, accepted, previous)
         prepared = self.catalog.prepare(record, require_new=True)
         # A different writer may have changed the current ref while the
         # catalog was created. No update is sent in that case.
         self._advance(record)
+        self._advance_selection(prepared.tag_object_oid, previous_operation)
         if self.catalog.read(request.operation_id) != prepared:
             raise SourceReleaseError("NEEDS_ATTENTION: prepared immutable source catalog changed")
         self._publish(record)

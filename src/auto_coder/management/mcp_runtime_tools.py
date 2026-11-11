@@ -42,11 +42,15 @@ from .operations import (
     OperationRecord,
     ReadStatus,
 )
+from .release_worker_deployment import ReleaseWorkerEvidenceIdentity
 from .retained_journal import RetainedGuardedOperationStore, RetainedJournal
 from .self_update_operation import ManagementSelfUpdateHandler
 from .self_update_policy import ManagementUpdateAction
 from .source_acceptance import BetaAcceptanceHandler, SourceAcceptancePublisher
 from .source_evidence import BetaEvidenceReader, SourceEvidenceError
+from .source_release_dispatch import ACTION as SOURCE_RELEASE_ACTION
+from .source_release_dispatch import INPUT_FIELDS as SOURCE_RELEASE_FIELDS
+from .source_release_dispatch import SourceReleaseDispatch
 from .worker_lifecycle import LIFECYCLE_ACTIONS, WorkerLifecycle
 from .worker_network_client import WorkerNetworkClient, WorkerNetworkResult
 
@@ -100,6 +104,8 @@ class ManagementRuntime:
         self.dispatcher.register(REEVALUATE_ACTION, OperationHandler(self._forward_reevaluation, self._reconcile_reevaluation))
         self.self_update = ManagementSelfUpdateHandler(settings, grants, self.journal, self_update_source_authority)
         self.dispatcher.register(ManagementUpdateAction.SELF_UPDATE.value, OperationHandler(self.self_update.forward, self.self_update.reconcile))
+        self.source_release = SourceReleaseDispatch(self)
+        self.dispatcher.register(SOURCE_RELEASE_ACTION, OperationHandler(self.source_release.process, self.source_release.process))
         self._worker_locks = {target_id: threading.RLock() for target_id in clients}
         self.lifecycle = WorkerLifecycle(self)
         for action in sorted(LIFECYCLE_ACTIONS):
@@ -547,6 +553,16 @@ class ManagementRuntime:
 
     async def operation_get(self, operation_id: str, target_id: str | None = None) -> dict[str, object]:
         grant = self._grant((READ_SCOPE,))
+        release_lookup = await asyncio.to_thread(self.journal.get, operation_id)
+        if release_lookup.record is not None and release_lookup.record.intent.action == SOURCE_RELEASE_ACTION:
+            recorded_target = self._params(release_lookup.record).get("target_id")
+            owned_release = self._owned_operation(target_id if target_id is not None else str(recorded_target), operation_id, grant)
+            if not isinstance(owned_release, OperationRecord):
+                return owned_release
+            if owned_release.effect.state is EffectState.SENT_UNKNOWN:
+                updated_release = await self.dispatcher.submit(operation_id)
+                owned_release = updated_release or owned_release
+            return self.source_release.project(owned_release)
         if self.retained_journal is not None and target_id is None:
             if not isinstance(operation_id, str) or not _IDENTITY.fullmatch(operation_id):
                 return self._response("INVALID_REQUEST", "invalid_operation_id")
@@ -698,6 +714,34 @@ class ManagementRuntime:
 
     async def deploy_beta_source(self, target_id: str, selected_git_sha: str, idempotency_key: str, expected_supervisor_generation: str, expected_runtime_id: str | None = None, expected_process_run_id: str | None = None, expected_deployment_generation: str | None = None) -> dict[str, object]:
         return await self.lifecycle.admit("deploy_beta_source", target_id, idempotency_key, expected_supervisor_generation, expected_process_run_id, expected_deployment_generation, expected_runtime_id, selected_git_sha)
+
+    async def deploy_release_source(
+        self,
+        target_id: str,
+        selected_git_sha: str,
+        promotion_operation_id: str,
+        catalog_ref: str,
+        catalog_oid: str,
+        acceptance_ref: str,
+        acceptance_oid: str,
+        idempotency_key: str,
+        expected_supervisor_generation: str,
+        expected_runtime_id: str | None = None,
+        expected_process_run_id: str | None = None,
+        expected_deployment_generation: str | None = None,
+    ) -> dict[str, object]:
+        identity = ReleaseWorkerEvidenceIdentity(promotion_operation_id, selected_git_sha, catalog_ref, catalog_oid, acceptance_ref, acceptance_oid)
+        return await self.lifecycle.admit(
+            "deploy_release_source",
+            target_id,
+            idempotency_key,
+            expected_supervisor_generation,
+            expected_process_run_id,
+            expected_deployment_generation,
+            expected_runtime_id,
+            selected_git_sha,
+            identity,
+        )
 
     def _project_beta_acceptance(self, record: OperationRecord) -> dict[str, object]:
         projected = self._project_operation(record)
@@ -979,6 +1023,24 @@ class ManagementRuntime:
             response = client.read_reevaluation(record.operation_id)
             return self._consume_receipt(record, response) or record
 
+    async def promote_accepted_source_release(
+        self, target_id: str, source_sha: str, ci_run_id: StrictInt, ci_run_attempt: StrictInt, tested_source_ref: str, tested_source_oid: str, tested_source_record_sha256: str, acceptance_ref: str, acceptance_oid: str, idempotency_key: str
+    ) -> dict[str, object]:
+        return await self.source_release.admit(
+            target_id,
+            idempotency_key,
+            {
+                "source_sha": source_sha,
+                "ci_run_id": ci_run_id,
+                "ci_run_attempt": ci_run_attempt,
+                "tested_source_ref": tested_source_ref,
+                "tested_source_oid": tested_source_oid,
+                "tested_source_record_sha256": tested_source_record_sha256,
+                "acceptance_ref": acceptance_ref,
+                "acceptance_oid": acceptance_oid,
+            },
+        )
+
     def tool_registrations(self) -> tuple[ManagementTool, ...]:
         read = ToolAnnotations(readOnlyHint=True, idempotentHint=True, destructiveHint=False, openWorldHint=False)
         mutation = ToolAnnotations(readOnlyHint=False, idempotentHint=True, destructiveHint=False, openWorldHint=False)
@@ -998,6 +1060,14 @@ class ManagementRuntime:
             ManagementTool("auto_coder_stop_worker", self.stop_worker, (READ_SCOPE, DEPLOY_SCOPE), mutation),
             ManagementTool("auto_coder_restart_worker", self.restart_worker, (READ_SCOPE, DEPLOY_SCOPE), mutation),
             ManagementTool("auto_coder_deploy_beta_source", self.deploy_beta_source, (READ_SCOPE, DEPLOY_SCOPE), mutation),
+            ManagementTool(
+                "auto_coder_deploy_release_source",
+                self.deploy_release_source,
+                (READ_SCOPE, DEPLOY_SCOPE),
+                mutation,
+                ("target_id", "selected_git_sha", "promotion_operation_id", "catalog_ref", "catalog_oid", "acceptance_ref", "acceptance_oid", "idempotency_key", "expected_supervisor_generation", "expected_runtime_id", "expected_process_run_id", "expected_deployment_generation"),
+            ),
             ManagementTool("auto_coder_run_beta_acceptance", self.run_beta_acceptance, (READ_SCOPE, DEPLOY_SCOPE), mutation),
             ManagementTool("auto_coder_beta_acceptance_get", self.beta_acceptance_get, (READ_SCOPE,), read),
+            ManagementTool("auto_coder_promote_accepted_source_release", self.promote_accepted_source_release, (READ_SCOPE, DEPLOY_SCOPE), mutation, ("target_id", *SOURCE_RELEASE_FIELDS, "idempotency_key")),
         )

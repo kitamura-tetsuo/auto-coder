@@ -3481,3 +3481,97 @@ deferred outcome; a foreign-author reply receipt instead leaves the diagnostic
 unclassified. Both cases prove no receipt-file creation, no reconciliation of
 excluded IDs, no send and no GitHub mutation. The public fact allowlist and
 renderer remain unchanged.
+
+## Authenticated accepted-source release workflow dispatch
+
+`management/source_release_dispatch.py` uses the independent management journal
+and fixed GitHub REST boundary. Admission and bounded observation use the existing
+Loguru sinks with operation ID and fixed outcome categories; Actions run identity
+is exposed separately from source commit in authenticated operation readback.
+There is no Issue/PR execution, scheduler admission, LLM/provider routing, or
+structured dashboard event in this path. Consequently the existing dashboard
+projection is unchanged: a workflow run, including success, must not imply source
+promotion or installed-worker deployment. Confirmed source catalog/Release/ref
+readback is exposed only as `SOURCE_PROMOTION_CONFIRMED` or
+`COMPLETED_BUT_SUPERSEDED`, always with `worker_deployed=false`.
+
+Run `bash scripts/test.sh --ci-tests-only tests/test_management_source_release_dispatch.py`.
+The suite crosses production HTTPS MCP admission, real OAuth consent/current
+policy, persistent SQLite, the actual acceptance validator/catalog publisher and
+controlled GitHub workflow transport. It checks response loss/restart, unresolved
+listings, immutable run/evidence mismatches, partial artifacts and policy/grant
+loss; no test-only authority flag or canned successful run is the promotion
+oracle. See `client-features/management-source-release-dispatch.md` for the schema
+and safe uncertainty projection. This is an observability-neutral management
+addition: it introduces no production-to-dashboard event or deployment outcome.
+
+### Authenticated release-worker source deployment (isolated-host acceptance)
+
+`management/release_worker_deployment.py` remains a read-only provenance
+consumer with `deployment_authorized=false` and `worker_deployed=false` in
+its returned facts. The separate authenticated
+`auto_coder_deploy_release_source` MCP action connects it to the existing
+per-instance lifecycle journal, signed Supervisor, and operator policy. The
+paired direct commit and annotated-operation selection refs distinguish
+subsequent promotions of the same SHA. Operation readback now reports staged
+artifact, original effect receipts, release identity, heartbeats and recovery
+state. This does not add a new dashboard event, renderer, private trace or
+Docker privilege. Existing management admission/reconciliation logs retain
+their configured Loguru stdout and rotating-file sinks.
+
+Run `uv run pytest tests/test_release_worker_deployment.py
+tests/test_management_source_release_dispatch.py`. Component regressions verify
+original producer linkage, isolated Git objects and journal reconstruction,
+current same-SHA operation selection, authenticated replay/CONFLICT/BUSY,
+policy failure, controlled lost replies, recovery and provenance refusal.
+The separate mandatory isolated-container suite uses actual independently
+installed prior/candidate worker versions through the authenticated release
+entry, signed Supervisor and genuine producer observations. It covers held
+terminal/OS exit, candidate failure and prior recovery, lost effect replies
+across reconstruction, failed pre-effect durability and same-SHA supersession.
+Neither controlled GitHub transport nor disposable host acceptance proves a
+live release deployment. Exact-head CI/review and the host acceptance record
+remain merge gates; see `client-features/release-worker-source-deployment.md`.
+
+## Prospective original management-attempt admission
+
+The optional `fresh-original-attempts-v1` host admission origin emits Loguru
+records with `original_history`, `original_attempt`, `original_boundary` and
+`evidence_only=true` after durable `anchor`, `claimed`, `never-created`,
+`unresolved` and `grant-possible` writes. Contention emits `original_boundary=contested`
+without inventing an admitted attempt. Filename, function and line remain in the
+shared configured diagnostic sinks. The existing application's colored console
+and rotating file configuration is retained; provenance helpers do not replace
+its sinks. Read-only verification adds no success/launch/recovery event.
+
+These host commands have no repository Issue/PR execution or dashboard job;
+adding such a job would misrepresent admission facts as execution. Therefore
+there is no dashboard event-schema or renderer change. The dashboard continues
+to have no recovery-success evidence for this origin. A possible grant,
+prospective enrollment, matched bounded object or unavailable legacy history
+must never project as recovery success or continuous exclusion.
+
+Run `bash scripts/test.sh --ci-tests-only tests/test_management_original_attempts.py`.
+`test_original_admission_trace_retains_boundaries_without_recovery_success`
+drives the real original admission/refusal producer, inspects structured Loguru
+fields and source locations, and checks that no success/recovery claim appears.
+The process contention cases use those actual post-fsync emissions as observable
+barriers. Full positive Docker-host lineage/cutover evidence remains unavailable;
+these tests do not substitute for the independent host suite.
+
+Managed release startup abandonment emits the existing health-log event envelope
+with category `engine_startup_failure`, fixed message
+`startup_reconciliation_abandoned`, and empty detail. Its sticky failure identity
+is exposed only in the identity-bound private worker observation and authenticated
+management lifecycle projection. No exception text is added to that fact. The
+controller remains non-serving and retains its invocation owners through the
+ordinary drain; the event is never an Issue/PR success or a producer heartbeat.
+`bash scripts/test.sh tests/test_worker_startup_failure.py` checks the actual
+production health JSONL event, private UDS fact, owned checkpoint and genuine
+terminal, plus wrapped/grouped operational and cancellation exclusions.
+`tests/test_release_worker_deployment.py` covers the separately correlated
+recovery drain, original-authority and persistence gates with a controlled signed
+boundary. The installed release acceptance case is listed separately in the
+required isolated-container profile. Dashboard processing events/renderers need
+no new target outcome: this failure precedes serving and is a daemon/management
+diagnostic, not a completed Issue/PR execution.

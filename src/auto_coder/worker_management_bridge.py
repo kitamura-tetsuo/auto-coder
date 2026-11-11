@@ -90,6 +90,7 @@ class WorkerManagementBridge:
     def __init__(self, identity: BridgeIdentity, engine: Any) -> None:
         self.identity = identity
         self.engine = engine
+        self.engine.startup_failure_recovery_enabled = identity.channel == "release"
         # Installed-artifact and process-run identity are immutable facts of
         # this bridge incarnation.  Capture them once before serving so every
         # response/header is correlatable and middleware never performs
@@ -300,6 +301,7 @@ class WorkerManagementBridge:
     def _observation(self, nonce: str) -> dict[str, object]:
         gate = self.engine.invocation_admission_snapshot()
         unsettled = gate.unsettled
+        startup_failure = getattr(self.engine, "startup_failure", None)
         identities = [
             {
                 "invocation_id": item.invocation_id,
@@ -326,6 +328,7 @@ class WorkerManagementBridge:
             "lifecycle": {
                 "state": self.engine.lifecycle.value,
                 "startup_reconciled": bool(self.engine.startup_reconciled),
+                "startup_failure": asdict(startup_failure) if startup_failure is not None else None,
                 "startup_reconciliation_error": _safe_text(self.engine.startup_reconciliation_error) if self.engine.startup_reconciliation_error else None,
                 "daemon_serving": bool(self.engine.daemon_serving),
             },

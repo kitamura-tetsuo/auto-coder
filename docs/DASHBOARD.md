@@ -449,3 +449,16 @@ an executor fence, and (when progress is unsafe) a reconciliation reason; only
 a confirmed recovered result advances to the existing downstream state. No new
 dashboard event is synthesized for startup discovery because recovery may run
 without the original execution trace scope.
+
+## Managed release startup failures
+
+A release worker that explicitly abandons startup reports
+`failed_awaiting_drain` and a fixed, identity-bound startup failure through its
+private management observation. Its health log records `engine_startup_failure`.
+This is not an Issue/PR result or useful producer progress, so it does not create
+a successful dashboard processing outcome. Authenticated management readback
+shows the reserved recovery attempt and separate `RECOVERY_DRAINING` step.
+Protected invocations/checkpoints remain owned until ordinary graceful drain;
+a successful terminal receipt alone does not prove the OS process has exited.
+See the release source-deployment and private worker-observation feature fragments
+for exact recovery evidence and the operator-owned attention boundary on expiry.

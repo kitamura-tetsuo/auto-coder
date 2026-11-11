@@ -92,6 +92,10 @@ class ManagementSettings:
     config_path: Path | None = None
     source_repository: str | None = None
     source_evidence_token_file: Path | None = None
+    source_release_policy_path: Path | None = None
+    source_release_token_file: Path | None = None
+    source_release_target_id: str = ""
+    source_release_workflow_id: int = 0
 
     def __post_init__(self) -> None:
         loopback = self.bind_host in {"127.0.0.1", "::1", "localhost"}
@@ -118,6 +122,12 @@ class ManagementSettings:
             raise ValueError("source repository must be an exact GitHub owner/name")
         if self.source_evidence_token_file is not None and not self.source_evidence_token_file.is_absolute():
             raise ValueError("source evidence token must use an absolute operator-owned path")
+        release = (self.source_release_policy_path, self.source_release_token_file, self.source_release_target_id, self.source_release_workflow_id)
+        if any(release):
+            if not all(release) or any(not isinstance(path, Path) or not path.is_absolute() for path in release[:2]):
+                raise ValueError("source release configuration must be complete with absolute operator-owned paths")
+            if not isinstance(self.source_release_target_id, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", self.source_release_target_id) is None or type(self.source_release_workflow_id) is not int or self.source_release_workflow_id <= 0:
+                raise ValueError("source release target/workflow identity is invalid")
 
 
 def load_management_settings(path: Path) -> ManagementSettings:
@@ -215,4 +225,8 @@ def load_management_settings(path: Path) -> ManagementSettings:
         config_path=path.resolve(),
         source_repository=raw.get("source_repository") if raw.get("source_repository") is None or isinstance(raw.get("source_repository"), str) else required_string("source_repository"),
         source_evidence_token_file=optional_path("source_evidence_token_file"),
+        source_release_policy_path=optional_path("source_release_policy_path"),
+        source_release_token_file=optional_path("source_release_token_file"),
+        source_release_target_id=raw.get("source_release_target_id", ""),
+        source_release_workflow_id=raw.get("source_release_workflow_id", 0),
     )
