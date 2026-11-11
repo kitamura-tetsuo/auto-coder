@@ -248,6 +248,29 @@ class ExternalServices:
         return Handler
 
 
+# All isolated source fixtures in one process use the same pinned project lock.
+# Cache only a successfully resolved lock for identical resolver inputs; preserve
+# per-fixture Git history, source manifests and installed --frozen validation.
+_SNAPSHOT_LOCK_CACHE: dict[tuple[str, str, tuple[tuple[str, str], ...]], bytes] = {}
+_SNAPSHOT_LOCK_MUTEX = threading.Lock()
+
+
+def _ensure_snapshot_lock(root: Path, uv: str, environment: dict[str, str]) -> None:
+    project_digest = hashlib.sha256((root / "pyproject.toml").read_bytes()).hexdigest()
+    uv_environment = tuple(sorted((key, value) for key, value in environment.items() if key.startswith("UV_")))
+    cache_key = (project_digest, str(Path(sys.executable).resolve()), uv_environment)
+    with _SNAPSHOT_LOCK_MUTEX:
+        locked = _SNAPSHOT_LOCK_CACHE.get(cache_key)
+        if locked is None:
+            _run([uv, "lock", "--python", sys.executable], root, env=environment)
+            locked = (root / "uv.lock").read_bytes()
+            if not locked:
+                raise AssertionError("disposable source lock resolution produced an empty lockfile")
+            _SNAPSHOT_LOCK_CACHE[cache_key] = locked
+        else:
+            (root / "uv.lock").write_bytes(locked)
+
+
 def _snapshot_source(root: Path, revision: str) -> str:
     """Commit actual working production modules into an isolated tested source."""
     source = root / "src" / "auto_coder"
@@ -277,7 +300,7 @@ def _snapshot_source(root: Path, revision: str) -> str:
         # CI locks the checked-out project. This new disposable project first
         # needs its own lock; installed staging still uses production --frozen.
         lock_environment = {name: value for name, value in os.environ.items() if name != "UV_LOCKED"}
-        _run([uv, "lock", "--python", sys.executable], root, env=lock_environment)
+        _ensure_snapshot_lock(root, uv, lock_environment)
     (source / "fixture_revision.json").write_text(json.dumps({"revision": revision}), encoding="utf-8")
     _run(["git", "add", "."], root)
     _run(["git", "commit", "-qm", revision], root)
