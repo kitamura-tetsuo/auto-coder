@@ -331,6 +331,7 @@ class WorkerLifecycle:
             steps=snapshot.get("steps"),
             heartbeats=snapshot.get("heartbeats"),
             recovery_attempts=snapshot.get("recovery_attempts"),
+            recovery_method=snapshot.get("recovery_method"),
             recovery_state=snapshot.get("recovery_state", "NOT_ATTEMPTED"),
             restored_worker=snapshot.get("restored_worker"),
             release_identity=snapshot.get("release_identity"),

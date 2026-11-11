@@ -655,6 +655,10 @@ class WorkerSupervisor:
                     self._finish(operation_id, state, {"status": "NEEDS_ATTENTION", "reason": "reboot_recovery_revalidation_failed"})
                 logger.error("Reboot recovery refused after failed validation")
                 return
+            assert isinstance(operation_id, str)
+            assert isinstance(failed, dict)
+            assert isinstance(record, dict)
+            assert isinstance(runtime, dict)
             # Persist the one-shot consumption before Popen. A crash in the
             # launch window must never spawn an uncorrelated second successor.
             marker["phase"] = "RECOVERING"
