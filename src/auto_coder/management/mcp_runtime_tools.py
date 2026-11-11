@@ -42,6 +42,7 @@ from .operations import (
     OperationRecord,
     ReadStatus,
 )
+from .release_worker_deployment import ReleaseWorkerEvidenceIdentity
 from .retained_journal import RetainedGuardedOperationStore, RetainedJournal
 from .self_update_operation import ManagementSelfUpdateHandler
 from .self_update_policy import ManagementUpdateAction
@@ -714,6 +715,34 @@ class ManagementRuntime:
     async def deploy_beta_source(self, target_id: str, selected_git_sha: str, idempotency_key: str, expected_supervisor_generation: str, expected_runtime_id: str | None = None, expected_process_run_id: str | None = None, expected_deployment_generation: str | None = None) -> dict[str, object]:
         return await self.lifecycle.admit("deploy_beta_source", target_id, idempotency_key, expected_supervisor_generation, expected_process_run_id, expected_deployment_generation, expected_runtime_id, selected_git_sha)
 
+    async def deploy_release_source(
+        self,
+        target_id: str,
+        selected_git_sha: str,
+        promotion_operation_id: str,
+        catalog_ref: str,
+        catalog_oid: str,
+        acceptance_ref: str,
+        acceptance_oid: str,
+        idempotency_key: str,
+        expected_supervisor_generation: str,
+        expected_runtime_id: str | None = None,
+        expected_process_run_id: str | None = None,
+        expected_deployment_generation: str | None = None,
+    ) -> dict[str, object]:
+        identity = ReleaseWorkerEvidenceIdentity(promotion_operation_id, selected_git_sha, catalog_ref, catalog_oid, acceptance_ref, acceptance_oid)
+        return await self.lifecycle.admit(
+            "deploy_release_source",
+            target_id,
+            idempotency_key,
+            expected_supervisor_generation,
+            expected_process_run_id,
+            expected_deployment_generation,
+            expected_runtime_id,
+            selected_git_sha,
+            identity,
+        )
+
     def _project_beta_acceptance(self, record: OperationRecord) -> dict[str, object]:
         projected = self._project_operation(record)
         try:
@@ -1031,6 +1060,13 @@ class ManagementRuntime:
             ManagementTool("auto_coder_stop_worker", self.stop_worker, (READ_SCOPE, DEPLOY_SCOPE), mutation),
             ManagementTool("auto_coder_restart_worker", self.restart_worker, (READ_SCOPE, DEPLOY_SCOPE), mutation),
             ManagementTool("auto_coder_deploy_beta_source", self.deploy_beta_source, (READ_SCOPE, DEPLOY_SCOPE), mutation),
+            ManagementTool(
+                "auto_coder_deploy_release_source",
+                self.deploy_release_source,
+                (READ_SCOPE, DEPLOY_SCOPE),
+                mutation,
+                ("target_id", "selected_git_sha", "promotion_operation_id", "catalog_ref", "catalog_oid", "acceptance_ref", "acceptance_oid", "idempotency_key", "expected_supervisor_generation", "expected_runtime_id", "expected_process_run_id", "expected_deployment_generation"),
+            ),
             ManagementTool("auto_coder_run_beta_acceptance", self.run_beta_acceptance, (READ_SCOPE, DEPLOY_SCOPE), mutation),
             ManagementTool("auto_coder_beta_acceptance_get", self.beta_acceptance_get, (READ_SCOPE,), read),
             ManagementTool("auto_coder_promote_accepted_source_release", self.promote_accepted_source_release, (READ_SCOPE, DEPLOY_SCOPE), mutation, ("target_id", *SOURCE_RELEASE_FIELDS, "idempotency_key")),

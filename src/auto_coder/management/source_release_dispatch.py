@@ -329,8 +329,9 @@ class SourceReleaseDispatch:
         pointer = promotion._pointer()
         if release is None or pointer is None:
             return self._hold(record, "source_publication_incomplete")
-        outcome = "SOURCE_PROMOTION_CONFIRMED" if pointer == request.source_sha else "COMPLETED_BUT_SUPERSEDED"
-        if promotion.catalog.read(record.operation_id) != catalog or promotion._read_release(catalog.record) != release or promotion._pointer() != pointer:
+        selection = promotion._selection_oid()
+        outcome = "SOURCE_PROMOTION_CONFIRMED" if pointer == request.source_sha and selection == catalog.tag_object_oid else "COMPLETED_BUT_SUPERSEDED"
+        if promotion.catalog.read(record.operation_id) != catalog or promotion._read_release(catalog.record) != release or promotion._pointer() != pointer or promotion._selection_oid() != selection:
             return self._hold(record, "source_publication_readback_changed")
         receipt = EffectReceipt(
             record.effect.correlation_identity, "github-source-release-readback", time.time(), canonical({"outcome": outcome, "run_id": bound["id"], "run_attempt": bound["run_attempt"], "catalog_oid": catalog.tag_object_oid, "source_sha": request.source_sha, "worker_deployed": False})

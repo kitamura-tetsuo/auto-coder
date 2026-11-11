@@ -17,6 +17,7 @@ from auto_coder.cli_commands_deployment import deployment_group
 from auto_coder.management.beta_runtime_smoke import LocalSmokeEvidence, SmokeProfile, SmokeState
 from auto_coder.management.source_acceptance import SourceAcceptancePublisher
 from auto_coder.source_release_catalog import (
+    RELEASE_SELECTION_REF,
     RELEASE_WORKFLOW,
     AllowedProfile,
     SourceReleaseCatalog,
@@ -47,6 +48,7 @@ class ReleaseGit(GitEvidenceBoundary):
         super().__init__()
         self.releases: dict[str, dict[str, object]] = {}
         self.release_pointer_writes = 0
+        self.release_selection_writes = 0
         self.lost_release_pointer_response = False
         self.lost_release_response = False
         self.unreadable_pointer = False
@@ -91,6 +93,15 @@ class ReleaseGit(GitEvidenceBoundary):
             if self.lost_release_pointer_response:
                 raise RuntimeError("response lost after release source ref creation")
             return GitDataResponse(201)
+        if method == "POST" and path == "git/refs" and payload and payload.get("ref") == RELEASE_SELECTION_REF:
+            self.release_selection_writes += 1
+            return super().request(method, path, payload)
+        if method == "PATCH" and path == "git/refs/tags/auto-coder-release-source-selection-current" and payload:
+            self.release_selection_writes += 1
+            self.calls.append((method, path))
+            assert payload["force"] is True
+            self.refs[RELEASE_SELECTION_REF] = ("tag", str(payload["sha"]))
+            return GitDataResponse(200)
         if method == "PATCH" and path == "git/refs/tags/auto-coder-release-source-current" and payload:
             self.release_pointer_writes += 1
             self.calls.append((method, path))
@@ -122,6 +133,7 @@ class RealReleaseGit(RealGitDataBoundary):
         super().__init__(repository)
         self.releases: dict[str, dict[str, object]] = {}
         self.release_pointer_writes = 0
+        self.release_selection_writes = 0
         self.lose_update_response = False
 
     def request(self, method: str, path: str, payload: dict[str, object] | None = None) -> GitDataResponse:
@@ -148,6 +160,14 @@ class RealReleaseGit(RealGitDataBoundary):
             if self.lose_update_response:
                 raise RuntimeError("lost update response after actual git update-ref")
             return GitDataResponse(200)
+        if method == "PATCH" and path == "git/refs/tags/auto-coder-release-source-selection-current" and payload:
+            assert payload["force"] is True
+            self.release_selection_writes += 1
+            self._git("update-ref", RELEASE_SELECTION_REF, str(payload["sha"]))
+            return GitDataResponse(200)
+        if method == "POST" and path == "git/refs" and payload and payload.get("ref") == RELEASE_SELECTION_REF:
+            self.release_selection_writes += 1
+            return super().request(method, path, payload)
         if method == "POST" and path == "git/refs" and payload and payload.get("ref") == RELEASE_REF:
             self.release_pointer_writes += 1
             result = super().request(method, path, payload)

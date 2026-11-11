@@ -434,6 +434,7 @@ def test_real_discovery_firebase_exchange_and_whoami(real_boundary) -> None:
             "auto_coder_stop_worker",
             "auto_coder_restart_worker",
             "auto_coder_deploy_beta_source",
+            "auto_coder_deploy_release_source",
             "auto_coder_run_beta_acceptance",
             "auto_coder_beta_acceptance_get",
             "auto_coder_promote_accepted_source_release",
@@ -444,9 +445,9 @@ def test_real_discovery_firebase_exchange_and_whoami(real_boundary) -> None:
         assert listed[9]["annotations"]["readOnlyHint"] is False and listed[9]["annotations"]["destructiveHint"] is True
         assert listed[10]["annotations"]["readOnlyHint"] is True
         assert listed[11]["annotations"]["readOnlyHint"] is True
-        assert all(tool["annotations"]["readOnlyHint"] is False for tool in listed[12:17])
-        assert listed[17]["annotations"]["readOnlyHint"] is True
-        assert listed[18]["annotations"]["readOnlyHint"] is False
+        assert all(tool["annotations"]["readOnlyHint"] is False for tool in listed[12:18])
+        assert listed[18]["annotations"]["readOnlyHint"] is True
+        assert listed[19]["annotations"]["readOnlyHint"] is False
         identity = _mcp(client, token, "tools/call", 3, {"name": "auto_coder_whoami", "arguments": {}}).json()["result"]["structuredContent"]
         assert identity == {"project_id": "mcp-test-project", "uid": "alice", "client_id": "alice-client", "scopes": ["auto-coder.read"], "resource": settings.oauth.resource}
 

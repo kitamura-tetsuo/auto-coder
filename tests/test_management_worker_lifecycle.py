@@ -126,19 +126,20 @@ class LifecycleBridge:
 
     def dispatch_worker_operation(self, operation_id: str, operation: str, *, process_run_id: str | None, deployment_generation: str | None, selected_runtime_id: str | None, runtime_id: str | None = None) -> WorkerNetworkResult:
         self.actions.append((operation, operation_id))
+        digest = WorkerSupervisor._digest({"operation": operation, "expected_supervisor_incarnation": self.supervisor_generation, "expected_process_run_id": process_run_id, "expected_generation": deployment_generation, "expected_runtime_id": selected_runtime_id, "runtime_id": runtime_id})
         if operation == "REQUEST_GRACEFUL_STOP":
-            receipt = {"status": "STOPPED", "operation_id": operation_id}
+            receipt = {"status": "STOPPED", "operation_id": operation_id, "intent_digest": digest}
             self.worker = None
             result = self._result("UNKNOWN", {}) if self.lost_stop_response else self._result("DRAINING", {"status": "DRAINING", "operation_id": operation_id})
         elif operation == "START":
             self.selected = runtime_id or "runtime-old"
             self.worker = {"process_run_id": "run-new", "deployment_generation": "generation-new", "runtime_id": self.selected, "binding_status": "VERIFIED"}
-            receipt = {"status": "RUNNING", "operation_id": operation_id, "worker": self.worker}
+            receipt = {"status": "RUNNING", "operation_id": operation_id, "worker": self.worker, "intent_digest": digest}
             result = self._result("RUNNING", receipt)
         elif operation == "RECOVER_PREVIOUS":
             self.selected = "runtime-old"
             self.worker = {"process_run_id": "run-restored", "deployment_generation": "generation-restored", "runtime_id": self.selected, "binding_status": "VERIFIED"}
-            receipt = {"status": "RUNNING", "operation_id": operation_id, "worker": self.worker}
+            receipt = {"status": "RUNNING", "operation_id": operation_id, "worker": self.worker, "intent_digest": digest}
             result = self._result("RUNNING", receipt)
         else:
             raise AssertionError(operation)
@@ -520,19 +521,22 @@ def test_authenticated_real_bridge_held_drain_lost_reply_and_management_reconstr
             supervisor.child.wait(timeout=5)
 
 
+@pytest.mark.parametrize("channel", ("beta", "release"))
 @pytest.mark.parametrize("restart", (False, True))
-def test_authenticated_bootstrap_start_reply_loss_survives_supervisor_reconstruction(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None, restart: bool) -> None:
+def test_authenticated_bootstrap_start_reply_loss_survives_supervisor_reconstruction(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None, restart: bool, channel: str) -> None:
     base, _base_grants, identity, signed, _uids, state = real_boundary
     origin = base.oauth.canonical_issuer
     oauth = OAuthSettings(base.oauth.database_path, origin, base.oauth.firebase_project_id, (OAuthClient("alice-client", (origin + "/alice-callback",), allowed_scopes=(READ_SCOPE, DEPLOY_SCOPE)),), enabled_scopes=(READ_SCOPE, DEPLOY_SCOPE))
     policy = tmp_path / "operator.yaml"
-    policy.write_text("profile: beta\ntargets:\n  beta-worker:\n    channel: beta\n    repositories: [fixture/beta]\n", encoding="utf-8")
+    profile = "full" if channel == "release" else "beta"
+    target = f"{channel}-worker"
+    policy.write_text(f"profile: {profile}\ntargets:\n  {target}:\n    channel: {channel}\n    repositories: [fixture/{channel}]\n", encoding="utf-8")
     settings = ManagementSettings(tmp_path, oauth, port=base.port, operating_policy_path=policy, operation_state_root=tmp_path / "journal")
     grants = OAuthGrantService(oauth, identity, clock=lambda: state["now"])
     monkeypatch.setenv("AUTO_CODER_TEST_CONFIG_REPORT", "1")
     monkeypatch.delenv("AUTO_CODER_ISSUE_ALLOWLIST", raising=False)
     monkeypatch.delenv("AUTO_CODER_PR_ALLOWLIST", raising=False)
-    supervisor = _supervisor(tmp_path / "child")
+    supervisor = _supervisor(tmp_path / "child", channel)
     config_dir = supervisor.config.workspace_root / ".auto-coder"
     config_dir.mkdir()
     config_file = config_dir / "config.toml"
@@ -569,10 +573,10 @@ def test_authenticated_bootstrap_start_reply_loss_survives_supervisor_reconstruc
             return result
 
         monkeypatch.setattr(worker_client, "dispatch_worker_operation", lose_start)
-        app = create_management_app(settings, grants, worker_clients={"beta": worker_client})
+        app = create_management_app(settings, grants, worker_clients={channel: worker_client})
         with TestClient(app, base_url=origin) as client:
             bearer = _issue(client, settings, signed, "alice", "alice-client", READ_SCOPE + " " + DEPLOY_SCOPE)["access_token"]
-            arguments = {"target_id": "beta-worker", "idempotency_key": "lost-start", "expected_supervisor_generation": supervisor.incarnation, "expected_runtime_id": "bootstrap"}
+            arguments = {"target_id": target, "idempotency_key": "lost-start", "expected_supervisor_generation": supervisor.incarnation, "expected_runtime_id": "bootstrap"}
             tool = "auto_coder_restart_worker" if restart else "auto_coder_start_worker"
             if restart:
                 arguments.update(expected_process_run_id=worker["process_run_id"], expected_deployment_generation=worker["deployment_generation"])
@@ -581,7 +585,29 @@ def test_authenticated_bootstrap_start_reply_loss_survives_supervisor_reconstruc
             for _ in range(100):
                 _drive(app, operation_id, 1)
                 if restart and (tmp_path / "child" / "fixture-draining").exists() and original_child.poll() is None:
+                    hold = tmp_path / "child" / "fixture-hold-terminal-exit"
+                    if channel == "release":
+                        hold.write_text("hold actual OS exit")
                     (tmp_path / "child" / "fixture-release").write_text("release")
+                    if channel == "release":
+                        for _ in range(200):
+                            if (tmp_path / "child" / "fixture-terminal-exit-held").exists():
+                                break
+                            time.sleep(0.02)
+                        else:
+                            raise AssertionError("real worker did not persist terminal receipt before held exit")
+                        terminal = json.loads((tmp_path / "child" / "last-terminal.json").read_text())
+                        assert terminal["process_run_id"] == worker["process_run_id"]
+                        assert terminal["deployment_generation"] == worker["deployment_generation"]
+                        _drive(app, operation_id, 8)
+                        assert original_child.poll() is None
+                        assert dispatches == []
+                        snapshot = app.state.management_runtime.journal.lifecycle_snapshot(operation_id)
+                        assert snapshot is not None and "start" not in snapshot[1]["steps"]
+                        assert _call(client, bearer, tool, arguments)["operation_id"] == operation_id
+                        competing = _call(client, bearer, tool, {**arguments, "idempotency_key": "competing-held-exit"})
+                        assert competing["status"] == "BUSY"
+                        hold.unlink()
                     original_child.wait(timeout=10)
                     (tmp_path / "child" / "fixture-release").unlink()
                 if dispatches:
@@ -595,7 +621,7 @@ def test_authenticated_bootstrap_start_reply_loss_survives_supervisor_reconstruc
         supervisor = WorkerSupervisor(supervisor.config)
         listener, reconstructed_client = _bridge(supervisor, b"s" * 48, port=worker_client.config.port)
         assert reconstructed_client.config.binding_digest == worker_client.config.binding_digest
-        reconstructed = create_management_app(settings, grants, worker_clients={"beta": reconstructed_client})
+        reconstructed = create_management_app(settings, grants, worker_clients={channel: reconstructed_client})
         with TestClient(reconstructed, base_url=origin) as client:
             for _ in range(300):
                 _drive(reconstructed, operation_id, 1)
@@ -609,8 +635,9 @@ def test_authenticated_bootstrap_start_reply_loss_survives_supervisor_reconstruc
             assert current["pid"] == pid and current["deployment_generation"] == generation
             assert _call(client, bearer, tool, arguments)["operation_id"] == operation_id
             assert len(dispatches) == 1
-            assert _call(client, bearer, "auto_coder_operation_get", {"target_id": "beta-worker", "operation_id": operation_id})["status"] != "SUCCEEDED"
+            assert _call(client, bearer, "auto_coder_operation_get", {"target_id": target, "operation_id": operation_id})["status"] != "SUCCEEDED"
     finally:
+        (tmp_path / "child" / "fixture-hold-terminal-exit").unlink(missing_ok=True)
         (tmp_path / "child" / "fixture-release").write_text("release")
         listener.close()
         if new_child is not None and new_child.poll() is None:

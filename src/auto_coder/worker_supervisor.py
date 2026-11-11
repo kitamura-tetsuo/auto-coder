@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import hashlib
 import http.client
@@ -24,6 +25,7 @@ from urllib.parse import urlencode
 
 from loguru import logger
 
+from .worker_startup_failure import observed_startup_failure, startup_failure_fact
 from .worker_supervisor_store import SupervisorStore
 from .worker_versions import PrepareIntent, WorkerVersionConfig, WorkerVersionError, WorkerVersionPreparer
 
@@ -103,6 +105,7 @@ class WorkerSupervisor:
         self.incarnation = uuid.uuid4().hex
         self._lock = threading.RLock()
         self._shutdown_requested = False
+        self._reboot_recovery_requested_at: float | None = None
         self._active_preparations: set[str] = set()
 
     @property
@@ -272,6 +275,17 @@ class WorkerSupervisor:
                             "start_token": worker["start_token"],
                             "observed_at": worker["binding_observed_at"],
                         }
+                        if self.config.channel == "release":
+                            worker["last_verified_binding"] = dict(worker["runtime_binding"])
+                            failure = observed_startup_failure(observation)
+                            if failure is not None:
+                                retained = worker.get("startup_failure")
+                                if retained is None or retained == asdict(failure):
+                                    worker["startup_failure"] = asdict(failure)
+                                else:
+                                    worker["startup_failure_conflict"] = True
+                                    worker["binding_status"] = "CONFLICT"
+                                    worker.pop("runtime_binding", None)
             else:
                 worker["binding_status"] = "UNAVAILABLE"
             self.store.write(state)
@@ -467,10 +481,29 @@ class WorkerSupervisor:
             self.store.write(state)
             return {**result, "operation_id": operation_id, "source_sha": record["source_sha"]}
 
+    def stopped_startup_failure(self, state: dict[str, object]) -> dict[str, object] | None:
+        """Return only the exact failed lifetime with genuine terminal and OS exit."""
+        failed = state.get("last_worker")
+        if (
+            self.config.channel != "release"
+            or state.get("worker") is not None
+            or not state.get("stop_verified")
+            or not isinstance(failed, dict)
+            or failed.get("startup_failure_conflict")
+            or startup_failure_fact(failed.get("startup_failure")) is None
+            or state.get("selected_runtime_id") != failed.get("runtime_id")
+            or self._is_alive(failed)
+            or not self._receipt(failed)
+        ):
+            return None
+        return failed
+
     def _fences_match(self, request: dict[str, Any], state: dict[str, Any]) -> bool:
         if "expected_supervisor_incarnation" in request and request["expected_supervisor_incarnation"] != self.incarnation:
             return False
         worker = state.get("worker")
+        if worker is None and request.get("operation") == "RECOVER_PREVIOUS":
+            worker = self.stopped_startup_failure(state)
         current = (
             worker.get("process_run_id") if isinstance(worker, dict) else None,
             worker.get("deployment_generation") if isinstance(worker, dict) else None,
@@ -480,12 +513,12 @@ class WorkerSupervisor:
 
     @staticmethod
     def _unresolved(state: dict[str, Any], excluding: str) -> bool:
-        statuses = {"IN_PROGRESS", "DRAINING", "UNKNOWN", "NEEDS_ATTENTION"}
+        statuses = {"IN_PROGRESS", "DRAINING", "RESTARTING", "UNKNOWN", "NEEDS_ATTENTION"}
         return any(key != excluding and record.get("result", {}).get("status") in statuses for key, record in state["operations"].items())
 
     def apply(self, request: dict[str, Any]) -> dict[str, Any]:
         operation_id, operation = request.get("operation_id"), request.get("operation")
-        if not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 128 or operation not in {"INSPECT", "START", "REQUEST_GRACEFUL_STOP", "RESTART_WORKER", "RECOVER_PREVIOUS"}:
+        if not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 128 or operation not in {"INSPECT", "START", "REQUEST_GRACEFUL_STOP", "RESTART_WORKER", "RECOVER_PREVIOUS", "RECOVER_PREVIOUS_REBOOT"}:
             return {"status": "UNSUPPORTED"}
         if not request.keys() <= self._REQUEST_FIELDS:
             # A caller may supply identity fences and a runtime ID, but not
@@ -521,8 +554,8 @@ class WorkerSupervisor:
         # READY verification can execute an interpreter from a prepared runtime.
         # Keep it outside the lifecycle lock so INSPECT and safe stop requests for
         # the current child remain available while that bounded probe runs.
-        runtime = self._resolve_runtime(request.get("runtime_id", "bootstrap")) if operation in {"START", "RESTART_WORKER", "RECOVER_PREVIOUS"} else None
-        if operation in {"START", "RESTART_WORKER", "RECOVER_PREVIOUS"} and runtime is None:
+        runtime = self._resolve_runtime(request.get("runtime_id", "bootstrap")) if operation in {"START", "RESTART_WORKER", "RECOVER_PREVIOUS", "RECOVER_PREVIOUS_REBOOT"} else None
+        if operation in {"START", "RESTART_WORKER", "RECOVER_PREVIOUS", "RECOVER_PREVIOUS_REBOOT"} and runtime is None:
             return {"status": "UNAVAILABLE"}
 
         with self._lock:
@@ -545,6 +578,8 @@ class WorkerSupervisor:
                 return self._finish(operation_id, state, {"status": "CONFLICT"})
             if operation == "RECOVER_PREVIOUS":
                 result = self._recover_previous(state, runtime, operation_id)
+            elif operation == "RECOVER_PREVIOUS_REBOOT":
+                result = self._request_reboot_recovery(state, runtime, operation_id)
             else:
                 result = self._start(state, runtime, operation_id) if operation == "START" else self._stop(state)
             if operation == "RESTART_WORKER" and result["status"] == "STOPPED":
@@ -554,6 +589,23 @@ class WorkerSupervisor:
     def _recover_previous(self, state: dict[str, Any], runtime: dict[str, Any] | None, operation_id: str) -> dict[str, Any]:
         """One separately journaled prior-READY recovery after actual child exit."""
         failed, previous = state.get("worker"), state.get("last_worker")
+        if failed is None:
+            failed = self.stopped_startup_failure(state)
+            if failed is None:
+                return {"status": "CONFLICT"}
+            previous = failed.get("recovery_parent")
+            if not isinstance(previous, dict) or not isinstance(previous.get("last_verified_binding"), dict):
+                return {"status": "CONFLICT"}
+            binding = previous["last_verified_binding"]
+            ready = previous.get("ready")
+            if (
+                not isinstance(ready, dict)
+                or any(not isinstance(ready.get(key), str) or not ready[key] or binding.get(key) != ready[key] for key in ("content_identity", "source_sha", "distribution_version", "lock_sha256"))
+                or binding.get("runtime_id") != previous.get("runtime_id")
+                or binding.get("process_run_id") != previous.get("process_run_id")
+                or binding.get("deployment_generation") != previous.get("deployment_generation")
+            ):
+                return {"status": "CONFLICT"}
         if (
             not isinstance(failed, dict)
             or not isinstance(previous, dict)
@@ -574,6 +626,294 @@ class WorkerSupervisor:
         self.store.write(state)
         return self._start(state, runtime, operation_id)
 
+    def _pid1_lifetime_token(self) -> str | None:
+        """Observe this actual container PID1 lifetime, not an object incarnation."""
+        if os.getpid() != 1:
+            return None
+        try:
+            return self._start_token(1)
+        except (OSError, ValueError):
+            return None
+
+    def _reboot_candidate_evidence(self, state: dict[str, Any]) -> dict[str, Any] | None:
+        failed, previous = state.get("worker"), state.get("last_worker")
+        if not isinstance(failed, dict) or not isinstance(previous, dict) or not self._is_alive(failed) or self._is_alive(previous) or not self._receipt(previous) or state.get("selected_runtime_id") != failed.get("runtime_id"):
+            return None
+        try:
+            endpoint = self.worker_socket.lstat()
+            if not stat.S_ISSOCK(endpoint.st_mode):
+                return None
+            observed = self._observation(failed)
+            confirmed = self.worker_socket.lstat()
+            if not stat.S_ISSOCK(confirmed.st_mode) or (confirmed.st_dev, confirmed.st_ino, confirmed.st_ctime_ns) != (endpoint.st_dev, endpoint.st_ino, endpoint.st_ctime_ns):
+                return None
+        except OSError:
+            return None
+        ready = failed.get("ready")
+        lifecycle = observed.get("lifecycle") if isinstance(observed, dict) else None
+        if (
+            not isinstance(observed, dict)
+            or not isinstance(ready, dict)
+            or not isinstance(ready.get("installed_provenance"), dict)
+            or any(key not in ready for key in ("source_sha", "distribution_version"))
+            or any(key not in ready["installed_provenance"] for key in ("source_revision", "distribution_version"))
+            or not self._artifact_matches_ready(observed.get("artifact"), ready)
+            or observed.get("process_run_id") != failed.get("process_run_id")
+            or observed.get("deployment_generation") != failed.get("deployment_generation")
+            or not isinstance(lifecycle, dict)
+            or lifecycle.get("state") != "running"
+            or lifecycle.get("startup_reconciled") is not False
+            or lifecycle.get("daemon_serving") is not False
+            or not self._is_alive(failed)
+        ):
+            return None
+        return {
+            "pid": failed["pid"],
+            "start_token": failed["start_token"],
+            "process_run_id": failed["process_run_id"],
+            "deployment_generation": failed["deployment_generation"],
+            "runtime_id": failed["runtime_id"],
+            "socket_device": endpoint.st_dev,
+            "socket_inode": endpoint.st_ino,
+            "socket_ctime_ns": endpoint.st_ctime_ns,
+            "startup_reconciled": False,
+            "daemon_serving": False,
+            "observed_at": time.time(),
+        }
+
+    def _exit_for_reboot_if_eligible(self) -> None:
+        """Recheck the actual candidate immediately before our authorized exit."""
+        with self._lock:
+            # Failure to read/persist proof must not turn into an accidental
+            # exception-driven PID1 exit or an automatically retried effect.
+            self._reboot_recovery_requested_at = None
+            try:
+                state = self.store.read()
+                marker = state.get("reboot_recovery")
+                if not isinstance(marker, dict):
+                    return
+                operation_id = marker.get("operation_id")
+                record = state.get("operations", {}).get(operation_id)
+                runtime = record.get("runtime") if isinstance(record, dict) else None
+                verified = isinstance(runtime, dict) and self._verify_runtime(runtime) is not None
+                evidence = self._reboot_candidate_evidence(state)
+                original = marker.get("eligibility")
+                pid1_token = self._pid1_lifetime_token()
+                valid = (
+                    self.config.channel == "release"
+                    and os.getpid() == 1
+                    and isinstance(pid1_token, str)
+                    and bool(pid1_token)
+                    and verified
+                    and not self._shutdown_requested
+                    and marker.get("phase") == "REQUESTED"
+                    and marker.get("origin_incarnation") == self.incarnation
+                    and marker.get("origin_pid1_start_token") == pid1_token
+                    and isinstance(record, dict)
+                    and isinstance(record.get("request"), dict)
+                    and record["request"].get("operation") == "RECOVER_PREVIOUS_REBOOT"
+                    and record.get("digest") == self._digest(record["request"])
+                    and evidence is not None
+                    and evidence.get("deployment_generation") == marker.get("failed_generation")
+                    and isinstance(original, dict)
+                    and all(evidence.get(key) == original.get(key) for key in ("pid", "start_token", "process_run_id", "deployment_generation", "runtime_id", "socket_device", "socket_inode", "socket_ctime_ns"))
+                )
+                if not valid:
+                    marker["phase"] = "BLOCKED"
+                    if isinstance(operation_id, str) and isinstance(record, dict):
+                        self._finish(operation_id, state, {"status": "NEEDS_ATTENTION", "reason": "reboot_candidate_no_longer_proven_unready"})
+                    else:
+                        self.store.write(state)
+                    return
+                assert isinstance(record, dict)
+                record["reboot_exit_evidence"] = evidence
+                self.store.write(state)
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                logger.error("Reboot exit proof unavailable: {}", type(error).__name__)
+                return
+            logger.warning("Exiting release Supervisor PID 1 for Docker-managed container restart")
+            os._exit(81)
+
+    def _request_reboot_recovery(self, state: dict[str, Any], runtime: dict[str, Any] | None, operation_id: str) -> dict[str, Any]:
+        """Durably request an exit of this release container's PID 1, not Docker control."""
+        failed, previous = state.get("worker"), state.get("last_worker")
+        pid1_token = self._pid1_lifetime_token()
+        if (
+            self.config.channel != "release"
+            or os.getpid() != 1
+            or not isinstance(pid1_token, str)
+            or not pid1_token
+            or self._shutdown_requested
+            or not isinstance(failed, dict)
+            or not isinstance(previous, dict)
+            or not self._is_alive(failed)
+            or runtime is None
+            or runtime.get("runtime_id") == "bootstrap"
+            or previous.get("runtime_id") != runtime.get("runtime_id")
+            or previous.get("ready") != runtime.get("ready")
+            or state.get("selected_runtime_id") != failed.get("runtime_id")
+            or state.get("prior_recovery_generation") == failed.get("deployment_generation")
+            or state.get("reboot_recovery") is not None
+            or state.get("launch_intent") is not None
+            or self._verify_runtime(runtime) is None
+        ):
+            return {"status": "CONFLICT"}
+        evidence = self._reboot_candidate_evidence(state)
+        if evidence is None:
+            return {"status": "CONFLICT", "reason": "release_reboot_eligibility_unproven"}
+        state["reboot_recovery"] = {
+            "operation_id": operation_id,
+            "origin_incarnation": self.incarnation,
+            "origin_pid1_start_token": pid1_token,
+            "failed_generation": failed["deployment_generation"],
+            "eligibility": evidence,
+            "phase": "REQUESTED",
+        }
+        self.store.write(state)
+        self._reboot_recovery_requested_at = time.monotonic()
+        return {"status": "RESTARTING", "reason": "release_supervisor_pid1_exit_requested"}
+
+    def _remove_original_reboot_socket(self, evidence: dict[str, Any]) -> bool:
+        """Reclaim only the original dead namespace's positively refused UDS."""
+        device, inode, ctime_ns = evidence.get("socket_device"), evidence.get("socket_inode"), evidence.get("socket_ctime_ns")
+        if type(device) is not int or device < 0 or type(inode) is not int or inode <= 0 or type(ctime_ns) is not int or ctime_ns <= 0:
+            return False
+        try:
+            # Pin the inode throughout the check. Without O_PATH a concurrent
+            # replacement can immediately reuse the unlinked socket's inode.
+            descriptor = os.open(self.worker_socket, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISSOCK(before.st_mode) or (before.st_dev, before.st_ino, before.st_ctime_ns) != (device, inode, ctime_ns):
+                return False
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.25)
+                try:
+                    probe.connect(str(self.worker_socket))
+                except OSError as error:
+                    if error.errno != errno.ECONNREFUSED:
+                        return False
+                else:
+                    return False
+            after = self.worker_socket.lstat()
+            if not stat.S_ISSOCK(after.st_mode) or (after.st_dev, after.st_ino, after.st_ctime_ns) != (device, inode, ctime_ns):
+                return False
+            self.worker_socket.unlink()
+            return True
+        except OSError:
+            return False
+        finally:
+            os.close(descriptor)
+
+    def _resume_reboot_recovery(self) -> None:
+        """On a fresh Docker lifetime, launch only the pinned prior READY once."""
+        with self._lock:
+            try:
+                state = self.store.read()
+            except (OSError, ValueError) as error:
+                logger.error("Reboot recovery state unavailable: {}", type(error).__name__)
+                return
+            marker = state.get("reboot_recovery")
+            if marker is None:
+                return
+            if not isinstance(marker, dict):
+                logger.error("Reboot recovery marker is invalid")
+                return
+            operation_id = marker.get("operation_id")
+            record = state.get("operations", {}).get(operation_id) if isinstance(operation_id, str) else None
+            failed, previous = state.get("worker"), state.get("last_worker")
+            runtime = record.get("runtime") if isinstance(record, dict) else None
+            request = record.get("request") if isinstance(record, dict) else None
+            pid1_token = self._pid1_lifetime_token()
+            exit_evidence = record.get("reboot_exit_evidence") if isinstance(record, dict) else None
+            eligibility = marker.get("eligibility")
+            valid = (
+                self.config.channel == "release"
+                and os.getpid() == 1
+                and marker.get("phase") == "REQUESTED"
+                and isinstance(marker.get("origin_incarnation"), str)
+                and marker["origin_incarnation"] != self.incarnation
+                and isinstance(marker.get("origin_pid1_start_token"), str)
+                and bool(marker["origin_pid1_start_token"])
+                and isinstance(pid1_token, str)
+                and bool(pid1_token)
+                and marker["origin_pid1_start_token"] != pid1_token
+                and isinstance(record, dict)
+                and isinstance(request, dict)
+                and request.get("operation") == "RECOVER_PREVIOUS_REBOOT"
+                and record.get("digest") == self._digest(request)
+                and isinstance(failed, dict)
+                and isinstance(exit_evidence, dict)
+                and isinstance(eligibility, dict)
+                and all(evidence.get("startup_reconciled") is False and evidence.get("daemon_serving") is False for evidence in (eligibility, exit_evidence))
+                and all(exit_evidence.get(key) == eligibility.get(key) == failed.get(key) for key in ("pid", "start_token", "process_run_id", "deployment_generation", "runtime_id"))
+                and all(exit_evidence.get(key) == eligibility.get(key) for key in ("socket_device", "socket_inode", "socket_ctime_ns"))
+                and isinstance(previous, dict)
+                and marker.get("failed_generation") == failed.get("deployment_generation")
+                and isinstance(runtime, dict)
+                and runtime.get("runtime_id") != "bootstrap"
+                and previous.get("runtime_id") == runtime.get("runtime_id")
+                and previous.get("ready") == runtime.get("ready")
+                and state.get("selected_runtime_id") == failed.get("runtime_id")
+                and state.get("prior_recovery_generation") != failed.get("deployment_generation")
+                and state.get("launch_intent") is None
+                and not self._is_alive(failed)
+                and self._verify_runtime(runtime) is not None
+            )
+            if not valid:
+                try:
+                    if isinstance(record, dict) and isinstance(operation_id, str):
+                        self._finish(operation_id, state, {"status": "NEEDS_ATTENTION", "reason": "reboot_recovery_revalidation_failed"})
+                except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
+                    logger.error("Reboot refusal persistence unavailable: {}", type(error).__name__)
+                logger.error("Reboot recovery refused after failed validation")
+                return
+            assert isinstance(operation_id, str) and isinstance(record, dict) and isinstance(failed, dict)
+            assert isinstance(runtime, dict)
+            try:
+                # Persist the one-shot consumption before Popen. A crash in the
+                # launch window must never spawn an uncorrelated second successor.
+                marker["phase"] = "RECOVERING"
+                record["reboot_evidence"] = {
+                    "origin_incarnation": marker["origin_incarnation"],
+                    "origin_pid1_start_token": marker["origin_pid1_start_token"],
+                    "recovered_incarnation": self.incarnation,
+                    "recovered_pid1_start_token": pid1_token,
+                    "failed_generation": marker["failed_generation"],
+                }
+                state.update(
+                    prior_recovery_attempted=True,
+                    prior_recovery_generation=failed["deployment_generation"],
+                    failed_worker=failed,
+                    worker=None,
+                    stopped=True,
+                    stop_verified=False,
+                )
+                self.store.write(state)
+                assert isinstance(exit_evidence, dict)
+                if not self._remove_original_reboot_socket(exit_evidence):
+                    self._finish(operation_id, state, {"status": "NEEDS_ATTENTION", "reason": "original_reboot_socket_not_reclaimable"})
+                    return
+                record["reboot_evidence"]["original_socket_reclaimed"] = True
+                self.store.write(state)
+                result = self._start(state, runtime, operation_id)
+                if result.get("status") != "RUNNING":
+                    self._finish(operation_id, state, {"status": "NEEDS_ATTENTION", "reason": "reboot_recovery_launch_unverified"})
+                    return
+                record["result"] = {"status": "IN_PROGRESS"}
+                state.pop("reboot_recovery", None)
+                self.store.write(state)
+                logger.info("Reboot recovery launched prior READY for operation={}", hashlib.sha256(operation_id.encode()).hexdigest()[:12])
+            except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
+                # Keep PID1 alive on storage/probe failure. Persisted consumption
+                # or launch intent still prevents another attempt after a crash.
+                logger.error("Reboot recovery proof or persistence unavailable: {}", type(error).__name__)
+                return
+
     def _finish(self, operation_id: str, state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
         record = state["operations"][operation_id]
         record["result"] = result
@@ -592,13 +932,15 @@ class WorkerSupervisor:
 
     def _reconcile_operation(self, operation_id: str, state: dict[str, Any]) -> dict[str, Any]:
         record, result = state["operations"][operation_id], state["operations"][operation_id]["result"]
-        if result.get("status") not in {"IN_PROGRESS", "DRAINING", "UNKNOWN"}:
+        if result.get("status") not in {"IN_PROGRESS", "DRAINING", "RESTARTING", "UNKNOWN"}:
+            return result
+        if record["request"]["operation"] == "RECOVER_PREVIOUS_REBOOT" and result.get("status") == "RESTARTING":
             return result
         worker = state.get("worker")
         successor_launch = result.get("status") == "DRAINING" and record["request"]["operation"] == "RESTART_WORKER" and isinstance(worker, dict) and worker.get("launch_operation_id") == operation_id
         if result.get("status") == "IN_PROGRESS" or successor_launch:
             if (
-                record["request"]["operation"] in {"START", "RESTART_WORKER", "RECOVER_PREVIOUS"}
+                record["request"]["operation"] in {"START", "RESTART_WORKER", "RECOVER_PREVIOUS", "RECOVER_PREVIOUS_REBOOT"}
                 and isinstance(worker, dict)
                 and worker.get("launch_operation_id") == operation_id
                 and isinstance(record.get("runtime"), dict)
@@ -719,6 +1061,11 @@ class WorkerSupervisor:
                 "reason": "child lifetime unavailable during startup",
             }
         worker = {"pid": self.child.pid, "start_token": start_token, "process_run_id": None, "deployment_generation": generation, "runtime_id": runtime["runtime_id"], "ready": runtime["ready"], "ready_path": runtime.get("ready_path"), "started_at": time.time(), "launch_operation_id": operation_id}
+        previous = state.get("last_worker")
+        if self.config.channel == "release" and isinstance(previous, dict) and isinstance(previous.get("last_verified_binding"), dict) and previous.get("runtime_id") != runtime["runtime_id"]:
+            # Capture immutable prior provenance before a failed successor can
+            # replace last_worker with its own genuine terminal receipt.
+            worker["recovery_parent"] = {key: previous.get(key) for key in ("runtime_id", "ready", "ready_path", "process_run_id", "deployment_generation", "last_verified_binding")}
         state.update(worker=worker, stopped=False, launch_intent=None)
         self.store.write(state)
         return {"status": "RUNNING", "worker": worker}
@@ -805,6 +1152,7 @@ class WorkerSupervisor:
             signal.signal(signal.SIGTERM, self._handle_shutdown)
         bridge = None
         try:
+            self._resume_reboot_recovery()
             if bridge_config is not None:
                 bridge = SupervisorBridgeServer(bridge_config, self)
                 bridge.start()
@@ -815,6 +1163,8 @@ class WorkerSupervisor:
                 logger.info("Initial worker start: {}", result.get("status"))
             shutdown_operation = {"operation_id": "container-shutdown-" + self.incarnation, "operation": "REQUEST_GRACEFUL_STOP"}
             while True:
+                if self._reboot_recovery_requested_at is not None and time.monotonic() - self._reboot_recovery_requested_at >= 0.5:
+                    self._exit_for_reboot_if_eligible()
                 if self._shutdown_requested:
                     result = self.apply(shutdown_operation)
                     state = self.store.read()
