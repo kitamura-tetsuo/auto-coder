@@ -175,10 +175,7 @@ def test_private_source_first_launch_and_retained_grant_readback(request_file: P
             # refuse any later configured sibling and permanently consume
             # the original one-shot claim, even when that sibling is removed.
             suspended = subprocess.Popen(
-                [
-                    sys.executable, "-B", "-c", _PAUSE_AFTER_HOST_CLAIM,
-                    str(request_file), child_id, image_id, str(root), str(outer_socket),
-                ],
+                [sys.executable, "-B", "-c", _PAUSE_AFTER_HOST_CLAIM, str(request_file), child_id, image_id, str(root), str(outer_socket)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -188,11 +185,7 @@ def test_private_source_first_launch_and_retained_grant_readback(request_file: P
                 assert suspended.stdout is not None
                 assert select.select([suspended.stdout], [], [], 30)[0], "private host did not reach claim barrier"
                 barrier = suspended.stdout.readline()
-                assert barrier == "new-host-claim-fsynced\n", (
-                    barrier,
-                    suspended.poll(),
-                    suspended.stderr.read() if suspended.poll() is not None and suspended.stderr is not None else "",
-                )
+                assert barrier == "new-host-claim-fsynced\n", (barrier, suspended.poll(), suspended.stderr.read() if suspended.poll() is not None and suspended.stderr is not None else "")
                 original_claim = (request_file.parent / "guard/new-docker-first-start.json").read_bytes()
                 assert not (request_file.parent / "state/physical-child-invocations").exists()
                 extra = subprocess.run(
