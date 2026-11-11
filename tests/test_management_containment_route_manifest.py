@@ -65,6 +65,24 @@ def test_systemd_multi_exec_start_post_preserves_all_command_sources(monkeypatch
     assert routes._systemd_unit("dmesg.service").sha256 != first.sha256
 
 
+def test_unordered_systemd_dependency_sets_are_canonical_without_losing_membership(monkeypatch: pytest.MonkeyPatch) -> None:
+    shown = (
+        "Id=bolt.service\nLoadState=loaded\nUnitFileState=enabled\nActiveState=inactive\n"
+        "SubState=dead\nFragmentPath=/usr/lib/systemd/system/bolt.service\n"
+        "NeedDaemonReload=no\nMainPID=0\n"
+        "Requires=sysinit.target system.slice dbus.socket -.mount\n"
+        "Wants=network.target dbus.socket\n"
+        "TriggeredBy=bolt.socket dbus.socket\n"
+    )
+    current = [shown]
+    monkeypatch.setattr(routes, "_command", lambda *args, **kwargs: current[0] if args[1] == "show" else "[Service]\nExecStart=/usr/bin/boltd\n")
+    first = routes._systemd_unit("bolt.service")
+    current[0] = shown.replace("sysinit.target system.slice dbus.socket -.mount", "system.slice dbus.socket -.mount sysinit.target").replace("network.target dbus.socket", "dbus.socket network.target").replace("bolt.socket dbus.socket", "dbus.socket bolt.socket")
+    assert routes._systemd_unit("bolt.service").sha256 == first.sha256
+    current[0] = current[0].replace("dbus.socket -.mount sysinit.target", "other.socket -.mount sysinit.target")
+    assert routes._systemd_unit("bolt.service").sha256 != first.sha256
+
+
 def test_removed_loaded_systemd_unit_is_only_an_unrelated_current_fact(monkeypatch: pytest.MonkeyPatch) -> None:
     shown = "Id=auto-cpufreq.service\nLoadState=not-found\nUnitFileState=\nActiveState=inactive\nSubState=dead\nFragmentPath=\nNeedDaemonReload=no\nMainPID=0\n"
 

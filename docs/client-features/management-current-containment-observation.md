@@ -159,6 +159,12 @@ daemon reload and a root-owned `/dev/null` mask link. The known management
 proxy watcher must be a restarter; other management names and source-detected
 management commands cannot be approved as unrelated.
 
+The `Wants`, `Requires`, `Triggers` and `TriggeredBy` dependency sets are sorted
+when hashed because systemd's presentation order is not stable. Added/removed
+dependencies still change the digest; command sequence and ordered drop-ins are
+not reordered. A previously approved digest from an older hashing version
+must be freshly reviewed and approved, never silently migrated.
+
 The manifest also binds the complete unfiltered Docker ID set to the existing
 whole-engine readback; the complete directory/file census of fixed
 `/etc/cron*`, `/etc/anacrontab` and `/var/spool/{cron,at,atjobs}` roots;

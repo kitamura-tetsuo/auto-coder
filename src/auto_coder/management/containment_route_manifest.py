@@ -89,6 +89,9 @@ _REQUIRED_UNIT_PROPERTIES = (
     "FragmentPath",
 )
 _REPEATABLE_UNIT_PROPERTIES = frozenset(("ExecStart", "ExecStartPre", "ExecStartPost", "ExecStopPost"))
+# systemd serializes dependency sets in nondeterministic order. Source and
+# command precedence remain ordered and must never be normalized as sets.
+_UNORDERED_UNIT_PROPERTIES = frozenset(("Triggers", "TriggeredBy", "Wants", "Requires"))
 
 
 class RouteManifestUnavailable(ValueError):
@@ -410,7 +413,7 @@ def _systemd_unit(unit: str, *, trusted_uid: int = 0) -> SystemdRouteFact:
             raise RouteManifestUnavailable("masked systemd unit is not backed by a protected /dev/null link")
         identity = (info.st_dev, info.st_ino, info.st_ctime_ns, info.st_uid, str(path))
     inhibited = not is_template and shown["LoadState"] == "masked" and shown["UnitFileState"] == "masked" and shown["ActiveState"] == "inactive" and shown["SubState"] == "dead" and shown["MainPID"] == "0" and shown["NeedDaemonReload"] == "no" and identity is not None
-    normalized = {name: repeatable.get(name, []) if name in _REPEATABLE_UNIT_PROPERTIES else shown.get(name, "") for name in _UNIT_PROPERTIES}
+    normalized = {name: (repeatable.get(name, []) if name in _REPEATABLE_UNIT_PROPERTIES else sorted(shown.get(name, "").split()) if name in _UNORDERED_UNIT_PROPERTIES else shown.get(name, "")) for name in _UNIT_PROPERTIES}
     candidate = any(term in (unit + "\n" + properties + "\n" + unit_source) for term in _MANAGEMENT_CUES)
     return SystemdRouteFact(unit, _digest((normalized, hashlib.sha256(unit_source.encode()).hexdigest(), identity, alias_state)), shown["UnitFileState"], shown["ActiveState"], int(shown["MainPID"]), inhibited, candidate)
 
