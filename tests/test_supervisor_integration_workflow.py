@@ -55,6 +55,17 @@ def test_new_private_engine_acceptance_keeps_mandatory_isolated_first_launch() -
     assert "tests/test_management_new_private_engine_gate.py" in step["run"]
     assert "test_management_new_instance_first_launch_docker.py" not in step["run"]
     assert "chmod 0666" not in (ROOT / ".github/workflows/new-instance-private-engine.yml").read_text()
+    assert not (ROOT / "tests/test_management_new_instance_first_launch_docker.py").exists()
+    regression = (ROOT / "tests/test_management_new_private_engine_docker.py").read_text()
+    for scenario in (
+        "changed-executable",
+        "changed-application",
+        "different-os-uid",
+        "pre-gate-live-sibling",
+        "restart-policy-after-claim",
+        "sealed-gate-outside-client",
+    ):
+        assert f'"{scenario}"' in regression
 
 
 def test_supervisor_planners_bootstrap_without_historical_native_durations() -> None:

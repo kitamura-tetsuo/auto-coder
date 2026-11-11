@@ -548,16 +548,22 @@ The additional guard-lock tests establish overlapping attempts at the same
 Linux `flock` inode and show that normal or SIGKILL-released locks cannot
 confer first-launch eligibility. They do not establish first-launch-claim
 contention or authenticated application readiness.
-The `tests/test_management_new_instance_docker_created.py` and
-`tests/test_management_new_instance_first_launch_docker.py` suites are marked
-`supervisor_integration` and exercise the real host Docker engine, including
-positive physical child launch, synthetic OAuth readback, concurrent first
-claim, race-window in-scope prior-process rejection, separate effective UID,
-and replay/crash refusal. The latter requires a valid
-`AUTOCODER_FRESH_TEST_BASE_IMAGE` integration image (defaulting locally to
-`auto-coder:management-local-abc65544`), a non-root
-Docker-enabled test host, and isolated disposable filesystem roots. Never
-point these tests at a production OAuth root or existing container.
+`tests/test_management_new_instance_docker_created.py` retains the
+non-authorizing CREATED-scope and unisolated-Engine refusal tests. The former
+host-wide first-start acceptance suite was retired when an independently
+created, live private Docker Engine became mandatory: a test that starts a
+child through the outer Engine can no longer be a positive NEW admission test.
+Its real source, container and synthetic retained-grant fixtures now live in
+`tests/support/new_first_start.py`. The opt-in
+`tests/test_management_new_private_engine_docker.py` suite exercises actual
+private-Engine creation, one original physical launch, authenticated exact-child
+readback, owner/first-claim contention, killed-host and replay refusal, modified
+bootstrap/executable/application, second OS UID denial, configured or live
+sibling and restart-policy races, and sealed-API outside-client refusal. The
+dedicated `NEW Docker Private Engine Acceptance` workflow executes these tests
+in disposable Docker-in-Docker parents, without mounting an existing service's
+OAuth root or container. A green component or outer-Engine test never replaces
+the private-source first-launch acceptance result.
 
 These operations do not expose a new public endpoint, create a worker job,
 enable a deployment or assert dashboard success. Read-only assessment stdout

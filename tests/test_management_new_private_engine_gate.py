@@ -17,8 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from auto_coder.management.fresh_private_engine_gate import hold_one_start_api_gate
 from auto_coder.management.fresh_new_host_start import _LocalDockerConnection
+from auto_coder.management.fresh_private_engine_gate import hold_one_start_api_gate
 
 SELECTED = "c" * 64
 
