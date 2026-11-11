@@ -31,7 +31,8 @@ from .containment_enrollment import (
     _trusted_ancestors,
 )
 
-_UNIT_NAME = re.compile(r"(?:[A-Za-z0-9_.@:-]|\\x[0-9a-fA-F]{2})+\.(?:service|timer|socket)")
+_UNIT_NAME = re.compile(r"(?:[A-Za-z0-9_.@:-]|\\x[0-9a-fA-F]{2})+\.(?:service|timer|socket|path|target|mount|automount|swap)")
+_ACTIVATION_UNIT_TYPES = ("service", "timer", "socket", "path", "target", "mount", "automount", "swap")
 _HASH = re.compile(r"[0-9a-f]{64}")
 _CONTAINER = re.compile(r"[0-9a-f]{64}")
 _MAX_MANIFEST_BYTES = 1024 * 1024
@@ -319,9 +320,7 @@ def _systemd_catalog() -> tuple[str, ...]:
             "systemctl",
             operation,
             "--all",
-            "--type=service",
-            "--type=timer",
-            "--type=socket",
+            *("--type=" + unit_type for unit_type in _ACTIVATION_UNIT_TYPES),
             "--output=json",
             "--no-pager",
             max_bytes=_MAX_MANIFEST_BYTES,
@@ -377,7 +376,7 @@ def _systemd_unit(unit: str, *, trusted_uid: int = 0) -> SystemdRouteFact:
                 raise RouteManifestUnavailable("duplicate singleton systemd unit property")
             shown[key] = value
         required = set(_REQUIRED_UNIT_PROPERTIES)
-        if unit.endswith((".timer", ".socket")):
+        if not unit.endswith(".service"):
             required.remove("MainPID")
             shown.setdefault("MainPID", "0")
         if not required <= set(shown) or not _UNIT_NAME.fullmatch(shown["Id"]) or shown["NeedDaemonReload"] not in ("yes", "no") or not shown["MainPID"].isdecimal():

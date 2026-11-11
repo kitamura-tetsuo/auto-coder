@@ -147,9 +147,10 @@ file SHA-256 and deployment/enrollment/authorization/profile IDs, requiring
 `complete_ordinary_routes_attested: true`. Neither a scope JSON nor a
 test-generated manifest establishes the trusted root's separate review.
 
-The manifest lists and classifies the **entire** host-systemd unit-file and
-loaded-unit universe (service, timer and socket units, including unrelated
-ones). Each route has `unit`, a SHA-256 of freshly re-read effective
+The manifest lists and classifies the **entire** selected host-systemd
+activation-capable unit-file and loaded-unit universe (service, timer, socket,
+path, target, mount, automount and swap units, including unrelated ones). Each
+route has `unit`, a SHA-256 of freshly re-read effective
 `systemctl show` properties, `systemctl cat` source and mask-link identity,
 and `role: restarter` or `unrelated`. Root must review exclusions. The actual
 catalog is enumerated afresh, not selected by the manifest. Unknown or omitted

@@ -23,6 +23,9 @@ from auto_coder.management.containment_enrollment import EnrollmentUnavailable
 
 def test_systemd_unit_names_allow_safe_systemd_hex_escapes_without_path_selection() -> None:
     assert routes._UNIT_NAME.fullmatch(r"systemd-fsck@dev-disk-by\x2duuid-BC0B\x2dD22A.service")
+    assert routes._UNIT_NAME.fullmatch("apport-autoreport.path")
+    assert routes._UNIT_NAME.fullmatch("multi-user.target")
+    assert routes._UNIT_NAME.fullmatch("proc-sys-fs-binfmt_misc.automount")
     assert not routes._UNIT_NAME.fullmatch("../../untrusted.service")
     assert not routes._UNIT_NAME.fullmatch("untrusted.service;systemctl start manager")
 
@@ -34,6 +37,31 @@ def test_systemd_timer_without_service_main_pid_is_fingerprinted(monkeypatch: py
     assert fact.main_pid == 0
     assert fact.unit_file_state == "enabled"
     assert fact.inhibited is False
+
+
+@pytest.mark.parametrize("unit", ("apport-autoreport.path", "multi-user.target", "etc-fstab.mount", "proc-sys-fs-binfmt_misc.automount", "dev-zram0.swap"))
+def test_other_service_activators_are_fingerprinted_without_main_pid(monkeypatch: pytest.MonkeyPatch, unit: str) -> None:
+    shown = "Id=" + unit + "\nLoadState=loaded\nUnitFileState=enabled\nActiveState=active\nSubState=running\nFragmentPath=/etc/systemd/system/" + unit + "\nNeedDaemonReload=no\n"
+    monkeypatch.setattr(routes, "_command", lambda *args, **kwargs: shown if args[1] == "show" else "[Unit]\nWants=management.service\n")
+    fact = routes._systemd_unit(unit)
+    assert fact.unit == unit
+    assert fact.main_pid == 0
+    assert fact.inhibited is False
+
+
+def test_systemd_catalog_includes_indirect_service_activation_types(monkeypatch: pytest.MonkeyPatch) -> None:
+    commands: list[tuple[str, ...]] = []
+
+    def command(*args: str, **kwargs: object) -> str:
+        commands.append(args)
+        field = "unit_file" if args[1] == "list-unit-files" else "unit"
+        return json.dumps([{field: "apport-autoreport.path"}, {field: "multi-user.target"}, {field: "management.service"}])
+
+    monkeypatch.setattr(routes, "_command", command)
+    assert routes._systemd_catalog() == ("apport-autoreport.path", "management.service", "multi-user.target")
+    assert len(commands) == 2
+    for args in commands:
+        assert set(args[3:11]) == {"--type=" + unit_type for unit_type in routes._ACTIVATION_UNIT_TYPES}
 
 
 def test_systemd_template_file_is_read_without_pretending_to_observe_an_instance(monkeypatch: pytest.MonkeyPatch) -> None:
