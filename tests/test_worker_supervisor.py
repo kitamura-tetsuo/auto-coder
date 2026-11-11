@@ -476,6 +476,9 @@ def test_release_pid1_reboot_recovery_consumes_pinned_prior_ready_once(tmp_path:
     requested = first.store.read()
     assert requested["reboot_recovery"] == {"operation_id": "restore-prior", "origin_incarnation": first.incarnation, "failed_generation": "failed-generation", "phase": "REQUESTED"}
     assert requested["worker"]["runtime_id"] == "preparedNew"
+    # Without an actual Docker restart, there is no prior-runtime launch or
+    # confirmed recovery, even after the durable request is acknowledged.
+    assert requested["operations"]["restore-prior"]["result"]["status"] == "RESTARTING"
 
     resumed = WorkerSupervisor(settings)
     try:
@@ -529,6 +532,25 @@ def test_reboot_recovery_refuses_beta_and_surviving_candidate(tmp_path: Path) ->
     with patch.object(beta, "_resolve_runtime", return_value=prior), patch.object(beta, "_is_alive", return_value=True), patch.object(beta, "_reconcile_worker"), patch("auto_coder.worker_supervisor.os.getpid", return_value=1):
         assert beta.apply(payload)["status"] == "CONFLICT"
     assert beta.store.read().get("reboot_recovery") is None
+
+
+def test_reboot_recovery_requires_verified_prior_runtime(tmp_path: Path) -> None:
+    settings = replace(config(tmp_path), instance_id="release-worker", channel="release")
+    supervisor = WorkerSupervisor(settings)
+    state = supervisor.store.read()
+    state.update(worker={"runtime_id": "preparedNew", "deployment_generation": "failed-generation"}, last_worker=None, selected_runtime_id="preparedNew")
+    supervisor.store.write(state)
+    request = {"operation_id": "restore-without-prior", "operation": "RECOVER_PREVIOUS_REBOOT", "runtime_id": "preparedOld", "expected_runtime_id": "preparedNew", "expected_generation": "failed-generation", "expected_process_run_id": None}
+    with (
+        patch.object(supervisor, "_resolve_runtime", return_value={"runtime_id": "preparedOld"}),
+        patch.object(supervisor, "_is_alive", return_value=True),
+        patch.object(supervisor, "_reconcile_worker"),
+        patch("auto_coder.worker_supervisor.os.getpid", return_value=1),
+        patch("auto_coder.worker_supervisor.subprocess.Popen") as launch,
+    ):
+        assert supervisor.apply(request)["status"] == "CONFLICT"
+        launch.assert_not_called()
+    assert supervisor.store.read().get("reboot_recovery") is None
 
 
 def test_reconstruction_fences_unresolved_durable_effect(tmp_path: Path) -> None:

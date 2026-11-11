@@ -714,7 +714,7 @@ def _exercise_installed_release_join(
                                 return None
                             return retained
 
-                        pending_version, pending_snapshot = _wait_for(unready_candidate, timeout=150)
+                        _pending_version, pending_snapshot = _wait_for(unready_candidate, timeout=150)
                         assert pending_snapshot["recovery_attempts"] == 0
                         assert _wait_for(lambda: (release.runtime / "fixture-candidate-live-held").exists(), timeout=30)
                         failed_os = json.loads((release.runtime / "supervisor" / "state.json").read_text())["worker"]
@@ -722,16 +722,16 @@ def _exercise_installed_release_join(
                         before = _container_identity(release.container)
                         before_restart = int(_docker("inspect", "-f", "{{.RestartCount}}", release.container).stdout.strip())
                         assert before_restart == 0
-                        # Elapse only the original manager's recovery window.
-                        # No worker, Supervisor, or Docker state is fabricated.
-                        pending_snapshot["deadline"] = time.time() - 1
-                        assert journal.lifecycle_save(operation_id, pending_version, pending_snapshot)
+                        # Keep the real manager deadline and its journal intact;
+                        # prove that the actual timeout triggers the original recovery.
+                        remaining = float(pending_snapshot["deadline"]) - time.time()
+                        assert 0 < remaining <= 180
 
                         def rebooted():
                             inspected = WorkerNetworkClient(release.client.config).inspect_supervisor()
                             return inspected if inspected.result_code == "OK" and inspected.supervisor_generation != previous.supervisor_generation else None
 
-                        restarted = _wait_for(rebooted, timeout=120)
+                        restarted = _wait_for(rebooted, timeout=remaining + 120)
                         assert restarted.data["status"] in {"RUNNING", "UNKNOWN"}
                         after = _container_identity(release.container)
                         assert after["id"] == before["id"] and after["pid"] != before["pid"] and after["started"] != before["started"]
