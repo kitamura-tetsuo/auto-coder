@@ -251,8 +251,17 @@ def test_lost_or_denied_dispatch_restart_never_sends_again(dispatch, failure):
         assert first["effect_state"] == "sent_unknown"
         operation_id = first["operation_id"]
     d.remote.failure = ""
-    with TestClient(d.app(), base_url=d.settings.oauth.canonical_issuer) as client:
+    app = d.app()
+    with TestClient(app, base_url=d.settings.oauth.canonical_issuer) as client:
         token = _token(client, d)
+        before = app.state.management_runtime.journal.get(operation_id).record
+        prior_dispatches = list(d.remote.dispatches)
+        prior_writes = d.remote.release_pointer_writes
+        inspected = _call(client, token, "auto_coder_operation_inspect", {"operation_id": operation_id})
+        assert inspected["operation_id"] == operation_id
+        assert app.state.management_runtime.journal.get(operation_id).record == before
+        assert d.remote.dispatches == prior_dispatches
+        assert d.remote.release_pointer_writes == prior_writes
         result = _read(client, token, operation_id)
         assert result["status"] == ("SUCCEEDED" if failure == "after" else "NEEDS_ATTENTION"), result
         assert len(d.remote.dispatches) == 1

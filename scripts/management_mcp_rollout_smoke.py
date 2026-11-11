@@ -26,7 +26,7 @@ READ_TOOLS = frozenset(
         "auto_coder_targets",
         "auto_coder_status",
         "auto_coder_deployment_status",
-        "auto_coder_operation_get",
+        "auto_coder_operation_inspect",
         "auto_coder_beta_source_readback",
         "auto_coder_beta_acceptance_get",
     }
@@ -241,7 +241,7 @@ def checked_tool(name: str, arguments: dict[str, object]) -> None:
         raise ValueError("unexpected identity arguments")
     if name == "auto_coder_status" and set(arguments) != {"target_id"}:
         raise ValueError("status requires only exact target ID")
-    if name == "auto_coder_operation_get" and set(arguments) != {"target_id", "operation_id"}:
+    if name == "auto_coder_operation_inspect" and set(arguments) != {"target_id", "operation_id"}:
         raise ValueError("operation readback requires original operation and target IDs")
     if any(not isinstance(v, str) or SAFE_ID.fullmatch(v) is None for v in arguments.values()):
         raise ValueError("read-only observer accepts only exact safe identifiers")
@@ -274,7 +274,7 @@ def read_plan(checkpoint: DotCheckpoint, target: str, operation_id: str) -> tupl
             raise ValueError("configured stage target is missing from the original checkpoint")
         if selected_targets and target not in selected_targets:
             raise ValueError("diagnostic target is outside the configured original stage targets")
-    original_read: tuple[str, dict[str, object]] = ("auto_coder_operation_get", {"target_id": target, "operation_id": operation_id})
+    original_read: tuple[str, dict[str, object]] = ("auto_coder_operation_inspect", {"target_id": target, "operation_id": operation_id})
     status_read: tuple[str, dict[str, object]] = ("auto_coder_status", {"target_id": target})
     deployment_read: tuple[str, dict[str, object]] = ("auto_coder_deployment_status", {"target_id": target})
     if checkpoint.pending_effect_state in UNKNOWN_EFFECTS:
@@ -301,9 +301,9 @@ def read_plan(checkpoint: DotCheckpoint, target: str, operation_id: str) -> tupl
 def checked_live_plan(plan: tuple[tuple[str, dict[str, object]], ...]) -> None:
     """Refuse server-side dispatch through an existing operation-get API."""
     for name, arguments in plan:
-        checked_tool(name, arguments)
         if name == "auto_coder_operation_get":
-            raise EffectfulReadError("Original operation_get may dispatch an existing effect; " "a verified non-dispatching operation reader is required")
+            raise EffectfulReadError("Original operation_get may dispatch an existing effect; use operation_inspect instead")
+        checked_tool(name, arguments)
 
 
 async def observe_live(endpoint: str, bearer: str, plan: tuple[tuple[str, dict[str, object]], ...], stage: str) -> RolloutReport:

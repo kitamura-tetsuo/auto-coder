@@ -185,7 +185,8 @@ def _request(beta: FixedWorkerBoundary, *, key: str = "key-1", target_id: str = 
 
 def test_real_oauth_http_tool_scopes_policy_and_idempotent_journal(runtime_boundary) -> None:
     settings, _grants, signed, policy, beta, _release = runtime_boundary
-    with TestClient(_application(runtime_boundary), base_url=settings.oauth.canonical_issuer) as client:
+    app = _application(runtime_boundary)
+    with TestClient(app, base_url=settings.oauth.canonical_issuer) as client:
         read_token = _issue(client, settings, signed, "alice", "alice-client", READ_SCOPE)["access_token"]
         operate_token = _issue(client, settings, signed, "bob", "bob-client", READ_SCOPE + " " + OPERATE_SCOPE)["access_token"]
         status = _call(client, read_token, "auto_coder_status", {"target_id": "beta-worker"})
@@ -209,6 +210,13 @@ def test_real_oauth_http_tool_scopes_policy_and_idempotent_journal(runtime_bound
         assert beta.send_calls == 1
         queried = _call(client, operate_token, "auto_coder_operation_get", {"target_id": "beta-worker", "operation_id": first["operation_id"]}, 5)
         assert queried == first
+        original_record = app.state.management_runtime.journal.get(first["operation_id"]).record
+        read_calls = beta.read_calls
+        inspected = _call(client, operate_token, "auto_coder_operation_inspect", {"target_id": "beta-worker", "operation_id": first["operation_id"]})
+        assert inspected == first
+        assert app.state.management_runtime.journal.get(first["operation_id"]).record == original_record
+        assert beta.read_calls == read_calls and beta.send_calls == 1
+        assert _call(client, read_token, "auto_coder_operation_inspect", {"target_id": "beta-worker", "operation_id": first["operation_id"]})["status"] == "NOT_FOUND"
         different_key = _call(client, operate_token, "auto_coder_reevaluate_target", _request(beta, key="key-2"), 6)
         assert different_key["status"] == "accepted_for_reevaluation"
         assert beta.send_calls == 2
@@ -710,8 +718,17 @@ def test_lost_response_reconciles_exact_receipt_without_resend_after_restart(run
         op_id = first["operation_id"]
         grants.revoke("bob-client", token)
     # The original worker receipt was committed; only a GET is now allowed.
-    with TestClient(_application(runtime_boundary), base_url=settings.oauth.canonical_issuer) as client:
+    next_app = _application(runtime_boundary)
+    with TestClient(next_app, base_url=settings.oauth.canonical_issuer) as client:
         fresh_token = _issue(client, settings, signed, "bob", "bob-client", READ_SCOPE)["access_token"]
+        before = next_app.state.management_runtime.journal.get(op_id).record
+        reads_before = beta.read_calls
+        inspected = _call(client, fresh_token, "auto_coder_operation_inspect", {"target_id": "beta-worker", "operation_id": op_id})
+        assert before is not None
+        assert inspected["effect_state"] == before.effect.state.value
+        assert inspected["phase"] == before.phase.value
+        assert next_app.state.management_runtime.journal.get(op_id).record == before
+        assert beta.send_calls == 1 and beta.read_calls == reads_before
         recovered = _call(client, fresh_token, "auto_coder_operation_get", {"target_id": "beta-worker", "operation_id": op_id})
         assert recovered["status"] == "accepted_for_reevaluation"
         assert beta.send_calls == 1 and beta.read_calls >= 1

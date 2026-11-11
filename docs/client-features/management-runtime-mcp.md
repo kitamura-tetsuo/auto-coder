@@ -73,7 +73,8 @@ new effect, and it does not erase a previously committed receipt.
 | `auto_coder_logs` | `auto-coder.read` | `target_id`, optional `limit`, `item_type`, `item_number`, `execution_id`, `process_run_id`, `after_sequence`, `cursor` | Existing source-redacted, bounded log projection and retention-gap outcomes |
 | `auto_coder_validation_attempt` | `auto-coder.read` | `target_id`, required positive `pr_number`, and exactly one of `attempt_id` or `attempt_sequence` | Existing exact validation-attempt projection and no-match/unavailable outcomes |
 | `auto_coder_pr_diagnostics` | `auto-coder.read` | `target_id`, positive `pr_number`, optional `limit` (1–100) and `cursor` | Independent retained review-cycle, effective-decision, effect and pending-work evidence; see [`retained-pr-publication-diagnostics.md`](retained-pr-publication-diagnostics.md) |
-| `auto_coder_operation_get` | `auto-coder.read` | `operation_id`, plus `target_id` for worker operations | Non-secret original actor/client, immutable intent, effect state and verified receipt; exact read-only reconciliation is allowed |
+| `auto_coder_operation_get` | `auto-coder.read` | `operation_id`, plus `target_id` for worker operations | Original operation reconciliation; may submit or enqueue already-admitted unsettled effects, so callers must not use it as a side-effect-free diagnostic |
+| `auto_coder_operation_inspect` | `auto-coder.read` | `operation_id`, plus `target_id` for worker operations | Owner-scoped immutable intent, journal state and prior verified receipts without dispatcher submission, enqueueing or worker effects; it never settles an unresolved send |
 | `auto_coder_reevaluate_target` | `auto-coder.read` and `auto-coder.operate` | `target_id`, `target_type` (`issue`/`pr`), positive `number`, `idempotency_key` (1–128 characters), `expected_process_run_id`, `expected_deployment_generation` | One journaled reevaluation request for the current live worker incarnation |
 | `auto_coder_deployment_status` | `auto-coder.read` | `target_id` | Signed Supervisor state and actual installed worker observation where available |
 | `auto_coder_start_worker` | `auto-coder.read` and `auto-coder.deploy` | `target_id`, `idempotency_key`, `expected_supervisor_generation`, optional `expected_runtime_id` | Start the existing selected runtime only after a genuine stop |
@@ -92,7 +93,9 @@ or nonpositive item numbers, invalid identity/key characters and out-of-range
 limits. It accepts no `force`, `retry`, `resume`, `emergency`, `backend`, model,
 permission, command, arbitrary URL, path, repository, channel or machine key.
 `auto_coder_reevaluate_target` is an explicitly mutating, idempotent tool;
-inspection tools are read-only. Tool annotations do not confer authorization.
+`auto_coder_operation_inspect` is the non-dispatching operation reader. The legacy
+`auto_coder_operation_get` may advance existing operations and is explicitly
+marked non-read-only; tool annotations do not confer an absence of effects.
 The normal OAuth resource authentication still yields HTTP **401** for invalid
 credentials, **403** for missing original scope/current permission, and **503**
 when the grant authority is unavailable *before any MCP tool executes*.

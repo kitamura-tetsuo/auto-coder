@@ -552,6 +552,14 @@ class ManagementRuntime:
         return record
 
     async def operation_get(self, operation_id: str, target_id: str | None = None) -> dict[str, object]:
+        """Query an original operation, retaining the existing reconciliation behavior."""
+        return await self._operation_query(operation_id, target_id, advance=True)
+
+    async def operation_inspect(self, operation_id: str, target_id: str | None = None) -> dict[str, object]:
+        """Return the original owned journal projection without dispatching effects."""
+        return await self._operation_query(operation_id, target_id, advance=False)
+
+    async def _operation_query(self, operation_id: str, target_id: str | None, *, advance: bool) -> dict[str, object]:
         grant = self._grant((READ_SCOPE,))
         release_lookup = await asyncio.to_thread(self.journal.get, operation_id)
         if release_lookup.record is not None and release_lookup.record.intent.action == SOURCE_RELEASE_ACTION:
@@ -559,7 +567,7 @@ class ManagementRuntime:
             owned_release = self._owned_operation(target_id if target_id is not None else str(recorded_target), operation_id, grant)
             if not isinstance(owned_release, OperationRecord):
                 return owned_release
-            if owned_release.effect.state is EffectState.SENT_UNKNOWN:
+            if advance and owned_release.effect.state is EffectState.SENT_UNKNOWN:
                 updated_release = await self.dispatcher.submit(operation_id)
                 owned_release = updated_release or owned_release
             return self.source_release.project(owned_release)
@@ -600,9 +608,11 @@ class ManagementRuntime:
                 return management
             if target_id is not None and target_id != management.intent.target.instance_id:
                 return self._response("NOT_FOUND", "operation_not_found")
-            await self.observe_authenticated_identity(grant)
-            queued = self.dispatcher.enqueue(operation_id)
-            return {**await asyncio.to_thread(self.self_update.project, management), "dispatch_queued": queued}
+            if advance:
+                await self.observe_authenticated_identity(grant)
+                queued = self.dispatcher.enqueue(operation_id)
+                return {**await asyncio.to_thread(self.self_update.project, management), "dispatch_queued": queued}
+            return await asyncio.to_thread(self.self_update.project, management)
         if target_id is None:
             return self._response("INVALID_REQUEST", "worker_target_id_required")
         owned = self._owned_operation(target_id, operation_id, grant)
@@ -612,7 +622,7 @@ class ManagementRuntime:
             # An inspection-only MCP call must not become the actuator for
             # the next worker-changing step. The service dispatcher owns it.
             return self.lifecycle.project(owned)
-        if owned.effect.state in {EffectState.SENT_UNKNOWN, EffectState.CONFIRMED} and owned.phase not in {OperationPhase.SUCCEEDED, OperationPhase.FAILED, OperationPhase.ROLLED_BACK}:
+        if advance and owned.effect.state in {EffectState.SENT_UNKNOWN, EffectState.CONFIRMED} and owned.phase not in {OperationPhase.SUCCEEDED, OperationPhase.FAILED, OperationPhase.ROLLED_BACK}:
             updated = await self.dispatcher.submit(operation_id)
             if updated is not None:
                 owned = updated
@@ -1051,7 +1061,8 @@ class ManagementRuntime:
             ManagementTool("auto_coder_logs", self.logs, (READ_SCOPE,), read),
             ManagementTool("auto_coder_validation_attempt", self.validation_attempt, (READ_SCOPE,), read),
             ManagementTool("auto_coder_pr_diagnostics", self.pr_diagnostics, (READ_SCOPE,), read),
-            ManagementTool("auto_coder_operation_get", self.operation_get, (READ_SCOPE,), read),
+            ManagementTool("auto_coder_operation_get", self.operation_get, (READ_SCOPE,), mutation),
+            ManagementTool("auto_coder_operation_inspect", self.operation_inspect, (READ_SCOPE,), read),
             ManagementTool("auto_coder_reevaluate_target", self.reevaluate_target, (READ_SCOPE, OPERATE_SCOPE), mutation),
             ManagementTool("auto_coder_update_management_service", self.update_management_service, (READ_SCOPE, DEPLOY_SCOPE), ToolAnnotations(readOnlyHint=False, idempotentHint=True, destructiveHint=True, openWorldHint=False), ("source_sha", "idempotency_key")),
             ManagementTool("auto_coder_deployment_status", self.deployment_status, (READ_SCOPE,), read),

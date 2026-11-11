@@ -74,11 +74,11 @@ def test_unknown_effect_precedes_every_stage_and_never_rekeys(stage, pending):
         smoke.read_plan(original, "beta-worker", "unrelated-operation")
     plan = smoke.read_plan(original, "beta-worker", "original-operation")
     assert plan[1] == (
-        "auto_coder_operation_get",
+        "auto_coder_operation_inspect",
         {"target_id": "beta-worker", "operation_id": "original-operation"},
     )
     assert all(name in smoke.READ_TOOLS for name, _ in plan)
-    assert [name for name, _ in plan[:2]] == ["auto_coder_whoami", "auto_coder_operation_get"]
+    assert [name for name, _ in plan[:2]] == ["auto_coder_whoami", "auto_coder_operation_inspect"]
 
 
 @pytest.mark.parametrize("pending", ["SENT_UNKOWN", "READY", "COMPLETE"])
@@ -128,7 +128,7 @@ def test_unknown_effect_requires_unique_original_operation_target_binding():
 def test_pending_original_operation_read_has_one_authorized_target(original, target, operation):
     original = replace(original, pending_effect_state="NEEDS_ATTENTION", pending_operation_id=operation)
     plan = smoke.read_plan(original, target, operation)
-    assert plan[1] == ("auto_coder_operation_get", {"target_id": target, "operation_id": operation})
+    assert plan[1] == ("auto_coder_operation_inspect", {"target_id": target, "operation_id": operation})
     assert len(plan) == 4
 
 
@@ -152,7 +152,7 @@ def test_pending_effect_does_not_read_other_saved_operation_on_same_target():
         smoke.read_plan(original, "fixture-release", "release-older")
     plan = smoke.read_plan(original, "fixture-release", "promotion-unknown")
     assert plan[1] == (
-        "auto_coder_operation_get",
+        "auto_coder_operation_inspect",
         {"target_id": "fixture-release", "operation_id": "promotion-unknown"},
     )
 
@@ -200,7 +200,7 @@ def test_pending_original_identity_survives_resumption_without_reselecting_other
     path.write_text(json.dumps(asdict(original)))
     loaded = smoke.load_checkpoint(path)
     assert loaded.pending_operation_id == "unresolved-beta"
-    assert smoke.read_plan(loaded, "fixture-beta", "unresolved-beta")[1][0] == "auto_coder_operation_get"
+    assert smoke.read_plan(loaded, "fixture-beta", "unresolved-beta")[1][0] == "auto_coder_operation_inspect"
     with pytest.raises(ValueError, match="pending original operation ID"):
         smoke.read_plan(loaded, "fixture-release", "prior-release")
     assert smoke.required_next_observation(loaded).verdict == "BLOCKED"
@@ -352,30 +352,25 @@ def test_read_only_transport_allows_explicit_https_or_loopback():
     assert smoke.checked_endpoint("http://127.0.0.1:8790/mcp") == "http://127.0.0.1:8790/mcp"
 
 
-@pytest.mark.parametrize("pending", ["SENT_UNKNOWN", "NEEDS_ATTENTION", ""])
-def test_pretransport_plan_refuses_server_side_operation_dispatch(pending):
+@pytest.mark.parametrize("pending", ["SENT_UNKNOWN", "NEEDS_ATTENTION"])
+def test_pretransport_plan_uses_non_dispatching_original_inspection(pending):
     original = checkpoint(
         beta_target="fixture-beta",
         beta_operation_id="operation-original",
         pending_effect_state=pending,
-        pending_operation_id="operation-original" if pending else "",
+        pending_operation_id="operation-original",
     )
     plan = smoke.read_plan(original, "fixture-beta", "operation-original")
-    assert any(name == "auto_coder_operation_get" for name, _ in plan)
-    with pytest.raises(smoke.EffectfulReadError, match="may dispatch"):
-        smoke.checked_live_plan(plan)
+    assert plan[1][0] == "auto_coder_operation_inspect"
+    assert smoke.checked_live_plan(plan) is None
 
 
-def test_effectful_service_operation_read_is_refused_before_import_or_transport():
-    original = checkpoint(
-        beta_target="fixture-beta",
-        beta_operation_id="pending-original",
-        pending_effect_state="SENT_UNKNOWN",
-        pending_operation_id="pending-original",
-    )
-    plan = smoke.read_plan(original, "fixture-beta", "pending-original")
+def test_effectful_legacy_operation_get_is_refused_before_import_or_transport():
+    unsafe_plan = (("auto_coder_operation_get", {"target_id": "fixture-beta", "operation_id": "pending-original"}),)
     with pytest.raises(smoke.EffectfulReadError, match="may dispatch"):
-        asyncio.run(smoke.observe_live("https://must-not-resolve.invalid/mcp", "synthetic-not-a-real-token", plan, "observe"))
+        asyncio.run(smoke.observe_live("https://must-not-resolve.invalid/mcp", "synthetic-not-a-real-token", unsafe_plan, "observe"))
+    with pytest.raises(ValueError, match="never dispatches"):
+        smoke.checked_tool("auto_coder_operation_get", {"target_id": "fixture-beta", "operation_id": "pending-original"})
 
 
 def test_pretransport_status_reads_are_still_effect_free():
@@ -412,7 +407,7 @@ def test_mcp_read_plan_never_contains_a_mutation_or_endpoint_selection():
         "auto_coder_whoami",
         "auto_coder_status",
         "auto_coder_deployment_status",
-        "auto_coder_operation_get",
+        "auto_coder_operation_inspect",
     ]
     assert all("url" not in arguments and "command" not in arguments for _, arguments in plan)
 
@@ -530,7 +525,7 @@ def test_diagnostic_operation_read_accepts_exact_original_binding_without_dispat
     original = checkpoint(beta_target="fixture-beta", beta_operation_id="real-original")
     plan = smoke.read_plan(original, "fixture-beta", "real-original")
     assert plan[-1] == (
-        "auto_coder_operation_get",
+        "auto_coder_operation_inspect",
         {"target_id": "fixture-beta", "operation_id": "real-original"},
     )
     assert all(name in smoke.READ_TOOLS for name, _ in plan)
@@ -677,7 +672,7 @@ def test_read_diagnostics_respect_stage_but_preserve_original_pending_reconcilia
     assert smoke.read_plan(full, "fixture-release", "")[1][1] == {"target_id": "fixture-release"}
     unknown = replace(original, pending_effect_state="SENT_UNKNOWN", pending_operation_id="old-release", release_operation_id="old-release")
     assert smoke.read_plan(unknown, "fixture-release", "old-release")[1] == (
-        "auto_coder_operation_get",
+        "auto_coder_operation_inspect",
         {"target_id": "fixture-release", "operation_id": "old-release"},
     )
 

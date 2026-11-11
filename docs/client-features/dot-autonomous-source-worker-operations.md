@@ -129,7 +129,8 @@ arbitrary command, emergency promotion or Docker control fallback.
 `NOT_RUN`; it makes no network calls unless an explicit `--endpoint` is
 provided. The optional live client uses the pinned MCP SDK and only an exact
 readonly allowlist: `auto_coder_whoami`, `auto_coder_status`,
-`auto_coder_deployment_status`, and original `auto_coder_operation_get`.
+`auto_coder_deployment_status`, and original non-dispatching
+`auto_coder_operation_inspect`.
 The only bearer source is `AUTO_CODER_MCP_ACCESS_TOKEN`, never CLI arguments,
 checkpoint, stdout, report or logs. The endpoint must be HTTPS ending in
 `/mcp` (or HTTP for explicit loopback). Never point it at a deployed
@@ -170,15 +171,17 @@ AUTO_CODER_MCP_ACCESS_TOKEN=... python scripts/management_mcp_rollout_smoke.py \
 
 The example domain and IDs are placeholders, not usable configured resources.
 The client refuses unknown tool names or mutation requests and never issues
-effects. The service's existing `auto_coder_operation_get` can advance a
-pending worker/source operation via the dispatcher, despite its read-facing
-name and scope. Therefore the observer only **plans** original-ID reconciliation:
-any live plan containing that tool is refused with `BLOCKED` **before**
-opening MCP transport. A verified non-dispatching original-operation reader is
-required before automatic read-only reconciliation can be enabled; fetching
-status/deployment alone is not substitute evidence that an unknown effect
-settled. This is an explicit additional REQ-004/007/008 implementation blocker,
-not a completed acceptance scenario.
+effects. The legacy `auto_coder_operation_get` can advance a pending worker/source
+operation via the dispatcher despite its read-facing name and scope. The
+separate `auto_coder_operation_inspect` reads only the authenticated owner's
+original journal projection, including the immutable operation ID, target,
+effect state and already-recorded receipt; it never enqueues, submits or
+settles an effect. The observer plans the exact pending ID and original target,
+then uses only this non-dispatching reader. A server without that tool reports
+`BLOCKED`, not an alternative call to the effectful API. A diagnostic receipt
+is not by itself proof of current worker installation, source publication or
+successful bounded recovery. The real fixture acceptance flow remains a
+separate REQ-007/008 obligation.
 
 The observer reports `BLOCKED` for invalid/missing authority or uncertain
 original state and `NOT_RUN` for a diagnostic-only observation; digests
