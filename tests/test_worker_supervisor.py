@@ -447,6 +447,114 @@ def test_previous_runtime_recovery_limit_is_per_failed_process_generation(tmp_pa
         assert start.call_count == 2
 
 
+def test_release_pid1_reboot_recovery_consumes_pinned_prior_ready_once(tmp_path: Path) -> None:
+    settings = replace(config(tmp_path, (sys.executable, "-c", "import time; time.sleep(60)")), instance_id="release-worker", channel="release")
+    first = WorkerSupervisor(settings)
+    prior = {"runtime_id": "preparedOld", "interpreter_path": sys.executable, "ready": {"installed_runtime_id": "preparedOld", "environment_path": str(tmp_path)}, "ready_path": "/versions/old/READY.json"}
+    state = first.store.read()
+    state.update(
+        worker={"pid": 12345, "start_token": "failed-token", "runtime_id": "preparedNew", "deployment_generation": "failed-generation", "process_run_id": "candidate-run"},
+        last_worker={"runtime_id": "preparedOld", "ready": prior["ready"]},
+        selected_runtime_id="preparedNew",
+        stopped=False,
+    )
+    first.store.write(state)
+    recovery = {"operation_id": "restore-prior", "operation": "RECOVER_PREVIOUS_REBOOT", "runtime_id": "preparedOld", "expected_runtime_id": "preparedNew", "expected_generation": "failed-generation", "expected_process_run_id": "candidate-run"}
+    with (
+        patch.object(first, "_resolve_runtime", return_value=prior),
+        patch.object(first, "_verify_runtime", return_value=prior),
+        patch.object(first, "_is_alive", return_value=True),
+        patch.object(first, "_reconcile_worker"),
+        patch.object(first, "_reboot_candidate_evidence", return_value={"pid": 12345, "start_token": "failed-token", "process_run_id": "candidate-run", "deployment_generation": "failed-generation", "runtime_id": "preparedNew", "startup_reconciled": False, "daemon_serving": False}),
+        patch.object(first, "_pid1_lifetime_token", return_value="pid1-original"),
+        patch("auto_coder.worker_supervisor.os.getpid", return_value=1),
+        patch("auto_coder.worker_supervisor.subprocess.Popen") as launch,
+    ):
+        result = first.apply(recovery)
+        assert result["status"] == "RESTARTING"
+        assert first.apply(recovery) == result
+        assert first.apply({**recovery, "operation_id": "second-restore"})["status"] == "NEEDS_ATTENTION"
+        launch.assert_not_called()
+        with patch("auto_coder.worker_supervisor.os._exit") as exit_pid1:
+            first._exit_for_reboot_if_eligible()
+            exit_pid1.assert_called_once_with(81)
+    requested = first.store.read()
+    assert requested["reboot_recovery"] == {
+        "operation_id": "restore-prior",
+        "origin_incarnation": first.incarnation,
+        "origin_pid1_start_token": "pid1-original",
+        "failed_generation": "failed-generation",
+        "eligibility": {"pid": 12345, "start_token": "failed-token", "process_run_id": "candidate-run", "deployment_generation": "failed-generation", "runtime_id": "preparedNew", "startup_reconciled": False, "daemon_serving": False},
+        "phase": "REQUESTED",
+    }
+    assert requested["worker"]["runtime_id"] == "preparedNew"
+
+    resumed = WorkerSupervisor(settings)
+    try:
+        with patch.object(resumed, "_is_alive", return_value=False), patch.object(resumed, "_verify_runtime", return_value=prior), patch.object(resumed, "_pid1_lifetime_token", return_value="pid1-restarted"), patch("auto_coder.worker_supervisor.os.getpid", return_value=1):
+            resumed._resume_reboot_recovery()
+        restored = resumed.store.read()
+        assert "reboot_recovery" not in restored
+        assert restored["operations"]["restore-prior"]["result"]["status"] == "IN_PROGRESS"
+        assert restored["operations"]["restore-prior"]["reboot_evidence"] == {"origin_incarnation": first.incarnation, "origin_pid1_start_token": "pid1-original", "recovered_incarnation": resumed.incarnation, "recovered_pid1_start_token": "pid1-restarted", "failed_generation": "failed-generation"}
+        assert restored["worker"]["runtime_id"] == "preparedOld"
+        assert restored["worker"]["launch_operation_id"] == "restore-prior"
+        assert restored["prior_recovery_generation"] == "failed-generation"
+        assert restored["failed_worker"]["runtime_id"] == "preparedNew"
+        assert restored["worker"]["deployment_generation"] != "failed-generation"
+        with patch("auto_coder.worker_supervisor.os.getpid", return_value=1), patch("auto_coder.worker_supervisor.subprocess.Popen") as launch:
+            WorkerSupervisor(settings)._resume_reboot_recovery()
+            launch.assert_not_called()
+    finally:
+        if resumed.child is not None and resumed.child.poll() is None:
+            resumed.child.terminate()
+            resumed.child.wait(timeout=5)
+
+
+def test_reboot_recovery_refuses_beta_and_surviving_candidate(tmp_path: Path) -> None:
+    prior = {"runtime_id": "preparedOld", "interpreter_path": sys.executable, "ready": {"installed_runtime_id": "preparedOld"}}
+    settings = replace(config(tmp_path), instance_id="release-worker", channel="release")
+    supervisor = WorkerSupervisor(settings)
+    state = supervisor.store.read()
+    state.update(worker={"pid": 12345, "start_token": "failed-token", "runtime_id": "preparedNew", "deployment_generation": "failed-generation", "process_run_id": "candidate-run"}, last_worker={"runtime_id": "preparedOld", "ready": prior["ready"]}, selected_runtime_id="preparedNew")
+    supervisor.store.write(state)
+    payload = {"operation_id": "restore-prior", "operation": "RECOVER_PREVIOUS_REBOOT", "runtime_id": "preparedOld", "expected_runtime_id": "preparedNew", "expected_generation": "failed-generation", "expected_process_run_id": "candidate-run"}
+    with (
+        patch.object(supervisor, "_resolve_runtime", return_value=prior),
+        patch.object(supervisor, "_verify_runtime", return_value=prior),
+        patch.object(supervisor, "_is_alive", return_value=True),
+        patch.object(supervisor, "_reconcile_worker"),
+        patch.object(supervisor, "_reboot_candidate_evidence", return_value={"pid": 12345, "start_token": "failed-token", "process_run_id": "candidate-run", "deployment_generation": "failed-generation", "runtime_id": "preparedNew", "startup_reconciled": False, "daemon_serving": False}),
+        patch.object(supervisor, "_pid1_lifetime_token", return_value="pid1-original"),
+        patch("auto_coder.worker_supervisor.os.getpid", return_value=1),
+    ):
+        assert supervisor.apply(payload)["status"] == "RESTARTING"
+        with patch("auto_coder.worker_supervisor.os._exit") as exit_pid1:
+            supervisor._exit_for_reboot_if_eligible()
+            exit_pid1.assert_called_once_with(81)
+
+    reconstruction = WorkerSupervisor(settings)
+    with (
+        patch.object(reconstruction, "_is_alive", return_value=True),
+        patch.object(reconstruction, "_verify_runtime", return_value=prior),
+        patch.object(reconstruction, "_pid1_lifetime_token", return_value="pid1-restarted"),
+        patch("auto_coder.worker_supervisor.os.getpid", return_value=1),
+        patch("auto_coder.worker_supervisor.subprocess.Popen") as launch,
+    ):
+        reconstruction._resume_reboot_recovery()
+        launch.assert_not_called()
+    assert supervisor.store.read()["operations"]["restore-prior"]["result"]["status"] == "NEEDS_ATTENTION"
+
+    beta = WorkerSupervisor(replace(settings, channel="beta"))
+    beta.store = SupervisorStore(tmp_path / "other" / "state.json")
+    beta_state = beta.store.read()
+    beta_state.update(worker=state["worker"], last_worker=state["last_worker"], selected_runtime_id="preparedNew")
+    beta.store.write(beta_state)
+    with patch.object(beta, "_resolve_runtime", return_value=prior), patch.object(beta, "_is_alive", return_value=True), patch.object(beta, "_reconcile_worker"), patch("auto_coder.worker_supervisor.os.getpid", return_value=1):
+        assert beta.apply(payload)["status"] == "CONFLICT"
+    assert beta.store.read().get("reboot_recovery") is None
+
+
 def test_reconstruction_fences_unresolved_durable_effect(tmp_path: Path) -> None:
     first = WorkerSupervisor(config(tmp_path))
     state = first.store.read()
@@ -1140,3 +1248,139 @@ def test_candidate_launch_captures_prior_proof_without_nested_worker_history(tmp
         if supervisor.child is not None:
             supervisor.child.terminate()
             supervisor.child.wait(timeout=5)
+
+
+@pytest.mark.parametrize("original_token,current_token", [("pid1-original", "pid1-original"), ("pid1-original", None), ("pid1-original", ""), (None, "pid1-new"), ("", "pid1-new")])
+def test_reboot_recovery_requires_positive_new_pid1_lifetime_even_when_candidate_exited(tmp_path: Path, original_token, current_token) -> None:
+    settings = replace(config(tmp_path), instance_id="release-worker", channel="release")
+    first = WorkerSupervisor(settings)
+    prior = {"runtime_id": "preparedOld", "interpreter_path": sys.executable, "ready": {"installed_runtime_id": "preparedOld"}}
+    state = first.store.read()
+    state.update(worker={"pid": 12345, "start_token": "failed-token", "runtime_id": "preparedNew", "deployment_generation": "failed-generation", "process_run_id": "candidate-run"}, last_worker={"runtime_id": "preparedOld", "ready": prior["ready"]}, selected_runtime_id="preparedNew")
+    first.store.write(state)
+    request = {"operation_id": "restore-prior", "operation": "RECOVER_PREVIOUS_REBOOT", "runtime_id": "preparedOld", "expected_runtime_id": "preparedNew", "expected_generation": "failed-generation", "expected_process_run_id": "candidate-run"}
+    with (
+        patch.object(first, "_resolve_runtime", return_value=prior),
+        patch.object(first, "_verify_runtime", return_value=prior),
+        patch.object(first, "_is_alive", return_value=True),
+        patch.object(first, "_reconcile_worker"),
+        patch.object(first, "_reboot_candidate_evidence", return_value={"pid": 12345, "start_token": "failed-token", "process_run_id": "candidate-run", "deployment_generation": "failed-generation", "runtime_id": "preparedNew", "startup_reconciled": False, "daemon_serving": False}),
+        patch.object(first, "_pid1_lifetime_token", return_value="pid1-original"),
+        patch("auto_coder.worker_supervisor.os.getpid", return_value=1),
+    ):
+        assert first.apply(request)["status"] == "RESTARTING"
+        with patch("auto_coder.worker_supervisor.os._exit") as exit_pid1:
+            first._exit_for_reboot_if_eligible()
+            exit_pid1.assert_called_once_with(81)
+    requested = first.store.read()
+    requested["reboot_recovery"]["origin_pid1_start_token"] = original_token
+    first.store.write(requested)
+    reconstructed = WorkerSupervisor(settings)
+    assert reconstructed.incarnation != first.incarnation
+    with (
+        patch.object(reconstructed, "_is_alive", return_value=False),
+        patch.object(reconstructed, "_verify_runtime", return_value=prior),
+        patch.object(reconstructed, "_pid1_lifetime_token", return_value=current_token),
+        patch("auto_coder.worker_supervisor.os.getpid", return_value=1),
+        patch("auto_coder.worker_supervisor.subprocess.Popen") as launch,
+    ):
+        reconstructed._resume_reboot_recovery()
+        launch.assert_not_called()
+    refused = reconstructed.store.read()
+    assert refused["operations"]["restore-prior"]["result"] == {"status": "NEEDS_ATTENTION", "reason": "reboot_recovery_revalidation_failed"}
+    assert refused["reboot_recovery"] == requested["reboot_recovery"]
+    assert refused["worker"] == requested["worker"]
+    assert refused.get("prior_recovery_generation") is None and refused.get("launch_intent") is None
+
+
+@pytest.mark.parametrize("token", [None, ""])
+def test_reboot_request_without_pid1_lifetime_never_schedules_exit(tmp_path: Path, token) -> None:
+    supervisor = WorkerSupervisor(replace(config(tmp_path), instance_id="release-worker", channel="release"))
+    prior = {"runtime_id": "preparedOld", "ready": {"installed_runtime_id": "preparedOld"}}
+    state = supervisor.store.read()
+    state.update(worker={"runtime_id": "preparedNew", "deployment_generation": "failed-generation"}, last_worker={"runtime_id": "preparedOld", "ready": prior["ready"]}, selected_runtime_id="preparedNew")
+    supervisor.store.write(state)
+    with patch.object(supervisor, "_pid1_lifetime_token", return_value=token), patch.object(supervisor, "_is_alive", return_value=True), patch.object(supervisor, "_verify_runtime", return_value=prior), patch("auto_coder.worker_supervisor.os.getpid", return_value=1):
+        assert supervisor._request_reboot_recovery(state, prior, "restore-prior")["status"] == "CONFLICT"
+    assert supervisor.store.read() == state and "reboot_recovery" not in state
+    assert supervisor._reboot_recovery_requested_at is None
+
+
+@pytest.mark.parametrize("failure", [OSError("unreadable"), ValueError("invalid")])
+def test_pid1_lifetime_probe_fails_closed(tmp_path: Path, failure) -> None:
+    supervisor = WorkerSupervisor(config(tmp_path))
+    with patch("auto_coder.worker_supervisor.os.getpid", return_value=1), patch.object(supervisor, "_start_token", side_effect=failure):
+        assert supervisor._pid1_lifetime_token() is None
+    with patch("auto_coder.worker_supervisor.os.getpid", return_value=2), patch.object(supervisor, "_start_token") as probe:
+        assert supervisor._pid1_lifetime_token() is None
+        probe.assert_not_called()
+
+
+@pytest.mark.parametrize("damage", [None, "ready", "partial", "unavailable", "run", "generation", "artifact", "prior-alive", "terminal-missing", "draining"])
+def test_reboot_requires_affirmative_local_unready_and_prior_terminal(tmp_path: Path, damage) -> None:
+    supervisor = WorkerSupervisor(replace(config(tmp_path), channel="release"))
+    ready = {"source_sha": "a" * 40, "distribution_version": "1.0", "installed_provenance": {"source_revision": "a" * 40, "distribution_version": "1.0"}}
+    failed = {"pid": 12345, "start_token": "token", "process_run_id": "candidate-run", "deployment_generation": "candidate-generation", "runtime_id": "preparedNew", "ready": ready}
+    previous = {"runtime_id": "preparedOld"}
+    state = {"worker": failed, "last_worker": previous, "selected_runtime_id": "preparedNew"}
+    observed = {
+        "process_run_id": "candidate-run",
+        "deployment_generation": "candidate-generation",
+        "lifecycle": {"state": "running", "startup_reconciled": False, "daemon_serving": False},
+        "artifact": {"source_revision": {"available": True, "value": ready["source_sha"], "origin": "build_embedded"}, "distribution_version": {"available": True, "value": ready["distribution_version"], "origin": "installed_distribution_metadata"}},
+    }
+    if damage == "ready":
+        observed["lifecycle"].update(startup_reconciled=True, daemon_serving=True)
+    elif damage == "partial":
+        observed["lifecycle"].pop("startup_reconciled")
+    elif damage == "run":
+        observed["process_run_id"] = "other-run"
+    elif damage == "generation":
+        observed["deployment_generation"] = "other-generation"
+    elif damage == "artifact":
+        observed["artifact"]["source_revision"]["value"] = "b" * 40
+    elif damage == "draining":
+        observed["lifecycle"]["state"] = "draining"
+    with (
+        patch.object(supervisor, "_is_alive", side_effect=lambda worker: worker is failed or damage == "prior-alive"),
+        patch.object(supervisor, "_receipt", return_value=damage != "terminal-missing"),
+        patch.object(supervisor, "_observation", return_value=None if damage == "unavailable" else observed),
+    ):
+        evidence = supervisor._reboot_candidate_evidence(state)
+    assert (evidence is not None) is (damage is None)
+    if evidence:
+        assert all(evidence[key] == failed[key] for key in ("pid", "start_token", "process_run_id", "deployment_generation", "runtime_id"))
+
+
+@pytest.mark.parametrize("damage", ["ready-or-unavailable", "changed-lifetime", "storage-unavailable"])
+def test_reboot_exit_rechecks_candidate_and_never_crashes_on_missing_proof(tmp_path: Path, damage) -> None:
+    supervisor = WorkerSupervisor(replace(config(tmp_path), channel="release"))
+    evidence = {"pid": 12345, "start_token": "token", "process_run_id": "candidate-run", "deployment_generation": "candidate-generation", "runtime_id": "preparedNew"}
+    request = {"operation": "RECOVER_PREVIOUS_REBOOT"}
+    record = {"request": request, "digest": supervisor._digest(request), "runtime": {"runtime_id": "preparedOld"}, "result": {"status": "RESTARTING"}}
+    state = supervisor.store.read()
+    state.update(reboot_recovery={"operation_id": "original", "phase": "REQUESTED", "origin_incarnation": supervisor.incarnation, "origin_pid1_start_token": "pid1-original", "failed_generation": "candidate-generation", "eligibility": evidence})
+    state["operations"]["original"] = record
+    supervisor.store.write(state)
+    supervisor._reboot_recovery_requested_at = 1
+    fresh = None if damage == "ready-or-unavailable" else {**evidence, "start_token": "changed"} if damage == "changed-lifetime" else evidence
+    with (
+        patch("auto_coder.worker_supervisor.os.getpid", return_value=1),
+        patch.object(supervisor, "_pid1_lifetime_token", return_value="pid1-original"),
+        patch.object(supervisor, "_verify_runtime", return_value=record["runtime"]),
+        patch.object(supervisor, "_reboot_candidate_evidence", return_value=fresh),
+        patch("auto_coder.worker_supervisor.os._exit") as exit_pid1,
+    ):
+        if damage == "storage-unavailable":
+            with patch.object(supervisor.store, "write", side_effect=OSError("unavailable")):
+                supervisor._exit_for_reboot_if_eligible()
+        else:
+            supervisor._exit_for_reboot_if_eligible()
+        exit_pid1.assert_not_called()
+    assert supervisor._reboot_recovery_requested_at is None
+    retained = supervisor.store.read()
+    if damage != "storage-unavailable":
+        assert retained["reboot_recovery"]["phase"] == "BLOCKED"
+        assert retained["operations"]["original"]["result"]["status"] == "NEEDS_ATTENTION"
+    else:
+        assert retained == state

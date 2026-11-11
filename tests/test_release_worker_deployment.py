@@ -1270,3 +1270,185 @@ def test_live_failed_recovery_persistence_failure_never_dispatches(live_failed_r
         assert persisted["recovery_attempts"] == (0 if boundary == "reservation" else 1)
         assert "recovery_drain" not in persisted["steps"]
         assert [name for name, _ in d.bridge.actions] == ["PREPARE", "REQUEST_GRACEFUL_STOP", "START"]
+
+
+@pytest.mark.parametrize("blocker", [None, "authority", "policy", "persistence", "candidate-generation", "prior-unverified", "budget-reserved", "missing-drain", "drain-unknown", "drain-digest", "ready", "partial", "unavailable"])
+def test_expired_release_candidate_reserves_one_original_reboot_budget(release_flow, monkeypatch, blocker):
+    """Controlled contract test; the installed case waits the real deadline."""
+    import time
+
+    d = release_flow
+    observe = d.bridge.observe_worker
+
+    def unready(nonce=None):
+        if d.bridge.selected != "runtime-new":
+            return observe(nonce)
+        if blocker == "unavailable":
+            return d.bridge._result("UNAVAILABLE", {})
+        result = observe(nonce)
+        lifecycle = result.data["observation"]["lifecycle"]
+        lifecycle.update(startup_reconciled=blocker == "ready", daemon_serving=blocker == "ready")
+        if blocker == "partial":
+            lifecycle.pop("startup_reconciled")
+        return result
+
+    monkeypatch.setattr(d.bridge, "observe_worker", unready)
+    with TestClient(d.app, base_url=d.settings.oauth.canonical_issuer) as client:
+        token = _token(client, d)
+        promotion = _call(client, token, MCP_PROMOTION_ACTION, d.args)
+        arguments = _release_arguments(d, promotion)
+        operation_id = _call(client, token, "auto_coder_deploy_release_source", arguments)["operation_id"]
+        _reach_release_stage(d, operation_id, "RECONCILING")
+        runtime = d.app.state.management_runtime
+        journal = runtime.journal
+        version, snapshot = journal.lifecycle_snapshot(operation_id)
+        assert snapshot["steps"]["drain"]["state"] == snapshot["steps"]["start"]["state"] == "CONFIRMED"
+        snapshot["deadline"] = time.time() - 1
+        if blocker == "prior-unverified":
+            snapshot["previous_runtime_verified"] = False
+        if blocker == "budget-reserved":
+            snapshot["recovery_attempts"] = 1
+        if blocker == "missing-drain":
+            snapshot["steps"].pop("drain")
+        elif blocker == "drain-unknown":
+            snapshot["steps"]["drain"]["state"] = "SENT_UNKNOWN"
+        elif blocker == "drain-digest":
+            snapshot["steps"]["drain"]["observation"]["intent_digest"] = "wrong"
+        assert journal.lifecycle_save(operation_id, version, snapshot)
+        original_record = journal.get(operation_id).record
+        actions = list(d.bridge.actions)
+        if blocker == "authority":
+            monkeypatch.setattr(runtime.lifecycle, "_authority_refusal", lambda record: "original_authority_denied")
+        elif blocker == "policy":
+            monkeypatch.setattr(runtime, "retained_effect_permitted", lambda record: False)
+        elif blocker == "persistence":
+            monkeypatch.setattr(journal, "lifecycle_save", lambda *args, **kwargs: False)
+        elif blocker == "candidate-generation":
+            d.bridge.worker["deployment_generation"] = "different-candidate"
+        runtime.lifecycle.process(original_record)
+        retained = journal.lifecycle_snapshot(operation_id)[1]
+        assert d.bridge.actions == actions
+        assert retained["original_deadline"] == snapshot["original_deadline"]
+        assert retained["steps"] == snapshot["steps"]
+        assert journal.get(operation_id).record.intent == original_record.intent
+        assert journal.get(operation_id).record.authority == original_record.authority
+        if blocker is not None:
+            assert retained["deadline"] == snapshot["deadline"]
+            assert retained["recovery_attempts"] == snapshot["recovery_attempts"]
+            assert retained["stage"] == ("RECONCILING" if blocker == "persistence" else "NEEDS_ATTENTION")
+            assert retained.get("recovery_method") is None
+            return
+        assert retained["stage"] == "RESTORING" and retained["recovery_method"] == "REBOOT" and retained["recovery_attempts"] == 1
+        assert retained["deadline"] > time.time()
+        assert runtime.lifecycle.project(journal.get(operation_id).record)["recovery_method"] == "REBOOT"
+        dispatch = d.bridge.dispatch_worker_operation
+
+        def lose_reboot(operation_id, operation, **kwargs):
+            if operation == "RECOVER_PREVIOUS_REBOOT":
+                d.bridge.actions.append((operation, operation_id))
+                return d.bridge._result("UNKNOWN", {})
+            return dispatch(operation_id, operation, **kwargs)
+
+        monkeypatch.setattr(d.bridge, "dispatch_worker_operation", lose_reboot)
+        monkeypatch.setattr(d.bridge, "read_worker_operation", lambda operation_id: d.bridge._result("UNAVAILABLE", {}))
+        _drive(d.app, operation_id, 6)
+        sent = journal.lifecycle_snapshot(operation_id)[1]
+        assert sent["steps"]["recovery"]["state"] == "SENT_UNKNOWN"
+        assert sent["steps"]["recovery"]["operation_id"] == "r-" + operation_id
+        assert d.bridge.actions == actions + [("RECOVER_PREVIOUS_REBOOT", "r-" + operation_id)]
+        assert sent["deadline"] == retained["deadline"] and sent["recovery_attempts"] == 1
+        assert _call(client, token, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
+        assert _call(client, token, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing-reboot"})["status"] == "BUSY"
+        assert journal.lifecycle_snapshot(operation_id)[1] == sent
+        version, expired = journal.lifecycle_snapshot(operation_id)
+        expired["deadline"] = time.time() - 1
+        assert journal.lifecycle_save(operation_id, version, expired)
+        _drive(d.app, operation_id, 8)
+        attention = journal.lifecycle_snapshot(operation_id)[1]
+        assert attention["stage"] == "NEEDS_ATTENTION" and attention["recovery_method"] == "REBOOT"
+        assert attention["deadline"] == expired["deadline"] and attention["recovery_attempts"] == 1
+        assert attention["steps"] == sent["steps"]
+        assert d.bridge.actions == actions + [("RECOVER_PREVIOUS_REBOOT", "r-" + operation_id)]
+        assert journal.get(operation_id).record.effect.state is EffectState.SENT_UNKNOWN
+        assert _call(client, token, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "unavailable-restart-competing"})["status"] == "BUSY"
+
+
+@pytest.mark.parametrize("boundary", ["before-step", "after-durable-step"])
+@pytest.mark.parametrize("readiness", ["ready", "unavailable"])
+def test_reboot_rechecks_candidate_before_dispatch_without_releasing_original_lane(release_flow, monkeypatch, boundary, readiness):
+    import time
+
+    d = release_flow
+    observe = d.bridge.observe_worker
+    change = {"value": False}
+
+    def observe_candidate(nonce=None):
+        if d.bridge.selected == "runtime-new" and change["value"] and readiness == "unavailable":
+            return d.bridge._result("UNAVAILABLE", {})
+        result = observe(nonce)
+        if d.bridge.selected == "runtime-new":
+            result.data["observation"]["lifecycle"].update(startup_reconciled=change["value"], daemon_serving=change["value"])
+        return result
+
+    monkeypatch.setattr(d.bridge, "observe_worker", observe_candidate)
+    with TestClient(d.app, base_url=d.settings.oauth.canonical_issuer) as client:
+        token = _token(client, d)
+        promotion = _call(client, token, MCP_PROMOTION_ACTION, d.args)
+        args = _release_arguments(d, promotion)
+        operation_id = _call(client, token, "auto_coder_deploy_release_source", args)["operation_id"]
+        _reach_release_stage(d, operation_id, "RECONCILING")
+        runtime = d.app.state.management_runtime
+        journal = runtime.journal
+        version, snapshot = journal.lifecycle_snapshot(operation_id)
+        snapshot["deadline"] = time.time() - 1
+        assert journal.lifecycle_save(operation_id, version, snapshot)
+        runtime.lifecycle.process(journal.get(operation_id).record)
+        reserved = journal.lifecycle_snapshot(operation_id)[1]
+        assert reserved["stage"] == "RESTORING" and reserved["recovery_attempts"] == 1
+        if boundary == "before-step":
+            change["value"] = True
+        else:
+            save = journal.lifecycle_save
+
+            def changed_after_write(operation_id, version, state):
+                saved = save(operation_id, version, state)
+                if saved and "recovery" in state.get("steps", {}):
+                    change["value"] = True
+                return saved
+
+            monkeypatch.setattr(journal, "lifecycle_save", changed_after_write)
+            monkeypatch.setattr(d.bridge, "read_worker_operation", lambda operation_id: d.bridge._result("UNAVAILABLE", {}))
+        actions = list(d.bridge.actions)
+        _drive(d.app, operation_id, 6)
+        retained = journal.lifecycle_snapshot(operation_id)[1]
+        assert d.bridge.actions == actions and retained["deadline"] == reserved["deadline"] and retained["recovery_attempts"] == 1
+        if boundary == "before-step":
+            assert retained["stage"] == "NEEDS_ATTENTION" and "recovery" not in retained["steps"]
+        else:
+            assert retained["stage"] == "RESTORING" and retained["steps"]["recovery"]["state"] == "SENT_UNKNOWN"
+        assert _call(client, token, "auto_coder_deploy_release_source", {**args, "idempotency_key": "changed-readiness-competing"})["status"] == "BUSY"
+
+
+def test_reboot_is_not_admitted_for_originally_stopped_release(release_flow):
+    import time
+
+    d = release_flow
+    d.bridge.worker = None
+    with TestClient(d.app, base_url=d.settings.oauth.canonical_issuer) as client:
+        token = _token(client, d)
+        promotion = _call(client, token, MCP_PROMOTION_ACTION, d.args)
+        args = _release_arguments(d, promotion)
+        args.pop("expected_process_run_id")
+        args.pop("expected_deployment_generation")
+        operation_id = _call(client, token, "auto_coder_deploy_release_source", args)["operation_id"]
+        _reach_release_stage(d, operation_id, "RECONCILING")
+        runtime = d.app.state.management_runtime
+        version, snapshot = runtime.journal.lifecycle_snapshot(operation_id)
+        assert snapshot["incumbent"]["process_run_id"] is None and "drain" not in snapshot["steps"]
+        snapshot["deadline"] = time.time() - 1
+        assert runtime.journal.lifecycle_save(operation_id, version, snapshot)
+        _drive(d.app, operation_id, 5)
+        retained = runtime.journal.lifecycle_snapshot(operation_id)[1]
+        assert retained["stage"] == "NEEDS_ATTENTION" and retained["recovery_attempts"] == 0
+        assert retained["deadline"] == snapshot["deadline"]
+        assert [name for name, _ in d.bridge.actions] == ["PREPARE", "START"]

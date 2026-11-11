@@ -57,6 +57,20 @@ def main() -> None:
         os.path.join(os.environ["AUTO_CODER_RUNTIME_ROOT"], "logs", "auto-coder.log"),
     ]
     run_in_process = False
+    if os.environ.get("AUTO_CODER_FIXTURE_HOLD_CANDIDATE_RUNTIME") == os.environ.get("VIRTUAL_ENV") and os.environ.get("AUTO_CODER_FIXTURE_HOLD_CANDIDATE_RUNTIME"):
+        import asyncio
+
+        from auto_coder.automation_engine import AutomationEngine
+
+        async def hold_startup_reconciliation(engine: AutomationEngine, repository: str) -> None:
+            # Delay actual startup work, not its observation. The installed
+            # worker exposes its genuine unready lifecycle through the real UDS.
+            root = Path(os.environ["AUTO_CODER_RUNTIME_ROOT"])
+            (root / "fixture-candidate-live-held").write_text("actual startup reconciliation held", encoding="utf-8")
+            await asyncio.Event().wait()
+
+        AutomationEngine._attempt_startup_reconciliation = hold_startup_reconciliation
+        run_in_process = True
     if os.environ.get("AUTO_CODER_TEST_ABANDON_STARTUP_ONCE") == "1":
         abandoned = Path(os.environ["AUTO_CODER_RUNTIME_ROOT"]) / "fixture-abandon-next-startup"
         if abandoned.exists():

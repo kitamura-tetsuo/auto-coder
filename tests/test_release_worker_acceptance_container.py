@@ -161,7 +161,17 @@ def _ready(client: WorkerNetworkClient, source_sha: str) -> dict[str, object] | 
 
 @contextmanager
 def _installed_release(
-    system: _SmokeSystem, root: Path, scenario: str, *, fail_candidate: bool = False, reconstruct_supervisor: bool = False, hold_terminal_exit: bool = False, hold_terminal_after_recovery: bool = False, stop_prior_before_deployment: bool = False, live_failed_candidate: bool = False
+    system: _SmokeSystem,
+    root: Path,
+    scenario: str,
+    *,
+    fail_candidate: bool = False,
+    reconstruct_supervisor: bool = False,
+    hold_terminal_exit: bool = False,
+    hold_terminal_after_recovery: bool = False,
+    stop_prior_before_deployment: bool = False,
+    live_failed_candidate: bool = False,
+    hold_failed_candidate: bool = False,
 ) -> Iterator[_InstalledRelease]:
     """Independently install both release versions, then start the prior one."""
     image = _image()
@@ -248,6 +258,8 @@ def _installed_release(
             environment["AUTO_CODER_TEST_HOLD_INSTALLED_TERMINAL"] = "1"
             (runtime / "fixture-hold-selected-runtime").write_text(str(candidate["environment_path"]), encoding="utf-8")
             (runtime / "fixture-hold-terminal-exit").write_text("hold actual failed candidate terminal", encoding="utf-8")
+        if hold_failed_candidate:
+            environment["AUTO_CODER_FIXTURE_HOLD_CANDIDATE_RUNTIME"] = str(candidate["environment_path"])
         if reconstruct_supervisor:
             environment["AUTO_CODER_TEST_RECONSTRUCT_SUPERVISOR"] = "1"
         if hold_terminal_exit or hold_terminal_after_recovery:
@@ -255,7 +267,11 @@ def _installed_release(
             (runtime / "fixture-hold-selected-runtime").write_text(str(previous["environment_path"]), encoding="utf-8")
         if hold_terminal_exit:
             (runtime / "fixture-hold-terminal-exit").write_text("hold after actual terminal receipt", encoding="utf-8")
-        launch = ["run", "-d", "--rm", "--name", name, "--network", system.network, "--ip", address, "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--user", host_user, "--entrypoint", "python"]
+        launch = ["run", "-d", "--name", name, "--network", system.network, "--ip", address, "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--user", host_user, "--entrypoint", "python"]
+        if hold_failed_candidate:
+            launch.extend(["--restart", "unless-stopped"])
+        else:
+            launch.append("--rm")
         for host, guest, mode in ((runtime, "/runtime", ""), (workspace, "/workspace", ""), (routing, "/routing", ""), (fixtures, "/fixtures", "ro"), (trust, "/ci-trust", "ro"), (source, "/source", "ro")):
             launch.extend(["-v", f"{host}:{guest}" + (f":{mode}" if mode else "")])
         for key, value in environment.items():
@@ -361,6 +377,12 @@ def test_failed_installed_release_recovers_original_prior_runtime_once(real_boun
 
 
 @pytest.mark.timeout(2400)
+def test_unready_live_release_candidate_recovers_by_docker_pid1_restart(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None) -> None:
+    """Run the actual failed-but-alive release and Docker restart, without Docker in either runtime."""
+    _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=False, hold_failed_candidate=True)
+
+
+@pytest.mark.timeout(2400)
 def test_lost_installed_start_response_survives_manager_process_reconstruction(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None) -> None:
     _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=False, reconstruct_manager=True)
 
@@ -451,10 +473,12 @@ def _exercise_installed_release_join(
     reconstruct_held_exit: bool = False,
     live_failed_candidate: bool = False,
     expire_failed_drain: bool = False,
+    hold_failed_candidate: bool = False,
 ) -> None:
     assert not expire_failed_drain or live_failed_candidate
     assert not live_failed_candidate or fail_candidate
-    assert sum((live_failed_candidate, reconstruct_manager, lose_start_reconstruct, supersede_after_stage, supersede_stopped_after_stage, hold_terminal_exit, hold_terminal_after_recovery, lose_recovery_reconstruct_manager)) <= 1
+    assert not hold_failed_candidate or not fail_candidate
+    assert sum((hold_failed_candidate, live_failed_candidate, reconstruct_manager, lose_start_reconstruct, supersede_after_stage, supersede_stopped_after_stage, hold_terminal_exit, hold_terminal_after_recovery, lose_recovery_reconstruct_manager)) <= 1
     assert not lose_recovery_reconstruct_manager or fail_candidate
     assert not reconstruct_recovery_supervisor or (lose_recovery_reconstruct_manager and not recovery_process)
     assert not hold_terminal_after_recovery or fail_candidate
@@ -489,6 +513,8 @@ def _exercise_installed_release_join(
         prefix = "release-held-reconstruction-"
     if live_failed_candidate:
         prefix = "release-expired-failed-drain-" if expire_failed_drain else "release-live-failed-recovery-"
+    if hold_failed_candidate:
+        prefix = "release-pid1-reboot-recovery-"
     scenario = prefix + uuid.uuid4().hex[:12]
     with tempfile.TemporaryDirectory(prefix="release-join-", dir=tmp_path) as directory:
         root = Path(directory)
@@ -511,6 +537,7 @@ def _exercise_installed_release_join(
                     hold_terminal_after_recovery=hold_terminal_after_recovery,
                     stop_prior_before_deployment=supersede_stopped_after_stage,
                     live_failed_candidate=live_failed_candidate,
+                    hold_failed_candidate=hold_failed_candidate,
                 ) as release,
                 _source_http(system.remote) as endpoint,
                 ExitStack() as processes,
@@ -576,6 +603,16 @@ def _exercise_installed_release_join(
                     monkeypatch.setattr(release.client, "read_worker_operation", withhold_original_start_receipt)
                 recovery_dispatches: list[str] = []
                 failed_observations = []
+                reboot_observations = []
+                if hold_failed_candidate:
+                    original_observe = release.client.observe_worker
+
+                    def record_reboot_observation(*args, **kwargs):
+                        result = original_observe(*args, **kwargs)
+                        reboot_observations.append(result)
+                        return result
+
+                    monkeypatch.setattr(release.client, "observe_worker", record_reboot_observation)
                 allow_recovery_readback = {"value": False}
                 if lose_recovery_reconstruct_manager and not recovery_process:
                     original_dispatch = release.client.dispatch_worker_operation
@@ -839,6 +876,177 @@ def _exercise_installed_release_join(
                             assert system.remote._git("for-each-ref", "--format=%(refname) %(objectname)", "refs/tags") == refs_before
                             assert len(system.remote.dispatches) == 1
                             return
+                    if hold_failed_candidate:
+
+                        def unready_candidate():
+                            retained = journal.lifecycle_snapshot(operation_id)
+                            if retained is None or retained[1].get("stage") != "RECONCILING":
+                                return None
+                            inspected = release.client.inspect_supervisor()
+                            worker = inspected.data.get("worker") if isinstance(inspected.data, dict) else None
+                            if inspected.result_code != "OK" or inspected.data.get("alive") is not True or not isinstance(worker, dict) or worker.get("runtime_id") != release.candidate["installed_runtime_id"]:
+                                return None
+                            return retained
+
+                        _, pending_snapshot = _wait_for(unready_candidate, timeout=150)
+                        assert pending_snapshot["recovery_attempts"] == 0
+                        assert _wait_for(lambda: (release.runtime / "fixture-candidate-live-held").exists(), timeout=30)
+                        candidate_observer = WorkerNetworkClient(release.client.config)
+
+                        def genuine_unready():
+                            candidate_observer.inspect_supervisor()
+                            observed = candidate_observer.observe_worker()
+                            if observed.result_code != "OK" or not isinstance(observed.data, dict) or observed.data.get("binding_status") != "VERIFIED":
+                                return None
+                            lifecycle = observed.data["observation"]["lifecycle"]
+                            return observed if lifecycle["state"] == "running" and lifecycle["startup_reconciled"] is False and lifecycle["daemon_serving"] is False else None
+
+                        unready = _wait_for(genuine_unready, timeout=30)
+                        assert unready.data["runtime_binding"]["runtime_id"] == release.candidate["installed_runtime_id"]
+                        failed_os = json.loads((release.runtime / "supervisor" / "state.json").read_text())["worker"]
+                        assert failed_os["runtime_id"] == release.candidate["installed_runtime_id"]
+                        before = _container_identity(release.container)
+                        before_restart = int(_docker("inspect", "-f", "{{.RestartCount}}", release.container).stdout.strip())
+                        assert before_restart == 0
+                        pid1_token = _docker("exec", release.container, "python", "-c", "from pathlib import Path; print(Path('/proc/1/stat').read_text().rsplit(')', 1)[1].split()[19])").stdout.strip()
+                        assert pid1_token
+                        deadline = pending_snapshot["deadline"]
+                        assert deadline > time.time()
+                        assert pending_snapshot["steps"]["drain"]["state"] == pending_snapshot["steps"]["start"]["state"] == "CONFIRMED"
+                        terminal = json.loads((release.runtime / "last-terminal.json").read_text())
+                        assert all(terminal[key] == value for key, value in {"process_run_id": old["process_run_id"], "deployment_generation": old["deployment_generation"], "lifecycle_state": "stopped", "is_graceful_ready": True, "unsettled_count": 0}.items())
+                        _assert_lifetime_exited(release.container, old_os)
+                        original_posts = (release.runtime / "fixture-posts").read_bytes()
+                        original_launches = (release.runtime / "fixture-launches.jsonl").read_bytes()
+                        # Wait the unchanged production 150-second candidate window.
+                        # Readback/replay cannot authorize an early destructive effect.
+                        while time.time() < deadline - 10:
+                            replay = _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)
+                            assert replay["operation_id"] == operation_id and replay["status"] == "RECONCILING"
+                            assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "selected_git_sha": system.revisions[1]})["status"] == "CONFLICT"
+                            assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "reboot-competing"})["status"] == "BUSY"
+                            retained = journal.lifecycle_snapshot(operation_id)[1]
+                            assert retained["deadline"] == deadline and retained["original_deadline"] == pending_snapshot["original_deadline"]
+                            assert retained["recovery_attempts"] == 0 and retained["steps"] == pending_snapshot["steps"]
+                            assert (release.runtime / "fixture-posts").read_bytes() == original_posts
+                            assert (release.runtime / "fixture-launches.jsonl").read_bytes() == original_launches
+                            stat = _docker("exec", release.container, "cat", f"/proc/{failed_os['pid']}/stat").stdout.rsplit(") ", 1)[1].split()
+                            assert stat[19] == failed_os["start_token"] and stat[0] not in {"Z", "X"}
+                            assert int(_docker("inspect", "-f", "{{.RestartCount}}", release.container).stdout.strip()) == 0
+                            time.sleep(2)
+
+                        while time.time() < deadline:
+                            retained = journal.lifecycle_snapshot(operation_id)[1]
+                            if time.time() < deadline:
+                                assert retained["stage"] == "RECONCILING" and retained["recovery_attempts"] == 0
+                                assert retained["deadline"] == deadline and "recovery" not in retained["steps"]
+                            time.sleep(0.1)
+
+                        def rebooted():
+                            inspected = WorkerNetworkClient(release.client.config).inspect_supervisor()
+                            return inspected if inspected.result_code == "OK" and inspected.supervisor_generation != previous.supervisor_generation else None
+
+                        restarted = _wait_for(rebooted, timeout=120)
+                        assert time.time() >= deadline
+                        restarted_pid1_token = _docker("exec", release.container, "python", "-c", "from pathlib import Path; print(Path('/proc/1/stat').read_text().rsplit(')', 1)[1].split()[19])").stdout.strip()
+                        assert restarted_pid1_token and restarted_pid1_token != pid1_token
+                        assert restarted.data["status"] in {"RUNNING", "UNKNOWN"}
+                        after = _container_identity(release.container)
+                        assert after["id"] == before["id"] and after["pid"] != before["pid"] and after["started"] != before["started"]
+                        assert int(_docker("inspect", "-f", "{{.RestartCount}}", release.container).stdout.strip()) == 1
+                        assert _container_facts(release.container)["docker_socket"] is False
+                        assert _container_facts(release.container)["docker_binary"] is None
+                        _assert_lifetime_exited(release.container, failed_os)
+                        assert _container_identity(system.worker_name) == beta_identity
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "selected_git_sha": system.revisions[1]})["status"] == "CONFLICT"
+
+                        observer = WorkerNetworkClient(release.client.config)
+                        independent_samples = []
+
+                        def recovered():
+                            live = _ready(observer, str(release.previous["source_sha"]))
+                            if live is not None and live["observation"]["process_run_id"] != old["process_run_id"]:
+                                heartbeat = live["observation"]["heartbeat"]
+                                if heartbeat["stage"].startswith("producer:") and (not independent_samples or heartbeat["sequence"] > independent_samples[-1]["observation"]["heartbeat"]["sequence"]):
+                                    independent_samples.append(live)
+                            result = _call(http, system.bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
+                            stored = journal.get(operation_id).record
+                            return result if result["status"] == "FAILED" and stored is not None and stored.phase is OperationPhase.FAILED and len(independent_samples) >= 2 else None
+
+                        completed = _wait_for(recovered, timeout=240)
+                        ready = _ready(observer, str(release.previous["source_sha"]))
+                        assert ready is not None
+                        binding = ready["runtime_binding"]
+                        for field in ("source_sha", "content_identity", "lock_sha256", "distribution_version"):
+                            assert binding[field] == release.previous[field]
+                        assert binding["runtime_id"] == release.previous["installed_runtime_id"]
+                        assert completed["reason"] == "new_worker_failed_previous_runtime_restored"
+                        assert completed["recovery_attempts"] == 1 and completed["recovery_method"] == "REBOOT" and completed["recovery_state"] == "CONFIRMED"
+                        assert len(completed["heartbeats"]) == 2 and completed["heartbeats"][0] < completed["heartbeats"][1]
+                        assert len({(sample["observation"]["process_run_id"], sample["observation"]["deployment_generation"]) for sample in independent_samples}) == 1
+                        assert independent_samples[0]["observation"]["deployment_generation"] == completed["restored_worker"]["deployment_generation"]
+                        assert all(sample["observation"]["artifact"]["source_revision"] == {"available": True, "value": release.previous["source_sha"], "origin": "build_embedded", "reason": None} for sample in independent_samples)
+                        genuine_beats = {
+                            sample.data["observation"]["heartbeat"]["sequence"]
+                            for sample in reboot_observations
+                            if sample.result_code == "OK" and isinstance(sample.data, dict) and sample.data.get("observation", {}).get("deployment_generation") == completed["restored_worker"]["deployment_generation"] and sample.data["observation"]["heartbeat"]["stage"].startswith("producer:")
+                        }
+                        assert set(completed["heartbeats"]) <= genuine_beats
+                        assert completed["original_deadline"] == pending_snapshot["original_deadline"]
+                        assert completed["release_identity"]["catalog_oid"] == catalog_oid
+                        for step in ("prepare", "drain", "start"):
+                            assert completed["steps"][step] == pending_snapshot["steps"][step]
+                        assert completed["steps"]["recovery"]["state"] == "CONFIRMED"
+                        assert completed["restored_worker"]["deployment_generation"] != failed_os["deployment_generation"]
+                        recovery_id = completed["steps"]["recovery"]["operation_id"]
+                        receipt = observer.read_worker_operation(recovery_id)
+                        assert receipt.result_code == "RUNNING" and receipt.data["intent_digest"] == completed["steps"]["recovery"]["expected_digest"]
+                        state = json.loads((release.runtime / "supervisor" / "state.json").read_text())
+                        assert state["operations"][recovery_id]["request"]["operation"] == "RECOVER_PREVIOUS_REBOOT"
+                        assert state["operations"][recovery_id]["reboot_evidence"] == {
+                            "origin_incarnation": previous.supervisor_generation,
+                            "origin_pid1_start_token": pid1_token,
+                            "recovered_incarnation": restarted.supervisor_generation,
+                            "recovered_pid1_start_token": restarted_pid1_token,
+                            "failed_generation": failed_os["deployment_generation"],
+                        }
+                        exit_evidence = state["operations"][recovery_id]["reboot_exit_evidence"]
+                        assert all(exit_evidence[field] == failed_os[field] for field in ("pid", "start_token", "process_run_id", "deployment_generation", "runtime_id"))
+                        assert exit_evidence["startup_reconciled"] is False and exit_evidence["daemon_serving"] is False
+                        assert exit_evidence["observed_at"] >= deadline
+                        assert journal.lifecycle_snapshot(operation_id)[1]["reboot_eligibility"]["drain_operation_id"] == pending_snapshot["steps"]["drain"]["operation_id"]
+                        assert journal.lifecycle_snapshot(operation_id)[1]["reboot_eligibility"]["drain_digest"] == pending_snapshot["steps"]["drain"]["expected_digest"]
+                        assert state["prior_recovery_generation"] == failed_os["deployment_generation"]
+                        assert state["failed_worker"]["deployment_generation"] == failed_os["deployment_generation"]
+                        assert "reboot_recovery" not in state
+                        launches = [json.loads(line) for line in (release.runtime / "fixture-launches.jsonl").read_text().splitlines()]
+                        assert [item["environment"] for item in launches] == [release.previous["environment_path"], release.candidate["environment_path"], release.previous["environment_path"]]
+                        assert int(_docker("inspect", "-f", "{{.RestartCount}}", release.container).stdout.strip()) == 1
+                        terminal_posts = (release.runtime / "fixture-posts").read_bytes()
+                        terminal_launches = (release.runtime / "fixture-launches.jsonl").read_bytes()
+                        for _ in range(3):
+                            replay = _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)
+                            assert replay["status"] == "FAILED" and replay["operation_id"] == operation_id
+                            time.sleep(2.1)
+                        assert (release.runtime / "fixture-posts").read_bytes() == terminal_posts == original_posts + b"post\n"
+                        assert (release.runtime / "fixture-launches.jsonl").read_bytes() == terminal_launches
+                        assert len({item["deployment_generation"] for item in launches}) == 3
+                        assert len({(item["pid"], item["start_token"]) for item in launches}) == 3
+                        settled = journal.get(operation_id).record
+                        assert settled.phase is OperationPhase.FAILED and settled.intent == original.intent and settled.authority == original.authority
+                        beta_after = system.client.inspect_supervisor()
+                        assert beta_after.supervisor_generation == beta_before.supervisor_generation
+                        assert all(beta_after.data["worker"][key] == beta_before.data["worker"][key] for key in ("process_run_id", "deployment_generation", "runtime_id", "binding_status"))
+                        assert all(beta_after.data["worker"]["runtime_binding"][key] == beta_before.data["worker"]["runtime_binding"][key] for key in ("runtime_id", "content_identity", "source_sha", "start_token"))
+                        assert _container_identity(system.worker_name) == beta_identity
+                        assert _container_identity(release.container) == after
+                        assert after["mounts"] == before["mounts"]
+                        assert int(_docker("inspect", "-f", "{{.RestartCount}}", release.container).stdout.strip()) == 1
+                        assert all(path.read_bytes() == original for path, original in ownership)
+                        assert system.remote._git("for-each-ref", "--format=%(refname) %(objectname)", "refs/tags") == refs_before
+                        assert len(system.remote.dispatches) == 1
+                        return
 
                     if supersede_stopped_after_stage:
 
