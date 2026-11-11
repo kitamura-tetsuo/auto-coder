@@ -487,3 +487,80 @@ def test_full_cannot_skip_original_beta_and_tested_source_lineage():
     report = smoke.required_next_observation(evidence)
     assert report.verdict == "BLOCKED"
     assert not report.effect_dispatched
+
+
+@pytest.mark.parametrize(
+    "active_stage,active_revision,error",
+    [
+        ("observe", "", "stage differs"),
+        ("beta", "operator-new-revision", "revision differs"),
+        ("beta", "", "current operator stage revision"),
+        ("full", "operator-original-revision", "stage differs"),
+    ],
+)
+def test_live_resumption_requires_matching_current_operator_scope(active_stage, active_revision, error):
+    saved = checkpoint(
+        stage="beta",
+        task_id="original-task",
+        repository="kitamura-tetsuo/auto-coder",
+        issue_number="2608",
+        stage_revision="operator-original-revision",
+    )
+    with pytest.raises(smoke.OperatorScopeError, match=error):
+        smoke.confirm_operator_scope(saved, active_stage, active_revision)
+
+
+def test_operator_scope_confirmation_does_not_supply_current_grant_or_success():
+    saved = checkpoint(
+        stage="beta",
+        task_id="original-task",
+        repository="kitamura-tetsuo/auto-coder",
+        issue_number="2608",
+        stage_revision="operator-original-revision",
+    )
+    smoke.confirm_operator_scope(saved, "beta", "operator-original-revision")
+    result = smoke.required_next_observation(saved)
+    assert result.verdict == "BLOCKED"
+    assert not result.positive_deployment_proven
+    assert not result.effect_dispatched
+
+
+def test_cli_refuses_stale_operator_revision_before_mcp_transport(tmp_path):
+    saved = checkpoint(
+        stage="beta",
+        task_id="original-task",
+        repository="kitamura-tetsuo/auto-coder",
+        issue_number="2608",
+        stage_revision="operator-original-revision",
+        beta_target="fixture-beta",
+    )
+    path = tmp_path / "checkpoint.json"
+    path.write_text(json.dumps(asdict(saved)))
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(Path(smoke.__file__)),
+            "--checkpoint",
+            str(path),
+            "--endpoint",
+            "https://never-contacted-fixture.invalid/mcp",
+            "--target-id",
+            "fixture-beta",
+            "--operator-stage",
+            "beta",
+            "--operator-stage-revision",
+            "operator-current-revision",
+        ],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "XDG_STATE_HOME": str(tmp_path), "AUTO_CODER_MCP_ACCESS_TOKEN": "disposable-unused-test-token"},
+        timeout=15,
+    )
+    assert result.returncode == 2
+    report = json.loads(result.stdout.splitlines()[-1])
+    assert report["verdict"] == "BLOCKED"
+    assert "revision differs" in report["reason"]
+    assert report["observations"] == []
+    assert not report["effect_dispatched"]
+    assert not report["positive_deployment_proven"]
+    assert smoke.load_checkpoint(path) == saved

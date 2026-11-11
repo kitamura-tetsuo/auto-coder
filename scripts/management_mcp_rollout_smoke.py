@@ -39,6 +39,10 @@ REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_
 ISSUE_NUMBER = re.compile(r"[1-9][0-9]{0,8}\Z")
 
 
+class OperatorScopeError(ValueError):
+    """A saved operator selection is not proof of present operator authority."""
+
+
 @dataclass(frozen=True)
 class DotCheckpoint:
     """Operator-owned reminder, never an admission grant or current evidence."""
@@ -182,6 +186,26 @@ def required_next_observation(checkpoint: DotCheckpoint) -> RolloutReport:
     return RolloutReport("NOT_RUN", checkpoint.stage, "Release installed-worker lifecycle and original receipt cannot be certified by a checkpoint")
 
 
+def confirm_operator_scope(checkpoint: DotCheckpoint, current_stage: str | None, current_revision: str) -> None:
+    """Refuse stale stage selection before any network request; never grant effects."""
+    if current_stage not in STAGES:
+        raise OperatorScopeError("current operator stage is required before live diagnostics")
+    if current_stage != checkpoint.stage:
+        raise OperatorScopeError("current operator stage differs from the original checkpoint; no MCP request sent")
+    if current_stage == "observe":
+        if current_revision and current_revision != checkpoint.stage_revision:
+            raise OperatorScopeError("current operator stage revision differs from the original checkpoint")
+        return
+    if not (checkpoint.task_id and checkpoint.repository and (checkpoint.issue_number or checkpoint.pr_number) and checkpoint.stage_revision):
+        raise OperatorScopeError("original work identity and operator stage revision are required")
+    if not current_revision:
+        raise OperatorScopeError("current operator stage revision is required before live diagnostics")
+    if SAFE_ID.fullmatch(current_revision) is None:
+        raise OperatorScopeError("current operator stage revision is invalid")
+    if current_revision != checkpoint.stage_revision:
+        raise OperatorScopeError("current operator stage revision differs from the original checkpoint; no MCP request sent")
+
+
 def checked_endpoint(url: str) -> str:
     parsed = urlsplit(url)
     if parsed.query or parsed.fragment or parsed.username or parsed.password or parsed.path != "/mcp":
@@ -288,12 +312,16 @@ def main() -> int:
     parser.add_argument("--endpoint", help="Explicit operator-selected OAuth MCP resource ending in /mcp")
     parser.add_argument("--target-id", help="Exact configured worker alias (required with endpoint)")
     parser.add_argument("--operation-id", default="", help="Existing original management operation only")
+    parser.add_argument("--operator-stage", help="Fresh operator-selected stage for diagnostics, not a grant")
+    parser.add_argument("--operator-stage-revision", default="", help="Fresh operator-selected stage revision; must match the saved original")
     args = parser.parse_args()
     _configure_logging()
     try:
         checkpoint = load_checkpoint(args.checkpoint)
         if args.endpoint:
             endpoint = checked_endpoint(args.endpoint)
+            current_stage = args.operator_stage or ("observe" if checkpoint.stage == "observe" else None)
+            confirm_operator_scope(checkpoint, current_stage, args.operator_stage_revision)
             plan = read_plan(checkpoint, args.target_id or "", args.operation_id)
             bearer = os.environ.get("AUTO_CODER_MCP_ACCESS_TOKEN", "")
             if not bearer:
@@ -303,6 +331,9 @@ def main() -> int:
         else:
             report = required_next_observation(checkpoint)
         logger.info("Dot rollout observation stage={} verdict={} remote_effect=false", report.stage, report.verdict)
+    except OperatorScopeError as error:
+        logger.warning("Original operator scope differs from current selection; no MCP request sent")
+        report = RolloutReport("BLOCKED", checkpoint.stage, str(error))
     except (OSError, ValueError, TypeError, RuntimeError) as error:
         logger.warning("Dot rollout evidence unavailable: {}", type(error).__name__)
         report = RolloutReport("BLOCKED", "unknown", "Checkpoint, authority or evidence unavailable; no effect dispatched")

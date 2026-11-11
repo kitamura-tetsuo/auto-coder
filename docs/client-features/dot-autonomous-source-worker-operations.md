@@ -123,7 +123,14 @@ readonly allowlist: `auto_coder_whoami`, `auto_coder_status`,
 The only bearer source is `AUTO_CODER_MCP_ACCESS_TOKEN`, never CLI arguments,
 checkpoint, stdout, report or logs. The endpoint must be HTTPS ending in
 `/mcp` (or HTTP for explicit loopback). Never point it at a deployed
-service during disposable tests.
+service during disposable tests. Before any live diagnostic using a beta/full
+checkpoint, the operator must newly supply `--operator-stage` and
+`--operator-stage-revision`. They must exactly match the original saved stage
+and revision; missing, changed, or invalid revisions are `BLOCKED` before
+network access. The observe-only default needs no fresh revision. This check
+prevents a stale checkpoint from silently selecting a different stage; it is
+not server attestation or an authorization grant. The current authenticated
+MCP policy/grant and live producer evidence remain separately necessary.
 
 Example offline invocation on a machine with the project environment:
 
@@ -136,6 +143,7 @@ For **later operator-authorized nonproduction** authenticated read-only checks:
 ```sh
 AUTO_CODER_MCP_ACCESS_TOKEN=... python scripts/management_mcp_rollout_smoke.py \
   --checkpoint /private/operator-selected-dot-checkpoint.json \
+  --operator-stage beta --operator-stage-revision ORIGINAL_OPERATOR_REVISION \
   --endpoint https://disposable-fixture.example/mcp \
   --target-id fixture-beta-worker --operation-id ORIGINAL_OPERATION_ID
 ```
