@@ -46,7 +46,7 @@ from .fresh_host_observation import (
     assert_retained_oauth_mount,
     capture_prior_container,
 )
-from .fresh_initialization import FreshInitializationIntent, read_fresh_status
+from .fresh_initialization import FreshInitializationIntent, parse_fresh_intent, read_fresh_status
 from .operation_store import ACTIVE_PHASES, TERMINAL_PHASES
 from .proxy_reconnect import DockerProxyObservation
 from .retained_journal import RetainedJournal
@@ -264,13 +264,12 @@ def _input_hashes(profile: UpgradeProfile) -> dict[str, str]:
 
 def _fresh_intent(profile: UpgradeProfile) -> FreshInitializationIntent:
     raw = json.loads(_read_record(Path(profile.intent_file)))
-    optional = {"host_prior_journal_root", "prior_journal_root", "prior_journal_device", "prior_journal_inode"}
-    fields = set(FreshInitializationIntent.__dataclass_fields__)
-    if not isinstance(raw, dict) or set(raw) not in (fields, fields - optional):
-        raise UpgradeUnavailable("prerequisite-blocked", "fresh initialization intent differs")
-    result = FreshInitializationIntent(**raw)
-    result.validate()
-    return result
+    try:
+        return parse_fresh_intent(raw)
+    except ValueError as error:
+        if str(error) in {"fresh intent fields differ", "partial fresh intent extension"}:
+            raise UpgradeUnavailable("prerequisite-blocked", "fresh initialization intent differs") from error
+        raise
 
 
 def _mount_profile(profile: UpgradeProfile) -> dict[str, tuple[tuple[str, str, bool], ...]]:

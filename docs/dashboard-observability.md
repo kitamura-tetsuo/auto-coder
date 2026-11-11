@@ -3483,3 +3483,29 @@ loss; no test-only authority flag or canned successful run is the promotion
 oracle. See `client-features/management-source-release-dispatch.md` for the schema
 and safe uncertainty projection. This is an observability-neutral management
 addition: it introduces no production-to-dashboard event or deployment outcome.
+
+## Prospective original management-attempt admission
+
+The optional `fresh-original-attempts-v1` host admission origin emits Loguru
+records with `original_history`, `original_attempt`, `original_boundary` and
+`evidence_only=true` after durable `anchor`, `claimed`, `never-created`,
+`unresolved` and `grant-possible` writes. Contention emits `original_boundary=contested`
+without inventing an admitted attempt. Filename, function and line remain in the
+shared configured diagnostic sinks. The existing application's colored console
+and rotating file configuration is retained; provenance helpers do not replace
+its sinks. Read-only verification adds no success/launch/recovery event.
+
+These host commands have no repository Issue/PR execution or dashboard job;
+adding such a job would misrepresent admission facts as execution. Therefore
+there is no dashboard event-schema or renderer change. The dashboard continues
+to have no recovery-success evidence for this origin. A possible grant,
+prospective enrollment, matched bounded object or unavailable legacy history
+must never project as recovery success or continuous exclusion.
+
+Run `bash scripts/test.sh --ci-tests-only tests/test_management_original_attempts.py`.
+`test_original_admission_trace_retains_boundaries_without_recovery_success`
+drives the real original admission/refusal producer, inspects structured Loguru
+fields and source locations, and checks that no success/recovery claim appears.
+The process contention cases use those actual post-fsync emissions as observable
+barriers. Full positive Docker-host lineage/cutover evidence remains unavailable;
+these tests do not substitute for the independent host suite.

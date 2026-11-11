@@ -56,7 +56,16 @@ class FreshInitializationIntent:
     prior_journal_device: int = 0
     prior_journal_inode: int = 0
 
+    original_history: str = ""
+    original_history_id: str = ""
+
     def validate(self) -> None:
+        if bool(self.original_history) != bool(self.original_history_id):
+            raise ValueError("incomplete original history enrollment")
+        if self.original_history:
+            history = Path(self.original_history)
+            if not history.is_absolute() or history != history.resolve() or str(uuid.UUID(self.original_history_id)) != self.original_history_id:
+                raise ValueError("invalid original history enrollment")
         if str(uuid.UUID(self.request_id)) != self.request_id:
             raise ValueError("invalid initialization request")
         if not self.old_instance or not self.new_instance or self.old_instance == self.new_instance or not self.runtime_reference:
@@ -99,7 +108,30 @@ class FreshInitializationIntent:
                 raise ValueError("prior journal overlaps new roots or OAuth")
 
 
+def parse_fresh_intent(raw: object) -> FreshInitializationIntent:
+    required = set(FreshInitializationIntent.__dataclass_fields__) - {"host_prior_journal_root", "prior_journal_root", "prior_journal_device", "prior_journal_inode", "original_history", "original_history_id"}
+    if not isinstance(raw, dict) or not required <= set(raw) <= set(FreshInitializationIntent.__dataclass_fields__):
+        raise ValueError("fresh intent fields differ")
+    for group in ({"host_prior_journal_root", "prior_journal_root", "prior_journal_device", "prior_journal_inode"}, {"original_history", "original_history_id"}):
+        if set(raw) & group and not group <= set(raw):
+            raise ValueError("partial fresh intent extension")
+    intent = FreshInitializationIntent(**raw)
+    intent.validate()
+    return intent
+
+
 def claim_fresh_initialization(root: Path, intent: FreshInitializationIntent) -> str:
+    """Original admission; optional capture never supplies grant authority."""
+    intent.validate()
+    if intent.original_history:
+        from .original_attempts import capture_claim
+
+        with capture_claim(intent):
+            return _claim_fresh_initialization(root, intent)
+    return _claim_fresh_initialization(root, intent)
+
+
+def _claim_fresh_initialization(root: Path, intent: FreshInitializationIntent) -> str:
     """Claim an empty private directory once, leaving partial claims intact."""
     intent.validate()
     if root != Path(intent.host_state_root) or root.is_symlink():
@@ -248,12 +280,7 @@ def load_fresh_initialization(state_root: Path, *, host: bool = False) -> tuple[
         if len(encoded) > 65536:
             raise ValueError("fresh intent is too large")
         raw = json.loads(encoded)
-        optional = {"host_prior_journal_root", "prior_journal_root", "prior_journal_device", "prior_journal_inode"}
-        fields = set(FreshInitializationIntent.__dataclass_fields__)
-        if not isinstance(raw, dict) or set(raw) not in (fields, fields - optional):
-            raise ValueError("fresh intent fields differ")
-        intent = FreshInitializationIntent(**raw)
-        intent.validate()
+        intent = parse_fresh_intent(raw)
         root_info = os.fstat(directory)
         expected_root = intent.host_state_root if host else intent.state_root
         if state_root != Path(expected_root) or (root_info.st_dev, root_info.st_ino) != (intent.state_device, intent.state_inode) or encoded != json.dumps(raw, sort_keys=True, separators=(",", ":")).encode():

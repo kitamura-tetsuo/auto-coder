@@ -41,11 +41,18 @@ while not (root/'holder-release').exists(): time.sleep(.01)
 
 
 def main():
-    root, fault = Path(sys.argv[1]), sys.argv[2]
+    root, requested_fault = Path(sys.argv[1]), sys.argv[2]
+    original_profile = requested_fault.startswith("original-")
+    fault = requested_fault.removeprefix("original-") if original_profile else requested_fault
     patches = pytest.MonkeyPatch()
-    fixture = first_launch_case.__wrapped__(root, patches, SimpleNamespace(param="clean-restart" if fault == "prelaunch-shutdown" else None))
+    profile = "original-history" if original_profile else "clean-restart" if fault == "prelaunch-shutdown" else None
+    fixture = first_launch_case.__wrapped__(root, patches, SimpleNamespace(param=profile))
     case = next(fixture)
     case.owner.close()  # main()/run() must acquire the real exclusive owner FD.
+    if original_profile:
+        # The fixture's writable placeholder is not an original owner claim.
+        # Require the actual run() producer to create the 0600 owner inode.
+        (case.state / ".supervisor-owner.lock").unlink()
     real_popen = subprocess.Popen
     holder = real_popen([sys.executable, "-I", "-c", HOLDER, str(root), str(case.a / "owner.lock"), str(case.b / "owner.lock")], start_new_session=True)
     deadline = time.monotonic() + 10
