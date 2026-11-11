@@ -1,10 +1,14 @@
-# NEW-instance assessment and durable origin (DRAFT)
+# NEW-instance origin and isolated first launch (DRAFT)
 
 Issue #2672's Objective remains: “Allow an operator to initialize a new management
-bootstrap while retaining existing OAuth state.” This checkpoint implements only
-an independent read-only assessment and a separate, explicit one-use protected
-origin record. It does not complete REQ-001–005 or authorize a first launch,
-recovery, deployment or rollback.
+bootstrap while retaining existing OAuth state.” The read-only assessment and
+protected one-use origin record remain distinct from first-launch authorization.
+This draft now also has an explicit, bounded one-shot start for a **genuinely NEW,
+never-started, isolated Docker container**, with actual owner/guard claims,
+native store initialization, one physical child and authenticated exact-child
+readiness observation. It is not a generic migration of an existing manager,
+an authorization to deploy, or proof that arbitrary host startup controllers
+are excluded. The full REQ-001–005 acceptance and production release remain open.
 
 A trusted local operator can invoke the existing host boundary:
 
@@ -153,17 +157,18 @@ The selected bootstrap configuration explicitly requires
 owner-lock path simply to satisfy the prior-cutover configuration schema.
 The normal Supervisor entrypoint, including its legacy `--fresh-initialization`
 switch, refuses this selected NEW profile before creating an owner lock, ledger,
-or log file. A distinct admitted NEW first-launch controller is still required;
-this selector alone never enables a process start.
+or log file. The separate `--new-initialization --request-file` PID-1 entrypoint
+is required, and is accepted only after the trusted local host has selected the
+exact Docker first-start scope. The selector alone never enables a process start.
 
 The bounded profile requires the selected runtime's `source_root` to name the
 same immutable application closure supplied in the origin request. Installed
 runtime profiles, archived exclusions and container-only runtime bindings are
-not yet supported by this check. The result is `profile-verified-only` with
+not supported by this bounded mode. The result is `profile-verified-only` with
 `launch_authorized=false`: neither configuration parsing nor a valid retained
 OAuth database proves an active grant, current owner, host-guard challenge,
-first-launch claim, authenticated readback or any readiness. A separate actual
-admission and first-launch consumer is still required under REQ-001–005.
+first-launch claim, authenticated readback or any readiness. The distinct
+Docker start consumer described below performs the actual admission.
 
 ### Transient NEW admission serialization (non-authorizing)
 
@@ -191,15 +196,16 @@ Killing a holder releases only this transient kernel lock, not a consumed
 first-launch claim. Original state/operation roots stay empty and retained
 OAuth is not modified.
 
-This primitive is only local serialization for a future admission consumer.
+The standalone probe is only a local serialization observation.
 It is **not** the supervisor's `.supervisor-owner.lock`, and does not exclude
 any earlier manager or startup path unless that path is actually constrained
 by independently verified host authority. Issue #2672's no-prior-lock profile
 requires affirmative trusted host proof that no prior configured owner,
 child or listener exists **and** continuous enforceable exclusion of prior
 startup through first launch. A missing lock, scan or operator assertion
-alone does not prove this. The authoritative host producer is not yet
-integrated, so the probe cannot authorize launch even when it obtains the lock.
+alone does not prove this. The one-shot Docker controller additionally holds
+this very guard inode lock across its actual start and first-child observation;
+the probe itself still never authorizes a launch.
 
 ### Isolated Docker CREATED-state snapshot (non-authorizing)
 
@@ -231,60 +237,115 @@ observed reporting an unstarted, isolated container at the observation time.
 It cannot by itself reserve Docker start, establish that some other service
 will never start, prove a continuously held prior-startup exclusion, show that
 the recorded command is the actually executed runtime, or authorize a first
-management child launch. The separate host controller, durable admission
-claim, peer-authenticated challenge and actual exact-child readiness are still
-required. Tests use disposable synthetic OAuth and containers only; they do
-not attach real production OAuth or affect beta/release.
+management child launch. The separate command below is the only supported
+first-start consumer for this specific Docker profile. Tests use disposable
+synthetic OAuth and containers only; they do not attach real production OAuth
+or affect beta/release.
+
+### Explicit one-shot start for an isolated genuinely NEW container
+
+The operator must prepare an image whose immutable PID-1 command is exactly:
+
+```text
+python3 -B -m auto_coder.management.bootstrap_supervisor --config /private/bootstrap.json --new-initialization --request-file /private/new-instance-request.json
+```
+
+The actual Docker `Config.Entrypoint` and `Config.Cmd` must contain these
+separately, with original absolute paths. The original bootstrap config must
+select `new_instance_initialization=true`, an initial source-script runtime,
+the precise `management serve --config` command and the same retained OAuth
+and private roots. The Docker container must be *created but never started*;
+the read-only Docker inspection above must succeed before the first start.
+
+The non-root trusted host operator invokes:
+
+```sh
+python -B -m auto_coder.management.fresh_host start-new-container \
+  --request-file /private/new-instance-request.json \
+  --container-id FULL_64_CHARACTER_DOCKER_ID \
+  --image-id sha256:FULL_64_CHARACTER_IMAGE_DIGEST
+```
+
+This command is **effectful**: it acquires a nonblocking kernel `flock` on the
+original guard directory, re-verifies the selected original and exact Docker
+CREATED state, binds a private Unix host guard, and durably writes a one-use
+`new-docker-first-start.json` using O_EXCL, mode 0600 and fsync **before**
+calling `docker start` once. Failure, process crash, ambiguous observation or
+interruption leaves the claim in place and cannot issue another first start.
+`docker start` is the only Docker lifecycle effect initiated by this command.
+
+After Docker starts, PID 1 must independently verify the original source,
+selected runtime and OAuth schema, keep a single exclusive owner lock, publish
+the native current-incarnation ledger and obtain a fresh host challenge bound
+to the original request digest, exact container, owner incarnation and peer
+UID/PID. The host independently rechecks Docker PID 1, its kernel owner flock,
+and the matching native ledger before releasing that challenge. PID 1 consumes
+its own separate one-use `new-first-launch-claimed.json` and initializes the
+new child, operation, self-update handoff and recovery stores under owner-only
+permissions. Only after source and endpoint revalidation does it physically
+start the selected child exactly once and write `new-first-launched.json`.
+
+The successful *host command* only reports
+`first-child-observed-awaiting-authenticated-readback` and
+`launch_authorized=false`; this is **not** authenticated readiness. The
+actual child must answer the configured unauthenticated Bearer challenge, and
+a currently valid retained OAuth read-grant client must invoke
+`auto_coder_whoami` with the fresh `observation_id`. The existing management
+readiness reader independently verifies the live PID/start token, generation,
+owner incarnation, nonce, source/config receipts, grant/client/resource/project,
+read scope and time window. Only then does the protected one-use
+`new-first-outcome.json` record `succeeded`. An exit, timeout or unverifiable
+proof records or remains `unknown`; neither state permits a second first start.
+
+All original files and consumed claims must be preserved. No cleanup, manual
+Docker restart, fresh grant creation, legacy `--fresh-initialization` fallback,
+automatic repair or rollback is authorized by these commands. A new attempt
+needs separately authorized reconciliation and independent evidence; deleting
+one of these records is not a reconciliation. A host root or Docker controller
+outside the exact isolated container may still be governed by different
+startup sources: this mode does **not** establish exclusion of unknown or
+unmanaged host-level managers. No production credentials or services have been
+mounted into the isolated acceptance tests.
 
 Independent native Linux subprocess tests hold two writers immediately before
-the real O_EXCL call to establish one winner, and SIGKILL a producer immediately
-after the actual open to establish a non-reusable partial origin. These are
-positive tests of the bounded durable-origin producer, **not** the required
-positive first-launch/owner/OAuth acceptance scenarios.
+the original O_EXCL to establish one winner, and SIGKILL a producer immediately
+after the actual open to establish a non-reusable partial origin. The isolated
+Docker E2E separately establishes one genuine first start, exact-child
+authenticated readback, actual kernel admission contention between independent
+host processes, consumed-claim replay refusal and a SIGKILL boundary just
+after the host's durable Docker-start claim. These tests are affirmative
+evidence **only for the disposable isolated NEW profile**.
 
-## Missing normative gates and acceptance evidence
+## Remaining normative gates and acceptance limits
 
-- REQ-001: a protected origin record now exists at the host boundary, but
-  provisioning actual new state/operation/guard stores and admission-bound
-  root verification for first launch remain missing. An
-  assessment neither proves unused instance identity nor OAuth grant usability.
-  The optional profile check verifies retained schema/configuration selection,
-  not a currently authorized read grant.
-- REQ-002: a one-use original intent record now exists, but actual installed
-  runtime/configuration agreement, immediately-before-launch identity checks,
-  atomic first-launch claims, crash fencing and evidence-preserving launch
-  reconciliation remain missing. The JSON output is not a durable initialization intent, consumable
-  claim, or evidence of independently verified no-launch state. Never feed it
-  into the existing cutover claim path as prior-history evidence.
-  The optional bounded profile check is an independent read-only selection
-  comparison, not a held admission-time identity guarantee.
-- REQ-003: authoritative prior process/listener absence, relevant namespace
-  evidence, known-prior or genuinely-NEW host profile and continuous exclusion
-  of old startup sources, live supervisor owner fence, and fresh protected
-  host-guard peer/challenge binding are missing. The transient guard lock and
-  Docker CREATED-state snapshot do not establish continuous prior exclusion
-  or constitute admission authority.
-- REQ-004: new child/operation/handoff/recovery stores, first launch, exact-child
-  observation, Bearer challenge and authorized fresh readback with current grant
-  revalidation are missing. Existing #2668 recovery remains unchanged and refuses
-  missing history; this command cannot bootstrap or reset it.
-- REQ-005: full isolated production-like initialization with retained usable OAuth,
-  separate-UID admission, live prior process/listener and evidence failures,
-  actual overlapping owner/admission/claim contention, crash reconstruction,
-  independent OS application-launch counts and authenticated readback remain
-  unverified. The process regressions establish read-only assessment plus a one-use
-  origin file with real origin-write contention and interrupted publication,
-  not a validated actual launch or retained OAuth grant.
+- REQ-001/002: protected root intent, native initial stores, one-use Docker
+  and child claims and exact source verification have positive isolated proof.
+  Uncertain starts deliberately remain poisoned. A general authorized
+  reconciliation workflow for partially launched existing instances is not
+  implemented, and a synthetic new container cannot establish that some
+  unrelated pre-existing installation has no hidden historical startup path.
+- REQ-003: real Docker CREATED/never-started facts, private network/PID
+  namespaces, no Docker auto-restart, the host guard challenge and new owner
+  flock are verified in the isolated profile. This does not exclude arbitrary
+  external operators or host-level services with independent Docker authority.
+  Existing prior-installed manager cutovers require the separate known-prior
+  fence/profile; no prior lifetime is invented here.
+- REQ-004: the isolated NEW child and real retained *synthetic* OAuth grant
+  pass the existing authenticated exact-child reader. Real production OAuth
+  credentials are intentionally not mounted into tests. Negative mutation,
+  revocation and stale-readiness regressions must remain effective.
+- REQ-005: the real isolated host checks admission contention and crash/claim
+  boundaries, but further independent proof of hostile/external startup
+  sources, live old listener/process conditions, untrusted UID conditions and
+  all interrupted/uncertain reconciliation branches remains necessary before
+  treating the full issue as complete. Exact-head CI and independent review
+  are still merge gates.
 
-The first three Issue acceptance scenarios remain unresolved: there is no
-admitted initialization, first launch or authenticated end-to-end proof here.
-The fourth is preserved by leaving recovery unchanged and running its bounded
-missing-history regression. No production effects, authorization, grant recovery,
-worker ownership, host-controller operation, beta/release deployment, or rollback
-procedure is added. Preserve all old bytes and records and all existing unresolved
-claims; never erase them to obtain a fresh assessment. Deployment and rollback
-still require separately authorized operator procedures and the unchanged full
-normative gates.
+The #2668 missing-history recovery contract is unchanged: these commands
+must never convert a missing old history into a NEW origin. No production
+worker ownership, beta/release deployment, grant recovery or rollback is
+authorized. Preserve all old bytes, records and unresolved claims rather than
+erasing them to make an assessment pass.
 
 ## Verification and observability
 
@@ -300,13 +361,16 @@ The additional guard-lock tests establish overlapping attempts at the same
 Linux `flock` inode and show that normal or SIGKILL-released locks cannot
 confer first-launch eligibility. They do not establish first-launch-claim
 contention or authenticated application readiness.
-The separate `tests/test_management_new_instance_docker_created.py` suite is
-marked `supervisor_integration` and exercises the real host Docker engine
-(`docker create`, guarded inspection and disposable removal), including a real
-first Docker start that must invalidate CREATED-state evidence. It does not
-prove a management supervisor's first child launch or grant readback.
+The `tests/test_management_new_instance_docker_created.py` and
+`tests/test_management_new_instance_first_launch_docker.py` suites are marked
+`supervisor_integration` and exercise the real host Docker engine, including
+positive physical child launch, synthetic OAuth readback, concurrent first
+claim and replay/crash refusal. The latter requires the repository's
+`auto-coder:management-local-abc65544` integration base image, a non-root
+Docker-enabled test host, and isolated disposable filesystem roots. Never
+point these tests at a production OAuth root or existing container.
 
-This host-only diagnostic is observability-neutral for production: it creates a protected local origin record but no job, deployment admission,
-launch, outcome, authorized resumption path or structured dashboard event. Its stdout assessment is never translated into dashboard readiness or
-worker success. The existing production trace emissions and dashboard contract
-remain unchanged; see `docs/dashboard-observability.md`.
+These operations do not expose a new public endpoint, create a worker job,
+enable a deployment or assert dashboard success. Read-only assessment stdout
+is never translated into worker readiness. The existing production trace and
+dashboard contracts remain unchanged; see `docs/dashboard-observability.md`.
