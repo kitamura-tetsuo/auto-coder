@@ -334,7 +334,10 @@ def _published_acceptance(system: _SmokeSystem):
 
 def _container_identity(name: str) -> dict[str, object]:
     facts = json.loads(_docker("inspect", name).stdout)[0]
-    return {"id": facts["Id"], "pid": facts["State"]["Pid"], "started": facts["State"]["StartedAt"], "mounts": facts["Mounts"]}
+    # Docker does not promise Mounts array order. Keep every complete entry,
+    # including duplicate counts and unknown fields, while ignoring order only.
+    mounts = sorted(facts["Mounts"], key=lambda item: json.dumps(item, sort_keys=True))
+    return {"id": facts["Id"], "pid": facts["State"]["Pid"], "started": facts["State"]["StartedAt"], "mounts": mounts}
 
 
 def _assert_lifetime_gone(container: str, lifetime: dict[str, object]) -> None:
@@ -1271,7 +1274,12 @@ def _exercise_installed_release_join(
                         assert done["restored_worker"]["deployment_generation"] == launches[2]["deployment_generation"]
                         assert done["new_worker"]["deployment_generation"] == launches[1]["deployment_generation"]
                         assert failed_observations, "recovery requires independent signed observation of the failed child"
-                        assert all(item.supervisor_generation == previous.supervisor_generation and item.data["worker"]["deployment_generation"] == launches[1]["deployment_generation"] for item in failed_observations)
+                        expected_failure_supervisors = {previous.supervisor_generation}
+                        if live_failed_candidate:
+                            expected_failure_supervisors.add(failure_supervisor.supervisor_generation)
+                            assert live_failed.supervisor_generation == previous.supervisor_generation and live_failed.data["alive"] is True
+                            assert all(item.data["worker"]["process_run_id"] == failed_os["process_run_id"] for item in failed_observations)
+                        assert all(item.supervisor_generation in expected_failure_supervisors and item.data["worker"]["deployment_generation"] == launches[1]["deployment_generation"] and item.data["worker"]["runtime_id"] == release.candidate["installed_runtime_id"] for item in failed_observations)
                         assert not crash_marker.exists()
                         state = json.loads((release.runtime / "supervisor" / "state.json").read_text())
                         failed = state["failed_worker"]
