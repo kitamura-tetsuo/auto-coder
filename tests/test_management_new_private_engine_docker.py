@@ -257,12 +257,16 @@ def test_private_source_first_launch_and_retained_grant_readback(request_file: P
                 # original raw socket or the read-only proxy during the gap.
                 blocked_raw = subprocess.run(
                     ["docker", "--host", selected_host, "container", "create", "--entrypoint", "/bin/sh", image_id, "-c", "true"],
-                    capture_output=True, text=True, timeout=15,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
                 )
                 assert blocked_raw.returncode != 0, blocked_raw.stdout
                 blocked_gateway = subprocess.run(
                     ["docker", "--host", gate_host, "container", "create", "--entrypoint", "/bin/sh", image_id, "-c", "true"],
-                    capture_output=True, text=True, timeout=15,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
                 )
                 assert blocked_gateway.returncode != 0, blocked_gateway.stdout
                 assert not (request_file.parent / "state/physical-child-invocations").exists()

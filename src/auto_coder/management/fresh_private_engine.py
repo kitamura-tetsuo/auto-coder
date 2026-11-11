@@ -468,9 +468,17 @@ def _grant_original_socket_owner(outer_socket: Path, parent_id: str, private_soc
         raise HostObservationUnavailable("private Engine private socket did not appear")
     _docker(
         outer_socket,
-        "exec", "--user", "0:0", parent_id,
-        "sh", "-eu", "-c", 'chown "$1" "$2" && chmod 0600 "$2"', "socket-custody",
-        f"{os.geteuid()}:{os.getegid()}", str(private_socket),
+        "exec",
+        "--user",
+        "0:0",
+        parent_id,
+        "sh",
+        "-eu",
+        "-c",
+        'chown "$1" "$2" && chmod 0600 "$2"',
+        "socket-custody",
+        f"{os.geteuid()}:{os.getegid()}",
+        str(private_socket),
         timeout=timeout,
     )
     info = os.stat(private_socket, follow_symlinks=False)

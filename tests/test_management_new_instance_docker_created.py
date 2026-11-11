@@ -128,7 +128,10 @@ def test_unisolated_docker_source_can_never_consume_a_new_first_start(configured
         original_oauth = (configured_request.parent / "oauth/oauth.sqlite3").read_bytes()
         denied = subprocess.run(
             [sys.executable, "-B", "-m", "auto_coder.management.fresh_host", "start-new-container", "--request-file", str(configured_request), "--container-id", container_id, "--image-id", image_id],
-            env=_environment(), capture_output=True, text=True, timeout=20,
+            env=_environment(),
+            capture_output=True,
+            text=True,
+            timeout=20,
         )
         assert denied.returncode != 0 and denied.stdout == ""
         assert "--private-root" in denied.stderr
