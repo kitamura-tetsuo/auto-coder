@@ -166,13 +166,35 @@ def _assert_kernel_subcomponent(report: dict[str, object], *, present: bool, pin
 def _assert_route_component(report: dict[str, object]) -> None:
     component = report.get("route_manifest")
     if not isinstance(component, dict) or not isinstance(component.get("systemd"), list) or not component["systemd"]:
-        raise AssertionError("test-only root route component was not observed by the real CLI")
+        reasons = [(item["authority"], item["reason"]) for item in report.get("unavailable", []) if isinstance(item, dict) and item.get("authority") in ("docker", "approved-route-manifest", "approved-enrollment-component")]
+        raise AssertionError("test-only root route component was not observed by the real CLI: " + repr(reasons))
     if component.get("manifest", {}).get("complete_ordinary_routes_attested") is not True:
         raise AssertionError("test-only fixture root attestation was not read")
     if "approved-route-manifest" in _authorities(report):
         raise AssertionError("separately inspected test-only route component was refused")
     if not {"deployment-enrollment", "ordinary-route-closure", "original-source-profile", "kernel-containment"} <= _authorities(report):
         raise AssertionError("test-generated route component incorrectly removed normative full-profile refusals")
+
+
+def _verify_after_transient_docker_inventory(scope: Path, previous: Path) -> dict[str, object]:
+    """Retry only observed Docker inventory races; never revise an approved route."""
+    report: dict[str, object] = {}
+    for attempt in range(5):
+        report = _call_cli("verify", scope, previous)
+        if isinstance(report.get("route_manifest"), dict):
+            return report
+        reasons = report.get("unavailable", [])
+        transient = any(
+            isinstance(item, dict)
+            and isinstance(item.get("reason"), str)
+            and ((item.get("authority") == "docker" and item.get("reason") == "Docker configuration or lifetime changed during observation") or (item.get("authority") == "approved-route-manifest" and "whole-engine Docker inventory differs from approved routes" in item.get("reason", "")))
+            for item in reasons
+        )
+        if not transient or attempt == 4:
+            break
+        logger.warning("Independent verifier observed a transient Docker inventory change; retrying the unchanged approval")
+        time.sleep(0.3)
+    return report
 
 
 def _assert_reviewed_ordinary_source(report: dict[str, object]) -> None:
@@ -362,7 +384,7 @@ def run_fixture(*, exercise_test_route_manifest: bool = False, test_image: str =
             _assert_reviewed_ordinary_source(first)
         previous = private / "previous.json"
         _write_private(previous, json.dumps(first, sort_keys=True).encode())
-        verified = _call_cli("verify", scope, previous)
+        verified = _verify_after_transient_docker_inventory(scope, previous) if exercise_test_route_manifest else _call_cli("verify", scope, previous)
         _assert_component(verified, present=True)
         _assert_kernel_subcomponent(verified, present=True, pinned=True)
         if require_reviewed_ordinary_source:
