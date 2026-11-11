@@ -368,6 +368,18 @@ does not claim to prove those host-global network settings; do not consider it
 an approved production/public deployment without independent host-network
 policy verification and the complete prior-startup exclusion contract.
 
+Native Docker refusal tests additionally exercise a second real OS principal
+(effective UID 65534) attempting the original host first-start command against
+the unchanged 0700 private roots, a running listener in a second container on
+the **selected dedicated bridge**, and a live sibling process joining that
+bridge **after the durable host start claim** while the first host is suspended
+at an observable barrier. Each refuses before any management-child invocation;
+the original OAuth database and origin remain unchanged. The mid-admission
+case retains its consumed claim, and removing the competing process does not
+permit replay. These facts show revalidation for tested process races, not a
+general guarantee that every unrelated host service or Docker API controller
+is continuously excluded.
+
 ## Remaining normative gates and acceptance limits
 
 - REQ-001/002: protected root intent, native initial stores, one-use Docker
@@ -387,11 +399,12 @@ policy verification and the complete prior-startup exclusion contract.
   credentials are intentionally not mounted into tests. Negative mutation,
   revocation and stale-readiness regressions must remain effective.
 - REQ-005: the real isolated host checks admission contention and crash/claim
-  boundaries, but further independent proof of hostile/external startup
-  sources, live old listener/process conditions, untrusted UID conditions and
-  all interrupted/uncertain reconciliation branches remains necessary before
-  treating the full issue as complete. Exact-head CI and independent review
-  are still merge gates.
+  boundaries, an actual separate-UID refusal, live in-scope Docker network
+  listener/process rejection, and a process entering during the held claim.
+  Broader independent proof of hostile/external host startup sources, unknown
+  prior installations and all interrupted/uncertain reconciliation branches
+  remains necessary before treating the full issue as complete. Exact-head CI
+  and independent review are still merge gates.
 
 The #2668 missing-history recovery contract is unchanged: these commands
 must never convert a missing old history into a NEW origin. No production
@@ -417,7 +430,8 @@ The `tests/test_management_new_instance_docker_created.py` and
 `tests/test_management_new_instance_first_launch_docker.py` suites are marked
 `supervisor_integration` and exercise the real host Docker engine, including
 positive physical child launch, synthetic OAuth readback, concurrent first
-claim and replay/crash refusal. The latter requires a valid
+claim, race-window in-scope prior-process rejection, separate effective UID,
+and replay/crash refusal. The latter requires a valid
 `AUTOCODER_FRESH_TEST_BASE_IMAGE` integration image (defaulting locally to
 `auto-coder:management-local-abc65544`), a non-root
 Docker-enabled test host, and isolated disposable filesystem roots. Never
