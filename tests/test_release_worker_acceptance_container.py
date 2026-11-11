@@ -291,7 +291,7 @@ def _installed_release(
                 assert all(terminal[key] == value for key, value in {"process_run_id": prior["process_run_id"], "deployment_generation": prior["deployment_generation"], "lifecycle_state": "stopped", "is_graceful_ready": True, "unsettled_count": 0}.items())
                 assert client.inspect_supervisor().data["worker"] is None
                 assert client.inspect_supervisor().data["selected_runtime_id"] == prior["runtime_id"]
-                _assert_lifetime_gone(name, prior_os)
+                _assert_lifetime_exited(name, prior_os)
             yield _InstalledRelease(client, runtime, name, candidate, previous)
         finally:
             logs = _docker("logs", name, check=False)
@@ -340,9 +340,14 @@ def _container_identity(name: str) -> dict[str, object]:
     return {"id": facts["Id"], "pid": facts["State"]["Pid"], "started": facts["State"]["StartedAt"], "mounts": mounts}
 
 
-def _assert_lifetime_gone(container: str, lifetime: dict[str, object]) -> None:
+def _assert_lifetime_exited(container: str, lifetime: dict[str, object]) -> None:
     observed = _docker("exec", container, "python", "-c", "from pathlib import Path; import sys; p=Path('/proc/'+sys.argv[1]+'/stat'); print(p.read_text() if p.exists() else 'ABSENT')", str(lifetime["pid"])).stdout.strip()
-    assert observed == "ABSENT" or observed.rsplit(") ", 1)[1].split()[19] != lifetime["start_token"]
+    if observed == "ABSENT":
+        return
+    fields = observed.rsplit(") ", 1)[1].split()
+    # Z/X is kernel-confirmed exit, even when the reconstructed owner has no
+    # original Popen handle to reap it. A stopped/sleeping child is still live.
+    assert fields[19] != lifetime["start_token"] or fields[0] in {"Z", "X"}, observed
 
 
 @pytest.mark.timeout(2400)
@@ -722,7 +727,7 @@ def _exercise_installed_release_join(
                         failed_observations.append(live_failed)
                         prior_terminal = json.loads((release.runtime / "last-terminal.json").read_text())
                         assert all(prior_terminal[key] == old[key] for key in ("process_run_id", "deployment_generation"))
-                        _assert_lifetime_gone(release.container, old_os)
+                        _assert_lifetime_exited(release.container, old_os)
                         postpone_recovery_drain["value"] = False
                         _wait_for(lambda: (release.runtime / "fixture-terminal-exit-held").exists(), timeout=90)
                         actual_terminal = json.loads((release.runtime / "last-terminal.json").read_text())
@@ -808,7 +813,7 @@ def _exercise_installed_release_join(
                             assert all(state["last_worker"][field] == failed_os[field] for field in ("pid", "start_token", "process_run_id", "deployment_generation"))
                             assert not state.get("prior_recovery_attempted")
                             assert not any(value["request"]["operation"] == "RECOVER_PREVIOUS" for value in state["operations"].values())
-                            _assert_lifetime_gone(release.container, failed_os)
+                            _assert_lifetime_exited(release.container, failed_os)
                             assert json.loads((release.runtime / "last-terminal.json").read_text()) == actual_terminal
                             settled = journal.get(operation_id).record
                             assert settled.intent == original.intent and settled.authority == original.authority
@@ -1256,7 +1261,7 @@ def _exercise_installed_release_join(
                     terminal = json.loads((release.runtime / "last-terminal.json").read_text())
                     terminal_worker = failed_os if live_failed_candidate else old
                     assert all(terminal[key] == value for key, value in {"process_run_id": terminal_worker["process_run_id"], "deployment_generation": terminal_worker["deployment_generation"], "lifecycle_state": "stopped", "is_graceful_ready": True, "unsettled_count": 0}.items())
-                    _assert_lifetime_gone(release.container, old_os)
+                    _assert_lifetime_exited(release.container, old_os)
                     launches = [json.loads(line) for line in (release.runtime / "fixture-launches.jsonl").read_text().splitlines()]
                     expected_environments = [release.previous["environment_path"], release.candidate["environment_path"]]
                     if fail_candidate:
@@ -1296,7 +1301,7 @@ def _exercise_installed_release_join(
                             assert (release.runtime / "fixture-posts").read_bytes() == failure_posts + b"post\n"
                         else:
                             assert failed["process_run_id"] is None and failed.get("binding_status") != "VERIFIED"
-                        _assert_lifetime_gone(release.container, failed)
+                        _assert_lifetime_exited(release.container, failed)
                         assert state["prior_recovery_attempted"] is True
                         assert state["prior_recovery_generation"] == failed["deployment_generation"]
                         recovery_id = done["steps"]["recovery"]["operation_id"]
@@ -1428,7 +1433,7 @@ def _exercise_installed_release_join(
                         assert all(all(sample["runtime_binding"][field] == release.candidate[field] for field in ("source_sha", "content_identity", "lock_sha256", "distribution_version")) for sample in second_samples)
                         assert second_result["steps"]["drain"]["operation_id"] == "d-" + second_id
                         assert second_result["steps"]["start"]["operation_id"] == "s-" + second_id
-                        _assert_lifetime_gone(release.container, restored_os)
+                        _assert_lifetime_exited(release.container, restored_os)
                         assert len((release.runtime / "fixture-launches.jsonl").read_text().splitlines()) == 4
                         assert _ready(fresh, str(release.candidate["source_sha"])) is not None
                         assert _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)["status"] == "FAILED"
