@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import signal
 import sqlite3
 import stat
@@ -202,6 +203,8 @@ class BootstrapConfig:
     archived_exclusions: tuple[ArchivedExclusion, ...] = ()
     fresh_runtime_binding: FreshRuntimeBinding | None = None
     new_instance_initialization: bool = False
+    new_docker_network: str | None = None
+    new_docker_host_port: int | None = None
 
     @classmethod
     def read(cls, path: Path) -> "BootstrapConfig":
@@ -227,6 +230,8 @@ class BootstrapConfig:
             "archived_exclusions",
             "fresh_runtime_binding",
             "new_instance_initialization",
+            "new_docker_network",
+            "new_docker_host_port",
         }
         if set(raw) - allowed:
             raise ValueError("unknown bootstrap configuration field")
@@ -266,6 +271,8 @@ class BootstrapConfig:
             parse_exclusions(raw.get("archived_exclusions", [])),
             parse_fresh_runtime_binding(raw.get("fresh_runtime_binding")),
             raw.get("new_instance_initialization", False),
+            raw.get("new_docker_network"),
+            raw.get("new_docker_host_port"),
         )
         config.validate()
         return config
@@ -288,6 +295,13 @@ class BootstrapConfig:
             raise ValueError("invalid management self-update bootstrap profile")
         if type(self.new_instance_initialization) is not bool:
             raise ValueError("NEW initialization selector must be a boolean")
+        if (self.new_docker_network is None) != (self.new_docker_host_port is None):
+            raise ValueError("NEW Docker loopback network and port must be selected together")
+        if self.new_docker_network is not None:
+            if not self.new_instance_initialization or not isinstance(self.new_docker_network, str) or re.fullmatch(r"ac-new-[a-z0-9][a-z0-9-]{7,58}", self.new_docker_network) is None:
+                raise ValueError("NEW Docker network must be a dedicated exact-name profile")
+            if type(self.new_docker_host_port) is not int or not 1024 <= self.new_docker_host_port <= 65535:
+                raise ValueError("NEW Docker loopback host port is invalid")
         if self.new_instance_initialization:
             if self.fresh_guard_path is None or self.fresh_prior_lock_path is not None or self.restart_after_clean_shutdown or self.archived_exclusions or self.fresh_runtime_binding is not None:
                 raise ValueError("NEW initialization cannot claim a prior ownership lineage")
@@ -1107,7 +1121,9 @@ class ManagementBootstrapSupervisor:
                 raise ValueError("NEW selected management service state differs")
             validate_retained_oauth(settings.oauth)
             endpoint = urlsplit(self.config.listener_url)
-            if endpoint.hostname != settings.bind_host or endpoint.port != settings.port or endpoint.path != "/mcp" or endpoint.port is None:
+            from .oauth_config import management_listener_binding_matches
+
+            if endpoint.port is None or not management_listener_binding_matches(self.config, settings):
                 raise ValueError("NEW selected protected endpoint differs")
             if any(self.config.journal_root.iterdir()) or (self.config.state_root / CHILD_FIRST_CLAIM).exists():
                 raise ValueError("NEW first launch is already claimed or partially initialized")

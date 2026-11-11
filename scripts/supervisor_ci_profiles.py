@@ -60,6 +60,7 @@ CONTAINER_REQUIRED = (
         "tests/test_management_beta_deploy_container.py::test_authenticated_beta_source_installs_real_version_and_reconciles_after_lost_reply",
         "tests/test_management_new_instance_first_launch_docker.py::test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback[False]",
         "tests/test_management_new_instance_first_launch_docker.py::test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback[True]",
+        "tests/test_management_new_instance_first_launch_docker.py::test_new_docker_loopback_mcp_reaches_original_authenticated_child_from_host",
         "tests/test_management_new_instance_first_launch_docker.py::test_real_new_first_launch_never_reports_readiness_from_invalid_readback[revoked-grant]",
         "tests/test_management_new_instance_first_launch_docker.py::test_real_new_first_launch_never_reports_readiness_from_invalid_readback[stale-observation]",
         "tests/test_management_new_instance_first_launch_docker.py::test_real_new_start_refuses_changed_original_with_zero_docker_launches[bootstrap_config]",

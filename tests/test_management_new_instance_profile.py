@@ -107,6 +107,37 @@ def test_independent_profile_matches_selected_config_and_retained_oauth_without_
     assert not (root / "LAUNCHED").exists()
 
 
+@pytest.mark.parametrize("fault", ["", "wrong-host-port", "wildcard-without-network", "network-with-loopback-bind", "invalid-network-name"])
+def test_explicit_new_docker_loopback_profile_is_bound_to_original_files(configured_request: Path, fault: str) -> None:
+    request = json.loads(configured_request.read_bytes())
+    root = configured_request.parent
+    bootstrap_path = Path(request["bootstrap_config"])
+    management_path = Path(request["management_config"])
+    bootstrap = json.loads(bootstrap_path.read_bytes())
+    management = yaml.safe_load(management_path.read_bytes())
+    if fault != "wildcard-without-network":
+        bootstrap["new_docker_network"] = "ac-new-0123456789abcdef"
+        bootstrap["new_docker_host_port"] = 18882 if fault == "wrong-host-port" else 18881
+        if fault == "invalid-network-name":
+            bootstrap["new_docker_network"] = "bridge"
+    if fault != "network-with-loopback-bind":
+        management["bind_host"] = "0.0.0.0"
+    bootstrap_path.write_text(json.dumps(bootstrap))
+    management_path.write_text(yaml.safe_dump(management))
+    preserved = _bytes(root)
+    begin = _run("begin", configured_request)
+    assert begin.returncode == 0, begin.stderr
+    verified = _run("inspect-profile", configured_request)
+    if fault:
+        assert verified.returncode == 1 and verified.stdout == "", (verified.stdout, verified.stderr)
+    else:
+        assert verified.returncode == 0, verified.stderr
+        assert json.loads(verified.stdout)["launch_authorized"] is False
+    assert {path: content for path, content in _bytes(root).items() if not path.startswith("guard/")} == preserved
+    assert list((root / "state").iterdir()) == []
+    assert list((root / "operations").iterdir()) == []
+
+
 @pytest.mark.parametrize(
     "fault",
     (

@@ -316,6 +316,48 @@ host processes, consumed-claim replay refusal and a SIGKILL boundary just
 after the host's durable Docker-start claim. These tests are affirmative
 evidence **only for the disposable isolated NEW profile**.
 
+### Optional host-loopback-only Docker network profile
+
+The original `--network none` first-start profile remains the default. Its
+readback is reachable from inside the container, not from the host. A distinct
+operator-selected NEW bootstrap can opt in **before original `begin`** by
+including the following two fields in the original protected bootstrap JSON:
+
+```json
+{
+  "new_docker_network": "ac-new-unique-disposable-network",
+  "new_docker_host_port": 43981
+}
+```
+
+The named network must be dedicated to this container and created as a local,
+non-attachable Docker bridge with IP masquerading disabled. The operator must
+select a free host port, provide `--network` with the exact selected name and
+`--publish 127.0.0.1:43981:18881` when creating the never-started container.
+The internal port in this example (`18881`) is defined by the selected
+`listener_url`, not hardcoded by the host inspector. Docker's `--internal`
+bridge mode is **not** an equivalent profile: it disables the necessary host
+port forwarding on the tested engine.
+
+The matching management YAML must use `bind_host: 0.0.0.0` to accept packets
+inside the dedicated container network, but its `public_origin` must be
+`http://127.0.0.1:43981`. The original bootstrap `listener_url` remains the
+internal `http://127.0.0.1:18881/mcp`; both identifiers and ports are bound
+by the original protected file hashes. A wildcard HTTP management bind is
+refused outside this exact NEW bootstrap configuration. No production OAuth
+grant or privileged host socket is mounted as part of this test profile.
+
+The independent Docker CREATED observation rejects public/all-interface
+publishing, changed host ports, additional published ports, an unrelated or
+replaced network, IP masquerading, other network members and unsupported
+namespace policies. The host start guard additionally compares the **running**
+container's actual network ID, endpoint and host port mapping with the durable
+original and current Docker network identity before allowing first-child
+admission. A host `127.0.0.1` client must receive a real Bearer challenge and
+then issue `auto_coder_whoami` with the synthetic retained read grant; this is
+the only positive loopback-network acceptance oracle. It does not establish
+public-domain, cross-host or existing-installation connectivity.
+
 ## Remaining normative gates and acceptance limits
 
 - REQ-001/002: protected root intent, native initial stores, one-use Docker
@@ -365,8 +407,9 @@ The `tests/test_management_new_instance_docker_created.py` and
 `tests/test_management_new_instance_first_launch_docker.py` suites are marked
 `supervisor_integration` and exercise the real host Docker engine, including
 positive physical child launch, synthetic OAuth readback, concurrent first
-claim and replay/crash refusal. The latter requires the repository's
-`auto-coder:management-local-abc65544` integration base image, a non-root
+claim and replay/crash refusal. The latter requires a valid
+`AUTOCODER_FRESH_TEST_BASE_IMAGE` integration image (defaulting locally to
+`auto-coder:management-local-abc65544`), a non-root
 Docker-enabled test host, and isolated disposable filesystem roots. Never
 point these tests at a production OAuth root or existing container.
 

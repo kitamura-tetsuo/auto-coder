@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import stat
 import time
@@ -97,6 +98,9 @@ def load_new_first_start(
     if not isinstance(raw_created, dict) or set(raw_created) != set(CreatedNewDockerSnapshot.__dataclass_fields__):
         raise ValueError("NEW Docker created-state claim fields differ")
     created = CreatedNewDockerSnapshot(**raw_created)
+    from .bootstrap_supervisor import BootstrapConfig
+
+    bootstrap = BootstrapConfig.read(Path(request["bootstrap_config"]))
     if (
         created.request_id != origin.request_id
         or created.origin_sha256 != origin.record_sha256
@@ -115,6 +119,9 @@ def load_new_first_start(
         or any(char not in "0123456789abcdef" for char in created.mounts_sha256)
         or not isinstance(created.entrypoint, list)
         or not isinstance(created.command, list)
+        or not isinstance(created.network_id, str)
+        or type(created.published_host_port) is not int
+        or ((created.network_id != "" or created.published_host_port != 0) if bootstrap.new_docker_network is None else (re.fullmatch(r"[0-9a-f]{64}", created.network_id) is None or created.published_host_port != bootstrap.new_docker_host_port))
     ):
         raise ValueError("NEW Docker host created-state claim differs")
     # The original dataclass contains tuples, but canonical JSON stores lists.

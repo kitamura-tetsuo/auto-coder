@@ -27,7 +27,7 @@ from loguru import logger
 from .fresh_begin import _canonical, _lifetime, inspect_new_instance_origin
 from .fresh_host_observation import HostObservationUnavailable, _assert_pid_flock
 from .fresh_new_admission_fence import hold_new_guard_flock
-from .fresh_new_docker import CreatedNewDockerSnapshot, _docker_created_fields, _engine_id, _inspect_created_scope
+from .fresh_new_docker import CreatedNewDockerSnapshot, _dedicated_network_id, _docker_created_fields, _engine_id, _inspect_created_scope, assert_running_new_network
 from .fresh_new_first_launch import CHILD_LAUNCHED, HOST_FIRST_START, SOCKET, load_new_first_start
 from .fresh_new_profile import inspect_new_instance_profile
 from .fresh_preflight import _file, _open
@@ -121,11 +121,13 @@ def _serve_one_new_guard(listener: socket.socket, request_file: Path, container_
         fields = _docker_created_fields(container_id)
         if fields[1] != image_id or fields[3:6] != ("running", True, peer_pid) or fields[8] != 0 or _engine_id() != start.created.engine_id:
             raise HostObservationUnavailable("NEW Docker PID-1 running identity differs")
+        assert_running_new_network(request_file, start.created, fields)
         _assert_new_owner(peer_pid, owner, Path(request["state_root"]), start.profile.instance_id)
         # Recheck the independent engine and kernel owner after ledger reading.
         fields_again = _docker_created_fields(container_id)
         if fields_again != fields or _engine_id() != start.created.engine_id:
             raise HostObservationUnavailable("NEW Docker/owner observation changed")
+        assert_running_new_network(request_file, start.created, fields_again)
         _assert_new_owner(peer_pid, owner, Path(request["state_root"]), start.profile.instance_id)
         connection.sendall(_canonical({**payload, "granted": "host-evidence-verified"}) + b"\n")
         logger.bind(request_id=start.origin.request_id, new_container=container_id).info("NEW host grant delivered to exact Docker owner")
@@ -178,6 +180,10 @@ def start_new_docker_once(request_file: Path, container_id: str, image_id: str, 
                 raise HostObservationUnavailable("NEW first-start original was not durably bound")
             if _docker_created_fields(container_id)[3:9] != ("created", False, 0, "0001-01-01T00:00:00Z", "0001-01-01T00:00:00Z", 0) or _engine_id() != created.engine_id:
                 raise HostObservationUnavailable("NEW Docker scope changed before first start")
+            if created.network_id:
+                bootstrap = json.loads(_file(Path(request["bootstrap_config"]), private=True, limit=65536)[1])
+                if _dedicated_network_id(bootstrap["new_docker_network"]) != created.network_id:
+                    raise HostObservationUnavailable("NEW Docker dedicated network changed before first start")
             subprocess.run(["docker", "start", container_id], check=True, capture_output=True, timeout=20)
             _serve_one_new_guard(listener, request_file, container_id, image_id, claim, timeout=timeout)
             return _await_observed_first_child(Path(request["state_root"]), observed.origin.request_id, claim, container_id, timeout=timeout)

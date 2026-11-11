@@ -5,11 +5,13 @@ from __future__ import annotations
 import base64
 import gc
 import hashlib
+import http.client
 import json
 import os
 import select
 import shutil
 import signal
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -39,7 +41,8 @@ def _required_original(path: Path) -> dict[str, object]:
     return json.loads(path.read_bytes())
 
 
-def _prepare_real_new_source(request_file: Path) -> tuple[str, dict[str, object]]:
+def _prepare_real_new_source(request_file: Path, *, docker_network: str | None = None, host_port: int | None = None) -> tuple[str, dict[str, object]]:
+    assert (docker_network is None) == (host_port is None)
     root = request_file.parent
     request = _required_original(request_file)
     application = root / "application" / "auto_coder"
@@ -68,7 +71,7 @@ def _prepare_real_new_source(request_file: Path) -> tuple[str, dict[str, object]
     )
     selected_executable.write_text(script)
     selected_executable.chmod(0o700)
-    origin = "http://127.0.0.1:18881"
+    origin = f"http://127.0.0.1:{host_port or 18881}"
     settings = OAuthSettings(
         Path(str(request["oauth_root"])) / "oauth.sqlite3",
         origin,
@@ -109,7 +112,7 @@ def _prepare_real_new_source(request_file: Path) -> tuple[str, dict[str, object]
         "state_root": request["state_root"],
         "journal_root": request["operation_root"],
         "oauth_root": request["oauth_root"],
-        "listener_url": origin + "/mcp",
+        "listener_url": "http://127.0.0.1:18881/mcp",
         "initial_runtime": request["runtime_reference"],
         "runtimes": [
             {
@@ -125,6 +128,9 @@ def _prepare_real_new_source(request_file: Path) -> tuple[str, dict[str, object]
         "new_instance_initialization": True,
         "crash_budget": 0,
     }
+    if docker_network is not None:
+        bootstrap["new_docker_network"] = docker_network
+        bootstrap["new_docker_host_port"] = host_port
     Path(str(request["bootstrap_config"])).write_text(json.dumps(bootstrap))
     Path(str(request["management_config"])).write_text(
         yaml.safe_dump(
@@ -136,7 +142,7 @@ def _prepare_real_new_source(request_file: Path) -> tuple[str, dict[str, object]
                 "firebase_project_id": "new-docker-fixture",
                 "clients": [{"client_id": "new-client", "redirect_uris": [origin + "/callback"], "allowed_scopes": [READ_SCOPE]}],
                 "enabled_scopes": [READ_SCOPE],
-                "bind_host": "127.0.0.1",
+                "bind_host": "0.0.0.0" if docker_network is not None else "127.0.0.1",
                 "port": 18881,
                 "local_development": True,
             }
@@ -145,7 +151,7 @@ def _prepare_real_new_source(request_file: Path) -> tuple[str, dict[str, object]
     return token, request
 
 
-def _create_real_new_container(root: Path, request_file: Path, request: dict[str, object]) -> tuple[str, str, str]:
+def _create_real_new_container(root: Path, request_file: Path, request: dict[str, object], *, docker_network: str | None = None, host_port: int | None = None, published_ip: str = "127.0.0.1") -> tuple[str, str, str]:
     image_base = os.environ.get("AUTOCODER_FRESH_TEST_BASE_IMAGE", "auto-coder:management-local-abc65544")
     dockerfile = root / "Dockerfile"
     dockerfile.write_text(f'FROM {image_base}\nENTRYPOINT ["python3", "-B", "-m", "auto_coder.management.bootstrap_supervisor"]\n')
@@ -159,7 +165,7 @@ def _create_real_new_container(root: Path, request_file: Path, request: dict[str
         "--name",
         name,
         "--network",
-        "none",
+        docker_network or "none",
         "--restart",
         "no",
         "--read-only",
@@ -176,6 +182,8 @@ def _create_real_new_container(root: Path, request_file: Path, request: dict[str
         "--env",
         "HOME=/dev/shm",
     ]
+    if host_port is not None:
+        command.extend(["--publish", f"{published_ip}:{host_port}:18881"])
     for key in ("state_root", "operation_root", "guard_root", "oauth_root", "bootstrap_config", "management_config", "executable", "application_root"):
         path = str(request[key])
         command.extend(["--mount", "type=bind,src=" + path + ",dst=" + path + (",readonly" if key in {"bootstrap_config", "management_config", "executable", "application_root"} else "")])
@@ -200,6 +208,133 @@ def _authorized_readback(container_id: str, token: str, observation_id: str, *, 
         "assert expected!=200 or json.loads(data)['result']['structuredContent']['uid']=='new-operator'"
     )
     return subprocess.run(["docker", "exec", "--env", "SYNTHETIC_TOKEN=" + token, container_id, "python3", "-B", "-c", code], capture_output=True, text=True, timeout=20)
+
+
+def _host_mcp_response(host_port: int, *, token: str | None = None, observation_id: str = "") -> tuple[int, str, bytes]:
+    """Use the host network stack, not docker exec, for the MCP acceptance call."""
+    connection = http.client.HTTPConnection("127.0.0.1", host_port, timeout=3)
+    try:
+        if token is None:
+            connection.request("GET", "/mcp")
+        else:
+            payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "auto_coder_whoami", "arguments": {"observation_id": observation_id}}}).encode()
+            connection.request("POST", "/mcp", payload, headers={"Authorization": "Bearer " + token, "Content-Type": "application/json", "Accept": "application/json, text/event-stream"})
+        response = connection.getresponse()
+        return response.status, response.getheader("WWW-Authenticate", ""), response.read(65537)
+    finally:
+        connection.close()
+
+
+def _reserve_test_host_port() -> int:
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as listener:
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
+
+
+def _new_isolated_bridge(name: str, *, masquerade: bool = False) -> None:
+    subprocess.run(
+        ["docker", "network", "create", "--driver", "bridge", "--opt", "com.docker.network.bridge.enable_ip_masquerade=" + str(masquerade).lower(), name],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def test_new_docker_loopback_mcp_reaches_original_authenticated_child_from_host(request_file: Path) -> None:
+    """A public hostname never replaces the original host-loopback-only port."""
+    root = request_file.parent
+    network = "ac-new-" + uuid.uuid4().hex[:24]
+    port = _reserve_test_host_port()
+    token, request = _prepare_real_new_source(request_file, docker_network=network, host_port=port)
+    prior_oauth = (root / "oauth/oauth.sqlite3").read_bytes()
+    assert _run_host("begin", "--request-file", str(request_file)).returncode == 0
+    tag = ""
+    container_id = ""
+    _new_isolated_bridge(network)
+    try:
+        container_id, image_id, tag = _create_real_new_container(root, request_file, request, docker_network=network, host_port=port)
+        result = _run_host("inspect-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id)
+        assert result.returncode == 0, result.stderr
+        created = json.loads(result.stdout)
+        assert len(created["network_id"]) == 64
+        assert created["published_host_port"] == port
+        assert created["launch_authorized"] is False
+
+        started = _run_host("start-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id, timeout=150)
+        assert started.returncode == 0, (started.stderr, subprocess.run(["docker", "logs", container_id], capture_output=True, text=True).stdout)
+        assert json.loads(started.stdout)["status"] == "first-child-observed-awaiting-authenticated-readback"
+        identity = json.loads((root / "state/new-first-launched.json").read_bytes())["observation_id"]
+        assert len((root / "state/physical-child-invocations").read_text().splitlines()) == 1
+        replay = _run_host("start-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id, timeout=20)
+        assert replay.returncode == 1
+
+        deadline = time.monotonic() + 45
+        last_error = ""
+        while time.monotonic() < deadline:
+            try:
+                status, challenge, _ = _host_mcp_response(port)
+                if status != 401 or "Bearer" not in challenge:
+                    last_error = f"unauthorized response: {status} {challenge}"
+                else:
+                    auth_status, _, body = _host_mcp_response(port, token=token, observation_id=identity)
+                    if auth_status == 200 and json.loads(body)["result"]["structuredContent"]["uid"] == "new-operator":
+                        break
+                    last_error = f"authorized status: {auth_status}"
+            except (OSError, ValueError, KeyError, http.client.HTTPException) as error:
+                last_error = str(error)
+            time.sleep(0.25)
+        else:
+            raise AssertionError("host-loopback authenticated MCP was not usable: " + last_error)
+
+        outcome_file = root / "state/new-first-outcome.json"
+        deadline = time.monotonic() + 40
+        while time.monotonic() < deadline and not outcome_file.exists():
+            time.sleep(0.1)
+        assert json.loads(outcome_file.read_bytes())["status"] == "succeeded"
+        assert (root / "oauth/oauth.sqlite3").read_bytes() == prior_oauth
+        assert len((root / "state/physical-child-invocations").read_text().splitlines()) == 1
+    finally:
+        if container_id:
+            subprocess.run(["docker", "rm", "--force", container_id], check=True, capture_output=True, timeout=30)
+        if tag:
+            subprocess.run(["docker", "image", "rm", tag], check=True, capture_output=True, timeout=30)
+        subprocess.run(["docker", "network", "rm", network], check=True, capture_output=True, timeout=30)
+
+
+@pytest.mark.parametrize("invalid", ["public-ip", "wrong-port", "masquerade"])
+def test_new_docker_loopback_refuses_unselected_publication_without_claim(request_file: Path, invalid: str) -> None:
+    network = "ac-new-" + uuid.uuid4().hex[:24]
+    port = _reserve_test_host_port()
+    _token, request = _prepare_real_new_source(request_file, docker_network=network, host_port=port)
+    prior_oauth = (request_file.parent / "oauth/oauth.sqlite3").read_bytes()
+    assert _run_host("begin", "--request-file", str(request_file)).returncode == 0
+    tag = ""
+    container_id = ""
+    _new_isolated_bridge(network, masquerade=invalid == "masquerade")
+    try:
+        container_id, image_id, tag = _create_real_new_container(
+            request_file.parent,
+            request_file,
+            request,
+            docker_network=network,
+            host_port=port - 1 if invalid == "wrong-port" else port,
+            published_ip="0.0.0.0" if invalid == "public-ip" else "127.0.0.1",
+        )
+        observed = _run_host("inspect-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id)
+        assert observed.returncode == 1 and observed.stdout == "", (observed.stdout, observed.stderr)
+        refused = _run_host("start-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id, timeout=30)
+        assert refused.returncode == 1 and refused.stdout == ""
+        assert subprocess.check_output(["docker", "inspect", "--format", "{{.State.Status}}", container_id], text=True).strip() == "created"
+        assert not (request_file.parent / "guard/new-docker-first-start.json").exists()
+        assert not (request_file.parent / "state/new-first-launch-claimed.json").exists()
+        assert (request_file.parent / "oauth/oauth.sqlite3").read_bytes() == prior_oauth
+    finally:
+        if container_id:
+            subprocess.run(["docker", "rm", "--force", container_id], check=True, capture_output=True, timeout=30)
+        if tag:
+            subprocess.run(["docker", "image", "rm", tag], check=True, capture_output=True, timeout=30)
+        subprocess.run(["docker", "network", "rm", network], check=True, capture_output=True, timeout=30)
 
 
 def _first_launch_with_actual_admission_contention(root: Path, request_file: Path, container_id: str, image_id: str) -> dict[str, object]:

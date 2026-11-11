@@ -45,7 +45,7 @@ def inspect_new_instance_profile(
     from .action_scopes import READ_SCOPE
     from .bootstrap_supervisor import BootstrapConfig
     from .fresh_oauth import validate_retained_oauth
-    from .oauth_config import load_management_settings
+    from .oauth_config import load_management_settings, management_listener_binding_matches
 
     origin = inspect_new_instance_origin(request_file, guard_entries=guard_entries, state_entries=state_entries, operation_entries=operation_entries)
     _, encoded = _file(request_file, private=True, limit=65536)
@@ -84,7 +84,7 @@ def inspect_new_instance_profile(
     ):
         raise ValueError("NEW selected management or OAuth configuration differs")
     endpoint = urlsplit(config.listener_url)
-    if endpoint.scheme != "http" or endpoint.hostname not in {"127.0.0.1", "::1"} or endpoint.hostname != settings.bind_host or endpoint.port != settings.port or endpoint.path != "/mcp" or endpoint.query or endpoint.fragment:
+    if endpoint.scheme != "http" or endpoint.hostname not in {"127.0.0.1", "::1"} or not management_listener_binding_matches(config, settings):
         raise ValueError("NEW selected protected management endpoint differs")
     validate_retained_oauth(settings.oauth)
     # The independent file and mounted-root receipts must remain identical
