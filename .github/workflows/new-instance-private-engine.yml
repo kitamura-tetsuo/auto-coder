@@ -43,6 +43,6 @@ jobs:
         run: |
           set -euo pipefail
           docker --host=unix:///var/run/docker.sock pull docker:29-dind
-          uv run pytest -q -vv --basetemp="$(mktemp -d /tmp/acne-XXXXXX)" \
+          uv run pytest -q -vv --maxfail=1 --basetemp="$(mktemp -d /tmp/acne-XXXXXX)" \
             tests/test_management_new_private_engine_docker.py \
             tests/test_management_new_private_engine_gate.py

@@ -50,7 +50,7 @@ def _assert_only_original_engine_connection(socket_path: Path, daemon_net_pid: i
     # guardian channel has state 03. A pending connect is state 02 and must
     # also poison admission, even if dockerd has not accepted it yet.
     if sorted(matching) != [("00000000", "0001", "03"), ("00010000", "0001", "01")]:
-        raise HostObservationUnavailable("NEW private Engine has another preconnected or unverified API client")
+        raise HostObservationUnavailable("NEW private Engine has another preconnected or unverified API client (kernel states: " + repr(sorted(matching)) + ")")
 
 
 class _EngineConnection(http.client.HTTPConnection):
