@@ -204,3 +204,29 @@ simulated `PASS`. Changes to the running beta/release service are prohibited
 for this test. The implementation PR stays DRAFT until the genuine disposable
 end-to-end staging/unknown/recovery/policy downgrade tests and exact-head CI
 succeed and all review is resolved.
+
+### Disposable-only acceptance harness (partial)
+
+`scripts/dot_disposable_fixture.py` creates an owner-private, per-fixture Docker
+Compose configuration using the fixed `kitamura-tetsuo/auto-coder-test`
+repository, non-root workers, no host ports or runtime Docker socket, and an
+observe-only management policy. It neither executes Compose nor creates grants.
+The operator must separately provision and explicitly authorize a disposable
+fixture before any live acceptance. The generated image names are pinned fixture
+requirements, not automatically verified runtime identities.
+
+`scripts/dot_mcp_acceptance.py` is opt-in and returns `NOT_RUN` without a fixture.
+Its default path only reads current authenticated MCP observations. The explicit
+`--enable-fixture-mutation` mode confines available actions to test-only beta
+reevaluation or beta-source selection and requires current selected stage,
+revision, original Git/Actions proof and an immutable fsynced pre-send ticket.
+Unknown, interrupted or conflicting sends remain `BLOCKED`; the original
+idempotency key is never reissued. Live producer observations are hashed for
+origin tracking. No successful synthetic fixture test certifies live acceptance.
+
+These scripts provide reusable acceptance components, not a completed #2608
+contract: obtaining real fixture grants, actual controller/worker/source and
+GitHub Actions evidence, staged unknown-effect/recovery regressions, and dot
+scheduler recurrence still require independent end-to-end verification. Never
+use this harness against production or existing beta/release services or treat
+its local unit tests as deployment, authorization or merge proof.
