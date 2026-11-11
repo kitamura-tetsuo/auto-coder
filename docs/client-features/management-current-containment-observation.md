@@ -126,6 +126,28 @@ These tests use owner-private disposable files and real file identities, but
 the test-created approval record and prior facts are deliberately not accepted
 as original deployment authority or positive controller containment.
 
+An optional host-only integration probe exercises the production `observe` and
+separate-process `verify` entrypoints against a disposable *real* Docker manager
+and proxy with a root-private test-only approval record. On an explicitly
+authorized Linux/Docker test host with the preexisting image
+`auto-coder:management-local-abc65544`, run as initial-namespace host root:
+
+```sh
+python scripts/test_management_containment_enrollment_host.py --confirm-test-only-fixture
+```
+
+This probe does not pull images. It creates uniquely named test containers and
+only its own files under `/var/lib/auto-coder/containment-readback-fixtures` and
+the fixed approval directory, and cleans up those resources after completion or
+failure. It checks that a protected test approval is actually read in both
+entrypoint processes, that the full containment verdict remains unavailable,
+and that a post-observation original-file substitution is rejected by the
+separate verifier. It does **not** exercise or alter the original production
+controllers, nor establish original production provenance or a full positive
+closed profile. The operator must ensure that the host, the fixed approval
+directory, the test image and temporary Docker/localhost-port effects are
+separately authorized before running this probe.
+
 The installed route inventory must independently cover the actual watcher and
 explicit reconciliation, services/timers, socket activation, Docker restart
 policies, configured local and remote scripts, repair/recreate routes, and
