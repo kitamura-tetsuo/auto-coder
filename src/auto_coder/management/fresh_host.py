@@ -1,7 +1,9 @@
-"""Trusted host operator entry points for one fresh management cutover.
+"""Trusted local entry points for prior cutover and genuinely NEW bootstrap.
 
-These commands only inspect Docker; starting and stopping services remains an
-explicit operator action. Evidence and state must be new protected directories.
+Assessment commands never authorize a launch. The separate, explicit NEW
+Docker start command is effectful and one-shot; it requires a protected origin,
+selected isolated container and durable first-start claim. No command resets
+an existing owner or reconstructs missing recovery history.
 """
 
 from __future__ import annotations

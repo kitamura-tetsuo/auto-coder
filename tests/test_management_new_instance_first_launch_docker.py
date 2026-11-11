@@ -354,6 +354,38 @@ def test_real_new_first_launch_never_reports_readiness_from_invalid_readback(req
             subprocess.run(["docker", "image", "rm", tag], capture_output=True, timeout=30)
 
 
+@pytest.mark.parametrize("changed_original", ["bootstrap_config", "executable", "application_root"])
+def test_real_new_start_refuses_changed_original_with_zero_docker_launches(request_file: Path, changed_original: str) -> None:
+    root = request_file.parent
+    _token, request = _prepare_real_new_source(request_file)
+    retained_oauth = (root / "oauth/oauth.sqlite3").read_bytes()
+    assert _run_host("begin", "--request-file", str(request_file)).returncode == 0
+
+    tag = ""
+    container_id = ""
+    try:
+        container_id, image_id, tag = _create_real_new_container(root, request_file, request)
+        original = _run_host("inspect-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id)
+        assert original.returncode == 0, original.stderr
+        selected = Path(str(request[changed_original]))
+        if changed_original == "application_root":
+            selected /= "__init__.py"
+        selected.write_bytes(selected.read_bytes() + b"\n# changed after durable original\n")
+
+        refused = _run_host("start-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id, timeout=30)
+        assert refused.returncode == 1 and refused.stdout == "", (refused.stdout, refused.stderr)
+        assert subprocess.check_output(["docker", "inspect", "--format", "{{.State.Status}}", container_id], text=True).strip() == "created"
+        assert not (root / "guard/new-docker-first-start.json").exists()
+        assert not (root / "state/physical-child-invocations").exists()
+        assert not (root / "state/new-first-launch-claimed.json").exists()
+        assert (root / "oauth/oauth.sqlite3").read_bytes() == retained_oauth
+    finally:
+        if container_id:
+            subprocess.run(["docker", "rm", "--force", container_id], capture_output=True, timeout=30)
+        if tag:
+            subprocess.run(["docker", "image", "rm", tag], capture_output=True, timeout=30)
+
+
 _PAUSE_AFTER_HOST_CLAIM = """
 import json, os, signal, sys
 from pathlib import Path
