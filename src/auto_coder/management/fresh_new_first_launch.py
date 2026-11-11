@@ -38,6 +38,7 @@ class NewFirstStart:
     created: CreatedNewDockerSnapshot
     host_claim_sha256: str
     launch_nonce: str
+    private_source_sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -86,8 +87,27 @@ def load_new_first_start(
     _verify_guard_socket(guard / SOCKET)
     before, encoded = _file(guard / HOST_FIRST_START, private=True, limit=65536)
     record = json.loads(encoded)
-    if not isinstance(record, dict) or set(record) != {"schema_version", "profile", "created", "launch_nonce", "producer_lifetime"} or record["schema_version"] != 1 or record["profile"] != "genuinely-new-docker-v1" or encoded != _canonical(record):
+    if not isinstance(record, dict) or record.get("schema_version") != 1 or record.get("profile") not in {"genuinely-new-docker-v1", "genuinely-new-private-engine-v1"} or encoded != _canonical(record):
         raise ValueError("NEW Docker host first-start claim is not canonical")
+    private_source = record.get("private_source")
+    if record["profile"] == "genuinely-new-docker-v1":
+        if set(record) != {"schema_version", "profile", "created", "launch_nonce", "producer_lifetime"}:
+            raise ValueError("legacy NEW Docker host claim fields differ")
+        private_source_sha256 = ""
+    else:
+        if set(record) != {"schema_version", "profile", "created", "launch_nonce", "producer_lifetime", "private_source"}:
+            raise ValueError("NEW private Engine host claim fields differ")
+        from .fresh_private_engine import PrivateEngineEvidence
+
+        if not isinstance(private_source, dict) or set(private_source) != set(PrivateEngineEvidence.__dataclass_fields__):
+            raise ValueError("NEW private Engine original source fields differ")
+        raw_created_source = record.get("created")
+        if not isinstance(raw_created_source, dict):
+            raise ValueError("NEW private Engine source has no Docker original")
+        source = PrivateEngineEvidence(**private_source)
+        if source.request_id != origin.request_id or source.origin_sha256 != origin.record_sha256 or not isinstance(source.parent_container_id, str) or not re.fullmatch(r"[0-9a-f]{64}", source.parent_container_id) or source.private_engine_id != raw_created_source.get("engine_id"):
+            raise ValueError("NEW private Engine host source differs from original claim")
+        private_source_sha256 = hashlib.sha256(_canonical(private_source)).hexdigest()
     from .fresh_begin import _verify_origin_lifetime
 
     _verify_origin_lifetime(record["producer_lifetime"])
@@ -128,7 +148,7 @@ def load_new_first_start(
     created = CreatedNewDockerSnapshot(**{**raw_created, "entrypoint": tuple(created.entrypoint), "command": tuple(created.command)})
     if _file(guard / HOST_FIRST_START, private=True, limit=65536)[0] != before:
         raise ValueError("NEW host first-start original changed")
-    return NewFirstStart(request_file, origin, profile, created, before.sha256, nonce)
+    return NewFirstStart(request_file, origin, profile, created, before.sha256, nonce, private_source_sha256)
 
 
 def claim_new_child_first_launch(start: NewFirstStart, owner_incarnation: str, state_root: Path) -> str:

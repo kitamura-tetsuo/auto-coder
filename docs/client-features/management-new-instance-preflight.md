@@ -412,6 +412,50 @@ Another regression changes the real Docker restart policy from `no` to
 `always` after the durable claim. The host must refuse before starting the
 container, preserve the claim, and reject replay after the policy is restored.
 
+### Independent NEW private-Engine host producer (in-progress, non-production)
+
+The separately approved **code-only** host approach introduces
+`auto_coder.management.fresh_private_engine_host`, which is an explicit
+trusted-local operator command, not a management MCP tool or application
+service. Its `prepare` operation consumes an empty, owner-only (0700),
+non-overlapping private Engine root and an already recorded NEW intent. It
+durably writes three one-way 0600 receipts: original producer intent before
+the Docker effect, exact created parent identity before the first parent
+start, and verified ready source after observing a distinct, empty Docker
+Engine. An uncertain parent create/start never permits replay or creation of
+another parent. The parent is selected by an immutable image ID and uses a
+private Unix socket and distinct Docker data root, no outer Docker socket
+mount, `--network none`, `--pid host`, `--restart no` and `--init`. **This
+parent is privileged**: its deployment is a separately authorized host
+operation, and no parent has been installed as a permanent production
+service. The source verifier checks the parent runtime policy, immutable
+container and image identity, current PID/start token and namespace identity,
+source directory/socket device/inode and the distinct inner/outer Engine IDs.
+The parent selects `--entrypoint dockerd` (as in the existing disposable CI
+fixture), disables its bridge/firewall and avoids the DinD script's extra
+default TCP listener. After the one-way parent-created record, a
+single root-in-parent `chown` transfers only the dedicated Unix socket to the
+original host operator; incomplete custody is not retried. Docker data and
+application processes remain isolated from the outer production Engine.
+
+An opt-in `fresh_host start-new-container --private-root PATH --outer-socket
+PATH` first holds the private source root's kernel lock and its original
+living parent evidence, then holds the NEW admission guard through the
+existing one-use Docker start. A private-source identity is included in the
+durable host start claim and required in the fresh host challenge; the host
+rechecks the source before the Engine effect and the child guard response.
+Only the trusted host process has the outer/private Docker authority. The
+management container never receives either Engine socket.
+
+**Not yet sufficient for merging:** the original `start-new-container` without
+`--private-root` remains in place for existing integration fixtures, so the
+new source is not yet a mandatory admission condition. The new host producer
+has unit-level fail-closed evidence tests but has not yet passed the full
+privileged-host parent creation and re-admission regression on the exact new
+head. Production deployment, privilege acceptance, and all remaining
+reconciliation/REQ-003 evidence are outside this code-only approval. Do not
+interpret an opt-in source receipt or these unit tests as full REQ-003 proof.
+
 ## Remaining normative gates and acceptance limits
 
 - REQ-001/002: protected root intent, native initial stores, one-use Docker

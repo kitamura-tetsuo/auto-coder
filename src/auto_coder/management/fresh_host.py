@@ -113,6 +113,8 @@ def main() -> None:
     docker_start.add_argument("--container-id", required=True)
     docker_start.add_argument("--image-id", required=True)
     docker_start.add_argument("--timeout", type=float, default=120)
+    docker_start.add_argument("--private-root", type=Path)
+    docker_start.add_argument("--outer-socket", type=Path, default=Path("/var/run/docker.sock"))
     capture = commands.add_parser("capture")
     for option in ("management-id", "management-image", "proxy-id", "proxy-image", "mounts-file", "guard-dir"):
         capture.add_argument("--" + option, required=True)
@@ -160,7 +162,7 @@ def main() -> None:
         elif args.command == "start-new-container":
             from .fresh_new_host_start import start_new_docker_once
 
-            print(json.dumps(start_new_docker_once(args.request_file, args.container_id, args.image_id, timeout=args.timeout), sort_keys=True))
+            print(json.dumps(start_new_docker_once(args.request_file, args.container_id, args.image_id, timeout=args.timeout, private_root=args.private_root, outer_socket=args.outer_socket), sort_keys=True))
         elif args.command == "capture":
             mounts = json.loads(_protected_file(Path(args.mounts_file)))
             if not isinstance(mounts, dict) or set(mounts) != {"management", "proxy"}:

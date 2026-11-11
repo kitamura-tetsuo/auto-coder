@@ -19,8 +19,10 @@ import stat
 import struct
 import time
 import uuid
+from contextlib import ExitStack
 from dataclasses import asdict
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlsplit
 
 from loguru import logger
@@ -34,15 +36,21 @@ from .fresh_new_profile import inspect_new_instance_profile
 from .fresh_preflight import _file, _open
 
 
-def _create_host_start_claim(guard: Path, created: CreatedNewDockerSnapshot) -> str:
+def _create_host_start_claim(guard: Path, created: CreatedNewDockerSnapshot, *, private_source: object | None = None) -> str:
     """One-way transition: a failed Docker start must never erase this file."""
     value = {
         "schema_version": 1,
-        "profile": "genuinely-new-docker-v1",
+        "profile": "genuinely-new-private-engine-v1" if private_source is not None else "genuinely-new-docker-v1",
         "created": asdict(created),
         "launch_nonce": secrets.token_hex(32),
         "producer_lifetime": _lifetime(),
     }
+    if private_source is not None:
+        from .fresh_private_engine import PrivateEngineEvidence
+
+        if not isinstance(private_source, PrivateEngineEvidence):
+            raise TypeError("NEW private Engine original evidence required")
+        value["private_source"] = asdict(private_source)
     encoded = _canonical(value)
     with _open(guard, directory=True) as descriptor:
         child = os.open(HOST_FIRST_START, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=descriptor)
@@ -77,11 +85,11 @@ class _LocalDockerConnection(http.client.HTTPConnection):
         self.sock = connection
 
 
-def _start_docker_container_once(container_id: str, engine_id: str) -> None:
+def _start_docker_container_once(container_id: str, engine_id: str, *, docker_host: str | None = None) -> None:
     """Require Engine HTTP 204; CLI exit zero also includes an already-running 304."""
     if os.environ.get("DOCKER_CONTEXT") not in (None, "", "default"):
         raise HostObservationUnavailable("NEW Docker context must be the independently verified local engine")
-    raw_host = os.environ.get("DOCKER_HOST", "unix:///var/run/docker.sock")
+    raw_host = docker_host if docker_host is not None else os.environ.get("DOCKER_HOST", "unix:///var/run/docker.sock")
     endpoint = urlsplit(raw_host)
     if endpoint.scheme != "unix" or endpoint.netloc or not endpoint.path.startswith("/") or endpoint.query or endpoint.fragment:
         raise HostObservationUnavailable("NEW Docker first start requires a local Unix Engine socket")
@@ -144,6 +152,8 @@ def _serve_one_new_guard(
     original_docker_fields: tuple[object, ...],
     *,
     timeout: float,
+    source_sha256: str = "",
+    assert_source_live: Callable[[], None] | None = None,
 ) -> None:
     request = json.loads(_file(request_file, private=True, limit=65536)[1])
     deadline = time.monotonic() + timeout
@@ -179,7 +189,15 @@ def _serve_one_new_guard(
         if not isinstance(challenge, str) or len(challenge) != 64 or any(char not in "0123456789abcdef" for char in challenge):
             raise HostObservationUnavailable("NEW grant challenge nonce differs")
         start = load_new_first_start(request_file, state_entries=None, operation_entries=frozenset())
-        if payload["request_id"] != start.origin.request_id or payload["intent_sha256"] != start.origin.record_sha256 or payload["new_container_id"] != container_id or canonical_owner != owner or start.host_claim_sha256 != host_claim_sha256 or start.created.image_id != image_id:
+        if (
+            payload["request_id"] != start.origin.request_id
+            or payload["intent_sha256"] != start.origin.record_sha256
+            or payload["new_container_id"] != container_id
+            or canonical_owner != owner
+            or start.host_claim_sha256 != host_claim_sha256
+            or start.created.image_id != image_id
+            or start.private_source_sha256 != source_sha256
+        ):
             raise HostObservationUnavailable("NEW grant does not bind the original host start")
         fields = _docker_created_fields(container_id)
         _assert_docker_policy_unchanged(original_docker_fields, fields)
@@ -194,6 +212,8 @@ def _serve_one_new_guard(
             raise HostObservationUnavailable("NEW Docker/owner observation changed")
         assert_running_new_network(request_file, start.created, fields_again)
         _assert_new_owner(peer_pid, owner, Path(request["state_root"]), start.profile.instance_id)
+        if assert_source_live is not None:
+            assert_source_live()
         connection.sendall(_canonical({**payload, "granted": "host-evidence-verified"}) + b"\n")
         logger.bind(request_id=start.origin.request_id, new_container=container_id).info("NEW host grant delivered to exact Docker owner")
 
@@ -216,7 +236,15 @@ def _await_observed_first_child(state_root: Path, request_id: str, host_claim_sh
     raise HostObservationUnavailable("NEW first child launch remains unknown after deadline")
 
 
-def start_new_docker_once(request_file: Path, container_id: str, image_id: str, *, timeout: float = 120) -> dict[str, object]:
+def start_new_docker_once(
+    request_file: Path,
+    container_id: str,
+    image_id: str,
+    *,
+    timeout: float = 120,
+    private_root: Path | None = None,
+    outer_socket: Path = Path("/var/run/docker.sock"),
+) -> dict[str, object]:
     """Consume a first-start claim and invoke Docker start exactly once.
 
     The result never asserts authenticated readiness. A Docker failure, killed
@@ -224,8 +252,26 @@ def start_new_docker_once(request_file: Path, container_id: str, image_id: str, 
     """
     if not 1 <= timeout <= 3600:
         raise ValueError("NEW start timeout is invalid")
-    with hold_new_guard_flock(request_file) as fence:
+    with ExitStack() as stack:
+        source = None
+        source_recheck: Callable[[], None] | None = None
+        if private_root is not None:
+            from .fresh_private_engine import assert_private_engine_live, hold_private_engine_source
+
+            source = stack.enter_context(hold_private_engine_source(request_file, private_root, outer_socket, expected_container_id=container_id))
+            expected_host = f"unix://{private_root / 'socket' / 'docker.sock'}"
+            if os.environ.get("DOCKER_HOST") != expected_host:
+                raise HostObservationUnavailable("NEW selected Engine socket is not the recorded isolated host")
+
+            def recheck_source() -> None:
+                assert source is not None
+                assert_private_engine_live(request_file, private_root, outer_socket, source, container_id=container_id)
+
+            source_recheck = recheck_source
+        fence = stack.enter_context(hold_new_guard_flock(request_file))
         created = _inspect_created_scope(request_file, container_id, image_id)
+        if source is not None and created.engine_id != source.private_engine_id:
+            raise HostObservationUnavailable("NEW selected Docker Engine differs from held private host source")
         original_docker_fields = _docker_created_fields(container_id)
         if original_docker_fields[9] != {"Name": "no", "MaximumRetryCount": 0} or original_docker_fields[3:9] != ("created", False, 0, "0001-01-01T00:00:00Z", "0001-01-01T00:00:00Z", 0):
             raise HostObservationUnavailable("NEW Docker created state or restart policy changed before first-start claim")
@@ -242,9 +288,9 @@ def start_new_docker_once(request_file: Path, container_id: str, image_id: str, 
             finally:
                 os.umask(old_umask)
             listener.listen(1)
-            claim = _create_host_start_claim(guard, created)
+            claim = _create_host_start_claim(guard, created, private_source=source)
             observed = load_new_first_start(request_file)
-            if observed.host_claim_sha256 != claim or (fence.request_id, fence.origin_sha256) != (observed.origin.request_id, observed.origin.record_sha256):
+            if observed.host_claim_sha256 != claim or (fence.request_id, fence.origin_sha256) != (observed.origin.request_id, observed.origin.record_sha256) or observed.private_source_sha256 != (hashlib.sha256(_canonical(asdict(source))).hexdigest() if source is not None else ""):
                 raise HostObservationUnavailable("NEW first-start original was not durably bound")
             current_docker_fields = _docker_created_fields(container_id)
             _assert_docker_policy_unchanged(original_docker_fields, current_docker_fields)
@@ -254,6 +300,8 @@ def start_new_docker_once(request_file: Path, container_id: str, image_id: str, 
                 bootstrap = json.loads(_file(Path(request["bootstrap_config"]), private=True, limit=65536)[1])
                 if _dedicated_network_id(bootstrap["new_docker_network"]) != created.network_id:
                     raise HostObservationUnavailable("NEW Docker dedicated network changed before first start")
+            if source_recheck is not None:
+                source_recheck()
             _start_docker_container_once(container_id, created.engine_id)
-            _serve_one_new_guard(listener, request_file, container_id, image_id, claim, original_docker_fields, timeout=timeout)
+            _serve_one_new_guard(listener, request_file, container_id, image_id, claim, original_docker_fields, timeout=timeout, source_sha256=observed.private_source_sha256, assert_source_live=source_recheck)
             return _await_observed_first_child(Path(request["state_root"]), observed.origin.request_id, claim, container_id, timeout=timeout)
