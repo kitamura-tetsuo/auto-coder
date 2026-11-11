@@ -486,6 +486,11 @@ private source lock, NEW guard lock, and verified parent lifetime remain held
 through this interval. If the guardian crashes, the consumed claim remains
 poisoned and the source socket may remain sealed until explicit host recovery;
 there is no automatic retry or authority reconstruction.
+After sealing, the guardian also rechecks the selected container's original
+never-started Docker state through the exclusive API gate immediately before
+its one HTTP 204 start. A separate controller that starts and stops the
+selected PID 1 during the last pre-seal gap leaves a non-CREATED state and
+cannot cause a second launch to be mistaken for the original.
 
 The former unguarded start is now rejected before any side effect, even if a
 read-only Docker CREATED snapshot succeeds. Real positive launch and retained
@@ -534,7 +539,9 @@ review remains mandatory.
   this original operator. A live Docker restart-policy change during the held
   admission is likewise refused without child launch. A deliberately retained
   separate private-Engine API connection must likewise refuse with zero child
-  effects and preserved OAuth/claim bytes after the original seal.
+  effects and preserved OAuth/claim bytes after the original seal. The last
+  pre-seal interval also has a real selected-PID1 start/stop race that must
+  refuse a second start while preserving the initial one-shot claim.
   Broader independent proof of hostile/external host startup sources, unknown
   prior installations and all interrupted/uncertain reconciliation branches
   remains necessary before treating the full issue as complete. Exact-head CI

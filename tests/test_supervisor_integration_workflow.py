@@ -63,6 +63,7 @@ def test_new_private_engine_acceptance_keeps_mandatory_isolated_first_launch() -
         "different-os-uid",
         "pre-gate-live-sibling",
         "preconnected-private-client",
+        "pre-seal-start-stop-selected",
         "restart-policy-after-claim",
         "sealed-gate-outside-client",
         "wrong-pid1-command",

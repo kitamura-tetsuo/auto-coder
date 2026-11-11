@@ -171,6 +171,29 @@ client.close()
 """
 
 
+_PAUSE_BEFORE_PRIVATE_SOCKET_SEAL = """
+import json, sys, time
+from contextlib import contextmanager
+from pathlib import Path
+from auto_coder.management import fresh_new_host_start as host
+from auto_coder.management import fresh_private_engine_gate as gate
+original = gate.hold_one_start_api_gate
+@contextmanager
+def pause_before_seal(*args, **kwargs):
+    print('before-private-socket-seal', flush=True)
+    release = Path(sys.argv[6])
+    deadline = time.monotonic() + 30
+    while not release.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if not release.exists():
+        raise RuntimeError('private pre-seal barrier was not released')
+    with original(*args, **kwargs) as endpoint:
+        yield endpoint
+gate.hold_one_start_api_gate = pause_before_seal
+print(json.dumps(host.start_new_docker_once(Path(sys.argv[1]), sys.argv[2], sys.argv[3], private_root=Path(sys.argv[4]), outer_socket=Path(sys.argv[5]))), flush=True)
+"""
+
+
 @pytest.mark.parametrize(
     "race",
     [
@@ -178,6 +201,7 @@ client.close()
         "pre-gate-sibling",
         "pre-gate-live-sibling",
         "preconnected-private-client",
+        "pre-seal-start-stop-selected",
         "sealed-gate-outside-client",
         "owner-contention",
         "killed-first-claim",
@@ -395,6 +419,37 @@ def test_private_source_first_launch_and_retained_grant_readback(request_file: P
             replay = _run_host(*arguments, timeout=20)
             assert replay.returncode != 0 and replay.stdout == ""
             assert (request_file.parent / "guard/new-docker-first-start.json").read_bytes() == claim
+            return
+        if race == "pre-seal-start-stop-selected":
+            release = request_file.parent / "release-pre-seal"
+            suspended = subprocess.Popen(
+                [sys.executable, "-B", "-c", _PAUSE_BEFORE_PRIVATE_SOCKET_SEAL, str(request_file), child_id, image_id, str(root), str(outer_socket), str(release)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=_environment(),
+            )
+            try:
+                assert suspended.stdout is not None
+                assert select.select([suspended.stdout], [], [], 35)[0], "host did not reach pre-seal barrier"
+                assert suspended.stdout.readline() == "before-private-socket-seal\n"
+                claim = (request_file.parent / "guard/new-docker-first-start.json").read_bytes()
+                subprocess.run(["docker", "--host", selected_host, "start", child_id], check=True, capture_output=True, timeout=30)
+                subprocess.run(["docker", "--host", selected_host, "stop", "--time", "0", child_id], check=True, capture_output=True, timeout=30)
+                assert subprocess.check_output(["docker", "--host", selected_host, "inspect", "--format", "{{.State.Status}}", child_id], text=True).strip() == "exited"
+                release.touch(mode=0o600)
+                stdout, stderr = suspended.communicate(timeout=60)
+                assert suspended.returncode != 0 and stdout == "", (stdout, stderr)
+                assert "already started before its original guarded effect" in stderr, stderr
+                assert (request_file.parent / "guard/new-docker-first-start.json").read_bytes() == claim
+                assert not (request_file.parent / "state/physical-child-invocations").exists()
+                assert (request_file.parent / "oauth/oauth.sqlite3").read_bytes() == original_oauth
+            finally:
+                release.touch(mode=0o600)
+                if suspended.poll() is None:
+                    suspended.kill()
+                    suspended.communicate(timeout=10)
+            assert _run_host(*arguments, timeout=20).returncode != 0
             return
         if race in {"pre-gate-sibling", "pre-gate-live-sibling"}:
             # A second trusted Docker client can reach the socket while the

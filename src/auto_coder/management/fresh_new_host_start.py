@@ -314,6 +314,13 @@ def start_new_docker_once(
                 os.environ["DOCKER_HOST"] = f"unix://{gate_socket}"
                 try:
                     source_recheck()
+                    # The source can have been raced just before sealing by
+                    # another Docker client that then disconnected. Reprove
+                    # never-started state through the now-exclusive API gate.
+                    sealed_docker_fields = _docker_created_fields(container_id)
+                    _assert_docker_policy_unchanged(original_docker_fields, sealed_docker_fields)
+                    if sealed_docker_fields[3:9] != ("created", False, 0, "0001-01-01T00:00:00Z", "0001-01-01T00:00:00Z", 0):
+                        raise HostObservationUnavailable("NEW Docker selected child was already started before its original guarded effect")
                     _start_docker_container_once(container_id, created.engine_id)
                     _serve_one_new_guard(listener, request_file, container_id, image_id, claim, original_docker_fields, timeout=timeout, source_sha256=observed.private_source_sha256, assert_source_live=source_recheck)
                     return _await_observed_first_child(Path(request["state_root"]), observed.origin.request_id, claim, container_id, timeout=timeout)
