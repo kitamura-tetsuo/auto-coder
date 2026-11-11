@@ -301,7 +301,8 @@ def test_authenticated_release_deployment_reuses_original_producer_and_journal(r
         assert len(d.remote.dispatches) == 1 and d.remote.release_pointer_writes == 1
 
 
-def test_same_sha_new_release_supersedes_staged_but_not_replacement_effect(release_flow):
+@pytest.mark.parametrize("delay_terminal_settlement", [False, True])
+def test_same_sha_new_release_supersedes_staged_but_not_replacement_effect(release_flow, monkeypatch, delay_terminal_settlement):
     d = release_flow
     with TestClient(d.app, base_url=d.settings.oauth.canonical_issuer) as client:
         token = _token(client, d)
@@ -322,9 +323,31 @@ def test_same_sha_new_release_supersedes_staged_but_not_replacement_effect(relea
         next_promotion = _call(client, token, MCP_PROMOTION_ACTION, {**d.args, "idempotency_key": "same-sha-new-release"})
         assert next_promotion["status"] == "SUCCEEDED"
         assert d.remote.release_pointer_writes == 1 and d.remote.release_selection_writes == 2
+        service = d.app.state.management_runtime
+        if delay_terminal_settlement:
+            # Expose the real durable snapshot before the separate journal
+            # transition, without fabricating a terminal receipt or outcome.
+            with monkeypatch.context() as paused:
+                paused.setattr(service.lifecycle, "_settle", lambda record, stage, reason: record)
+                _drive(d.app, operation_id, 12)
+                pending = _call(client, token, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
+                assert pending["status"] == "SUPERSEDED" and pending["phase"] != OperationPhase.FAILED.value
+                assert pending["reason"] == "worker_lifecycle"
+                record = service.journal.get(operation_id).record
+                assert record is not None and record.effect.state is EffectState.SENT_UNKNOWN and record.effect.receipt is None
+                replay = _call(client, token, "auto_coder_deploy_release_source", arguments)
+                assert replay["operation_id"] == operation_id and replay["phase"] != OperationPhase.FAILED.value
+                competing = _call(client, token, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "pending-supersession-competitor"})
+                assert competing["status"] == "BUSY" and competing["operation_id"] == operation_id
+                assert [name for name, _ in d.bridge.actions] == ["PREPARE"]
         _drive(d.app, operation_id, 12)
         status = _call(client, token, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
-        assert status["status"] == "SUPERSEDED" and status["reason"] == "original_release_operation_superseded"
+        assert status["status"] == "SUPERSEDED" and status["phase"] == OperationPhase.FAILED.value
+        assert status["reason"] == "original_release_operation_superseded"
+        settled = service.journal.get(operation_id).record
+        assert settled is not None and settled.effect.state is EffectState.CONFIRMED
+        assert settled.effect.receipt is not None and settled.effect.receipt.correlation_identity == settled.effect.correlation_identity
+        assert settled.effect.receipt.safe_result == "original_release_operation_superseded"
         assert [name for name, _ in d.bridge.actions] == ["PREPARE"]
 
 

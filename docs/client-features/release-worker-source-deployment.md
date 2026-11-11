@@ -512,3 +512,12 @@ regular file, mismatched inode or unavailable probe is retained and produces
 NEEDS_ATTENTION without launching the prior. This is limited to the authenticated
 reboot-consumption path under the existing exclusive Supervisor owner. Ordinary
 worker startup still never unlinks a competing endpoint.
+
+The isolated installed-worker refusal regression interrupts the disposable
+Supervisor after production persists its final reboot exit evidence and before
+PID 1 exits. A new Supervisor owner reads the unchanged original intent while
+the kernel reports the same PID 1 lifetime. Both a surviving failed candidate
+and an externally terminated failed candidate must refuse recovery without a
+prior launch or a Docker restart. The interruption injects no lifecycle,
+readiness, or successful recovery evidence. This fixture-only coverage does not
+change production events or the dashboard observability contract.

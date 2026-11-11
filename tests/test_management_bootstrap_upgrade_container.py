@@ -700,8 +700,13 @@ def test_disposable_operator_failure_fences_real_docker(installed_chain: Install
         if failure_point == "lost-start" and args == ("start", successor.container):
             raise subprocess.TimeoutExpired("docker", timeout)
         if failure_point == "postlaunch-proxy-failed" and args == ("start", successor.proxy):
-            # The physical replacement proxy dies before the watcher proves it.
+            # Docker's SIGTERM response can precede the proxy's actual exit.
+            # Prove the injected failure before the operator can observe its start.
             actual_docker("kill", "--signal=SIGTERM", successor.proxy)
+            wait_for(
+                lambda: actual_docker("inspect", "--format", "{{.State.Running}}", successor.proxy) == "false",
+                "replacement proxy exit after fault injection",
+            )
         return answer
 
     monkeypatch.setattr(upgrade, "_docker", fault_after_real_docker)
