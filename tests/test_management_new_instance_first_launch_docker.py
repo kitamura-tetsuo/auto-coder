@@ -6,17 +6,22 @@ import base64
 import hashlib
 import json
 import os
+import select
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
 
+from auto_coder.management import fresh_new_host_start
 from auto_coder.management.action_scopes import READ_SCOPE
 from auto_coder.management.identity import AdmissionResult, AdmissionStatus, ReasonCode, VerifiedPrincipal
 from auto_coder.management.oauth_config import OAuthClient, OAuthSettings
@@ -194,7 +199,49 @@ def _authorized_readback(container_id: str, token: str, observation_id: str) -> 
     return subprocess.run(["docker", "exec", "--env", "SYNTHETIC_TOKEN=" + token, container_id, "python3", "-B", "-c", code], capture_output=True, text=True, timeout=20)
 
 
-def test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback(request_file: Path) -> None:
+def _first_launch_with_actual_admission_contention(root: Path, request_file: Path, container_id: str, image_id: str) -> dict[str, object]:
+    """Prove a second host reaches the same kernel admission while claim is held."""
+    claimed = threading.Event()
+    release = threading.Event()
+    result: dict[str, object] = {}
+    original_claim = fresh_new_host_start._create_host_start_claim
+
+    def barrier(*args):
+        digest = original_claim(*args)
+        claimed.set()
+        if not release.wait(20):
+            raise AssertionError("first admission barrier was not released")
+        return digest
+
+    def first_host() -> None:
+        try:
+            result["observation"] = fresh_new_host_start.start_new_docker_once(request_file, container_id, image_id, timeout=90)
+        except BaseException as error:
+            result["error"] = error
+
+    contender = threading.Thread(target=first_host, daemon=True)
+    with patch.object(fresh_new_host_start, "_create_host_start_claim", side_effect=barrier):
+        contender.start()
+        try:
+            assert claimed.wait(20), "first host did not durably claim the launch"
+            assert (root / "guard/new-docker-first-start.json").is_file()
+            assert not (root / "state/physical-child-invocations").exists()
+            competing = _run_host("start-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id, timeout=20)
+            assert competing.returncode == 1 and "Resource temporarily unavailable" in competing.stderr, competing.stderr
+            assert subprocess.check_output(["docker", "inspect", "--format", "{{.State.Status}}", container_id], text=True).strip() == "created"
+            assert not (root / "state/new-first-launch-claimed.json").exists()
+        finally:
+            release.set()
+            contender.join(timeout=110)
+    assert not contender.is_alive(), "first host remains unresolved"
+    if "error" in result:
+        raise AssertionError("first host failed while owning the admission") from result["error"]
+    assert isinstance(result.get("observation"), dict)
+    return result["observation"]
+
+
+@pytest.mark.parametrize("actual_admission_contention", [False, True])
+def test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback(request_file: Path, actual_admission_contention: bool) -> None:
     root = request_file.parent
     token, request = _prepare_real_new_source(request_file)
     prior_oauth = (root / "oauth/oauth.sqlite3").read_bytes()
@@ -206,9 +253,12 @@ def test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback
         preflight = _run_host("inspect-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id)
         assert preflight.returncode == 0, preflight.stderr
         assert json.loads(preflight.stdout)["launch_authorized"] is False
-        started = _run_host("start-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id, timeout=150)
-        assert started.returncode == 0, (started.stderr, subprocess.run(["docker", "logs", container_id], capture_output=True, text=True).stdout)
-        observed = json.loads(started.stdout)
+        if actual_admission_contention:
+            observed = _first_launch_with_actual_admission_contention(root, request_file, container_id, image_id)
+        else:
+            started = _run_host("start-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id, timeout=150)
+            assert started.returncode == 0, (started.stderr, subprocess.run(["docker", "logs", container_id], capture_output=True, text=True).stdout)
+            observed = json.loads(started.stdout)
         assert observed["status"] == "first-child-observed-awaiting-authenticated-readback"
         assert observed["launch_authorized"] is False
         counter = root / "state/physical-child-invocations"
@@ -239,7 +289,72 @@ def test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback
         assert outcome["status"] == "succeeded", outcome
         assert len(counter.read_text().splitlines()) == 1
         assert (root / "oauth/oauth.sqlite3").read_bytes() == prior_oauth
+        # A killed, already-successful owner must not turn its original
+        # consumed first-start claim back into Docker launch authority.
+        subprocess.run(["docker", "kill", "--signal", "KILL", container_id], check=True, capture_output=True, timeout=20)
+        after_crash = _run_host("start-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id, timeout=20)
+        assert after_crash.returncode == 1 and after_crash.stdout == ""
+        assert len(counter.read_text().splitlines()) == 1
+        assert json.loads((root / "state/new-first-outcome.json").read_bytes())["status"] == "succeeded"
     finally:
+        if container_id:
+            subprocess.run(["docker", "rm", "--force", container_id], capture_output=True, timeout=30)
+        if tag:
+            subprocess.run(["docker", "image", "rm", tag], capture_output=True, timeout=30)
+
+
+_KILL_AFTER_HOST_CLAIM = """
+import os, signal, sys
+from pathlib import Path
+from auto_coder.management import fresh_new_host_start as host
+original = host._create_host_start_claim
+def pause_after_durable_claim(*args):
+    digest = original(*args)
+    print('new-host-claim-fsynced', flush=True)
+    os.kill(os.getpid(), signal.SIGSTOP)
+    return digest
+host._create_host_start_claim = pause_after_durable_claim
+host.start_new_docker_once(Path(sys.argv[1]), sys.argv[2], sys.argv[3])
+"""
+
+
+def test_killed_first_host_preserves_consumed_claim_without_docker_start(request_file: Path) -> None:
+    root = request_file.parent
+    _token, request = _prepare_real_new_source(request_file)
+    preserved_oauth = (root / "oauth/oauth.sqlite3").read_bytes()
+    assert _run_host("begin", "--request-file", str(request_file)).returncode == 0
+    tag = ""
+    container_id = ""
+    suspended = None
+    try:
+        container_id, image_id, tag = _create_real_new_container(root, request_file, request)
+        assert _run_host("inspect-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id).returncode == 0
+        suspended = subprocess.Popen(
+            [sys.executable, "-B", "-c", _KILL_AFTER_HOST_CLAIM, str(request_file), container_id, image_id],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=_environment(),
+        )
+        assert suspended.stdout is not None
+        assert select.select([suspended.stdout], [], [], 20)[0], "first host did not reach the durable claim barrier"
+        assert suspended.stdout.readline() == "new-host-claim-fsynced\n"
+        claim = root / "guard/new-docker-first-start.json"
+        before = claim.read_bytes()
+        assert len(before) > 100
+        os.kill(suspended.pid, signal.SIGKILL)
+        assert suspended.wait(timeout=10) == -signal.SIGKILL
+        retry = _run_host("start-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id, timeout=20)
+        assert retry.returncode == 1, retry.stdout
+        assert claim.read_bytes() == before
+        assert subprocess.check_output(["docker", "inspect", "--format", "{{.State.Status}}", container_id], text=True).strip() == "created"
+        assert not (root / "state/physical-child-invocations").exists()
+        assert not (root / "state/new-first-launch-claimed.json").exists()
+        assert (root / "oauth/oauth.sqlite3").read_bytes() == preserved_oauth
+    finally:
+        if suspended is not None and suspended.poll() is None:
+            suspended.kill()
+            suspended.wait(timeout=10)
         if container_id:
             subprocess.run(["docker", "rm", "--force", container_id], capture_output=True, timeout=30)
         if tag:

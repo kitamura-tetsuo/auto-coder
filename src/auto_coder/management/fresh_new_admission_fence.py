@@ -39,10 +39,6 @@ def hold_new_guard_flock(request_file: Path) -> Iterator[NewAdmissionFenceObserv
     The caller is responsible for post-effect content/source verification;
     this context provides only held kernel serialization and inode identity.
     """
-    origin = inspect_new_instance_origin(request_file)
-    profile = inspect_new_instance_profile(request_file)
-    if profile.origin_sha256 != origin.record_sha256 or profile.request_id != origin.request_id:
-        raise ValueError("NEW profile and origin differ")
     request = json.loads(_file(request_file, private=True, limit=65536)[1])
     guard = Path(request["guard_root"])
     with _open(guard, directory=True) as descriptor:
@@ -52,8 +48,13 @@ def hold_new_guard_flock(request_file: Path) -> Iterator[NewAdmissionFenceObserv
         # LOCK_NB makes a real competing admission fail instead of waiting
         # until after its peer has exited and accidentally passing a test.
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        # The lock is held before repeating all original identity checks.
-        # A stale preliminary snapshot never admits even a read-only probe.
+        # Arbitrate before reading mutable guard entries: an overlapping
+        # competitor must reach the actual kernel admission lock even while
+        # the first contender is writing its durable launch claim.
+        origin = inspect_new_instance_origin(request_file)
+        profile = inspect_new_instance_profile(request_file)
+        if profile.origin_sha256 != origin.record_sha256 or profile.request_id != origin.request_id:
+            raise ValueError("NEW profile and origin differ")
         if inspect_new_instance_origin(request_file) != origin or inspect_new_instance_profile(request_file) != profile:
             raise ValueError("NEW admission sources changed during arbitration")
         current = _identity(guard, descriptor)
