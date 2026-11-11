@@ -54,7 +54,7 @@ def test_production_entrypoint_refuses_operator_scope_as_authority(tmp_path: Pat
     source = ROOT / "src/auto_coder/management/bootstrap_supervisor.py"
     original = source.read_bytes()
     report = _command(tmp_path, _scope((source,), profile))
-    assert report["schema"] == "current-containment-prerequisites-v6"
+    assert report["schema"] == "current-containment-prerequisites-v7"
     assert report["scope"]["profile"] == profile
     assert report["files"][0]["sha256"] == hashlib.sha256(original).hexdigest()
     assert report["files"][0]["inode"] == source.stat().st_ino
@@ -67,6 +67,7 @@ def test_production_entrypoint_refuses_operator_scope_as_authority(tmp_path: Pat
     assert "saved namespace inode strings cannot establish absence" in reasons["kernel-containment"]
     assert ("quarantined-original-profile" in reasons) == (profile == "quarantined-original-v1")
     assert report["resource_limit"] == "All read descriptors are released before return; no namespace pin or owner fence is retained."
+    assert report["kernel_subobservation"] is None
     assert report["started_monotonic_ns"] <= report["finished_monotonic_ns"]
     assert report["boot_id"] == Path("/proc/sys/kernel/random/boot_id").read_text().strip()
 
@@ -312,6 +313,26 @@ def test_unselected_management_image_and_network_routes_are_explicitly_refused(m
     assert "Current state: running" in reasons["docker-alternative-management:" + "c" * 64]
     assert "ordinary-route-closure" in reasons
     assert observed.status == "unavailable"
+
+
+def test_unrelated_worker_restart_route_is_observed_but_not_treated_as_management_restarter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the worker in the engine inventory without demanding worker inhibition."""
+    objects, _ = _engine_boundary(monkeypatch)
+    objects["a" * 64]["Image"] = "sha256:" + "a" * 64
+    objects["b" * 64]["Image"] = "sha256:" + "b" * 64
+    objects["c" * 64]["Image"] = "sha256:" + "c" * 64
+    objects["c" * 64]["Config"]["Cmd"] = ["worker", "--run"]
+    objects["c" * 64]["HostConfig"]["RestartPolicy"] = {"Name": "unless-stopped", "MaximumRetryCount": 0}
+    observed = observation.observe(_scope())
+    worker = next(item for item in observed.docker if item.container_id == "c" * 64)
+    assert worker.management_route_roles == ()
+    assert worker.restart_policy == "unless-stopped"
+    assert not any(item.authority == "docker-restart:" + worker.container_id for item in observed.unavailable)
+    assert not any(item.authority == "docker-alternative-management:" + worker.container_id for item in observed.unavailable)
+    saved = json.loads(json.dumps(asdict(observed)))
+    objects["c" * 64]["Mounts"] = [{"Type": "bind", "Source": "/unrelated-worker-state", "Destination": "/state", "RW": True}]
+    verified = observation.verify(_scope(), saved)
+    assert "saved-report:docker" in {item.authority for item in verified.unavailable}
 
 
 def test_management_command_alternative_is_reobserved_after_producer_exit(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,8 +1,9 @@
-"""Exercise protected enrollment readback on a disposable real Linux/Docker fixture.
+"""Exercise protected enrollment and kernel checks on a disposable Docker fixture.
 
 This manually invoked host probe never authorizes full containment. It installs
 only a uniquely identified test-only approval component, verifies it in two
-separate subprocesses, and removes only resources it created.
+separate subprocesses, and removes only resources it created. A successful
+kernel *sub-observation* is not positive full-profile containment acceptance.
 """
 
 from __future__ import annotations
@@ -124,6 +125,23 @@ def _assert_component(report: dict[str, object], *, present: bool) -> None:
         raise AssertionError("test-only enrollment removed normative containment refusals")
 
 
+def _assert_kernel_subcomponent(report: dict[str, object], *, present: bool) -> None:
+    component = report.get("kernel_subobservation")
+    authorities = _authorities(report)
+    if (component is not None) != present:
+        details = [item for item in report.get("unavailable", []) if isinstance(item, dict) and item.get("authority") == "kernel-subcomponent"]
+        raise AssertionError("real kernel sub-observation presence differs: " + repr(details))
+    if present:
+        if not isinstance(component, dict) or component.get("retained_original_network_pin") is not False:
+            raise AssertionError("unpinned kernel component claimed an original namespace pin")
+        if not all(component.get(key) is True for key in ("original_cgroups_empty", "unpinned_network_task_scan_absent", "host_listener_absent")):
+            raise AssertionError("kernel component has incomplete original task or listener checks")
+        if "kernel-subcomponent-unpinned" not in authorities:
+            raise AssertionError("unpinned kernel component removed its refusal reason")
+    elif "kernel-subcomponent" not in authorities:
+        raise AssertionError("kernel refusal did not identify its unavailable component")
+
+
 def run_fixture() -> None:
     if os.geteuid() != 0 or os.readlink("/proc/self/ns/pid") != os.readlink("/proc/1/ns/pid"):
         raise PermissionError("host root is required for this isolated fixture")
@@ -204,6 +222,13 @@ def run_fixture() -> None:
             raise AssertionError("fixture Docker returned an ambiguous proxy identity")
         created_containers.append(proxy)
         prior_proxy = capture_prior_container(proxy, image)
+        escaped = _docker("run", "-d", "--name", fixture_id + "-namespace-holder", "--network", "container:" + manager, "--user", "0:0", "--entrypoint", "/bin/sleep", image, "120")
+        if not re.fullmatch(r"[0-9a-f]{64}", escaped):
+            raise AssertionError("fixture Docker returned an ambiguous namespace-holder identity")
+        created_containers.append(escaped)
+        escaped_pid = int(_docker("inspect", "--type", "container", "--format", "{{.State.Pid}}", escaped))
+        if escaped_pid <= 0 or os.readlink(f"/proc/{escaped_pid}/ns/net") != prior_manager.net_namespace:
+            raise AssertionError("live escaped-task control does not occupy the captured original network namespace")
         _docker("cp", manager + ":" + INSTALLED_BOOTSTRAP, str(private / "bootstrap-source"))
         (private / "bootstrap-source").chmod(0o600)
         _docker("stop", "--time", "1", proxy, timeout=25)
@@ -245,11 +270,48 @@ def run_fixture() -> None:
         )
         first = _call_cli("observe", scope)
         _assert_component(first, present=True)
+        _assert_kernel_subcomponent(first, present=False)
+        logger.info("Original manager and proxy exited, but the independently identified live fixture namespace holder prevents kernel sub-observation")
+        _docker("stop", "--time", "1", escaped, timeout=25)
+        # A real stopped-manager fixture can now establish these *three*
+        # kernel subfacts, but has no retained original network namespace pin.
+        for _ in range(5):
+            first = _call_cli("observe", scope)
+            if first.get("kernel_subobservation") is not None:
+                break
+            time.sleep(0.2)
+        _assert_kernel_subcomponent(first, present=True)
         previous = private / "previous.json"
         _write_private(previous, json.dumps(first, sort_keys=True).encode())
         verified = _call_cli("verify", scope, previous)
         _assert_component(verified, present=True)
+        _assert_kernel_subcomponent(verified, present=True)
         logger.info("Real stopped Docker manager/proxy and separately invoked verifier observed the protected test-only enrollment component")
+        _docker("update", "--restart=unless-stopped", proxy)
+        changed_restart = _call_cli("verify", scope, previous)
+        if "docker-restart:" + proxy not in _authorities(changed_restart) or "saved-report:docker" not in _authorities(changed_restart):
+            raise AssertionError("selected fixture Docker restart policy was not independently refused")
+        _docker("update", "--restart=no", proxy)
+        logger.info("Enabled and restored a restart policy on the stopped fixture proxy only; separate consumer rejected changed Docker authority")
+        alternative = _docker("create", "--name", fixture_id + "-alternate-manager", "--network", "none", "--entrypoint", "/bin/sleep", image, "120")
+        if not re.fullmatch(r"[0-9a-f]{64}", alternative):
+            raise AssertionError("fixture Docker returned an ambiguous alternative identity")
+        created_containers.append(alternative)
+        with_alternative = _call_cli("verify", scope, previous)
+        if "docker-alternative-management:" + alternative not in _authorities(with_alternative) or "saved-report:docker" not in _authorities(with_alternative):
+            raise AssertionError("unselected real Docker management-image candidate was not refused")
+        _docker("rm", alternative)
+        created_containers.remove(alternative)
+        logger.info("Unselected stopped management-image alternative was detected and rejected without touching unrelated Docker objects")
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("127.0.0.1", prior_manager.published_port))
+            listener.listen(1)
+            conflict = _call_cli("verify", scope, previous)
+            _assert_kernel_subcomponent(conflict, present=False)
+            if "saved-report:kernel_subobservation" not in _authorities(conflict):
+                raise AssertionError("separate consumer did not reject a real conflicting host TCP listener")
+        logger.info("Real loopback listener on the disposable published port caused kernel refusal; it was released")
         changed = private / "proxy-config"
         changed.write_bytes(b"substituted fixture proxy configuration\n")
         refused = _call_cli("verify", scope, previous)

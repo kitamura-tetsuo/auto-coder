@@ -52,7 +52,7 @@ python -m auto_coder.management.containment_observation verify \
 ```
 
 Both commands return exit status **2**, even if every available sub-observation
-matches. Output is JSON. `current-containment-prerequisites-v6` includes the full
+matches. Output is JSON. `current-containment-prerequisites-v7` includes the full
 proposed scope and its hash, a new observation UUID, current boot ID, observer PID
 and process-start token, monotonic observation interval, observed file identities,
 available Docker identities and explicit unavailable authorities/reasons.
@@ -67,7 +67,7 @@ image, effective command, mounts, security options, restart configuration and
 current Docker lifetime without exposing environment/configuration contents.
 Two independent complete engine reads must agree. This inventory includes every
 listed container; it does **not** establish deployment enrollment, close launch
-routes or prove task absence. The v6 report additionally derives potential
+routes or prove task absence. The v7 report additionally derives potential
 management routes from the selected pair's Docker images, installed
 bootstrap/serve commands, and shared management network namespace. Unselected
 matches remain visible as refusals in the independent verifier. These are
@@ -96,7 +96,7 @@ operator lists is insufficient. No enrollment or controller mutation is performe
 
 ### Protected enrollment component (introduced in v4)
 
-The v6 report optionally includes `approved_enrollment`, a bounded component
+The v7 report optionally includes `approved_enrollment`, a bounded component
 readback from the fixed trusted-local path
 `/var/lib/auto-coder/approved-containment-enrollments/<enrollment-id>.json`.
 The observer never writes to that path. Initial-namespace host root (matching
@@ -126,7 +126,7 @@ full-scope positive fixture yet.
 
 For the specifically reviewed `ordinary-v1` bootstrap-source bytes
 (`66bcfefa86aa2bd88dd4a253405fc6faac65675917e8d393e587d5a62fff83bb`),
-v6 additionally invokes read-only `docker cp` twice against the exact selected
+v7 additionally invokes read-only `docker cp` twice against the exact selected
 management container's installed
 `/opt/auto-coder/.venv/lib/python3.12/site-packages/auto_coder/management/bootstrap_supervisor.py`.
 It accepts only a bounded, regular, single-member tar archive with that filename
@@ -139,6 +139,29 @@ archive ambiguity, failed Docker copy or changed bytes report
 `installed-bootstrap-source` unavailable. A checked image file does not prove it
 was historically executed; the full installed route, mount, owner-lock, kernel,
 and positive test requirements remain unresolved.
+
+### Original-kernel sub-observation (introduced in v7)
+
+When the protected approval and complete Docker inventory are available, the
+observer also reads the protected prior manager/proxy lifetime evidence again.
+It rechecks the exact original Docker/cgroup stop state (including captured
+process start tokens), scans every host `/proc/<pid>/task/<tid>/ns/net` entry
+for the old manager namespace, verifies that the recorded host listener is
+absent, reopens the original owner-file inode through the current state mount,
+and rereads the original evidence and Docker/cgroups afterward. These checks
+are bounded by existing host-root/procfs rules and return an optional
+`kernel_subobservation` component. A separate process independently repeats
+the checks and compares the complete saved component.
+
+A successful *sub-observation* still adds
+`kernel-subcomponent-unpinned` and retains `kernel-containment`: the original
+network namespace has not been retained via an independently reopenable live
+namespace pin or fencing resource. It is **not** a positive closed-profile
+verdict. Unreadable processes, nonleader namespace occupancy, wrong original
+cgroup/owner identities, occupied listeners, replaced prior evidence and
+interleaving changes add a specific `kernel-subcomponent` refusal. This path
+does not acquire an owner lock, pin a namespace, start a process or change a
+controller; it always releases read-only file descriptors before returning.
 
 Run the new bounded protected-record regressions with:
 
@@ -166,7 +189,15 @@ the fixed approval directory, and cleans up those resources after completion or
 failure. It checks that a protected test approval is actually read in both
 entrypoint processes, that the full containment verdict remains unavailable,
 and that a post-observation original-file substitution is rejected by the
-separate verifier. It does **not** exercise or alter the original production
+separate verifier. It additionally uses a separately identified live container
+in the old manager network namespace to force a kernel refusal; after stopping
+that fixture-only holder, it checks the current stopped-cgroup, namespace-scan
+and loopback-listener **sub-observations** in both CLI processes. It temporarily
+enables and restores only the disposable proxy's restart policy, introduces and
+removes a stopped same-image alternative manager candidate, and binds only the
+released test port to force a listener-conflict refusal. None of these is a
+positive *closed-profile* verdict: the original namespace pin and full route
+authority are still missing. The probe does **not** exercise or alter the original production
 controllers, nor establish original production provenance or a full positive
 closed profile. The operator must ensure that the host, the fixed approval
 directory, the test image and temporary Docker/localhost-port effects are
@@ -252,7 +283,7 @@ the corresponding production trace-to-view obligations.
 
 ## Complete current Docker inventory sub-observation
 
-The `current-containment-prerequisites-v6` report replaces v1/v2/v3/v4/v5. Earlier
+The `current-containment-prerequisites-v7` report replaces v1–v6. Earlier
 reports are refused; v1/v2 did not bind the complete engine inventory, and v4
 did not bind the current fixed watcher systemd route. `docker` includes
 **every** container returned by unfiltered `docker container ls --all --quiet
@@ -283,9 +314,12 @@ and compares that reason. A consistent selected PID remains only a partial
 observation, not proof that other escaped tasks or restarters are absent.
 The bound keeps saved reports within the verifier's file-size limit. The verifier
 repeats all these reads, including objects omitted from the proposed scope,
-and compares the full inventory. Any configured `always`,
-`unless-stopped` or `on-failure` policy produces a container-specific
-`docker-restart:<full-id>` unavailable reason, even for a stopped container.
+and compares the full inventory. A configured `always`, `unless-stopped` or
+`on-failure` policy on the selected manager/proxy or an unselected **candidate
+management/proxy route** produces `docker-restart:<full-id>` unavailable, even
+when stopped. An unrelated running worker with its own Docker restart policy is
+still included in the complete inventory and rechecked by the verifier, but it
+does not itself require worker restart inhibition to prove management closure.
 A `no` policy is a positive observation of Docker's current configuration only;
 it does not establish inhibition by a watcher, service, timer, socket, script or
 repair route. Unselected objects remain of unresolved deployment membership;

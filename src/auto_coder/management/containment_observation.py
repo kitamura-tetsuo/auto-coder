@@ -23,6 +23,7 @@ from pathlib import Path
 
 from .archived_exclusions import unique_pairs
 from .containment_enrollment import EnrollmentObservation, EnrollmentUnavailable, observe_approved_enrollment
+from .containment_kernel_subobservation import KernelSubObservation, observe_kernel_subcomponent
 from .fresh_host_observation import _validate_host_proc_profile
 from .installed_bootstrap_source import InstalledBootstrapSource, inspect_installed_bootstrap_source
 from .proc_observation import ProcessObservation, observe_process
@@ -121,6 +122,7 @@ class PrerequisiteReport:
     approved_enrollment: EnrollmentObservation | None = None
     watcher_systemd: WatcherSystemdObservation | None = None
     installed_bootstrap_source: InstalledBootstrapSource | None = None
+    kernel_subobservation: KernelSubObservation | None = None
 
 
 def _digest(value: object) -> str:
@@ -324,8 +326,8 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
             raise ValueError("Docker configuration or lifetime changed during observation")
         docker = before_docker
         for item in docker:
-            if item.restart_policy != "no":
-                unavailable.append(Unavailable("docker-restart:" + item.container_id, "Engine inventory contains a configured " + item.restart_policy + " restart route; stopped state does not prove inhibition or authorize exclusion from deployment scope."))
+            if item.restart_policy != "no" and item.management_route_roles:
+                unavailable.append(Unavailable("docker-restart:" + item.container_id, "A selected or candidate management/proxy Docker object has a configured " + item.restart_policy + " restart route; stopped state does not prove inhibition or authorize exclusion from deployment scope."))
             if item.container_id not in (scope.management_id, scope.proxy_id) and item.management_route_roles:
                 unavailable.append(
                     Unavailable(
@@ -375,8 +377,15 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
         process = process_by_pid[container.pid]
         if process.unavailable or not process.start_token or not process.boot_id or (boot_id and process.boot_id != boot_id):
             unavailable.append(Unavailable("docker-process:" + container.container_id, "Docker-selected live process could not be independently correlated to an inspectable current Linux lifetime."))
+    kernel_subobservation = None
+    if approved_enrollment is not None and isinstance(approved_enrollment, EnrollmentObservation) and docker:
+        try:
+            kernel_subobservation = observe_kernel_subcomponent(approved_enrollment)
+            unavailable.append(Unavailable("kernel-subcomponent-unpinned", "Current old-cgroup, task-namespace and host-listener checks passed, but the original namespace object is not retained by an independently re-openable pin. These facts cannot establish kernel containment."))
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            unavailable.append(Unavailable("kernel-subcomponent", "Original lifetime, all-task namespace or listener reobservation failed (" + type(exc).__name__ + ")."))
     return PrerequisiteReport(
-        "current-containment-prerequisites-v6",
+        "current-containment-prerequisites-v7",
         "unavailable",
         scope,
         _digest(asdict(scope)),
@@ -393,6 +402,7 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
         approved_enrollment=approved_enrollment,
         watcher_systemd=watcher_systemd,
         installed_bootstrap_source=installed_bootstrap_source,
+        kernel_subobservation=kernel_subobservation,
     )
 
 
@@ -404,7 +414,7 @@ def verify(scope: ProposedScope, previous: object) -> PrerequisiteReport:
         reasons.append(Unavailable("saved-report", "Unsupported or authorizing saved report; no containment success schema exists."))
     else:
         current_value = json.loads(json.dumps(asdict(current)))
-        for field in ("scope", "scope_sha256", "boot_id", "files", "docker", "processes", "approved_enrollment", "watcher_systemd", "installed_bootstrap_source", "unavailable", "resource_limit"):
+        for field in ("scope", "scope_sha256", "boot_id", "files", "docker", "processes", "approved_enrollment", "watcher_systemd", "installed_bootstrap_source", "kernel_subobservation", "unavailable", "resource_limit"):
             if previous[field] != current_value[field]:
                 reasons.append(Unavailable("saved-report:" + field, "Independent current observation differs from saved report."))
     return replace(current, unavailable=tuple(reasons))
