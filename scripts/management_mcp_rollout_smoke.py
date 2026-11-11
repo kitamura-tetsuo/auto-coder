@@ -185,12 +185,9 @@ def read_plan(checkpoint: DotCheckpoint, target: str, operation_id: str) -> tupl
         raise ValueError("invalid original operation ID")
     if checkpoint.pending_effect_state and checkpoint.pending_effect_state not in UNKNOWN_EFFECTS:
         raise ValueError("unsupported pending effect state")
-    original_read: tuple[str, dict[str, object]] = ("auto_coder_operation_get", {"target_id": target, "operation_id": operation_id})
-    status_read: tuple[str, dict[str, object]] = ("auto_coder_status", {"target_id": target})
-    deployment_read: tuple[str, dict[str, object]] = ("auto_coder_deployment_status", {"target_id": target})
-    if checkpoint.pending_effect_state in UNKNOWN_EFFECTS:
-        if not operation_id:
-            raise ValueError("unknown original effect requires its original operation ID")
+    if checkpoint.pending_effect_state in UNKNOWN_EFFECTS and not operation_id:
+        raise ValueError("unknown original effect requires its original operation ID")
+    if operation_id:
         bindings = [
             configured_target
             for original_id, configured_target in (
@@ -201,9 +198,13 @@ def read_plan(checkpoint: DotCheckpoint, target: str, operation_id: str) -> tupl
             if original_id == operation_id
         ]
         if not bindings:
-            raise ValueError("unknown effect must use a checkpoint original operation ID")
+            raise ValueError("requested original operation ID must be a checkpoint original operation ID")
         if len(bindings) != 1 or not bindings[0] or bindings[0] != target:
             raise ValueError("original operation ID must be uniquely bound to its configured target")
+    original_read: tuple[str, dict[str, object]] = ("auto_coder_operation_get", {"target_id": target, "operation_id": operation_id})
+    status_read: tuple[str, dict[str, object]] = ("auto_coder_status", {"target_id": target})
+    deployment_read: tuple[str, dict[str, object]] = ("auto_coder_deployment_status", {"target_id": target})
+    if checkpoint.pending_effect_state in UNKNOWN_EFFECTS:
         # Original-operation reconciliation precedes current deployment diagnostics.
         plan: tuple[tuple[str, dict[str, object]], ...] = (
             ("auto_coder_whoami", {}),

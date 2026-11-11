@@ -251,7 +251,8 @@ def test_runtime_tool_allowlist_explicitly_refuses_mutation(tool):
 
 
 def test_mcp_read_plan_never_contains_a_mutation_or_endpoint_selection():
-    plan = smoke.read_plan(checkpoint(stage="full"), "fixture-beta", "operation-123")
+    original = checkpoint(stage="full", beta_target="fixture-beta", beta_operation_id="operation-123")
+    plan = smoke.read_plan(original, "fixture-beta", "operation-123")
     assert [name for name, _ in plan] == [
         "auto_coder_whoami",
         "auto_coder_status",
@@ -340,3 +341,39 @@ def test_beta_rollout_cannot_proceed_without_original_work_identity_or_stage_rev
     assert report.verdict == "BLOCKED"
     assert "work identity or operator stage revision" in report.reason
     assert not report.effect_dispatched
+
+
+@pytest.mark.parametrize(
+    "original,target,operation",
+    [
+        (checkpoint(), "fixture-beta", "unclaimed-read"),
+        (
+            checkpoint(beta_target="fixture-beta", beta_operation_id="real-original"),
+            "fixture-beta",
+            "another-operation",
+        ),
+        (
+            checkpoint(beta_target="fixture-beta", beta_operation_id="real-original"),
+            "fixture-release",
+            "real-original",
+        ),
+        (
+            checkpoint(beta_target="fixture-beta", beta_operation_id="duplicated", release_target="fixture-release", release_operation_id="duplicated"),
+            "fixture-beta",
+            "duplicated",
+        ),
+    ],
+)
+def test_diagnostic_operation_read_must_match_unique_checkpoint_original_binding(original, target, operation):
+    with pytest.raises(ValueError, match="original operation"):
+        smoke.read_plan(original, target, operation)
+
+
+def test_diagnostic_operation_read_accepts_exact_original_binding_without_dispatch():
+    original = checkpoint(beta_target="fixture-beta", beta_operation_id="real-original")
+    plan = smoke.read_plan(original, "fixture-beta", "real-original")
+    assert plan[-1] == (
+        "auto_coder_operation_get",
+        {"target_id": "fixture-beta", "operation_id": "real-original"},
+    )
+    assert all(name in smoke.READ_TOOLS for name, _ in plan)

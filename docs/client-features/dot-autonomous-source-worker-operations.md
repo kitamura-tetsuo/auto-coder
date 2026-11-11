@@ -83,6 +83,9 @@ already retained in the checkpoint and uniquely bound to its configured
 beta/release target (release promotion reads use the release target). A
 different target, ambiguous reused operation ID, unbound target or
 unrecognized nonempty pending-effect state fails closed before transport.
+The same unique original-operation/target binding is required for any optional
+operation readback, even without an unresolved send; a diagnostic request
+must not select an unrelated operation from the service.
 When reconciliation is pending, the read plan requests original-operation
 readback immediately after identity and before deployment diagnostics; an
 unrelated or newly invented ID refuses even a bounded read plan. Never infer
