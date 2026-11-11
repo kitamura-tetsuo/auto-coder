@@ -462,6 +462,91 @@ def test_real_different_os_uid_cannot_claim_original_new_docker_first_start(requ
             subprocess.run(["docker", "image", "rm", tag], check=True, capture_output=True, timeout=30)
 
 
+def test_new_docker_loopback_refuses_live_prior_network_listener_without_claim(request_file: Path) -> None:
+    """A live process on the selected bridge violates sole network ownership."""
+    root = request_file.parent
+    network = "ac-new-" + uuid.uuid4().hex[:24]
+    port = _reserve_test_host_port()
+    _token, request = _prepare_real_new_source(request_file, docker_network=network, host_port=port)
+    original_oauth = (root / "oauth/oauth.sqlite3").read_bytes()
+    assert _run_host("begin", "--request-file", str(request_file)).returncode == 0
+    prior_origin = (root / "guard/new-instance-origin.json").read_bytes()
+    tag = ""
+    container_id = ""
+    old_listener_id = ""
+    _new_isolated_bridge(network)
+    try:
+        container_id, image_id, tag = _create_real_new_container(root, request_file, request, docker_network=network, host_port=port)
+        before = _run_host("inspect-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id)
+        assert before.returncode == 0, before.stderr
+        old_listener_name = "auto-coder-new-old-listener-" + uuid.uuid4().hex[:14]
+        old_listener_id = subprocess.check_output(
+            [
+                "docker",
+                "run",
+                "--detach",
+                "--name",
+                old_listener_name,
+                "--network",
+                network,
+                "--restart",
+                "no",
+                "--read-only",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--user",
+                "65534:65534",
+                "--entrypoint",
+                "python3",
+                os.environ.get("AUTOCODER_FRESH_TEST_BASE_IMAGE", "auto-coder:management-local-abc65544"),
+                "-B",
+                "-c",
+                "import socket,time;listener=socket.socket();listener.bind(('0.0.0.0',18881));listener.listen(4);time.sleep(240)",
+            ],
+            text=True,
+            timeout=40,
+        ).strip()
+        assert len(old_listener_id) == 64
+
+        listener_ready = False
+        for _attempt in range(30):
+            probe = subprocess.run(
+                ["docker", "exec", old_listener_id, "python3", "-B", "-c", "import socket;socket.create_connection(('127.0.0.1',18881),timeout=2).close()"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if probe.returncode == 0:
+                listener_ready = True
+                break
+            time.sleep(0.2)
+        assert listener_ready, "the real prior network listener never bound"
+
+        observed = _run_host("inspect-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id)
+        assert observed.returncode == 1 and observed.stdout == ""
+        assert "network scope differs" in observed.stderr
+        refused = _run_host("start-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id, timeout=30)
+        assert refused.returncode == 1 and refused.stdout == ""
+        assert "network scope differs" in refused.stderr
+        assert subprocess.check_output(["docker", "inspect", "--format", "{{.State.Running}}", old_listener_id], text=True).strip() == "true"
+        assert subprocess.check_output(["docker", "inspect", "--format", "{{.State.Status}}", container_id], text=True).strip() == "created"
+        assert not (root / "guard/new-docker-first-start.json").exists()
+        assert not (root / "state/new-first-launch-claimed.json").exists()
+        assert not (root / "state/physical-child-invocations").exists()
+        assert (root / "oauth/oauth.sqlite3").read_bytes() == original_oauth
+        assert (root / "guard/new-instance-origin.json").read_bytes() == prior_origin
+    finally:
+        if old_listener_id:
+            subprocess.run(["docker", "rm", "--force", old_listener_id], check=True, capture_output=True, timeout=30)
+        if container_id:
+            subprocess.run(["docker", "rm", "--force", container_id], check=True, capture_output=True, timeout=30)
+        if tag:
+            subprocess.run(["docker", "image", "rm", tag], check=True, capture_output=True, timeout=30)
+        subprocess.run(["docker", "network", "rm", network], check=True, capture_output=True, timeout=30)
+
+
 def _first_launch_with_actual_admission_contention(root: Path, request_file: Path, container_id: str, image_id: str) -> dict[str, object]:
     """Prove independent hosts overlap at the real first-claim kernel lock."""
     first = subprocess.Popen(

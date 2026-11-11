@@ -315,6 +315,7 @@ def test_all_baseline_selectors_and_execution_contexts_are_preserved() -> None:
         "tests/test_management_new_instance_first_launch_docker.py::test_new_docker_loopback_mcp_reaches_original_authenticated_child_from_host",
         "tests/test_management_new_instance_first_launch_docker.py::test_new_docker_loopback_refuses_live_prior_host_listener_without_first_claim",
         "tests/test_management_new_instance_first_launch_docker.py::test_real_different_os_uid_cannot_claim_original_new_docker_first_start",
+        "tests/test_management_new_instance_first_launch_docker.py::test_new_docker_loopback_refuses_live_prior_network_listener_without_claim",
         "tests/test_management_new_docker_network_policy.py::test_loopback_publication_refuses_legacy_or_unverifiable_docker_engine[27.5.1-False]",
         "tests/test_management_new_docker_network_policy.py::test_dedicated_new_bridge_rejects_ipv6_even_with_masquerading_disabled[True]",
         "tests/test_management_new_instance_first_launch_docker.py::test_real_new_first_launch_never_reports_readiness_from_invalid_readback[revoked-grant]",
