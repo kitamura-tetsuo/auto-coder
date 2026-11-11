@@ -1,13 +1,13 @@
-# Authenticated release worker source deployment (pending real-host acceptance)
+# Authenticated release worker source deployment (isolated-host acceptance)
 
 The `auto_coder_deploy_release_source` management MCP action is implemented as
 an explicit, instance-bound request using the existing OAuth read+deploy grant,
 the operator-owned `full` release policy, the shared per-instance operation
 journal, immutable version preparer and signed Supervisor control lane. It is
 not an automatic consequence of promotion or an OCI/Docker deployment.
-**PR #2832 remains draft until genuine independent release-worker and
-previous-version host acceptance is recorded.** Controlled tests do not
-establish that a real release worker has been deployed or is healthy.
+**PR #2832 remains draft until its exact-head host tests, CI and review gates
+are complete.** Isolated-host acceptance of disposable installed workers is
+not authorization to deploy, restart or replace the live release service.
 
 ## Trust boundaries and request
 
@@ -110,11 +110,10 @@ recovery and rejection of worker artifact fields with a controlled
 Supervisor bridge. `tests/test_management_worker_lifecycle.py` and
 `tests/test_worker_supervisor_bridge.py` separately exercise actual
 subprocess, UDS, HTTP, held drain, OS exit and Supervisor reconstruction.
-These are **not** a substitute for a complete production-origin release run
-with a real installed candidate, an independently running prior version,
-held exit/recovery and peer beta isolation. Record the exact original
-positive-control evidence, CI results and operator acceptance against
-Issue #2613 before marking the PR ready to merge.
+These controlled tests are **not** a substitute for the integrated
+production-origin release suite described below. Record exact original
+positive-control evidence, host/image revision, CI results, review disposition
+and operator acceptance against Issue #2613 before marking the PR ready.
 
 A bounded regression command is:
 
@@ -271,10 +270,42 @@ and another key remains busy. Removing the external hold permits genuine process
 exit and the original candidate activation. No terminal or readiness data is
 synthesized by this fault.
 
+The uncertain-recovery case discards a real `RECOVER_PREVIOUS` reply after the
+candidate actually exits, withholds that operation's receipt and reconstructs
+manager app/client objects against the original journal. While the exact prior
+installed worker resumes, the original operation and lane remain owned, with
+no further recovery or child launch. Revealing the original receipt confirms
+recovery as `FAILED`, never `SUCCEEDED`. This case does not restart the manager
+OS process or change the Supervisor incarnation. The retained-recovery rebind
+and post-deadline read-only rules above are separately covered by component
+regressions until their installed-worker acceptance is recorded.
+
+All integrated cases verify original immutable replay, changed-intent
+`CONFLICT`, competing-key `BUSY`, untouched beta process/container identities,
+routing ownership and exact OS launch counts. Successful and recovered-runtime
+cases additionally verify independent installed provenance, producer heartbeats
+and unchanged release Git refs; the supersession case intentionally advances
+only the source selection. Focused component tests additionally
+deny further effects after the original OAuth grant expires or is revoked and
+after the operator policy is downgraded. The fixture uses no Docker socket or
+binary inside the exercising runtime; Docker only creates and removes external
+disposable test containers. The source promotion's external Actions/Release
+HTTP remains controlled, so this is not a live GitHub publication or a live
+release rollout.
+
+Do not remove the draft/review acceptance gate solely because individual tests
+passed on a different head. Record a clean checked-out commit/image, complete
+the relevant bounded host tests, verify live release/beta service identities
+were unchanged, then require that commit's CI and review disposition. An
+unknown recovery, unverified installed binding or incomplete original receipt
+must never be promoted to `SUCCEEDED` merely to clear the release lane.
+
 These bounded cases do not complete REQ-010. Integrated held active invocations,
-unresolved-effect ownership during recovery, independent Supervisor OS-process
-reconstruction and other lost-response boundaries remain separate required
-acceptance scenarios. Killing/restarting the current PID1 container destroys its
+unresolved recovery across a changed Supervisor incarnation or a separate manager
+OS-process restart, post-deadline original recovery settlement, and independent
+Supervisor OS-process reconstruction remain separate required acceptance
+scenarios. The app-only unknown-recovery case above covers its own retained lane
+but does not establish those remaining boundaries. Killing/restarting the current PID1 container destroys its
 worker PID namespace; the same-process listener reconstruction does not establish
 child survival across that OS boundary. Preserve the unresolved acceptance gate
 until the remaining exact scenarios and clean-revision CI are demonstrated.
