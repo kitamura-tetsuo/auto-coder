@@ -554,6 +554,51 @@ class WorkerLifecycle:
         self._save(record, version, snapshot)
         return record
 
+    def _reserve_expired_release_recovery(self, record: OperationRecord, version: int, snapshot: dict[str, object], client: WorkerNetworkClient) -> OperationRecord:
+        """Keep the original lane while recovering an unready release candidate."""
+        failed = snapshot.get("new_worker")
+        incumbent = snapshot.get("incumbent")
+        previous = snapshot.get("previous_binding")
+        staged = snapshot.get("staged")
+        inspected = client.inspect_supervisor()
+        data = inspected.data
+        worker = data.get("worker") if isinstance(data, dict) else None
+        if (
+            record.intent.action != "deploy_release_source"
+            or snapshot.get("previous_runtime_verified") is not True
+            or snapshot.get("recovery_attempts") != 0
+            or not isinstance(previous, dict)
+            or not isinstance(incumbent, dict)
+            or previous.get("runtime_id") != incumbent.get("runtime_id")
+            or not isinstance(staged, dict)
+            or not isinstance(failed, dict)
+            or not isinstance(worker, dict)
+            or not isinstance(data, dict)
+            or inspected.result_code != "OK"
+            or data.get("supervisor_incarnation") != inspected.supervisor_generation
+            or inspected.supervisor_generation != snapshot.get("current_supervisor_generation", incumbent.get("supervisor_generation"))
+            or worker.get("runtime_id") != failed.get("runtime_id")
+            or failed.get("runtime_id") == incumbent.get("runtime_id")
+            or worker.get("deployment_generation") != failed.get("deployment_generation")
+            or (failed.get("process_run_id") is not None and worker.get("process_run_id") != failed.get("process_run_id"))
+            or staged.get("installed_runtime_id") != failed.get("runtime_id")
+        ):
+            return self._finish(record, version, snapshot, "NEEDS_ATTENTION", "failed_release_lifetime_unverified")
+        alive = data.get("alive")
+        if alive is True and data.get("status") == "RUNNING" and (worker.get("process_run_id") is None or isinstance(worker.get("process_run_id"), str)):
+            method = "REBOOT"
+        elif alive is False:
+            method = "EXITED"
+        else:
+            return self._finish(record, version, snapshot, "NEEDS_ATTENTION", "failed_release_lifetime_unverified")
+        if self._authority_refusal(record) is not None or not self.runtime.retained_effect_permitted(record):
+            return self._finish(record, version, snapshot, "NEEDS_ATTENTION", "recovery_authority_unavailable")
+        if failed.get("process_run_id") is None and isinstance(worker.get("process_run_id"), str):
+            failed["process_run_id"] = worker["process_run_id"]
+        snapshot.update(stage="RESTORING", recovery_attempts=1, recovery_state="ATTEMPTED", recovery_method=method, deadline=time.time() + 300)
+        self._save(record, version, snapshot)
+        return record
+
     def _step(self, record: OperationRecord, version: int, snapshot: dict[str, object], name: str, client: WorkerNetworkClient, operation: str, runtime_id: str | None) -> OperationRecord:
         steps = snapshot["steps"]
         assert isinstance(steps, dict)
@@ -651,7 +696,7 @@ class WorkerLifecycle:
             effect_id = steps[name]["operation_id"]
             response = client.read_preparation(effect_id) if name == "prepare" else client.read_worker_operation(effect_id)
         # Only signed, identity-bound Supervisor observations may advance a stage.
-        if response.result_code in {"READY", "STOPPED", "RUNNING", "FAILED", "CONFLICT", "UNAVAILABLE", "UNKNOWN", "DRAINING", "IN_PROGRESS", "NEEDS_ATTENTION"} and isinstance(response.data, dict) and response.data.get("operation_id", effect_id) == effect_id:
+        if response.result_code in {"READY", "STOPPED", "RUNNING", "FAILED", "CONFLICT", "UNAVAILABLE", "UNKNOWN", "DRAINING", "RESTARTING", "IN_PROGRESS", "NEEDS_ATTENTION"} and isinstance(response.data, dict) and response.data.get("operation_id", effect_id) == effect_id:
             refreshed = self.runtime.journal.lifecycle_snapshot(record.operation_id)
             if refreshed is None:
                 return record
@@ -724,6 +769,8 @@ class WorkerLifecycle:
                 return record
             deadline = snapshot.get("deadline")
             if not isinstance(deadline, (int, float)) or time.time() > deadline:
+                if stage == "RECONCILING" and record.intent.action == "deploy_release_source" and isinstance(deadline, (int, float)):
+                    return self._reserve_expired_release_recovery(record, version, snapshot, client)
                 return self._finish(record, version, snapshot, "NEEDS_ATTENTION", "lifecycle_deadline_exceeded")
             if stage == "PREPARING":
                 steps = snapshot["steps"]
@@ -810,7 +857,7 @@ class WorkerLifecycle:
                 ):
                     # Confirm the failed child lifetime through the actual
                     # Supervisor's OS observation before reserving recovery.
-                    snapshot.update(stage="RESTORING", recovery_attempts=1, recovery_state="ATTEMPTED", deadline=time.time() + 150)
+                    snapshot.update(stage="RESTORING", recovery_attempts=1, recovery_state="ATTEMPTED", recovery_method="EXITED", deadline=time.time() + 150)
                     self._save(record, version, snapshot)
                     return record
                 if (
@@ -882,7 +929,8 @@ class WorkerLifecycle:
                     runtime_id = prior.get("runtime_id")
                     if not isinstance(runtime_id, str) or runtime_id == "bootstrap":
                         return self._finish(record, version, snapshot, "NEEDS_ATTENTION", "previous_prepared_runtime_unavailable")
-                    return self._step(record, version, snapshot, "recovery", client, "RECOVER_PREVIOUS", runtime_id)
+                    operation = "RECOVER_PREVIOUS_REBOOT" if snapshot.get("recovery_method") == "REBOOT" else "RECOVER_PREVIOUS"
+                    return self._step(record, version, snapshot, "recovery", client, operation, runtime_id)
                 observation = step.get("observation")
                 if not isinstance(observation, dict) or observation.get("status") != "RUNNING" or not isinstance(observation.get("worker"), dict):
                     return record

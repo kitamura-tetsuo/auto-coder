@@ -368,10 +368,12 @@ class _BridgeHandler(BaseHTTPRequestHandler):
 
         if method == "POST" and path == "/v1/worker-operations" and not pairs:
             value = self._parse_json(body, {"operation_id", "operation", "expected_process_run_id", "expected_deployment_generation", "expected_runtime_id"}, {"runtime_id"})
-            if value is None or not isinstance(value["operation_id"], str) or not _OPERATION.fullmatch(value["operation_id"]) or value["operation"] not in {"START", "REQUEST_GRACEFUL_STOP", "RESTART_WORKER", "RECOVER_PREVIOUS"}:
+            if value is None or not isinstance(value["operation_id"], str) or not _OPERATION.fullmatch(value["operation_id"]) or value["operation"] not in {"START", "REQUEST_GRACEFUL_STOP", "RESTART_WORKER", "RECOVER_PREVIOUS", "RECOVER_PREVIOUS_REBOOT"}:
                 return 422, "UNSUPPORTED", None
             run, generation, runtime = (value[key] for key in ("expected_process_run_id", "expected_deployment_generation", "expected_runtime_id"))
-            if not self._current_worker_matches(run, generation, allow_stopped=True, allow_crashed=value["operation"] == "RECOVER_PREVIOUS", expected_runtime_id=runtime):
+            if value["operation"] == "RECOVER_PREVIOUS_REBOOT" and self.server.bridge_config.channel != "release":
+                return 409, "CONFLICT", None
+            if not self._current_worker_matches(run, generation, allow_stopped=True, allow_crashed=value["operation"] == "RECOVER_PREVIOUS", allow_unready=value["operation"] == "RECOVER_PREVIOUS_REBOOT", expected_runtime_id=runtime):
                 return 409, "CONFLICT", None
             if value["operation"] == "REQUEST_GRACEFUL_STOP" and "runtime_id" in value:
                 return 422, "UNSUPPORTED", None
@@ -418,14 +420,14 @@ class _BridgeHandler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError):
             return None
 
-    def _current_worker_matches(self, run: object, generation: object, *, allow_stopped: bool = False, allow_crashed: bool = False, expected_runtime_id: object = None) -> bool:
+    def _current_worker_matches(self, run: object, generation: object, *, allow_stopped: bool = False, allow_crashed: bool = False, allow_unready: bool = False, expected_runtime_id: object = None) -> bool:
         supervisor = self.server.supervisor
         inspection = supervisor.inspect()
         worker = inspection.get("worker")
         if not isinstance(worker, dict):
             if not allow_stopped or inspection["status"] != "STOPPED" or run is not None or generation is not None:
                 return False
-        elif (not inspection["alive"] and not allow_crashed) or not isinstance(generation, str) or not generation or (not isinstance(run, str) or not run) and not (allow_crashed and run is None and worker.get("process_run_id") is None):
+        elif (not inspection["alive"] and not allow_crashed) or not isinstance(generation, str) or not generation or (not isinstance(run, str) or not run) and not ((allow_crashed or allow_unready) and run is None and worker.get("process_run_id") is None):
             return False
         elif worker.get("process_run_id") != run or worker.get("deployment_generation") != generation:
             return False

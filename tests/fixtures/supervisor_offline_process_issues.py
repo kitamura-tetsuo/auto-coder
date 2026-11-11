@@ -28,6 +28,13 @@ def main() -> None:
         # the subsequently selected locked-uv runtime still executes the
         # unmodified production process-issues CLI below.
         os.execv(sys.executable, [sys.executable, "/fixtures/supervisor_bridge_worker.py"])
+    if os.environ.get("AUTO_CODER_FIXTURE_HOLD_CANDIDATE_RUNTIME") == os.environ.get("VIRTUAL_ENV") and os.environ.get("AUTO_CODER_FIXTURE_HOLD_CANDIDATE_RUNTIME"):
+        # Hold a genuine selected candidate OS lifetime before it can serve
+        # readiness. Only the outer Docker restart can release this process.
+        root = Path(os.environ["AUTO_CODER_RUNTIME_ROOT"])
+        (root / "fixture-candidate-live-held").write_text("selected candidate alive without readiness", encoding="utf-8")
+        while True:
+            time.sleep(0.1)
     if os.environ.get("AUTO_CODER_FIXTURE_FAIL_STAGED_ONCE") == "1" and "/worker-versions/" in os.environ.get("VIRTUAL_ENV", ""):
         # Crash one genuine Supervisor-launched staged process before it can
         # publish a producer heartbeat; a recovered previous runtime must

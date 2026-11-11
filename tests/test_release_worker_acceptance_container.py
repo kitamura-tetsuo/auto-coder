@@ -160,7 +160,9 @@ def _ready(client: WorkerNetworkClient, source_sha: str) -> dict[str, object] | 
 
 
 @contextmanager
-def _installed_release(system: _SmokeSystem, root: Path, scenario: str, *, fail_candidate: bool = False, reconstruct_supervisor: bool = False, hold_terminal_exit: bool = False, hold_terminal_after_recovery: bool = False, stop_prior_before_deployment: bool = False) -> Iterator[_InstalledRelease]:
+def _installed_release(
+    system: _SmokeSystem, root: Path, scenario: str, *, fail_candidate: bool = False, reconstruct_supervisor: bool = False, hold_terminal_exit: bool = False, hold_terminal_after_recovery: bool = False, stop_prior_before_deployment: bool = False, hold_failed_candidate: bool = False
+) -> Iterator[_InstalledRelease]:
     """Independently install both release versions, then start the prior one."""
     image = _image()
     source = Path(os.environ.get("GITHUB_WORKSPACE", str(Path(__file__).parents[1]))).resolve()
@@ -241,6 +243,8 @@ def _installed_release(system: _SmokeSystem, root: Path, scenario: str, *, fail_
         }
         if fail_candidate:
             environment["AUTO_CODER_FIXTURE_FAIL_STAGED_ONCE"] = "1"
+        if hold_failed_candidate:
+            environment["AUTO_CODER_FIXTURE_HOLD_CANDIDATE_RUNTIME"] = str(candidate["environment_path"])
         if reconstruct_supervisor:
             environment["AUTO_CODER_TEST_RECONSTRUCT_SUPERVISOR"] = "1"
         if hold_terminal_exit or hold_terminal_after_recovery:
@@ -248,7 +252,11 @@ def _installed_release(system: _SmokeSystem, root: Path, scenario: str, *, fail_
             (runtime / "fixture-hold-selected-runtime").write_text(str(previous["environment_path"]), encoding="utf-8")
         if hold_terminal_exit:
             (runtime / "fixture-hold-terminal-exit").write_text("hold after actual terminal receipt", encoding="utf-8")
-        launch = ["run", "-d", "--rm", "--name", name, "--network", system.network, "--ip", address, "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--user", host_user, "--entrypoint", "python"]
+        launch = ["run", "-d", "--name", name, "--network", system.network, "--ip", address, "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--user", host_user, "--entrypoint", "python"]
+        if hold_failed_candidate:
+            launch.extend(["--restart", "unless-stopped"])
+        else:
+            launch.append("--rm")
         for host, guest, mode in ((runtime, "/runtime", ""), (workspace, "/workspace", ""), (routing, "/routing", ""), (fixtures, "/fixtures", "ro"), (trust, "/ci-trust", "ro"), (source, "/source", "ro")):
             launch.extend(["-v", f"{host}:{guest}" + (f":{mode}" if mode else "")])
         for key, value in environment.items():
@@ -366,6 +374,12 @@ def test_failed_installed_release_recovers_original_prior_runtime_once(real_boun
 
 
 @pytest.mark.timeout(2400)
+def test_unready_live_release_candidate_recovers_by_docker_pid1_restart(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None) -> None:
+    """Run the actual failed-but-alive release and Docker restart, without Docker in either runtime."""
+    _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=False, hold_failed_candidate=True)
+
+
+@pytest.mark.timeout(2400)
 def test_lost_installed_start_response_survives_manager_process_reconstruction(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None) -> None:
     _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=False, reconstruct_manager=True)
 
@@ -442,8 +456,9 @@ def _exercise_installed_release_join(
     hold_terminal_after_recovery: bool = False,
     reconstruct_recovery_supervisor: bool = False,
     reconstruct_held_exit: bool = False,
+    hold_failed_candidate: bool = False,
 ) -> None:
-    assert sum((reconstruct_manager, lose_start_reconstruct, supersede_after_stage, supersede_stopped_after_stage, hold_terminal_exit, hold_terminal_after_recovery, lose_recovery_reconstruct_manager)) <= 1
+    assert sum((reconstruct_manager, lose_start_reconstruct, supersede_after_stage, supersede_stopped_after_stage, hold_terminal_exit, hold_terminal_after_recovery, lose_recovery_reconstruct_manager, hold_failed_candidate)) <= 1
     assert not lose_recovery_reconstruct_manager or fail_candidate
     assert not reconstruct_recovery_supervisor or (lose_recovery_reconstruct_manager and not recovery_process)
     assert not hold_terminal_after_recovery or fail_candidate
@@ -476,6 +491,8 @@ def _exercise_installed_release_join(
         prefix = "release-rebound-recovery-"
     if reconstruct_held_exit:
         prefix = "release-held-reconstruction-"
+    if hold_failed_candidate:
+        prefix = "release-pid1-reboot-recovery-"
     scenario = prefix + uuid.uuid4().hex[:12]
     with tempfile.TemporaryDirectory(prefix="release-join-", dir=tmp_path) as directory:
         root = Path(directory)
@@ -497,6 +514,7 @@ def _exercise_installed_release_join(
                     hold_terminal_exit=hold_terminal_exit,
                     hold_terminal_after_recovery=hold_terminal_after_recovery,
                     stop_prior_before_deployment=supersede_stopped_after_stage,
+                    hold_failed_candidate=hold_failed_candidate,
                 ) as release,
                 _source_http(system.remote) as endpoint,
                 ExitStack() as processes,
@@ -683,6 +701,81 @@ def _exercise_installed_release_join(
                     assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "catalog_oid": system.revisions[1]})["status"] == "CONFLICT"
                     competing = _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing"})
                     assert competing["status"] == "BUSY" and competing["operation_id"] == operation_id
+
+                    if hold_failed_candidate:
+
+                        def unready_candidate():
+                            retained = journal.lifecycle_snapshot(operation_id)
+                            if retained is None or retained[1].get("stage") != "RECONCILING":
+                                return None
+                            inspected = release.client.inspect_supervisor()
+                            worker = inspected.data.get("worker") if isinstance(inspected.data, dict) else None
+                            if inspected.result_code != "OK" or inspected.data.get("alive") is not True or not isinstance(worker, dict) or worker.get("runtime_id") != release.candidate["installed_runtime_id"]:
+                                return None
+                            return retained
+
+                        pending_version, pending_snapshot = _wait_for(unready_candidate, timeout=150)
+                        assert pending_snapshot["recovery_attempts"] == 0
+                        assert _wait_for(lambda: (release.runtime / "fixture-candidate-live-held").exists(), timeout=30)
+                        failed_os = json.loads((release.runtime / "supervisor" / "state.json").read_text())["worker"]
+                        assert failed_os["runtime_id"] == release.candidate["installed_runtime_id"]
+                        before = _container_identity(release.container)
+                        before_restart = int(_docker("inspect", "-f", "{{.RestartCount}}", release.container).stdout.strip())
+                        assert before_restart == 0
+                        # Elapse only the original manager's recovery window.
+                        # No worker, Supervisor, or Docker state is fabricated.
+                        pending_snapshot["deadline"] = time.time() - 1
+                        assert journal.lifecycle_save(operation_id, pending_version, pending_snapshot)
+
+                        def rebooted():
+                            inspected = WorkerNetworkClient(release.client.config).inspect_supervisor()
+                            return inspected if inspected.result_code == "OK" and inspected.supervisor_generation != previous.supervisor_generation else None
+
+                        restarted = _wait_for(rebooted, timeout=120)
+                        assert restarted.data["status"] in {"RUNNING", "UNKNOWN"}
+                        after = _container_identity(release.container)
+                        assert after["id"] == before["id"] and after["pid"] != before["pid"] and after["started"] != before["started"]
+                        assert int(_docker("inspect", "-f", "{{.RestartCount}}", release.container).stdout.strip()) == 1
+                        assert _container_facts(release.container)["docker_socket"] is False
+                        assert _container_facts(release.container)["docker_binary"] is None
+                        _assert_lifetime_gone(release.container, failed_os)
+                        assert _container_identity(system.worker_name) == beta_identity
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "selected_git_sha": system.revisions[1]})["status"] == "CONFLICT"
+
+                        observer = WorkerNetworkClient(release.client.config)
+
+                        def recovered():
+                            result = _call(http, system.bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
+                            stored = journal.get(operation_id).record
+                            return result if result["status"] == "FAILED" and stored is not None and stored.phase is OperationPhase.FAILED else None
+
+                        completed = _wait_for(recovered, timeout=240)
+                        ready = _ready(observer, str(release.previous["source_sha"]))
+                        assert ready is not None
+                        binding = ready["runtime_binding"]
+                        for field in ("source_sha", "content_identity", "lock_sha256", "distribution_version"):
+                            assert binding[field] == release.previous[field]
+                        assert binding["runtime_id"] == release.previous["installed_runtime_id"]
+                        assert completed["reason"] == "new_worker_failed_previous_runtime_restored"
+                        assert completed["recovery_attempts"] == 1 and completed["recovery_method"] == "REBOOT" and completed["recovery_state"] == "CONFIRMED"
+                        assert len(completed["heartbeats"]) == 2 and completed["heartbeats"][0] < completed["heartbeats"][1]
+                        assert completed["steps"]["recovery"]["state"] == "CONFIRMED"
+                        assert completed["restored_worker"]["deployment_generation"] != failed_os["deployment_generation"]
+                        recovery_id = completed["steps"]["recovery"]["operation_id"]
+                        receipt = observer.read_worker_operation(recovery_id)
+                        assert receipt.result_code == "RUNNING" and receipt.data["intent_digest"] == completed["steps"]["recovery"]["expected_digest"]
+                        state = json.loads((release.runtime / "supervisor" / "state.json").read_text())
+                        assert state["operations"][recovery_id]["request"]["operation"] == "RECOVER_PREVIOUS_REBOOT"
+                        assert state["prior_recovery_generation"] == failed_os["deployment_generation"]
+                        assert state["failed_worker"]["deployment_generation"] == failed_os["deployment_generation"]
+                        assert "reboot_recovery" not in state
+                        launches = [json.loads(line) for line in (release.runtime / "fixture-launches.jsonl").read_text().splitlines()]
+                        assert [item["environment"] for item in launches] == [release.previous["environment_path"], release.candidate["environment_path"], release.previous["environment_path"]]
+                        assert int(_docker("inspect", "-f", "{{.RestartCount}}", release.container).stdout.strip()) == 1
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)["status"] == "FAILED"
+                        assert _container_identity(system.worker_name) == beta_identity
+                        return
 
                     if supersede_stopped_after_stage:
 

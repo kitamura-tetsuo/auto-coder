@@ -87,9 +87,19 @@ Current policy/grant loss, missing selection, ambiguous process exit and
 unresolved original operations retain the same journal lane; no timeout
 permits replacing them with a different request.
 
-If the new child fails after activation, recovery may start **at most one**
+If the new child exits after activation, recovery may start **at most one**
 previously verified prepared runtime, with a separately persisted step,
-after actual new-child exit and with current authority. The readback exposes
+after actual new-child exit and with current authority. A release-only candidate
+which is still alive but has not achieved required startup/producer readiness by
+its bounded reconciliation deadline has a second, explicitly destructive fallback:
+the Supervisor durably requests `RECOVER_PREVIOUS_REBOOT` for that exact failed
+generation and prior READY, then exits **its own container PID 1**. Docker's
+already configured `restart: unless-stopped` restarts the **same container**.
+The new Supervisor consumes the one-shot durable intent and launches the prior
+verified runtime before reporting any recovery success. Management invokes only
+the authenticated, signed Supervisor operation; neither management nor the
+Supervisor opens Docker's socket, executes `docker`, or creates/replaces a
+container. The readback exposes `recovery_method` (`EXITED` or `REBOOT`),
 `recovery_attempts`, `recovery_state` (`NOT_ATTEMPTED`, `ATTEMPTED`,
 `UNKNOWN` for an unsettled step, `CONFIRMED`) and `restored_worker`.
 Confirmed recovery ends new-source
@@ -97,7 +107,11 @@ deployment as `FAILED`, not `SUCCEEDED`. The release readback retains
 `new_worker_failed_previous_runtime_restored` while existing beta readback
 retains `new_beta_worker_failed_previous_runtime_restored`, so release
 admission does not silently change beta failure diagnostics. Unknown recovery
-is not automatically retried. Restoring Python cannot undo migrations, database
+is not automatically retried. The forced path discards all candidate process
+state and unfinished coding-agent work; external GitHub/provider effects already
+performed are not undone. It requires a running Docker daemon and the existing
+restart policy and cannot guarantee recovery if those or the prior READY are
+unavailable. Restoring Python cannot undo migrations, database
 state, provider effects or publication; those require explicit operator
 rollback/bootstrap investigation.
 
@@ -157,7 +171,8 @@ Each later mutation still passes original grant/policy and source-selection gate
 
 Missing/mismatched receipts, a live old child, a different installed binding or
 an unconfirmed observation retain the original operation/lane without a new
-transition. A retained recovery uses only its original `RECOVER_PREVIOUS` effect
+transition. A retained recovery uses only its original `RECOVER_PREVIOUS` or
+`RECOVER_PREVIOUS_REBOOT` effect
 ID and intent digest, which binds the original failed-child fence and selected
 prior runtime. It additionally requires exactly one recorded recovery attempt,
 the original verified prior binding, a distinct restored child matching the
@@ -172,8 +187,10 @@ Unavailable recovery receipt/inspection/binding observations wait within the
 original deadline. Conflicting evidence retains `NEEDS_ATTENTION` and the busy
 lane. Once original correlated evidence is observable, the normal prior-runtime
 readiness/progress checks can finish the original deployment as `FAILED` with
-recovery `CONFIRMED`. This does not add recovery of a still-running failed
-candidate or permission to infer failure from missing readiness or timeout.
+recovery `CONFIRMED`. For release alone, a candidate that remains the exact
+Supervisor-PID-verified OS lifetime but fails the bounded readiness deadline may
+instead be abandoned by the one-shot Docker-managed PID-1 restart. This does
+not bypass the prior incumbent's original terminal-drain-and-exit requirement.
 Preparation-only reconstruction is not admitted by this rule. Controlled
 signed-boundary regression cases cover recovery reconstruction and its negative
 cases. The installed recovery reconstruction cases below exercise the original
@@ -343,8 +360,11 @@ and unchanged release Git refs; the supersession case intentionally advances
 only the source selection. Focused component tests additionally
 deny further effects after the original OAuth grant expires or is revoked and
 after the operator policy is downgraded. The fixture uses no Docker socket or
-binary inside the exercising runtime; Docker only creates and removes external
-disposable test containers. The source promotion's external Actions/Release
+binary inside the exercising runtime; the outer test fixture alone creates,
+inspects and removes disposable Docker containers. The forced release recovery
+case also verifies Docker's configured restart policy relaunches the same
+container after PID 1 exits and validates the restored READY, receipt and
+producer heartbeats. The source promotion's external Actions/Release
 HTTP remains controlled, so this is not a live GitHub publication or a live
 release rollout.
 
@@ -355,10 +375,9 @@ were unchanged, then require that commit's CI and review disposition. An
 unknown recovery, unverified installed binding or incomplete original receipt
 must never be promoted to `SUCCEEDED` merely to clear the release lane.
 
-These bounded cases do not complete REQ-010. Integrated held active invocations,
-recovery of a still-running candidate with an authoritative failure producer
-and independent Supervisor OS-process reconstruction remain separate required
-acceptance scenarios. The cases above do not establish those remaining boundaries.
-Killing/restarting the current PID1 container destroys its worker PID namespace; the same-process listener reconstruction does not establish
-child survival across that OS boundary. Preserve the unresolved acceptance gate
-until the remaining exact scenarios and clean-revision CI are demonstrated.
+The destructive release fallback deliberately does not preserve the candidate's
+active invocations or OS process lifetime. Other held-incumbent-drain and
+unknown-effect scenarios still require their original non-destructive evidence.
+Passing a disposable Docker restart test is not a claim that the live release
+host was restarted: preserve separate deployment approval and clean-revision
+CI/review gates.

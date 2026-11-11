@@ -447,6 +447,90 @@ def test_previous_runtime_recovery_limit_is_per_failed_process_generation(tmp_pa
         assert start.call_count == 2
 
 
+def test_release_pid1_reboot_recovery_consumes_pinned_prior_ready_once(tmp_path: Path) -> None:
+    settings = replace(config(tmp_path, (sys.executable, "-c", "import time; time.sleep(60)")), instance_id="release-worker", channel="release")
+    first = WorkerSupervisor(settings)
+    prior = {"runtime_id": "preparedOld", "interpreter_path": sys.executable, "ready": {"installed_runtime_id": "preparedOld", "environment_path": str(tmp_path)}, "ready_path": "/versions/old/READY.json"}
+    state = first.store.read()
+    state.update(
+        worker={"pid": 12345, "start_token": "failed-token", "runtime_id": "preparedNew", "deployment_generation": "failed-generation", "process_run_id": None},
+        last_worker={"runtime_id": "preparedOld", "ready": prior["ready"]},
+        selected_runtime_id="preparedNew",
+        stopped=False,
+    )
+    first.store.write(state)
+    recovery = {"operation_id": "restore-prior", "operation": "RECOVER_PREVIOUS_REBOOT", "runtime_id": "preparedOld", "expected_runtime_id": "preparedNew", "expected_generation": "failed-generation", "expected_process_run_id": None}
+    with (
+        patch.object(first, "_resolve_runtime", return_value=prior),
+        patch.object(first, "_verify_runtime", return_value=prior),
+        patch.object(first, "_is_alive", return_value=True),
+        patch.object(first, "_reconcile_worker"),
+        patch("auto_coder.worker_supervisor.os.getpid", return_value=1),
+        patch("auto_coder.worker_supervisor.subprocess.Popen") as launch,
+    ):
+        result = first.apply(recovery)
+        assert result["status"] == "RESTARTING"
+        assert first.apply(recovery) == result
+        assert first.apply({**recovery, "operation_id": "second-restore"})["status"] == "NEEDS_ATTENTION"
+        launch.assert_not_called()
+    requested = first.store.read()
+    assert requested["reboot_recovery"] == {"operation_id": "restore-prior", "origin_incarnation": first.incarnation, "failed_generation": "failed-generation", "phase": "REQUESTED"}
+    assert requested["worker"]["runtime_id"] == "preparedNew"
+
+    resumed = WorkerSupervisor(settings)
+    try:
+        with patch.object(resumed, "_is_alive", return_value=False), patch.object(resumed, "_verify_runtime", return_value=prior), patch("auto_coder.worker_supervisor.os.getpid", return_value=1):
+            resumed._resume_reboot_recovery()
+        restored = resumed.store.read()
+        assert "reboot_recovery" not in restored
+        assert restored["operations"]["restore-prior"]["result"]["status"] == "IN_PROGRESS"
+        assert restored["worker"]["runtime_id"] == "preparedOld"
+        assert restored["worker"]["launch_operation_id"] == "restore-prior"
+        assert restored["prior_recovery_generation"] == "failed-generation"
+        assert restored["failed_worker"]["runtime_id"] == "preparedNew"
+        assert restored["worker"]["deployment_generation"] != "failed-generation"
+        with patch("auto_coder.worker_supervisor.os.getpid", return_value=1), patch("auto_coder.worker_supervisor.subprocess.Popen") as launch:
+            WorkerSupervisor(settings)._resume_reboot_recovery()
+            launch.assert_not_called()
+    finally:
+        if resumed.child is not None and resumed.child.poll() is None:
+            resumed.child.terminate()
+            resumed.child.wait(timeout=5)
+
+
+def test_reboot_recovery_refuses_beta_and_surviving_candidate(tmp_path: Path) -> None:
+    prior = {"runtime_id": "preparedOld", "interpreter_path": sys.executable, "ready": {"installed_runtime_id": "preparedOld"}}
+    settings = replace(config(tmp_path), instance_id="release-worker", channel="release")
+    supervisor = WorkerSupervisor(settings)
+    state = supervisor.store.read()
+    state.update(worker={"runtime_id": "preparedNew", "deployment_generation": "failed-generation", "process_run_id": None}, last_worker={"runtime_id": "preparedOld", "ready": prior["ready"]}, selected_runtime_id="preparedNew")
+    supervisor.store.write(state)
+    payload = {"operation_id": "restore-prior", "operation": "RECOVER_PREVIOUS_REBOOT", "runtime_id": "preparedOld", "expected_runtime_id": "preparedNew", "expected_generation": "failed-generation", "expected_process_run_id": None}
+    with (
+        patch.object(supervisor, "_resolve_runtime", return_value=prior),
+        patch.object(supervisor, "_verify_runtime", return_value=prior),
+        patch.object(supervisor, "_is_alive", return_value=True),
+        patch.object(supervisor, "_reconcile_worker"),
+        patch("auto_coder.worker_supervisor.os.getpid", return_value=1),
+    ):
+        assert supervisor.apply(payload)["status"] == "RESTARTING"
+
+    reconstruction = WorkerSupervisor(settings)
+    with patch.object(reconstruction, "_is_alive", return_value=True), patch.object(reconstruction, "_verify_runtime", return_value=prior), patch("auto_coder.worker_supervisor.os.getpid", return_value=1), patch("auto_coder.worker_supervisor.subprocess.Popen") as launch:
+        reconstruction._resume_reboot_recovery()
+        launch.assert_not_called()
+    assert supervisor.store.read()["operations"]["restore-prior"]["result"]["status"] == "NEEDS_ATTENTION"
+
+    beta = WorkerSupervisor(replace(settings, channel="beta"))
+    beta.store = SupervisorStore(tmp_path / "other" / "state.json")
+    beta_state = beta.store.read()
+    beta_state.update(worker=state["worker"], last_worker=state["last_worker"], selected_runtime_id="preparedNew")
+    beta.store.write(beta_state)
+    with patch.object(beta, "_resolve_runtime", return_value=prior), patch.object(beta, "_is_alive", return_value=True), patch.object(beta, "_reconcile_worker"), patch("auto_coder.worker_supervisor.os.getpid", return_value=1):
+        assert beta.apply(payload)["status"] == "CONFLICT"
+    assert beta.store.read().get("reboot_recovery") is None
+
+
 def test_reconstruction_fences_unresolved_durable_effect(tmp_path: Path) -> None:
     first = WorkerSupervisor(config(tmp_path))
     state = first.store.read()
