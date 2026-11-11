@@ -338,7 +338,7 @@ def _systemd_catalog() -> tuple[str, ...]:
 
 
 def _unit_enablement(unit: str) -> str:
-    result = subprocess.run(("systemctl", "is-enabled", unit), capture_output=True, text=True, timeout=15)
+    result = subprocess.run(("systemctl", "is-enabled", "--", unit), capture_output=True, text=True, timeout=15)
     state = result.stdout.strip()
     if result.returncode not in (0, 1, 3) or len(result.stderr) > 4096 or not re.fullmatch(r"[a-z-]{1,64}", state):
         raise RouteManifestUnavailable("installed systemd enablement cannot be independently verified")
@@ -360,7 +360,7 @@ def _systemd_unit(unit: str, *, trusted_uid: int = 0) -> SystemdRouteFact:
         properties = ""
         repeatable: dict[str, list[str]] = {}
     else:
-        properties = _command("systemctl", "show", unit, "--property=" + ",".join(_UNIT_PROPERTIES))
+        properties = _command("systemctl", "show", "--property=" + ",".join(_UNIT_PROPERTIES), "--", unit)
         shown = {}
         repeatable = {}
         for line in properties.splitlines():
@@ -392,7 +392,7 @@ def _systemd_unit(unit: str, *, trusted_uid: int = 0) -> SystemdRouteFact:
         if not shown["UnitFileState"] and (shown["LoadState"] != "not-found" or shown["FragmentPath"]):
             raise RouteManifestUnavailable("effective systemd unit-file state is unavailable")
     try:
-        unit_source = _command("systemctl", "cat", unit, "--no-pager")
+        unit_source = _command("systemctl", "cat", "--no-pager", "--", unit)
     except subprocess.CalledProcessError:
         if not is_template and shown["LoadState"] == "not-found" and not shown["FragmentPath"] and not shown["UnitFileState"] and shown["ActiveState"] == "inactive":
             unit_source = "<no installed unit source>"

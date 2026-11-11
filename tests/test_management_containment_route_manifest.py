@@ -49,6 +49,20 @@ def test_other_service_activators_are_fingerprinted_without_main_pid(monkeypatch
     assert fact.inhibited is False
 
 
+def test_root_mount_unit_name_is_never_misread_as_a_systemctl_option(monkeypatch: pytest.MonkeyPatch) -> None:
+    name = "-.mount"
+    shown = "Id=-.mount\nLoadState=loaded\nUnitFileState=generated\nActiveState=active\nSubState=mounted\nFragmentPath=/run/systemd/generator/-.mount\nNeedDaemonReload=no\n"
+    commands: list[tuple[str, ...]] = []
+
+    def command(*args: str, **kwargs: object) -> str:
+        commands.append(args)
+        return shown if args[1] == "show" else "[Mount]\nWhere=/\n"
+
+    monkeypatch.setattr(routes, "_command", command)
+    assert routes._systemd_unit(name).unit == name
+    assert all(args[-2:] == ("--", name) for args in commands)
+
+
 def test_systemd_catalog_includes_indirect_service_activation_types(monkeypatch: pytest.MonkeyPatch) -> None:
     commands: list[tuple[str, ...]] = []
 
