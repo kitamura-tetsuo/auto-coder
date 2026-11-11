@@ -223,7 +223,7 @@ def _first_launch_with_actual_admission_contention(root: Path, request_file: Pat
     with patch.object(fresh_new_host_start, "_create_host_start_claim", side_effect=barrier):
         contender.start()
         try:
-            assert claimed.wait(20), "first host did not durably claim the launch"
+            assert claimed.wait(10), f"first host did not durably claim the launch: {result.get('error')!r}"
             assert (root / "guard/new-docker-first-start.json").is_file()
             assert not (root / "state/physical-child-invocations").exists()
             competing = _run_host("start-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id, timeout=20)
