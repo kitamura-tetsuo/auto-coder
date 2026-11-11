@@ -168,7 +168,7 @@ def _create_real_new_container(root: Path, request_file: Path, request: dict[str
         "--env",
         "PYTHONPATH=" + str(Path(str(request["application_root"])).parent),
         "--env",
-        "HOME=" + str(request["state_root"]),
+        "HOME=/dev/shm",
     ]
     for key in ("state_root", "operation_root", "guard_root", "oauth_root", "bootstrap_config", "management_config", "executable", "application_root"):
         path = str(request[key])
@@ -179,13 +179,17 @@ def _create_real_new_container(root: Path, request_file: Path, request: dict[str
     return container_id, image_id, tag
 
 
-def _authorized_readback(container_id: str, token: str) -> subprocess.CompletedProcess[str]:
+def _authorized_readback(container_id: str, token: str, observation_id: str) -> subprocess.CompletedProcess[str]:
     code = (
-        "import os,urllib.request,urllib.error;"
-        'data=b\'{"jsonrpc":"2.0","id":1,"method":"tools/list"}\';'
-        "r=urllib.request.Request('http://127.0.0.1:18881/mcp',data=data,method='POST',"
-        "headers={'Authorization':'Bearer '+os.environ['SYNTHETIC_TOKEN'],'Content-Type':'application/json'});"
-        "urllib.request.urlopen(r,timeout=3).read()"
+        "import http.client,json,os;"
+        f"obs={observation_id!r};"
+        "payload=json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call',"
+        "'params':{'name':'auto_coder_whoami','arguments':{'observation_id':obs}}}).encode();"
+        "c=http.client.HTTPConnection('127.0.0.1',18881,timeout=3);"
+        "c.request('POST','/mcp',payload,headers={'Authorization':'Bearer '+os.environ['SYNTHETIC_TOKEN'],"
+        "'Content-Type':'application/json','Accept':'application/json, text/event-stream'});"
+        "r=c.getresponse();data=json.loads(r.read(65537));"
+        "assert r.status==200 and data['result']['structuredContent']['uid']=='new-operator'"
     )
     return subprocess.run(["docker", "exec", "--env", "SYNTHETIC_TOKEN=" + token, container_id, "python3", "-B", "-c", code], capture_output=True, text=True, timeout=20)
 
@@ -211,13 +215,14 @@ def test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback
         assert len(counter.read_text().splitlines()) == 1
         assert (root / "state/new-first-launch-claimed.json").is_file()
         assert (root / "state/new-first-launched.json").is_file()
+        observation_id = json.loads((root / "state/new-first-launched.json").read_bytes())["observation_id"]
         replay = _run_host("start-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id, timeout=20)
         assert replay.returncode == 1
         assert len(counter.read_text().splitlines()) == 1
 
         deadline = time.monotonic() + 40
         while time.monotonic() < deadline:
-            call = _authorized_readback(container_id, token)
+            call = _authorized_readback(container_id, token, observation_id)
             if call.returncode == 0:
                 break
             time.sleep(0.3)

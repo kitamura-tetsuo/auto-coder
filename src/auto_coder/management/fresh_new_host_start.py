@@ -83,8 +83,18 @@ def _assert_new_owner(peer_pid: int, owner_incarnation: str, state_root: Path, i
 
 def _serve_one_new_guard(listener: socket.socket, request_file: Path, container_id: str, image_id: str, host_claim_sha256: str, *, timeout: float) -> None:
     request = json.loads(_file(request_file, private=True, limit=65536)[1])
-    listener.settimeout(timeout)
-    connection, _ = listener.accept()
+    deadline = time.monotonic() + timeout
+    listener.settimeout(0.25)
+    while True:
+        if time.monotonic() >= deadline:
+            raise HostObservationUnavailable("NEW Docker owner did not request its first-start guard before the deadline")
+        if _docker_created_fields(container_id)[3:5] != ("running", True):
+            raise HostObservationUnavailable("NEW Docker owner exited before requesting its first-start guard")
+        try:
+            connection, _ = listener.accept()
+            break
+        except socket.timeout:
+            continue
     with connection:
         connection.settimeout(10)
         peer_pid, peer_uid, _ = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
