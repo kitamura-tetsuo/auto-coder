@@ -23,8 +23,8 @@ def test_offline_default_never_sends_and_never_claims_deployment(tmp_path):
         text=True,
         env={**os.environ, "XDG_STATE_HOME": str(tmp_path)},
         timeout=15,
-        check=True,
     )
+    assert result.returncode == 3
     report = json.loads(result.stdout.splitlines()[-1])
     assert report == {
         "verdict": "NOT_RUN",

@@ -236,7 +236,7 @@ def main() -> int:
         logger.warning("Dot rollout transport unavailable: {}", type(error).__name__)
         report = RolloutReport("BLOCKED", "unknown", "MCP transport or authenticated producer unavailable; no effect dispatched")
     print(json.dumps(asdict(report), sort_keys=True))
-    return 0 if report.verdict in {"PASS", "NOT_RUN"} else 2
+    return {"PASS": 0, "FAIL": 1, "BLOCKED": 2, "NOT_RUN": 3}[report.verdict]
 
 
 if __name__ == "__main__":

@@ -126,7 +126,10 @@ of actual structured MCP read responses identify the observed bytes without
 leaking raw credentials or implying installed readiness. `positive_deployment_proven`
 and `effect_dispatched` remain false. Stdout is newline-delimited JSON (Loguru
 console records followed by the final report on the last line); the same
-nonsecret diagnostics go to a rotating Loguru state-directory file. Any future `PASS` requires an independent original producer oracle,
+nonsecret diagnostics go to a rotating Loguru state-directory file. Exit codes
+are 0 only for independently established `PASS`, 1 for `FAIL`, 2 for
+`BLOCKED` and **3 for `NOT_RUN`**, so a scheduler cannot mistake an
+unexecuted acceptance for success. Any future `PASS` requires an independent original producer oracle,
 not just an MCP JSON response or a checkpoint.
 
 **Current acceptance gap:** This version has no mutation mode, no
