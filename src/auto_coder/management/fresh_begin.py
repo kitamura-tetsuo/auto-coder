@@ -150,8 +150,8 @@ def inspect_new_instance_origin(
     request_file: Path,
     *,
     guard_entries: frozenset[str] = frozenset(),
-    state_entries: frozenset[str] = frozenset(),
-    operation_entries: frozenset[str] = frozenset(),
+    state_entries: frozenset[str] | None = frozenset(),
+    operation_entries: frozenset[str] | None = frozenset(),
 ) -> NewOriginReceipt:
     """Re-read original inputs across explicitly named, non-authorizing additions.
 
@@ -181,9 +181,9 @@ def inspect_new_instance_origin(
             raise ValueError("original NEW root scope differs")
         for index, path in enumerate((current_request["state_root"], current_request["operation_root"], current_request["guard_root"], current_request["oauth_root"])):
             additions = (state_entries, operation_entries, guard_entries, frozenset())[index]
-            now = _root(Path(path), private=index < 3, empty=index < 2 and not additions)
+            now = _root(Path(path), private=index < 3, empty=index < 2 and additions == frozenset())
             expected = roots[index]
-            if index == 2 or additions:
+            if index == 2 or additions is None or additions:
                 # A newly created record changes the directory mtime/ctime.
                 # Only the fixed original device/inode/ownership is retained;
                 # consumers must verify every expected new entry themselves.
@@ -194,7 +194,7 @@ def inspect_new_instance_origin(
                     _root_binding_matches_for_record(expected, directory)
             elif asdict(now) != expected:
                 raise ValueError("original NEW root identity changed")
-            if index < 2:
+            if index < 2 and additions is not None:
                 with _open(Path(path), directory=True) as root_descriptor:
                     if _identity(Path(path), root_descriptor) != now or set(os.listdir(root_descriptor)) != additions:
                         raise ValueError("new state or operation namespace differs")

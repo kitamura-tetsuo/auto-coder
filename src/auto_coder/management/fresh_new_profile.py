@@ -33,8 +33,8 @@ def inspect_new_instance_profile(
     request_file: Path,
     *,
     guard_entries: frozenset[str] = frozenset(),
-    state_entries: frozenset[str] = frozenset(),
-    operation_entries: frozenset[str] = frozenset(),
+    state_entries: frozenset[str] | None = frozenset(),
+    operation_entries: frozenset[str] | None = frozenset(),
 ) -> NewProfileReceipt:
     """Reject a semantically mismatched, unsupported or changed NEW profile.
 

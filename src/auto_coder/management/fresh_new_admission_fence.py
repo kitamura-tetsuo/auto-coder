@@ -33,13 +33,11 @@ class NewAdmissionFenceObservation:
 
 
 @contextmanager
-def hold_new_admission_fence(request_file: Path) -> Iterator[NewAdmissionFenceObservation]:
-    """Serialize NEW admission candidates on the actual protected guard inode.
+def hold_new_guard_flock(request_file: Path) -> Iterator[NewAdmissionFenceObservation]:
+    """Hold the original guard inode through a caller-owned effect boundary.
 
-    This is a prerequisite local arbitration primitive, not a replacement for
-    the still-missing prior-owner exclusion, authorized host challenge, durable
-    first-launch claim, running supervisor owner or authenticated readback.
-    A returned observation cannot be reused after this descriptor closes.
+    The caller is responsible for post-effect content/source verification;
+    this context provides only held kernel serialization and inode identity.
     """
     origin = inspect_new_instance_origin(request_file)
     profile = inspect_new_instance_profile(request_file)
@@ -73,5 +71,14 @@ def hold_new_admission_fence(request_file: Path) -> Iterator[NewAdmissionFenceOb
         current = _identity(guard, descriptor)
         if (current.device, current.inode, current.uid, current.mode) != (info.st_dev, info.st_ino, info.st_uid, stat.S_IMODE(info.st_mode)):
             raise ValueError("NEW admission guard changed while fence held")
-        if inspect_new_instance_origin(request_file) != origin or inspect_new_instance_profile(request_file) != profile:
-            raise ValueError("NEW admission sources changed while fence held")
+
+
+@contextmanager
+def hold_new_admission_fence(request_file: Path) -> Iterator[NewAdmissionFenceObservation]:
+    """Serialize an observation only; no launch authority survives this scope."""
+    with hold_new_guard_flock(request_file) as observation:
+        yield observation
+        if inspect_new_instance_origin(request_file).record_sha256 != observation.origin_sha256:
+            raise ValueError("NEW origin changed while probe fence was held")
+        if inspect_new_instance_profile(request_file).origin_sha256 != observation.origin_sha256:
+            raise ValueError("NEW profile changed while probe fence was held")

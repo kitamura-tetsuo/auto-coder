@@ -6,6 +6,7 @@ import http.client
 import sqlite3
 import time
 from pathlib import Path
+from typing import Callable, Protocol
 from urllib.parse import urlsplit
 
 from loguru import logger
@@ -16,13 +17,37 @@ from .readiness_observation import read_authenticated_readback
 from .recovery_evidence import assert_current_owner
 
 
+class ReadinessIntent(Protocol):
+    @property
+    def request_id(self) -> str: ...
+
+    @property
+    def runtime_reference(self) -> str: ...
+
+    @property
+    def management_config_sha256(self) -> str: ...
+
+    @property
+    def application_sha256(self) -> str: ...
+
+
 class FreshReadinessObserver:
-    def __init__(self, supervisor: ManagementBootstrapSupervisor, intent: FreshInitializationIntent, observation: dict[str, object], issuer: str, application_root: Path) -> None:
+    def __init__(
+        self,
+        supervisor: ManagementBootstrapSupervisor,
+        intent: ReadinessIntent,
+        observation: dict[str, object],
+        issuer: str,
+        application_root: Path,
+        *,
+        record_outcome: Callable[..., None] = record_fresh_outcome,
+    ) -> None:
         self.supervisor = supervisor
         self.intent = intent
         self.observation = observation
         self.issuer = issuer
         self.application_root = application_root
+        self.record_outcome = record_outcome
         self.finished = False
         self.succeeded = False
 
@@ -30,6 +55,8 @@ class FreshReadinessObserver:
         config = self.supervisor.config
         if config.fresh_runtime_binding is None:
             return Path(path).resolve(strict=True).parent == self.application_root and application_tree_sha256(self.application_root) == self.intent.application_sha256
+        if not isinstance(self.intent, FreshInitializationIntent):
+            return False
         from .fresh_runtime_binding import fresh_management_path, verify_installed_fresh_binding
         from .oauth_config import load_management_settings
 
@@ -52,7 +79,7 @@ class FreshReadinessObserver:
                 raise ValueError("fresh readiness observation is malformed")
             current = self.supervisor.inspect()
             if time.time() > deadline or not current.process_ready or self.supervisor._identity(current.record) != identity:
-                record_fresh_outcome(self.supervisor.config.state_root, self.observation, status="unknown")
+                self.record_outcome(self.supervisor.config.state_root, self.observation, status="unknown")
                 logger.warning("Fresh management initialization request={} status=unknown", self.intent.request_id)
                 self.finished = True
                 return
@@ -72,7 +99,7 @@ class FreshReadinessObserver:
             proof = read_authenticated_readback(self.supervisor.config, observation_id=observation_id, observation_started_at=float(started), observation_ends_at=float(deadline))
             if proof is not None and proof.child_identity == identity and proof.management_config_sha256 == self.intent.management_config_sha256 and self._application_matches(proof.application_path, current.record.selected_runtime):
                 assert_current_owner(self.supervisor.config, self.supervisor.incarnation)
-                record_fresh_outcome(self.supervisor.config.state_root, self.observation, status="succeeded")
+                self.record_outcome(self.supervisor.config.state_root, self.observation, status="succeeded")
                 logger.info("Fresh management initialization request={} status=succeeded", self.intent.request_id)
                 self.succeeded = True
                 self.finished = True

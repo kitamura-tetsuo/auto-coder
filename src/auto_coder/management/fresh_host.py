@@ -12,6 +12,7 @@ import json
 import os
 import sqlite3
 import stat
+import subprocess
 from dataclasses import asdict
 from pathlib import Path
 
@@ -89,7 +90,7 @@ def _evidence(path: Path) -> tuple[PriorContainer, PriorContainer, str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Fresh management host evidence; no Docker mutation")
+    parser = argparse.ArgumentParser(description="Fresh management trusted-local host authority; Docker starts require an explicit selected command")
     commands = parser.add_subparsers(dest="command", required=True)
     preflight = commands.add_parser("preflight", help="Read-only NEW-instance assessment; never launch authority")
     preflight.add_argument("--request-file", required=True, type=Path)
@@ -105,6 +106,11 @@ def main() -> None:
     docker_created.add_argument("--request-file", required=True, type=Path)
     docker_created.add_argument("--container-id", required=True)
     docker_created.add_argument("--image-id", required=True)
+    docker_start = commands.add_parser("start-new-container", help="Consume one NEW Docker first-start claim; never retry an uncertain effect")
+    docker_start.add_argument("--request-file", required=True, type=Path)
+    docker_start.add_argument("--container-id", required=True)
+    docker_start.add_argument("--image-id", required=True)
+    docker_start.add_argument("--timeout", type=float, default=120)
     capture = commands.add_parser("capture")
     for option in ("management-id", "management-image", "proxy-id", "proxy-image", "mounts-file", "guard-dir"):
         capture.add_argument("--" + option, required=True)
@@ -149,6 +155,10 @@ def main() -> None:
             from .fresh_new_docker import inspect_created_new_docker
 
             print(json.dumps(inspect_created_new_docker(args.request_file, args.container_id, args.image_id), sort_keys=True))
+        elif args.command == "start-new-container":
+            from .fresh_new_host_start import start_new_docker_once
+
+            print(json.dumps(start_new_docker_once(args.request_file, args.container_id, args.image_id, timeout=args.timeout), sort_keys=True))
         elif args.command == "capture":
             mounts = json.loads(_protected_file(Path(args.mounts_file)))
             if not isinstance(mounts, dict) or set(mounts) != {"management", "proxy"}:
@@ -206,7 +216,7 @@ def main() -> None:
                 serve_one_fresh_grant(args.guard_dir / "fresh-guard.sock", intent, management, proxy, fence, args.prior_network_fd, bootstrap_config=args.bootstrap_config)
             finally:
                 os.close(fence)
-    except (OSError, ValueError, TypeError, KeyError, sqlite3.Error, yaml.YAMLError, HostObservationUnavailable) as exc:
+    except (OSError, ValueError, TypeError, KeyError, sqlite3.Error, yaml.YAMLError, HostObservationUnavailable, subprocess.SubprocessError) as exc:
         parser.exit(1, f"fresh host observation unavailable: {exc}\n")
 
 
