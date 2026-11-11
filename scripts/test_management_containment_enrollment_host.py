@@ -297,9 +297,19 @@ def run_fixture() -> None:
         if not re.fullmatch(r"[0-9a-f]{64}", alternative):
             raise AssertionError("fixture Docker returned an ambiguous alternative identity")
         created_containers.append(alternative)
-        with_alternative = _call_cli("verify", scope, previous)
+        for _ in range(5):
+            with_alternative = _call_cli("verify", scope, previous)
+            if "docker-alternative-management:" + alternative in _authorities(with_alternative):
+                break
+            # Other host-controlled, unrelated Docker objects can change
+            # between the two full-engine inventory reads. Such races must
+            # refuse; retrying an isolated acceptance probe is not acceptance.
+            if "docker" not in _authorities(with_alternative):
+                break
+            time.sleep(0.2)
         if "docker-alternative-management:" + alternative not in _authorities(with_alternative) or "saved-report:docker" not in _authorities(with_alternative):
-            raise AssertionError("unselected real Docker management-image candidate was not refused")
+            reasons = {item["authority"]: item["reason"] for item in with_alternative["unavailable"]}
+            raise AssertionError("unselected real Docker management-image candidate was not refused: " + repr(reasons))
         _docker("rm", alternative)
         created_containers.remove(alternative)
         logger.info("Unselected stopped management-image alternative was detected and rejected without touching unrelated Docker objects")
