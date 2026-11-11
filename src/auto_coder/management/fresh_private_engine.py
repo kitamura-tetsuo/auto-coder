@@ -324,8 +324,19 @@ def _observe_source(
             raise HostObservationUnavailable("private Engine has existing container startup sources")
         if expected_container_id is not None and children != [expected_container_id]:
             raise HostObservationUnavailable("private Engine has another configured startup source")
-    if _parent_security_snapshot(_parent(outer_socket, parent_id)) != _parent_security_snapshot(parent) or _engine_id(outer_socket) != outer_id or _engine_id(private_socket) != private_id:
-        raise HostObservationUnavailable("private Engine parent or daemon changed during observation")
+    original_security = _parent_security_snapshot(parent)
+    current_security = _parent_security_snapshot(_parent(outer_socket, parent_id))
+    if current_security != original_security:
+        changed = sorted(key for key in original_security if original_security[key] != current_security[key])
+        if "State" in changed:
+            prior_state = original_security["State"]
+            current_state = current_security["State"]
+            if isinstance(prior_state, dict) and isinstance(current_state, dict):
+                changed_fields = sorted(key for key in prior_state if prior_state[key] != current_state[key])
+                changed.append("State." + ",".join(changed_fields))
+        raise HostObservationUnavailable("private Engine parent or daemon changed during observation (fields: " + ",".join(changed) + ")")
+    if _engine_id(outer_socket) != outer_id or _engine_id(private_socket) != private_id:
+        raise HostObservationUnavailable("private Engine parent or daemon changed during observation (Engine ID)")
     if _lifetime(pid, outer_socket=outer_socket, parent_id=parent_id) != (token, pid_ns, net_ns, boot_id):
         raise HostObservationUnavailable("private Engine parent lifetime changed during observation")
     if original is None and (inspect_new_instance_origin(request_file) != origin or inspect_new_instance_profile(request_file) != profile):
