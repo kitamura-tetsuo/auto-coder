@@ -795,7 +795,12 @@ def pause_after_durable_claim(*args, **kwargs):
     os.kill(os.getpid(), signal.SIGSTOP)
     return digest
 host._create_host_start_claim = pause_after_durable_claim
-print(json.dumps(host.start_new_docker_once(Path(sys.argv[1]), sys.argv[2], sys.argv[3])), flush=True)
+kwargs = {}
+if len(sys.argv) == 6:
+    kwargs = {"private_root": Path(sys.argv[4]), "outer_socket": Path(sys.argv[5])}
+elif len(sys.argv) != 4:
+    raise SystemExit("unexpected original NEW source test arguments")
+print(json.dumps(host.start_new_docker_once(Path(sys.argv[1]), sys.argv[2], sys.argv[3], **kwargs)), flush=True)
 """
 
 

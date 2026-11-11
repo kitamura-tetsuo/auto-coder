@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -27,13 +30,14 @@ from auto_coder.management.fresh_private_engine import (
     hold_private_engine_source,
 )
 from tests.test_management_new_instance_first_launch_docker import (
+    _PAUSE_AFTER_HOST_CLAIM,
     _authorized_readback,
     _create_real_new_container,
     _prepare_real_new_source,
     _run_host,
     _wait_for_new_outcome,
 )
-from tests.test_management_new_instance_preflight import request_file
+from tests.test_management_new_instance_preflight import _environment, request_file
 from tests.test_management_new_instance_profile import configured_request
 
 pytestmark = [
@@ -109,7 +113,8 @@ def test_real_private_engine_parent_preserves_original_and_seals_independent_sou
         _remove_disposable_engine_root(root)
 
 
-def test_private_source_first_launch_and_retained_grant_readback(request_file: Path) -> None:
+@pytest.mark.parametrize("competing_source_during_claim", [False, True])
+def test_private_source_first_launch_and_retained_grant_readback(request_file: Path, competing_source_during_claim: bool) -> None:
     """Cross the private source, host challenge, and real OAuth child boundary."""
     token, request = _prepare_real_new_source(request_file)
     original_oauth = (request_file.parent / "oauth/oauth.sqlite3").read_bytes()
@@ -164,6 +169,63 @@ def test_private_source_first_launch_and_retained_grant_readback(request_file: P
             "--outer-socket",
             str(outer_socket),
         )
+        if competing_source_during_claim:
+            # A second trusted Docker client can reach the socket while the
+            # original host holds the guard. The guard-to-effect recheck must
+            # refuse any later configured sibling and permanently consume
+            # the original one-shot claim, even when that sibling is removed.
+            suspended = subprocess.Popen(
+                [
+                    sys.executable, "-B", "-c", _PAUSE_AFTER_HOST_CLAIM,
+                    str(request_file), child_id, image_id, str(root), str(outer_socket),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=_environment(),
+            )
+            try:
+                assert suspended.stdout is not None
+                assert select.select([suspended.stdout], [], [], 30)[0], "private host did not reach claim barrier"
+                barrier = suspended.stdout.readline()
+                assert barrier == "new-host-claim-fsynced\n", (
+                    barrier,
+                    suspended.poll(),
+                    suspended.stderr.read() if suspended.poll() is not None and suspended.stderr is not None else "",
+                )
+                original_claim = (request_file.parent / "guard/new-docker-first-start.json").read_bytes()
+                assert not (request_file.parent / "state/physical-child-invocations").exists()
+                extra = subprocess.run(
+                    ["docker", "--host", selected_host, "container", "create", "--entrypoint", "/bin/sh", image_id, "-c", "true"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                ).stdout.strip()
+                try:
+                    os.kill(suspended.pid, signal.SIGCONT)
+                    stdout, stderr = suspended.communicate(timeout=60)
+                    assert suspended.returncode == 1 and stdout == "", (suspended.returncode, stdout, stderr)
+                    assert "another configured startup source" in stderr, stderr
+                    assert (request_file.parent / "guard/new-docker-first-start.json").read_bytes() == original_claim
+                    assert not (request_file.parent / "state/physical-child-invocations").exists()
+                    assert (request_file.parent / "oauth/oauth.sqlite3").read_bytes() == original_oauth
+                finally:
+                    subprocess.run(
+                        ["docker", "--host", selected_host, "container", "rm", extra],
+                        check=True,
+                        capture_output=True,
+                        timeout=30,
+                    )
+                replay = _run_host(*arguments, timeout=15)
+                assert replay.returncode != 0 and replay.stdout == ""
+                assert (request_file.parent / "guard/new-docker-first-start.json").read_bytes() == original_claim
+                assert not (request_file.parent / "state/physical-child-invocations").exists()
+                return
+            finally:
+                if suspended.poll() is None:
+                    suspended.kill()
+                    suspended.communicate(timeout=10)
         launch = _run_host(*arguments, timeout=150)
         assert launch.returncode == 0, (launch.stderr, subprocess.run(["docker", "logs", child_id], capture_output=True, text=True).stdout)
         assert json.loads(launch.stdout)["status"] == "first-child-observed-awaiting-authenticated-readback"
