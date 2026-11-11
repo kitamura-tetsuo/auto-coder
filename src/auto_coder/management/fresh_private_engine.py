@@ -104,6 +104,21 @@ def _root_stat(path: Path, *, require_empty: bool = False) -> os.stat_result:
         return info
 
 
+def _data_stat(private_root: Path) -> os.stat_result:
+    """Stat the new data root without reading daemon-owned Docker contents.
+
+    Docker may chown the mounted data-root directory to root during its own
+    initialization. Only the original owner-only parent directory can name
+    this inode; requiring the host operator to traverse Docker's internal
+    directory would needlessly expand access.
+    """
+    with _open(private_root, directory=True) as descriptor:
+        info = os.stat("data", dir_fd=descriptor, follow_symlinks=False)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.geteuid()) or stat.S_IMODE(info.st_mode) & 0o022:
+            raise HostObservationUnavailable("private Engine data root identity or write protection differs")
+        return info
+
+
 def _record(path: Path, value: dict[str, object]) -> str:
     """Durably publish once; a partial/uncertain record is not retried."""
     encoded = _canonical(value)
@@ -194,7 +209,7 @@ def _observe_source(
     private_root, socket_dir, data_dir = _private_paths(private_root, request_file)
     root_info = _root_stat(private_root)
     socket_dir_info = _root_stat(socket_dir)
-    data_dir_info = _root_stat(data_dir)
+    data_dir_info = _data_stat(private_root)
     private_socket = socket_dir / "docker.sock"
     # Opening a Unix socket with open(2) is unsupported. Stat its directory
     # entry through a held no-follow parent directory descriptor instead.
@@ -321,6 +336,19 @@ def assert_private_engine_live(request_file: Path, private_root: Path, outer_soc
         raise HostObservationUnavailable("private Engine parent/namespace/source changed before child launch")
 
 
+def _assert_original_source_identity(observed: PrivateEngineEvidence, intent: dict[str, object]) -> None:
+    identity = {
+        "private_root_dev": observed.private_root_dev,
+        "private_root_ino": observed.private_root_ino,
+        "socket_dir_dev": observed.socket_dir_dev,
+        "socket_dir_ino": observed.socket_dir_ino,
+        "data_dir_dev": observed.data_dir_dev,
+        "data_dir_ino": observed.data_dir_ino,
+    }
+    if any(intent.get(key) != value for key, value in identity.items()):
+        raise HostObservationUnavailable("private Engine directories differ from pre-effect intent")
+
+
 @contextmanager
 def hold_private_engine_source(request_file: Path, private_root: Path, outer_socket: Path, *, expected_container_id: str | None = None) -> Iterator[PrivateEngineEvidence]:
     """Hold original source custody while the caller performs one launch."""
@@ -333,7 +361,7 @@ def hold_private_engine_source(request_file: Path, private_root: Path, outer_soc
         ready = _read_record(private_root / SOURCE_READY)
         created = _read_record(private_root / SOURCE_CREATED)
         intent = _read_record(private_root / SOURCE_INTENT)
-        if set(intent) != {"schema_version", "origin_sha256", "request_id", "parent_image_id", "outer_engine_id", "nonce"} or intent.get("schema_version") != 1:
+        if set(intent) != {"schema_version", "origin_sha256", "request_id", "parent_image_id", "outer_engine_id", "nonce", "private_root_dev", "private_root_ino", "socket_dir_dev", "socket_dir_ino", "data_dir_dev", "data_dir_ino"} or intent.get("schema_version") != 1:
             raise HostObservationUnavailable("private Engine source intent is invalid")
         if set(created) != {"schema_version", "intent_sha256", "parent_container_id"} or created.get("schema_version") != 1 or created.get("intent_sha256") != hashlib.sha256(_canonical(intent)).hexdigest():
             raise HostObservationUnavailable("private Engine source creation is invalid")
@@ -346,6 +374,7 @@ def hold_private_engine_source(request_file: Path, private_root: Path, outer_soc
         if parent.get("Name") != "/ac-new-private-engine-" + nonce[:16]:
             raise HostObservationUnavailable("private Engine parent was not the selected original source")
         observed = _observe_source(request_file, private_root, outer_socket, str(created["parent_container_id"]), str(intent["parent_image_id"]), require_empty_private_engine=False, expected_container_id=expected_container_id)
+        _assert_original_source_identity(observed, intent)
         if asdict(observed) != ready["evidence"] or observed.outer_engine_id != intent["outer_engine_id"] or (observed.request_id, observed.origin_sha256) != (intent["request_id"], intent["origin_sha256"]):
             raise HostObservationUnavailable("private Engine live source differs from durable original")
         yield observed
@@ -398,17 +427,34 @@ def create_private_engine(request_file: Path, private_root: Path, outer_socket: 
     if not _IMAGE_ID.fullmatch(parent_image_id):
         raise ValueError("immutable Docker-in-Docker parent image ID required")
     private_root, socket_dir, data_dir = _private_paths(private_root, request_file)
-    _root_stat(private_root, require_empty=True)
+    root_info = _root_stat(private_root, require_empty=True)
     origin = inspect_new_instance_origin(request_file)
     profile = inspect_new_instance_profile(request_file)
     if profile.origin_sha256 != origin.record_sha256:
         raise HostObservationUnavailable("private Engine source profile differs")
     outer_id = _engine_id(outer_socket)
     nonce = uuid.uuid4().hex
-    intent = {"schema_version": 1, "origin_sha256": origin.record_sha256, "request_id": origin.request_id, "parent_image_id": parent_image_id, "outer_engine_id": outer_id, "nonce": nonce}
-    _record(private_root / SOURCE_INTENT, intent)
+    # Directory creation is still before the first Docker effect. A crash
+    # here leaves a nonempty root, which must refuse any second producer.
     _create_dir(private_root, "socket")
     _create_dir(private_root, "data")
+    socket_info = _root_stat(socket_dir)
+    data_info = _data_stat(private_root)
+    intent = {
+        "schema_version": 1,
+        "origin_sha256": origin.record_sha256,
+        "request_id": origin.request_id,
+        "parent_image_id": parent_image_id,
+        "outer_engine_id": outer_id,
+        "nonce": nonce,
+        "private_root_dev": root_info.st_dev,
+        "private_root_ino": root_info.st_ino,
+        "socket_dir_dev": socket_info.st_dev,
+        "socket_dir_ino": socket_info.st_ino,
+        "data_dir_dev": data_info.st_dev,
+        "data_dir_ino": data_info.st_ino,
+    }
+    _record(private_root / SOURCE_INTENT, intent)
     request = json.loads(_file(request_file, private=True, limit=65536)[1])
     cmd = [
         "create",
@@ -464,6 +510,7 @@ def create_private_engine(request_file: Path, private_root: Path, outer_socket: 
     while time.monotonic() < deadline:
         try:
             evidence = _observe_source(request_file, private_root, outer_socket, parent_id, parent_image_id, require_empty_private_engine=True)
+            _assert_original_source_identity(evidence, intent)
             _record(private_root / SOURCE_READY, {"schema_version": 1, "created_sha256": hashlib.sha256(_canonical(created)).hexdigest(), "evidence": asdict(evidence)})
             return evidence
         except (OSError, ValueError, subprocess.SubprocessError) as error:

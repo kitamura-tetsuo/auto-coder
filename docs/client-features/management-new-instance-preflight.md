@@ -431,12 +431,18 @@ operation, and no parent has been installed as a permanent production
 service. The source verifier checks the parent runtime policy, immutable
 container and image identity, current PID/start token and namespace identity,
 source directory/socket device/inode and the distinct inner/outer Engine IDs.
+The original root, socket directory, and data directory inode identities are
+recorded **before the first Docker effect**. The daemon can later take root
+ownership of its bind-mounted data directory; the trusted host verifies its
+original inode and write protection through `stat(..., dir_fd=owner_root_fd)`
+without traversing Docker's contents or widening filesystem permissions.
 The parent selects `--entrypoint dockerd` (as in the existing disposable CI
 fixture), disables its bridge/firewall and avoids the DinD script's extra
 default TCP listener. After the one-way parent-created record, a
 single root-in-parent `chown` transfers only the dedicated Unix socket to the
-original host operator; incomplete custody is not retried. Docker data and
-application processes remain isolated from the outer production Engine.
+original host operator; incomplete custody is not retried. The private Engine
+has separate Docker data and no outer Engine socket mount, but the privileged
+parent is **not** a security sandbox against a compromised Docker daemon.
 
 An opt-in `fresh_host start-new-container --private-root PATH --outer-socket
 PATH` first holds the private source root's kernel lock and its original

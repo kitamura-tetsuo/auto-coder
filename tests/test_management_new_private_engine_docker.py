@@ -34,10 +34,30 @@ from tests.test_management_new_instance_first_launch_docker import (
 from tests.test_management_new_instance_preflight import request_file
 from tests.test_management_new_instance_profile import configured_request
 
-pytestmark = pytest.mark.skipif(
-    os.environ.get("AUTO_CODER_PRIVATE_ENGINE_ACCEPTANCE") != "1",
-    reason="requires explicitly opted-in disposable runner Docker privileges",
-)
+pytestmark = [
+    pytest.mark.usefixtures("_use_real_commands", "_use_real_sleep"),
+    pytest.mark.skipif(
+        os.environ.get("AUTO_CODER_PRIVATE_ENGINE_ACCEPTANCE") != "1",
+        reason="requires explicitly opted-in disposable runner Docker privileges",
+    ),
+]
+
+
+def _remove_disposable_engine_root(root: Path) -> None:
+    """Remove only the test-created /tmp root after the DinD parent exits.
+
+    Docker takes root ownership of its data-root contents. A GitHub-hosted
+    runner can remove that disposable subtree with sudo after the parent is
+    removed, but no production path or unchecked caller path is accepted.
+    """
+    if root.parent != Path("/tmp") or not root.name.startswith("acpe-") or not root.is_dir() or root.is_symlink():
+        raise AssertionError("refusing to clean a non-disposable private Engine root")
+    try:
+        shutil.rmtree(root)
+    except PermissionError:
+        if os.environ.get("GITHUB_ACTIONS") != "true":
+            raise
+        subprocess.run(["sudo", "--non-interactive", "rm", "--recursive", "--force", "--", str(root)], check=True, timeout=30)
 
 
 def test_real_private_engine_parent_preserves_original_and_seals_independent_source(configured_request: Path) -> None:
@@ -84,7 +104,7 @@ def test_real_private_engine_parent_preserves_original_and_seals_independent_sou
             if result.returncode == 0:
                 print("Disposable DinD parent logs:\n", result.stdout[-4000:], result.stderr[-4000:])
             subprocess.run([*outer, "rm", "--force", parent_id], capture_output=True, text=True, timeout=30, check=True)
-        shutil.rmtree(root)
+        _remove_disposable_engine_root(root)
 
 
 def test_private_source_first_launch_and_retained_grant_readback(request_file: Path) -> None:
@@ -181,4 +201,4 @@ def test_private_source_first_launch_and_retained_grant_readback(request_file: P
             if logs.returncode == 0:
                 print("Disposable DinD parent logs:\n", logs.stdout[-4000:], logs.stderr[-4000:])
             subprocess.run([*outer, "rm", "--force", parent_id], capture_output=True, text=True, timeout=30, check=True)
-        shutil.rmtree(root)
+        _remove_disposable_engine_root(root)

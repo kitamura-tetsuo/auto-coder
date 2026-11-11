@@ -91,7 +91,23 @@ def _observation(source: tuple[Path, Path, Path, dict[str, object], Path]) -> au
 def _seal(source: tuple[Path, Path, Path, dict[str, object], Path]) -> authority.PrivateEngineEvidence:
     request, root, _, _, _ = source
     origin = authority.inspect_new_instance_origin(request)
-    intent = {"schema_version": 1, "origin_sha256": origin.record_sha256, "request_id": origin.request_id, "parent_image_id": PARENT_IMAGE, "outer_engine_id": "outer-engine", "nonce": "0" * 32}
+    root_info = root.stat()
+    socket_info = (root / "socket").stat()
+    data_info = (root / "data").stat()
+    intent = {
+        "schema_version": 1,
+        "origin_sha256": origin.record_sha256,
+        "request_id": origin.request_id,
+        "parent_image_id": PARENT_IMAGE,
+        "outer_engine_id": "outer-engine",
+        "nonce": "0" * 32,
+        "private_root_dev": root_info.st_dev,
+        "private_root_ino": root_info.st_ino,
+        "socket_dir_dev": socket_info.st_dev,
+        "socket_dir_ino": socket_info.st_ino,
+        "data_dir_dev": data_info.st_dev,
+        "data_dir_ino": data_info.st_ino,
+    }
     created = {"schema_version": 1, "intent_sha256": hashlib.sha256(_canonical(intent)).hexdigest(), "parent_container_id": PARENT_ID}
     evidence = _observation(source)
     ready = {"schema_version": 1, "created_sha256": hashlib.sha256(_canonical(created)).hexdigest(), "evidence": asdict(evidence)}
@@ -109,6 +125,29 @@ def test_private_engine_source_binds_separate_live_parent_kernel_lifetime_and_or
     with authority.hold_private_engine_source(*source[:3]) as current:
         assert current == evidence
     assert {path.name for path in source[1].iterdir()} == {"socket", "data", authority.SOURCE_INTENT, authority.SOURCE_CREATED, authority.SOURCE_READY}
+
+
+def test_daemon_data_root_does_not_need_host_operator_traversal(source: tuple[Path, Path, Path, dict[str, object], Path]) -> None:
+    """The daemon can take ownership of data without expanding the host ACL."""
+    evidence = _seal(source)
+    data_root = source[1] / "data"
+    data_root.chmod(0o000)
+    try:
+        with authority.hold_private_engine_source(*source[:3]) as observed:
+            assert observed == evidence
+            assert authority._data_stat(source[1]).st_ino == evidence.data_dir_ino
+    finally:
+        data_root.chmod(0o700)
+
+
+def test_original_data_root_inode_cannot_be_substituted(source: tuple[Path, Path, Path, dict[str, object], Path]) -> None:
+    _seal(source)
+    data_root = source[1] / "data"
+    data_root.rename(source[1].parent / "retired-data")
+    data_root.mkdir(mode=0o700)
+    with pytest.raises(HostObservationUnavailable, match="directories differ from pre-effect intent"):
+        with authority.hold_private_engine_source(*source[:3]):
+            pytest.fail("replaced original Docker data root unexpectedly admitted")
 
 
 @pytest.mark.parametrize(
