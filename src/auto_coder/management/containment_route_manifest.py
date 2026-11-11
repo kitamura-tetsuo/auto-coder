@@ -389,12 +389,18 @@ def _systemd_unit(unit: str, *, trusted_uid: int = 0) -> SystemdRouteFact:
             raise RouteManifestUnavailable("effective systemd state is unsupported")
         if shown["UnitFileState"] and not re.fullmatch(r"[a-z-]+", shown["UnitFileState"]):
             raise RouteManifestUnavailable("effective systemd unit-file state is unsupported")
-        if not shown["UnitFileState"] and (shown["LoadState"] != "not-found" or shown["FragmentPath"]):
+        kernel_mount = unit.endswith(".mount") and shown["LoadState"] == "loaded" and shown["UnitFileState"] == "" and shown["FragmentPath"] == "" and shown.get("SourcePath") == "/proc/self/mountinfo"
+        if not shown["UnitFileState"] and not kernel_mount and (shown["LoadState"] != "not-found" or shown["FragmentPath"]):
             raise RouteManifestUnavailable("effective systemd unit-file state is unavailable")
     try:
         unit_source = _command("systemctl", "cat", "--no-pager", "--", unit)
     except subprocess.CalledProcessError:
-        if not is_template and shown["LoadState"] == "not-found" and not shown["FragmentPath"] and not shown["UnitFileState"] and shown["ActiveState"] == "inactive":
+        if not is_template and shown["LoadState"] == "loaded" and shown["UnitFileState"] == "" and not shown["FragmentPath"] and shown.get("SourcePath") == "/proc/self/mountinfo" and unit.endswith(".mount"):
+            # Passive mount units reflected from the kernel have no installed
+            # systemd fragment. They remain in the full inventory and can
+            # never satisfy the inhibited-restarter condition.
+            unit_source = "<kernel mount reflected from /proc/self/mountinfo>"
+        elif not is_template and shown["LoadState"] == "not-found" and not shown["FragmentPath"] and not shown["UnitFileState"] and shown["ActiveState"] == "inactive":
             unit_source = "<no installed unit source>"
         else:
             raise

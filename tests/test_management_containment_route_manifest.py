@@ -63,6 +63,24 @@ def test_root_mount_unit_name_is_never_misread_as_a_systemctl_option(monkeypatch
     assert all(args[-2:] == ("--", name) for args in commands)
 
 
+def test_passive_kernel_reflected_mount_is_inventoried_but_cannot_be_an_inhibited_restarter(monkeypatch: pytest.MonkeyPatch) -> None:
+    shown = "Id=run-user-1000.mount\nLoadState=loaded\nUnitFileState=\nActiveState=active\n" "SubState=mounted\nFragmentPath=\nSourcePath=/proc/self/mountinfo\nNeedDaemonReload=no\n"
+
+    def command(*args: str, **kwargs: object) -> str:
+        if args[1] == "show":
+            return shown
+        raise subprocess.CalledProcessError(1, args)
+
+    monkeypatch.setattr(routes, "_command", command)
+    fact = routes._systemd_unit("run-user-1000.mount")
+    assert fact.main_pid == 0
+    assert fact.active_state == "active"
+    assert fact.inhibited is False
+    monkeypatch.setattr(routes, "_command", lambda *args, **kwargs: shown.replace("/proc/self/mountinfo", "/unsupported/mountinfo") if args[1] == "show" else command(*args, **kwargs))
+    with pytest.raises(routes.RouteManifestUnavailable, match="unit-file state"):
+        routes._systemd_unit("run-user-1000.mount")
+
+
 def test_systemd_catalog_includes_indirect_service_activation_types(monkeypatch: pytest.MonkeyPatch) -> None:
     commands: list[tuple[str, ...]] = []
 

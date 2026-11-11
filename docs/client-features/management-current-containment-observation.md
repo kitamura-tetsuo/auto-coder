@@ -165,6 +165,9 @@ when hashed because systemd's presentation order is not stable. Added/removed
 dependencies still change the digest; command sequence and ordered drop-ins are
 not reordered. A previously approved digest from an older hashing version
 must be freshly reviewed and approved, never silently migrated.
+Kernel-reflected `.mount` units with no fragment are inventoried only when
+systemd identifies `/proc/self/mountinfo` as their source; they cannot count
+as inhibited restarters. Any other source-less loaded unit refuses.
 
 The manifest also binds the complete unfiltered Docker ID set to the existing
 whole-engine readback; the complete directory/file census of fixed
