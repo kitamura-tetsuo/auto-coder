@@ -183,6 +183,41 @@ startup through first launch. A missing lock, scan or operator assertion
 alone does not prove this. The authoritative host producer is not yet
 integrated, so the probe cannot authorize launch even when it obtains the lock.
 
+### Isolated Docker CREATED-state snapshot (non-authorizing)
+
+For an operator-approved dedicated test container, the trusted host can read
+Docker's independently maintained **never-started** state:
+
+```sh
+python -B -m auto_coder.management.fresh_host inspect-new-container \
+  --request-file /private/new-instance-request.json \
+  --container-id FULL_64_CHARACTER_DOCKER_ID \
+  --image-id sha256:FULL_64_CHARACTER_IMAGE_DIGEST
+```
+
+The command rechecks original NEW intent, selected management configuration
+and retained OAuth schema, then inspects the exact immutable Docker container
+and image identities twice against the same engine ID. It requires Docker's
+`created` state, zero PID/restarts and never-started timestamps, an isolated
+`--network none` network namespace, private PID namespace, no automatic Docker
+restart policy, a read-only container root, non-root effective UID/GID,
+disabled added capabilities, no privileged mode, device mappings, published
+ports or Docker-socket mount. All original request, configuration, executable,
+application and new/retained state paths must be explicitly mounted at their
+original canonical host paths with the declared read/write access. Extra or
+missing mounts refuse. No Docker create/start/stop or state write occurs.
+
+A valid observation is `docker-created-snapshot-only` and explicitly has
+`launch_authorized=false`. It proves only that this exact Docker engine was
+observed reporting an unstarted, isolated container at the observation time.
+It cannot by itself reserve Docker start, establish that some other service
+will never start, prove a continuously held prior-startup exclusion, show that
+the recorded command is the actually executed runtime, or authorize a first
+management child launch. The separate host controller, durable admission
+claim, peer-authenticated challenge and actual exact-child readiness are still
+required. Tests use disposable synthetic OAuth and containers only; they do
+not attach real production OAuth or affect beta/release.
+
 Independent native Linux subprocess tests hold two writers immediately before
 the real O_EXCL call to establish one winner, and SIGKILL a producer immediately
 after the actual open to establish a non-reusable partial origin. These are
@@ -208,8 +243,9 @@ positive first-launch/owner/OAuth acceptance scenarios.
 - REQ-003: authoritative prior process/listener absence, relevant namespace
   evidence, known-prior or genuinely-NEW host profile and continuous exclusion
   of old startup sources, live supervisor owner fence, and fresh protected
-  host-guard peer/challenge binding are missing. The transient guard-lock
-  probe is not a replacement for these checks.
+  host-guard peer/challenge binding are missing. The transient guard lock and
+  Docker CREATED-state snapshot do not establish continuous prior exclusion
+  or constitute admission authority.
 - REQ-004: new child/operation/handoff/recovery stores, first launch, exact-child
   observation, Bearer challenge and authorized fresh readback with current grant
   revalidation are missing. Existing #2668 recovery remains unchanged and refuses
@@ -246,6 +282,11 @@ The additional guard-lock tests establish overlapping attempts at the same
 Linux `flock` inode and show that normal or SIGKILL-released locks cannot
 confer first-launch eligibility. They do not establish first-launch-claim
 contention or authenticated application readiness.
+The separate `tests/test_management_new_instance_docker_created.py` suite is
+marked `supervisor_integration` and exercises the real host Docker engine
+(`docker create`, guarded inspection and disposable removal), including a real
+first Docker start that must invalidate CREATED-state evidence. It does not
+prove a management supervisor's first child launch or grant readback.
 
 This host-only diagnostic is observability-neutral for production: it creates a protected local origin record but no job, deployment admission,
 launch, outcome, authorized resumption path or structured dashboard event. Its stdout assessment is never translated into dashboard readiness or

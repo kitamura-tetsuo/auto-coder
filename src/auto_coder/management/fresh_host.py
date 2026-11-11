@@ -101,6 +101,10 @@ def main() -> None:
     inspect_profile.add_argument("--request-file", required=True, type=Path)
     probe_fence = commands.add_parser("probe-admission-fence", help="Probe transient exclusive NEW admission serialization; no launch authority")
     probe_fence.add_argument("--request-file", required=True, type=Path)
+    docker_created = commands.add_parser("inspect-new-container", help="Read-only Docker CREATED-scope observation; not first-launch authority")
+    docker_created.add_argument("--request-file", required=True, type=Path)
+    docker_created.add_argument("--container-id", required=True)
+    docker_created.add_argument("--image-id", required=True)
     capture = commands.add_parser("capture")
     for option in ("management-id", "management-image", "proxy-id", "proxy-image", "mounts-file", "guard-dir"):
         capture.add_argument("--" + option, required=True)
@@ -141,6 +145,10 @@ def main() -> None:
             with hold_new_admission_fence(args.request_file) as observation:
                 receipt = asdict(observation)
             print(json.dumps(receipt, sort_keys=True))
+        elif args.command == "inspect-new-container":
+            from .fresh_new_docker import inspect_created_new_docker
+
+            print(json.dumps(inspect_created_new_docker(args.request_file, args.container_id, args.image_id), sort_keys=True))
         elif args.command == "capture":
             mounts = json.loads(_protected_file(Path(args.mounts_file)))
             if not isinstance(mounts, dict) or set(mounts) != {"management", "proxy"}:
