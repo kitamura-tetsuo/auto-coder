@@ -20,7 +20,7 @@ from typing import Iterator
 
 from loguru import logger
 
-from .fresh_initialization import FreshInitializationIntent
+from .fresh_initialization import FreshInitializationIntent, parse_fresh_intent
 
 PROFILE = "fresh-original-attempts-v1"
 MAX_EVENTS = 4096
@@ -177,6 +177,16 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
         event = json.loads(encoded)
         if not isinstance(event, dict) or set(event) != {"previous", "sequence", "kind", "attempt", "value"} or event["previous"] != previous or type(event["sequence"]) is not int or event["sequence"] != index or canonical(event) != encoded:
             raise OriginalEvidenceUnavailable("corrupt or cyclic original frontier")
+        if event["kind"] == "anchor":
+            anchor = event["value"]
+            if not isinstance(anchor, dict) or set(anchor) != {"intent", "lifetime", "stores", "state", "journal", "pristine"}:
+                raise OriginalEvidenceUnavailable("incomplete original anchor")
+            try:
+                original_intent = parse_fresh_intent(anchor["intent"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise OriginalEvidenceUnavailable("incomplete original anchor") from error
+            if original_intent.request_id != event["attempt"]:
+                raise OriginalEvidenceUnavailable("original anchor attempt mismatch")
         previous = hashlib.sha256(encoded).hexdigest()
         events.append(HistoryEvent(event["previous"], index, event["kind"], event["attempt"], canonical(event["value"]).decode()))
     if previous != frontier["digest"]:

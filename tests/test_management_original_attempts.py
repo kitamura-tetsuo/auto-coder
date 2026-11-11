@@ -1040,3 +1040,46 @@ def test_original_sqlite_reader_refuses_sidecar_created_during_immutable_read(tm
         reader._database(path)
     assert path.read_bytes() == original
     assert pending.read_bytes() == b"simulated unresolved sidecar"
+
+
+@pytest.mark.parametrize("corruption", ["missing-intent", "incomplete-intent", "attempt-mismatch"])
+def test_new_original_claim_refuses_corrupt_anchor_with_rehashed_frontier(tmp_path, corruption):
+    """A valid digest chain cannot excuse a missing original intent field."""
+    from auto_coder.management.fresh_initialization import claim_fresh_initialization
+
+    binding = _history(tmp_path)
+    _terminal(tmp_path, binding, "prior-corrupt")
+    history = Path(binding.root)
+    previous = ""
+    frontier_path = history / "frontier.json"
+    frontier = json.loads(frontier_path.read_bytes())
+    for index in range(frontier["count"]):
+        event_path = history / f"{index:08d}.json"
+        event = json.loads(event_path.read_bytes())
+        event["previous"] = previous
+        if index == 0:
+            assert event["kind"] == "anchor"
+            if corruption == "missing-intent":
+                del event["value"]["intent"]
+            elif corruption == "incomplete-intent":
+                del event["value"]["intent"]["request_id"]
+            else:
+                event["attempt"] = "00000000-0000-4000-8000-000000000001"
+        encoded = canonical(event)
+        event_path.write_bytes(encoded)
+        previous = hashlib.sha256(encoded).hexdigest()
+    frontier["digest"] = previous
+    frontier_path.write_bytes(canonical(frontier))
+    original = _fingerprint(tmp_path)
+    successor = _covered(tmp_path, binding, "new-after-corruption")
+
+    with observe(binding) as fence:
+        evidence = derive(binding, fence)
+        assert any("original anchor" in reason for reason in evidence.unavailable)
+        with pytest.raises(OriginalEvidenceUnavailable):
+            verify(evidence, binding, fence)
+    with pytest.raises(OriginalEvidenceUnavailable, match="original anchor"):
+        claim_fresh_initialization(Path(successor.host_state_root), successor)
+    assert _fingerprint(tmp_path) == original
+    assert list(Path(successor.host_state_root).iterdir()) == []
+    assert list(Path(successor.host_journal_root).iterdir()) == []

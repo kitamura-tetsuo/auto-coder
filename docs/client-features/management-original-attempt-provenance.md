@@ -60,6 +60,13 @@ canonical boot UUID and nonce) even when an event and its frontier
 digest form an internally consistent chain. A malformed lifetime or
 unexpected terminal-boundary payload is unavailable, not a recorded
 grant or successful original attempt.
+Before original admission can inspect an earlier anchor's predecessor/target,
+the producer also checks its complete canonical intent schema and requires
+its request ID to match the anchor event. A rehashed chain with a missing,
+partial or cross-attempt original anchor refuses as unavailable instead of
+throwing an unhandled field lookup; it never creates another intent or grant.
+This schema check does not authenticate rewritten original bytes or fill a
+pre-enrollment historical gap.
 Individual original files are bounded to 8 MiB; larger evidence is unavailable.
 Protected original regular files, including the history lock, authority,
 frontier, events, intent and native stores, must have exactly one hard link.
