@@ -625,7 +625,11 @@ def test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback
             if call.returncode == 0:
                 break
             outcome_path = root / "state/new-first-outcome.json"
-            if outcome_path.exists() and json.loads(outcome_path.read_bytes()).get("status") == "unknown":
+            try:
+                early_outcome = json.loads(outcome_path.read_bytes())
+            except (FileNotFoundError, json.JSONDecodeError):
+                early_outcome = {}
+            if early_outcome.get("status") == "unknown":
                 logs = subprocess.run(["docker", "logs", "--tail", "40", container_id], capture_output=True, text=True, timeout=10)
                 raise AssertionError("real child exited or timed out before authenticated readback: " + (logs.stdout + logs.stderr)[-2500:])
             time.sleep(0.3)
@@ -688,12 +692,7 @@ def test_real_new_first_launch_never_reports_readiness_from_invalid_readback(req
         else:
             raise AssertionError("real NEW invalid readback could not be tested: " + readback.stderr[-1200:])
 
-        outcome_file = root / "state/new-first-outcome.json"
-        deadline = time.monotonic() + 35
-        while time.monotonic() < deadline and not outcome_file.exists():
-            time.sleep(0.1)
-        assert outcome_file.is_file(), "NEW owner did not record the readback timeout"
-        assert json.loads(outcome_file.read_bytes())["status"] == "unknown"
+        assert _wait_for_new_outcome(root, timeout=35)["status"] == "unknown"
         assert len((root / "state/physical-child-invocations").read_text().splitlines()) == 1
         assert (root / "oauth/oauth.sqlite3").read_bytes() == retained_oauth
 
