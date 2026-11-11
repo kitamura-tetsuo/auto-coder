@@ -1135,7 +1135,9 @@ def _exercise_installed_release_join(
                         assert system.remote._git("rev-parse", "refs/tags/auto-coder-release-source-selection-current") != catalog_oid
                         promoted_refs = system.remote._git("for-each-ref", "--format=%(refname) %(objectname)", "refs/tags")
                         postpone_start["value"] = False
-                        superseded = _wait_for(lambda: status if (status := _call(http, system.bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id}))["status"] == "SUPERSEDED" else None, timeout=50)
+                        # The lifecycle stage is persisted before the correlated terminal
+                        # journal transition. Wait for both before asserting its reason.
+                        superseded = _wait_for(lambda: status if (status := _call(http, system.bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id}))["status"] == "SUPERSEDED" and status["phase"] == OperationPhase.FAILED.value else None, timeout=50)
                         assert superseded["reason"] == "original_release_operation_superseded"
                         assert (release.runtime / "fixture-posts").read_bytes() == preparer_posts
                         assert (release.runtime / "fixture-launches.jsonl").read_bytes() == stopped_launches
@@ -1300,7 +1302,8 @@ def _exercise_installed_release_join(
                         assert system.remote._git("rev-parse", "refs/tags/auto-coder-release-source-selection-current") != catalog_oid
                         promoted_refs = system.remote._git("for-each-ref", "--format=%(refname) %(objectname)", "refs/tags")
                         postpone_drain["value"] = False
-                        superseded = _wait_for(lambda: result if (result := _call(http, system.bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id}))["status"] == "SUPERSEDED" else None, timeout=50)
+                        # Snapshot stage alone does not establish durable terminal proof.
+                        superseded = _wait_for(lambda: result if (result := _call(http, system.bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id}))["status"] == "SUPERSEDED" and result["phase"] == OperationPhase.FAILED.value else None, timeout=50)
                         assert superseded["reason"] == "original_release_operation_superseded"
                         assert (release.runtime / "fixture-posts").read_bytes() == preparer_posts, "superseded selection must not send a replacement effect"
                         assert len((release.runtime / "fixture-launches.jsonl").read_text().splitlines()) == 1
