@@ -337,6 +337,39 @@ def test_new_docker_loopback_refuses_unselected_publication_without_claim(reques
         subprocess.run(["docker", "network", "rm", network], check=True, capture_output=True, timeout=30)
 
 
+def test_new_docker_loopback_refuses_live_prior_host_listener_without_first_claim(request_file: Path) -> None:
+    """A bound host endpoint is an authoritative refusal, before Docker start."""
+    root = request_file.parent
+    network = "ac-new-" + uuid.uuid4().hex[:24]
+    port = _reserve_test_host_port()
+    _token, request = _prepare_real_new_source(request_file, docker_network=network, host_port=port)
+    prior_oauth = (root / "oauth/oauth.sqlite3").read_bytes()
+    assert _run_host("begin", "--request-file", str(request_file)).returncode == 0
+    tag = ""
+    container_id = ""
+    _new_isolated_bridge(network)
+    try:
+        container_id, image_id, tag = _create_real_new_container(root, request_file, request, docker_network=network, host_port=port)
+        assert _run_host("inspect-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id).returncode == 0
+        with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as existing_listener:
+            existing_listener.bind(("127.0.0.1", port))
+            existing_listener.listen(1)
+            refused = _run_host("start-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id, timeout=30)
+            assert refused.returncode == 1 and refused.stdout == ""
+            assert "already occupied" in refused.stderr
+        assert not (root / "guard/new-docker-first-start.json").exists()
+        assert not (root / "state/physical-child-invocations").exists()
+        assert not (root / "state/new-first-launch-claimed.json").exists()
+        assert (root / "oauth/oauth.sqlite3").read_bytes() == prior_oauth
+        assert subprocess.check_output(["docker", "inspect", "--format", "{{.State.Status}}", container_id], text=True).strip() == "created"
+    finally:
+        if container_id:
+            subprocess.run(["docker", "rm", "--force", container_id], check=True, capture_output=True, timeout=30)
+        if tag:
+            subprocess.run(["docker", "image", "rm", tag], check=True, capture_output=True, timeout=30)
+        subprocess.run(["docker", "network", "rm", network], check=True, capture_output=True, timeout=30)
+
+
 def _first_launch_with_actual_admission_contention(root: Path, request_file: Path, container_id: str, image_id: str) -> dict[str, object]:
     """Prove independent hosts overlap at the real first-claim kernel lock."""
     first = subprocess.Popen(

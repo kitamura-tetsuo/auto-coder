@@ -349,8 +349,9 @@ grant or privileged host socket is mounted as part of this test profile.
 
 The independent Docker CREATED observation rejects public/all-interface
 publishing, changed host ports, additional published ports, an unrelated or
-replaced network, IP masquerading, other network members and unsupported
-namespace policies. The host start guard additionally compares the **running**
+replaced network, IP masquerading, other network members, an already bound
+host-loopback listener and unsupported namespace policies. The host start
+guard additionally compares the **running**
 container's actual network ID, endpoint and host port mapping with the durable
 original and current Docker network identity before allowing first-child
 admission. A host `127.0.0.1` client must receive a real Bearer challenge and

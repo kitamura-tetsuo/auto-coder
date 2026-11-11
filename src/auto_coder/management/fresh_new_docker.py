@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import socket
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -121,6 +122,15 @@ def _dedicated_network_id(name: str, *, expected_container: str | None = None) -
 
 def _network_ports(container_port: int, host_port: int) -> dict[str, list[dict[str, str]]]:
     return {f"{container_port}/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(host_port)}]}
+
+
+def _assert_host_loopback_port_free(port: int) -> None:
+    """Reject a live prior host listener without probing remote addresses."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", port))
+    except OSError as error:
+        raise HostObservationUnavailable("NEW protected host-loopback port is already occupied") from error
 
 
 def assert_running_new_network(request_file: Path, created: CreatedNewDockerSnapshot, fields: tuple[object, ...]) -> None:
@@ -241,6 +251,7 @@ def _inspect_created_scope(request_file: Path, container_id: str, image_id: str)
         if not isinstance(selected, dict) or selected.get("IPAMConfig") is not None or selected.get("Links") is not None or selected.get("DriverOpts") is not None or selected.get("NetworkID") or selected.get("EndpointID") or selected.get("IPAddress"):
             raise HostObservationUnavailable("NEW Docker created-network identity differs")
         network_id = _dedicated_network_id(bootstrap.new_docker_network)
+        _assert_host_loopback_port_free(host_port)
     if not isinstance(entrypoint, list) or not entrypoint or not isinstance(command, list) or not command or any(not isinstance(item, str) or not item or len(item) > 4096 for item in [*entrypoint, *command]):
         raise HostObservationUnavailable("NEW Docker executable command is unavailable")
     # Every source is opened independently by the original NEW producer. A
@@ -268,6 +279,8 @@ def _inspect_created_scope(request_file: Path, container_id: str, image_id: str)
         or inspect_new_instance_profile(request_file) != profile
     ):
         raise HostObservationUnavailable("NEW Docker or original scope changed during observation")
+    if host_port:
+        _assert_host_loopback_port_free(host_port)
     return CreatedNewDockerSnapshot(origin.request_id, origin.record_sha256, engine, container_id, image_id, created, tuple(entrypoint), tuple(command), digest, network_id, host_port)
 
 
