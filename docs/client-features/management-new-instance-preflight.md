@@ -443,7 +443,7 @@ and separate network namespace. It still binds the parent's host PID start
 token and rechecks the same parent/container lifetime before admitting it.
 The repeated parent inspect compares a deliberately enumerated security
 snapshot: original container/image identity, complete host and container
-configuration, exact mounts, restart count, permitted `none`-only network
+configuration, all exact mount contents (canonically sorted without relying on Docker's mount array order), restart count, permitted `none`-only network
 attachments, and the parent PID/lifetime/status fields. Docker's changing
 exec/health/display metadata is not authority.
 Any change to the security snapshot refuses. Enumerating the

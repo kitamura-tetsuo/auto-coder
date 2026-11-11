@@ -217,14 +217,16 @@ def _parent_security_snapshot(parent: dict[str, object]) -> dict[str, object]:
     """
     state = parent.get("State")
     network = parent.get("NetworkSettings")
-    if not isinstance(state, dict) or not isinstance(network, dict) or not isinstance(network.get("Networks"), dict):
-        raise HostObservationUnavailable("private Engine parent state or network evidence is invalid")
+    mounts = parent.get("Mounts")
+    if not isinstance(state, dict) or not isinstance(network, dict) or not isinstance(network.get("Networks"), dict) or not isinstance(mounts, list) or not all(isinstance(mount, dict) for mount in mounts):
+        raise HostObservationUnavailable("private Engine parent state, network, or mount evidence is invalid")
     network_names = network["Networks"]
     if set(network_names) - {"none"}:
         raise HostObservationUnavailable("private Engine parent acquired an independent network attachment")
     static_state_keys = ("Status", "Running", "Restarting", "Pid", "StartedAt", "FinishedAt", "Dead", "OOMKilled", "ExitCode", "Error")
     return {
-        **{key: parent.get(key) for key in ("Id", "Name", "Image", "Created", "RestartCount", "Path", "Args", "HostConfig", "Config", "Mounts")},
+        **{key: parent.get(key) for key in ("Id", "Name", "Image", "Created", "RestartCount", "Path", "Args", "HostConfig", "Config")},
+        "Mounts": sorted(_canonical(mount) for mount in mounts),
         "State": {key: state.get(key) for key in static_state_keys},
         "Networks": sorted(network_names),
     }

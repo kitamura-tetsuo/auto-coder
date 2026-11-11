@@ -202,6 +202,29 @@ def test_transient_docker_exec_list_cannot_spoil_parent_provenance(source: tuple
     assert reads == 2
 
 
+@pytest.mark.parametrize("change_mount_content", [False, True])
+def test_parent_mount_order_is_not_provenance_but_mount_content_is(source: tuple[Path, Path, Path, dict[str, object], Path], monkeypatch: pytest.MonkeyPatch, change_mount_content: bool) -> None:
+    reads = 0
+
+    def changed_parent(*_args: object) -> dict[str, object]:
+        nonlocal reads
+        reads += 1
+        snapshot = deepcopy(source[3])
+        if reads == 2:
+            snapshot["Mounts"].reverse()
+            if change_mount_content:
+                snapshot["Mounts"][0]["RW"] = not snapshot["Mounts"][0]["RW"]
+        return snapshot
+
+    monkeypatch.setattr(authority, "_parent", changed_parent)
+    if change_mount_content:
+        with pytest.raises(HostObservationUnavailable, match="fields: Mounts"):
+            _observation(source)
+    else:
+        assert _observation(source).parent_container_id == PARENT_ID
+    assert reads == 2
+
+
 def test_parent_restart_policy_change_during_probe_still_refuses(source: tuple[Path, Path, Path, dict[str, object], Path], monkeypatch: pytest.MonkeyPatch) -> None:
     reads = 0
 
