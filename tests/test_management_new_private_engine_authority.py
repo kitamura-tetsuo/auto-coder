@@ -338,6 +338,48 @@ def test_private_engine_refuses_unowned_socket_or_extra_default_listener(source:
         _observation(source)
 
 
+def test_private_engine_recheck_during_sealed_gate_requires_exact_protected_proxy(source: tuple[Path, Path, Path, dict[str, object], Path]) -> None:
+    """A sealed raw socket can be observed only through its exact owner-only gate."""
+    request, root, outer, _, raw_socket = source
+    expected = _observation(source)
+    gate = root / "socket/first-start-gate.sock"
+    os.mknod(gate, stat.S_IFSOCK | 0o600)
+    raw_socket.chmod(0o000)
+    sealed = authority._observe_source(
+        request,
+        root,
+        outer,
+        PARENT_ID,
+        PARENT_IMAGE,
+        require_empty_private_engine=True,
+        inspection_socket=gate,
+    )
+    assert sealed == expected
+    with pytest.raises(HostObservationUnavailable, match="socket is not owner-scope"):
+        _observation(source)
+    with pytest.raises(HostObservationUnavailable, match="not the original first-start gate"):
+        authority._observe_source(
+            request,
+            root,
+            outer,
+            PARENT_ID,
+            PARENT_IMAGE,
+            require_empty_private_engine=True,
+            inspection_socket=raw_socket,
+        )
+    gate.chmod(0o666)
+    with pytest.raises(HostObservationUnavailable, match="inspection gate is not exclusively host-owned"):
+        authority._observe_source(
+            request,
+            root,
+            outer,
+            PARENT_ID,
+            PARENT_IMAGE,
+            require_empty_private_engine=True,
+            inspection_socket=gate,
+        )
+
+
 def test_private_engine_socket_custody_is_one_explicit_parent_exec(source: tuple[Path, Path, Path, dict[str, object], Path], monkeypatch: pytest.MonkeyPatch) -> None:
     commands: list[tuple[str, ...]] = []
     source[4].chmod(0o666)

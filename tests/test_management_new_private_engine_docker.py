@@ -11,10 +11,13 @@ import os
 import select
 import shutil
 import signal
+import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
 import time
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -64,6 +67,23 @@ def _remove_disposable_engine_root(root: Path) -> None:
         if os.environ.get("GITHUB_ACTIONS") != "true":
             raise
         subprocess.run(["sudo", "--non-interactive", "rm", "--recursive", "--force", "--", str(root)], check=True, timeout=30)
+
+
+def _original_private_child_requires_bearer(container_id: str) -> bool:
+    """Probe the real configured MCP endpoint in the exact child namespace."""
+    script = (
+        "import http.client,json;"
+        "c=http.client.HTTPConnection('127.0.0.1',18881,timeout=3);"
+        "p=json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call',"
+        "'params':{'name':'auto_coder_whoami','arguments':{'observation_id':'0'*32}}}).encode();"
+        "c.request('POST','/mcp',p,headers={'Content-Type':'application/json',"
+        "'Accept':'application/json, text/event-stream'});"
+        "r=c.getresponse();b=r.read(65537);"
+        "assert r.status==401,(r.status,b);"
+        "assert 'Bearer' in r.getheader('WWW-Authenticate',''),(r.status,b)"
+    )
+    probe = subprocess.run(["docker", "exec", container_id, "python3", "-B", "-c", script], capture_output=True, text=True, timeout=20)
+    return probe.returncode == 0
 
 
 def test_real_private_engine_parent_preserves_original_and_seals_independent_source(configured_request: Path) -> None:
@@ -132,10 +152,20 @@ print(json.dumps(host.start_new_docker_once(Path(sys.argv[1]), sys.argv[2], sys.
 """
 
 
-@pytest.mark.parametrize("race", ["none", "pre-gate-sibling", "sealed-gate-outside-client"])
+@pytest.mark.parametrize("race", ["none", "pre-gate-sibling", "sealed-gate-outside-client", "owner-contention", "killed-first-claim", "changed-bootstrap", "revoked-grant", "stale-observation"])
 def test_private_source_first_launch_and_retained_grant_readback(request_file: Path, race: str) -> None:
     """Cross the private source, host challenge, and real OAuth child boundary."""
     token, request = _prepare_real_new_source(request_file)
+    if race in {"revoked-grant", "stale-observation"}:
+        bootstrap_path = Path(str(request["bootstrap_config"]))
+        bootstrap = json.loads(bootstrap_path.read_bytes())
+        bootstrap["verification_timeout"] = 20
+        bootstrap_path.write_text(json.dumps(bootstrap))
+    if race == "revoked-grant":
+        with closing(sqlite3.connect(request_file.parent / "oauth/oauth.sqlite3")) as connection:
+            connection.execute("UPDATE grants SET revoked=? WHERE client_id=?", (time.time(), "new-client"))
+            connection.commit()
+            assert connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
     original_oauth = (request_file.parent / "oauth/oauth.sqlite3").read_bytes()
     begin_new_instance(request_file)
     outer_socket = Path("/var/run/docker.sock")
@@ -188,6 +218,16 @@ def test_private_source_first_launch_and_retained_grant_readback(request_file: P
             "--outer-socket",
             str(outer_socket),
         )
+        if race == "changed-bootstrap":
+            bootstrap_path = Path(str(request["bootstrap_config"]))
+            bootstrap_path.write_bytes(bootstrap_path.read_bytes() + b"\n")
+            refused = _run_host(*arguments, timeout=30)
+            assert refused.returncode != 0 and refused.stdout == ""
+            assert not (request_file.parent / "guard/new-docker-first-start.json").exists()
+            assert not (request_file.parent / "state/physical-child-invocations").exists()
+            assert (request_file.parent / "oauth/oauth.sqlite3").read_bytes() == original_oauth
+            assert subprocess.check_output(["docker", "--host", selected_host, "inspect", "--format", "{{.State.Status}}", child_id], text=True).strip() == "created"
+            return
         if race == "pre-gate-sibling":
             # A second trusted Docker client can reach the socket while the
             # original host holds the guard. The guard-to-effect recheck must
@@ -238,7 +278,41 @@ def test_private_source_first_launch_and_retained_grant_readback(request_file: P
                 if suspended.poll() is None:
                     suspended.kill()
                     suspended.communicate(timeout=10)
-        if race == "sealed-gate-outside-client":
+        if race in {"owner-contention", "killed-first-claim"}:
+            suspended = subprocess.Popen(
+                [sys.executable, "-B", "-c", _PAUSE_AFTER_HOST_CLAIM, str(request_file), child_id, image_id, str(root), str(outer_socket)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=_environment(),
+            )
+            try:
+                assert suspended.stdout is not None
+                assert select.select([suspended.stdout], [], [], 30)[0]
+                assert suspended.stdout.readline() == "new-host-claim-fsynced\n"
+                claim_bytes = (request_file.parent / "guard/new-docker-first-start.json").read_bytes()
+                assert not (request_file.parent / "state/physical-child-invocations").exists()
+                if race == "killed-first-claim":
+                    os.kill(suspended.pid, signal.SIGKILL)
+                    assert suspended.wait(timeout=10) == -signal.SIGKILL
+                    replay = _run_host(*arguments, timeout=20)
+                    assert replay.returncode != 0 and replay.stdout == ""
+                    assert (request_file.parent / "guard/new-docker-first-start.json").read_bytes() == claim_bytes
+                    assert not (request_file.parent / "state/physical-child-invocations").exists()
+                    assert (request_file.parent / "oauth/oauth.sqlite3").read_bytes() == original_oauth
+                    return
+                loser = _run_host(*arguments, timeout=20)
+                assert loser.returncode != 0 and loser.stdout == ""
+                assert (request_file.parent / "guard/new-docker-first-start.json").read_bytes() == claim_bytes
+                os.kill(suspended.pid, signal.SIGCONT)
+                stdout, stderr = suspended.communicate(timeout=150)
+                assert suspended.returncode == 0, stderr
+                launch = subprocess.CompletedProcess(arguments, suspended.returncode, stdout, stderr)
+            finally:
+                if suspended.poll() is None:
+                    suspended.kill()
+                    suspended.communicate(timeout=10)
+        elif race == "sealed-gate-outside-client":
             release = request_file.parent / "release-original-gate"
             suspended = subprocess.Popen(
                 [sys.executable, "-B", "-c", _PAUSE_DURING_SEALED_API_GATE, str(request_file), child_id, image_id, str(root), str(outer_socket), str(release)],
@@ -284,6 +358,9 @@ def test_private_source_first_launch_and_retained_grant_readback(request_file: P
             launch = _run_host(*arguments, timeout=150)
         assert launch.returncode == 0, (launch.stderr, subprocess.run(["docker", "logs", child_id], capture_output=True, text=True).stdout)
         assert json.loads(launch.stdout)["status"] == "first-child-observed-awaiting-authenticated-readback"
+        assert stat.S_IMODE((root / "socket/docker.sock").stat().st_mode) == 0o600
+        assert not (root / "socket/first-start-gate.sock").exists()
+        assert subprocess.check_output(["docker", "--host", selected_host, "ps", "--all", "--quiet", "--no-trunc"], text=True).splitlines() == [child_id]
         claim = json.loads((request_file.parent / "guard/new-docker-first-start.json").read_bytes())
         assert claim["profile"] == "genuinely-new-private-engine-v1"
         assert claim["private_source"]["parent_container_id"] == source.parent_container_id
@@ -293,6 +370,27 @@ def test_private_source_first_launch_and_retained_grant_readback(request_file: P
         assert replay.returncode != 0 and replay.stdout == ""
 
         observation_id = json.loads((request_file.parent / "state/new-first-launched.json").read_bytes())["observation_id"]
+        challenge_deadline = time.monotonic() + 20
+        while not _original_private_child_requires_bearer(child_id):
+            if time.monotonic() >= challenge_deadline:
+                raise AssertionError("private NEW child never produced the configured unauthenticated Bearer challenge")
+            time.sleep(0.25)
+        if race in {"revoked-grant", "stale-observation"}:
+            tested_id = "0" * 32 if race == "stale-observation" else observation_id
+            expected_status = 401 if race == "revoked-grant" else 200
+            deadline = time.monotonic() + 18
+            while time.monotonic() < deadline:
+                refused = _authorized_readback(child_id, token, tested_id, expected_status=expected_status)
+                if refused.returncode == 0:
+                    break
+                time.sleep(0.3)
+            else:
+                raise AssertionError("private retained-grant negative readback did not reach the real child: " + refused.stderr[-1200:])
+            assert _wait_for_new_outcome(request_file.parent, timeout=35)["status"] == "unknown"
+            assert len((request_file.parent / "state/physical-child-invocations").read_text().splitlines()) == 1
+            assert (request_file.parent / "oauth/oauth.sqlite3").read_bytes() == original_oauth
+            assert _run_host(*arguments, timeout=15).returncode != 0
+            return
         deadline = time.monotonic() + 40
         while time.monotonic() < deadline:
             readback = _authorized_readback(child_id, token, observation_id)

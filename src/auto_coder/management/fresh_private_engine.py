@@ -254,8 +254,15 @@ def _observe_source(
     # entry through a held no-follow parent directory descriptor instead.
     with _open(socket_dir, directory=True) as descriptor:
         socket_info = os.stat("docker.sock", dir_fd=descriptor, follow_symlinks=False)
-        if not stat.S_ISSOCK(socket_info.st_mode) or socket_info.st_uid != os.geteuid() or socket_info.st_gid != os.getegid() or stat.S_IMODE(socket_info.st_mode) != 0o600:
+        required_mode = 0o000 if inspection_socket is not None else 0o600
+        if not stat.S_ISSOCK(socket_info.st_mode) or socket_info.st_uid != os.geteuid() or socket_info.st_gid != os.getegid() or stat.S_IMODE(socket_info.st_mode) != required_mode:
             raise HostObservationUnavailable("private Engine socket is not owner-scope protected")
+        if inspection_socket is not None:
+            if inspection_socket != socket_dir / "first-start-gate.sock":
+                raise HostObservationUnavailable("private Engine inspection socket is not the original first-start gate")
+            gate_info = os.stat("first-start-gate.sock", dir_fd=descriptor, follow_symlinks=False)
+            if not stat.S_ISSOCK(gate_info.st_mode) or gate_info.st_uid != os.geteuid() or gate_info.st_gid != os.getegid() or stat.S_IMODE(gate_info.st_mode) != 0o600:
+                raise HostObservationUnavailable("private Engine inspection gate is not exclusively host-owned")
     if not _IMAGE_ID.fullmatch(parent_image_id):
         raise ValueError("immutable parent image ID required")
     if original is None:
