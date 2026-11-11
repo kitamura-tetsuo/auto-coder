@@ -746,6 +746,75 @@ print(json.dumps(host.start_new_docker_once(Path(sys.argv[1]), sys.argv[2], sys.
 """
 
 
+_PAUSE_BEFORE_ENGINE_START = """
+import json, os, signal, sys
+from pathlib import Path
+from auto_coder.management import fresh_new_host_start as host
+original = host._start_docker_container_once
+def pause_before_engine_start(*args):
+    print('before-native-docker-start', flush=True)
+    os.kill(os.getpid(), signal.SIGSTOP)
+    return original(*args)
+host._start_docker_container_once = pause_before_engine_start
+print(json.dumps(host.start_new_docker_once(Path(sys.argv[1]), sys.argv[2], sys.argv[3])), flush=True)
+"""
+
+
+def test_new_docker_refuses_external_first_start_racing_final_engine_command(request_file: Path) -> None:
+    """A CLI-success no-op cannot authorize another process's Docker start."""
+    root = request_file.parent
+    _token, request = _prepare_real_new_source(request_file)
+    original_oauth = (root / "oauth/oauth.sqlite3").read_bytes()
+    assert _run_host("begin", "--request-file", str(request_file)).returncode == 0
+    original_intent = (root / "guard/new-instance-origin.json").read_bytes()
+    tag = ""
+    container_id = ""
+    suspended = None
+    try:
+        container_id, image_id, tag = _create_real_new_container(root, request_file, request)
+        assert _run_host("inspect-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id).returncode == 0
+        suspended = subprocess.Popen(
+            [sys.executable, "-B", "-c", _PAUSE_BEFORE_ENGINE_START, str(request_file), container_id, image_id],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=_environment(),
+        )
+        assert suspended.stdout is not None
+        assert select.select([suspended.stdout], [], [], 20)[0], "the host did not reach the last Engine command"
+        assert suspended.stdout.readline() == "before-native-docker-start\n"
+        original_claim = (root / "guard/new-docker-first-start.json").read_bytes()
+        assert subprocess.check_output(["docker", "inspect", "--format", "{{.State.Status}}", container_id], text=True).strip() == "created"
+
+        # This independent Docker CLI invocation starts the selected PID-1,
+        # but must not be mistaken for the host's atomic original start.
+        outside_start = subprocess.run(["docker", "start", container_id], capture_output=True, text=True, timeout=35)
+        assert outside_start.returncode == 0, outside_start.stderr
+        assert subprocess.check_output(["docker", "inspect", "--format", "{{.State.Running}}", container_id], text=True).strip() == "true"
+
+        os.kill(suspended.pid, signal.SIGCONT)
+        stdout, stderr = suspended.communicate(timeout=35)
+        assert suspended.returncode == 1 and stdout == "", (suspended.returncode, stdout, stderr)
+        assert "did not perform an original start" in stderr
+        assert (root / "guard/new-docker-first-start.json").read_bytes() == original_claim
+        assert (root / "guard/new-instance-origin.json").read_bytes() == original_intent
+        assert (root / "oauth/oauth.sqlite3").read_bytes() == original_oauth
+        assert not (root / "state/physical-child-invocations").exists()
+        assert not (root / "state/new-first-launch-claimed.json").exists()
+        replay = _run_host("start-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id, timeout=25)
+        assert replay.returncode == 1 and replay.stdout == ""
+        assert (root / "guard/new-docker-first-start.json").read_bytes() == original_claim
+        assert not (root / "state/physical-child-invocations").exists()
+    finally:
+        if suspended is not None and suspended.poll() is None:
+            suspended.kill()
+            suspended.wait(timeout=10)
+        if container_id:
+            subprocess.run(["docker", "rm", "--force", container_id], check=True, capture_output=True, timeout=30)
+        if tag:
+            subprocess.run(["docker", "image", "rm", tag], check=True, capture_output=True, timeout=30)
+
+
 def test_new_docker_rejects_prior_process_joining_network_after_durable_claim(request_file: Path) -> None:
     """Recheck real bridge membership after a competing process enters mid-admission."""
     root = request_file.parent

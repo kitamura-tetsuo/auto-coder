@@ -270,9 +270,16 @@ This command is **effectful**: it acquires a nonblocking kernel `flock` on the
 original guard directory, re-verifies the selected original and exact Docker
 CREATED state, binds a private Unix host guard, and durably writes a one-use
 `new-docker-first-start.json` using O_EXCL, mode 0600 and fsync **before**
-calling `docker start` once. Failure, process crash, ambiguous observation or
-interruption leaves the claim in place and cannot issue another first start.
-`docker start` is the only Docker lifecycle effect initiated by this command.
+making one Docker Engine start request. The host requires a local Unix Engine
+socket, independently matches the Engine API identity against the recorded
+Docker CLI identity, and accepts only the Engine's **HTTP 204** original-start
+result. In particular, Docker CLI returns success for an already-running
+container, but the Engine API returns **304**, which now refuses without
+mistaking another controller's start for this operator's start. Remote Docker
+contexts and unverifiable socket/Engine identity are refused. Failure, process
+crash, ambiguous observation or interruption leaves the claim in place and
+cannot issue another first start. The Engine start request is the only Docker
+lifecycle effect initiated by this command.
 
 After Docker starts, PID 1 must independently verify the original source,
 selected runtime and OAuth schema, keep a single exclusive owner lock, publish
@@ -380,6 +387,14 @@ permit replay. These facts show revalidation for tested process races, not a
 general guarantee that every unrelated host service or Docker API controller
 is continuously excluded.
 
+A separate, narrower race regression pauses the host **after its final
+CREATED-state check but before the Engine start request** and has another
+independent client start the exact same container. The original host must
+receive Engine HTTP 304, refuse authorization and preserve the consumed claim
+without ever starting the selected management child. This verifies that the
+host can distinguish its own successful Engine state transition from a
+successful-but-no-op Docker CLI invocation.
+
 ## Remaining normative gates and acceptance limits
 
 - REQ-001/002: protected root intent, native initial stores, one-use Docker
@@ -401,6 +416,9 @@ is continuously excluded.
 - REQ-005: the real isolated host checks admission contention and crash/claim
   boundaries, an actual separate-UID refusal, live in-scope Docker network
   listener/process rejection, and a process entering during the held claim.
+  The host's Engine HTTP 204/304 boundary also rejects an out-of-band Docker
+  start during the final check-to-effect race instead of attributing it to
+  this original operator.
   Broader independent proof of hostile/external host startup sources, unknown
   prior installations and all interrupted/uncertain reconciliation branches
   remains necessary before treating the full issue as complete. Exact-head CI

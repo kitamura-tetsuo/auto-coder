@@ -9,6 +9,7 @@ keeping unrelated host controllers outside this newly reserved identity.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import secrets
@@ -16,11 +17,11 @@ import socket
 import sqlite3
 import stat
 import struct
-import subprocess
 import time
 import uuid
 from dataclasses import asdict
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from loguru import logger
 
@@ -56,6 +57,53 @@ def _create_host_start_claim(guard: Path, created: CreatedNewDockerSnapshot) -> 
 def _bootstrap_command_matches(created, bootstrap_config: str, request_file: Path) -> bool:
     """Bind actual Docker PID-1 argv to the selected NEW Supervisor entrypoint."""
     return created.entrypoint == ("python3", "-B", "-m", "auto_coder.management.bootstrap_supervisor") and created.command == ("--config", bootstrap_config, "--new-initialization", "--request-file", str(request_file))
+
+
+class _LocalDockerConnection(http.client.HTTPConnection):
+    """Use the selected local Docker Engine's native HTTP start result."""
+
+    def __init__(self, socket_path: Path) -> None:
+        super().__init__("localhost", timeout=20)
+        self._socket_path = socket_path
+
+    def connect(self) -> None:
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.settimeout(self.timeout)
+        try:
+            connection.connect(str(self._socket_path))
+        except OSError:
+            connection.close()
+            raise
+        self.sock = connection
+
+
+def _start_docker_container_once(container_id: str, engine_id: str) -> None:
+    """Require Engine HTTP 204; CLI exit zero also includes an already-running 304."""
+    if os.environ.get("DOCKER_CONTEXT") not in (None, "", "default"):
+        raise HostObservationUnavailable("NEW Docker context must be the independently verified local engine")
+    raw_host = os.environ.get("DOCKER_HOST", "unix:///var/run/docker.sock")
+    endpoint = urlsplit(raw_host)
+    if endpoint.scheme != "unix" or endpoint.netloc or not endpoint.path.startswith("/") or endpoint.query or endpoint.fragment:
+        raise HostObservationUnavailable("NEW Docker first start requires a local Unix Engine socket")
+    connection = _LocalDockerConnection(Path(endpoint.path))
+    try:
+        connection.request("GET", "/v1.41/info")
+        info_response = connection.getresponse()
+        info_bytes = info_response.read(262145)
+        if info_response.status != 200 or len(info_bytes) > 262144:
+            raise HostObservationUnavailable("NEW Docker Engine API identity is unavailable")
+        info = json.loads(info_bytes)
+        if not isinstance(info, dict) or info.get("ID") != engine_id:
+            raise HostObservationUnavailable("NEW Docker API engine differs from verified original")
+        connection.request("POST", f"/v1.41/containers/{container_id}/start")
+        start_response = connection.getresponse()
+        start_response.read(4096)
+        if start_response.status != 204:
+            raise HostObservationUnavailable("NEW Docker Engine did not perform an original start (possibly already running)")
+    except (OSError, ValueError, http.client.HTTPException) as error:
+        raise HostObservationUnavailable("NEW Docker Engine one-shot start result is unavailable") from error
+    finally:
+        connection.close()
 
 
 def _assert_new_owner(peer_pid: int, owner_incarnation: str, state_root: Path, instance: str) -> None:
@@ -184,6 +232,6 @@ def start_new_docker_once(request_file: Path, container_id: str, image_id: str, 
                 bootstrap = json.loads(_file(Path(request["bootstrap_config"]), private=True, limit=65536)[1])
                 if _dedicated_network_id(bootstrap["new_docker_network"]) != created.network_id:
                     raise HostObservationUnavailable("NEW Docker dedicated network changed before first start")
-            subprocess.run(["docker", "start", container_id], check=True, capture_output=True, timeout=20)
+            _start_docker_container_once(container_id, created.engine_id)
             _serve_one_new_guard(listener, request_file, container_id, image_id, claim, timeout=timeout)
             return _await_observed_first_child(Path(request["state_root"]), observed.origin.request_id, claim, container_id, timeout=timeout)
