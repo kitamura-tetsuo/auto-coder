@@ -167,6 +167,8 @@ def _create_real_new_container(root: Path, request_file: Path, request: dict[str
         "PYTHONDONTWRITEBYTECODE=1",
         "--env",
         "PYTHONPATH=" + str(Path(str(request["application_root"])).parent),
+        "--env",
+        "HOME=" + str(request["state_root"]),
     ]
     for key in ("state_root", "operation_root", "guard_root", "oauth_root", "bootstrap_config", "management_config", "executable", "application_root"):
         path = str(request[key])
@@ -193,7 +195,6 @@ def test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback
     token, request = _prepare_real_new_source(request_file)
     prior_oauth = (root / "oauth/oauth.sqlite3").read_bytes()
     assert _run_host("begin", "--request-file", str(request_file)).returncode == 0
-    name = ""
     tag = ""
     container_id = ""
     try:
