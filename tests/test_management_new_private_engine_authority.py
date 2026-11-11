@@ -150,6 +150,40 @@ def test_original_data_root_inode_cannot_be_substituted(source: tuple[Path, Path
             pytest.fail("replaced original Docker data root unexpectedly admitted")
 
 
+@pytest.mark.parametrize("isolated_net", [True, False])
+def test_private_engine_restricted_proc_namespace_requires_verified_parent_probe(source: tuple[Path, Path, Path, dict[str, object], Path], monkeypatch: pytest.MonkeyPatch, isolated_net: bool) -> None:
+    """A ptrace denial cannot become an unverified namespace assumption."""
+    original_readlink = os.readlink
+    host_pid_namespace = original_readlink("/proc/self/ns/pid")
+    host_net_namespace = original_readlink("/proc/self/ns/net")
+    forbidden = {f"/proc/{os.getpid()}/ns/pid", f"/proc/{os.getpid()}/ns/net"}
+
+    def restricted_readlink(path: str | os.PathLike[str]) -> str:
+        if os.fspath(path) in forbidden:
+            raise PermissionError("ptrace-gated parent namespace")
+        return original_readlink(path)
+
+    probes: list[tuple[str, ...]] = []
+
+    def private_probe(_socket: Path, *arguments: str, **_kwargs: object) -> str:
+        if arguments[0] == "ps":
+            return ""
+        probes.append(arguments)
+        if arguments[-1] == "/proc/self/ns/pid":
+            return host_pid_namespace
+        return "net:[999999999]" if isolated_net else host_net_namespace
+
+    monkeypatch.setattr(authority.os, "readlink", restricted_readlink)
+    monkeypatch.setattr(authority, "_docker", private_probe)
+    if isolated_net:
+        assert _observation(source).parent_pid_namespace == host_pid_namespace
+        assert len(probes) == 4, "both before and after observations must recheck each namespace"
+    else:
+        with pytest.raises(HostObservationUnavailable, match="kernel lifetime unavailable"):
+            _observation(source)
+        assert len(probes) == 2
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

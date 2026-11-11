@@ -436,6 +436,11 @@ recorded **before the first Docker effect**. The daemon can later take root
 ownership of its bind-mounted data directory; the trusted host verifies its
 original inode and write protection through `stat(..., dir_fd=owner_root_fd)`
 without traversing Docker's contents or widening filesystem permissions.
+When Linux ptrace restrictions deny the non-root operator direct access to
+`/proc/<parent-pid>/ns/*`, the verifier asks the exact inspected parent to
+read its own kernel namespace links and checks the host PID-namespace match
+and separate network namespace. It still binds the parent's host PID start
+token and rechecks the same parent/container lifetime before admitting it.
 The parent selects `--entrypoint dockerd` (as in the existing disposable CI
 fixture), disables its bridge/firewall and avoids the DinD script's extra
 default TCP listener. After the one-way parent-created record, a

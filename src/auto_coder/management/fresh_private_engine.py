@@ -163,15 +163,27 @@ def _parent(host_socket: Path, container_id: str) -> dict[str, object]:
     return value
 
 
-def _lifetime(pid: int) -> tuple[str, str, str, str]:
+def _lifetime(pid: int, *, outer_socket: Path, parent_id: str) -> tuple[str, str, str, str]:
     if type(pid) is not int or pid <= 0:
         raise HostObservationUnavailable("private Engine parent PID unavailable")
     try:
         raw = (Path("/proc") / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()
         token = raw[19]
         boot_id = (Path("/proc/sys/kernel/random/boot_id")).read_text().strip()
-        pid_namespace = os.readlink(Path("/proc") / str(pid) / "ns/pid")
-        net_namespace = os.readlink(Path("/proc") / str(pid) / "ns/net")
+        try:
+            pid_namespace = os.readlink(Path("/proc") / str(pid) / "ns/pid")
+            net_namespace = os.readlink(Path("/proc") / str(pid) / "ns/net")
+        except PermissionError:
+            # A non-root host operator can inspect the parent PID start token
+            # but Linux may deny ptrace-gated /proc/<root-pid>/ns links. Ask
+            # the exact Docker-created parent to read its own kernel links;
+            # the already verified Docker policy fixes PID mode to host and
+            # network mode to none. Reject a parent in the host network or a
+            # caller outside the outer Engine's host PID namespace.
+            pid_namespace = _docker(outer_socket, "exec", "--user", "0:0", parent_id, "readlink", "/proc/self/ns/pid")
+            net_namespace = _docker(outer_socket, "exec", "--user", "0:0", parent_id, "readlink", "/proc/self/ns/net")
+            if pid_namespace != os.readlink("/proc/self/ns/pid") or net_namespace == os.readlink("/proc/self/ns/net"):
+                raise HostObservationUnavailable("private Engine parent namespace cannot be independently bound to this host")
         if not token.isdecimal() or int(token) <= 0 or str(uuid.UUID(boot_id)) != boot_id:
             raise ValueError("invalid Linux parent lifetime")
     except (OSError, IndexError, ValueError) as error:
@@ -278,7 +290,7 @@ def _observe_source(
     pid = state.get("Pid")
     if type(pid) is not int or pid <= 0:
         raise HostObservationUnavailable("private Engine parent host PID is unavailable")
-    token, pid_ns, net_ns, boot_id = _lifetime(pid)
+    token, pid_ns, net_ns, boot_id = _lifetime(pid, outer_socket=outer_socket, parent_id=parent_id)
     private_id = _engine_id(private_socket)
     if private_id == outer_id:
         raise HostObservationUnavailable("private Engine is the outer production Docker Engine")
@@ -290,7 +302,7 @@ def _observe_source(
             raise HostObservationUnavailable("private Engine has another configured startup source")
     if _parent(outer_socket, parent_id) != parent or _engine_id(outer_socket) != outer_id or _engine_id(private_socket) != private_id:
         raise HostObservationUnavailable("private Engine parent or daemon changed during observation")
-    if _lifetime(pid) != (token, pid_ns, net_ns, boot_id):
+    if _lifetime(pid, outer_socket=outer_socket, parent_id=parent_id) != (token, pid_ns, net_ns, boot_id):
         raise HostObservationUnavailable("private Engine parent lifetime changed during observation")
     if original is None and (inspect_new_instance_origin(request_file) != origin or inspect_new_instance_profile(request_file) != profile):
         raise HostObservationUnavailable("private Engine original identity changed")
