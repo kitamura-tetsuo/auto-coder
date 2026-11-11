@@ -27,26 +27,29 @@ from auto_coder.util import gh_cache
 from tests.test_release_worker_acceptance_container import _SourceHTTPTransport
 
 
-class _LostStartResponse(WorkerNetworkClient):
-    """Discard only actual signed START transport results and exact readback."""
+class _LostOperationResponse(WorkerNetworkClient):
+    """Discard one actual signed effect response and its exact readback only."""
 
-    def __init__(self, config: WorkerEndpointConfig, fault_root: Path) -> None:
+    def __init__(self, config: WorkerEndpointConfig, fault_root: Path, operation: str) -> None:
         super().__init__(config)
         self.fault_root = fault_root
+        assert operation in {"START", "RECOVER_PREVIOUS"}
+        self.operation = operation
+        self.label = "start" if operation == "START" else "recovery"
 
     def _call(self, method: str, target: str, document: dict[str, object] | None = None, *, bootstrap: bool = False, worker_run: str = "", worker_generation: str = "") -> WorkerNetworkResult:
         result = super()._call(method, target, document, bootstrap=bootstrap, worker_run=worker_run, worker_generation=worker_generation)
-        if not (self.fault_root / "hold-start-response").exists():
+        if not (self.fault_root / f"hold-{self.label}-response").exists():
             return result
-        lost = self.fault_root / "lost-start.json"
-        if method == "POST" and target == "/v1/worker-operations" and document and document.get("operation") == "START":
+        lost = self.fault_root / f"lost-{self.label}.json"
+        if method == "POST" and target == "/v1/worker-operations" and document and document.get("operation") == self.operation:
             # This is written only AFTER the production client verified the real
             # signed response. It is never returned as lifecycle evidence.
             assert result.result_code == "RUNNING", result
             lost.write_text(json.dumps({"operation_id": document["operation_id"], "supervisor_generation": result.supervisor_generation, "request_id": result.request_id, "result_code": result.result_code}), encoding="utf-8")
-            event = "discarded_start_response"
+            event = f"discarded_{self.label}_response"
         elif method == "GET" and lost.exists() and target == "/v1/worker-operations/" + json.loads(lost.read_text())["operation_id"]:
-            event = "discarded_start_readback"
+            event = f"discarded_{self.label}_readback"
         else:
             return result
         with (self.fault_root / "lost-response-audit.jsonl").open("a", encoding="utf-8") as stream:
@@ -94,7 +97,7 @@ def main() -> None:
     endpoint["secret"] = base64.b64decode(endpoint["secret"])
     if endpoint["secret_file"] is not None:
         endpoint["secret_file"] = Path(endpoint["secret_file"])
-    network = _LostStartResponse(WorkerEndpointConfig(**endpoint), Path(configuration["fault_root"]))
+    network = _LostOperationResponse(WorkerEndpointConfig(**endpoint), Path(configuration["fault_root"]), configuration.get("lost_operation", "START"))
     pristine = network.supervisor_generation is None and network.worker_process_run_id is None and network.worker_deployment_generation is None
 
     @contextmanager

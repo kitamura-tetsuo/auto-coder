@@ -28,7 +28,7 @@ from starlette.testclient import TestClient
 
 from auto_coder.management.app import create_management_app
 from auto_coder.management.beta_runtime_smoke import SmokeProfile
-from auto_coder.management.operations import OperationPhase
+from auto_coder.management.operations import EffectState, OperationPhase
 from auto_coder.management.source_acceptance import SourceAcceptancePublisher
 from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkClient, WorkerNetworkResult
 from auto_coder.source_release_catalog import canonical, digest
@@ -352,19 +352,52 @@ def test_failed_installed_release_retains_uncertain_recovery_across_manager_reco
     _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=True, lose_recovery_reconstruct_manager=True)
 
 
+@pytest.mark.timeout(2400)
+def test_lost_installed_recovery_survives_manager_process_and_supervisor_reconstruction(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None) -> None:
+    """Restart manager OS process and Supervisor object/listener, retaining child."""
+    _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=True, lose_recovery_reconstruct_manager=True, recovery_process=True)
+
+
+@pytest.mark.timeout(2400)
+def test_expired_installed_recovery_settles_original_evidence_after_reconstruction(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None) -> None:
+    """Let the actual recovery deadline expire, then release original readback."""
+    _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=True, lose_recovery_reconstruct_manager=True, recovery_process=True, expire_recovery=True)
+
+
 def _exercise_installed_release_join(
-    real_boundary, tmp_path: Path, monkeypatch, *, fail_candidate: bool, reconstruct_manager: bool = False, lose_start_reconstruct: bool = False, supersede_after_stage: bool = False, hold_terminal_exit: bool = False, lose_recovery_reconstruct_manager: bool = False
+    real_boundary,
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    fail_candidate: bool,
+    reconstruct_manager: bool = False,
+    lose_start_reconstruct: bool = False,
+    supersede_after_stage: bool = False,
+    hold_terminal_exit: bool = False,
+    lose_recovery_reconstruct_manager: bool = False,
+    recovery_process: bool = False,
+    expire_recovery: bool = False,
 ) -> None:
     assert sum((reconstruct_manager, lose_start_reconstruct, supersede_after_stage, hold_terminal_exit, lose_recovery_reconstruct_manager)) <= 1
     assert not lose_recovery_reconstruct_manager or fail_candidate
+    assert not recovery_process or lose_recovery_reconstruct_manager
+    assert not expire_recovery or recovery_process
     assert not fail_candidate or not any((reconstruct_manager, lose_start_reconstruct, supersede_after_stage, hold_terminal_exit))
     prefix = (
-        "release-manager-reconstruction-"
-        if reconstruct_manager
+        "release-expired-recovery-"
+        if expire_recovery
         else (
-            "release-uncertain-recovery-"
-            if lose_recovery_reconstruct_manager
-            else "release-held-terminal-" if hold_terminal_exit else "release-superseded-" if supersede_after_stage else "release-lost-start-" if lose_start_reconstruct else "release-failed-candidate-" if fail_candidate else "release-installed-join-"
+            "release-recovery-reconstruction-"
+            if recovery_process
+            else (
+                "release-manager-reconstruction-"
+                if reconstruct_manager
+                else (
+                    "release-uncertain-recovery-"
+                    if lose_recovery_reconstruct_manager
+                    else "release-held-terminal-" if hold_terminal_exit else "release-superseded-" if supersede_after_stage else "release-lost-start-" if lose_start_reconstruct else "release-failed-candidate-" if fail_candidate else "release-installed-join-"
+                )
+            )
         )
     )
     scenario = prefix + uuid.uuid4().hex[:12]
@@ -378,7 +411,7 @@ def _exercise_installed_release_join(
             service = system.app.state.management_runtime
             system.http.portal.call(service.stop_monitor)
             system.http.portal.call(service.dispatcher.stop)
-            with _installed_release(system, root / "release", scenario, fail_candidate=fail_candidate, reconstruct_supervisor=lose_start_reconstruct, hold_terminal_exit=hold_terminal_exit) as release, _source_http(system.remote) as endpoint, ExitStack() as processes:
+            with _installed_release(system, root / "release", scenario, fail_candidate=fail_candidate, reconstruct_supervisor=lose_start_reconstruct or recovery_process, hold_terminal_exit=hold_terminal_exit) as release, _source_http(system.remote) as endpoint, ExitStack() as processes:
 
                 @contextmanager
                 def source_http_client(**_kwargs):
@@ -438,7 +471,7 @@ def _exercise_installed_release_join(
                     monkeypatch.setattr(release.client, "read_worker_operation", withhold_original_start_receipt)
                 recovery_dispatches: list[str] = []
                 allow_recovery_readback = {"value": False}
-                if lose_recovery_reconstruct_manager:
+                if lose_recovery_reconstruct_manager and not recovery_process:
                     original_dispatch = release.client.dispatch_worker_operation
                     original_read = release.client.read_worker_operation
 
@@ -509,19 +542,22 @@ def _exercise_installed_release_join(
                         "expected_process_run_id": old["process_run_id"],
                         "expected_deployment_generation": old["deployment_generation"],
                     }
-                    if reconstruct_manager:
+                    if reconstruct_manager or recovery_process:
                         # Only the child managers own the release lifecycle. The
                         # promotion app is stopped before the first admission.
                         http.portal.call(app.state.management_runtime.stop_monitor)
                         http.portal.call(app.state.management_runtime.dispatcher.stop)
                         fault_root = root / "manager-fault"
                         fault_root.mkdir()
-                        hold = fault_root / "hold-start-response"
-                        hold.write_text("discard real START transport responses", encoding="utf-8")
+                        lost_operation = "RECOVER_PREVIOUS" if recovery_process else "START"
+                        hold = fault_root / ("hold-recovery-response" if recovery_process else "hold-start-response")
+                        hold.write_text(f"discard real {lost_operation} transport responses", encoding="utf-8")
                         configuration = fault_root / "configuration.json"
                         worker_config = asdict(release.client.config)
                         worker_config["secret"] = base64.b64encode(worker_config["secret"]).decode()
-                        configuration.write_text(json.dumps({"settings": asdict(settings), "worker": worker_config, "uid_policy": str(real_boundary[4]), "oauth_now": real_boundary[5]["now"], "source_endpoint": endpoint, "fault_root": str(fault_root)}, default=str), encoding="utf-8")
+                        configuration.write_text(
+                            json.dumps({"settings": asdict(settings), "worker": worker_config, "uid_policy": str(real_boundary[4]), "oauth_now": real_boundary[5]["now"], "source_endpoint": endpoint, "fault_root": str(fault_root), "lost_operation": lost_operation}, default=str), encoding="utf-8"
+                        )
                         first_manager = _ManagerProcess(configuration, fault_root / "manager-first.stderr")
                         processes.callback(first_manager.close)
                         http = first_manager
@@ -702,12 +738,20 @@ def _exercise_installed_release_join(
                                 worker = inspected.data.get("worker")
                                 if inspected.data.get("alive") is False and isinstance(worker, dict) and worker.get("runtime_id") == release.candidate["installed_runtime_id"]:
                                     failed_observations.append(inspected)
+                            if recovery_process:
+                                lost_file = fault_root / "lost-recovery.json"
+                                persisted = journal.lifecycle_snapshot(operation_id)
+                                step = persisted[1].get("steps", {}).get("recovery") if persisted else None
+                                if lost_file.exists() and step and step["state"] == "SENT_UNKNOWN":
+                                    lost = json.loads(lost_file.read_text())
+                                    assert lost["supervisor_generation"] == previous.supervisor_generation
+                                    recovery_dispatches.append(lost["operation_id"])
                             return recovery_dispatches[0] if recovery_dispatches else None
 
                         _wait_for(recovery_dispatched, timeout=180)
                         assert recovery_dispatches == ["r-" + operation_id]
                         independent = WorkerNetworkClient(release.client.config)
-                        assert _wait_for(lambda: _ready(independent, str(release.previous["source_sha"])), timeout=90)
+                        survivor = _wait_for(lambda: _ready(independent, str(release.previous["source_sha"])), timeout=90)
                         unsettled = journal.lifecycle_snapshot(operation_id)
                         assert unsettled is not None
                         assert unsettled[1]["stage"] == "RESTORING"
@@ -719,30 +763,92 @@ def _exercise_installed_release_join(
                         assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "selected_git_sha": system.revisions[1]})["status"] == "CONFLICT"
                         assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing-recovery"})["status"] == "BUSY"
 
-                        clients.close()
-                        fresh = WorkerNetworkClient(release.client.config)
-                        fresh_read = fresh.read_worker_operation
+                        held_recovery = unsettled[1]
+                        recovery_step = held_recovery["steps"]["recovery"]
+                        receipt_before = independent.read_worker_operation(recovery_dispatches[0])
+                        assert receipt_before.result_code == "RUNNING" and receipt_before.data["intent_digest"] == recovery_step["expected_digest"]
+                        retained_os = json.loads((release.runtime / "supervisor" / "state.json").read_text())["worker"]
+                        preserved_launches = (release.runtime / "fixture-launches.jsonl").read_bytes()
+                        if recovery_process:
+                            first_manager.crash()
+                            # The Supervisor owner/listener is reconstructed in
+                            # the same PID1, not an OS-process/container restart.
+                            _docker("kill", "--signal=SIGUSR1", release.container)
+                            reconstructed_supervisor = _wait_for(lambda: result if (result := independent.inspect_supervisor()).result_code == "OK" and result.supervisor_generation != previous.supervisor_generation else None, timeout=30)
+                            assert (release.runtime / "fixture-supervisor-reconstructions").read_text() == "1"
+                            assert _container_identity(release.container) == release_identity
+                            second_manager = _ManagerProcess(configuration, fault_root / "manager-second.stderr")
+                            processes.callback(second_manager.close)
+                            assert second_manager.process.pid != first_manager.process.pid
+                            assert (second_manager.process.pid, second_manager.start_token) != (first_manager.process.pid, first_manager.start_token)
+                            http = second_manager
+                        else:
+                            clients.close()
+                            fresh = WorkerNetworkClient(release.client.config)
+                            fresh_read = fresh.read_worker_operation
 
-                        def retain_uncertain_recovery(operation_id: str):
-                            if operation_id in recovery_dispatches and not allow_recovery_readback["value"]:
-                                return WorkerNetworkResult(0, "UNAVAILABLE", None, fresh.supervisor_generation or "", uuid.uuid4().hex)
-                            return fresh_read(operation_id)
+                            def retain_uncertain_recovery(operation_id: str):
+                                if operation_id in recovery_dispatches and not allow_recovery_readback["value"]:
+                                    return WorkerNetworkResult(0, "UNAVAILABLE", None, fresh.supervisor_generation or "", uuid.uuid4().hex)
+                                return fresh_read(operation_id)
 
-                        monkeypatch.setattr(fresh, "read_worker_operation", retain_uncertain_recovery)
-                        reconstructed = create_management_app(settings, service.grants, worker_clients={"release": fresh})
-                        http = clients.enter_context(TestClient(reconstructed, base_url=settings.oauth.canonical_issuer))
-                        journal = reconstructed.state.management_runtime.journal
-                        recovered = journal.get(operation_id).record
-                        assert recovered is not None and recovered.intent == original.intent and recovered.authority == original.authority
-                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
-                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "selected_git_sha": system.revisions[1]})["status"] == "CONFLICT"
-                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing-recovery-reconstructed"})["status"] == "BUSY"
-                        held = _call(http, system.bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
-                        assert held["status"] == "RESTORING" and held["recovery_state"] == "UNKNOWN"
-                        time.sleep(5)
-                        assert (release.runtime / "fixture-posts").read_bytes() == preserved_posts
-                        assert len((release.runtime / "fixture-launches.jsonl").read_text().splitlines()) == 3
-                        allow_recovery_readback["value"] = True
+                            monkeypatch.setattr(fresh, "read_worker_operation", retain_uncertain_recovery)
+                            reconstructed = create_management_app(settings, service.grants, worker_clients={"release": fresh})
+                            http = clients.enter_context(TestClient(reconstructed, base_url=settings.oauth.canonical_issuer))
+                            journal = reconstructed.state.management_runtime.journal
+
+                        def recovery_lane_held():
+                            recovered = journal.get(operation_id).record
+                            assert recovered is not None and recovered.intent == original.intent and recovered.authority == original.authority
+                            assert recovered.effect.state is EffectState.SENT_UNKNOWN and recovered.effect.receipt is None
+                            held = _call(http, system.bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
+                            expected_statuses = {"RESTORING", "NEEDS_ATTENTION"} if expire_recovery else {"RESTORING"}
+                            assert held["status"] in expected_statuses and held["recovery_state"] == "UNKNOWN", held
+                            assert _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
+                            assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "selected_git_sha": system.revisions[1]})["status"] == "CONFLICT"
+                            assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "catalog_oid": "f" * 40})["status"] == "CONFLICT"
+                            competing = _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing-recovery-reconstructed"})
+                            assert competing["status"] == "BUSY" and competing["operation_id"] == operation_id
+                            rebuilt = journal.lifecycle_snapshot(operation_id)[1]
+                            for field in ("steps", "original_deadline", "deadline", "accepted_evidence", "release_identity", "incumbent", "staged", "new_worker", "recovery_attempts"):
+                                assert rebuilt[field] == held_recovery[field], field
+                            assert (release.runtime / "fixture-posts").read_bytes() == preserved_posts
+                            assert (release.runtime / "fixture-launches.jsonl").read_bytes() == preserved_launches
+                            return held
+
+                        for _ in range(3):
+                            recovery_lane_held()
+                            time.sleep(2.1)
+                        if expire_recovery:
+                            # No clock/deadline edits: wait for the original
+                            # production 150-second recovery window to expire.
+                            remaining = held_recovery["deadline"] - time.time()
+                            assert 0 < remaining < 150
+                            while time.time() <= held_recovery["deadline"]:
+                                recovery_lane_held()
+                                time.sleep(min(5, max(0.1, held_recovery["deadline"] - time.time())))
+                            expired = _wait_for(lambda: result if (result := recovery_lane_held())["status"] == "NEEDS_ATTENTION" else None, timeout=20)
+                            assert expired["reason"] == "original_supervisor_incarnation_changed"
+                            assert journal.get(operation_id).record.phase is OperationPhase.NEEDS_ATTENTION
+                            assert "recovery_read_only_heartbeats" not in journal.lifecycle_snapshot(operation_id)[1]
+                        still_live = _ready(independent, str(release.previous["source_sha"]))
+                        assert still_live is not None
+                        for field in ("process_run_id", "deployment_generation"):
+                            assert still_live["observation"][field] == survivor["observation"][field]
+                        live_os = json.loads((release.runtime / "supervisor" / "state.json").read_text())["worker"]
+                        assert all(live_os[field] == retained_os[field] for field in ("pid", "start_token", "deployment_generation", "runtime_id"))
+                        stat = _docker("exec", release.container, "cat", f"/proc/{retained_os['pid']}/stat").stdout
+                        assert stat.rsplit(") ", 1)[1].split()[19] == retained_os["start_token"]
+                        if recovery_process:
+                            retained_receipt = independent.read_worker_operation(recovery_dispatches[0])
+                            assert retained_receipt.supervisor_generation == reconstructed_supervisor.supervisor_generation
+                            assert retained_receipt.data == receipt_before.data
+                            audit = [json.loads(line) for line in (fault_root / "lost-response-audit.jsonl").read_text().splitlines()]
+                            assert len([entry for entry in audit if entry["event"] == "discarded_recovery_response"]) == 1
+                            assert any(entry["pid"] == second_manager.process.pid and entry["event"] == "discarded_recovery_readback" and entry["result_code"] == "RUNNING" for entry in audit)
+                            hold.unlink()
+                        else:
+                            allow_recovery_readback["value"] = True
 
                     independent_samples = []
                     expected = release.previous if fail_candidate else release.candidate
@@ -763,7 +869,10 @@ def _exercise_installed_release_join(
                             if heartbeat["stage"].startswith("producer:") and (not independent_samples or heartbeat["sequence"] > independent_samples[-1]["observation"]["heartbeat"]["sequence"]):
                                 independent_samples.append(live)
                         result = _call(http, system.bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
-                        assert result["status"] not in {"SUPERSEDED", "NEEDS_ATTENTION", "SUCCEEDED" if fail_candidate else "FAILED"}, result
+                        forbidden = {"SUPERSEDED", "SUCCEEDED" if fail_candidate else "FAILED"}
+                        if not expire_recovery:
+                            forbidden.add("NEEDS_ATTENTION")
+                        assert result["status"] not in forbidden, result
                         stored = journal.get(operation_id).record
                         return result if result["status"] == terminal_status and stored is not None and stored.phase is terminal_phase else None
 
@@ -824,6 +933,22 @@ def _exercise_installed_release_join(
                         receipt = observer.read_worker_operation(recovery_id)
                         assert receipt.result_code == "RUNNING" and receipt.data["intent_digest"] == done["steps"]["recovery"]["expected_digest"]
                         assert receipt.data["worker"]["deployment_generation"] == launches[2]["deployment_generation"]
+                    if lose_recovery_reconstruct_manager:
+                        assert done["original_deadline"] == held_recovery["original_deadline"]
+                        for field in ("operation_id", "sent_at", "owner_generation", "attempt_id", "correlation_identity", "expected_digest"):
+                            assert done["steps"]["recovery"][field] == recovery_step[field]
+                        assert done["restored_worker"]["deployment_generation"] == retained_os["deployment_generation"]
+                        assert (release.runtime / "fixture-posts").read_bytes() == preserved_posts
+                        assert (release.runtime / "fixture-launches.jsonl").read_bytes() == preserved_launches
+                        if recovery_process:
+                            assert current.supervisor_generation == reconstructed_supervisor.supervisor_generation != previous.supervisor_generation
+                        if expire_recovery:
+                            assert done["deadline"] == held_recovery["deadline"] < time.time()
+                            assert journal.lifecycle_snapshot(operation_id)[1]["recovery_read_only_heartbeats"] == done["heartbeats"]
+                            settled_recovery = journal.get(operation_id).record
+                            assert settled_recovery.effect.state is EffectState.CONFIRMED
+                            assert settled_recovery.effect.receipt.correlation_identity == settled_recovery.effect.correlation_identity
+                            assert settled_recovery.effect.receipt.observation_source == "supervisor-and-worker-lifecycle-journal"
                     if reconstruct_manager:
                         assert done["original_deadline"] == held["original_deadline"]
                         for field in ("operation_id", "sent_at", "owner_generation", "attempt_id", "correlation_identity", "expected_digest"):

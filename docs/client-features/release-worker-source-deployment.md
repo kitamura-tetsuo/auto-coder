@@ -176,7 +176,8 @@ recovery `CONFIRMED`. This does not add recovery of a still-running failed
 candidate or permission to infer failure from missing readiness or timeout.
 Preparation-only reconstruction is not admitted by this rule. Controlled
 signed-boundary regression cases cover recovery reconstruction and its negative
-cases; they are not independent installed-worker acceptance for that combination.
+cases. The installed recovery reconstruction cases below exercise the original
+receipt and genuine worker join; their exact clean-revision runs remain required.
 If expiry has already moved a release recovery to `NEEDS_ATTENTION`, a separate
 recovery-only read path can still verify that original effect. It never resumes
 a dispatch-capable stage or changes either deadline. It requires the original
@@ -193,8 +194,9 @@ made resumable by this narrow recovery path.
 
 Transient live-binding unavailability waits within the original lifecycle deadline,
 without dispatch or lane release; fresh matching evidence can then continue the
-same operation. Expiry remains NEEDS_ATTENTION. Beta source reconstruction is
-unchanged by this release-specific extension.
+same operation. Expiry retains NEEDS_ATTENTION until the recovery-only proof
+above is available; other uncertain steps remain held. Beta source reconstruction
+is unchanged by this release-specific extension.
 
 ### Installed acceptance join regression
 
@@ -276,9 +278,31 @@ manager app/client objects against the original journal. While the exact prior
 installed worker resumes, the original operation and lane remain owned, with
 no further recovery or child launch. Revealing the original receipt confirms
 recovery as `FAILED`, never `SUCCEEDED`. This case does not restart the manager
-OS process or change the Supervisor incarnation. The retained-recovery rebind
-and post-deadline read-only rules above are separately covered by component
-regressions until their installed-worker acceptance is recorded.
+OS process or change the Supervisor incarnation.
+
+Two additional cases reuse that same actual failed candidate and original
+recovery. They discard the signed `RECOVER_PREVIOUS` response only after the
+production client verifies it, then discard readback of exactly that operation.
+The first manager OS process is killed and a fresh Python manager starts against
+its original journal, OAuth database and UID policy. The Supervisor object and
+signed listener are reconstructed separately in their existing PID1 process;
+this changes the signed incarnation without killing the retained installed
+worker. Independent signed receipts, `/proc` PID/start tokens and launch audits
+must show the same restored prior child and exactly three total launches.
+While readback is lost, original replay/authority/deadlines/effect identities
+remain unchanged, altered source/catalog conflicts, another key stays busy,
+and neither new signed POSTs nor another recovery are permitted.
+
+The post-deadline variant waits out the original production 150-second recovery
+window without editing time or the journal. It requires `NEEDS_ATTENTION` with
+an unknown effect and an owned lane before releasing only the transport fault.
+The original receipt and two new genuine producer heartbeat samples must then
+settle the same operation as `FAILED` with recovery `CONFIRMED`, using the
+original expired deadline and a correlated durable terminal journal receipt.
+The normal variant releases readback before expiry. Both require independent
+installed provenance/progress and unchanged beta/ownership/source identities.
+These are fixture-pipe authenticated ASGI requests and Supervisor object/listener
+reconstruction, not a Supervisor OS-process restart or external TLS test.
 
 All integrated cases verify original immutable replay, changed-intent
 `CONFLICT`, competing-key `BUSY`, untouched beta process/container identities,
@@ -301,11 +325,10 @@ unknown recovery, unverified installed binding or incomplete original receipt
 must never be promoted to `SUCCEEDED` merely to clear the release lane.
 
 These bounded cases do not complete REQ-010. Integrated held active invocations,
-unresolved recovery across a changed Supervisor incarnation or a separate manager
-OS-process restart, post-deadline original recovery settlement, and independent
-Supervisor OS-process reconstruction remain separate required acceptance
-scenarios. The app-only unknown-recovery case above covers its own retained lane
-but does not establish those remaining boundaries. Killing/restarting the current PID1 container destroys its
+held-exit barriers across reconstruction, recovery of a still-running candidate
+with an authoritative failure producer, and independent Supervisor OS-process
+reconstruction remain separate required acceptance scenarios. The cases above
+do not establish those remaining boundaries. Killing/restarting the current PID1 container destroys its
 worker PID namespace; the same-process listener reconstruction does not establish
 child survival across that OS boundary. Preserve the unresolved acceptance gate
 until the remaining exact scenarios and clean-revision CI are demonstrated.
