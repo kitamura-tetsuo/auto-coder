@@ -24,6 +24,7 @@ from pathlib import Path
 from .archived_exclusions import unique_pairs
 from .containment_enrollment import EnrollmentObservation, EnrollmentUnavailable, observe_approved_enrollment
 from .containment_kernel_subobservation import KernelSubObservation, observe_kernel_subcomponent
+from .containment_route_manifest import RouteManifestObservation, RouteManifestUnavailable, observe_approved_route_manifest
 from .fresh_host_observation import _validate_host_proc_profile
 from .installed_bootstrap_source import InstalledBootstrapSource, inspect_installed_bootstrap_source
 from .proc_observation import ProcessObservation, observe_process
@@ -123,6 +124,7 @@ class PrerequisiteReport:
     watcher_systemd: WatcherSystemdObservation | None = None
     installed_bootstrap_source: InstalledBootstrapSource | None = None
     kernel_subobservation: KernelSubObservation | None = None
+    route_manifest: RouteManifestObservation | None = None
 
 
 def _digest(value: object) -> str:
@@ -377,6 +379,29 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
         process = process_by_pid[container.pid]
         if process.unavailable or not process.start_token or not process.boot_id or (boot_id and process.boot_id != boot_id):
             unavailable.append(Unavailable("docker-process:" + container.container_id, "Docker-selected live process could not be independently correlated to an inspectable current Linux lifetime."))
+    route_manifest = None
+    if isinstance(approved_enrollment, EnrollmentObservation) and docker:
+        try:
+            route_manifest = observe_approved_route_manifest(approved_enrollment, docker)
+            unavailable = [
+                (
+                    Unavailable("ordinary-route-closure", "The protected exhaustive-route component was reobserved, but user-session controllers, opaque alternate roots and full original-profile route authority remain unverified; a manifest alone cannot prove these technical exclusions.")
+                    if item.authority == "ordinary-route-closure"
+                    else item
+                )
+                for item in unavailable
+            ]
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            unavailable.append(
+                Unavailable(
+                    "approved-route-manifest",
+                    (
+                        "The installed exhaustive route authority or its independently observed inhibition is unavailable (" + type(exc).__name__ + "): " + str(exc)
+                        if isinstance(exc, RouteManifestUnavailable)
+                        else "The installed exhaustive route authority or independent route readback is unavailable (" + type(exc).__name__ + ")."
+                    ),
+                )
+            )
     kernel_subobservation = None
     if approved_enrollment is not None and isinstance(approved_enrollment, EnrollmentObservation) and docker:
         try:
@@ -386,7 +411,7 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             unavailable.append(Unavailable("kernel-subcomponent", "Original lifetime, all-task namespace or listener reobservation failed (" + type(exc).__name__ + ")."))
     return PrerequisiteReport(
-        "current-containment-prerequisites-v8",
+        "current-containment-prerequisites-v9",
         "unavailable",
         scope,
         _digest(asdict(scope)),
@@ -404,6 +429,7 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
         watcher_systemd=watcher_systemd,
         installed_bootstrap_source=installed_bootstrap_source,
         kernel_subobservation=kernel_subobservation,
+        route_manifest=route_manifest,
     )
 
 
@@ -415,7 +441,7 @@ def verify(scope: ProposedScope, previous: object) -> PrerequisiteReport:
         reasons.append(Unavailable("saved-report", "Unsupported or authorizing saved report; no containment success schema exists."))
     else:
         current_value = json.loads(json.dumps(asdict(current)))
-        for field in ("scope", "scope_sha256", "boot_id", "files", "docker", "processes", "approved_enrollment", "watcher_systemd", "installed_bootstrap_source", "kernel_subobservation", "unavailable", "resource_limit"):
+        for field in ("scope", "scope_sha256", "boot_id", "files", "docker", "processes", "approved_enrollment", "watcher_systemd", "installed_bootstrap_source", "kernel_subobservation", "route_manifest", "unavailable", "resource_limit"):
             if previous[field] != current_value[field]:
                 reasons.append(Unavailable("saved-report:" + field, "Independent current observation differs from saved report."))
     return replace(current, unavailable=tuple(reasons))

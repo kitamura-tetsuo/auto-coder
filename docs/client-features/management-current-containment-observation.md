@@ -52,7 +52,7 @@ python -m auto_coder.management.containment_observation verify \
 ```
 
 Both commands return exit status **2**, even if every available sub-observation
-matches. Output is JSON. `current-containment-prerequisites-v8` includes the full
+matches. Output is JSON. `current-containment-prerequisites-v9` includes the full
 proposed scope and its hash, a new observation UUID, current boot ID, observer PID
 and process-start token, monotonic observation interval, observed file identities,
 available Docker identities and explicit unavailable authorities/reasons.
@@ -134,6 +134,67 @@ to carry the independent `deployment-enrollment`, `original-source-profile`,
 `ordinary-route-closure` and `kernel-containment` unavailable reasons and
 always returns status 2. There is no accepted profile, authority to launch or
 full-scope positive fixture yet.
+
+### Protected ordinary-route manifest component (introduced in v9)
+
+The trusted host operator can separately review and install a private
+`/var/lib/auto-coder/approved-containment-enrollments/<enrollment-id>.routes.json`
+file, owned by root and mode `0600`, beneath the existing private mode `0700`
+root. The observer **never creates, repairs or signs** it. Its strict
+`approved-management-ordinary-routes-v1` schema binds the exact enrollment
+file SHA-256 and deployment/enrollment/authorization/profile IDs, requiring
+`approved_observation_only: true` and
+`complete_ordinary_routes_attested: true`. Neither a scope JSON nor a
+test-generated manifest establishes the trusted root's separate review.
+
+The manifest lists and classifies the **entire** host-systemd unit-file and
+loaded-unit universe (service, timer and socket units, including unrelated
+ones). Each route has `unit`, a SHA-256 of freshly re-read effective
+`systemctl show` properties, `systemctl cat` source and mask-link identity,
+and `role: restarter` or `unrelated`. Root must review exclusions. The actual
+catalog is enumerated afresh, not selected by the manifest. Unknown or omitted
+units, changed effective configurations, enabled restarters and uninspectable
+states refuse. A restarter must be masked and inactive, with PID 0, no pending
+daemon reload and a root-owned `/dev/null` mask link. The known management
+proxy watcher must be a restarter; other management names and source-detected
+management commands cannot be approved as unrelated.
+
+The manifest also binds the complete unfiltered Docker ID set to the existing
+whole-engine readback; the complete directory/file census of fixed
+`/etc/cron*`, `/etc/anacrontab` and `/var/spool/{cron,at,atjobs}` roots;
+and root-protected local repair/recreate scripts with their masked systemd
+inhibitors. Known or source-detected cron restarters must have inhibited
+installed scheduler units. The root-attested remote-script origin list must
+currently be empty; any nonempty list refuses until authenticated remote
+scheduler and script reobservation is implemented. Root is responsible for
+reviewing the completeness of other local/remote origin and opaque wrapper
+classifications. Such root attestation is an explicit **trust boundary**, not
+proof that the observer technically discovered an absent remote script.
+
+The optional `route_manifest` observation contains the protected manifest's
+inode and SHA-256 and the current full systemd, cron, script and Docker
+readback. A separate verifier repeats all reads. Missing or changed authority
+or enabled/unreadable routes add `approved-route-manifest` refusal; no approval
+record is modified. This component alone is **not** proof of complete
+original-source, user-session systemd, alternative-root or kernel containment.
+
+For initial inspection, trusted host root can run
+`python -m auto_coder.management.containment_route_manifest propose --scope /private/proposed-scope.json`.
+The JSON result contains `status: unapproved-root-review-required`, with
+`complete_ordinary_routes_attested: false`, no inferred local scripts and no
+inferred remote origins. It is **not accepted by the reader as installed
+authority**. A separate root operator must audit every exclusion, missing
+local/remote controller origin, scheduler and route classification, arrange
+inhibition outside this read-only path, and explicitly approve a protected
+record. The proposal command itself neither installs nor modifies anything.
+
+The entire adapter remains unavailable with exit status 2 until its real
+full-profile positive test is passed. Protocol tests for this component are
+not substitutes for Issue #2827 AS-T01–AS-T05 original-origin acceptance:
+
+```sh
+python -m pytest -q tests/test_management_containment_route_manifest.py
+```
 
 For the specifically reviewed `ordinary-v1` bootstrap-source bytes
 (`66bcfefa86aa2bd88dd4a253405fc6faac65675917e8d393e587d5a62fff83bb`),
@@ -260,8 +321,9 @@ regressions, run:
 The installed route inventory must independently cover the actual watcher and
 explicit reconciliation, services/timers, socket activation, Docker restart
 policies, configured local and remote scripts, repair/recreate routes, and
-alternative roots. This adapter cannot establish that inventory and always
-reports it missing. Unknown, omitted, enabled, uninspectable or mutable alternative
+alternative roots. The v9 manifest reader verifies a bounded part of this
+inventory but does not yet establish complete original-profile closure.
+Unknown, omitted, enabled, uninspectable or mutable alternative
 routes cannot be declared outside the deployment. It does not impose a new threat
 model on trusted Docker, Git, worktrees or later administrator actions.
 
@@ -309,7 +371,8 @@ the corresponding production trace-to-view obligations.
 
 ## Complete current Docker inventory sub-observation
 
-The `current-containment-prerequisites-v8` report replaces v1–v7. Earlier
+The `current-containment-prerequisites-v9` report extends v8 with protected
+ordinary-route observations. Earlier
 reports are refused; v1/v2 did not bind the complete engine inventory, and v4
 did not bind the current fixed watcher systemd route. `docker` includes
 **every** container returned by unfiltered `docker container ls --all --quiet
@@ -352,9 +415,10 @@ repair route. Unselected objects remain of unresolved deployment membership;
 labels and names never exclude them. Inventory/digest agreement neither proves
 immutable source/configuration nor closes alternative roots.
 
-Every command still returns status 2. Both exact original
-profiles, independent enrollment and complete route/kernel authority remain
-unavailable. No original histories have been recovered.
+Every command still returns status 2. Both complete original profiles and
+positive closed-route/kernel acceptance remain unavailable. The route manifest
+is a separately reobserved component only. No original histories have been
+recovered.
 
 Run the bounded ordinary regressions with:
 
