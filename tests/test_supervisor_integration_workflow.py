@@ -64,6 +64,7 @@ def test_new_private_engine_acceptance_keeps_mandatory_isolated_first_launch() -
         "pre-gate-live-sibling",
         "restart-policy-after-claim",
         "sealed-gate-outside-client",
+        "wrong-pid1-command",
     ):
         assert f'"{scenario}"' in regression
 

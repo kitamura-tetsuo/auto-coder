@@ -166,6 +166,7 @@ print(json.dumps(host.start_new_docker_once(Path(sys.argv[1]), sys.argv[2], sys.
         "changed-executable",
         "changed-application",
         "different-os-uid",
+        "wrong-pid1-command",
         "revoked-grant",
         "stale-observation",
     ],
@@ -219,7 +220,7 @@ def test_private_source_first_launch_and_retained_grant_readback(request_file: P
         assert loaded.returncode == 0, loaded.stderr
         os.environ["DOCKER_HOST"] = selected_host
 
-        child_id, image_id, child_image_tag = _create_real_new_container(request_file.parent, request_file, request)
+        child_id, image_id, child_image_tag = _create_real_new_container(request_file.parent, request_file, request, wrong_command=race == "wrong-pid1-command")
         child_scope = json.loads(subprocess.check_output(["docker", "--host", selected_host, "inspect", child_id], text=True))[0]
         assert child_scope["HostConfig"]["NetworkMode"] == "none"
         assert not child_scope["HostConfig"]["PortBindings"]
@@ -238,6 +239,21 @@ def test_private_source_first_launch_and_retained_grant_readback(request_file: P
             "--outer-socket",
             str(outer_socket),
         )
+        if race == "wrong-pid1-command":
+            refused = _run_host(*arguments, timeout=30)
+            assert refused.returncode == 1 and refused.stdout == "", refused.stderr
+            assert "not the selected Supervisor first start" in refused.stderr
+            assert not (request_file.parent / "guard/new-docker-first-start.json").exists()
+            assert not (request_file.parent / "state/physical-child-invocations").exists()
+            assert (request_file.parent / "oauth/oauth.sqlite3").read_bytes() == original_oauth
+            assert (
+                subprocess.check_output(
+                    ["docker", "--host", selected_host, "inspect", "--format", "{{.State.Status}}", child_id],
+                    text=True,
+                ).strip()
+                == "created"
+            )
+            return
         if race in {"changed-bootstrap", "changed-executable", "changed-application"}:
             selected = {
                 "changed-bootstrap": Path(str(request["bootstrap_config"])),

@@ -167,7 +167,7 @@ def _prepare_real_new_source(request_file: Path) -> tuple[str, dict[str, object]
     return token, request
 
 
-def _create_real_new_container(root: Path, request_file: Path, request: dict[str, object]) -> tuple[str, str, str]:
+def _create_real_new_container(root: Path, request_file: Path, request: dict[str, object], *, wrong_command: bool = False) -> tuple[str, str, str]:
     image_base = os.environ.get("AUTOCODER_FRESH_TEST_BASE_IMAGE", "auto-coder:management-local-abc65544")
     dockerfile = root / "Dockerfile"
     dockerfile.write_text(f'FROM {image_base}\nENTRYPOINT ["python3", "-B", "-m", "auto_coder.management.bootstrap_supervisor"]\n')
@@ -217,7 +217,10 @@ def _create_real_new_container(root: Path, request_file: Path, request: dict[str
         readonly = ",readonly" if key in {"bootstrap_config", "management_config", "executable", "application_root"} else ""
         command.extend(["--mount", f"type=bind,src={path},dst={path}{readonly}"])
     command.extend(["--mount", f"type=bind,src={request_file},dst={request_file},readonly"])
-    command.extend([image_id, "--config", str(request["bootstrap_config"]), "--new-initialization", "--request-file", str(request_file)])
+    if wrong_command:
+        command.extend(["--entrypoint", "/bin/sh", image_id, "-c", "true"])
+    else:
+        command.extend([image_id, "--config", str(request["bootstrap_config"]), "--new-initialization", "--request-file", str(request_file)])
     return subprocess.check_output(command, text=True, timeout=40).strip(), image_id, tag
 
 

@@ -175,31 +175,3 @@ def test_real_docker_started_container_never_qualifies_as_created(configured_req
         assert not (configured_request.parent / "LAUNCHED").exists()
     finally:
         subprocess.run(["docker", "rm", "-f", name], check=True, capture_output=True, timeout=30)
-
-
-def test_first_start_refuses_wrong_pid1_command_before_claim_or_docker_effect(configured_request: Path, isolated_image: tuple[str, str]) -> None:
-    """An isolated container alone cannot authorize an unrelated entrypoint."""
-    _begin(configured_request)
-    _, image_id = isolated_image
-    container_id, name = _create(configured_request, image_id)
-    try:
-        root = configured_request.parent
-        original = _bytes(root)
-        result = subprocess.run(
-            [sys.executable, "-B", "-m", "auto_coder.management.fresh_host", "start-new-container", "--request-file", str(configured_request), "--container-id", container_id, "--image-id", image_id, "--timeout", "5"],
-            env=_environment(),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        assert result.returncode == 1
-        assert "command is not the selected Supervisor" in result.stderr
-        assert result.stdout == ""
-        assert _bytes(root) == original
-        assert _inspect(configured_request, container_id, image_id).returncode == 0
-        assert subprocess.check_output(["docker", "inspect", "--format", "{{.State.Status}}", container_id], text=True).strip() == "created"
-        assert not (root / "guard/new-docker-first-start.json").exists()
-        assert not (root / "guard/fresh-guard.sock").exists()
-        assert not (root / "LAUNCHED").exists()
-    finally:
-        subprocess.run(["docker", "rm", "-f", name], check=True, capture_output=True, timeout=30)

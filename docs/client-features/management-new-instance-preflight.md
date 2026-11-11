@@ -559,7 +559,8 @@ Its real source, container and synthetic retained-grant fixtures now live in
 private-Engine creation, one original physical launch, authenticated exact-child
 readback, owner/first-claim contention, killed-host and replay refusal, modified
 bootstrap/executable/application, second OS UID denial, configured or live
-sibling and restart-policy races, and sealed-API outside-client refusal. The
+sibling and restart-policy races, wrong-PID1 entrypoint, and sealed-API
+outside-client refusal. The
 dedicated `NEW Docker Private Engine Acceptance` workflow executes these tests
 in disposable Docker-in-Docker parents, without mounting an existing service's
 OAuth root or container. A green component or outer-Engine test never replaces
