@@ -22,6 +22,7 @@ from auto_coder.management.fresh_private_engine import (
     SOURCE_CREATED,
     SOURCE_INTENT,
     SOURCE_READY,
+    assert_private_engine_live,
     create_private_engine,
     hold_private_engine_source,
 )
@@ -148,28 +149,6 @@ def test_private_source_first_launch_and_retained_grant_readback(request_file: P
         os.environ["DOCKER_HOST"] = selected_host
 
         child_id, image_id, child_image_tag = _create_real_new_container(request_file.parent, request_file, request)
-        # A second CREATED child is another possible startup source.
-        # This is a real private Engine refusal, before any first-launch claim.
-        extra = subprocess.run(
-            ["docker", "--host", selected_host, "container", "create", "--entrypoint", "/bin/sh", image_id, "-c", "true"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        ).stdout.strip()
-        try:
-            with pytest.raises(HostObservationUnavailable, match="another configured startup source"):
-                with hold_private_engine_source(request_file, root, outer_socket, expected_container_id=child_id):
-                    pytest.fail("another private Engine child was admitted")
-            assert not (request_file.parent / "state/physical-child-invocations").exists()
-            assert (request_file.parent / "oauth/oauth.sqlite3").read_bytes() == original_oauth
-        finally:
-            subprocess.run(
-                ["docker", "--host", selected_host, "container", "rm", extra],
-                check=True,
-                capture_output=True,
-                timeout=30,
-            )
         inspected = _run_host("inspect-new-container", "--request-file", str(request_file), "--container-id", child_id, "--image-id", image_id)
         assert inspected.returncode == 0, inspected.stderr
         arguments = (
@@ -208,6 +187,27 @@ def test_private_source_first_launch_and_retained_grant_readback(request_file: P
         assert _wait_for_new_outcome(request_file.parent)["status"] == "succeeded"
         assert (request_file.parent / "oauth/oauth.sqlite3").read_bytes() == original_oauth
         assert len((request_file.parent / "state/physical-child-invocations").read_text().splitlines()) == 1
+        # A second CREATED child must poison this same source's live exclusion.
+        # Never erase a prior child and then assert a fresh first-launch.
+        extra = subprocess.run(
+            ["docker", "--host", selected_host, "container", "create", "--entrypoint", "/bin/sh", image_id, "-c", "true"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout.strip()
+        try:
+            with pytest.raises(HostObservationUnavailable, match="another configured startup source"):
+                assert_private_engine_live(request_file, root, outer_socket, source, container_id=child_id)
+            assert len((request_file.parent / "state/physical-child-invocations").read_text().splitlines()) == 1
+            assert (request_file.parent / "oauth/oauth.sqlite3").read_bytes() == original_oauth
+        finally:
+            subprocess.run(
+                ["docker", "--host", selected_host, "container", "rm", extra],
+                check=True,
+                capture_output=True,
+                timeout=30,
+            )
     finally:
         if original_docker_host is None:
             os.environ.pop("DOCKER_HOST", None)
