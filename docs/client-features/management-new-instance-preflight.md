@@ -161,7 +161,11 @@ python -B -m auto_coder.management.fresh_host probe-admission-fence \
 The production `hold_new_admission_fence` context manager obtains a real Linux
 nonblocking exclusive `flock` on the directory descriptor, then re-verifies
 the original source files, application closure, configuration, OAuth schema
-and guard identity **while retaining the lock**. Another process attempting
+and guard identity **while retaining the lock**. It also rechecks retained
+source and guard identity before returning from the held context, refusing a
+guard path detached or configuration changed during the hold. This final
+bounded observation does not prevent changes after the check or confer
+continuous custody/launch authority. Another process attempting
 the same guard concurrently is refused by the kernel. The CLI releases the
 lock before it exits and reports `admission-fence-observed-only` with
 `launch_authorized=false`; its receipt cannot be reused as launch authority.

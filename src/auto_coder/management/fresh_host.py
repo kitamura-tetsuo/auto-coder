@@ -139,7 +139,8 @@ def main() -> None:
             from .fresh_new_admission_fence import hold_new_admission_fence
 
             with hold_new_admission_fence(args.request_file) as observation:
-                print(json.dumps(asdict(observation), sort_keys=True))
+                receipt = asdict(observation)
+            print(json.dumps(receipt, sort_keys=True))
         elif args.command == "capture":
             mounts = json.loads(_protected_file(Path(args.mounts_file)))
             if not isinstance(mounts, dict) or set(mounts) != {"management", "proxy"}:

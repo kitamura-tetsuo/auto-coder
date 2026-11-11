@@ -65,3 +65,13 @@ def hold_new_admission_fence(request_file: Path) -> Iterator[NewAdmissionFenceOb
             if (os.fstat(reopened).st_dev, os.fstat(reopened).st_ino) != (info.st_dev, info.st_ino):
                 raise ValueError("NEW admission guard was detached from its path")
         yield NewAdmissionFenceObservation(origin.request_id, origin.record_sha256, info.st_dev, info.st_ino)
+        # The held inode may have been detached from the path while the caller
+        # held the lock. This final observation is a refusal, not launch authority.
+        with _open(guard, directory=True) as reopened:
+            if (os.fstat(reopened).st_dev, os.fstat(reopened).st_ino) != (info.st_dev, info.st_ino):
+                raise ValueError("NEW admission guard detached while fence held")
+        current = _identity(guard, descriptor)
+        if (current.device, current.inode, current.uid, current.mode) != (info.st_dev, info.st_ino, info.st_uid, stat.S_IMODE(info.st_mode)):
+            raise ValueError("NEW admission guard changed while fence held")
+        if inspect_new_instance_origin(request_file) != origin or inspect_new_instance_profile(request_file) != profile:
+            raise ValueError("NEW admission sources changed while fence held")

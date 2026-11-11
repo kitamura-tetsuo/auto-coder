@@ -57,9 +57,9 @@ with hold_new_admission_fence(Path(sys.argv[1])) as observation:
 """
 
 
-def _holder(request: Path) -> subprocess.Popen[str]:
+def _holder(request: Path, *, script: str = _HOLD) -> subprocess.Popen[str]:
     process = subprocess.Popen(
-        [sys.executable, "-B", "-c", _HOLD, str(request)],
+        [sys.executable, "-B", "-c", script, str(request)],
         env=_environment(),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -158,3 +158,61 @@ def test_fence_probe_refuses_changed_original_evidence(configured_request: Path,
     assert result.stdout == ""
     assert _bytes(root) == before
     assert not (root / "LAUNCHED").exists()
+
+
+def test_guard_path_replaced_during_held_fence_refuses_exit(configured_request: Path) -> None:
+    """A held flock cannot vouch for a newly mounted or renamed path."""
+    root = configured_request.parent
+    _begin(configured_request)
+    original_receipt = (root / "guard/new-instance-origin.json").read_bytes()
+    holder = _holder(configured_request)
+    detached = root / "detached-guard"
+    try:
+        (root / "guard").rename(detached)
+        (root / "guard").mkdir(mode=0o700)
+        assert holder.stdin is not None
+        holder.stdin.write("resume\n")
+        holder.stdin.flush()
+        _, stderr = holder.communicate(timeout=20)
+        assert holder.returncode != 0, "stale held guard descriptor was silently accepted"
+        assert "guard" in stderr.lower() or "origin" in stderr.lower()
+        assert (detached / "new-instance-origin.json").read_bytes() == original_receipt
+        assert not (root / "LAUNCHED").exists()
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.communicate(timeout=5)
+        (root / "guard").rmdir()
+        detached.rename(root / "guard")
+
+
+_HOLD_POSTCHECK = """
+import sys
+from pathlib import Path
+from auto_coder.management.fresh_new_admission_fence import hold_new_admission_fence
+with hold_new_admission_fence(Path(sys.argv[1])) as observation:
+    print('REAL_FENCE_HELD', flush=True)
+    sys.stdin.readline()
+print(observation.status, flush=True)
+"""
+
+
+def test_changed_profile_during_held_fence_cannot_emit_success(configured_request: Path) -> None:
+    """An original configuration change invalidates the post-hold observation."""
+    root = configured_request.parent
+    _begin(configured_request)
+    holder = _holder(configured_request, script=_HOLD_POSTCHECK)
+    try:
+        (root / "management.yaml").write_bytes(b"changed while original guard was locked")
+        assert holder.stdin is not None
+        holder.stdin.write("resume\n")
+        holder.stdin.flush()
+        stdout, stderr = holder.communicate(timeout=20)
+        assert holder.returncode != 0
+        assert stdout == ""
+        assert "changed" in stderr or "differs" in stderr
+        assert not (root / "LAUNCHED").exists()
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.communicate(timeout=5)
