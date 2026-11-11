@@ -24,26 +24,38 @@ def test_host_fixture_requires_explicit_confirmation(monkeypatch: pytest.MonkeyP
 def test_host_fixture_passes_exact_test_image_to_authorized_runner(monkeypatch: pytest.MonkeyPatch) -> None:
     options: dict[str, object] = {}
 
-    def selected(*, exercise_test_route_manifest: bool, test_image: str, require_reviewed_ordinary_source: bool) -> None:
-        options.update(route_manifest=exercise_test_route_manifest, image=test_image, reviewed_source=require_reviewed_ordinary_source)
+    def selected(*, exercise_test_route_manifest: bool, exercise_disposable_systemd: bool, test_image: str, require_reviewed_ordinary_source: bool) -> None:
+        options.update(route_manifest=exercise_test_route_manifest, systemd=exercise_disposable_systemd, image=test_image, reviewed_source=require_reviewed_ordinary_source)
 
     monkeypatch.setattr(fixture, "run_fixture", selected)
     selected_image = "sha256:" + "b" * 64
-    monkeypatch.setattr(sys, "argv", ["host-fixture", "--confirm-test-only-fixture", "--exercise-test-route-manifest", "--require-reviewed-ordinary-source", "--test-image", selected_image])
+    monkeypatch.setattr(sys, "argv", ["host-fixture", "--confirm-test-only-fixture", "--exercise-test-route-manifest", "--exercise-disposable-systemd", "--require-reviewed-ordinary-source", "--test-image", selected_image])
     fixture.main()
-    assert options == {"route_manifest": True, "image": selected_image, "reviewed_source": True}
+    assert options == {"route_manifest": True, "systemd": True, "image": selected_image, "reviewed_source": True}
 
 
 def test_host_fixture_keeps_default_preinstalled_image(monkeypatch: pytest.MonkeyPatch) -> None:
     options: dict[str, object] = {}
 
-    def selected(*, exercise_test_route_manifest: bool, test_image: str, require_reviewed_ordinary_source: bool) -> None:
-        options.update(route_manifest=exercise_test_route_manifest, image=test_image, reviewed_source=require_reviewed_ordinary_source)
+    def selected(*, exercise_test_route_manifest: bool, exercise_disposable_systemd: bool, test_image: str, require_reviewed_ordinary_source: bool) -> None:
+        options.update(route_manifest=exercise_test_route_manifest, systemd=exercise_disposable_systemd, image=test_image, reviewed_source=require_reviewed_ordinary_source)
 
     monkeypatch.setattr(fixture, "run_fixture", selected)
     monkeypatch.setattr(sys, "argv", ["host-fixture", "--confirm-test-only-fixture"])
     fixture.main()
-    assert options == {"route_manifest": False, "image": fixture.IMAGE_TAG, "reviewed_source": False}
+    assert options == {"route_manifest": False, "systemd": False, "image": fixture.IMAGE_TAG, "reviewed_source": False}
+
+
+def test_disposable_systemd_requires_a_read_back_route_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(fixture.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(fixture.os, "readlink", lambda _: "pid:[1]")
+    with pytest.raises(ValueError, match="requires independently read-back"):
+        fixture.run_fixture(exercise_disposable_systemd=True)
+
+
+def test_disposable_systemd_identities_reject_unrelated_names_without_effects() -> None:
+    with pytest.raises(ValueError, match="fixture identity differs"):
+        fixture.DisposableSystemdRoutes.install(fixture_id="production-watcher", manager_id="a" * 64)
 
 
 def test_reviewed_source_requires_actual_image_readback() -> None:

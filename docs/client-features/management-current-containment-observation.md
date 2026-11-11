@@ -321,6 +321,20 @@ not independent production review, and this check cannot establish an
 original-production positive closed-profile verdict. It always removes the
 test-only route file, leaving production approvals unchanged.
 
+With **separate explicit host approval for test-only systemd mutations**, add
+`--exercise-disposable-systemd` together with `--exercise-test-route-manifest`.
+This opt-in path creates only UUID-qualified `ac-test-pr2829-*` service, timer
+and socket units, whose service would start only the disposable fixture
+manager. It runtime-masks all three, independently reads the protected
+full-route manifest from the production `observe` and separate `verify`
+entrypoints, then temporarily unmasks **only the disposable service** and
+requires the verifier to refuse its changed/enabled route. It restores the
+mask, removes only its own verified unit files/runtime mask links and reloads
+the systemd catalog to eliminate test-unit references. It does not operate
+on installed Auto-Coder services or authorize any full-profile acceptance.
+The host systemd catalog and its daemon-reload are shared host facilities,
+so this option must never run under read-only authorization alone.
+
 This probe does not pull images. It creates uniquely named test containers and
 only its own files under `/var/lib/auto-coder/containment-readback-fixtures` and
 the fixed approval directory, and cleans up those resources after completion or
