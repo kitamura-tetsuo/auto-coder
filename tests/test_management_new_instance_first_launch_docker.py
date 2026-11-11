@@ -257,6 +257,51 @@ def _new_isolated_bridge(name: str, *, masquerade: bool = False) -> None:
     )
 
 
+def _assert_other_docker_namespace_cannot_serve(request: dict[str, object], tag: str, admitted_container: str) -> None:
+    """A second real Docker namespace cannot reuse a live owner's files."""
+    program = (
+        "import json,os,subprocess,sys;"
+        f"cmd=[sys.executable,'-B','-m','auto_coder.cli','management','serve','--config',{str(request['management_config'])!r}];"
+        "result=subprocess.run(cmd,capture_output=True,text=True,timeout=10);"
+        "print(json.dumps({'pid1':os.getpid(),'netns':os.readlink('/proc/self/ns/net'),"
+        "'exit':result.returncode,'refused':'NEW Docker HTTP owner is not the admitted PID 1 entrypoint' in result.stderr}))"
+    )
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--user",
+        f"{os.geteuid()}:{os.getegid()}",
+        "--env",
+        "PYTHONDONTWRITEBYTECODE=1",
+        "--env",
+        "PYTHONPATH=" + str(Path(str(request["application_root"])).parent),
+    ]
+    for key in ("state_root", "operation_root", "guard_root", "oauth_root", "bootstrap_config", "management_config", "application_root"):
+        path = str(request[key])
+        command.extend(["--mount", f"type=bind,src={path},dst={path},readonly"])
+    command.extend(["--entrypoint", "python3", tag, "-B", "-c", program])
+    refused = subprocess.run(command, capture_output=True, text=True, timeout=40)
+    assert refused.returncode == 0, refused.stderr
+    evidence = json.loads(refused.stdout)
+    assert evidence["pid1"] == 1 and evidence["exit"] != 0 and evidence["refused"] is True
+    admitted_namespace = subprocess.run(
+        ["docker", "exec", admitted_container, "python3", "-B", "-c", "import os; print(os.readlink('/proc/self/ns/net'))"],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert admitted_namespace.returncode == 0, admitted_namespace.stderr
+    assert evidence["netns"] != admitted_namespace.stdout.strip()
+
+
 def test_new_docker_loopback_mcp_reaches_original_authenticated_child_from_host(request_file: Path) -> None:
     """A public hostname never replaces the original host-loopback-only port."""
     root = request_file.parent
@@ -304,6 +349,7 @@ def test_new_docker_loopback_mcp_reaches_original_authenticated_child_from_host(
             raise AssertionError("host-loopback authenticated MCP was not usable: " + last_error)
 
         assert _wait_for_new_outcome(root)["status"] == "succeeded"
+        _assert_other_docker_namespace_cannot_serve(request, tag, container_id)
         assert (root / "oauth/oauth.sqlite3").read_bytes() == prior_oauth
         assert len((root / "state/physical-child-invocations").read_text().splitlines()) == 1
     finally:
