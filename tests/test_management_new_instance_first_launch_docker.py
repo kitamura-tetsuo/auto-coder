@@ -815,6 +815,60 @@ def test_new_docker_refuses_external_first_start_racing_final_engine_command(req
             subprocess.run(["docker", "image", "rm", tag], check=True, capture_output=True, timeout=30)
 
 
+def test_new_docker_rejects_restart_policy_added_after_durable_claim(request_file: Path) -> None:
+    """A restart controller added during held admission must poison first start."""
+    root = request_file.parent
+    _token, request = _prepare_real_new_source(request_file)
+    original_oauth = (root / "oauth/oauth.sqlite3").read_bytes()
+    assert _run_host("begin", "--request-file", str(request_file)).returncode == 0
+    original_intent = (root / "guard/new-instance-origin.json").read_bytes()
+    tag = ""
+    container_id = ""
+    suspended = None
+    try:
+        container_id, image_id, tag = _create_real_new_container(root, request_file, request)
+        assert _run_host("inspect-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id).returncode == 0
+        suspended = subprocess.Popen(
+            [sys.executable, "-B", "-c", _PAUSE_AFTER_HOST_CLAIM, str(request_file), container_id, image_id],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=_environment(),
+        )
+        assert suspended.stdout is not None
+        assert select.select([suspended.stdout], [], [], 20)[0], "the host did not reach the durable claim barrier"
+        assert suspended.stdout.readline() == "new-host-claim-fsynced\n"
+        original_claim = (root / "guard/new-docker-first-start.json").read_bytes()
+        assert subprocess.check_output(["docker", "inspect", "--format", "{{.State.Status}}", container_id], text=True).strip() == "created"
+        subprocess.run(["docker", "update", "--restart=always", container_id], check=True, capture_output=True, timeout=25)
+        assert subprocess.check_output(["docker", "inspect", "--format", "{{.State.Status}} {{.HostConfig.RestartPolicy.Name}}", container_id], text=True).strip() == "created always"
+
+        os.kill(suspended.pid, signal.SIGCONT)
+        stdout, stderr = suspended.communicate(timeout=35)
+        assert suspended.returncode == 1 and stdout == "", (suspended.returncode, stdout, stderr)
+        assert "static startup or restart policy changed" in stderr
+        assert (root / "guard/new-docker-first-start.json").read_bytes() == original_claim
+        assert (root / "guard/new-instance-origin.json").read_bytes() == original_intent
+        assert (root / "oauth/oauth.sqlite3").read_bytes() == original_oauth
+        assert not (root / "state/physical-child-invocations").exists()
+        assert not (root / "state/new-first-launch-claimed.json").exists()
+        assert subprocess.check_output(["docker", "inspect", "--format", "{{.State.Status}}", container_id], text=True).strip() == "created"
+
+        subprocess.run(["docker", "update", "--restart=no", container_id], check=True, capture_output=True, timeout=25)
+        replay = _run_host("start-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id, timeout=25)
+        assert replay.returncode == 1 and replay.stdout == ""
+        assert (root / "guard/new-docker-first-start.json").read_bytes() == original_claim
+        assert not (root / "state/physical-child-invocations").exists()
+    finally:
+        if suspended is not None and suspended.poll() is None:
+            suspended.kill()
+            suspended.wait(timeout=10)
+        if container_id:
+            subprocess.run(["docker", "rm", "--force", container_id], check=True, capture_output=True, timeout=30)
+        if tag:
+            subprocess.run(["docker", "image", "rm", tag], check=True, capture_output=True, timeout=30)
+
+
 def test_new_docker_rejects_prior_process_joining_network_after_durable_claim(request_file: Path) -> None:
     """Recheck real bridge membership after a competing process enters mid-admission."""
     root = request_file.parent

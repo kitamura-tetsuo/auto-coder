@@ -106,6 +106,12 @@ def _start_docker_container_once(container_id: str, engine_id: str) -> None:
         connection.close()
 
 
+def _assert_docker_policy_unchanged(original: tuple[object, ...], current: tuple[object, ...]) -> None:
+    """Refuse restart-policy or other Docker runtime changes across admission."""
+    if original[:3] != current[:3] or original[9:23] != current[9:23]:
+        raise HostObservationUnavailable("NEW Docker static startup or restart policy changed")
+
+
 def _assert_new_owner(peer_pid: int, owner_incarnation: str, state_root: Path, instance: str) -> None:
     """Bind a peer to the actual held owner lock and native supervisor row."""
     lock = state_root / ".supervisor-owner.lock"
@@ -129,7 +135,16 @@ def _assert_new_owner(peer_pid: int, owner_incarnation: str, state_root: Path, i
         raise HostObservationUnavailable("NEW owner incarnation differs from native presence")
 
 
-def _serve_one_new_guard(listener: socket.socket, request_file: Path, container_id: str, image_id: str, host_claim_sha256: str, *, timeout: float) -> None:
+def _serve_one_new_guard(
+    listener: socket.socket,
+    request_file: Path,
+    container_id: str,
+    image_id: str,
+    host_claim_sha256: str,
+    original_docker_fields: tuple[object, ...],
+    *,
+    timeout: float,
+) -> None:
     request = json.loads(_file(request_file, private=True, limit=65536)[1])
     deadline = time.monotonic() + timeout
     listener.settimeout(0.25)
@@ -167,12 +182,14 @@ def _serve_one_new_guard(listener: socket.socket, request_file: Path, container_
         if payload["request_id"] != start.origin.request_id or payload["intent_sha256"] != start.origin.record_sha256 or payload["new_container_id"] != container_id or canonical_owner != owner or start.host_claim_sha256 != host_claim_sha256 or start.created.image_id != image_id:
             raise HostObservationUnavailable("NEW grant does not bind the original host start")
         fields = _docker_created_fields(container_id)
+        _assert_docker_policy_unchanged(original_docker_fields, fields)
         if fields[1] != image_id or fields[3:6] != ("running", True, peer_pid) or fields[8] != 0 or _engine_id() != start.created.engine_id:
             raise HostObservationUnavailable("NEW Docker PID-1 running identity differs")
         assert_running_new_network(request_file, start.created, fields)
         _assert_new_owner(peer_pid, owner, Path(request["state_root"]), start.profile.instance_id)
         # Recheck the independent engine and kernel owner after ledger reading.
         fields_again = _docker_created_fields(container_id)
+        _assert_docker_policy_unchanged(original_docker_fields, fields_again)
         if fields_again != fields or _engine_id() != start.created.engine_id:
             raise HostObservationUnavailable("NEW Docker/owner observation changed")
         assert_running_new_network(request_file, start.created, fields_again)
@@ -209,6 +226,9 @@ def start_new_docker_once(request_file: Path, container_id: str, image_id: str, 
         raise ValueError("NEW start timeout is invalid")
     with hold_new_guard_flock(request_file) as fence:
         created = _inspect_created_scope(request_file, container_id, image_id)
+        original_docker_fields = _docker_created_fields(container_id)
+        if original_docker_fields[9] != {"Name": "no", "MaximumRetryCount": 0} or original_docker_fields[3:9] != ("created", False, 0, "0001-01-01T00:00:00Z", "0001-01-01T00:00:00Z", 0):
+            raise HostObservationUnavailable("NEW Docker created state or restart policy changed before first-start claim")
         request = json.loads(_file(request_file, private=True, limit=65536)[1])
         if not _bootstrap_command_matches(created, request["bootstrap_config"], request_file):
             raise HostObservationUnavailable("NEW Docker command is not the selected Supervisor first start")
@@ -226,12 +246,14 @@ def start_new_docker_once(request_file: Path, container_id: str, image_id: str, 
             observed = load_new_first_start(request_file)
             if observed.host_claim_sha256 != claim or (fence.request_id, fence.origin_sha256) != (observed.origin.request_id, observed.origin.record_sha256):
                 raise HostObservationUnavailable("NEW first-start original was not durably bound")
-            if _docker_created_fields(container_id)[3:9] != ("created", False, 0, "0001-01-01T00:00:00Z", "0001-01-01T00:00:00Z", 0) or _engine_id() != created.engine_id:
+            current_docker_fields = _docker_created_fields(container_id)
+            _assert_docker_policy_unchanged(original_docker_fields, current_docker_fields)
+            if current_docker_fields[3:9] != ("created", False, 0, "0001-01-01T00:00:00Z", "0001-01-01T00:00:00Z", 0) or _engine_id() != created.engine_id:
                 raise HostObservationUnavailable("NEW Docker scope changed before first start")
             if created.network_id:
                 bootstrap = json.loads(_file(Path(request["bootstrap_config"]), private=True, limit=65536)[1])
                 if _dedicated_network_id(bootstrap["new_docker_network"]) != created.network_id:
                     raise HostObservationUnavailable("NEW Docker dedicated network changed before first start")
             _start_docker_container_once(container_id, created.engine_id)
-            _serve_one_new_guard(listener, request_file, container_id, image_id, claim, timeout=timeout)
+            _serve_one_new_guard(listener, request_file, container_id, image_id, claim, original_docker_fields, timeout=timeout)
             return _await_observed_first_child(Path(request["state_root"]), observed.origin.request_id, claim, container_id, timeout=timeout)

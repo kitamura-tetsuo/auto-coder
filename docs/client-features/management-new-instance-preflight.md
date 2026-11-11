@@ -281,6 +281,13 @@ crash, ambiguous observation or interruption leaves the claim in place and
 cannot issue another first start. The Engine start request is the only Docker
 lifecycle effect initiated by this command.
 
+The host also compares the original Docker CREATED container's immutable
+identity and selected startup/containment fields, including its no-restart
+policy, after its durable claim and again during the PID-1 guard handshake.
+An out-of-band Docker `update --restart=always` during admission is a
+refusal, not a newly authorized restart source; restoring `--restart=no`
+after a consumed claim cannot reauthorize first launch.
+
 After Docker starts, PID 1 must independently verify the original source,
 selected runtime and OAuth schema, keep a single exclusive owner lock, publish
 the native current-incarnation ledger and obtain a fresh host challenge bound
@@ -394,6 +401,9 @@ receive Engine HTTP 304, refuse authorization and preserve the consumed claim
 without ever starting the selected management child. This verifies that the
 host can distinguish its own successful Engine state transition from a
 successful-but-no-op Docker CLI invocation.
+Another regression changes the real Docker restart policy from `no` to
+`always` after the durable claim. The host must refuse before starting the
+container, preserve the claim, and reject replay after the policy is restored.
 
 ## Remaining normative gates and acceptance limits
 
@@ -418,7 +428,8 @@ successful-but-no-op Docker CLI invocation.
   listener/process rejection, and a process entering during the held claim.
   The host's Engine HTTP 204/304 boundary also rejects an out-of-band Docker
   start during the final check-to-effect race instead of attributing it to
-  this original operator.
+  this original operator. A live Docker restart-policy change during the held
+  admission is likewise refused without child launch.
   Broader independent proof of hostile/external host startup sources, unknown
   prior installations and all interrupted/uncertain reconciliation branches
   remains necessary before treating the full issue as complete. Exact-head CI
