@@ -971,6 +971,7 @@ def _exercise_installed_release_join(
                                 if heartbeat["stage"].startswith("producer:") and (not independent_samples or heartbeat["sequence"] > independent_samples[-1]["observation"]["heartbeat"]["sequence"]):
                                     independent_samples.append(live)
                             result = _call(http, system.bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
+                            assert result["status"] not in {"NEEDS_ATTENTION", "SUPERSEDED", "SUCCEEDED"}, result
                             stored = journal.get(operation_id).record
                             return result if result["status"] == "FAILED" and stored is not None and stored.phase is OperationPhase.FAILED and len(independent_samples) >= 2 else None
 
@@ -1010,6 +1011,7 @@ def _exercise_installed_release_join(
                             "recovered_incarnation": restarted.supervisor_generation,
                             "recovered_pid1_start_token": restarted_pid1_token,
                             "failed_generation": failed_os["deployment_generation"],
+                            "original_socket_reclaimed": True,
                         }
                         exit_evidence = state["operations"][recovery_id]["reboot_exit_evidence"]
                         assert all(exit_evidence[field] == failed_os[field] for field in ("pid", "start_token", "process_run_id", "deployment_generation", "runtime_id"))

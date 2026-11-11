@@ -447,7 +447,8 @@ def test_previous_runtime_recovery_limit_is_per_failed_process_generation(tmp_pa
         assert start.call_count == 2
 
 
-def test_release_pid1_reboot_recovery_consumes_pinned_prior_ready_once(tmp_path: Path) -> None:
+@pytest.mark.parametrize("socket_available", [True, False, "storage-unavailable"])
+def test_release_pid1_reboot_recovery_consumes_pinned_prior_ready_once(tmp_path: Path, socket_available) -> None:
     settings = replace(config(tmp_path, (sys.executable, "-c", "import time; time.sleep(60)")), instance_id="release-worker", channel="release")
     first = WorkerSupervisor(settings)
     prior = {"runtime_id": "preparedOld", "interpreter_path": sys.executable, "ready": {"installed_runtime_id": "preparedOld", "environment_path": str(tmp_path)}, "ready_path": "/versions/old/READY.json"}
@@ -465,7 +466,11 @@ def test_release_pid1_reboot_recovery_consumes_pinned_prior_ready_once(tmp_path:
         patch.object(first, "_verify_runtime", return_value=prior),
         patch.object(first, "_is_alive", return_value=True),
         patch.object(first, "_reconcile_worker"),
-        patch.object(first, "_reboot_candidate_evidence", return_value={"pid": 12345, "start_token": "failed-token", "process_run_id": "candidate-run", "deployment_generation": "failed-generation", "runtime_id": "preparedNew", "startup_reconciled": False, "daemon_serving": False}),
+        patch.object(
+            first,
+            "_reboot_candidate_evidence",
+            return_value={"pid": 12345, "start_token": "failed-token", "process_run_id": "candidate-run", "deployment_generation": "failed-generation", "runtime_id": "preparedNew", "socket_device": 1, "socket_inode": 2, "socket_ctime_ns": 3, "startup_reconciled": False, "daemon_serving": False},
+        ),
         patch.object(first, "_pid1_lifetime_token", return_value="pid1-original"),
         patch("auto_coder.worker_supervisor.os.getpid", return_value=1),
         patch("auto_coder.worker_supervisor.subprocess.Popen") as launch,
@@ -484,7 +489,7 @@ def test_release_pid1_reboot_recovery_consumes_pinned_prior_ready_once(tmp_path:
         "origin_incarnation": first.incarnation,
         "origin_pid1_start_token": "pid1-original",
         "failed_generation": "failed-generation",
-        "eligibility": {"pid": 12345, "start_token": "failed-token", "process_run_id": "candidate-run", "deployment_generation": "failed-generation", "runtime_id": "preparedNew", "startup_reconciled": False, "daemon_serving": False},
+        "eligibility": {"pid": 12345, "start_token": "failed-token", "process_run_id": "candidate-run", "deployment_generation": "failed-generation", "runtime_id": "preparedNew", "socket_device": 1, "socket_inode": 2, "socket_ctime_ns": 3, "startup_reconciled": False, "daemon_serving": False},
         "phase": "REQUESTED",
     }
     assert requested["worker"]["runtime_id"] == "preparedNew"
@@ -492,11 +497,36 @@ def test_release_pid1_reboot_recovery_consumes_pinned_prior_ready_once(tmp_path:
     resumed = WorkerSupervisor(settings)
     try:
         with patch.object(resumed, "_is_alive", return_value=False), patch.object(resumed, "_verify_runtime", return_value=prior), patch.object(resumed, "_pid1_lifetime_token", return_value="pid1-restarted"), patch("auto_coder.worker_supervisor.os.getpid", return_value=1):
-            resumed._resume_reboot_recovery()
+            cleanup = resumed._remove_original_reboot_socket
+            with patch.object(resumed, "_remove_original_reboot_socket", side_effect=cleanup if socket_available else lambda evidence: False):
+                if socket_available == "storage-unavailable":
+                    with patch.object(resumed.store, "write", side_effect=OSError("unavailable")):
+                        resumed._resume_reboot_recovery()
+                else:
+                    resumed._resume_reboot_recovery()
         restored = resumed.store.read()
+        if socket_available == "storage-unavailable":
+            assert resumed.child is None and restored == requested
+            return
+        if not socket_available:
+            assert resumed.child is None and restored["worker"] is None
+            assert restored["prior_recovery_generation"] == "failed-generation"
+            assert restored["reboot_recovery"]["phase"] == "RECOVERING"
+            assert restored["operations"]["restore-prior"]["result"] == {"status": "NEEDS_ATTENTION", "reason": "original_reboot_socket_not_reclaimable"}
+            with patch("auto_coder.worker_supervisor.subprocess.Popen") as launch:
+                WorkerSupervisor(settings)._resume_reboot_recovery()
+                launch.assert_not_called()
+            return
         assert "reboot_recovery" not in restored
         assert restored["operations"]["restore-prior"]["result"]["status"] == "IN_PROGRESS"
-        assert restored["operations"]["restore-prior"]["reboot_evidence"] == {"origin_incarnation": first.incarnation, "origin_pid1_start_token": "pid1-original", "recovered_incarnation": resumed.incarnation, "recovered_pid1_start_token": "pid1-restarted", "failed_generation": "failed-generation"}
+        assert restored["operations"]["restore-prior"]["reboot_evidence"] == {
+            "origin_incarnation": first.incarnation,
+            "origin_pid1_start_token": "pid1-original",
+            "recovered_incarnation": resumed.incarnation,
+            "recovered_pid1_start_token": "pid1-restarted",
+            "failed_generation": "failed-generation",
+            "original_socket_reclaimed": True,
+        }
         assert restored["worker"]["runtime_id"] == "preparedOld"
         assert restored["worker"]["launch_operation_id"] == "restore-prior"
         assert restored["prior_recovery_generation"] == "failed-generation"
@@ -524,7 +554,11 @@ def test_reboot_recovery_refuses_beta_and_surviving_candidate(tmp_path: Path) ->
         patch.object(supervisor, "_verify_runtime", return_value=prior),
         patch.object(supervisor, "_is_alive", return_value=True),
         patch.object(supervisor, "_reconcile_worker"),
-        patch.object(supervisor, "_reboot_candidate_evidence", return_value={"pid": 12345, "start_token": "failed-token", "process_run_id": "candidate-run", "deployment_generation": "failed-generation", "runtime_id": "preparedNew", "startup_reconciled": False, "daemon_serving": False}),
+        patch.object(
+            supervisor,
+            "_reboot_candidate_evidence",
+            return_value={"pid": 12345, "start_token": "failed-token", "process_run_id": "candidate-run", "deployment_generation": "failed-generation", "runtime_id": "preparedNew", "socket_device": 1, "socket_inode": 2, "socket_ctime_ns": 3, "startup_reconciled": False, "daemon_serving": False},
+        ),
         patch.object(supervisor, "_pid1_lifetime_token", return_value="pid1-original"),
         patch("auto_coder.worker_supervisor.os.getpid", return_value=1),
     ):
@@ -1250,8 +1284,9 @@ def test_candidate_launch_captures_prior_proof_without_nested_worker_history(tmp
             supervisor.child.wait(timeout=5)
 
 
-@pytest.mark.parametrize("original_token,current_token", [("pid1-original", "pid1-original"), ("pid1-original", None), ("pid1-original", ""), (None, "pid1-new"), ("", "pid1-new")])
-def test_reboot_recovery_requires_positive_new_pid1_lifetime_even_when_candidate_exited(tmp_path: Path, original_token, current_token) -> None:
+@pytest.mark.parametrize("original_token,current_token", [("pid1-original", "pid1-original"), ("pid1-original", None), ("pid1-original", ""), (None, "pid1-new"), ("", "pid1-new"), pytest.param("pid1-original", "pid1-restarted", id="invalid-prior-ready")])
+@pytest.mark.parametrize("persistence_available", [True, False])
+def test_reboot_recovery_requires_positive_new_pid1_lifetime_even_when_candidate_exited(tmp_path: Path, original_token, current_token, persistence_available) -> None:
     settings = replace(config(tmp_path), instance_id="release-worker", channel="release")
     first = WorkerSupervisor(settings)
     prior = {"runtime_id": "preparedOld", "interpreter_path": sys.executable, "ready": {"installed_runtime_id": "preparedOld"}}
@@ -1264,7 +1299,11 @@ def test_reboot_recovery_requires_positive_new_pid1_lifetime_even_when_candidate
         patch.object(first, "_verify_runtime", return_value=prior),
         patch.object(first, "_is_alive", return_value=True),
         patch.object(first, "_reconcile_worker"),
-        patch.object(first, "_reboot_candidate_evidence", return_value={"pid": 12345, "start_token": "failed-token", "process_run_id": "candidate-run", "deployment_generation": "failed-generation", "runtime_id": "preparedNew", "startup_reconciled": False, "daemon_serving": False}),
+        patch.object(
+            first,
+            "_reboot_candidate_evidence",
+            return_value={"pid": 12345, "start_token": "failed-token", "process_run_id": "candidate-run", "deployment_generation": "failed-generation", "runtime_id": "preparedNew", "socket_device": 1, "socket_inode": 2, "socket_ctime_ns": 3, "startup_reconciled": False, "daemon_serving": False},
+        ),
         patch.object(first, "_pid1_lifetime_token", return_value="pid1-original"),
         patch("auto_coder.worker_supervisor.os.getpid", return_value=1),
     ):
@@ -1279,15 +1318,22 @@ def test_reboot_recovery_requires_positive_new_pid1_lifetime_even_when_candidate
     assert reconstructed.incarnation != first.incarnation
     with (
         patch.object(reconstructed, "_is_alive", return_value=False),
-        patch.object(reconstructed, "_verify_runtime", return_value=prior),
+        patch.object(reconstructed, "_verify_runtime", return_value=None if current_token == "pid1-restarted" else prior),
         patch.object(reconstructed, "_pid1_lifetime_token", return_value=current_token),
         patch("auto_coder.worker_supervisor.os.getpid", return_value=1),
         patch("auto_coder.worker_supervisor.subprocess.Popen") as launch,
     ):
-        reconstructed._resume_reboot_recovery()
+        if persistence_available:
+            reconstructed._resume_reboot_recovery()
+        else:
+            with patch.object(reconstructed.store, "write", side_effect=OSError("unavailable")):
+                reconstructed._resume_reboot_recovery()
         launch.assert_not_called()
     refused = reconstructed.store.read()
-    assert refused["operations"]["restore-prior"]["result"] == {"status": "NEEDS_ATTENTION", "reason": "reboot_recovery_revalidation_failed"}
+    if persistence_available:
+        assert refused["operations"]["restore-prior"]["result"] == {"status": "NEEDS_ATTENTION", "reason": "reboot_recovery_revalidation_failed"}
+    else:
+        assert refused == requested
     assert refused["reboot_recovery"] == requested["reboot_recovery"]
     assert refused["worker"] == requested["worker"]
     assert refused.get("prior_recovery_generation") is None and refused.get("launch_intent") is None
@@ -1341,6 +1387,8 @@ def test_reboot_requires_affirmative_local_unready_and_prior_terminal(tmp_path: 
         observed["artifact"]["source_revision"]["value"] = "b" * 40
     elif damage == "draining":
         observed["lifecycle"]["state"] = "draining"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as endpoint:
+        endpoint.bind(str(supervisor.worker_socket))
     with (
         patch.object(supervisor, "_is_alive", side_effect=lambda worker: worker is failed or damage == "prior-alive"),
         patch.object(supervisor, "_receipt", return_value=damage != "terminal-missing"),
@@ -1350,6 +1398,8 @@ def test_reboot_requires_affirmative_local_unready_and_prior_terminal(tmp_path: 
     assert (evidence is not None) is (damage is None)
     if evidence:
         assert all(evidence[key] == failed[key] for key in ("pid", "start_token", "process_run_id", "deployment_generation", "runtime_id"))
+        details = supervisor.worker_socket.lstat()
+        assert (evidence["socket_device"], evidence["socket_inode"], evidence["socket_ctime_ns"]) == (details.st_dev, details.st_ino, details.st_ctime_ns)
 
 
 @pytest.mark.parametrize("damage", ["ready-or-unavailable", "changed-lifetime", "storage-unavailable"])
@@ -1384,3 +1434,70 @@ def test_reboot_exit_rechecks_candidate_and_never_crashes_on_missing_proof(tmp_p
         assert retained["operations"]["original"]["result"]["status"] == "NEEDS_ATTENTION"
     else:
         assert retained == state
+
+
+@pytest.mark.parametrize("kind", ["stale", "absent", "live", "file", "symlink", "wrong-inode", "wrong-ctime", "missing-proof", "probe-unavailable", "unlink-unavailable", "replaced-after-probe"])
+def test_reboot_socket_reclamation_never_removes_live_or_unrelated_endpoint(tmp_path: Path, kind) -> None:
+    import errno
+
+    supervisor = WorkerSupervisor(replace(config(tmp_path), channel="release"))
+    path = supervisor.worker_socket
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    replacement = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        if kind == "file":
+            path.write_text("unrelated", encoding="utf-8")
+        elif kind == "symlink":
+            target = tmp_path / "target"
+            target.write_text("unrelated", encoding="utf-8")
+            path.symlink_to(target)
+        elif kind != "absent":
+            listener.bind(str(path))
+            if kind == "live":
+                listener.listen()
+            else:
+                listener.close()
+        details = path.lstat() if kind != "absent" else None
+        evidence = {"socket_device": details.st_dev if details else 1, "socket_inode": details.st_ino if details else 2, "socket_ctime_ns": details.st_ctime_ns if details else 3}
+        if kind == "wrong-inode":
+            evidence["socket_inode"] += 1
+        elif kind == "wrong-ctime":
+            evidence["socket_ctime_ns"] -= 1
+        elif kind == "missing-proof":
+            evidence.pop("socket_inode")
+        if kind == "probe-unavailable":
+            with patch("auto_coder.worker_supervisor.socket.socket.connect", side_effect=PermissionError(errno.EACCES, "unavailable")):
+                result = supervisor._remove_original_reboot_socket(evidence)
+        elif kind == "unlink-unavailable":
+            with patch.object(Path, "unlink", side_effect=PermissionError(errno.EACCES, "unavailable")):
+                result = supervisor._remove_original_reboot_socket(evidence)
+        elif kind == "replaced-after-probe":
+            connect = socket.socket.connect
+
+            def replaced(probe, destination):
+                try:
+                    return connect(probe, destination)
+                finally:
+                    path.unlink()
+                    replacement.bind(str(path))
+                    replacement.listen()
+
+            with patch("auto_coder.worker_supervisor.socket.socket.connect", replaced):
+                result = supervisor._remove_original_reboot_socket(evidence)
+        else:
+            result = supervisor._remove_original_reboot_socket(evidence)
+        assert result is (kind in {"stale", "absent"})
+        if result:
+            assert not path.exists()
+        else:
+            assert path.is_symlink() or path.exists()
+            if kind != "replaced-after-probe":
+                retained = path.lstat()
+                assert (retained.st_dev, retained.st_ino) == (details.st_dev, details.st_ino)
+            if kind == "file":
+                assert path.read_text() == "unrelated"
+            if kind == "symlink":
+                assert target.read_text() == "unrelated"
+    finally:
+        listener.close()
+        replacement.close()

@@ -500,3 +500,15 @@ durable before exit and must match the original intent when the new PID1 consume
 it. This is a fresh local check, not an atomic lock on the worker's future startup
 progress. The disposable acceptance holds actual startup reconciliation while
 the installed worker's original UDS and readiness producer remain available.
+
+The destructive exit leaves its worker UDS pathname on the mounted runtime.
+Original candidate and exit-time observations therefore pin its device/inode and
+ctime_ns alongside the exact OS lifetime. After positive PID1 replacement and durable
+one-shot recovery consumption, Supervisor reclaims only that original socket
+when a local connection is positively refused. Matching ctime_ns also rejects
+historical inode reuse before the probe. An O_PATH descriptor pins the inode across the probe so a replacement cannot reuse its identity; a final
+pathname/type/identity check rejects replacement. A live listener, symlink,
+regular file, mismatched inode or unavailable probe is retained and produces
+NEEDS_ATTENTION without launching the prior. This is limited to the authenticated
+reboot-consumption path under the existing exclusive Supervisor owner. Ordinary
+worker startup still never unlinks a competing endpoint.
