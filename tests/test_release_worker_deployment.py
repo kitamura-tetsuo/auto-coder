@@ -407,6 +407,7 @@ def test_release_recovery_unknown_receipt_retains_lane_and_recovers_original_ste
         _drive(d.app, operation_id, 20)
         recovered = _call(client, token, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
         assert recovered["status"] == "FAILED" and recovered["recovery_state"] == "CONFIRMED", recovered
+        assert recovered["reason"] == "new_worker_failed_previous_runtime_restored"
         assert [name for name, _ in d.bridge.actions].count("RECOVER_PREVIOUS") == 1
 
 
@@ -464,6 +465,7 @@ def test_release_deploy_rechecks_policy_reconciles_lost_replies_and_refuses_unve
             assert actions == ["PREPARE", "REQUEST_GRACEFUL_STOP", "START"]
         elif intervention == "crash_new":
             assert outcome["status"] == "FAILED" and outcome["recovery_state"] == "CONFIRMED", outcome
+            assert outcome["reason"] == "new_worker_failed_previous_runtime_restored"
             assert actions == ["PREPARE", "REQUEST_GRACEFUL_STOP", "START", "RECOVER_PREVIOUS"]
             assert outcome["recovery_attempts"] == 1
         elif intervention in {"wrong_artifact_origin", "wrong_version_origin"}:

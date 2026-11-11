@@ -755,7 +755,8 @@ class WorkerLifecycle:
                     beats.append(heartbeat["sequence"])
                     if len(beats) >= 2:
                         snapshot["recovery_state"] = "CONFIRMED"
-                        return self._finish(record, version, snapshot, "FAILED", "new_worker_failed_previous_runtime_restored")
+                        reason = "new_beta_worker_failed_previous_runtime_restored" if record.intent.action == "deploy_beta_source" else "new_worker_failed_previous_runtime_restored"
+                        return self._finish(record, version, snapshot, "FAILED", reason)
                     self._save(record, version, snapshot)
                 return record
             return record

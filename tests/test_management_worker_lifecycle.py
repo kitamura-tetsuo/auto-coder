@@ -308,7 +308,7 @@ def test_authenticated_beta_deploy_replays_exact_evidence_and_only_stops_after_r
             assert completed["steps"]["drain"]["state"] == "SENT_UNKNOWN"
             return
         if intervention == "crash_after_start":
-            assert completed["status"] == "FAILED" and completed["reason"] == "new_worker_failed_previous_runtime_restored"
+            assert completed["status"] == "FAILED" and completed["reason"] == "new_beta_worker_failed_previous_runtime_restored"
             assert completed["recovery_attempts"] == 1
             assert [name for name, _id in bridge.actions] == ["PREPARE", "REQUEST_GRACEFUL_STOP", "START", "RECOVER_PREVIOUS"]
             return

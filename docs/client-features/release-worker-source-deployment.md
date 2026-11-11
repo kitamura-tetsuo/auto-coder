@@ -93,8 +93,11 @@ after actual new-child exit and with current authority. The readback exposes
 `recovery_attempts`, `recovery_state` (`NOT_ATTEMPTED`, `ATTEMPTED`,
 `UNKNOWN` for an unsettled step, `CONFIRMED`) and `restored_worker`.
 Confirmed recovery ends new-source
-deployment as `FAILED`, not `SUCCEEDED`. Unknown recovery is not
-automatically retried. Restoring Python cannot undo migrations, database
+deployment as `FAILED`, not `SUCCEEDED`. The release readback retains
+`new_worker_failed_previous_runtime_restored` while existing beta readback
+retains `new_beta_worker_failed_previous_runtime_restored`, so release
+admission does not silently change beta failure diagnostics. Unknown recovery
+is not automatically retried. Restoring Python cannot undo migrations, database
 state, provider effects or publication; those require explicit operator
 rollback/bootstrap investigation.
 
