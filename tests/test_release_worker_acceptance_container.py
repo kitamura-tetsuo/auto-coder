@@ -11,10 +11,13 @@ from __future__ import annotations
 import base64
 import json
 import os
+import select
+import subprocess
+import sys
 import tempfile
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Iterator
@@ -81,6 +84,59 @@ class _SourceHTTPTransport(httpx.BaseTransport):
 
     def close(self) -> None:
         self.transport.close()
+
+
+class _ManagerProcess:
+    """Authenticated ASGI requests in a distinct, disposable manager OS process."""
+
+    def __init__(self, configuration: Path, log: Path) -> None:
+        self.log = log
+        self.stream = log.open("w", encoding="utf-8")
+        repository = Path(__file__).resolve().parents[1]
+        environment = {**os.environ, "PYTHONPATH": str(repository / "src") + os.pathsep + str(repository)}
+        self.process = subprocess.Popen([sys.executable, "-B", str(repository / "tests/fixtures/release_manager_process.py"), str(configuration)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stream, text=True, env=environment, cwd=repository)
+        try:
+            ready = self._read()
+            assert ready == {"pid": self.process.pid, "fresh_worker_client": True}, ready
+            self.start_token = Path(f"/proc/{self.process.pid}/stat").read_text().rsplit(") ", 1)[1].split()[19]
+        except BaseException:
+            self.close()
+            raise
+
+    def _read(self) -> dict[str, object]:
+        assert self.process.stdout is not None
+        available, _, _ = select.select([self.process.stdout], [], [], 60)
+        assert available, self.log.read_text()[-12000:]
+        line = self.process.stdout.readline()
+        assert line, self.log.read_text()[-12000:]
+        return json.loads(line)
+
+    def post(self, path: str, *, headers: dict[str, str], json: dict[str, object]) -> httpx.Response:
+        assert self.process.stdin is not None and self.process.poll() is None
+        # Match TestClient's HTTP interface without bypassing MCP authentication.
+        from json import dumps
+
+        self.process.stdin.write(dumps({"path": path, "headers": headers, "json": json}) + "\n")
+        self.process.stdin.flush()
+        response = self._read()
+        return httpx.Response(response["status_code"], json=response["body"])
+
+    def crash(self) -> None:
+        assert self.process.poll() is None
+        self.process.kill()
+        assert self.process.wait(timeout=20) == -9
+        assert not Path(f"/proc/{self.process.pid}").exists()
+
+    def close(self) -> None:
+        if self.process.poll() is None:
+            if self.process.stdin is not None:
+                self.process.stdin.close()
+            try:
+                self.process.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=20)
+        self.stream.close()
 
 
 @dataclass
@@ -263,8 +319,13 @@ def test_failed_installed_release_recovers_original_prior_runtime_once(real_boun
     _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=True)
 
 
-def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch, *, fail_candidate: bool) -> None:
-    scenario = ("release-failed-candidate-" if fail_candidate else "release-installed-join-") + uuid.uuid4().hex[:12]
+@pytest.mark.timeout(2400)
+def test_lost_installed_start_response_survives_manager_process_reconstruction(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None) -> None:
+    _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=False, reconstruct_manager=True)
+
+
+def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch, *, fail_candidate: bool, reconstruct_manager: bool = False) -> None:
+    scenario = ("release-manager-reconstruction-" if reconstruct_manager else "release-failed-candidate-" if fail_candidate else "release-installed-join-") + uuid.uuid4().hex[:12]
     with tempfile.TemporaryDirectory(prefix="release-join-", dir=tmp_path) as directory:
         root = Path(directory)
         beta_root = root / "beta"
@@ -275,7 +336,7 @@ def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch,
             service = system.app.state.management_runtime
             system.http.portal.call(service.stop_monitor)
             system.http.portal.call(service.dispatcher.stop)
-            with _installed_release(system, root / "release", scenario, fail_candidate=fail_candidate) as release, _source_http(system.remote) as endpoint:
+            with _installed_release(system, root / "release", scenario, fail_candidate=fail_candidate) as release, _source_http(system.remote) as endpoint, ExitStack() as processes:
 
                 @contextmanager
                 def source_http_client(**_kwargs):
@@ -341,6 +402,22 @@ def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch,
                         "expected_process_run_id": old["process_run_id"],
                         "expected_deployment_generation": old["deployment_generation"],
                     }
+                    if reconstruct_manager:
+                        # Only the child managers own the release lifecycle. The
+                        # promotion app is stopped before the first admission.
+                        http.portal.call(app.state.management_runtime.stop_monitor)
+                        http.portal.call(app.state.management_runtime.dispatcher.stop)
+                        fault_root = root / "manager-fault"
+                        fault_root.mkdir()
+                        hold = fault_root / "hold-start-response"
+                        hold.write_text("discard real START transport responses", encoding="utf-8")
+                        configuration = fault_root / "configuration.json"
+                        worker_config = asdict(release.client.config)
+                        worker_config["secret"] = base64.b64encode(worker_config["secret"]).decode()
+                        configuration.write_text(json.dumps({"settings": asdict(settings), "worker": worker_config, "uid_policy": str(real_boundary[4]), "oauth_now": real_boundary[5]["now"], "source_endpoint": endpoint, "fault_root": str(fault_root)}, default=str), encoding="utf-8")
+                        first_manager = _ManagerProcess(configuration, fault_root / "manager-first.stderr")
+                        processes.callback(first_manager.close)
+                        http = first_manager
                     crash_marker = release.runtime / "fixture-crash-next-staged"
                     if fail_candidate:
                         # The original prior process is already serving. The next
@@ -357,6 +434,60 @@ def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch,
                     assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "selected_git_sha": system.revisions[1]})["status"] == "CONFLICT"
                     competing = _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing"})
                     assert competing["status"] == "BUSY" and competing["operation_id"] == operation_id
+
+                    if reconstruct_manager:
+
+                        def lost_start():
+                            persisted = journal.lifecycle_snapshot(operation_id)
+                            step = persisted[1].get("steps", {}).get("start") if persisted else None
+                            return persisted[1] if (fault_root / "lost-start.json").exists() and step and step["state"] == "SENT_UNKNOWN" else None
+
+                        held = _wait_for(lost_start, timeout=150)
+                        lost = json.loads((fault_root / "lost-start.json").read_text())
+                        assert lost["operation_id"] == held["steps"]["start"]["operation_id"]
+                        assert lost["supervisor_generation"] == previous.supervisor_generation
+                        independent = WorkerNetworkClient(release.client.config)
+                        survivor = _wait_for(lambda: _ready(independent, str(release.candidate["source_sha"])), timeout=90)
+                        receipt = independent.read_worker_operation(lost["operation_id"])
+                        assert receipt.result_code == "RUNNING" and receipt.data["intent_digest"] == held["steps"]["start"]["expected_digest"]
+                        retained_os = json.loads((release.runtime / "supervisor" / "state.json").read_text())["worker"]
+                        posts_before_restart = (release.runtime / "fixture-posts").read_bytes()
+                        launches_before_restart = (release.runtime / "fixture-launches.jsonl").read_bytes()
+                        first_manager.crash()
+                        second_manager = _ManagerProcess(configuration, fault_root / "manager-second.stderr")
+                        processes.callback(second_manager.close)
+                        assert second_manager.process.pid != first_manager.process.pid
+                        assert (second_manager.process.pid, second_manager.start_token) != (first_manager.process.pid, first_manager.start_token)
+                        http = second_manager
+                        for _ in range(3):
+                            replay = _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)
+                            assert replay["operation_id"] == operation_id and replay["status"] == "STARTING", replay
+                            assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "selected_git_sha": system.revisions[1]})["status"] == "CONFLICT"
+                            assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "catalog_oid": "f" * 40})["status"] == "CONFLICT"
+                            competing = _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing-after-restart"})
+                            assert competing["status"] == "BUSY" and competing["operation_id"] == operation_id
+                            time.sleep(2.1)
+                        rebuilt = journal.lifecycle_snapshot(operation_id)[1]
+                        for field in ("steps", "original_deadline", "deadline", "accepted_evidence", "release_identity", "incumbent", "staged"):
+                            assert rebuilt[field] == held[field], field
+                        rebuilt_record = journal.get(operation_id).record
+                        assert rebuilt_record.intent == original.intent and rebuilt_record.authority == original.authority
+                        assert (release.runtime / "fixture-posts").read_bytes() == posts_before_restart
+                        assert (release.runtime / "fixture-launches.jsonl").read_bytes() == launches_before_restart
+                        still_live = _ready(independent, str(release.candidate["source_sha"]))
+                        assert still_live is not None
+                        for field in ("process_run_id", "deployment_generation"):
+                            assert still_live["observation"][field] == survivor["observation"][field]
+                        live_os = json.loads((release.runtime / "supervisor" / "state.json").read_text())["worker"]
+                        assert all(live_os[field] == retained_os[field] for field in ("pid", "start_token", "deployment_generation", "runtime_id"))
+                        stat = _docker("exec", release.container, "cat", f"/proc/{retained_os['pid']}/stat").stdout
+                        assert stat.rsplit(") ", 1)[1].split()[19] == retained_os["start_token"]
+                        audit = [json.loads(line) for line in (fault_root / "lost-response-audit.jsonl").read_text().splitlines()]
+                        assert len([entry for entry in audit if entry["event"] == "discarded_start_response"]) == 1
+                        assert any(entry["pid"] == second_manager.process.pid and entry["event"] == "discarded_start_readback" and entry["result_code"] == "RUNNING" for entry in audit)
+                        # Release transport loss only. The next genuine signed
+                        # read must settle the same effect, not dispatch again.
+                        hold.unlink()
 
                     independent_samples = []
                     failed_observations = []
@@ -435,6 +566,15 @@ def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch,
                         receipt = observer.read_worker_operation(recovery_id)
                         assert receipt.result_code == "RUNNING" and receipt.data["intent_digest"] == done["steps"]["recovery"]["expected_digest"]
                         assert receipt.data["worker"]["deployment_generation"] == launches[2]["deployment_generation"]
+                    if reconstruct_manager:
+                        assert done["original_deadline"] == held["original_deadline"]
+                        for field in ("operation_id", "sent_at", "owner_generation", "attempt_id", "correlation_identity", "expected_digest"):
+                            assert done["steps"]["start"][field] == held["steps"]["start"][field]
+                        assert done["steps"]["start"]["state"] == "CONFIRMED"
+                        assert done["new_worker"]["deployment_generation"] == retained_os["deployment_generation"]
+                        assert current.supervisor_generation == previous.supervisor_generation
+                        assert (release.runtime / "fixture-posts").read_bytes() == posts_before_restart
+                        assert (release.runtime / "fixture-launches.jsonl").read_bytes() == launches_before_restart
                     terminal_posts = (release.runtime / "fixture-posts").read_bytes()
                     for _ in range(3):
                         replay = _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)

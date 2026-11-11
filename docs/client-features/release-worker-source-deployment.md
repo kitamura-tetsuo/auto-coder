@@ -201,10 +201,30 @@ operation/authority on repeated replay and terminal `FAILED` with recovery
 `CONFIRMED`. The beta peer, source refs, containers and ownership remain unchanged.
 This proves recovery of executable code, not rollback of persistent data or schema.
 
-These bounded successful/failed joins, replay, changed-source conflict and
-competing-key busy coverage do not complete REQ-010. Integrated installed-release
-held invocation/terminal-exit barriers, unresolved-effect ownership during
-recovery, lost responses across independent manager/Supervisor reconstruction,
-unconfirmed pre-effect durability and post-stage supersession remain separate
-required acceptance scenarios. Preserve the unresolved acceptance gate until those exact
-scenarios and clean-revision CI are demonstrated.
+The lost-START-response case runs authenticated deployment in a separate manager
+OS process. Its external transport fault discards the actual verified signed
+START response and subsequent reads of only that original operation. An
+independent signed client still observes the installed candidate and retained
+Supervisor receipt. The fixture kills the first manager and starts another Python
+process with a fresh client against the original OAuth database, UID policy and
+operation journal. While the response is unavailable, original replay remains
+`STARTING`, changed source/catalog intent conflicts and another key remains busy.
+The effect ID, owner, attempt, correlation, digest, deadlines, accepted evidence
+and authority remain original, with no further signed POST or worker launch.
+Releasing only transport loss lets the original signed receipt and independently
+observed producer progress settle the same deployment successfully. Actual PID
+and start-token checks establish that the candidate survived the manager restart.
+Requests enter the child process as HTTP documents over a fixture pipe and pass
+through the real authenticated ASGI app; this is process/state reconstruction,
+not an external TLS listener restart. No accepted authority or runtime evidence
+is synthesized.
+
+These bounded successful/failed joins and manager START-response reconstruction
+do not complete REQ-010. Integrated installed-release held invocation/terminal-exit
+barriers, unresolved-effect ownership during recovery, Supervisor reconstruction,
+other lost-response boundaries, unconfirmed pre-effect durability and post-stage
+supersession remain separate required acceptance scenarios. The current container
+fixture runs Supervisor as PID1, so killing/restarting that container also destroys
+the worker PID namespace and cannot prove retention of the same live child across
+a Supervisor restart. Preserve the unresolved acceptance gate until the remaining
+exact scenarios and clean-revision CI are demonstrated.
