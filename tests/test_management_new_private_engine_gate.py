@@ -10,7 +10,9 @@ import socketserver
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -62,8 +64,15 @@ def _api(socket_path: Path, method: str, path: str) -> tuple[int, bytes]:
         connection.close()
 
 
-def test_original_socket_sealed_and_only_original_process_can_start(tmp_path: Path) -> None:
-    root = tmp_path / "private-source"
+@pytest.fixture
+def short_unix_root() -> Iterator[Path]:
+    """Keep native AF_UNIX test socket names below Linux sun_path limits."""
+    with tempfile.TemporaryDirectory(prefix="acpg-", dir="/tmp") as directory:
+        yield Path(directory)
+
+
+def test_original_socket_sealed_and_only_original_process_can_start(short_unix_root: Path) -> None:
+    root = short_unix_root
     socket_dir = root / "socket"
     socket_dir.mkdir(parents=True, mode=0o700)
     raw = socket_dir / "docker.sock"
@@ -124,8 +133,8 @@ def test_original_socket_sealed_and_only_original_process_can_start(tmp_path: Pa
             original_thread.join(timeout=5)
 
 
-def test_unattempted_start_unseals_and_refuses_success(tmp_path: Path) -> None:
-    socket_dir = tmp_path / "socket"
+def test_unattempted_start_unseals_and_refuses_success(short_unix_root: Path) -> None:
+    socket_dir = short_unix_root / "socket"
     socket_dir.mkdir(mode=0o700)
     raw = socket_dir / "docker.sock"
     with _UnixEngine(str(raw), _OriginalEngine) as engine:
@@ -135,7 +144,7 @@ def test_unattempted_start_unseals_and_refuses_success(tmp_path: Path) -> None:
         os.chmod(raw, 0o600)
         try:
             with pytest.raises(Exception, match="first-start effect was never attempted"):
-                with hold_one_start_api_gate(tmp_path, SELECTED) as gate:
+                with hold_one_start_api_gate(short_unix_root, SELECTED) as gate:
                     assert _api(gate, "GET", "/v1.41/info")[0] == 200
             assert stat.S_IMODE(raw.stat().st_mode) == 0o600
             assert not (socket_dir / "first-start-gate.sock").exists()
