@@ -131,3 +131,20 @@ def test_actual_exited_child_is_proven_before_parent_reaps_it(monkeypatch, _use_
             child.stdin.close()
         assert child.wait(timeout=10) == 0
     assert not path.exists()
+
+
+def test_container_identity_ignores_mount_order_but_detects_changes(monkeypatch: pytest.MonkeyPatch) -> None:
+    mounts = [{"Destination": "/workspace", "RW": True}, {"Destination": "/fixtures", "RW": False}]
+    baseline = {"Id": "fixed", "State": {"Pid": 123, "StartedAt": "fixed-time"}, "Mounts": mounts}
+    reordered = {**baseline, "Mounts": list(reversed(mounts))}
+    altered = {**baseline, "Mounts": [{**mounts[0], "RW": False}, mounts[1]]}
+    inspections = iter((baseline, reordered, altered))
+
+    def inspect_fixture(*args: str) -> subprocess.CompletedProcess[str]:
+        assert args == ("inspect", "fixture")
+        return subprocess.CompletedProcess(args, 0, stdout=json.dumps([next(inspections)]), stderr="")
+
+    monkeypatch.setattr(acceptance, "_docker", inspect_fixture)
+    identity = acceptance._container_identity("fixture")
+    assert acceptance._container_identity("fixture") == identity
+    assert acceptance._container_identity("fixture") != identity
