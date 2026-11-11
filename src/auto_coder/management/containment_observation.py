@@ -118,7 +118,7 @@ class PrerequisiteReport:
     docker: tuple[DockerObservation, ...]
     unavailable: tuple[Unavailable, ...]
     processes: tuple[ProcessObservation, ...] = ()
-    resource_limit: str = "All read descriptors are released before return; no namespace pin or owner fence is retained."
+    resource_limit: str = "Observer-owned descriptors are released before return; a separately enrolled namespace FD holder, if any, must still exist when a consumer reopens and independently verifies it. No owner fence or launch grant is retained."
     approved_enrollment: EnrollmentObservation | None = None
     watcher_systemd: WatcherSystemdObservation | None = None
     installed_bootstrap_source: InstalledBootstrapSource | None = None
@@ -381,11 +381,12 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
     if approved_enrollment is not None and isinstance(approved_enrollment, EnrollmentObservation) and docker:
         try:
             kernel_subobservation = observe_kernel_subcomponent(approved_enrollment)
-            unavailable.append(Unavailable("kernel-subcomponent-unpinned", "Current old-cgroup, task-namespace and host-listener checks passed, but the original namespace object is not retained by an independently re-openable pin. These facts cannot establish kernel containment."))
+            if not kernel_subobservation.external_namespace_pin_verified:
+                unavailable.append(Unavailable("kernel-subcomponent-unpinned", "Current old-cgroup, task-namespace and host-listener checks passed, but the original namespace object is not retained by an independently re-openable pin. These facts cannot establish kernel containment."))
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             unavailable.append(Unavailable("kernel-subcomponent", "Original lifetime, all-task namespace or listener reobservation failed (" + type(exc).__name__ + ")."))
     return PrerequisiteReport(
-        "current-containment-prerequisites-v7",
+        "current-containment-prerequisites-v8",
         "unavailable",
         scope,
         _digest(asdict(scope)),

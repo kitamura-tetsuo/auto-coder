@@ -7,7 +7,7 @@ import json
 import os
 import pwd
 import tempfile
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +18,7 @@ from auto_coder.management.containment_enrollment import (
     ApprovedEnrollment,
     EnrollmentUnavailable,
     OriginalFile,
+    OriginalNetworkPin,
     _observe_approved_enrollment,
     observe_approved_enrollment,
 )
@@ -129,6 +130,27 @@ def test_protected_reader_observes_exact_separately_installed_selection_only() -
         assert _observe_approved_enrollment(selection, root=root, expected_uid=os.geteuid()) == saved
         selection.deployment_id = "other-deployment"
         with pytest.raises(EnrollmentUnavailable, match="proposed deployment differ"):
+            _observe_approved_enrollment(selection, root=root, expected_uid=os.geteuid())
+
+
+def test_protected_v2_reader_binds_external_namespace_pin_without_claiming_it_is_live() -> None:
+    with _approved_fixture() as (root, enrollment, selection):
+        pin = OriginalNetworkPin(123, "456", "00000000-0000-0000-0000-000000000001", 7, "net:[2222]", 8, 2222)
+        approved = replace(enrollment, schema="approved-current-containment-enrollment-v2", original_network_pin=pin)
+        path = root / "fixture-enrollment.json"
+        path.write_text(json.dumps(asdict(approved), sort_keys=True))
+        assert _observe_approved_enrollment(selection, root=root, expected_uid=os.geteuid()).enrollment == approved
+
+        for field, invalid in (("holder_pid", 0), ("holder_fd", -1), ("holder_start_token", "0"), ("holder_boot_id", "fake"), ("namespace", "net:[0]"), ("inode", 0)):
+            changed = asdict(approved)
+            changed["original_network_pin"][field] = invalid
+            path.write_text(json.dumps(changed, sort_keys=True))
+            with pytest.raises(EnrollmentUnavailable, match="cannot be decoded"):
+                _observe_approved_enrollment(selection, root=root, expected_uid=os.geteuid())
+
+        forged = replace(enrollment, original_network_pin=pin)
+        path.write_text(json.dumps(asdict(forged), sort_keys=True))
+        with pytest.raises(EnrollmentUnavailable, match="cannot be decoded"):
             _observe_approved_enrollment(selection, root=root, expected_uid=os.geteuid())
 
 

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from auto_coder.management import containment_kernel_subobservation as kernel
-from auto_coder.management.containment_enrollment import ApprovedEnrollment, EnrollmentObservation
+from auto_coder.management.containment_enrollment import ApprovedEnrollment, EnrollmentObservation, OriginalNetworkPin
 from auto_coder.management.fresh_host_observation import HostObservationUnavailable, PriorContainer, PriorTask
 
 
@@ -111,3 +111,26 @@ def test_kernel_subobservation_rejects_prior_file_swap_after_task_scan(monkeypat
     with pytest.raises(HostObservationUnavailable, match="changed during kernel"):
         kernel.observe_kernel_subcomponent(enrolled)
     assert reads == 2
+
+
+def test_real_live_namespace_fd_is_independently_opened_then_released() -> None:
+    original = os.open("/proc/self/ns/net", os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        link = os.readlink(f"/proc/self/fd/{original}")
+        info = os.fstat(original)
+        token = Path("/proc/self/stat").read_text(encoding="ascii").rsplit(")", 1)[1].split()[19]
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+        pin = OriginalNetworkPin(os.getpid(), token, boot, original, link, info.st_dev, info.st_ino)
+        with kernel._external_namespace_pin(pin, link):
+            assert os.readlink(f"/proc/self/fd/{original}") == link
+        with pytest.raises(HostObservationUnavailable, match="namespace pin holder lifetime"):
+            with kernel._external_namespace_pin(OriginalNetworkPin(os.getpid(), str(int(token) + 1), boot, original, link, info.st_dev, info.st_ino), link):
+                pass
+        with pytest.raises(HostObservationUnavailable, match="does not match"):
+            with kernel._external_namespace_pin(pin, "net:[999999999999]"):
+                pass
+    finally:
+        os.close(original)
+    with pytest.raises(HostObservationUnavailable, match="namespace pin"):
+        with kernel._external_namespace_pin(pin, link):
+            pass

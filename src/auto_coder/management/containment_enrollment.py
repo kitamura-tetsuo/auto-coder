@@ -13,6 +13,7 @@ import json
 import os
 import re
 import stat
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -58,6 +59,48 @@ class OriginalFile:
 
 
 @dataclass(frozen=True)
+class OriginalNetworkPin:
+    """Trusted-root enrollment selection of a preexisting live namespace FD.
+
+    The observer must independently open and hold the actual nsfs object. This
+    record does not create a pin, prove when the FD was acquired or grant a
+    process-control capability.
+    """
+
+    holder_pid: int
+    holder_start_token: str
+    holder_boot_id: str
+    holder_fd: int
+    namespace: str
+    device: int
+    inode: int
+
+    @classmethod
+    def parse(cls, value: object) -> OriginalNetworkPin:
+        if not isinstance(value, dict) or set(value) != set(cls.__dataclass_fields__):
+            raise EnrollmentUnavailable("approved namespace pin schema differs")
+        if type(value["holder_pid"]) is not int or not 1 < value["holder_pid"] <= 2147483647:
+            raise EnrollmentUnavailable("approved namespace pin holder PID differs")
+        if type(value["holder_fd"]) is not int or not 0 <= value["holder_fd"] <= 1048576:
+            raise EnrollmentUnavailable("approved namespace pin descriptor differs")
+        token = value["holder_start_token"]
+        if not isinstance(token, str) or not re.fullmatch(r"[1-9][0-9]{0,23}", token):
+            raise EnrollmentUnavailable("approved namespace pin holder lifetime differs")
+        try:
+            boot = str(uuid.UUID(value["holder_boot_id"]))
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise EnrollmentUnavailable("approved namespace pin boot identity differs") from exc
+        if value["holder_boot_id"] != boot:
+            raise EnrollmentUnavailable("approved namespace pin boot identity differs")
+        namespace = value["namespace"]
+        if not isinstance(namespace, str) or not re.fullmatch(r"net:\[[1-9][0-9]{0,23}\]", namespace):
+            raise EnrollmentUnavailable("approved namespace pin original identity differs")
+        if any(type(value[name]) is not int or value[name] <= 0 for name in ("device", "inode")):
+            raise EnrollmentUnavailable("approved namespace pin kernel inode differs")
+        return cls(value["holder_pid"], token, boot, value["holder_fd"], namespace, value["device"], value["inode"])
+
+
+@dataclass(frozen=True)
 class ApprovedEnrollment:
     schema: str
     deployment_id: str
@@ -73,12 +116,23 @@ class ApprovedEnrollment:
     original_prior_evidence_path: str
     original_prior_evidence_sha256: str
     approved_observation_only: bool
+    original_network_pin: OriginalNetworkPin | None = None
 
     @classmethod
     def parse(cls, value: object) -> ApprovedEnrollment:
-        if not isinstance(value, dict) or set(value) != set(cls.__dataclass_fields__):
+        if not isinstance(value, dict):
             raise EnrollmentUnavailable("approved enrollment schema differs")
-        if value["schema"] != "approved-current-containment-enrollment-v1" or value["approved_observation_only"] is not True:
+        keys = set(cls.__dataclass_fields__)
+        schema = value.get("schema")
+        if schema == "approved-current-containment-enrollment-v1" and set(value) in (keys, keys - {"original_network_pin"}):
+            if value.get("original_network_pin") is not None:
+                raise EnrollmentUnavailable("legacy approval cannot carry a namespace pin")
+            network_pin = None
+        elif schema == "approved-current-containment-enrollment-v2" and set(value) == keys:
+            network_pin = OriginalNetworkPin.parse(value["original_network_pin"])
+        else:
+            raise EnrollmentUnavailable("approved enrollment schema differs")
+        if value["approved_observation_only"] is not True:
             raise EnrollmentUnavailable("unsupported or authorizing enrollment record")
         for key in ("deployment_id", "enrollment_id", "authorization_id"):
             if not isinstance(value[key], str) or not _IDENTIFIER.fullmatch(value[key]):
@@ -126,6 +180,7 @@ class ApprovedEnrollment:
             evidence_path,
             evidence_sha,
             True,
+            network_pin,
         )
 
 

@@ -1,21 +1,25 @@
-"""Bounded original-lifetime kernel checks; not a retained containment pin.
+"""Bounded original-lifetime kernel checks with an optional external pin.
 
 This component independently checks old Docker/cgroup lifetimes, the full host
-task namespace scan and the original published listener. A historical namespace
-inode with no live pinned namespace object is *never* a positive closed-profile
-authority, even when these current sub-observations agree.
+task namespace scan and the original published listener. A trusted-root v2
+enrollment can select an externally retained namespace FD that the producer
+and separate verifier independently reopen and pin during their own reads.
+Neither result retains its own FD or establishes a full closed-profile verdict.
 """
 
 from __future__ import annotations
 
 import os
+import select
 import stat
 import time
 import uuid
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
-from .containment_enrollment import EnrollmentObservation, _file_identity, _protected
+from .containment_enrollment import EnrollmentObservation, OriginalNetworkPin, _file_identity, _protected
 from .fresh_host import _evidence
 from .fresh_host_observation import (
     HostObservationUnavailable,
@@ -23,6 +27,7 @@ from .fresh_host_observation import (
     _inspect,
     assert_host_listener_absent,
     assert_known_prior_stack_stopped,
+    assert_prior_network_pin,
     assert_prior_network_unreferenced,
 )
 
@@ -49,6 +54,68 @@ class KernelSubObservation:
     unpinned_network_task_scan_absent: bool
     host_listener_absent: bool
     retained_original_network_pin: bool = False
+    external_namespace_pin_verified: bool = False
+    namespace_pin_holder_pid: int = 0
+    namespace_pin_holder_start_token: str = ""
+    namespace_pin_holder_fd: int = -1
+
+
+def _holder_start_token(pid: int) -> str:
+    value = (Path("/proc") / str(pid) / "stat").read_text(encoding="ascii")
+    prefix, separator, tail = value.rpartition(")")
+    fields = tail.split()
+    if not separator or prefix.partition(" (")[0] != str(pid) or len(fields) < 20 or fields[0] in ("Z", "X", "x") or not fields[19].isdecimal() or int(fields[19]) <= 0:
+        raise HostObservationUnavailable("namespace pin holder lifetime is unavailable")
+    return fields[19]
+
+
+@contextmanager
+def _external_namespace_pin(pin: OriginalNetworkPin, original_namespace: str) -> Iterator[None]:
+    """Hold the referenced nsfs object throughout this observer's kernel scan.
+
+    The trusted operator must have acquired the external FD while the original
+    namespace was still alive. Current observations alone cannot reconstruct
+    that earlier event or survive the external holder's termination.
+    """
+    descriptor = None
+    lifetime = None
+    try:
+        if pin.namespace != original_namespace or str(uuid.UUID(Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip())) != pin.holder_boot_id:
+            raise HostObservationUnavailable("approved external namespace pin does not match the original boot/namespace")
+        lifetime = os.pidfd_open(pin.holder_pid, 0)
+        selector = select.poll()
+        selector.register(lifetime, select.POLLIN)
+        target = f"/proc/{pin.holder_pid}/fd/{pin.holder_fd}"
+
+        def check_lifetime() -> None:
+            if _holder_start_token(pin.holder_pid) != pin.holder_start_token or selector.poll(0):
+                raise HostObservationUnavailable("approved namespace pin holder lifetime differs or exited")
+
+        check_lifetime()
+        if os.readlink(target) != original_namespace:
+            raise HostObservationUnavailable("approved namespace pin FD no longer names the original namespace")
+        descriptor = os.open(target, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
+        info = os.fstat(descriptor)
+        if (info.st_dev, info.st_ino) != (pin.device, pin.inode):
+            raise HostObservationUnavailable("approved namespace pin kernel object differs")
+        assert_prior_network_pin(descriptor, original_namespace)
+        check_lifetime()
+        if os.readlink(target) != original_namespace:
+            raise HostObservationUnavailable("approved namespace pin FD changed during open")
+        yield
+        assert_prior_network_pin(descriptor, original_namespace)
+        check_lifetime()
+        if os.readlink(target) != original_namespace or (os.fstat(descriptor).st_dev, os.fstat(descriptor).st_ino) != (pin.device, pin.inode):
+            raise HostObservationUnavailable("approved namespace pin changed during kernel observation")
+    except HostObservationUnavailable:
+        raise
+    except (OSError, ValueError, IndexError, UnicodeError) as exc:
+        raise HostObservationUnavailable("approved external namespace pin cannot be independently retained") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if lifetime is not None:
+            os.close(lifetime)
 
 
 def _owner_lock(prior: PriorContainer) -> tuple[int, int, int, int]:
@@ -91,35 +158,41 @@ def observe_kernel_subcomponent(enrolled: EnrollmentObservation) -> KernelSubObs
     ):
         raise HostObservationUnavailable("original lifetime scope differs")
     start = time.monotonic_ns()
-    first_owner = _owner_lock(management)
-    assert_known_prior_stack_stopped(management, proxy)
-    assert_prior_network_unreferenced(management.net_namespace)
-    if management.published_port <= 0:
-        raise HostObservationUnavailable("original published listener is unavailable")
-    assert_host_listener_absent(management.published_port)
-    assert_known_prior_stack_stopped(management, proxy)
-    if _owner_lock(management) != first_owner:
-        raise HostObservationUnavailable("original owner file changed during kernel checks")
-    final, after = _protected(prior_path, uid=0, size_limit=65536)
-    if final != original or _file_identity(after) != _file_identity(before):
-        raise HostObservationUnavailable("original lifetime evidence changed during kernel checks")
-    boot = str(uuid.UUID(Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()))
-    return KernelSubObservation(
-        management.engine_id,
-        management.container_id,
-        proxy.container_id,
-        management.pid,
-        management.start_token,
-        proxy.pid,
-        proxy.start_token,
-        management.net_namespace,
-        management.owner_lock_device,
-        management.owner_lock_inode,
-        management.published_port,
-        boot,
-        start,
-        time.monotonic_ns(),
-        True,
-        True,
-        True,
-    )
+    pin = approval.original_network_pin
+    with _external_namespace_pin(pin, management.net_namespace) if pin is not None else nullcontext():
+        first_owner = _owner_lock(management)
+        assert_known_prior_stack_stopped(management, proxy)
+        assert_prior_network_unreferenced(management.net_namespace)
+        if management.published_port <= 0:
+            raise HostObservationUnavailable("original published listener is unavailable")
+        assert_host_listener_absent(management.published_port)
+        assert_known_prior_stack_stopped(management, proxy)
+        if _owner_lock(management) != first_owner:
+            raise HostObservationUnavailable("original owner file changed during kernel checks")
+        final, after = _protected(prior_path, uid=0, size_limit=65536)
+        if final != original or _file_identity(after) != _file_identity(before):
+            raise HostObservationUnavailable("original lifetime evidence changed during kernel checks")
+        boot = str(uuid.UUID(Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()))
+        return KernelSubObservation(
+            management.engine_id,
+            management.container_id,
+            proxy.container_id,
+            management.pid,
+            management.start_token,
+            proxy.pid,
+            proxy.start_token,
+            management.net_namespace,
+            management.owner_lock_device,
+            management.owner_lock_inode,
+            management.published_port,
+            boot,
+            start,
+            time.monotonic_ns(),
+            True,
+            True,
+            True,
+            external_namespace_pin_verified=pin is not None,
+            namespace_pin_holder_pid=pin.holder_pid if pin is not None else 0,
+            namespace_pin_holder_start_token=pin.holder_start_token if pin is not None else "",
+            namespace_pin_holder_fd=pin.holder_fd if pin is not None else -1,
+        )

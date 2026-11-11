@@ -52,7 +52,7 @@ python -m auto_coder.management.containment_observation verify \
 ```
 
 Both commands return exit status **2**, even if every available sub-observation
-matches. Output is JSON. `current-containment-prerequisites-v7` includes the full
+matches. Output is JSON. `current-containment-prerequisites-v8` includes the full
 proposed scope and its hash, a new observation UUID, current boot ID, observer PID
 and process-start token, monotonic observation interval, observed file identities,
 available Docker identities and explicit unavailable authorities/reasons.
@@ -94,7 +94,7 @@ separately approved present-time enrollment and independent original installed
 source/controller/route authority. Merely naming an enrollment or supplying
 operator lists is insufficient. No enrollment or controller mutation is performed here.
 
-### Protected enrollment component (introduced in v4)
+### Protected enrollment component (introduced in v4, external pin in v8)
 
 The v7 report optionally includes `approved_enrollment`, a bounded component
 readback from the fixed trusted-local path
@@ -113,6 +113,17 @@ Absent, mismatched, mutable and uninspectable records contribute
 `approved-enrollment-component` refusal reasons. Unit-level fixtures use a
 separate explicitly injected private directory and their own UID, never the
 production CLI path.
+
+The original v1 approval schema remains readable as an explicitly **unpinned**
+selection. The new `approved-current-containment-enrollment-v2` schema may bind
+an externally retained original network namespace FD through an exact holder
+PID, process-start token, boot ID, descriptor number, nsfs device/inode and
+`net:[inode]` identity. The trusted operator must have opened that FD **while
+the real original manager namespace was still alive** and must retain it
+through observation and verification. The observer never creates or replaces
+the FD, and a v1 record cannot silently gain pin authority. A path or PID
+selected by the operator is only a proposal until its actual live kernel
+object and holder lifetime are independently verified.
 
 An installed record only establishes that a protected *candidate approval
 component* can be inspected. File hashes and root ownership do **not** establish
@@ -140,7 +151,7 @@ archive ambiguity, failed Docker copy or changed bytes report
 was historically executed; the full installed route, mount, owner-lock, kernel,
 and positive test requirements remain unresolved.
 
-### Original-kernel sub-observation (introduced in v7)
+### Original-kernel sub-observation (introduced in v7, external pin in v8)
 
 When the protected approval and complete Docker inventory are available, the
 observer also reads the protected prior manager/proxy lifetime evidence again.
@@ -153,11 +164,21 @@ are bounded by existing host-root/procfs rules and return an optional
 `kernel_subobservation` component. A separate process independently repeats
 the checks and compares the complete saved component.
 
-A successful *sub-observation* still adds
-`kernel-subcomponent-unpinned` and retains `kernel-containment`: the original
-network namespace has not been retained via an independently reopenable live
-namespace pin or fencing resource. It is **not** a positive closed-profile
-verdict. Unreadable processes, nonleader namespace occupancy, wrong original
+A v1 *sub-observation* still adds `kernel-subcomponent-unpinned` because the
+original namespace has no proven live pin. For a v2 enrollment, the observer
+uses PIDFD/process-start/boot checks to open and retain the independently
+reopenable **original nsfs object** during its entire cgroup, all-task and
+listener scan. It rechecks the holder's PID lifetime, descriptor target,
+device/inode and original namespace after those reads, then closes its own FD.
+`external_namespace_pin_verified=true` is current **subcomponent evidence**:
+the external holder must survive, and a separate consumer must reopen the
+same kernel object afresh. A saved result does not retain a pin or reserve the
+namespace. Releasing or replacing the holder's FD after the producer exits
+must cause the verifier to refuse.
+
+Both v1 and v2 still retain `kernel-containment` as an independently missing
+full-profile condition. A positively pinned subcomponent is **not** a positive
+closed-profile verdict. Unreadable processes, nonleader namespace occupancy, wrong original
 cgroup/owner identities, occupied listeners, replaced prior evidence and
 interleaving changes add a specific `kernel-subcomponent` refusal. This path
 does not acquire an owner lock, pin a namespace, start a process or change a
@@ -192,12 +213,17 @@ and that a post-observation original-file substitution is rejected by the
 separate verifier. It additionally uses a separately identified live container
 in the old manager network namespace to force a kernel refusal; after stopping
 that fixture-only holder, it checks the current stopped-cgroup, namespace-scan
-and loopback-listener **sub-observations** in both CLI processes. It temporarily
+and loopback-listener **sub-observations** in both CLI processes. The fixture
+parent retains a real FD opened from the original manager **before** it stops;
+after the last namespace occupant stops, the separate CLI processes each open
+and verify the same live original nsfs object, then release their own handles.
+Closing the parent FD deliberately proves a saved producer observation cannot
+be replayed as a current positive pin. It temporarily
 enables and restores only the disposable proxy's restart policy, introduces and
 removes a stopped same-image alternative manager candidate, and binds only the
 released test port to force a listener-conflict refusal. None of these is a
-positive *closed-profile* verdict: the original namespace pin and full route
-authority are still missing. The probe does **not** exercise or alter the original production
+positive *closed-profile* verdict: full original route/source/owner authority
+and both original profile validations are still missing. The probe does **not** exercise or alter the original production
 controllers, nor establish original production provenance or a full positive
 closed profile. The operator must ensure that the host, the fixed approval
 directory, the test image and temporary Docker/localhost-port effects are
@@ -283,7 +309,7 @@ the corresponding production trace-to-view obligations.
 
 ## Complete current Docker inventory sub-observation
 
-The `current-containment-prerequisites-v7` report replaces v1–v6. Earlier
+The `current-containment-prerequisites-v8` report replaces v1–v7. Earlier
 reports are refused; v1/v2 did not bind the complete engine inventory, and v4
 did not bind the current fixed watcher systemd route. `docker` includes
 **every** container returned by unfiltered `docker container ls --all --quiet

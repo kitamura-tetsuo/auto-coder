@@ -25,7 +25,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from auto_coder.management.containment_enrollment import ApprovedEnrollment, OriginalFile
+from auto_coder.management.containment_enrollment import ApprovedEnrollment, OriginalFile, OriginalNetworkPin
 from auto_coder.management.fresh_host import _write_evidence
 from auto_coder.management.fresh_host_observation import HostObservationUnavailable, PriorContainer, capture_prior_container
 
@@ -140,7 +140,7 @@ def _assert_component(report: dict[str, object], *, present: bool) -> None:
         raise AssertionError("test-only enrollment removed normative containment refusals")
 
 
-def _assert_kernel_subcomponent(report: dict[str, object], *, present: bool) -> None:
+def _assert_kernel_subcomponent(report: dict[str, object], *, present: bool, pinned: bool = False) -> None:
     component = report.get("kernel_subobservation")
     authorities = _authorities(report)
     if (component is not None) != present:
@@ -148,11 +148,13 @@ def _assert_kernel_subcomponent(report: dict[str, object], *, present: bool) -> 
         raise AssertionError("real kernel sub-observation presence differs: " + repr(details))
     if present:
         if not isinstance(component, dict) or component.get("retained_original_network_pin") is not False:
-            raise AssertionError("unpinned kernel component claimed an original namespace pin")
+            raise AssertionError("kernel component claimed an observer-owned retained namespace pin")
         if not all(component.get(key) is True for key in ("original_cgroups_empty", "unpinned_network_task_scan_absent", "host_listener_absent")):
             raise AssertionError("kernel component has incomplete original task or listener checks")
-        if "kernel-subcomponent-unpinned" not in authorities:
-            raise AssertionError("unpinned kernel component removed its refusal reason")
+        if component.get("external_namespace_pin_verified") is not pinned:
+            raise AssertionError("external original namespace pin observation differs")
+        if ("kernel-subcomponent-unpinned" in authorities) == pinned:
+            raise AssertionError("kernel namespace pin refusal reason differs")
     elif "kernel-subcomponent" not in authorities:
         raise AssertionError("kernel refusal did not identify its unavailable component")
 
@@ -173,6 +175,7 @@ def run_fixture() -> None:
     manager_name = fixture_id + "-manager"
     proxy_name = fixture_id + "-proxy"
     created_containers: list[str] = []
+    namespace_pin_fd: int | None = None
     try:
         logger.add(sys.stdout, level="INFO", format="{time} | {level} | {message}")
         logger.add(private / "test.log", rotation="1 MB", level="INFO")
@@ -232,6 +235,15 @@ def run_fixture() -> None:
             raise AssertionError("fixture Docker returned an ambiguous manager identity")
         created_containers.append(manager)
         prior_manager = _capture_manager(manager, image, state, bootstrap, oauth)
+        # Retain the real original nsfs object while the manager is alive; the
+        # fixture parent stays in the host network namespace and only holds an
+        # FD. The producer and verifier must each independently reopen it.
+        namespace_pin_fd = os.open(f"/proc/{prior_manager.pid}/ns/net", os.O_RDONLY | os.O_CLOEXEC)
+        if os.readlink(f"/proc/self/fd/{namespace_pin_fd}") != prior_manager.net_namespace:
+            raise AssertionError("test-only namespace pin does not match the live original manager")
+        pin_stat = os.fstat(namespace_pin_fd)
+        pin_holder_start = Path("/proc/self/stat").read_text(encoding="ascii").rsplit(")", 1)[1].split()[19]
+        pin = OriginalNetworkPin(os.getpid(), pin_holder_start, Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip(), namespace_pin_fd, prior_manager.net_namespace, pin_stat.st_dev, pin_stat.st_ino)
         proxy = _docker("run", "-d", "--name", proxy_name, "--network", "container:" + manager, "--user", "0:0", "--entrypoint", "/bin/sleep", image, "120")
         if not re.fullmatch(r"[0-9a-f]{64}", proxy):
             raise AssertionError("fixture Docker returned an ambiguous proxy identity")
@@ -263,7 +275,7 @@ def run_fixture() -> None:
             )
         )
         approved = ApprovedEnrollment(
-            "approved-current-containment-enrollment-v1",
+            "approved-current-containment-enrollment-v2",
             fixture_id,
             fixture_id,
             "test-only-" + fixture_id,
@@ -277,6 +289,7 @@ def run_fixture() -> None:
             str(evidence_dir / "prior-evidence.json"),
             prior_digest,
             True,
+            pin,
         )
         _write_private(enrollment_file, json.dumps(asdict(approved), sort_keys=True).encode())
         scope = private / "scope.json"
@@ -294,20 +307,20 @@ def run_fixture() -> None:
         _assert_kernel_subcomponent(first, present=False)
         logger.info("Original manager and proxy exited, but the independently identified live fixture namespace holder prevents kernel sub-observation")
         _docker("stop", "--time", "1", escaped, timeout=25)
-        # A real stopped-manager fixture can now establish these *three*
-        # kernel subfacts, but has no retained original network namespace pin.
+        # Stopping the last namespace occupant leaves only the externally
+        # retained original nsfs FD, which two separate CLI processes reopen.
         for _ in range(5):
             first = _call_cli("observe", scope)
             if first.get("kernel_subobservation") is not None:
                 break
             time.sleep(0.2)
-        _assert_kernel_subcomponent(first, present=True)
+        _assert_kernel_subcomponent(first, present=True, pinned=True)
         previous = private / "previous.json"
         _write_private(previous, json.dumps(first, sort_keys=True).encode())
         verified = _call_cli("verify", scope, previous)
         _assert_component(verified, present=True)
-        _assert_kernel_subcomponent(verified, present=True)
-        logger.info("Real stopped Docker manager/proxy and separately invoked verifier observed the protected test-only enrollment component")
+        _assert_kernel_subcomponent(verified, present=True, pinned=True)
+        logger.info("Real stopped Docker manager/proxy and separate verifier independently reopened the same live original namespace pin")
         _docker("update", "--restart=unless-stopped", proxy)
         _verify_expected(scope, previous, {"docker-restart:" + proxy, "saved-report:docker"})
         _docker("update", "--restart=no", proxy)
@@ -327,6 +340,13 @@ def run_fixture() -> None:
             conflict = _verify_expected(scope, previous, {"kernel-subcomponent", "saved-report:kernel_subobservation"})
             _assert_kernel_subcomponent(conflict, present=False)
         logger.info("Real loopback listener on the disposable published port caused kernel refusal; it was released")
+        # The previous positive kernel component cannot outlive its externally
+        # owned pin: closing the one real FD must invalidate the later consumer.
+        os.close(namespace_pin_fd)
+        namespace_pin_fd = None
+        released = _verify_expected(scope, previous, {"kernel-subcomponent", "saved-report:kernel_subobservation"})
+        _assert_kernel_subcomponent(released, present=False)
+        logger.info("Released the original namespace pin; separate consumer refused the saved positive sub-observation")
         changed = private / "proxy-config"
         changed.write_bytes(b"substituted fixture proxy configuration\n")
         refused = _call_cli("verify", scope, previous)
@@ -335,6 +355,8 @@ def run_fixture() -> None:
             raise AssertionError("separate consumer did not reject saved approval after source mutation")
         logger.info("Source substitution refused after producer exit; no full containment verdict was issued")
     finally:
+        if namespace_pin_fd is not None:
+            os.close(namespace_pin_fd)
         for container in reversed(created_containers):
             subprocess.run(("docker", "rm", "-f", container), capture_output=True, check=False, timeout=30)
         if enrollment_file.exists():

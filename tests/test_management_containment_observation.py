@@ -54,7 +54,7 @@ def test_production_entrypoint_refuses_operator_scope_as_authority(tmp_path: Pat
     source = ROOT / "src/auto_coder/management/bootstrap_supervisor.py"
     original = source.read_bytes()
     report = _command(tmp_path, _scope((source,), profile))
-    assert report["schema"] == "current-containment-prerequisites-v7"
+    assert report["schema"] == "current-containment-prerequisites-v8"
     assert report["scope"]["profile"] == profile
     assert report["files"][0]["sha256"] == hashlib.sha256(original).hexdigest()
     assert report["files"][0]["inode"] == source.stat().st_ino
@@ -66,7 +66,7 @@ def test_production_entrypoint_refuses_operator_scope_as_authority(tmp_path: Pat
     assert "current installation bytes cannot establish original lock-before-launch evidence" in reasons["original-source-profile"]
     assert "saved namespace inode strings cannot establish absence" in reasons["kernel-containment"]
     assert ("quarantined-original-profile" in reasons) == (profile == "quarantined-original-v1")
-    assert report["resource_limit"] == "All read descriptors are released before return; no namespace pin or owner fence is retained."
+    assert report["resource_limit"] == ("Observer-owned descriptors are released before return; a separately enrolled namespace FD holder, if any, must still exist when a consumer reopens and independently verifies it. No owner fence or launch grant is retained.")
     assert report["kernel_subobservation"] is None
     assert report["started_monotonic_ns"] <= report["finished_monotonic_ns"]
     assert report["boot_id"] == Path("/proc/sys/kernel/random/boot_id").read_text().strip()
