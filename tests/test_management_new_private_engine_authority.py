@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import stat
+from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
 
@@ -182,6 +183,55 @@ def test_private_engine_restricted_proc_namespace_requires_verified_parent_probe
         with pytest.raises(HostObservationUnavailable, match="kernel lifetime unavailable"):
             _observation(source)
         assert len(probes) == 2
+
+
+def test_transient_docker_exec_list_cannot_spoil_parent_provenance(source: tuple[Path, Path, Path, dict[str, object], Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    reads = 0
+
+    def live_parent(*_args: object) -> dict[str, object]:
+        nonlocal reads
+        reads += 1
+        snapshot = deepcopy(source[3])
+        snapshot["ExecIDs"] = ["temporary-namespace-observation"] if reads == 1 else None
+        return snapshot
+
+    monkeypatch.setattr(authority, "_parent", live_parent)
+    assert _observation(source).parent_container_id == PARENT_ID
+    assert reads == 2
+
+
+def test_parent_restart_policy_change_during_probe_still_refuses(source: tuple[Path, Path, Path, dict[str, object], Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    reads = 0
+
+    def changed_parent(*_args: object) -> dict[str, object]:
+        nonlocal reads
+        reads += 1
+        snapshot = deepcopy(source[3])
+        if reads == 2:
+            snapshot["HostConfig"]["RestartPolicy"] = {"Name": "always", "MaximumRetryCount": 0}
+        return snapshot
+
+    monkeypatch.setattr(authority, "_parent", changed_parent)
+    with pytest.raises(HostObservationUnavailable, match="parent or daemon changed"):
+        _observation(source)
+
+
+def test_private_engine_expected_child_id_requires_untruncated_list(source: tuple[Path, Path, Path, dict[str, object], Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    child_id = "3" * 64
+    seen: list[tuple[str, ...]] = []
+
+    def list_children(_host: Path, *arguments: str, **_kwargs: object) -> str:
+        seen.append(arguments)
+        if arguments[0] == "ps":
+            assert arguments == ("ps", "--all", "--quiet", "--no-trunc")
+            return child_id
+        return ""
+
+    monkeypatch.setattr(authority, "_docker", list_children)
+    request, root, outer, _, _ = source
+    observed = authority._observe_source(request, root, outer, PARENT_ID, PARENT_IMAGE, require_empty_private_engine=False, expected_container_id=child_id)
+    assert observed.parent_container_id == PARENT_ID
+    assert any(command[0] == "ps" for command in seen)
 
 
 @pytest.mark.parametrize(

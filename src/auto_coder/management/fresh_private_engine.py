@@ -206,6 +206,18 @@ def _mounts_are_private(parent: dict[str, object], expected: list[tuple[str, str
         raise HostObservationUnavailable("private Engine parent mounts differ from original scope")
 
 
+def _parent_without_inflight_execs(parent: dict[str, object]) -> dict[str, object]:
+    """Ignore only Docker's transient exec-session IDs during a live probe.
+
+    The parent itself is immutable during observation, but the exact trusted
+    probe uses docker exec. Its temporary ExecIDs list is intentionally not
+    a container startup source, runtime policy or parent lifetime change.
+    All other inspect fields, including restart policy, mounts and PID, must
+    remain byte-for-byte equal.
+    """
+    return {key: value for key, value in parent.items() if key != "ExecIDs"}
+
+
 def _observe_source(
     request_file: Path,
     private_root: Path,
@@ -295,12 +307,12 @@ def _observe_source(
     if private_id == outer_id:
         raise HostObservationUnavailable("private Engine is the outer production Docker Engine")
     if require_empty_private_engine or expected_container_id is not None:
-        children = _docker(private_socket, "ps", "--all", "--quiet").splitlines()
+        children = _docker(private_socket, "ps", "--all", "--quiet", "--no-trunc").splitlines()
         if require_empty_private_engine and children:
             raise HostObservationUnavailable("private Engine has existing container startup sources")
         if expected_container_id is not None and children != [expected_container_id]:
             raise HostObservationUnavailable("private Engine has another configured startup source")
-    if _parent(outer_socket, parent_id) != parent or _engine_id(outer_socket) != outer_id or _engine_id(private_socket) != private_id:
+    if _parent_without_inflight_execs(_parent(outer_socket, parent_id)) != _parent_without_inflight_execs(parent) or _engine_id(outer_socket) != outer_id or _engine_id(private_socket) != private_id:
         raise HostObservationUnavailable("private Engine parent or daemon changed during observation")
     if _lifetime(pid, outer_socket=outer_socket, parent_id=parent_id) != (token, pid_ns, net_ns, boot_id):
         raise HostObservationUnavailable("private Engine parent lifetime changed during observation")

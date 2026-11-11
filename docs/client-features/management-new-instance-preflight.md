@@ -441,6 +441,11 @@ When Linux ptrace restrictions deny the non-root operator direct access to
 read its own kernel namespace links and checks the host PID-namespace match
 and separate network namespace. It still binds the parent's host PID start
 token and rechecks the same parent/container lifetime before admitting it.
+The repeated parent inspect permits only Docker's transient `ExecIDs` field
+to differ while these inspection probes run; runtime, restart, namespace,
+mount, image and other parent fields must remain unchanged. Enumerating the
+private Engine's children uses `docker ps --all --quiet --no-trunc` so exact
+full container IDs, rather than display abbreviations, are compared.
 The parent selects `--entrypoint dockerd` (as in the existing disposable CI
 fixture), disables its bridge/firewall and avoids the DinD script's extra
 default TCP listener. After the one-way parent-created record, a
