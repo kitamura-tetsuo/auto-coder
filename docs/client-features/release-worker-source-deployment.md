@@ -263,6 +263,14 @@ step, publishes a later promotion for the same Git SHA through the authenticated
 promotion tool, then resumes. The original deployment must become `SUPERSEDED`
 without any drain/start POST or replacement launch. Same-source identity alone
 cannot substitute for the originally accepted promotion/catalog identity.
+A separate stopped-incumbent variant first obtains the prior installed worker's
+real graceful terminal receipt and independently verifies its exact OS lifetime
+is absent before admission. With no unresolved stop, it stages the candidate and
+holds the first START boundary. A second same-SHA promotion must supersede the
+original before any runtime-pointer/start effect. Only PREPARE may reach the
+signed bridge, the selected prior runtime stays stopped, and no new interpreter
+launches. The deployment must preserve all refs produced by the deliberate
+second promotion, both original immutable evidence objects, beta and ownership.
 
 The terminal-exit case runs the installed prior worker's actual CLI, wraps only
 its terminal-persistence return, and holds that process after the production
@@ -271,6 +279,14 @@ still alive, the manager must not dispatch START, replay retains the operation,
 and another key remains busy. Removing the external hold permits genuine process
 exit and the original candidate activation. No terminal or readiness data is
 synthesized by this fault.
+Its reconstruction variant holds the same actual prior PID/start token and
+terminal receipt while killing/recreating the separate manager OS process and
+reconstructing the Supervisor object/listener in the same PID1 process. The
+original drain receipt must still be DRAINING while that OS lifetime exists.
+The manager retains its original step, authority, accepted evidence and deadlines;
+replay and conflict/busy exclusions cannot free the lane or issue another POST.
+Only removal of the external hold and real old-process exit may allow the
+original candidate START. No Supervisor OS-process restart is claimed.
 
 The uncertain-recovery case discards a real `RECOVER_PREVIOUS` reply after the
 candidate actually exits, withholds that operation's receipt and reconstructs
@@ -304,6 +320,23 @@ installed provenance/progress and unchanged beta/ownership/source identities.
 These are fixture-pipe authenticated ASGI requests and Supervisor object/listener
 reconstruction, not a Supervisor OS-process restart or external TLS test.
 
+Another app-only variant changes the Supervisor incarnation while retaining
+the original unknown recovery receipt. It uses a fresh manager app/client,
+not a separate manager OS process.
+
+Additional installed acceptance cases exercise two distinct effect boundaries:
+one starts from an initially empty release Supervisor with no former child,
+replaces the source selection with a later same-SHA promotion after PREPARE but before START, and
+requires the original deployment to be superseded without launching any child.
+The other starts with a failed candidate that genuinely recovers the prior
+installed worker, then attempts another authenticated deployment while the
+restored prior's actual terminal receipt is held ahead of OS exit. After
+manager-app and Supervisor reconstruction, the original running lifetime must
+remain fenced until that OS exit is observed. Neither test fabricates a
+successful terminal receipt or prior child identity. The latter is a second
+deployment after the first has already finished FAILED with recovery CONFIRMED;
+it is not a held child during the original recovery direction.
+
 All integrated cases verify original immutable replay, changed-intent
 `CONFLICT`, competing-key `BUSY`, untouched beta process/container identities,
 routing ownership and exact OS launch counts. Successful and recovered-runtime
@@ -325,10 +358,9 @@ unknown recovery, unverified installed binding or incomplete original receipt
 must never be promoted to `SUCCEEDED` merely to clear the release lane.
 
 These bounded cases do not complete REQ-010. Integrated held active invocations,
-held-exit barriers across reconstruction, recovery of a still-running candidate
-with an authoritative failure producer, and independent Supervisor OS-process
-reconstruction remain separate required acceptance scenarios. The cases above
-do not establish those remaining boundaries. Killing/restarting the current PID1 container destroys its
-worker PID namespace; the same-process listener reconstruction does not establish
+recovery of a still-running candidate with an authoritative failure producer
+and independent Supervisor OS-process reconstruction remain separate required
+acceptance scenarios. The cases above do not establish those remaining boundaries.
+Killing/restarting the current PID1 container destroys its worker PID namespace; the same-process listener reconstruction does not establish
 child survival across that OS boundary. Preserve the unresolved acceptance gate
 until the remaining exact scenarios and clean-revision CI are demonstrated.
