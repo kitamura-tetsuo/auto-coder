@@ -15,6 +15,7 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from contextlib import closing
@@ -368,6 +369,97 @@ def test_new_docker_loopback_refuses_live_prior_host_listener_without_first_clai
         if tag:
             subprocess.run(["docker", "image", "rm", tag], check=True, capture_output=True, timeout=30)
         subprocess.run(["docker", "network", "rm", network], check=True, capture_output=True, timeout=30)
+
+
+def test_real_different_os_uid_cannot_claim_original_new_docker_first_start(request_file: Path) -> None:
+    """A real non-owner process must fail before claiming or starting the child."""
+    root = request_file.parent
+    _token, request = _prepare_real_new_source(request_file)
+    assert _run_host("begin", "--request-file", str(request_file)).returncode == 0
+    prior_oauth = (root / "oauth/oauth.sqlite3").read_bytes()
+    original_origin = (root / "guard/new-instance-origin.json").read_bytes()
+    tag = ""
+    container_id = ""
+    other_uid_image = "auto-coder-new-nonowner:" + uuid.uuid4().hex
+    other_uid_container = "auto-coder-new-nonowner-" + uuid.uuid4().hex[:14]
+    try:
+        container_id, image_id, tag = _create_real_new_container(root, request_file, request)
+        before = _run_host("inspect-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id)
+        assert before.returncode == 0, before.stderr
+
+        with tempfile.TemporaryDirectory(prefix="ac-new-different-uid-") as directory:
+            build_root = Path(directory)
+            shutil.copytree(root / "application/auto_coder", build_root / "auto_coder")
+            base = os.environ.get("AUTOCODER_FRESH_TEST_BASE_IMAGE", "auto-coder:management-local-abc65544")
+            (build_root / "Dockerfile").write_text(f"FROM {base}\nCOPY auto_coder /opt/new-uid-src/auto_coder\n")
+            subprocess.run(["docker", "build", "--network", "none", "-t", other_uid_image, str(build_root)], check=True, capture_output=True, text=True, timeout=120)
+
+        code = (
+            "import os,runpy,sys;"
+            "assert os.geteuid()==65534;"
+            "sys.stderr.write('verified-nonowner-euid=65534\\n');"
+            f"sys.argv=['fresh_host','start-new-container','--request-file',{str(request_file)!r},"
+            f"'--container-id',{container_id!r},'--image-id',{image_id!r}];"
+            "runpy.run_module('auto_coder.management.fresh_host',run_name='__main__')"
+        )
+        refused = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--name",
+                other_uid_container,
+                "--network",
+                "none",
+                "--restart",
+                "no",
+                "--read-only",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--user",
+                "65534:65534",
+                "--env",
+                "PYTHONPATH=/opt/new-uid-src",
+                "--env",
+                "PYTHONDONTWRITEBYTECODE=1",
+                "--env",
+                "HOME=/tmp",
+                "--tmpfs",
+                "/tmp:rw,nosuid,nodev,size=16m",
+                "--mount",
+                f"type=bind,src={root},dst={root},readonly",
+                "--entrypoint",
+                "python3",
+                other_uid_image,
+                "-B",
+                "-c",
+                code,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=40,
+        )
+        assert refused.returncode == 1 and refused.stdout == "", (refused.returncode, refused.stdout, refused.stderr)
+        assert "verified-nonowner-euid=65534" in refused.stderr
+        assert "fresh host observation unavailable" in refused.stderr
+        assert "Permission denied" in refused.stderr or "owned by effective UID" in refused.stderr
+        assert not (root / "guard/new-docker-first-start.json").exists()
+        assert not (root / "state/new-first-launch-claimed.json").exists()
+        assert not (root / "state/physical-child-invocations").exists()
+        assert (root / "guard/new-instance-origin.json").read_bytes() == original_origin
+        assert (root / "oauth/oauth.sqlite3").read_bytes() == prior_oauth
+        assert subprocess.check_output(["docker", "inspect", "--format", "{{.State.Status}}", container_id], text=True).strip() == "created"
+        after = _run_host("inspect-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id)
+        assert after.returncode == 0, after.stderr
+    finally:
+        subprocess.run(["docker", "rm", "--force", other_uid_container], capture_output=True, timeout=30, check=False)
+        subprocess.run(["docker", "image", "rm", other_uid_image], capture_output=True, timeout=30, check=False)
+        if container_id:
+            subprocess.run(["docker", "rm", "--force", container_id], check=True, capture_output=True, timeout=30)
+        if tag:
+            subprocess.run(["docker", "image", "rm", tag], check=True, capture_output=True, timeout=30)
 
 
 def _first_launch_with_actual_admission_contention(root: Path, request_file: Path, container_id: str, image_id: str) -> dict[str, object]:
