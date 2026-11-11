@@ -61,6 +61,8 @@ CONTAINER_REQUIRED = (
         "tests/test_release_worker_acceptance_container.py::test_authenticated_release_joins_published_acceptance_and_independent_installed_workers",
         "tests/test_release_worker_acceptance_container.py::test_failed_installed_release_recovers_original_prior_runtime_once",
         "tests/test_release_worker_acceptance_container.py::test_unready_live_release_candidate_recovers_by_docker_pid1_restart",
+        "tests/test_release_worker_acceptance_container.py::test_original_reboot_intent_refuses_actual_same_pid1_reconstruction[False]",
+        "tests/test_release_worker_acceptance_container.py::test_original_reboot_intent_refuses_actual_same_pid1_reconstruction[True]",
         "tests/test_release_worker_acceptance_container.py::test_lost_installed_start_response_survives_manager_process_reconstruction",
         "tests/test_release_worker_acceptance_container.py::test_installed_release_lost_start_reply_recovers_after_manager_and_supervisor_reconstruction",
         "tests/test_release_worker_acceptance_container.py::test_installed_release_rejects_later_same_sha_selection_after_staging_before_drain",
