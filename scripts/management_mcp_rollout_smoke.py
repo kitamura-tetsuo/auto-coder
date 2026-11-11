@@ -159,8 +159,16 @@ def read_plan(checkpoint: DotCheckpoint, target: str, operation_id: str) -> tupl
         raise ValueError("an exact configured target is required")
     if operation_id and SAFE_ID.fullmatch(operation_id) is None:
         raise ValueError("invalid original operation ID")
-    if checkpoint.pending_effect_state in UNKNOWN_EFFECTS and not operation_id:
-        raise ValueError("unknown original effect requires its original operation ID")
+    if checkpoint.pending_effect_state in UNKNOWN_EFFECTS:
+        if not operation_id:
+            raise ValueError("unknown original effect requires its original operation ID")
+        original_operations = {
+            checkpoint.beta_operation_id,
+            checkpoint.promotion_operation_id,
+            checkpoint.release_operation_id,
+        } - {""}
+        if operation_id not in original_operations:
+            raise ValueError("unknown effect must use a checkpoint original operation ID")
     plan: tuple[tuple[str, dict[str, object]], ...] = (
         ("auto_coder_whoami", {}),
         ("auto_coder_status", {"target_id": target}),

@@ -73,8 +73,10 @@ interruption; no current HEAD substitution, changed-intent same-key replay
 or new idempotency key after an unknown send.
 
 `SENT_UNKNOWN` and `NEEDS_ATTENTION` preserve the original operation and
-the per-target lane. Reconcile by its original operation ID; never infer
-no effect from elapsed time or silence. In any unchanged action, target, source
+the per-target lane. Reconcile only by the exact original operation ID
+already retained in the checkpoint; an unrelated or newly invented operation
+ID refuses even a bounded read plan. Never infer no effect from elapsed time
+or silence. In any unchanged action, target, source
 and failure-signature namespace, use at most one new authorized recovery
 operation, then mark `BLOCKED` and notify the operator. Never bypass
 the existing slot, retry/EXHAUSTED, merge or authorization gates.

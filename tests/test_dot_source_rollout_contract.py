@@ -59,6 +59,7 @@ def test_unknown_effect_precedes_every_stage_and_never_rekeys(stage, pending):
     original = checkpoint(
         stage=stage,
         idempotency_key="immutable-original-key",
+        beta_operation_id="original-operation",
         pending_effect_state=pending,
     )
     report = smoke.required_next_observation(original)
@@ -66,6 +67,8 @@ def test_unknown_effect_precedes_every_stage_and_never_rekeys(stage, pending):
     assert "original operation ID" in report.reason
     with pytest.raises(ValueError, match="original operation ID"):
         smoke.read_plan(original, "beta-worker", "")
+    with pytest.raises(ValueError, match="checkpoint original operation"):
+        smoke.read_plan(original, "beta-worker", "unrelated-operation")
     plan = smoke.read_plan(original, "beta-worker", "original-operation")
     assert plan[-1] == (
         "auto_coder_operation_get",
