@@ -293,13 +293,28 @@ def test_all_baseline_selectors_and_execution_contexts_are_preserved() -> None:
     assert all(node in profile_args("fresh-host") or node.split("::")[0] in profile_args("fresh-host") for node in FRESH_REQUIRED)
 
     containers = _step(workflow["jobs"]["isolated-containers"], "Verify isolated Supervisor containers")
-    for path in ("test_supervisor_container_integration.py", "test_worker_network_integration.py", "test_management_beta_deploy_container.py", "test_beta_runtime_smoke_container.py"):
+    for path in (
+        "test_supervisor_container_integration.py",
+        "test_worker_network_integration.py",
+        "test_management_beta_deploy_container.py",
+        "test_beta_runtime_smoke_container.py",
+        "test_management_new_instance_docker_created.py",
+        "test_management_new_instance_first_launch_docker.py",
+    ):
         assert any(path in value for value in profile_args("isolated-containers"))
     assert profile_args("isolated-containers")[2:4] == ("-m", "supervisor_integration")
     assert workflow["jobs"]["isolated-containers"]["env"]["AUTO_CODER_REQUIRE_SUPERVISOR_INTEGRATION"] == "1"
+    assert workflow["jobs"]["isolated-containers"]["env"]["AUTOCODER_FRESH_TEST_BASE_IMAGE"] == workflow["jobs"]["isolated-containers"]["env"]["AUTOCODER_SUPERVISOR_IMAGE"]
     required = CONTAINER_REQUIRED
     assert len(required) == len(set(required))
     assert set(OTHER_REQUIRED_NODEIDS) | {f"tests/test_beta_runtime_smoke_container.py::{name}" for name in SMOKE_CASES} <= set(required)
+    assert {
+        "tests/test_management_new_instance_first_launch_docker.py::test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback[False]",
+        "tests/test_management_new_instance_first_launch_docker.py::test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback[True]",
+        "tests/test_management_new_instance_first_launch_docker.py::test_real_new_first_launch_never_reports_readiness_from_invalid_readback[revoked-grant]",
+        "tests/test_management_new_instance_first_launch_docker.py::test_real_new_first_launch_never_reports_readiness_from_invalid_readback[stale-observation]",
+        "tests/test_management_new_instance_first_launch_docker.py::test_killed_first_host_preserves_consumed_claim_without_docker_start",
+    } <= set(required)
     assert all(nodeid.startswith("tests/") for nodeid in required)
 
 

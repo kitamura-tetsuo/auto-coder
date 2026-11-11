@@ -58,6 +58,12 @@ CONTAINER_REQUIRED = (
     + (
         "tests/test_worker_network_integration.py::test_three_target_manager_restart_peer_isolation_and_lost_response",
         "tests/test_management_beta_deploy_container.py::test_authenticated_beta_source_installs_real_version_and_reconciles_after_lost_reply",
+        "tests/test_management_new_instance_first_launch_docker.py::test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback[False]",
+        "tests/test_management_new_instance_first_launch_docker.py::test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback[True]",
+        "tests/test_management_new_instance_first_launch_docker.py::test_real_new_first_launch_never_reports_readiness_from_invalid_readback[revoked-grant]",
+        "tests/test_management_new_instance_first_launch_docker.py::test_real_new_first_launch_never_reports_readiness_from_invalid_readback[stale-observation]",
+        "tests/test_management_new_instance_first_launch_docker.py::test_real_new_start_refuses_changed_original_with_zero_docker_launches[bootstrap_config]",
+        "tests/test_management_new_instance_first_launch_docker.py::test_killed_first_host_preserves_consumed_claim_without_docker_start",
     )
     + tuple(
         f"tests/test_beta_runtime_smoke_container.py::{name}"
@@ -102,6 +108,8 @@ SELECTORS = {
         "tests/test_worker_network_integration.py",
         "tests/test_management_beta_deploy_container.py",
         "tests/test_beta_runtime_smoke_container.py",
+        "tests/test_management_new_instance_docker_created.py",
+        "tests/test_management_new_instance_first_launch_docker.py",
     ),
 }
 
