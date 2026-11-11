@@ -221,8 +221,28 @@ and exact hash equality to the protected enrollment's independently re-read
 non-authorizing `installed_bootstrap_source` component, re-observed and compared
 by the separate consumer. Other ordinary source digests, unreviewed profiles,
 archive ambiguity, failed Docker copy or changed bytes report
-`installed-bootstrap-source` unavailable. A checked image file does not prove it
-was historically executed; the full installed route, mount, owner-lock, kernel,
+`installed-bootstrap-source` unavailable. The same non-authorizing byte check
+now also recognizes **only** the reviewed `quarantined-original-v1` bootstrap
+SHA-256 `6a7da1f8f57aab76acb062a911598f75f4ea0b237308389f3807bc6368785e59`,
+independently copied from the stopped original image and verified against Git
+revision `1b23f3be30ca47926462e7d261ef98e79bb82728` (Git blob
+`594bec30aafa56852b9d9db3035718c7a1f9e887`). This image contains
+exclusive `.supervisor-owner.lock` acquisition before `_run_owned`.
+
+Read-only original-host checks also established that the selected quarantined
+candidate's child runtime has `execution_kind=management-installed`, its
+executable/source root are under `/management-versions/`, and its arguments
+include `/bootstrap/management.yml`. The separate `/management-source` mount
+was not referenced by those executable/source/argument paths. It is a
+directory mount, whereas the current `support-source` enrollment field covers
+only protected regular files. **Neither** the digest match nor the observed
+path categories validate exact effective bootstrap mounts, absence of path
+shadowing, support-mount execution effect, all controllers or kernel containment.
+The quarantined profile still emits `quarantined-original-profile` unavailable
+and can never become a successful containment verdict in the present adapter.
+This review does not authorize replacing or launching a quarantined image.
+Any checked image file is current-byte evidence only, not proof it was
+historically executed; the full installed route, mount, owner-lock, kernel,
 and positive test requirements remain unresolved.
 
 ### Original-kernel sub-observation (introduced in v7, external pin in v8)

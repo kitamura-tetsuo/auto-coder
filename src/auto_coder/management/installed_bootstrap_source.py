@@ -1,7 +1,7 @@
-"""Independently compare one reviewed present-time bootstrap image source.
+"""Independently compare reviewed present-time bootstrap image sources.
 
-This is an ordinary-v1 source component, not historical execution provenance,
-route closure, a kernel pin, or permission to replace a prior deployment.
+This is a source component, not an original-profile/mount validation, historical
+execution provenance, route closure, a kernel pin, or replacement admission.
 """
 
 from __future__ import annotations
@@ -17,8 +17,13 @@ from .containment_enrollment import EnrollmentObservation
 
 # The deployed ordinary bootstrap image source was reviewed for the exclusive
 # .supervisor-owner.lock acquisition before _run_owned on this exact source.
-# No different source is promoted to an accepted profile by operator JSON.
+# The quarantined original was independently read from the stopped original
+# container and matched against the same file at OCI revision 1b23f3be30ca.
+# Both have the reviewed owner-lock-before-launch ordering. These are source
+# readbacks only; particularly, quarantine mount/configuration authority is
+# not established by a matching source and the profile remains unavailable.
 _REVIEWED_ORDINARY_SOURCE_SHA256 = "66bcfefa86aa2bd88dd4a253405fc6faac65675917e8d393e587d5a62fff83bb"
+_REVIEWED_QUARANTINED_SOURCE_SHA256 = "6a7da1f8f57aab76acb062a911598f75f4ea0b237308389f3807bc6368785e59"
 _SOURCE_IN_IMAGE = "/opt/auto-coder/.venv/lib/python3.12/site-packages/auto_coder/management/bootstrap_supervisor.py"
 _MAX_SOURCE_BYTES = 1024 * 1024
 _MAX_ARCHIVE_BYTES = 2 * 1024 * 1024
@@ -58,14 +63,18 @@ def _copy_source(container_id: str) -> bytes:
 def inspect_installed_bootstrap_source(record: EnrollmentObservation) -> InstalledBootstrapSource:
     """Reread Docker's selected original container file without changing it."""
     enrollment = record.enrollment
-    if enrollment.profile != "ordinary-v1":
+    if enrollment.profile == "ordinary-v1":
+        reviewed_sha256 = _REVIEWED_ORDINARY_SOURCE_SHA256
+    elif enrollment.profile == "quarantined-original-v1":
+        reviewed_sha256 = _REVIEWED_QUARANTINED_SOURCE_SHA256
+    else:
         raise ValueError("installed bootstrap source is not reviewed for this profile")
     approved_files = {file.purpose: file.sha256 for file in enrollment.original_files}
     readback = dict(record.original_file_sha256)
-    if approved_files.get("bootstrap-source") != _REVIEWED_ORDINARY_SOURCE_SHA256 or readback.get("bootstrap-source") != _REVIEWED_ORDINARY_SOURCE_SHA256:
-        raise ValueError("installed bootstrap source differs from reviewed ordinary-v1 bytes")
+    if approved_files.get("bootstrap-source") != reviewed_sha256 or readback.get("bootstrap-source") != reviewed_sha256:
+        raise ValueError("installed bootstrap source differs from reviewed " + enrollment.profile + " bytes")
     first = _copy_source(enrollment.management_id)
     second = _copy_source(enrollment.management_id)
-    if first != second or hashlib.sha256(first).hexdigest() != _REVIEWED_ORDINARY_SOURCE_SHA256:
+    if first != second or hashlib.sha256(first).hexdigest() != reviewed_sha256:
         raise ValueError("installed bootstrap source differs from the pinned reviewed bytes")
-    return InstalledBootstrapSource(enrollment.management_id, enrollment.management_image_id, _SOURCE_IN_IMAGE, _REVIEWED_ORDINARY_SOURCE_SHA256, len(first), True)
+    return InstalledBootstrapSource(enrollment.management_id, enrollment.management_image_id, _SOURCE_IN_IMAGE, reviewed_sha256, len(first), True)

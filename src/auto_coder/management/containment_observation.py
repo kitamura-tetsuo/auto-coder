@@ -348,7 +348,7 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
                 try:
                     installed_bootstrap_source = inspect_installed_bootstrap_source(approved_enrollment)
                 except (OSError, ValueError, subprocess.SubprocessError, tarfile.TarError) as exc:
-                    unavailable.append(Unavailable("installed-bootstrap-source", "Current approved ordinary source cannot be matched to the reviewed Docker image-file bytes (" + type(exc).__name__ + ")."))
+                    unavailable.append(Unavailable("installed-bootstrap-source", "Current approved " + scope.profile + " source cannot be matched to the reviewed Docker image-file bytes (" + type(exc).__name__ + ")."))
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         # Do not print raw Docker stderr, environment or configuration bytes.
         reason = "Docker read-only inspection unavailable (" + type(exc).__name__ + ")"

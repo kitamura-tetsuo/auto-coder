@@ -1,4 +1,4 @@
-"""Unit protocol tests for the reviewed ordinary bootstrap source component.
+"""Unit protocol tests for reviewed bootstrap source components.
 
 The fixture bytes are not original deployment evidence or positive acceptance.
 """
@@ -15,14 +15,14 @@ from auto_coder.management import installed_bootstrap_source as source
 from auto_coder.management.containment_enrollment import ApprovedEnrollment, EnrollmentObservation, OriginalFile
 
 
-def _record(digest: str) -> EnrollmentObservation:
+def _record(digest: str, *, profile: str = "ordinary-v1", readback_digest: str | None = None) -> EnrollmentObservation:
     original = OriginalFile("bootstrap-source", "/private/fixture-source", digest, 1, 2)
     enrollment = ApprovedEnrollment(
         "approved-current-containment-enrollment-v1",
         "fixture-deployment",
         "fixture-enrollment",
         "fixture-authorization",
-        "ordinary-v1",
+        profile,
         "fixture-engine",
         "a" * 64,
         "sha256:" + "a" * 64,
@@ -33,7 +33,7 @@ def _record(digest: str) -> EnrollmentObservation:
         "0" * 64,
         True,
     )
-    return EnrollmentObservation(enrollment, "0" * 64, 1, 2, 3, ((original.purpose, digest),), "0" * 64)
+    return EnrollmentObservation(enrollment, "0" * 64, 1, 2, 3, ((original.purpose, readback_digest or digest),), "0" * 64)
 
 
 def _archive(content: bytes, *, name: str = "bootstrap_supervisor.py", kind: bytes | None = None) -> bytes:
@@ -64,6 +64,36 @@ def test_exact_pinned_source_is_rechecked_twice_without_original_claim(monkeypat
     assert observed.source_sha256 == digest
     assert observed.source_bytes == len(fixture)
     assert observed.reviewed_lock_before_launch is True
+
+
+def test_exact_quarantined_original_source_is_read_back_without_mount_or_containment_claim(monkeypatch: pytest.MonkeyPatch) -> None:
+    fixture = b"fixture quarantined original bootstrap source with an owner lock"
+    digest = hashlib.sha256(fixture).hexdigest()
+    monkeypatch.setattr(source, "_REVIEWED_QUARANTINED_SOURCE_SHA256", digest)
+    calls = []
+
+    def copy(identifier: str) -> bytes:
+        calls.append(identifier)
+        return fixture
+
+    monkeypatch.setattr(source, "_copy_source", copy)
+    observed = source.inspect_installed_bootstrap_source(_record(digest, profile="quarantined-original-v1"))
+    assert calls == ["a" * 64, "a" * 64]
+    assert observed.source_sha256 == digest
+    assert observed.reviewed_lock_before_launch is True
+    assert not hasattr(observed, "quarantine_mounts_verified")
+
+
+def test_quarantined_source_refuses_an_ordinary_digest(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(source, "_copy_source", lambda _: pytest.fail("No Docker copy on profile mismatch"))
+    with pytest.raises(ValueError, match="differs from reviewed quarantined-original-v1 bytes"):
+        source.inspect_installed_bootstrap_source(_record(source._REVIEWED_ORDINARY_SOURCE_SHA256, profile="quarantined-original-v1"))
+
+
+def test_quarantined_source_refuses_changed_protected_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(source, "_copy_source", lambda _: pytest.fail("No Docker copy on protected record mismatch"))
+    with pytest.raises(ValueError, match="differs from reviewed quarantined-original-v1 bytes"):
+        source.inspect_installed_bootstrap_source(_record(source._REVIEWED_QUARANTINED_SOURCE_SHA256, profile="quarantined-original-v1", readback_digest="0" * 64))
 
 
 def test_unreviewed_operator_source_cannot_select_a_new_profile(monkeypatch: pytest.MonkeyPatch) -> None:
