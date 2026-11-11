@@ -873,6 +873,7 @@ class WorkerSupervisor:
                 logger.error("Reboot recovery refused after failed validation")
                 return
             assert isinstance(operation_id, str) and isinstance(record, dict) and isinstance(failed, dict)
+            assert isinstance(runtime, dict)
             try:
                 # Persist the one-shot consumption before Popen. A crash in the
                 # launch window must never spawn an uncorrelated second successor.
