@@ -100,7 +100,10 @@ and an existing private
 root-owned directory (mode 0700), private regular file (mode 0600), canonical
 paths, exact deployment IDs, original image IDs and independently reopened
 protected original source/configuration and prior-evidence file identities are
-required. The observer reopens the record and originals after reading them.
+required. The observer reopens the enrollment, originals and prior evidence and
+compares file identity (device, inode, size, mtime and ctime) as well as exact
+contents/hashes across both reads. An inode replacement with identical bytes is
+an observed change and refuses, not evidence of an unchanged installed source.
 Absent, mismatched, mutable and uninspectable records contribute
 `approved-enrollment-component` refusal reasons. Unit-level fixtures use a
 separate explicitly injected private directory and their own UID, never the

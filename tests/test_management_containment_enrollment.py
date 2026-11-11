@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from auto_coder.management import containment_enrollment as enrollment_reader
 from auto_coder.management.containment_enrollment import (
     ApprovedEnrollment,
     EnrollmentUnavailable,
@@ -194,6 +195,39 @@ def test_protected_reader_never_creates_missing_approval() -> None:
             _observe_approved_enrollment(selection, root=root, expected_uid=os.geteuid())
         assert not approval.exists()
         assert list(root.iterdir()) == []
+
+
+@pytest.mark.parametrize("target", ("enrollment", "original", "prior"))
+def test_reader_refuses_same_bytes_inode_replacement_between_reads(monkeypatch: pytest.MonkeyPatch, target: str) -> None:
+    with _approved_fixture() as (root, enrollment, selection):
+        paths = {
+            "enrollment": root / "fixture-enrollment.json",
+            "original": Path(enrollment.original_files[0].path),
+            "prior": Path(enrollment.original_prior_evidence_path),
+        }
+        selected = paths[target]
+        initial = selected.stat()
+        protected = enrollment_reader._protected
+        exchanged = False
+
+        def replace_after_first_read(path: Path, *, uid: int, size_limit: int):
+            nonlocal exchanged
+            content, identity = protected(path, uid=uid, size_limit=size_limit)
+            if path == selected and not exchanged:
+                replacement = path.with_name(path.name + ".replacement")
+                replacement.write_bytes(content)
+                replacement.chmod(0o600)
+                assert replacement.stat().st_ino != initial.st_ino
+                os.replace(replacement, path)
+                exchanged = True
+            return content, identity
+
+        monkeypatch.setattr(enrollment_reader, "_protected", replace_after_first_read)
+        with pytest.raises(EnrollmentUnavailable, match="changed during observation"):
+            _observe_approved_enrollment(selection, root=root, expected_uid=os.geteuid())
+        assert exchanged
+        assert selected.read_bytes() == protected(selected, uid=os.geteuid(), size_limit=65536)[0]
+        assert selected.stat().st_ino != initial.st_ino
 
 
 def test_public_reader_refuses_a_different_mount_namespace(monkeypatch: pytest.MonkeyPatch) -> None:

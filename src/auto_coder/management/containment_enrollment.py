@@ -142,6 +142,10 @@ class EnrollmentObservation:
     original_prior_evidence_sha256: str
 
 
+def _file_identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
 def _protected(path: Path, *, uid: int, size_limit: int) -> tuple[bytes, os.stat_result]:
     if not path.is_absolute() or path != path.resolve(strict=True):
         raise EnrollmentUnavailable("approved evidence path is not canonical")
@@ -157,10 +161,7 @@ def _protected(path: Path, *, uid: int, size_limit: int) -> tuple[bytes, os.stat
         if len(content) > size_limit:
             raise EnrollmentUnavailable("approved evidence exceeds size bound")
 
-        def fields(info: os.stat_result) -> tuple[int, int, int, int, int]:
-            return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
-
-        if fields(before) != fields(after) or fields(after) != fields(path.lstat()) or path != path.resolve(strict=True):
+        if _file_identity(before) != _file_identity(after) or _file_identity(after) != _file_identity(path.lstat()) or path != path.resolve(strict=True):
             raise EnrollmentUnavailable("approved evidence changed during read")
         return content, after
     finally:
@@ -221,13 +222,15 @@ def _observe_approved_enrollment(proposed: object, *, root: Path, expected_uid: 
         if getattr(enrollment, field) != getattr(proposed, field, None):
             raise EnrollmentUnavailable("approved enrollment and proposed deployment differ")
     originals = []
+    original_identities = []
     for item in enrollment.original_files:
         original, info = _protected(Path(item.path), uid=expected_uid, size_limit=1024 * 1024)
         digest = hashlib.sha256(original).hexdigest()
         if (info.st_dev, info.st_ino, digest) != (item.device, item.inode, item.sha256):
             raise EnrollmentUnavailable("approved original source/configuration differs: " + item.purpose)
         originals.append((item.purpose, digest))
-    prior, _ = _protected(Path(enrollment.original_prior_evidence_path), uid=expected_uid, size_limit=_MAX_BYTES)
+        original_identities.append(_file_identity(info))
+    prior, prior_identity = _protected(Path(enrollment.original_prior_evidence_path), uid=expected_uid, size_limit=_MAX_BYTES)
     prior_digest = hashlib.sha256(prior).hexdigest()
     if prior_digest != enrollment.original_prior_evidence_sha256:
         raise EnrollmentUnavailable("approved original Docker/lifetime evidence differs")
@@ -252,12 +255,15 @@ def _observe_approved_enrollment(proposed: object, *, root: Path, expected_uid: 
         raise EnrollmentUnavailable("approved original Docker/lifetime identity differs")
     # Recheck approval and originals after the other reads. A caller still
     # needs separate live Docker/controller/kernel closure and owner fences.
-    if _protected(enrollment_file, uid=expected_uid, size_limit=_MAX_BYTES)[0] != content:
+    final_enrollment, final_enrollment_identity = _protected(enrollment_file, uid=expected_uid, size_limit=_MAX_BYTES)
+    if final_enrollment != content or _file_identity(final_enrollment_identity) != _file_identity(identity):
         raise EnrollmentUnavailable("approved enrollment changed during observation")
-    for item in enrollment.original_files:
-        if hashlib.sha256(_protected(Path(item.path), uid=expected_uid, size_limit=1024 * 1024)[0]).hexdigest() != item.sha256:
+    for item, initial_identity in zip(enrollment.original_files, original_identities):
+        final_content, final_identity = _protected(Path(item.path), uid=expected_uid, size_limit=1024 * 1024)
+        if hashlib.sha256(final_content).hexdigest() != item.sha256 or _file_identity(final_identity) != initial_identity:
             raise EnrollmentUnavailable("approved original source/configuration changed during observation")
-    if hashlib.sha256(_protected(Path(enrollment.original_prior_evidence_path), uid=expected_uid, size_limit=_MAX_BYTES)[0]).hexdigest() != prior_digest:
+    final_prior, final_prior_identity = _protected(Path(enrollment.original_prior_evidence_path), uid=expected_uid, size_limit=_MAX_BYTES)
+    if hashlib.sha256(final_prior).hexdigest() != prior_digest or _file_identity(final_prior_identity) != _file_identity(prior_identity):
         raise EnrollmentUnavailable("approved original Docker/lifetime evidence changed during observation")
     return EnrollmentObservation(
         enrollment,
