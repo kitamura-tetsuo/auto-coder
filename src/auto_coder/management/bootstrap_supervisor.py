@@ -201,6 +201,7 @@ class BootstrapConfig:
     restart_after_clean_shutdown: bool = False
     archived_exclusions: tuple[ArchivedExclusion, ...] = ()
     fresh_runtime_binding: FreshRuntimeBinding | None = None
+    new_instance_initialization: bool = False
 
     @classmethod
     def read(cls, path: Path) -> "BootstrapConfig":
@@ -225,6 +226,7 @@ class BootstrapConfig:
             "restart_after_clean_shutdown",
             "archived_exclusions",
             "fresh_runtime_binding",
+            "new_instance_initialization",
         }
         if set(raw) - allowed:
             raise ValueError("unknown bootstrap configuration field")
@@ -263,6 +265,7 @@ class BootstrapConfig:
             raw.get("restart_after_clean_shutdown", False),
             parse_exclusions(raw.get("archived_exclusions", [])),
             parse_fresh_runtime_binding(raw.get("fresh_runtime_binding")),
+            raw.get("new_instance_initialization", False),
         )
         config.validate()
         return config
@@ -283,8 +286,15 @@ class BootstrapConfig:
                 raise ValueError("clean restart requires a fixed drain receipt path")
         if (self.management_version_root is None) != (self.management_config is None) or not 0 < self.verification_timeout <= 3600:
             raise ValueError("invalid management self-update bootstrap profile")
-        if (self.fresh_guard_path is None) != (self.fresh_prior_lock_path is None) or any(path is not None and not path.is_absolute() for path in (self.fresh_guard_path, self.fresh_prior_lock_path)):
-            raise ValueError("fresh initialization paths must be paired and absolute")
+        if type(self.new_instance_initialization) is not bool:
+            raise ValueError("NEW initialization selector must be a boolean")
+        if self.new_instance_initialization:
+            if self.fresh_guard_path is None or self.fresh_prior_lock_path is not None or self.restart_after_clean_shutdown or self.archived_exclusions or self.fresh_runtime_binding is not None:
+                raise ValueError("NEW initialization cannot claim a prior ownership lineage")
+        elif (self.fresh_guard_path is None) != (self.fresh_prior_lock_path is None):
+            raise ValueError("fresh initialization paths must be paired")
+        if any(path is not None and not path.is_absolute() for path in (self.fresh_guard_path, self.fresh_prior_lock_path)):
+            raise ValueError("fresh initialization paths must be absolute")
         if self.fresh_runtime_binding is not None:
             self.fresh_runtime_binding.validate()
             initial = next(item for item in self.runtimes if item.reference == self.initial_runtime)
@@ -788,6 +798,11 @@ class ManagementBootstrapSupervisor:
 
     def run(self) -> int:
         """Remain alive as PID 1 and reap only the configured child."""
+        if self.config.new_instance_initialization:
+            # A NEW profile must never fall through the legacy empty-ledger
+            # bootstrap, which has no NEW origin or first-launch claim gate.
+            logger.error("NEW initialization requires a separately admitted first-launch controller")
+            return 1
         if self.fresh_initialization and (not self.config.state_root.is_dir() or self.config.state_root.is_symlink()):
             logger.error("Fresh initialization state root is unavailable")
             return 1
@@ -1305,6 +1320,8 @@ def main() -> None:
     parser.add_argument("--fresh-initialization", action="store_true")
     args = parser.parse_args()
     config = BootstrapConfig.read(args.config)
+    if config.new_instance_initialization:
+        parser.exit(1, "NEW initialization requires a separately admitted first-launch controller\n")
     setup_logger(stream=sys.stdout, log_file=str(config.state_root / "logs" / "management-bootstrap.log"))
     raise SystemExit(ManagementBootstrapSupervisor(config, bootstrap_config_path=args.config, fresh_initialization=args.fresh_initialization).run())
 

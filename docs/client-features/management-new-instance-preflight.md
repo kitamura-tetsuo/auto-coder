@@ -138,6 +138,15 @@ reconfigure permissions. Missing or malformed OAuth data and unsupported
 selected runtime profiles refuse without writing or launching anything. A
 second origin inspection after these checks detects changed original inputs.
 
+The selected bootstrap configuration explicitly requires
+`"new_instance_initialization": true`, its protected `fresh_guard_path`, and
+**no** `fresh_prior_lock_path`. A genuinely NEW profile must not invent an old
+owner-lock path simply to satisfy the prior-cutover configuration schema.
+The normal Supervisor entrypoint, including its legacy `--fresh-initialization`
+switch, refuses this selected NEW profile before creating an owner lock, ledger,
+or log file. A distinct admitted NEW first-launch controller is still required;
+this selector alone never enables a process start.
+
 The bounded profile requires the selected runtime's `source_root` to name the
 same immutable application closure supplied in the origin request. Installed
 runtime profiles, archived exclusions and container-only runtime bindings are

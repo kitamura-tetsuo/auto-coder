@@ -56,6 +56,8 @@ def inspect_new_instance_profile(request_file: Path) -> NewProfileReceipt:
         or config.journal_root != Path(selected.operation_root)
         or config.oauth_root != Path(selected.oauth_root)
         or config.fresh_guard_path != Path(selected.guard_root) / "fresh-guard.sock"
+        or config.fresh_prior_lock_path is not None
+        or config.new_instance_initialization is not True
         or runtime is None
         or runtime.executable != Path(selected.executable)
         or runtime.source_root != Path(selected.application_root)

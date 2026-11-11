@@ -52,7 +52,7 @@ def configured_request(request_file: Path) -> Path:
             }
         ],
         "fresh_guard_path": request["guard_root"] + "/fresh-guard.sock",
-        "fresh_prior_lock_path": str(root / "prior-owner.lock"),
+        "new_instance_initialization": True,
     }
     Path(request["bootstrap_config"]).write_text(json.dumps(config))
     Path(request["management_config"]).write_text(
@@ -122,6 +122,9 @@ def test_independent_profile_matches_selected_config_and_retained_oauth_without_
         "oauth_read_scope",
         "oauth_database_missing",
         "oauth_schema",
+        "selector_missing",
+        "selector_not_boolean",
+        "prior_lock",
     ),
 )
 def test_profile_mismatch_refuses_without_touching_original_state(configured_request: Path, fault: str) -> None:
@@ -151,6 +154,12 @@ def test_profile_mismatch_refuses_without_touching_original_state(configured_req
         management["firebase_project_id"] = "another-project"
     elif fault == "oauth_read_scope":
         management["enabled_scopes"] = ["auto-coder.operate"]
+    elif fault == "selector_missing":
+        del bootstrap["new_instance_initialization"]
+    elif fault == "selector_not_boolean":
+        bootstrap["new_instance_initialization"] = "true"
+    elif fault == "prior_lock":
+        bootstrap["fresh_prior_lock_path"] = str(root / "invented-prior-owner.lock")
     elif fault == "oauth_database_missing":
         (root / "oauth/oauth.sqlite3").rename(root / "oauth/preserved-original.sqlite3")
     else:
@@ -165,6 +174,25 @@ def test_profile_mismatch_refuses_without_touching_original_state(configured_req
     assert "fresh host observation unavailable:" in refusal.stderr
     assert {path: content for path, content in _bytes(root).items() if not path.startswith("guard/")} == original
     assert all(list((root / name).iterdir()) == [] for name in ("state", "operations"))
+    assert not (root / "LAUNCHED").exists()
+
+
+@pytest.mark.parametrize("legacy_flag", [[], ["--fresh-initialization"]])
+def test_new_profile_cannot_enter_legacy_bootstrap_without_admission(configured_request: Path, legacy_flag: list[str]) -> None:
+    request = json.loads(configured_request.read_text())
+    root = configured_request.parent
+    before = _bytes(root)
+    result = subprocess.run(
+        [sys.executable, "-B", "-m", "auto_coder.management.bootstrap_supervisor", "--config", request["bootstrap_config"], *legacy_flag],
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 1
+    assert "NEW initialization requires a separately admitted first-launch controller" in result.stderr
+    assert _bytes(root) == before
+    assert all(list((root / name).iterdir()) == [] for name in ("state", "operations", "guard"))
     assert not (root / "LAUNCHED").exists()
 
 
