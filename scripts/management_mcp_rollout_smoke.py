@@ -247,6 +247,14 @@ def read_plan(checkpoint: DotCheckpoint, target: str, operation_id: str) -> tupl
         raise ValueError("pending original operation ID without unresolved effect state")
     if operation_id and _original_operation_target(checkpoint, operation_id) != target:
         raise ValueError("original operation ID must be uniquely bound to its configured target")
+    if checkpoint.pending_effect_state not in UNKNOWN_EFFECTS:
+        # Diagnostics must not attribute a different worker to the saved stage.
+        saved_targets = {checkpoint.beta_target, checkpoint.release_target} - {""}
+        selected_targets = {checkpoint.beta_target} - {""} if checkpoint.stage == "beta" else saved_targets
+        if checkpoint.stage != "observe" and not selected_targets:
+            raise ValueError("configured stage target is missing from the original checkpoint")
+        if selected_targets and target not in selected_targets:
+            raise ValueError("diagnostic target is outside the configured original stage targets")
     original_read: tuple[str, dict[str, object]] = ("auto_coder_operation_get", {"target_id": target, "operation_id": operation_id})
     status_read: tuple[str, dict[str, object]] = ("auto_coder_status", {"target_id": target})
     deployment_read: tuple[str, dict[str, object]] = ("auto_coder_deployment_status", {"target_id": target})

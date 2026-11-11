@@ -129,8 +129,14 @@ checkpoint, the operator must newly supply `--operator-stage` and
 and revision; missing, changed, or invalid revisions are `BLOCKED` before
 network access. The observe-only default needs no fresh revision. This check
 prevents a stale checkpoint from silently selecting a different stage; it is
-not server attestation or an authorization grant. The current authenticated
-MCP policy/grant and live producer evidence remain separately necessary.
+not server attestation or an authorization grant. Read-only target diagnostics
+are limited to the checkpoint's selected beta target in beta stage and its
+configured beta/release targets in full stage. Observe stage may select a
+fresh explicit target only when no targets were saved. A pending unknown effect
+is instead read back from its exact original operation-to-target binding,
+including when the current saved stage differs; this read never authorizes a
+new effect. The current authenticated MCP policy/grant and live producer
+evidence remain separately necessary.
 
 Example offline invocation on a machine with the project environment:
 

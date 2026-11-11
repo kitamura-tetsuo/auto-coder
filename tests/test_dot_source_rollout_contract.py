@@ -564,3 +564,34 @@ def test_cli_refuses_stale_operator_revision_before_mcp_transport(tmp_path):
     assert not report["effect_dispatched"]
     assert not report["positive_deployment_proven"]
     assert smoke.load_checkpoint(path) == saved
+
+
+@pytest.mark.parametrize(
+    "stage,target",
+    [
+        ("observe", "unselected-worker"),
+        ("beta", "fixture-release"),
+        ("beta", "unselected-worker"),
+        ("full", "unselected-worker"),
+    ],
+)
+def test_read_diagnostics_refuse_unselected_worker_targets(stage, target):
+    original = checkpoint(
+        stage=stage,
+        beta_target="fixture-beta",
+        release_target="fixture-release",
+    )
+    with pytest.raises(ValueError, match="configured.*target"):
+        smoke.read_plan(original, target, "")
+
+
+def test_read_diagnostics_respect_stage_but_preserve_original_pending_reconciliation():
+    original = checkpoint(stage="beta", beta_target="fixture-beta", release_target="fixture-release")
+    assert smoke.read_plan(original, "fixture-beta", "")[1][1] == {"target_id": "fixture-beta"}
+    full = replace(original, stage="full")
+    assert smoke.read_plan(full, "fixture-release", "")[1][1] == {"target_id": "fixture-release"}
+    unknown = replace(original, pending_effect_state="SENT_UNKNOWN", pending_operation_id="old-release", release_operation_id="old-release")
+    assert smoke.read_plan(unknown, "fixture-release", "old-release")[1] == (
+        "auto_coder_operation_get",
+        {"target_id": "fixture-release", "operation_id": "old-release"},
+    )
