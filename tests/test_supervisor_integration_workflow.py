@@ -57,6 +57,7 @@ def test_new_private_engine_acceptance_keeps_mandatory_isolated_first_launch() -
     assert "chmod 0666" not in (ROOT / ".github/workflows/new-instance-private-engine.yml").read_text()
     assert not (ROOT / "tests/test_management_new_instance_first_launch_docker.py").exists()
     regression = (ROOT / "tests/test_management_new_private_engine_docker.py").read_text()
+    assert "def test_kernel_pending_unix_client_in_separate_network_namespace_is_refused" in regression
     for scenario in (
         "changed-executable",
         "changed-application",

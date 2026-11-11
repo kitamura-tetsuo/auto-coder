@@ -11,6 +11,7 @@ import os
 import select
 import shutil
 import signal
+import socket
 import sqlite3
 import stat
 import subprocess
@@ -32,6 +33,7 @@ from auto_coder.management.fresh_private_engine import (
     create_private_engine,
     hold_private_engine_source,
 )
+from auto_coder.management.fresh_private_engine_gate import _assert_only_original_engine_connection
 from tests.support.new_first_start import (
     PAUSE_AFTER_HOST_CLAIM,
     _authorized_readback,
@@ -84,6 +86,96 @@ def _original_private_child_requires_bearer(container_id: str) -> bool:
     )
     probe = subprocess.run(["docker", "exec", container_id, "python3", "-B", "-c", script], capture_output=True, text=True, timeout=20)
     return probe.returncode == 0
+
+
+def test_kernel_pending_unix_client_in_separate_network_namespace_is_refused() -> None:
+    """Use real Linux socket tables for an unaccepted cross-netns client."""
+    outer = ["docker", "--host", "unix:///var/run/docker.sock"]
+    base_image = os.environ["AUTOCODER_FRESH_TEST_BASE_IMAGE"]
+    server_code = (
+        "import pathlib,socket,sys,time;"
+        "path=pathlib.Path(sys.argv[1]);"
+        "listener=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);"
+        "listener.bind(str(path));listener.listen(2);"
+        "path.with_suffix('.ready').touch(mode=0o600);"
+        "guardian,_=listener.accept();"
+        "path.with_suffix('.accepted').touch(mode=0o600);"
+        "time.sleep(60)"
+    )
+
+    def observed_states(proc_table: Path, path: Path) -> list[tuple[str, str, str]]:
+        rows = []
+        for line in proc_table.read_text().splitlines()[1:]:
+            columns = line.split(maxsplit=7)
+            if len(columns) == 8 and columns[7] == str(path):
+                rows.append((columns[3], columns[4], columns[5]))
+        return sorted(rows)
+
+    with tempfile.TemporaryDirectory(prefix="acpe-unix-", dir="/tmp") as directory:
+        root = Path(directory)
+        original_socket = root / "original.sock"
+        container_id = ""
+        guardian = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        pending = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            container_id = subprocess.check_output(
+                [
+                    *outer,
+                    "run",
+                    "--detach",
+                    "--rm",
+                    "--pull",
+                    "never",
+                    "--network",
+                    "none",
+                    "--restart",
+                    "no",
+                    "--read-only",
+                    "--cap-drop",
+                    "ALL",
+                    "--security-opt",
+                    "no-new-privileges",
+                    "--user",
+                    f"{os.geteuid()}:{os.getegid()}",
+                    "--mount",
+                    f"type=bind,src={root},dst={root}",
+                    "--entrypoint",
+                    "python3",
+                    base_image,
+                    "-B",
+                    "-c",
+                    server_code,
+                    str(original_socket),
+                ],
+                text=True,
+                timeout=60,
+            ).strip()
+            deadline = time.monotonic() + 25
+            while not original_socket.with_suffix(".ready").exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert original_socket.with_suffix(".ready").is_file(), "disposable namespace listener did not start"
+            guardian.connect(str(original_socket))
+            while not original_socket.with_suffix(".accepted").exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert original_socket.with_suffix(".accepted").is_file(), "guardian connection was not accepted"
+            pending.connect(str(original_socket))
+
+            daemon_pid = int(subprocess.check_output([*outer, "inspect", "--format", "{{.State.Pid}}", container_id], text=True, timeout=15))
+            daemon_namespace = os.readlink(f"/proc/{daemon_pid}/ns/net")
+            assert daemon_namespace != os.readlink("/proc/self/ns/net")
+            assert observed_states(Path(f"/proc/{daemon_pid}/net/unix"), original_socket) == [("00010000", "0001", "01")]
+            assert observed_states(Path("/proc/self/net/unix"), original_socket) == [
+                ("00000000", "0001", "02"),
+                ("00000000", "0001", "03"),
+            ]
+            with pytest.raises(HostObservationUnavailable, match="another preconnected") as excluded:
+                _assert_only_original_engine_connection(original_socket, daemon_pid, daemon_namespace)
+            assert "('00000000', '0001', '02')" in str(excluded.value)
+        finally:
+            pending.close()
+            guardian.close()
+            if container_id:
+                subprocess.run([*outer, "rm", "--force", container_id], capture_output=True, timeout=30)
 
 
 def test_real_private_engine_parent_preserves_original_and_seals_independent_source(configured_request: Path) -> None:
