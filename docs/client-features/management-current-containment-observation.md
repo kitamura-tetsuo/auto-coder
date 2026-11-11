@@ -278,6 +278,20 @@ authorized Linux/Docker test host with the preexisting image
 python scripts/test_management_containment_enrollment_host.py --confirm-test-only-fixture
 ```
 
+To test an already installed, independently identified original image instead
+of the historical fixture tag, add `--test-image sha256:<64-hex-digit-image-id>`.
+The flag selects an immutable local image reference only: the script never
+pulls, retags, rebuilds, starts or changes an existing original container.
+The same explicit `--confirm-test-only-fixture` gate, disposable mounts and
+cleanup apply. Selecting original image bytes alone does not approve the
+original installed source, prove complete controller closure or enable a
+positive containment verdict.
+For a reviewed ordinary bootstrap image, additionally select
+`--require-reviewed-ordinary-source` to require both independent CLI processes
+to return the successful installed-image source/lock-before-launch
+sub-observation. That flag fails if the original source bytes are unreviewed,
+unavailable or substituted; it still does not claim full deployment closure.
+
 An additional manual integration check is available with
 `--exercise-test-route-manifest`. It temporarily simulates a **test-only**
 root-approved complete-route declaration, reads the actual whole systemd,
