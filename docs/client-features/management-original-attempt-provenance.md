@@ -88,7 +88,11 @@ including failed siblings: each historical predecessor must be the initial
 baseline or a previously claimed target with the matching container ID. Reused
 target names, container identities, state/journal paths or root identities,
 and cycles refuse even if the corrupted anchor's individual intent schema and
-the rehashed frontier are otherwise valid. No historical byte is repaired.
+the rehashed frontier are otherwise valid. The reader also re-stats every
+historically anchored state/journal directory against its exact protected
+device/inode identity; changing both the anchor and intent cannot disguise a
+different original inode. A missing or replaced directory is unavailable, and
+no historical byte is repaired.
 This changes refusal eligibility only: it introduces no new trace schema,
 dashboard success state, management process transition or grant event.
 The existing boundary logger records only events actually durably appended,

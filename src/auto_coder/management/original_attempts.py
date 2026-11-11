@@ -311,6 +311,13 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
         journal_id = (intent.journal_device, intent.journal_inode)
         if state_id == journal_id or state_id in seen_roots or journal_id in seen_roots:
             raise OriginalEvidenceUnavailable("original target reuses a protected root")
+        try:
+            actual_state = identity(Path(intent.host_state_root), directory=True)
+            actual_journal = identity(Path(intent.host_journal_root), directory=True)
+        except (OSError, ValueError) as error:
+            raise OriginalEvidenceUnavailable("original anchor directory identity unavailable") from error
+        if actual_state != state_id or actual_journal != journal_id:
+            raise OriginalEvidenceUnavailable("original anchor directory identity differs")
         seen_targets.update(target_keys)
         seen_roots.update((state_id, journal_id))
         earlier_predecessor_names.add(intent.old_instance)

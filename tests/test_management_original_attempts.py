@@ -1376,9 +1376,9 @@ def test_original_host_grant_refuses_rehashed_malformed_ancestor(tmp_path, corru
 
 
 @pytest.mark.parametrize("boundary", ["admission", "grant"])
-@pytest.mark.parametrize("corruption", ["foreign-history", "foreign-root", "uncovered-predecessor", "duplicate-target"])
+@pytest.mark.parametrize("corruption", ["foreign-history", "foreign-root", "uncovered-predecessor", "duplicate-target", "forged-state-inode", "forged-journal-inode"])
 def test_original_boundaries_refuse_rehashed_historical_graph(tmp_path, boundary, corruption):
-    """An earlier failed branch cannot be rewritten into a different lineage."""
+    """A failed branch cannot claim an unrelated lineage or protected root."""
     binding = _history(tmp_path)
     prior = _covered(tmp_path, binding, "valid-predecessor")
     claim_fresh_initialization(Path(prior.host_state_root), prior)
@@ -1409,11 +1409,17 @@ def test_original_boundaries_refuse_rehashed_historical_graph(tmp_path, boundary
         elif corruption == "uncovered-predecessor":
             intent["old_instance"] = "invented-predecessor"
             intent["old_container_id"] = "d" * 64
-        else:
+        elif corruption == "duplicate-target":
             intent["old_instance"] = "old-instance"
             intent["old_container_id"] = "a" * 64
             intent["new_instance"] = prior.new_instance
-        # Each mutation must pass the intent schema; only its lineage is invalid.
+        elif corruption == "forged-state-inode":
+            intent["state_inode"] += 100000
+            event["value"]["state"][1] += 100000
+        else:
+            intent["journal_inode"] += 100000
+            event["value"]["journal"][1] += 100000
+        # The intent schema remains valid; the claimed history or roots do not.
         assert parse_fresh_intent(intent).request_id == failed.request_id
 
     _rewrite_rehashed_original_event(Path(binding.root), 2, mutate)
@@ -1422,6 +1428,8 @@ def test_original_boundaries_refuse_rehashed_historical_graph(tmp_path, boundary
         "foreign-root": "original anchor history identity differs",
         "uncovered-predecessor": "original lineage has uncovered or refused predecessor",
         "duplicate-target": "original target aliases or cycles covered history",
+        "forged-state-inode": "original anchor directory identity differs",
+        "forged-journal-inode": "original anchor directory identity differs",
     }[corruption]
     before = _fingerprint(tmp_path)
     with pytest.raises(OriginalEvidenceUnavailable, match=refusal):
