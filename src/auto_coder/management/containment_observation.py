@@ -15,6 +15,7 @@ import os
 import re
 import stat
 import subprocess
+import tarfile
 import time
 import uuid
 from dataclasses import asdict, dataclass, replace
@@ -23,6 +24,7 @@ from pathlib import Path
 from .archived_exclusions import unique_pairs
 from .containment_enrollment import EnrollmentObservation, EnrollmentUnavailable, observe_approved_enrollment
 from .fresh_host_observation import _validate_host_proc_profile
+from .installed_bootstrap_source import InstalledBootstrapSource, inspect_installed_bootstrap_source
 from .proc_observation import ProcessObservation, observe_process
 from .systemd_watcher_observation import WatcherSystemdObservation, observe_watcher_unit
 
@@ -90,6 +92,7 @@ class DockerObservation:
     finished_at: str
     restart_count: int
     mounts_sha256: str
+    management_route_roles: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -117,6 +120,7 @@ class PrerequisiteReport:
     resource_limit: str = "All read descriptors are released before return; no namespace pin or owner fence is retained."
     approved_enrollment: EnrollmentObservation | None = None
     watcher_systemd: WatcherSystemdObservation | None = None
+    installed_bootstrap_source: InstalledBootstrapSource | None = None
 
 
 def _digest(value: object) -> str:
@@ -172,10 +176,12 @@ def _docker(scope: ProposedScope) -> tuple[DockerObservation, ...]:
     if not {scope.management_id, scope.proxy_id} <= set(containers):
         raise ValueError("Selected Docker objects are absent from the complete engine inventory")
     observations = []
+    inspected: dict[str, dict[str, object]] = {}
     for container in containers:
         raw = _docker_read(("inspect", "--type", "container", container))
         if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], dict) or raw[0].get("Id") != container:
             raise ValueError("Docker container identity differs")
+        inspected[container] = raw[0]
         image = raw[0].get("Image")
         if not isinstance(image, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
             raise ValueError("Docker image identity unavailable")
@@ -194,13 +200,49 @@ def _docker(scope: ProposedScope) -> tuple[DockerObservation, ...]:
         # Bind the complete inspection, including command, security, mounts,
         # restart policy, and lifetime, without exposing environment secrets.
         observations.append(DockerObservation(engine, container, image, _digest(raw), policy["Name"], policy["MaximumRetryCount"], state["Running"], state["Status"], state["Pid"], state["StartedAt"], state["FinishedAt"], raw[0]["RestartCount"], _digest(mounts)))
+    # A proposed pair cannot exclude other current Docker objects that share
+    # its exact images, an installed management command or its network namespace.
+    # This is candidate discovery, not proof that all ordinary controllers are
+    # known; the separate installed-route inventory is still required.
+    management_image = inspected[scope.management_id]["Image"]
+    proxy_image = inspected[scope.proxy_id]["Image"]
+    classified = []
+    for item in observations:
+        obj = inspected[item.container_id]
+        config, host = obj.get("Config"), obj["HostConfig"]
+        if not isinstance(config, dict) or not isinstance(host, dict):
+            raise ValueError("Docker effective command or network configuration unavailable")
+        command = config.get("Cmd")
+        entrypoint = config.get("Entrypoint")
+        if command is not None and (not isinstance(command, list) or len(command) > 64 or any(not isinstance(part, str) or len(part) > 4096 for part in command)):
+            raise ValueError("Docker effective command is ambiguous")
+        if entrypoint is not None and (not isinstance(entrypoint, list) or len(entrypoint) > 64 or any(not isinstance(part, str) or len(part) > 4096 for part in entrypoint)):
+            raise ValueError("Docker entrypoint is ambiguous")
+        network_mode = host.get("NetworkMode")
+        if network_mode is not None and (not isinstance(network_mode, str) or len(network_mode) > 256):
+            raise ValueError("Docker network mode is ambiguous")
+        arguments = tuple((entrypoint or []) + (command or []))
+        roles = []
+        if item.container_id == scope.management_id:
+            roles.append("selected-management")
+        elif item.image_id == management_image:
+            roles.append("same-management-image")
+        if item.container_id == scope.proxy_id:
+            roles.append("selected-proxy")
+        elif item.image_id == proxy_image:
+            roles.append("same-proxy-image")
+        if "auto_coder.management.bootstrap_supervisor" in arguments or ("auto_coder.cli" in arguments and "management" in arguments and "serve" in arguments):
+            roles.append("management-command")
+        if network_mode == "container:" + scope.management_id:
+            roles.append("selected-management-network")
+        classified.append(replace(item, management_route_roles=tuple(roles)))
     if _docker_ids() != containers:
         raise ValueError("Docker engine inventory changed during observation")
     if _docker_read(("info", "--format", "{{json .ID}}")) != engine:
         raise ValueError("Docker engine changed during observation")
     if _docker_read(("context", "inspect", "--format", "{{json .Endpoints.docker.Host}}")) != endpoint:
         raise ValueError("Docker context changed during observation")
-    return tuple(observations)
+    return tuple(classified)
 
 
 def _docker_ids() -> tuple[str, ...]:
@@ -247,6 +289,7 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
                 "The protected present-time enrollment was read, but independent original execution, complete installed controller membership and current technical closure are not established by that record.",
             ),
         )
+    installed_bootstrap_source = None
     if scope.profile == "quarantined-original-v1":
         unavailable.append(Unavailable("quarantined-original-profile", "Exact original bootstrap file mounts, no-new-privileges setting and support-mount purpose/source/destination/read-only execution binding are not registered; replacement admission is unchanged."))
     watcher_systemd = None
@@ -283,6 +326,25 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
         for item in docker:
             if item.restart_policy != "no":
                 unavailable.append(Unavailable("docker-restart:" + item.container_id, "Engine inventory contains a configured " + item.restart_policy + " restart route; stopped state does not prove inhibition or authorize exclusion from deployment scope."))
+            if item.container_id not in (scope.management_id, scope.proxy_id) and item.management_route_roles:
+                unavailable.append(
+                    Unavailable(
+                        "docker-alternative-management:" + item.container_id,
+                        "An unselected Docker object matches the proposed management/proxy image, command or network route (" + ",".join(item.management_route_roles) + "); its independently approved installed-controller membership and inhibition remain unproven. Current state: " + item.status + ".",
+                    )
+                )
+        if approved_enrollment is not None and isinstance(approved_enrollment, EnrollmentObservation):
+            enrolled = approved_enrollment.enrollment
+            selected = {item.container_id: item for item in docker}
+            management = selected[scope.management_id]
+            proxy = selected[scope.proxy_id]
+            if management.engine_id != enrolled.engine_id or proxy.engine_id != enrolled.engine_id or management.image_id != enrolled.management_image_id or proxy.image_id != enrolled.proxy_image_id:
+                unavailable.append(Unavailable("enrollment-live-docker", "The independently inspected Docker engine or selected current image identities differ from the protected present-time enrollment."))
+            else:
+                try:
+                    installed_bootstrap_source = inspect_installed_bootstrap_source(approved_enrollment)
+                except (OSError, ValueError, subprocess.SubprocessError, tarfile.TarError) as exc:
+                    unavailable.append(Unavailable("installed-bootstrap-source", "Current approved ordinary source cannot be matched to the reviewed Docker image-file bytes (" + type(exc).__name__ + ")."))
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         # Do not print raw Docker stderr, environment or configuration bytes.
         reason = "Docker read-only inspection unavailable (" + type(exc).__name__ + ")"
@@ -314,7 +376,7 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
         if process.unavailable or not process.start_token or not process.boot_id or (boot_id and process.boot_id != boot_id):
             unavailable.append(Unavailable("docker-process:" + container.container_id, "Docker-selected live process could not be independently correlated to an inspectable current Linux lifetime."))
     return PrerequisiteReport(
-        "current-containment-prerequisites-v5",
+        "current-containment-prerequisites-v6",
         "unavailable",
         scope,
         _digest(asdict(scope)),
@@ -330,6 +392,7 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
         processes,
         approved_enrollment=approved_enrollment,
         watcher_systemd=watcher_systemd,
+        installed_bootstrap_source=installed_bootstrap_source,
     )
 
 
@@ -341,7 +404,7 @@ def verify(scope: ProposedScope, previous: object) -> PrerequisiteReport:
         reasons.append(Unavailable("saved-report", "Unsupported or authorizing saved report; no containment success schema exists."))
     else:
         current_value = json.loads(json.dumps(asdict(current)))
-        for field in ("scope", "scope_sha256", "boot_id", "files", "docker", "processes", "approved_enrollment", "watcher_systemd", "unavailable", "resource_limit"):
+        for field in ("scope", "scope_sha256", "boot_id", "files", "docker", "processes", "approved_enrollment", "watcher_systemd", "installed_bootstrap_source", "unavailable", "resource_limit"):
             if previous[field] != current_value[field]:
                 reasons.append(Unavailable("saved-report:" + field, "Independent current observation differs from saved report."))
     return replace(current, unavailable=tuple(reasons))

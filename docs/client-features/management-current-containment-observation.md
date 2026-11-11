@@ -52,7 +52,7 @@ python -m auto_coder.management.containment_observation verify \
 ```
 
 Both commands return exit status **2**, even if every available sub-observation
-matches. Output is JSON. `current-containment-prerequisites-v5` includes the full
+matches. Output is JSON. `current-containment-prerequisites-v6` includes the full
 proposed scope and its hash, a new observation UUID, current boot ID, observer PID
 and process-start token, monotonic observation interval, observed file identities,
 available Docker identities and explicit unavailable authorities/reasons.
@@ -67,7 +67,11 @@ image, effective command, mounts, security options, restart configuration and
 current Docker lifetime without exposing environment/configuration contents.
 Two independent complete engine reads must agree. This inventory includes every
 listed container; it does **not** establish deployment enrollment, close launch
-routes or prove task absence.
+routes or prove task absence. The v6 report additionally derives potential
+management routes from the selected pair's Docker images, installed
+bootstrap/serve commands, and shared management network namespace. Unselected
+matches remain visible as refusals in the independent verifier. These are
+conservative candidates, not an authoritative inventory of all installed routes.
 
 The verifier independently reads the selected current files, Docker facts,
 selected Linux process facts and the fixed watcher systemd route; it never
@@ -90,9 +94,9 @@ separately approved present-time enrollment and independent original installed
 source/controller/route authority. Merely naming an enrollment or supplying
 operator lists is insufficient. No enrollment or controller mutation is performed here.
 
-### Protected enrollment component (v5; unchanged from v4)
+### Protected enrollment component (introduced in v4)
 
-The v5 report optionally includes `approved_enrollment`, a bounded component
+The v6 report optionally includes `approved_enrollment`, a bounded component
 readback from the fixed trusted-local path
 `/var/lib/auto-coder/approved-containment-enrollments/<enrollment-id>.json`.
 The observer never writes to that path. Initial-namespace host root (matching
@@ -119,6 +123,22 @@ to carry the independent `deployment-enrollment`, `original-source-profile`,
 `ordinary-route-closure` and `kernel-containment` unavailable reasons and
 always returns status 2. There is no accepted profile, authority to launch or
 full-scope positive fixture yet.
+
+For the specifically reviewed `ordinary-v1` bootstrap-source bytes
+(`66bcfefa86aa2bd88dd4a253405fc6faac65675917e8d393e587d5a62fff83bb`),
+v6 additionally invokes read-only `docker cp` twice against the exact selected
+management container's installed
+`/opt/auto-coder/.venv/lib/python3.12/site-packages/auto_coder/management/bootstrap_supervisor.py`.
+It accepts only a bounded, regular, single-member tar archive with that filename
+and exact hash equality to the protected enrollment's independently re-read
+`bootstrap-source`. The source was inspected for exclusive
+`.supervisor-owner.lock` acquisition before `_run_owned`. The result is a
+non-authorizing `installed_bootstrap_source` component, re-observed and compared
+by the separate consumer. Other ordinary source digests, unreviewed profiles,
+archive ambiguity, failed Docker copy or changed bytes report
+`installed-bootstrap-source` unavailable. A checked image file does not prove it
+was historically executed; the full installed route, mount, owner-lock, kernel,
+and positive test requirements remain unresolved.
 
 Run the new bounded protected-record regressions with:
 
@@ -152,9 +172,9 @@ closed profile. The operator must ensure that the host, the fixed approval
 directory, the test image and temporary Docker/localhost-port effects are
 separately authorized before running this probe.
 
-### Fixed watcher systemd route component (v5)
+### Fixed watcher systemd route component (introduced in v5)
 
-The v5 report also exposes a bounded `watcher_systemd` fact for the exact
+The report also exposes a bounded `watcher_systemd` fact for the exact
 `auto-coder-management-proxy-watch.service` installed path. The observer runs
 `systemctl show` twice and reads the filesystem unit identity and symbolic link
 twice. The component reports inhibition only if PID 1 identifies the unit as
@@ -232,7 +252,7 @@ the corresponding production trace-to-view obligations.
 
 ## Complete current Docker inventory sub-observation
 
-The `current-containment-prerequisites-v5` report replaces v1/v2/v3/v4. Earlier
+The `current-containment-prerequisites-v6` report replaces v1/v2/v3/v4/v5. Earlier
 reports are refused; v1/v2 did not bind the complete engine inventory, and v4
 did not bind the current fixed watcher systemd route. `docker` includes
 **every** container returned by unfiltered `docker container ls --all --quiet
@@ -240,7 +260,14 @@ did not bind the current fixed watcher systemd route. `docker` includes
 Both selected objects must occur in that inventory. Each object records the engine,
 container and image IDs, complete inspection digest, mount digest, explicit current
 restart policy and retry limit, running/status/PID, Docker start/finish timestamps
-and restart count. Docker timestamps/PIDs are Docker observations, not independently
+and restart count. `management_route_roles` records detected selected-image,
+bootstrap/serve-command and selected-management-network relationships. An
+unselected match generates `docker-alternative-management:<container-id>`
+until independent installed-controller membership and inhibition are established.
+If a protected enrollment was read, its engine and selected image identities
+are independently checked against current Docker inspection; mismatches generate
+`enrollment-live-docker`. Neither check is a complete route closure.
+Docker timestamps/PIDs are Docker observations, not independently
 correlated kernel lifetimes. Raw configuration, environment and mount contents are
 not emitted.
 
@@ -304,7 +331,7 @@ Docker/controller acceptance remains unverified in this environment, and Issue
 
 ## Current Linux process observation component (bounded REQ-402/REQ-406 work)
 
-The v5 prerequisite report retains `processes`: current `/proc` observations for
+The v6 prerequisite report retains `processes`: current `/proc` observations for
 positive PIDs in the Docker inventory. A stopped object's PID 0 supplies no task
 absence evidence. Docker PIDs only select proposed current processes; this does
 not correlate them to original manager/proxy lifetimes or discover escaped tasks.
@@ -323,7 +350,7 @@ Both commands always return status 2 and `status: unavailable` under the separat
 saved objects never choose its scope. The consumer reopens procfs and pidfds and
 compares fresh complete process facts, including boot ID and task start tokens,
 without trusting signatures, saved success claims or numeric PID stability.
-The full v5 verifier likewise compares newly read `processes`; earlier reports are
+The full v6 verifier likewise compares newly read `processes`; earlier reports are
 refused as unsupported rather than upgraded into authority.
 
 Each selected process records every currently enumerated thread's TID, start

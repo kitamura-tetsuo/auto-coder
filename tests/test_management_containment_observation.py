@@ -54,7 +54,7 @@ def test_production_entrypoint_refuses_operator_scope_as_authority(tmp_path: Pat
     source = ROOT / "src/auto_coder/management/bootstrap_supervisor.py"
     original = source.read_bytes()
     report = _command(tmp_path, _scope((source,), profile))
-    assert report["schema"] == "current-containment-prerequisites-v5"
+    assert report["schema"] == "current-containment-prerequisites-v6"
     assert report["scope"]["profile"] == profile
     assert report["files"][0]["sha256"] == hashlib.sha256(original).hexdigest()
     assert report["files"][0]["inode"] == source.stat().st_ino
@@ -271,7 +271,9 @@ def test_engine_inventory_includes_unselected_objects_and_exact_restart_facts(mo
     objects["c" * 64]["HostConfig"]["RestartPolicy"] = {"Name": "on-failure", "MaximumRetryCount": 4}
     result = observation._docker(_scope())
     assert [item.container_id for item in result] == [key * 64 for key in "abc"]
-    assert result[2] == observation.DockerObservation("unit-engine", "c" * 64, "sha256:" + "d" * 64, observation._digest([objects["c" * 64]]), "on-failure", 4, False, "exited", 0, "2026-11-10T00:00:00Z", "2026-11-10T00:01:00Z", 0, observation._digest([]))
+    assert result[2] == observation.DockerObservation(
+        "unit-engine", "c" * 64, "sha256:" + "d" * 64, observation._digest([objects["c" * 64]]), "on-failure", 4, False, "exited", 0, "2026-11-10T00:00:00Z", "2026-11-10T00:01:00Z", 0, observation._digest([]), ("same-management-image", "same-proxy-image")
+    )
     assert calls.count(("docker", "container", "ls", "--all", "--quiet", "--no-trunc")) == 2
     assert "must-not-be-emitted" not in json.dumps([asdict(item) for item in result])
 
@@ -292,6 +294,69 @@ def test_verifier_reinspects_unselected_restart_route_and_mounts(monkeypatch: py
     assert calls.count(("docker", "inspect", "--type", "container", "c" * 64)) == 2
     assert current.status == "unavailable"
     assert "ordinary-route-closure" in reasons and "deployment-enrollment" in reasons
+
+
+def test_unselected_management_image_and_network_routes_are_explicitly_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Protocol fixture only: classification cannot establish full route closure."""
+    objects, _ = _engine_boundary(monkeypatch)
+    objects["a" * 64]["Image"] = "sha256:" + "a" * 64
+    objects["b" * 64]["Image"] = "sha256:" + "b" * 64
+    objects["c" * 64]["Image"] = "sha256:" + "b" * 64
+    objects["c" * 64]["HostConfig"]["NetworkMode"] = "container:" + "a" * 64
+    objects["c" * 64]["State"].update(Running=True, Pid=os.getpid(), Status="running")
+    observed = observation.observe(_scope())
+    candidate = next(item for item in observed.docker if item.container_id == "c" * 64)
+    assert candidate.management_route_roles == ("same-proxy-image", "selected-management-network")
+    reasons = {item.authority: item.reason for item in observed.unavailable}
+    assert "docker-alternative-management:" + "c" * 64 in reasons
+    assert "Current state: running" in reasons["docker-alternative-management:" + "c" * 64]
+    assert "ordinary-route-closure" in reasons
+    assert observed.status == "unavailable"
+
+
+def test_management_command_alternative_is_reobserved_after_producer_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    objects, _ = _engine_boundary(monkeypatch)
+    objects["c" * 64]["Config"]["Cmd"] = ["-m", "auto_coder.management.bootstrap_supervisor", "--config", "/bootstrap/config.json"]
+    saved = json.loads(json.dumps(asdict(observation.observe(_scope()))))
+    candidate = next(item for item in saved["docker"] if item["container_id"] == "c" * 64)
+    assert "management-command" in candidate["management_route_roles"]
+    objects["c" * 64]["Config"]["Cmd"] = ["-c", "print('not a manager')"]
+    current = observation.verify(_scope(), saved)
+    reasons = {item.authority: item.reason for item in current.unavailable}
+    assert "saved-report:docker" in reasons
+    assert "saved-report:unavailable" in reasons
+    assert current.status == "unavailable"
+
+
+def test_enrollment_images_must_match_independent_current_docker_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A root-owned approval record cannot replace current Docker inspection."""
+    from auto_coder.management.containment_enrollment import ApprovedEnrollment, EnrollmentObservation
+
+    _engine_boundary(monkeypatch)
+    scope = _scope()
+    enrolled = ApprovedEnrollment(
+        "approved-current-containment-enrollment-v1",
+        scope.deployment_id,
+        scope.enrollment_id,
+        scope.authorization_id,
+        scope.profile,
+        "unit-engine",
+        scope.management_id,
+        "sha256:" + "a" * 64,
+        scope.proxy_id,
+        "sha256:" + "b" * 64,
+        (),
+        "/private/previous-evidence.json",
+        "0" * 64,
+        True,
+    )
+    component = EnrollmentObservation(enrolled, "0" * 64, 1, 2, 3, (), "0" * 64)
+    monkeypatch.setattr(observation, "observe_approved_enrollment", lambda _: component)
+    observed = observation.observe(scope)
+    reasons = {item.authority: item.reason for item in observed.unavailable}
+    assert "enrollment-live-docker" in reasons
+    assert "approved-enrollment-component" not in reasons
+    assert observed.status == "unavailable"
 
 
 @pytest.mark.parametrize("running,pid", [(True, 0), (False, 12345)])
