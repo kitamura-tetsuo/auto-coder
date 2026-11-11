@@ -164,7 +164,10 @@ whole-engine readback; the complete directory/file census of fixed
 `/etc/cron*`, `/etc/anacrontab` and `/var/spool/{cron,at,atjobs}` roots;
 and root-protected local repair/recreate scripts with their masked systemd
 inhibitors. Known or source-detected cron restarters must have inhibited
-installed scheduler units. The root-attested remote-script origin list must
+installed scheduler units. A cron symlink to a protected regular script is
+bound to both its own link identity/target text and the target's device, inode,
+change time and content hash; an uninspectable or nonregular target refuses.
+The root-attested remote-script origin list must
 currently be empty; any nonempty list refuses until authenticated remote
 scheduler and script reobservation is implemented. Root is responsible for
 reviewing the completeness of other local/remote origin and opaque wrapper

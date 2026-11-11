@@ -125,6 +125,10 @@ class CronEntry:
     uid: int
     sha256: str
     management_candidate: bool = False
+    link_target: str = ""
+    target_device: int = 0
+    target_inode: int = 0
+    target_ctime_ns: int = 0
 
     @classmethod
     def parse(cls, value: object) -> CronEntry:
@@ -132,19 +136,26 @@ class CronEntry:
             raise RouteManifestUnavailable("approved cron entry schema differs")
         if not isinstance(value["path"], str) or not Path(value["path"]).is_absolute() or len(value["path"]) > 4096:
             raise RouteManifestUnavailable("approved cron entry path differs")
-        if value["kind"] not in ("missing", "directory", "regular"):
+        if value["kind"] not in ("missing", "directory", "regular", "symlink"):
             raise RouteManifestUnavailable("approved cron entry kind differs")
-        if any(type(value[key]) is not int or value[key] < 0 for key in ("device", "inode", "ctime_ns", "mode", "uid")):
+        if any(type(value[key]) is not int or value[key] < 0 for key in ("device", "inode", "ctime_ns", "mode", "uid", "target_device", "target_inode", "target_ctime_ns")):
             raise RouteManifestUnavailable("approved cron entry identity differs")
         digest = value["sha256"]
-        if not isinstance(digest, str) or (value["kind"] == "regular" and not _HASH.fullmatch(digest)) or (value["kind"] != "regular" and digest):
+        if not isinstance(digest, str) or (value["kind"] in ("regular", "symlink") and not _HASH.fullmatch(digest)) or (value["kind"] not in ("regular", "symlink") and digest):
             raise RouteManifestUnavailable("approved cron entry digest differs")
         if value["kind"] == "missing" and any(value[key] for key in ("device", "inode", "ctime_ns", "mode", "uid")):
             raise RouteManifestUnavailable("approved absent cron entry has an identity")
         if value["kind"] != "missing" and (value["device"] == 0 or value["inode"] == 0):
             raise RouteManifestUnavailable("approved cron entry identity is missing")
-        if type(value["management_candidate"]) is not bool or (value["kind"] != "regular" and value["management_candidate"]):
+        if type(value["management_candidate"]) is not bool or (value["kind"] not in ("regular", "symlink") and value["management_candidate"]):
             raise RouteManifestUnavailable("approved cron route classification differs")
+        if not isinstance(value["link_target"], str) or len(value["link_target"]) > 4096:
+            raise RouteManifestUnavailable("approved cron symbolic link target differs")
+        if value["kind"] == "symlink":
+            if not value["link_target"] or any(value[key] <= 0 for key in ("target_device", "target_inode", "target_ctime_ns")):
+                raise RouteManifestUnavailable("approved cron target identity is incomplete")
+        elif value["link_target"] or any(value[key] for key in ("target_device", "target_inode", "target_ctime_ns")):
+            raise RouteManifestUnavailable("approved nonlink cron entry has a target identity")
         return cls(**value)
 
 
@@ -217,7 +228,7 @@ class ApprovedRouteManifest:
         if tuple(item.path for item in cron_entries) != tuple(sorted({item.path for item in cron_entries})):
             raise RouteManifestUnavailable("approved cron catalog is duplicate or unsorted")
         crons = value["cron_restarter_paths"]
-        if not isinstance(crons, list) or crons != sorted(set(crons)) or any(not isinstance(item, str) or item not in {entry.path for entry in cron_entries if entry.kind == "regular"} for item in crons):
+        if not isinstance(crons, list) or crons != sorted(set(crons)) or any(not isinstance(item, str) or item not in {entry.path for entry in cron_entries if entry.kind in ("regular", "symlink")} for item in crons):
             raise RouteManifestUnavailable("approved cron restarter set differs")
         local = value["local_script_routes"]
         if not isinstance(local, list) or len(local) > 128:
@@ -404,7 +415,7 @@ def _systemd_unit(unit: str, *, trusted_uid: int = 0) -> SystemdRouteFact:
     return SystemdRouteFact(unit, _digest((normalized, hashlib.sha256(unit_source.encode()).hexdigest(), identity, alias_state)), shown["UnitFileState"], shown["ActiveState"], int(shown["MainPID"]), inhibited, candidate)
 
 
-def _cron_catalog(*, roots: tuple[Path, ...]) -> tuple[CronEntry, ...]:
+def _cron_catalog(*, roots: tuple[Path, ...], trusted_uid: int = 0) -> tuple[CronEntry, ...]:
     """Scan a fixed whole-cron/at surface; missing roots remain in the digest."""
     pending = list(roots)
     observed: dict[str, CronEntry] = {}
@@ -434,6 +445,25 @@ def _cron_catalog(*, roots: tuple[Path, ...]) -> tuple[CronEntry, ...]:
             if len(data) > _MAX_CRON_BYTES or aggregate_bytes > 16 * _MAX_CRON_BYTES or _file_identity(before) != _file_identity(after) or _file_identity(after) != _file_identity(path.lstat()):
                 raise RouteManifestUnavailable("cron source changed or exceeded bounded read")
             observed[name] = CronEntry(name, "regular", info.st_dev, info.st_ino, info.st_ctime_ns, stat.S_IMODE(info.st_mode), info.st_uid, hashlib.sha256(data).hexdigest(), any(term.encode() in data for term in _MANAGEMENT_CUES))
+        elif stat.S_ISLNK(info.st_mode):
+            target_text = os.readlink(path)
+            if not target_text or len(target_text) > 4096 or info.st_uid != trusted_uid:
+                raise RouteManifestUnavailable("installed cron symbolic link is not protected")
+            resolved = path.resolve(strict=True)
+            if resolved == path or not resolved.is_absolute():
+                raise RouteManifestUnavailable("installed cron symbolic link target is ambiguous")
+            _trusted_ancestors(resolved.parent, uid=trusted_uid)
+            descriptor = os.open(resolved, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+            with os.fdopen(descriptor, "rb") as stream:
+                before = os.fstat(stream.fileno())
+                if not stat.S_ISREG(before.st_mode) or before.st_uid != trusted_uid or before.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                    raise RouteManifestUnavailable("installed cron symbolic link target is not root-protected")
+                data = stream.read(_MAX_CRON_BYTES + 1)
+                after = os.fstat(stream.fileno())
+            aggregate_bytes += len(data)
+            if len(data) > _MAX_CRON_BYTES or aggregate_bytes > 16 * _MAX_CRON_BYTES or _file_identity(before) != _file_identity(after) or _file_identity(after) != _file_identity(resolved.lstat()) or _file_identity(path.lstat()) != _file_identity(info) or os.readlink(path) != target_text:
+                raise RouteManifestUnavailable("installed cron symbolic link or its target changed during observation")
+            observed[name] = CronEntry(name, "symlink", info.st_dev, info.st_ino, info.st_ctime_ns, stat.S_IMODE(info.st_mode), info.st_uid, hashlib.sha256(data).hexdigest(), any(term.encode() in data for term in _MANAGEMENT_CUES), target_text, after.st_dev, after.st_ino, after.st_ctime_ns)
         else:
             raise RouteManifestUnavailable("symlink or unsupported installed cron route requires explicit refusal")
     return tuple(observed[path] for path in sorted(observed))
@@ -495,7 +525,7 @@ def _observe_approved_route_manifest(
             raise RouteManifestUnavailable("ordinary systemd restarter remains enabled: " + approved.unit)
     if manifest.cron_restarter_paths and not _CRON_SCHEDULERS.intersection(restarters):
         raise RouteManifestUnavailable("ordinary cron restarter lacks scheduler inhibition")
-    cron = _cron_catalog(roots=cron_roots)
+    cron = _cron_catalog(roots=cron_roots, trusted_uid=expected_uid)
     if cron != manifest.cron_entries:
         raise RouteManifestUnavailable("unknown, omitted or changed cron/at route")
     if any(entry.management_candidate and entry.path not in manifest.cron_restarter_paths for entry in cron):
@@ -511,7 +541,7 @@ def _observe_approved_route_manifest(
         if route.inhibited_by not in restarters:
             raise RouteManifestUnavailable("local script ordinary restarter is not inhibited: " + route.path)
         local.append((route.path, digest))
-    if _systemd_catalog() != first_catalog or tuple(_systemd_unit(unit, trusted_uid=expected_uid) for unit in first_catalog) != observed_systemd or _cron_catalog(roots=cron_roots) != cron:
+    if _systemd_catalog() != first_catalog or tuple(_systemd_unit(unit, trusted_uid=expected_uid) for unit in first_catalog) != observed_systemd or _cron_catalog(roots=cron_roots, trusted_uid=expected_uid) != cron:
         raise RouteManifestUnavailable("installed ordinary routes changed during observation")
     if any(_local_script(Path(route.path), expected_uid=expected_uid) != (route.sha256, route.device, route.inode) for route in manifest.local_script_routes):
         raise RouteManifestUnavailable("installed local script source changed during observation")

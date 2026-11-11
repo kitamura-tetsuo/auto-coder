@@ -172,6 +172,33 @@ def test_draft_never_self_attests_a_generated_route_inventory(monkeypatch: pytes
         assert fixture.path.read_bytes() == original
 
 
+def test_existing_cron_symlink_is_bound_to_protected_target_content_and_inode(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _closed_routes(monkeypatch) as fixture:
+        target = fixture.base / "google-chrome-cron"
+        target.write_text("#!/bin/sh\n# benign cron source\n")
+        target.chmod(0o755)
+        link = fixture.cron_roots[0] / "google-chrome"
+        link.symlink_to(target)
+        snapshot = routes._cron_catalog(roots=fixture.cron_roots, trusted_uid=os.geteuid())
+        matching = next(item for item in snapshot if item.path == str(link))
+        assert matching.kind == "symlink"
+        assert matching.link_target == str(target)
+        assert matching.target_inode == target.stat().st_ino
+        fixture.manifest = replace(fixture.manifest, cron_entries=snapshot)
+        fixture.save()
+        assert fixture.observe().cron_entries == snapshot
+        target.write_text("#!/bin/sh\n# different target contents\n")
+        with pytest.raises(routes.RouteManifestUnavailable, match="changed cron/at route"):
+            fixture.observe()
+
+
+def test_cron_symlink_to_nonregular_target_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _closed_routes(monkeypatch) as fixture:
+        (fixture.cron_roots[0] / "disabled").symlink_to("/dev/null")
+        with pytest.raises(routes.RouteManifestUnavailable, match="not root-protected"):
+            routes._cron_catalog(roots=fixture.cron_roots, trusted_uid=os.geteuid())
+
+
 @pytest.mark.parametrize("mutation", ["new-unit", "changed-unit", "concealed-unit", "enabled-watcher", "new-cron", "changed-cron", "new-docker", "changed-script", "changed-manifest", "lost-approval"])
 def test_hostile_route_change_refuses_even_after_positive_component(monkeypatch: pytest.MonkeyPatch, mutation: str) -> None:
     with _closed_routes(monkeypatch) as fixture:
