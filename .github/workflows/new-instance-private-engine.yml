@@ -40,7 +40,8 @@ jobs:
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          private_root="$(mktemp -d "$RUNNER_TEMP/new-management-dind-XXXXXX")"
+          # Unix guard sockets inside pytest must stay below sun_path's limit.
+          private_root="$(mktemp -d /tmp/acn-XXXXXX)"
           chmod 0700 "$private_root"
           container_id="$(docker --host=unix:///var/run/docker.sock run --detach --pull=always \
             --privileged --pid=host --network none --restart no --init \
@@ -78,7 +79,7 @@ jobs:
         timeout-minutes: 15
         run: |
           set -euo pipefail
-          uv run pytest -q -vv \
+          uv run pytest -q -vv --basetemp="$TMPDIR/pytest" \
             'tests/test_management_new_instance_first_launch_docker.py::test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback[False]'
       - name: Stop only this disposable CI daemon
         if: always() && steps.private-engine.outputs.container_id != ''
