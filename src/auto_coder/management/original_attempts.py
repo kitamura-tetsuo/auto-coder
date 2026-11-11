@@ -183,6 +183,7 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
     previous = ""
     events = []
     branches: dict[str, list[str]] = {}
+    anchors: dict[str, dict[str, object]] = {}
     for index in range(frontier["count"]):
         encoded, _ = read_original(root / f"{index:08d}.json")
         event = json.loads(encoded)
@@ -198,6 +199,13 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
                 raise OriginalEvidenceUnavailable("incomplete original anchor") from error
             if original_intent.request_id != event["attempt"]:
                 raise OriginalEvidenceUnavailable("original anchor attempt mismatch")
+            anchors[event["attempt"]] = anchor
+        elif event["kind"] == "never-created":
+            anchor = anchors.get(event["attempt"])
+            if anchor is None or anchor["pristine"] is not True or event["value"] != {"lifetime": anchor["lifetime"], "stores": anchor["stores"]}:
+                raise OriginalEvidenceUnavailable("original terminal boundary differs from anchor")
+        elif event["kind"] == "unresolved" and event["value"] != {}:
+            raise OriginalEvidenceUnavailable("original terminal boundary is malformed")
         if not isinstance(event["kind"], str) or not isinstance(event["attempt"], str):
             raise OriginalEvidenceUnavailable("unsupported original event boundary")
         branches.setdefault(event["attempt"], []).append(event["kind"])

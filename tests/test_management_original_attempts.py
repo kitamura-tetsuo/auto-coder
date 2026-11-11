@@ -1200,3 +1200,63 @@ def test_original_host_grant_refuses_unrelated_corrupt_branch(tmp_path):
 
     assert _fingerprint(tmp_path) == before
     assert not (tmp_path / "fresh-guard.sock").exists()
+
+
+@pytest.mark.parametrize("corruption", ["wrong-stores", "wrong-lifetime", "unresolved-payload"])
+def test_original_admission_refuses_rehashed_false_terminal_boundary(tmp_path, corruption):
+    """A syntactically valid historical branch with false terminal facts is unavailable."""
+    binding = _history(tmp_path)
+    _terminal(tmp_path, binding, "prior-failure")
+    root = Path(binding.root)
+    event_path = root / "00000001.json"
+    event = json.loads(event_path.read_bytes())
+    assert event["kind"] == "never-created"
+    if corruption == "wrong-stores":
+        event["value"]["stores"]["child"] = "/different/child.sqlite3"
+    elif corruption == "wrong-lifetime":
+        event["value"]["lifetime"]["nonce"] = "different"
+    else:
+        event["kind"] = "unresolved"
+    encoded = canonical(event)
+    event_path.write_bytes(encoded)
+    frontier_path = root / "frontier.json"
+    frontier = json.loads(frontier_path.read_bytes())
+    frontier["digest"] = hashlib.sha256(encoded).hexdigest()
+    frontier_path.write_bytes(canonical(frontier))
+
+    successor = _covered(tmp_path, binding, "new-after-false-terminal")
+    before = _fingerprint(tmp_path)
+    with pytest.raises(OriginalEvidenceUnavailable, match="original terminal boundary"):
+        claim_fresh_initialization(Path(successor.host_state_root), successor)
+    assert _fingerprint(tmp_path) == before
+    assert not list(Path(successor.host_state_root).iterdir())
+
+
+def test_original_host_grant_refuses_rehashed_false_prior_terminal(tmp_path):
+    """A claimed attempt cannot cross grant when an unrelated prior terminal is false."""
+    binding = _history(tmp_path)
+    _terminal(tmp_path, binding, "prior-failure")
+    intent = _covered(tmp_path, binding, "current-claim")
+    claim_fresh_initialization(Path(intent.host_state_root), intent)
+    root = Path(binding.root)
+    frontier_path = root / "frontier.json"
+    frontier = json.loads(frontier_path.read_bytes())
+    previous = ""
+    for index in range(frontier["count"]):
+        path = root / f"{index:08d}.json"
+        event = json.loads(path.read_bytes())
+        event["previous"] = previous
+        if index == 1:
+            assert event["kind"] == "never-created"
+            event["value"]["stores"]["operations"] = "/different/operations.sqlite3"
+        encoded = canonical(event)
+        path.write_bytes(encoded)
+        previous = hashlib.sha256(encoded).hexdigest()
+    frontier["digest"] = previous
+    frontier_path.write_bytes(canonical(frontier))
+    before = _fingerprint(tmp_path)
+
+    with pytest.raises(OriginalEvidenceUnavailable, match="original terminal boundary"):
+        serve_one_fresh_grant(tmp_path / "fresh-guard.sock", intent, None, None, -1, -1)
+    assert _fingerprint(tmp_path) == before
+    assert not (tmp_path / "fresh-guard.sock").exists()

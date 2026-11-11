@@ -79,9 +79,13 @@ files, gaps and incomplete writes instead of truncating or repairing them.
 Concurrent admission reports `history admission contested` before writing an
 intent. Previously anchored request IDs, target aliases and cycles refuse replay.
 Before admitting another attempt or entering a host grant, the producer also
-rejects unknown event kinds and impossible per-attempt boundary sequences
-anywhere in the original frontier, even if the supplied event chain was
-rehashed consistently. This leaves the original corrupt bytes untouched.
+rejects unknown event kinds, impossible per-attempt boundary sequences, and
+terminal facts that contradict the matching original anchor. A never-created
+boundary must retain the anchor's exact original producer lifetime and
+expected stores, and it may only terminate an originally pristine target.
+An unresolved boundary must have the original empty payload. Rehashing the
+event chain cannot make such inconsistent history eligible for another
+admission or grant; the original corrupt bytes remain untouched.
 An original target whose own admission ended `never-created`, `unresolved`, or
 only anchored without a durable claim is not a valid predecessor for a new
 covered attempt. Both the original producer and independent evidence consumer
