@@ -20,7 +20,7 @@ def main() -> None:
         # This records launch facts only, never readiness or drain evidence.
         audit = Path(os.environ["AUTO_CODER_RUNTIME_ROOT"]) / "fixture-launches.jsonl"
         with audit.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps({"pid": os.getpid(), "interpreter": sys.executable, "environment": os.environ.get("VIRTUAL_ENV")}) + "\n")
+            stream.write(json.dumps({"pid": os.getpid(), "start_token": Path("/proc/self/stat").read_text().rsplit(") ", 1)[1].split()[19], "deployment_generation": os.environ["AUTO_CODER_DEPLOYMENT_GENERATION"], "interpreter": sys.executable, "environment": os.environ.get("VIRTUAL_ENV")}) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
     if os.environ.get("AUTO_CODER_FIXTURE_HOLD_BOOTSTRAP") == "1" and "/worker-versions/" not in os.environ.get("VIRTUAL_ENV", ""):

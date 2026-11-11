@@ -190,10 +190,21 @@ promotion publisher against real Git; it is not a live GitHub Actions acceptance
 claim. Neither worker has a Docker binary or socket. The test belongs to the
 required `isolated-containers` Supervisor profile rather than ordinary unit CI.
 
-This bounded successful join, replay, changed-source conflict and competing-key
-busy coverage does not complete REQ-010. Integrated installed-release held
-invocation/terminal-exit barriers, failed candidate and one-time prior recovery,
-lost responses across independent manager/Supervisor reconstruction, unconfirmed
-pre-effect durability and post-stage supersession remain separate required
-acceptance scenarios. Preserve the unresolved acceptance gate until those exact
+The failed-candidate case uses the same genuine acceptance and installed-runtime
+join. Only after the prior installed worker is serving, an external one-time
+fixture fault makes the actual candidate interpreter exit before daemon readiness.
+Independent signed observations and OS lifetime records identify that failed
+candidate; the original Supervisor starts the exact prior prepared environment
+once. The case checks its installed provenance and advancing producer heartbeat,
+three actual launches (prior, failed candidate, restored prior), the original
+operation/authority on repeated replay and terminal `FAILED` with recovery
+`CONFIRMED`. The beta peer, source refs, containers and ownership remain unchanged.
+This proves recovery of executable code, not rollback of persistent data or schema.
+
+These bounded successful/failed joins, replay, changed-source conflict and
+competing-key busy coverage do not complete REQ-010. Integrated installed-release
+held invocation/terminal-exit barriers, unresolved-effect ownership during
+recovery, lost responses across independent manager/Supervisor reconstruction,
+unconfirmed pre-effect durability and post-stage supersession remain separate
+required acceptance scenarios. Preserve the unresolved acceptance gate until those exact
 scenarios and clean-revision CI are demonstrated.

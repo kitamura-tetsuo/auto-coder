@@ -25,6 +25,7 @@ from starlette.testclient import TestClient
 
 from auto_coder.management.app import create_management_app
 from auto_coder.management.beta_runtime_smoke import SmokeProfile
+from auto_coder.management.operations import OperationPhase
 from auto_coder.management.source_acceptance import SourceAcceptancePublisher
 from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkClient
 from auto_coder.source_release_catalog import canonical, digest
@@ -103,7 +104,7 @@ def _ready(client: WorkerNetworkClient, source_sha: str) -> dict[str, object] | 
 
 
 @contextmanager
-def _installed_release(system: _SmokeSystem, root: Path, scenario: str) -> Iterator[_InstalledRelease]:
+def _installed_release(system: _SmokeSystem, root: Path, scenario: str, *, fail_candidate: bool = False) -> Iterator[_InstalledRelease]:
     """Independently install both release versions, then start the prior one."""
     image = _image()
     source = Path(os.environ.get("GITHUB_WORKSPACE", str(Path(__file__).parents[1]))).resolve()
@@ -182,6 +183,8 @@ def _installed_release(system: _SmokeSystem, root: Path, scenario: str) -> Itera
             "no_proxy": "api.github.com,localhost,127.0.0.1",
             "HOME": "/runtime/home",
         }
+        if fail_candidate:
+            environment["AUTO_CODER_FIXTURE_FAIL_STAGED_ONCE"] = "1"
         launch = ["run", "-d", "--rm", "--name", name, "--network", system.network, "--ip", address, "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--user", host_user, "--entrypoint", "python"]
         for host, guest, mode in ((runtime, "/runtime", ""), (workspace, "/workspace", ""), (routing, "/routing", ""), (fixtures, "/fixtures", "ro"), (trust, "/ci-trust", "ro"), (source, "/source", "ro")):
             launch.extend(["-v", f"{host}:{guest}" + (f":{mode}" if mode else "")])
@@ -245,9 +248,23 @@ def _container_identity(name: str) -> dict[str, object]:
     return {"id": facts["Id"], "pid": facts["State"]["Pid"], "started": facts["State"]["StartedAt"], "mounts": facts["Mounts"]}
 
 
+def _assert_lifetime_gone(container: str, lifetime: dict[str, object]) -> None:
+    observed = _docker("exec", container, "python", "-c", "from pathlib import Path; import sys; p=Path('/proc/'+sys.argv[1]+'/stat'); print(p.read_text() if p.exists() else 'ABSENT')", str(lifetime["pid"])).stdout.strip()
+    assert observed == "ABSENT" or observed.rsplit(") ", 1)[1].split()[19] != lifetime["start_token"]
+
+
 @pytest.mark.timeout(2400)
 def test_authenticated_release_joins_published_acceptance_and_independent_installed_workers(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None) -> None:
-    scenario = "release-installed-join-" + uuid.uuid4().hex[:12]
+    _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=False)
+
+
+@pytest.mark.timeout(2400)
+def test_failed_installed_release_recovers_original_prior_runtime_once(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None) -> None:
+    _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=True)
+
+
+def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch, *, fail_candidate: bool) -> None:
+    scenario = ("release-failed-candidate-" if fail_candidate else "release-installed-join-") + uuid.uuid4().hex[:12]
     with tempfile.TemporaryDirectory(prefix="release-join-", dir=tmp_path) as directory:
         root = Path(directory)
         beta_root = root / "beta"
@@ -258,7 +275,7 @@ def test_authenticated_release_joins_published_acceptance_and_independent_instal
             service = system.app.state.management_runtime
             system.http.portal.call(service.stop_monitor)
             system.http.portal.call(service.dispatcher.stop)
-            with _installed_release(system, root / "release", scenario) as release, _source_http(system.remote) as endpoint:
+            with _installed_release(system, root / "release", scenario, fail_candidate=fail_candidate) as release, _source_http(system.remote) as endpoint:
 
                 @contextmanager
                 def source_http_client(**_kwargs):
@@ -324,54 +341,110 @@ def test_authenticated_release_joins_published_acceptance_and_independent_instal
                         "expected_process_run_id": old["process_run_id"],
                         "expected_deployment_generation": old["deployment_generation"],
                     }
+                    crash_marker = release.runtime / "fixture-crash-next-staged"
+                    if fail_candidate:
+                        # The original prior process is already serving. The next
+                        # actual selected interpreter consumes this external fault
+                        # and exits before it can run the production daemon.
+                        crash_marker.write_text("crash-once", encoding="utf-8")
                     deployed = _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)
                     assert deployed["status"] in {"ACCEPTED", "PREPARING"}, deployed
                     operation_id = str(deployed["operation_id"])
+                    journal = app.state.management_runtime.journal
+                    original = journal.get(operation_id).record
+                    assert original is not None
                     assert _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
                     assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "selected_git_sha": system.revisions[1]})["status"] == "CONFLICT"
                     competing = _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing"})
                     assert competing["status"] == "BUSY" and competing["operation_id"] == operation_id
 
                     independent_samples = []
+                    failed_observations = []
+                    expected = release.previous if fail_candidate else release.candidate
+                    expected_source = str(expected["source_sha"])
+                    terminal_status = "FAILED" if fail_candidate else "SUCCEEDED"
+                    terminal_phase = OperationPhase.FAILED if fail_candidate else OperationPhase.SUCCEEDED
                     observer = WorkerNetworkClient(release.client.config)
 
                     def completed():
-                        live = _ready(observer, system.revisions[0])
-                        if live is not None:
+                        inspected = observer.inspect_supervisor()
+                        if fail_candidate and inspected.result_code == "OK" and isinstance(inspected.data, dict):
+                            worker = inspected.data.get("worker")
+                            if inspected.data.get("alive") is False and isinstance(worker, dict) and worker.get("runtime_id") == release.candidate["installed_runtime_id"]:
+                                failed_observations.append(inspected)
+                        live = _ready(observer, expected_source)
+                        if live is not None and live["observation"]["process_run_id"] != old["process_run_id"]:
                             heartbeat = live["observation"]["heartbeat"]
                             if heartbeat["stage"].startswith("producer:") and (not independent_samples or heartbeat["sequence"] > independent_samples[-1]["observation"]["heartbeat"]["sequence"]):
                                 independent_samples.append(live)
                         result = _call(http, system.bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
-                        assert result["status"] not in {"FAILED", "SUPERSEDED", "NEEDS_ATTENTION"}, result
-                        return result if result["status"] == "SUCCEEDED" else None
+                        assert result["status"] not in {"SUPERSEDED", "NEEDS_ATTENTION", "SUCCEEDED" if fail_candidate else "FAILED"}, result
+                        stored = journal.get(operation_id).record
+                        return result if result["status"] == terminal_status and stored is not None and stored.phase is terminal_phase else None
 
                     done = _wait_for(completed, timeout=210)
-                    observed = _ready(release.client, system.revisions[0])
+                    observed = _ready(release.client, expected_source)
                     assert observed is not None
                     binding = observed["runtime_binding"]
                     for field in ("source_sha", "content_identity", "lock_sha256", "distribution_version"):
-                        assert binding[field] == release.candidate[field]
-                    assert binding["runtime_id"] == release.candidate["installed_runtime_id"]
+                        assert binding[field] == expected[field]
+                    assert binding["runtime_id"] == expected["installed_runtime_id"]
                     assert done["release_identity"]["catalog_oid"] == catalog_oid
                     assert len(done["heartbeats"]) == 2
                     assert done["heartbeats"][0] < done["heartbeats"][1]
                     assert len(independent_samples) >= 2, "manager success needs independently observed producer progress"
                     assert done["heartbeats"][-1] in {sample["observation"]["heartbeat"]["sequence"] for sample in independent_samples}
                     assert len({(sample["observation"]["process_run_id"], sample["observation"]["deployment_generation"]) for sample in independent_samples}) == 1
-                    assert all(sample["observation"]["artifact"]["source_revision"] == {"available": True, "value": system.revisions[0], "origin": "build_embedded", "reason": None} for sample in independent_samples)
+                    assert all(sample["observation"]["artifact"]["source_revision"] == {"available": True, "value": expected_source, "origin": "build_embedded", "reason": None} for sample in independent_samples)
                     current = release.client.inspect_supervisor()
                     assert current.data["worker"]["process_run_id"] != old["process_run_id"]
                     assert current.data["worker"]["deployment_generation"] != old["deployment_generation"]
                     terminal = json.loads((release.runtime / "last-terminal.json").read_text())
                     assert all(terminal[key] == value for key, value in {"process_run_id": old["process_run_id"], "deployment_generation": old["deployment_generation"], "lifecycle_state": "stopped", "is_graceful_ready": True, "unsettled_count": 0}.items())
-                    lifetime = _docker("exec", release.container, "python", "-c", "from pathlib import Path; import sys; p=Path('/proc/'+sys.argv[1]+'/stat'); print(p.read_text() if p.exists() else 'ABSENT')", str(old_os["pid"])).stdout.strip()
-                    assert lifetime == "ABSENT" or lifetime.rsplit(") ", 1)[1].split()[19] != old_os["start_token"]
+                    _assert_lifetime_gone(release.container, old_os)
                     launches = [json.loads(line) for line in (release.runtime / "fixture-launches.jsonl").read_text().splitlines()]
-                    assert len(launches) == 2
-                    assert [item["environment"] for item in launches] == [release.previous["environment_path"], release.candidate["environment_path"]]
-                    assert len({item["pid"] for item in launches}) == 2
-                    assert _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
-                    assert len((release.runtime / "fixture-launches.jsonl").read_text().splitlines()) == 2
+                    expected_environments = [release.previous["environment_path"], release.candidate["environment_path"]]
+                    if fail_candidate:
+                        expected_environments.append(release.previous["environment_path"])
+                    assert len(launches) == len(expected_environments)
+                    assert [item["environment"] for item in launches] == expected_environments
+                    assert len({(item["pid"], item["start_token"]) for item in launches}) == len(expected_environments)
+                    assert len({item["deployment_generation"] for item in launches}) == len(expected_environments)
+                    assert launches[-1]["deployment_generation"] == current.data["worker"]["deployment_generation"]
+                    if fail_candidate:
+                        assert done["reason"] == "new_worker_failed_previous_runtime_restored"
+                        assert done["recovery_attempts"] == 1 and done["recovery_state"] == "CONFIRMED"
+                        assert done["steps"]["start"]["state"] == done["steps"]["recovery"]["state"] == "CONFIRMED"
+                        assert done["source_sha"] == release.candidate["source_sha"] != binding["source_sha"]
+                        assert done["restored_worker"]["deployment_generation"] == launches[2]["deployment_generation"]
+                        assert done["new_worker"]["deployment_generation"] == launches[1]["deployment_generation"]
+                        assert failed_observations, "recovery requires independent signed observation of the failed child"
+                        assert all(item.supervisor_generation == previous.supervisor_generation and item.data["worker"]["deployment_generation"] == launches[1]["deployment_generation"] for item in failed_observations)
+                        assert not crash_marker.exists()
+                        state = json.loads((release.runtime / "supervisor" / "state.json").read_text())
+                        failed = state["failed_worker"]
+                        assert all(failed[key] == launches[1][key] for key in ("pid", "start_token", "deployment_generation"))
+                        assert failed["runtime_id"] == release.candidate["installed_runtime_id"]
+                        assert failed["ready"] == release.candidate
+                        assert failed["process_run_id"] is None and failed.get("binding_status") != "VERIFIED"
+                        _assert_lifetime_gone(release.container, failed)
+                        assert state["prior_recovery_attempted"] is True
+                        assert state["prior_recovery_generation"] == failed["deployment_generation"]
+                        recovery_id = done["steps"]["recovery"]["operation_id"]
+                        assert [key for key, value in state["operations"].items() if value["request"]["operation"] == "RECOVER_PREVIOUS"] == [recovery_id]
+                        receipt = observer.read_worker_operation(recovery_id)
+                        assert receipt.result_code == "RUNNING" and receipt.data["intent_digest"] == done["steps"]["recovery"]["expected_digest"]
+                        assert receipt.data["worker"]["deployment_generation"] == launches[2]["deployment_generation"]
+                    terminal_posts = (release.runtime / "fixture-posts").read_bytes()
+                    for _ in range(3):
+                        replay = _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)
+                        assert replay["operation_id"] == operation_id and replay["status"] == terminal_status
+                        time.sleep(2.1)
+                    assert (release.runtime / "fixture-posts").read_bytes() == terminal_posts
+                    settled = journal.get(operation_id).record
+                    assert settled is not None and settled.phase is terminal_phase
+                    assert settled.intent == original.intent and settled.authority == original.authority
+                    assert len((release.runtime / "fixture-launches.jsonl").read_text().splitlines()) == len(expected_environments)
                     beta_after = system.client.inspect_supervisor()
                     assert beta_after.supervisor_generation == beta_before.supervisor_generation
                     assert all(beta_after.data["worker"][key] == beta_before.data["worker"][key] for key in ("process_run_id", "deployment_generation", "runtime_id", "binding_status"))
