@@ -16,7 +16,7 @@ from starlette.testclient import TestClient
 
 from auto_coder.management.app import create_management_app
 from auto_coder.management.operation_store import ManagementOperationStore
-from auto_coder.management.operations import ActionParameter, AdmissionStatus, ManagedTarget, MutationStatus, OperationIntent, OperationPhase
+from auto_coder.management.operations import ActionParameter, AdmissionStatus, EffectState, ManagedTarget, MutationStatus, OperationIntent, OperationPhase
 from auto_coder.management.release_worker_deployment import ReleaseWorkerEvidenceIdentity, ReleaseWorkerEvidenceReader
 from auto_coder.management.source_release_dispatch import ACTION, INPUT_FIELDS, SourceReleaseDispatch
 from auto_coder.management.worker_network_client import WorkerEndpointConfig, WorkerNetworkResult
@@ -811,6 +811,7 @@ def _assert_recovery_terminal_proof(d):
     assert record.effect.receipt.observation_source == "supervisor-and-worker-lifecycle-journal"
     assert record.intent == d.original.intent and record.authority == d.original.authority
     assert snapshot["stage"] == "FAILED" and snapshot["recovery_state"] == "CONFIRMED"
+    assert d.app.state.management_runtime.lifecycle.project(record)["reason"] == "new_worker_failed_previous_runtime_restored"
     assert snapshot["recovery_attempts"] == 1
     assert snapshot["deadline"] == d.snapshot["deadline"] and snapshot["original_deadline"] == d.snapshot["original_deadline"]
     assert snapshot["new_worker"] == d.snapshot["new_worker"]
@@ -915,6 +916,7 @@ def test_release_expired_recovery_does_not_release_lane_before_durable_terminal_
     record = d.journal.get(d.operation_id).record
     assert record.phase is OperationPhase.NEEDS_ATTENTION and record.effect.state.value == "sent_unknown"
     assert record.effect.receipt is None
+    assert lifecycle.project(record)["reason"] == "lifecycle_deadline_exceeded"
     assert d.journal.lifecycle_snapshot(d.operation_id)[1]["stage"] == ("NEEDS_ATTENTION" if failure == "snapshot" else "FAILED")
     assert _call(d.client, d.token, "auto_coder_deploy_release_source", {**d.arguments, "idempotency_key": "competing-undurable-terminal"})["status"] == "BUSY"
     assert d.bridge.actions == d.actions
@@ -922,6 +924,32 @@ def test_release_expired_recovery_does_not_release_lane_before_durable_terminal_
     monkeypatch.setattr(d.journal, "resolve_needs_attention", resolve_original)
     _drive(d.app, d.operation_id, 8)
     _assert_recovery_terminal_proof(d)
+
+
+@pytest.mark.parametrize("mismatch", ("row-phase", "effect-state", "correlation", "source", "outcome", "snapshot-phase", "snapshot-reason"))
+def test_release_terminal_reason_requires_matching_durable_receipt(expired_release_recovery, mismatch):
+    d = expired_release_recovery
+    d.recovery_gate["readable"] = True
+    _drive(d.app, d.operation_id, 8)
+    snapshot = _assert_recovery_terminal_proof(d)
+    record = d.journal.get(d.operation_id).record
+    receipt = record.effect.receipt
+    assert receipt is not None and record.safe_error_category == "lifecycle_deadline_exceeded"
+    if mismatch == "row-phase":
+        record = replace(record, phase=OperationPhase.NEEDS_ATTENTION)
+    elif mismatch == "effect-state":
+        record = replace(record, effect=replace(record.effect, state=EffectState.SENT_UNKNOWN))
+    elif mismatch == "correlation":
+        record = replace(record, effect=replace(record.effect, receipt=replace(receipt, correlation_identity="other-effect")))
+    elif mismatch == "source":
+        record = replace(record, effect=replace(record.effect, receipt=replace(receipt, observation_source="unrelated-producer")))
+    elif mismatch == "outcome":
+        record = replace(record, effect=replace(record.effect, receipt=replace(receipt, safe_result="unrelated-outcome")))
+    elif mismatch == "snapshot-phase":
+        snapshot = {**snapshot, "stage": "SUCCEEDED"}
+    else:
+        snapshot = {**snapshot, "reason": "unrelated-snapshot"}
+    assert d.app.state.management_runtime.lifecycle.project_snapshot(record, snapshot)["reason"] == "lifecycle_deadline_exceeded"
 
 
 def test_release_expired_recovery_new_login_cannot_replace_revoked_original_authority(expired_release_recovery):

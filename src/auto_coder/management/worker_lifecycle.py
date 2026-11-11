@@ -296,9 +296,26 @@ class WorkerLifecycle:
     def project_snapshot(self, record: OperationRecord, snapshot: dict[str, object]) -> dict[str, object]:
         if not isinstance(snapshot.get("stage"), str):
             return self._answer("NEEDS_ATTENTION", "lifecycle_journal_unavailable", operation_id=record.operation_id)
+        reason = record.safe_error_category or "worker_lifecycle"
+        receipt = record.effect.receipt
+        terminal_phase = OperationPhase.SUCCEEDED if snapshot["stage"] == "SUCCEEDED" else OperationPhase.FAILED
+        if (
+            snapshot["stage"] in TERMINAL_STAGES
+            and record.phase is terminal_phase
+            and record.effect.state is EffectState.CONFIRMED
+            and receipt is not None
+            and bool(record.effect.correlation_identity)
+            and receipt.correlation_identity == record.effect.correlation_identity
+            and receipt.observation_source == "supervisor-and-worker-lifecycle-journal"
+            and receipt.safe_result == snapshot.get("reason")
+        ):
+            # Attention resolution retains the historical journal category.
+            # Project the new outcome only after its correlated terminal proof
+            # and lifecycle snapshot are both durable; never from snapshot alone.
+            reason = receipt.safe_result
         return self._answer(
             str(snapshot["stage"]),
-            record.safe_error_category or "worker_lifecycle",
+            reason,
             operation_id=record.operation_id,
             phase=record.phase.value,
             action=record.intent.action,

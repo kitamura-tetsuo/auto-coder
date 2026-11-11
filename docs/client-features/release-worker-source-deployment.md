@@ -189,8 +189,11 @@ diagnostic-only activity and original authority loss retain the lane; a new logi
 does not substitute for a revoked original grant. Only after the full proof is
 durable does the existing evidence-bearing journal resolution finish the same
 operation as `FAILED` with recovery `CONFIRMED`. Failed snapshot or terminal-row
-persistence does not release the lane. Other uncertain lifecycle effects are not
-made resumable by this narrow recovery path.
+persistence does not release the lane. The historical attention category remains
+in the journal. Readback uses the final recovery reason only after a matching
+terminal row, lifecycle snapshot and same-correlation lifecycle receipt are all
+durable; a snapshot or unrelated receipt cannot replace that historical reason.
+Other uncertain lifecycle effects are not made resumable by this narrow path.
 
 Transient live-binding unavailability waits within the original lifecycle deadline,
 without dispatch or lane release; fresh matching evidence can then continue the
