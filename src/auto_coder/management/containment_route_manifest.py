@@ -88,6 +88,7 @@ _REQUIRED_UNIT_PROPERTIES = (
     "NeedDaemonReload",
     "FragmentPath",
 )
+_REPEATABLE_UNIT_PROPERTIES = frozenset(("ExecStart", "ExecStartPre", "ExecStartPost", "ExecStopPost"))
 
 
 class RouteManifestUnavailable(ValueError):
@@ -323,35 +324,54 @@ def _systemd_catalog() -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
+def _unit_enablement(unit: str) -> str:
+    result = subprocess.run(("systemctl", "is-enabled", unit), capture_output=True, text=True, timeout=15)
+    state = result.stdout.strip()
+    if result.returncode not in (0, 1, 3) or len(result.stderr) > 4096 or not re.fullmatch(r"[a-z-]{1,64}", state):
+        raise RouteManifestUnavailable("installed systemd enablement cannot be independently verified")
+    return state
+
+
 def _systemd_unit(unit: str, *, trusted_uid: int = 0) -> SystemdRouteFact:
     if not _UNIT_NAME.fullmatch(unit):
         raise RouteManifestUnavailable("installed systemd route name differs")
     is_template = "@." in unit
+    alias_state = ""
     if is_template:
         # Templates are installed files but not directly addressable with
         # `systemctl show`. Every instantiated unit is also separately found
         # by the unfiltered loaded-unit catalog. An installed template alone
         # cannot establish a positive restarter inhibition claim.
-        state_result = subprocess.run(("systemctl", "is-enabled", unit), capture_output=True, text=True, timeout=15)
-        state = state_result.stdout.strip()
-        if state_result.returncode not in (0, 1, 3) or not re.fullmatch(r"[a-z-]{1,64}", state):
-            raise RouteManifestUnavailable("installed systemd template enablement cannot be verified")
+        state = _unit_enablement(unit)
         shown = {"Id": unit, "UnitFileState": state, "LoadState": "template", "ActiveState": "inactive", "SubState": "dead", "MainPID": "0", "NeedDaemonReload": "unknown", "FragmentPath": ""}
         properties = ""
+        repeatable: dict[str, list[str]] = {}
     else:
         properties = _command("systemctl", "show", unit, "--property=" + ",".join(_UNIT_PROPERTIES))
         shown = {}
+        repeatable = {}
         for line in properties.splitlines():
             key, sep, value = line.partition("=")
-            if not sep or key not in _UNIT_PROPERTIES or key in shown or len(value) > 32768:
+            if not sep or key not in _UNIT_PROPERTIES or len(value) > 32768:
                 raise RouteManifestUnavailable("effective systemd unit properties are ambiguous")
+            if key in _REPEATABLE_UNIT_PROPERTIES:
+                repeatable.setdefault(key, []).append(value)
+                if len(repeatable[key]) > 128:
+                    raise RouteManifestUnavailable("effective systemd command list exceeds bound")
+                continue
+            if key in shown:
+                raise RouteManifestUnavailable("duplicate singleton systemd unit property")
             shown[key] = value
         required = set(_REQUIRED_UNIT_PROPERTIES)
         if unit.endswith((".timer", ".socket")):
             required.remove("MainPID")
             shown.setdefault("MainPID", "0")
-        if not required <= set(shown) or shown["Id"] != unit or shown["NeedDaemonReload"] not in ("yes", "no") or not shown["MainPID"].isdecimal():
+        if not required <= set(shown) or not _UNIT_NAME.fullmatch(shown["Id"]) or shown["NeedDaemonReload"] not in ("yes", "no") or not shown["MainPID"].isdecimal():
             raise RouteManifestUnavailable("effective systemd unit properties are incomplete")
+        if shown["Id"] != unit:
+            alias_state = _unit_enablement(unit)
+            if alias_state != "alias":
+                raise RouteManifestUnavailable("systemd unit identity redirected without approved alias state")
         if any(not re.fullmatch(r"[a-z-]+", shown[key]) for key in ("LoadState", "ActiveState", "SubState")):
             raise RouteManifestUnavailable("effective systemd state is unsupported")
         if shown["UnitFileState"] and not re.fullmatch(r"[a-z-]+", shown["UnitFileState"]):
@@ -379,9 +399,9 @@ def _systemd_unit(unit: str, *, trusted_uid: int = 0) -> SystemdRouteFact:
             raise RouteManifestUnavailable("masked systemd unit is not backed by a protected /dev/null link")
         identity = (info.st_dev, info.st_ino, info.st_ctime_ns, info.st_uid, str(path))
     inhibited = not is_template and shown["LoadState"] == "masked" and shown["UnitFileState"] == "masked" and shown["ActiveState"] == "inactive" and shown["SubState"] == "dead" and shown["MainPID"] == "0" and shown["NeedDaemonReload"] == "no" and identity is not None
-    normalized = {name: shown.get(name, "") for name in _UNIT_PROPERTIES}
+    normalized = {name: repeatable.get(name, []) if name in _REPEATABLE_UNIT_PROPERTIES else shown.get(name, "") for name in _UNIT_PROPERTIES}
     candidate = any(term in (unit + "\n" + properties + "\n" + unit_source) for term in _MANAGEMENT_CUES)
-    return SystemdRouteFact(unit, _digest((normalized, hashlib.sha256(unit_source.encode()).hexdigest(), identity)), shown["UnitFileState"], shown["ActiveState"], int(shown["MainPID"]), inhibited, candidate)
+    return SystemdRouteFact(unit, _digest((normalized, hashlib.sha256(unit_source.encode()).hexdigest(), identity, alias_state)), shown["UnitFileState"], shown["ActiveState"], int(shown["MainPID"]), inhibited, candidate)
 
 
 def _cron_catalog(*, roots: tuple[Path, ...]) -> tuple[CronEntry, ...]:

@@ -45,6 +45,26 @@ def test_systemd_template_file_is_read_without_pretending_to_observe_an_instance
     assert fact.inhibited is False
 
 
+def test_systemd_alias_is_bound_to_resolved_unit_and_enablement(monkeypatch: pytest.MonkeyPatch) -> None:
+    shown = "Id=chrony.service\nLoadState=loaded\nUnitFileState=enabled\nActiveState=active\nSubState=running\nFragmentPath=/usr/lib/systemd/system/chrony.service\nNeedDaemonReload=no\nMainPID=1234\n"
+    monkeypatch.setattr(routes, "_command", lambda *args, **kwargs: shown if args[1] == "show" else "[Service]\nExecStart=/usr/sbin/chronyd\n")
+    monkeypatch.setattr(routes, "_unit_enablement", lambda unit: "alias")
+    fact = routes._systemd_unit("chronyd.service")
+    assert fact.main_pid == 1234
+    assert fact.inhibited is False
+    monkeypatch.setattr(routes, "_unit_enablement", lambda unit: "enabled")
+    with pytest.raises(routes.RouteManifestUnavailable, match="redirected"):
+        routes._systemd_unit("chronyd.service")
+
+
+def test_systemd_multi_exec_start_post_preserves_all_command_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    shown = "Id=dmesg.service\nLoadState=loaded\nUnitFileState=enabled\nActiveState=inactive\nSubState=dead\nFragmentPath=/usr/lib/systemd/system/dmesg.service\nNeedDaemonReload=no\nMainPID=0\nExecStartPost=/usr/bin/chgrp\nExecStartPost=/usr/bin/chmod\n"
+    monkeypatch.setattr(routes, "_command", lambda *args, **kwargs: shown if args[1] == "show" else "[Service]\nType=oneshot\n")
+    first = routes._systemd_unit("dmesg.service")
+    monkeypatch.setattr(routes, "_command", lambda *args, **kwargs: shown.replace("/usr/bin/chmod", "/usr/bin/false") if args[1] == "show" else "[Service]\nType=oneshot\n")
+    assert routes._systemd_unit("dmesg.service").sha256 != first.sha256
+
+
 def test_removed_loaded_systemd_unit_is_only_an_unrelated_current_fact(monkeypatch: pytest.MonkeyPatch) -> None:
     shown = "Id=auto-cpufreq.service\nLoadState=not-found\nUnitFileState=\nActiveState=inactive\nSubState=dead\nFragmentPath=\nNeedDaemonReload=no\nMainPID=0\n"
 
