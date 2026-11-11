@@ -206,16 +206,28 @@ def _mounts_are_private(parent: dict[str, object], expected: list[tuple[str, str
         raise HostObservationUnavailable("private Engine parent mounts differ from original scope")
 
 
-def _parent_without_inflight_execs(parent: dict[str, object]) -> dict[str, object]:
-    """Ignore only Docker's transient exec-session IDs during a live probe.
+def _parent_security_snapshot(parent: dict[str, object]) -> dict[str, object]:
+    """Compare actual immutable authority fields, not Docker runtime telemetry.
 
-    The parent itself is immutable during observation, but the exact trusted
-    probe uses docker exec. Its temporary ExecIDs list is intentionally not
-    a container startup source, runtime policy or parent lifetime change.
-    All other inspect fields, including restart policy, mounts and PID, must
-    remain byte-for-byte equal.
+    A running Docker Engine updates inspect metadata during exec probes and
+    daemon activity. Its parent identity, original image, exact mounts,
+    container configuration, host security policy and lifetime must not move.
+    This explicitly excludes volatile health, exec and display counters;
+    it does not relax any field used to authorize the independent source.
     """
-    return {key: value for key, value in parent.items() if key != "ExecIDs"}
+    state = parent.get("State")
+    network = parent.get("NetworkSettings")
+    if not isinstance(state, dict) or not isinstance(network, dict) or not isinstance(network.get("Networks"), dict):
+        raise HostObservationUnavailable("private Engine parent state or network evidence is invalid")
+    network_names = network["Networks"]
+    if set(network_names) - {"none"}:
+        raise HostObservationUnavailable("private Engine parent acquired an independent network attachment")
+    static_state_keys = ("Status", "Running", "Restarting", "Pid", "StartedAt", "FinishedAt", "Dead", "OOMKilled", "ExitCode", "Error")
+    return {
+        **{key: parent.get(key) for key in ("Id", "Name", "Image", "Created", "RestartCount", "Path", "Args", "HostConfig", "Config", "Mounts")},
+        "State": {key: state.get(key) for key in static_state_keys},
+        "Networks": sorted(network_names),
+    }
 
 
 def _observe_source(
@@ -312,7 +324,7 @@ def _observe_source(
             raise HostObservationUnavailable("private Engine has existing container startup sources")
         if expected_container_id is not None and children != [expected_container_id]:
             raise HostObservationUnavailable("private Engine has another configured startup source")
-    if _parent_without_inflight_execs(_parent(outer_socket, parent_id)) != _parent_without_inflight_execs(parent) or _engine_id(outer_socket) != outer_id or _engine_id(private_socket) != private_id:
+    if _parent_security_snapshot(_parent(outer_socket, parent_id)) != _parent_security_snapshot(parent) or _engine_id(outer_socket) != outer_id or _engine_id(private_socket) != private_id:
         raise HostObservationUnavailable("private Engine parent or daemon changed during observation")
     if _lifetime(pid, outer_socket=outer_socket, parent_id=parent_id) != (token, pid_ns, net_ns, boot_id):
         raise HostObservationUnavailable("private Engine parent lifetime changed during observation")

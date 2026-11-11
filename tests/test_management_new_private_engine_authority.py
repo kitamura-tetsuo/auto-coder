@@ -76,6 +76,7 @@ def source(configured_request: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[P
                 "--ip-masq=false",
             ],
         },
+        "NetworkSettings": {"Networks": {"none": {"NetworkID": "private-none"}}},
         "Mounts": [{"Type": "bind", "Source": a, "Destination": b, "RW": c} for a, b, c in parent_mounts],
     }
     monkeypatch.setattr(authority, "_parent", lambda *_args: parent)
@@ -193,6 +194,7 @@ def test_transient_docker_exec_list_cannot_spoil_parent_provenance(source: tuple
         reads += 1
         snapshot = deepcopy(source[3])
         snapshot["ExecIDs"] = ["temporary-namespace-observation"] if reads == 1 else None
+        snapshot["State"]["Health"] = {"Status": "starting" if reads == 1 else "healthy"}
         return snapshot
 
     monkeypatch.setattr(authority, "_parent", live_parent)
@@ -213,6 +215,38 @@ def test_parent_restart_policy_change_during_probe_still_refuses(source: tuple[P
 
     monkeypatch.setattr(authority, "_parent", changed_parent)
     with pytest.raises(HostObservationUnavailable, match="parent or daemon changed"):
+        _observation(source)
+
+
+def test_parent_pid_change_during_probe_still_refuses(source: tuple[Path, Path, Path, dict[str, object], Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    reads = 0
+
+    def changed_parent(*_args: object) -> dict[str, object]:
+        nonlocal reads
+        reads += 1
+        snapshot = deepcopy(source[3])
+        if reads == 2:
+            snapshot["State"]["Pid"] = os.getpid() + 10000
+        return snapshot
+
+    monkeypatch.setattr(authority, "_parent", changed_parent)
+    with pytest.raises(HostObservationUnavailable, match="parent or daemon changed"):
+        _observation(source)
+
+
+def test_parent_new_network_attachment_during_probe_still_refuses(source: tuple[Path, Path, Path, dict[str, object], Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    reads = 0
+
+    def changed_parent(*_args: object) -> dict[str, object]:
+        nonlocal reads
+        reads += 1
+        snapshot = deepcopy(source[3])
+        if reads == 2:
+            snapshot["NetworkSettings"]["Networks"]["unauthorized"] = {"NetworkID": "changed"}
+        return snapshot
+
+    monkeypatch.setattr(authority, "_parent", changed_parent)
+    with pytest.raises(HostObservationUnavailable, match="network attachment"):
         _observation(source)
 
 

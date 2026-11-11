@@ -441,9 +441,12 @@ When Linux ptrace restrictions deny the non-root operator direct access to
 read its own kernel namespace links and checks the host PID-namespace match
 and separate network namespace. It still binds the parent's host PID start
 token and rechecks the same parent/container lifetime before admitting it.
-The repeated parent inspect permits only Docker's transient `ExecIDs` field
-to differ while these inspection probes run; runtime, restart, namespace,
-mount, image and other parent fields must remain unchanged. Enumerating the
+The repeated parent inspect compares a deliberately enumerated security
+snapshot: original container/image identity, complete host and container
+configuration, exact mounts, restart count, permitted `none`-only network
+attachments, and the parent PID/lifetime/status fields. Docker's changing
+exec/health/display metadata is not authority.
+Any change to the security snapshot refuses. Enumerating the
 private Engine's children uses `docker ps --all --quiet --no-trunc` so exact
 full container IDs, rather than display abbreviations, are compared.
 The parent selects `--entrypoint dockerd` (as in the existing disposable CI
