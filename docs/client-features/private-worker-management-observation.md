@@ -48,8 +48,8 @@ non-forced invocation gate has no unsettled work, atomically replaces
 `last-terminal.json` beside the socket. Schema version 1 records repository,
 channel, generation, process-run ID, observation time, bounded safe reason,
 lifecycle and gate state, graceful readiness, and unsettled count. Cancellation,
-force, startup failure, unexpected task exit, missing evidence, and write failure
-do not create a successful receipt. An older receipt retains its own incarnation
+force, startup failure by itself, unexpected task exit, missing evidence, and write
+failure do not create a successful receipt. An older receipt retains its own incarnation
 identity and says nothing about a later worker.
 
 Observation documents and receipts are limited to 256 KiB, identity lists to 500
@@ -58,3 +58,29 @@ locally admitted invocations reached their owned durable checkpoints. A handed-o
 provider job may still be running. Neither a live response nor a receipt proves
 that the OS process or container exited; the stable Supervisor must observe that
 independently.
+
+## Release startup abandonment
+
+A managed release controller may explicitly abandon its startup lifetime before
+steady-state serving. It then closes new invocation admission, remains observable
+in `failed_awaiting_drain`, and publishes one sticky `startup_failure` containing
+an opaque failure ID and the fixed reason `startup_reconciliation_abandoned`.
+The enclosing process-run ID, deployment generation and installed-artifact fields
+bind that fact to the actual worker. It does not contain exception text and does
+not claim that an external cause is permanently broken. Once abandoned, this
+lifetime cannot become serving again.
+
+This disposition is limited to the startup-reconciliation controller boundary.
+Governed GitHub/authentication deferrals, transport failures, unavailable local
+stores and cancellation, including explicit/implicit wrappers and grouped
+exceptions, do not produce it. Missing readiness or producer heartbeats never
+produce it. Beta, unmanaged CLI and failures after steady-state serving retain
+their existing behavior.
+
+The failed controller stays alive with its original invocation/checkpoint owners
+until normal graceful shutdown is requested. It reuses the ordinary protected
+invocation and local-work drain. Abandonment itself writes no successful terminal
+receipt. Only a later genuine `STOPPED` transition with no unsettled invocation
+writes the usual terminal; Supervisor OS-exit verification remains independent.
+`tests/test_worker_startup_failure.py` exercises the real daemon/private socket,
+held checkpoint, terminal producer and operational-error exclusions.

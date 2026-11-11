@@ -76,6 +76,22 @@ CONTAINER_REQUIRED = (
         "tests/test_management_new_instance_first_launch_docker.py::test_real_new_first_launch_never_reports_readiness_from_invalid_readback[stale-observation]",
         "tests/test_management_new_instance_first_launch_docker.py::test_real_new_start_refuses_changed_original_with_zero_docker_launches[bootstrap_config]",
         "tests/test_management_new_instance_first_launch_docker.py::test_killed_first_host_preserves_consumed_claim_without_docker_start",
+        "tests/test_release_worker_acceptance_container.py::test_authenticated_release_joins_published_acceptance_and_independent_installed_workers",
+        "tests/test_release_worker_acceptance_container.py::test_failed_installed_release_recovers_original_prior_runtime_once",
+        "tests/test_release_worker_acceptance_container.py::test_unready_live_release_candidate_recovers_by_docker_pid1_restart",
+        "tests/test_release_worker_acceptance_container.py::test_lost_installed_start_response_survives_manager_process_reconstruction",
+        "tests/test_release_worker_acceptance_container.py::test_installed_release_lost_start_reply_recovers_after_manager_and_supervisor_reconstruction",
+        "tests/test_release_worker_acceptance_container.py::test_installed_release_rejects_later_same_sha_selection_after_staging_before_drain",
+        "tests/test_release_worker_acceptance_container.py::test_installed_release_genuine_terminal_receipt_does_not_bypass_old_os_lifetime",
+        "tests/test_release_worker_acceptance_container.py::test_failed_installed_release_retains_uncertain_recovery_across_manager_reconstruction",
+        "tests/test_release_worker_acceptance_container.py::test_lost_installed_recovery_survives_manager_process_and_supervisor_reconstruction",
+        "tests/test_release_worker_acceptance_container.py::test_expired_installed_recovery_settles_original_evidence_after_reconstruction",
+        "tests/test_release_worker_acceptance_container.py::test_failed_installed_release_rebinds_original_recovery_after_supervisor_reconstruction",
+        "tests/test_release_worker_acceptance_container.py::test_stopped_installed_release_rejects_later_same_sha_selection_before_start",
+        "tests/test_release_worker_acceptance_container.py::test_restored_running_prior_holds_genuine_terminal_exit_across_reconstruction",
+        "tests/test_release_worker_acceptance_container.py::test_installed_release_held_terminal_exit_survives_manager_and_supervisor_reconstruction",
+        "tests/test_release_worker_acceptance_container.py::test_live_failed_installed_candidate_drains_across_reconstruction_before_prior_recovery",
+        "tests/test_release_worker_acceptance_container.py::test_expired_live_failed_installed_drain_settles_without_prior_launch",
     )
     + tuple(
         f"tests/test_beta_runtime_smoke_container.py::{name}"
@@ -124,6 +140,7 @@ SELECTORS = {
         "tests/test_management_new_docker_network_policy.py",
         "tests/test_management_new_instance_first_launch_docker.py",
         "tests/test_management_new_instance_profile.py",
+        "tests/test_release_worker_acceptance_container.py",
     ),
 }
 

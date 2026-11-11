@@ -39,11 +39,11 @@ def in_process_http_port(monkeypatch):
     monkeypatch.setattr("tests.test_management_mcp._free_port", lambda: 8081)
 
 
-class WorkflowGit(ReleaseGit):
+class WorkflowBoundary:
     """Stateful Actions boundary: every run originates at the dispatch POST."""
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, *args):
+        super().__init__(*args)
         self.runs = {}
         self.dispatches = []
         self.inputs = {}
@@ -139,6 +139,10 @@ class WorkflowGit(ReleaseGit):
                     return GitDataResponse(503)
                 return GitDataResponse(200, dict(self.runs[run_id]))
         return super().request(method, path, payload)
+
+
+class WorkflowGit(WorkflowBoundary, ReleaseGit):
+    """Controlled workflow transport over the in-memory Git boundary."""
 
 
 def _call(client, token, name, arguments):

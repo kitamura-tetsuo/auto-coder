@@ -1080,6 +1080,7 @@ def test_actual_daemon_is_observable_during_startup_and_cancellation(monkeypatch
             assert startup.json()["lifecycle"] == {
                 "state": "running",
                 "startup_reconciled": False,
+                "startup_failure": None,
                 "startup_reconciliation_error": None,
                 "daemon_serving": False,
             }

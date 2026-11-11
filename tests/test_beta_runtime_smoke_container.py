@@ -302,10 +302,12 @@ class _SmokeSystem:
     revisions: list[str]
     deployed_id: str
     reconstruction: Path
+    network: str
+    worker_name: str
 
 
 @contextmanager
-def _smoke_system(real_boundary, tmp_path: Path, scenario_id: str, stage_name: str) -> Iterator[_SmokeSystem]:
+def _smoke_system(real_boundary, tmp_path: Path, scenario_id: str, stage_name: str, *, source_service_type: type[_SourceService] = _SourceService) -> Iterator[_SmokeSystem]:
     """Provision and dispose independent real boundaries for one pytest case."""
     image = _image()
     source = Path(os.environ.get("GITHUB_WORKSPACE", str(Path(__file__).parents[1]))).resolve()
@@ -363,7 +365,7 @@ def _smoke_system(real_boundary, tmp_path: Path, scenario_id: str, stage_name: s
     assert all(item["installed"]["editable"] is False for item in installations)
     assert ready_a["source_sha"] == alternate["source_sha"] != ready_b["source_sha"]
     assert ready_a["content_identity"] != alternate["content_identity"]
-    remote = _SourceService(source, tmp_path / "source.git")
+    remote = source_service_type(source, tmp_path / "source.git")
     remote.publish_proof(ready_a, 101)
     remote.publish_proof(ready_b, 102)
     remote.executions[(11, 1)] = (revisions[0], "2026-10-01T01:00:00Z")
@@ -465,7 +467,7 @@ def _smoke_system(real_boundary, tmp_path: Path, scenario_id: str, stage_name: s
                 deployment_id = str(deployed["operation_id"])
                 _await_stage(app, deployment_id, "SUCCEEDED", timeout=210)
                 journal = app.state.management_runtime.journal
-                yield _SmokeSystem(journal, client, reader, selecting, remote, app, http, bearer, runtime, installations, revisions, deployment_id, configuration)
+                yield _SmokeSystem(journal, client, reader, selecting, remote, app, http, bearer, runtime, installations, revisions, deployment_id, configuration, network, worker_name)
             assert remote.read_only_mutations == []
     finally:
         _cleanup_smoke_docker(worker_name, github_name, network, scenario_id)

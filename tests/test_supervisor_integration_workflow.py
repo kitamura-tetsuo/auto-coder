@@ -24,6 +24,7 @@ SMOKE_CASES = (
     "test_local_smoke_distinct_revision_and_worker_lifecycle_outcomes",
 )
 OTHER_REQUIRED_NODEIDS = (
+    "tests/test_release_worker_acceptance_container.py::test_unready_live_release_candidate_recovers_by_docker_pid1_restart",
     "tests/test_supervisor_container_integration.py::test_production_entrypoint_is_private_pid1_without_docker_socket",
     "tests/test_supervisor_container_integration.py::test_release_beta_held_drain_replay_restart_and_crash_reconstruction",
     "tests/test_supervisor_container_integration.py::test_real_process_issues_bootstrap_and_staged_ready_binding",

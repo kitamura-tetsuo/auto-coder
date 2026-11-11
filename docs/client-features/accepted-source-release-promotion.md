@@ -79,9 +79,14 @@ Creating the catalog ref is create-only; any existing conflicting annotation,
 object, or commit is a collision. Catalog readback must succeed **before** any
 mutable release pointer update.
 
-The only mutable selection is the configured direct commit ref
+The configured direct commit ref is
 `refs/tags/auto-coder-release-source-current`. Its prestate is independently
-observed and checked again immediately before the one permitted update. The
+observed and checked again before the permitted update. The second mutable
+ref, `refs/tags/auto-coder-release-source-selection-current`, identifies the
+exact selected promotion by pointing to its annotated catalog object, even
+when later promotions choose the same commit. After confirming the direct
+commit pointer, the workflow advances the operation-selection ref from its
+independently observed previous object and verifies both. The
 workflow shares `release-channel` concurrency with the legacy OCI promotion
 and restore workflows, with `cancel-in-progress: false`. GitHub's Git ref API
 has no global transactional compare-and-swap over external writers: a trusted
@@ -95,14 +100,15 @@ write this source ref.
 Only after the exact catalog and current ref read back does the operation
 create or verify a GitHub Release associated with that immutable operation
 tag. Completion requires independent re-reading of the annotated tag/object,
-direct commit pointer, and exact GitHub Release. A successful write response
+direct commit pointer, selected operation object and exact GitHub Release. A successful write response
 alone does not establish completion or release-worker health.
 
 On repeat workflow attempts the original catalog is read **first**. A
 different candidate, proof, acceptance, policy revision, or Actions run is
 rejected. When its intended source pointer is already independently confirmed,
 an absent GitHub Release can be published/read back without moving selection
-again. An ambiguous missing record, absent ref, changed pointer or lost
+again. An ambiguous missing record, absent ref, changed pointer, changed
+operation-selection object or lost
 catalog/pointer readback is held for operator attention; retry never selects
 another candidate or reissues a possibly completed pointer write. A retry
 without the original catalog cannot start a new release mutation.
