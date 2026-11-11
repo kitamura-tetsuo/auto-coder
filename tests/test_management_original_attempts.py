@@ -1136,3 +1136,67 @@ def test_original_grant_refuses_matching_hash_of_wrong_claimed_target(tmp_path):
 
     assert [event.kind for event in read_frontier(Path(binding.root), binding)[1]] == ["anchor", "claimed"]
     assert _fingerprint(tmp_path) == before
+
+
+@pytest.mark.parametrize("corruption", ["unsupported-kind", "duplicate-terminal"])
+def test_original_admission_refuses_corrupt_prior_event_branch(tmp_path, corruption):
+    """A valid frontier checksum cannot make an impossible prior event safe."""
+    from auto_coder.management import original_attempts as producer
+
+    binding = _history(tmp_path)
+    prior = _terminal(tmp_path, binding, "prior-failure")
+    root = Path(binding.root)
+    if corruption == "unsupported-kind":
+        event_path = root / "00000001.json"
+        event = json.loads(event_path.read_bytes())
+        assert event["kind"] == "never-created"
+        event["kind"] = "unknown-original-boundary"
+        encoded = canonical(event)
+        event_path.write_bytes(encoded)
+        frontier_path = root / "frontier.json"
+        frontier = json.loads(frontier_path.read_bytes())
+        frontier["digest"] = hashlib.sha256(encoded).hexdigest()
+        frontier_path.write_bytes(canonical(frontier))
+    else:
+        with history_lock(root, exclusive=True):
+            producer._append(root, "claimed", prior.request_id, {"identity": [1, 2], "sha256": "invalid"})
+
+    successor = _covered(tmp_path, binding, "new-after-corrupt-prior")
+    before = _fingerprint(tmp_path)
+    with pytest.raises(OriginalEvidenceUnavailable, match="original event|original attempt boundaries"):
+        claim_fresh_initialization(Path(successor.host_state_root), successor)
+    assert _fingerprint(tmp_path) == before
+    assert not list(Path(successor.host_state_root).iterdir())
+    assert not list(Path(successor.host_journal_root).iterdir())
+    assert not (Path(successor.host_state_root) / "fresh-initialization.json").exists()
+
+
+def test_original_host_grant_refuses_unrelated_corrupt_branch(tmp_path):
+    """An intact current claim cannot bypass a corrupt historical branch."""
+    binding = _history(tmp_path)
+    _terminal(tmp_path, binding, "prior-failure")
+    intent = _covered(tmp_path, binding, "current-claim")
+    claim_fresh_initialization(Path(intent.host_state_root), intent)
+    history = Path(binding.root)
+    frontier_path = history / "frontier.json"
+    frontier = json.loads(frontier_path.read_bytes())
+    previous = ""
+    for index in range(frontier["count"]):
+        path = history / f"{index:08d}.json"
+        event = json.loads(path.read_bytes())
+        event["previous"] = previous
+        if index == 1:
+            assert event["kind"] == "never-created"
+            event["kind"] = "unknown-original-boundary"
+        encoded = canonical(event)
+        path.write_bytes(encoded)
+        previous = hashlib.sha256(encoded).hexdigest()
+    frontier["digest"] = previous
+    frontier_path.write_bytes(canonical(frontier))
+    before = _fingerprint(tmp_path)
+
+    with pytest.raises(OriginalEvidenceUnavailable, match="conflicting original attempt boundaries"):
+        serve_one_fresh_grant(tmp_path / "fresh-guard.sock", intent, None, None, -1, -1)
+
+    assert _fingerprint(tmp_path) == before
+    assert not (tmp_path / "fresh-guard.sock").exists()

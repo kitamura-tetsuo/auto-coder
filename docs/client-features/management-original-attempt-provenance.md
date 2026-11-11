@@ -78,6 +78,10 @@ The bounded namespace admits at most 4096 events and rejects overflow, extra
 files, gaps and incomplete writes instead of truncating or repairing them.
 Concurrent admission reports `history admission contested` before writing an
 intent. Previously anchored request IDs, target aliases and cycles refuse replay.
+Before admitting another attempt or entering a host grant, the producer also
+rejects unknown event kinds and impossible per-attempt boundary sequences
+anywhere in the original frontier, even if the supplied event chain was
+rehashed consistently. This leaves the original corrupt bytes untouched.
 An original target whose own admission ended `never-created`, `unresolved`, or
 only anchored without a durable claim is not a valid predecessor for a new
 covered attempt. Both the original producer and independent evidence consumer

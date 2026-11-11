@@ -182,6 +182,7 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
         raise OriginalEvidenceUnavailable("partial, omitted or conflicting frontier")
     previous = ""
     events = []
+    branches: dict[str, list[str]] = {}
     for index in range(frontier["count"]):
         encoded, _ = read_original(root / f"{index:08d}.json")
         event = json.loads(encoded)
@@ -197,8 +198,20 @@ def read_frontier(root: Path, expected: HistoryBinding | None = None) -> tuple[H
                 raise OriginalEvidenceUnavailable("incomplete original anchor") from error
             if original_intent.request_id != event["attempt"]:
                 raise OriginalEvidenceUnavailable("original anchor attempt mismatch")
+        if not isinstance(event["kind"], str) or not isinstance(event["attempt"], str):
+            raise OriginalEvidenceUnavailable("unsupported original event boundary")
+        branches.setdefault(event["attempt"], []).append(event["kind"])
         previous = hashlib.sha256(encoded).hexdigest()
         events.append(HistoryEvent(event["previous"], index, event["kind"], event["attempt"], canonical(event["value"]).decode()))
+    allowed_branches = (
+        ["anchor"],
+        ["anchor", "never-created"],
+        ["anchor", "unresolved"],
+        ["anchor", "claimed"],
+        ["anchor", "claimed", "grant-possible"],
+    )
+    if any(kinds not in allowed_branches for kinds in branches.values()):
+        raise OriginalEvidenceUnavailable("conflicting original attempt boundaries")
     if previous != frontier["digest"]:
         raise OriginalEvidenceUnavailable("truncated original frontier")
     return HistoryAuthority(binding, authority["profile"], tuple(authority["root"]), tuple(authority["lock"])), events
