@@ -746,6 +746,94 @@ print(json.dumps(host.start_new_docker_once(Path(sys.argv[1]), sys.argv[2], sys.
 """
 
 
+def test_new_docker_rejects_prior_process_joining_network_after_durable_claim(request_file: Path) -> None:
+    """Recheck real bridge membership after a competing process enters mid-admission."""
+    root = request_file.parent
+    network = "ac-new-" + uuid.uuid4().hex[:24]
+    port = _reserve_test_host_port()
+    _token, request = _prepare_real_new_source(request_file, docker_network=network, host_port=port)
+    original_oauth = (root / "oauth/oauth.sqlite3").read_bytes()
+    assert _run_host("begin", "--request-file", str(request_file)).returncode == 0
+    original_intent = (root / "guard/new-instance-origin.json").read_bytes()
+    tag = ""
+    container_id = ""
+    prior_id = ""
+    suspended = None
+    _new_isolated_bridge(network)
+    try:
+        container_id, image_id, tag = _create_real_new_container(root, request_file, request, docker_network=network, host_port=port)
+        assert _run_host("inspect-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id).returncode == 0
+        suspended = subprocess.Popen(
+            [sys.executable, "-B", "-c", _PAUSE_AFTER_HOST_CLAIM, str(request_file), container_id, image_id],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=_environment(),
+        )
+        assert suspended.stdout is not None
+        assert select.select([suspended.stdout], [], [], 20)[0], "the host did not reach the durable claim barrier"
+        assert suspended.stdout.readline() == "new-host-claim-fsynced\n"
+        original_claim = (root / "guard/new-docker-first-start.json").read_bytes()
+        assert subprocess.check_output(["docker", "inspect", "--format", "{{.State.Status}}", container_id], text=True).strip() == "created"
+
+        prior_id = subprocess.check_output(
+            [
+                "docker",
+                "run",
+                "--detach",
+                "--network",
+                network,
+                "--restart",
+                "no",
+                "--read-only",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--user",
+                "65534:65534",
+                "--entrypoint",
+                "python3",
+                os.environ.get("AUTOCODER_FRESH_TEST_BASE_IMAGE", "auto-coder:management-local-abc65544"),
+                "-B",
+                "-c",
+                "import time;time.sleep(180)",
+            ],
+            text=True,
+            timeout=40,
+        ).strip()
+        assert len(prior_id) == 64
+        assert subprocess.check_output(["docker", "inspect", "--format", "{{.State.Running}}", prior_id], text=True).strip() == "true"
+        os.kill(suspended.pid, signal.SIGCONT)
+        stdout, stderr = suspended.communicate(timeout=35)
+        assert suspended.returncode == 1 and stdout == "", (suspended.returncode, stdout, stderr)
+        assert "network scope differs" in stderr
+        assert (root / "guard/new-docker-first-start.json").read_bytes() == original_claim
+        assert (root / "guard/new-instance-origin.json").read_bytes() == original_intent
+        assert (root / "oauth/oauth.sqlite3").read_bytes() == original_oauth
+        assert not (root / "state/physical-child-invocations").exists()
+        assert not (root / "state/new-first-launch-claimed.json").exists()
+        assert subprocess.check_output(["docker", "inspect", "--format", "{{.State.Status}}", container_id], text=True).strip() == "created"
+
+        subprocess.run(["docker", "rm", "--force", prior_id], check=True, capture_output=True, timeout=30)
+        prior_id = ""
+        replay = _run_host("start-new-container", "--request-file", str(request_file), "--container-id", container_id, "--image-id", image_id, timeout=25)
+        assert replay.returncode == 1 and replay.stdout == ""
+        assert (root / "guard/new-docker-first-start.json").read_bytes() == original_claim
+        assert not (root / "state/physical-child-invocations").exists()
+    finally:
+        if suspended is not None and suspended.poll() is None:
+            suspended.kill()
+            suspended.wait(timeout=10)
+        if prior_id:
+            subprocess.run(["docker", "rm", "--force", prior_id], capture_output=True, timeout=30, check=False)
+        if container_id:
+            subprocess.run(["docker", "rm", "--force", container_id], check=True, capture_output=True, timeout=30)
+        if tag:
+            subprocess.run(["docker", "image", "rm", tag], check=True, capture_output=True, timeout=30)
+        subprocess.run(["docker", "network", "rm", network], check=True, capture_output=True, timeout=30)
+
+
 def test_killed_first_host_preserves_consumed_claim_without_docker_start(request_file: Path) -> None:
     root = request_file.parent
     _token, request = _prepare_real_new_source(request_file)
