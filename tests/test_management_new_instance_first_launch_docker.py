@@ -789,8 +789,8 @@ import json, os, signal, sys
 from pathlib import Path
 from auto_coder.management import fresh_new_host_start as host
 original = host._create_host_start_claim
-def pause_after_durable_claim(*args):
-    digest = original(*args)
+def pause_after_durable_claim(*args, **kwargs):
+    digest = original(*args, **kwargs)
     print('new-host-claim-fsynced', flush=True)
     os.kill(os.getpid(), signal.SIGSTOP)
     return digest
