@@ -6,6 +6,7 @@ These parser tests do not execute Docker or grant a containment verdict.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import pytest
 from scripts import test_management_containment_enrollment_host as fixture
@@ -53,3 +54,35 @@ def test_reviewed_source_requires_actual_image_readback() -> None:
     with pytest.raises(AssertionError, match="reviewed original-source readback is unavailable"):
         fixture._assert_reviewed_ordinary_source({"installed_bootstrap_source": {"reviewed_lock_before_launch": True, "source_sha256": "0" * 64, "source_bytes": 40}, "unavailable": []})
     fixture._assert_reviewed_ordinary_source({"installed_bootstrap_source": {"reviewed_lock_before_launch": True, "source_sha256": REVIEWED_SOURCE_SHA, "source_bytes": 40}, "unavailable": []})
+
+
+def test_host_verifier_retries_only_transient_global_docker_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
+    reports = [
+        {"route_manifest": None, "unavailable": [{"authority": "approved-route-manifest", "reason": "whole-engine Docker inventory differs from approved routes"}]},
+        {"route_manifest": {"manifest": "reobserved"}, "unavailable": []},
+    ]
+    observed: list[tuple[str, Path, Path]] = []
+
+    def verify(command: str, scope: Path, previous: Path) -> dict[str, object]:
+        observed.append((command, scope, previous))
+        return reports.pop(0)
+
+    monkeypatch.setattr(fixture, "_call_cli", verify)
+    monkeypatch.setattr(fixture.time, "sleep", lambda _: None)
+    scope, previous = Path("/test/fixture/scope"), Path("/test/fixture/previous")
+    assert fixture._verify_after_transient_docker_inventory(scope, previous)["route_manifest"] == {"manifest": "reobserved"}
+    assert observed == [("verify", scope, previous), ("verify", scope, previous)]
+
+
+def test_host_verifier_does_not_retry_unrelated_route_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    report = {"route_manifest": None, "unavailable": [{"authority": "approved-route-manifest", "reason": "installed ordinary routes changed"}]}
+    observed: list[tuple[str, Path, Path]] = []
+
+    def verify(command: str, scope: Path, previous: Path) -> dict[str, object]:
+        observed.append((command, scope, previous))
+        return report
+
+    monkeypatch.setattr(fixture, "_call_cli", verify)
+    scope, previous = Path("/test/fixture/scope"), Path("/test/fixture/previous")
+    assert fixture._verify_after_transient_docker_inventory(scope, previous) is report
+    assert observed == [("verify", scope, previous)]
