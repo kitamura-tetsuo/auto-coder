@@ -301,6 +301,7 @@ def test_all_baseline_selectors_and_execution_contexts_are_preserved() -> None:
         "test_management_new_instance_docker_created.py",
         "test_management_new_docker_network_policy.py",
         "test_management_new_instance_first_launch_docker.py",
+        "test_management_new_instance_profile.py",
     ):
         assert any(path in value for value in profile_args("isolated-containers"))
     assert profile_args("isolated-containers")[2:4] == ("-m", "supervisor_integration")
@@ -308,6 +309,7 @@ def test_all_baseline_selectors_and_execution_contexts_are_preserved() -> None:
     assert workflow["jobs"]["isolated-containers"]["env"]["AUTOCODER_FRESH_TEST_BASE_IMAGE"] == workflow["jobs"]["isolated-containers"]["env"]["AUTOCODER_SUPERVISOR_IMAGE"]
     required = CONTAINER_REQUIRED
     assert len(required) == len(set(required))
+    assert all(node.split("::", 1)[0] in profile_args("isolated-containers") for node in required)
     assert set(OTHER_REQUIRED_NODEIDS) | {f"tests/test_beta_runtime_smoke_container.py::{name}" for name in SMOKE_CASES} <= set(required)
     assert {
         "tests/test_management_new_instance_first_launch_docker.py::test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback[False]",

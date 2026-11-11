@@ -123,6 +123,7 @@ SELECTORS = {
         "tests/test_management_new_instance_docker_created.py",
         "tests/test_management_new_docker_network_policy.py",
         "tests/test_management_new_instance_first_launch_docker.py",
+        "tests/test_management_new_instance_profile.py",
     ),
 }
 

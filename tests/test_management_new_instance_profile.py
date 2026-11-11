@@ -141,6 +141,7 @@ def test_explicit_new_docker_loopback_profile_is_bound_to_original_files(configu
     assert list((root / "operations").iterdir()) == []
 
 
+@pytest.mark.supervisor_integration
 @pytest.mark.parametrize("owner_evidence", ["config-only", "stale-owner", "mismatched-owner"])
 def test_host_management_serve_refuses_new_docker_wildcard_without_live_pid1_owner(configured_request: Path, owner_evidence: str) -> None:
     """The real serve CLI must not turn a NEW YAML selector into host-wide HTTP."""
