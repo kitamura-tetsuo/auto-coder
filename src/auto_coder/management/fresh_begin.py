@@ -134,7 +134,9 @@ def begin_new_instance(request_file: Path) -> NewOriginReceipt:
         recorded, actual = _file(guard / RECORD, private=True, limit=1024 * 1024)
         if actual != encoded or recorded.sha256 != hashlib.sha256(encoded).hexdigest():
             raise ValueError("new original intent changed during publication")
-        if _root(guard, private=True, empty=False).inode != assessment.roots[2].inode:
+        current_guard = _root(guard, private=True, empty=False)
+        expected_guard = assessment.roots[2]
+        if (current_guard.device, current_guard.inode) != (expected_guard.device, expected_guard.inode):
             raise ValueError("new guard root replaced after publication")
     return NewOriginReceipt(
         request_id=assessment.request.request_id,

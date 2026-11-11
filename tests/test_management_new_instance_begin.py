@@ -232,3 +232,27 @@ def test_real_writer_killed_after_one_use_open_poisoned_replay(request_file: Pat
         if child.poll() is None:
             child.kill()
             child.communicate(timeout=10)
+
+
+def test_begin_refuses_guard_device_change_even_with_same_inode(request_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A synthetic cross-device inode collision must not pass final identity validation."""
+    from dataclasses import replace
+
+    from auto_coder.management import fresh_begin
+
+    original_root = fresh_begin._root
+    guard = request_file.parent / "guard"
+
+    def mismatched_guard(path: Path, *, private: bool, empty: bool):
+        identity = original_root(path, private=private, empty=empty)
+        if path == guard and not empty:
+            return replace(identity, device=identity.device + 1)
+        return identity
+
+    monkeypatch.setattr(fresh_begin, "_root", mismatched_guard)
+    with pytest.raises(ValueError, match="guard root replaced"):
+        fresh_begin.begin_new_instance(request_file)
+    assert (guard / "new-instance-origin.json").exists()
+    assert list((request_file.parent / "state").iterdir()) == []
+    assert list((request_file.parent / "operations").iterdir()) == []
+    assert not (request_file.parent / "LAUNCHED").exists()
