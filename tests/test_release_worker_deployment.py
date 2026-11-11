@@ -371,6 +371,39 @@ def test_release_selection_changed_during_durable_pre_effect_write_never_dispatc
         assert _call(client, token, "auto_coder_deploy_release_source", {**_release_arguments(d, promotion), "idempotency_key": "other"})["status"] == "BUSY"
 
 
+@pytest.mark.parametrize("downgrade", ("revoked", "expired"))
+def test_original_release_grant_downgrade_after_staging_prevents_worker_transition(release_flow, downgrade):
+    d = release_flow
+    with TestClient(d.app, base_url=d.settings.oauth.canonical_issuer) as client:
+        token = _token(client, d)
+        promotion = _call(client, token, MCP_PROMOTION_ACTION, d.args)
+        admitted = _call(client, token, "auto_coder_deploy_release_source", _release_arguments(d, promotion))
+        operation_id = str(admitted["operation_id"])
+        runtime = d.app.state.management_runtime
+        for _ in range(15):
+            record = runtime.journal.get(operation_id).record
+            assert record is not None
+            runtime.lifecycle.process(record)
+            snapshot = runtime.journal.lifecycle_snapshot(operation_id)
+            if snapshot is not None and snapshot[1]["stage"] == "DRAINING":
+                break
+        else:
+            raise AssertionError("release staging did not reach the drain boundary")
+        assert [name for name, _ in d.bridge.actions] == ["PREPARE"]
+
+        with d.grants.store.connect() as db:
+            if downgrade == "revoked":
+                db.execute("UPDATE grants SET revoked=?", (d.state["now"],))
+            else:
+                db.execute("UPDATE grants SET expires=?", (d.state["now"] - 1,))
+        _drive(d.app, operation_id, 30)
+        current = runtime.journal.get(operation_id).record
+        assert current is not None
+        status = runtime.lifecycle.project(current)
+        assert status["status"] == "NEEDS_ATTENTION" and status["reason"] == "original_authority_denied", status
+        assert [name for name, _ in d.bridge.actions] == ["PREPARE"]
+
+
 def test_release_recovery_unknown_receipt_retains_lane_and_recovers_original_step(release_flow, monkeypatch):
     d = release_flow
     d.bridge.crash_new = True

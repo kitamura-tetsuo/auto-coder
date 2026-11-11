@@ -284,9 +284,19 @@ def test_installed_release_genuine_terminal_receipt_does_not_bypass_old_os_lifet
     _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=False, hold_terminal_exit=True)
 
 
-def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch, *, fail_candidate: bool, lose_start_reconstruct: bool = False, supersede_after_stage: bool = False, hold_terminal_exit: bool = False) -> None:
-    assert sum((fail_candidate, lose_start_reconstruct, supersede_after_stage, hold_terminal_exit)) <= 1
-    prefix = "release-held-terminal-" if hold_terminal_exit else "release-superseded-" if supersede_after_stage else "release-lost-start-" if lose_start_reconstruct else "release-failed-candidate-" if fail_candidate else "release-installed-join-"
+@pytest.mark.timeout(2400)
+def test_failed_installed_release_retains_uncertain_recovery_across_manager_reconstruction(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None) -> None:
+    _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=True, lose_recovery_reconstruct_manager=True)
+
+
+def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch, *, fail_candidate: bool, lose_start_reconstruct: bool = False, supersede_after_stage: bool = False, hold_terminal_exit: bool = False, lose_recovery_reconstruct_manager: bool = False) -> None:
+    assert sum((lose_start_reconstruct, supersede_after_stage, hold_terminal_exit, lose_recovery_reconstruct_manager)) <= 1
+    assert not lose_recovery_reconstruct_manager or fail_candidate
+    prefix = (
+        "release-uncertain-recovery-"
+        if lose_recovery_reconstruct_manager
+        else "release-held-terminal-" if hold_terminal_exit else "release-superseded-" if supersede_after_stage else "release-lost-start-" if lose_start_reconstruct else "release-failed-candidate-" if fail_candidate else "release-installed-join-"
+    )
     scenario = prefix + uuid.uuid4().hex[:12]
     with tempfile.TemporaryDirectory(prefix="release-join-", dir=tmp_path) as directory:
         root = Path(directory)
@@ -356,6 +366,26 @@ def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch,
 
                     monkeypatch.setattr(release.client, "dispatch_worker_operation", lose_real_start_reply)
                     monkeypatch.setattr(release.client, "read_worker_operation", withhold_original_start_receipt)
+                recovery_dispatches: list[str] = []
+                allow_recovery_readback = {"value": False}
+                if lose_recovery_reconstruct_manager:
+                    original_dispatch = release.client.dispatch_worker_operation
+                    original_read = release.client.read_worker_operation
+
+                    def lose_real_recovery_reply(operation_id: str, operation: str, **kwargs):
+                        response = original_dispatch(operation_id, operation, **kwargs)
+                        if operation == "RECOVER_PREVIOUS":
+                            recovery_dispatches.append(operation_id)
+                            return WorkerNetworkResult(0, "UNKNOWN", None, response.supervisor_generation, response.request_id)
+                        return response
+
+                    def withhold_original_recovery_receipt(operation_id: str):
+                        if operation_id in recovery_dispatches and not allow_recovery_readback["value"]:
+                            return WorkerNetworkResult(0, "UNAVAILABLE", None, release.client.supervisor_generation or "", uuid.uuid4().hex)
+                        return original_read(operation_id)
+
+                    monkeypatch.setattr(release.client, "dispatch_worker_operation", lose_real_recovery_reply)
+                    monkeypatch.setattr(release.client, "read_worker_operation", withhold_original_recovery_receipt)
 
                 with ExitStack() as clients:
                     http = clients.enter_context(TestClient(app, base_url=settings.oauth.canonical_issuer))
@@ -423,6 +453,7 @@ def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch,
                     assert original is not None
                     assert _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
                     assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "selected_git_sha": system.revisions[1]})["status"] == "CONFLICT"
+                    assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "catalog_oid": system.revisions[1]})["status"] == "CONFLICT"
                     competing = _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing"})
                     assert competing["status"] == "BUSY" and competing["operation_id"] == operation_id
 
@@ -520,6 +551,47 @@ def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch,
                         recovered = journal.get(operation_id).record
                         assert recovered is not None and recovered.intent == original.intent and recovered.authority == original.authority
                         assert _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
+
+                    if lose_recovery_reconstruct_manager:
+                        _wait_for(lambda: recovery_dispatches[0] if recovery_dispatches else None, timeout=180)
+                        assert recovery_dispatches == ["r-" + operation_id]
+                        independent = WorkerNetworkClient(release.client.config)
+                        assert _wait_for(lambda: _ready(independent, str(release.previous["source_sha"])), timeout=90)
+                        unsettled = journal.lifecycle_snapshot(operation_id)
+                        assert unsettled is not None
+                        assert unsettled[1]["stage"] == "RESTORING"
+                        assert unsettled[1]["steps"]["recovery"]["state"] == "SENT_UNKNOWN"
+                        assert unsettled[1]["recovery_attempts"] == 1
+                        assert len((release.runtime / "fixture-launches.jsonl").read_text().splitlines()) == 3
+                        preserved_posts = (release.runtime / "fixture-posts").read_bytes()
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "selected_git_sha": system.revisions[1]})["status"] == "CONFLICT"
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing-recovery"})["status"] == "BUSY"
+
+                        clients.close()
+                        fresh = WorkerNetworkClient(release.client.config)
+                        fresh_read = fresh.read_worker_operation
+
+                        def retain_uncertain_recovery(operation_id: str):
+                            if operation_id in recovery_dispatches and not allow_recovery_readback["value"]:
+                                return WorkerNetworkResult(0, "UNAVAILABLE", None, fresh.supervisor_generation or "", uuid.uuid4().hex)
+                            return fresh_read(operation_id)
+
+                        monkeypatch.setattr(fresh, "read_worker_operation", retain_uncertain_recovery)
+                        reconstructed = create_management_app(settings, service.grants, worker_clients={"release": fresh})
+                        http = clients.enter_context(TestClient(reconstructed, base_url=settings.oauth.canonical_issuer))
+                        journal = reconstructed.state.management_runtime.journal
+                        recovered = journal.get(operation_id).record
+                        assert recovered is not None and recovered.intent == original.intent and recovered.authority == original.authority
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "selected_git_sha": system.revisions[1]})["status"] == "CONFLICT"
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing-recovery-reconstructed"})["status"] == "BUSY"
+                        held = _call(http, system.bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id})
+                        assert held["status"] == "RESTORING" and held["recovery_state"] == "UNKNOWN"
+                        time.sleep(5)
+                        assert (release.runtime / "fixture-posts").read_bytes() == preserved_posts
+                        assert len((release.runtime / "fixture-launches.jsonl").read_text().splitlines()) == 3
+                        allow_recovery_readback["value"] = True
 
                     independent_samples = []
                     failed_observations = []

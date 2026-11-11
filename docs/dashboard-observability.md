@@ -3484,7 +3484,7 @@ oracle. See `client-features/management-source-release-dispatch.md` for the sche
 and safe uncertainty projection. This is an observability-neutral management
 addition: it introduces no production-to-dashboard event or deployment outcome.
 
-### Authenticated release-worker source deployment (real-host acceptance pending)
+### Authenticated release-worker source deployment (isolated-host acceptance)
 
 `management/release_worker_deployment.py` remains a read-only provenance
 consumer with `deployment_authorized=false` and `worker_deployed=false` in
@@ -3503,9 +3503,14 @@ tests/test_management_source_release_dispatch.py`. Component regressions verify
 original producer linkage, isolated Git objects and journal reconstruction,
 current same-SHA operation selection, authenticated replay/CONFLICT/BUSY,
 policy failure, controlled lost replies, recovery and provenance refusal.
-These do not establish a genuine release worker deployment; real-host
-previous-version, held OS-exit and beta-isolation tests remain an acceptance gate.
-See `client-features/release-worker-source-deployment.md` for pending gates.
+The separate mandatory isolated-container suite uses actual independently
+installed prior/candidate worker versions through the authenticated release
+entry, signed Supervisor and genuine producer observations. It covers held
+terminal/OS exit, candidate failure and prior recovery, lost effect replies
+across reconstruction, failed pre-effect durability and same-SHA supersession.
+Neither controlled GitHub transport nor disposable host acceptance proves a
+live release deployment. Exact-head CI/review and the host acceptance record
+remain merge gates; see `client-features/release-worker-source-deployment.md`.
 
 ## Prospective original management-attempt admission
 

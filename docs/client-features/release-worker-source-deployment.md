@@ -1,13 +1,13 @@
-# Authenticated release worker source deployment (pending real-host acceptance)
+# Authenticated release worker source deployment (isolated-host acceptance)
 
 The `auto_coder_deploy_release_source` management MCP action is implemented as
 an explicit, instance-bound request using the existing OAuth read+deploy grant,
 the operator-owned `full` release policy, the shared per-instance operation
 journal, immutable version preparer and signed Supervisor control lane. It is
 not an automatic consequence of promotion or an OCI/Docker deployment.
-**PR #2832 remains draft until genuine independent release-worker and
-previous-version host acceptance is recorded.** Controlled tests do not
-establish that a real release worker has been deployed or is healthy.
+**PR #2832 remains draft until its exact-head host tests, CI and review gates
+are complete.** Isolated-host acceptance of disposable installed workers is
+not authorization to deploy, restart or replace the live release service.
 
 ## Trust boundaries and request
 
@@ -110,11 +110,10 @@ recovery and rejection of worker artifact fields with a controlled
 Supervisor bridge. `tests/test_management_worker_lifecycle.py` and
 `tests/test_worker_supervisor_bridge.py` separately exercise actual
 subprocess, UDS, HTTP, held drain, OS exit and Supervisor reconstruction.
-These are **not** a substitute for a complete production-origin release run
-with a real installed candidate, an independently running prior version,
-held exit/recovery and peer beta isolation. Record the exact original
-positive-control evidence, CI results and operator acceptance against
-Issue #2613 before marking the PR ready to merge.
+These controlled tests are **not** a substitute for the integrated
+production-origin release suite described below. Record exact original
+positive-control evidence, host/image revision, CI results, review disposition
+and operator acceptance against Issue #2613 before marking the PR ready.
 
 A bounded regression command is:
 
@@ -201,10 +200,49 @@ operation/authority on repeated replay and terminal `FAILED` with recovery
 `CONFIRMED`. The beta peer, source refs, containers and ownership remain unchanged.
 This proves recovery of executable code, not rollback of persistent data or schema.
 
-These bounded successful/failed joins, replay, changed-source conflict and
-competing-key busy coverage do not complete REQ-010. Integrated installed-release
-held invocation/terminal-exit barriers, unresolved-effect ownership during
-recovery, lost responses across independent manager/Supervisor reconstruction,
-unconfirmed pre-effect durability and post-stage supersession remain separate
-required acceptance scenarios. Preserve the unresolved acceptance gate until those exact
-scenarios and clean-revision CI are demonstrated.
+Additional isolated-container regressions use the **same authenticated release
+deployment and genuinely installed prior/candidate worker producers**:
+
+- `test_installed_release_genuine_terminal_receipt_does_not_bypass_old_os_lifetime`
+  holds the exact prior OS lifetime *after* its genuine terminal receipt, verifies
+  no successor POST/launch or lane release, and permits replacement only after
+  the barrier is removed and the old process really exits.
+- `test_installed_release_lost_start_reply_recovers_after_manager_and_supervisor_reconstruction`
+  first refuses the durable drain step and proves that only preparation occurred.
+  It then loses a genuine START reply, withholds its original readback, and
+  reconstructs manager and Supervisor independently. The new manager resumes
+  the original operation/digest, observes real installed provenance and producer
+  progress, and never dispatches another START.
+- `test_installed_release_rejects_later_same_sha_selection_after_staging_before_drain`
+  produces a *second* genuine source promotion of the same SHA while the first
+  deployment is staged but its drain is held. The first operation becomes
+  `SUPERSEDED`, with no worker-changing POST after its original PREPARE.
+- `test_failed_installed_release_retains_uncertain_recovery_across_manager_reconstruction`
+  loses the reply to a genuine `RECOVER_PREVIOUS` following candidate failure,
+  withholds the correlated receipt across manager reconstruction, and keeps
+  the original operation and lane while the prior installed worker actually
+  resumes. Revealing the original receipt can confirm recovery; no additional
+  recovery or child launch is permitted. This is distinct from changing the
+  Supervisor incarnation during an unresolved recovery: in that case the
+  original ownership remains held for operator attention, not guessed from an
+  unrelated START receipt.
+
+All integrated cases verify original immutable replay, changed-intent
+`CONFLICT`, competing-key `BUSY`, untouched beta process/container identities,
+routing ownership and exact OS launch counts. Successful and recovered-runtime
+cases additionally verify independent installed provenance, producer heartbeats
+and unchanged release Git refs; the supersession case intentionally advances
+only the source selection. Focused component tests additionally
+deny further effects after the original OAuth grant expires or is revoked and
+after the operator policy is downgraded. The fixture uses no Docker socket or
+binary inside the exercising runtime; Docker only creates and removes external
+disposable test containers. The source promotion's external Actions/Release
+HTTP remains controlled, so this is not a live GitHub publication or a live
+release rollout.
+
+Do not remove the draft/review acceptance gate solely because individual tests
+passed on a different head. Record a clean checked-out commit/image, complete
+the relevant bounded host tests, verify live release/beta service identities
+were unchanged, then require that commit's CI and review disposition. An
+unknown recovery, unverified installed binding or incomplete original receipt
+must never be promoted to `SUCCEEDED` merely to clear the release lane.
