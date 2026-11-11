@@ -1,0 +1,83 @@
+name: NEW Docker Private Engine Acceptance
+
+'on':
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  private-engine:
+    name: NEW private Engine first-launch probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      UV_LOCKED: "1"
+      PYTHONPATH: ${{ github.workspace }}/src
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.22"
+      - name: Install locked test dependencies
+        run: uv sync --locked --dev --extra test
+      - name: Build immutable management test image
+        run: uv run python scripts/prepare_management_test_image.py
+      - name: Start a networkless disposable Docker-in-Docker daemon
+        id: private-engine
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          private_root="$(mktemp -d "$RUNNER_TEMP/new-management-dind-XXXXXX")"
+          chmod 0700 "$private_root"
+          container_id="$(docker --host=unix:///var/run/docker.sock run --detach --pull=always \
+            --privileged --pid=host --network none --restart no --init \
+            --name "$(basename "$private_root")" \
+            --mount "type=bind,src=$private_root,dst=$private_root" \
+            --entrypoint dockerd docker:29-dind \
+            --host="unix://$private_root/docker.sock" \
+            --iptables=false --bridge=none --ip-forward=false --ip-masq=false --storage-driver=vfs)"
+          printf 'container_id=%s\n' "$container_id" >> "$GITHUB_OUTPUT"
+          for attempt in $(seq 1 60); do
+            if test -S "$private_root/docker.sock"; then
+              break
+            fi
+            if test "$(docker --host=unix:///var/run/docker.sock inspect --format '{{.State.Running}}' "$container_id")" != true; then
+              docker --host=unix:///var/run/docker.sock logs --tail 40 "$container_id"
+              exit 1
+            fi
+            sleep 1
+          done
+          test -S "$private_root/docker.sock"
+          # The socket remains inside a runner-owned 0700 directory.
+          sudo chmod 0666 "$private_root/docker.sock"
+          docker --host="unix://$private_root/docker.sock" info --format '{{.ID}}|{{.ServerVersion}}'
+          test -z "$(docker --host="unix://$private_root/docker.sock" ps --all --quiet)"
+          mkdir -m 0700 "$private_root/fixtures"
+          printf 'DOCKER_HOST=unix://%s/docker.sock\n' "$private_root" >> "$GITHUB_ENV"
+          printf 'TMPDIR=%s/fixtures\n' "$private_root" >> "$GITHUB_ENV"
+      - name: Load the checked-out fixture into the private Engine
+        run: |
+          set -euo pipefail
+          docker --host=unix:///var/run/docker.sock image save "$AUTOCODER_FRESH_TEST_BASE_IMAGE" |
+            docker --host="$DOCKER_HOST" image load
+          docker --host="$DOCKER_HOST" image inspect "$AUTOCODER_FRESH_TEST_BASE_IMAGE" --format '{{.Id}}'
+      - name: Prove one real first child and authenticated readback
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          uv run pytest -q -vv \
+            'tests/test_management_new_instance_first_launch_docker.py::test_one_genuinely_new_docker_launch_and_retained_grant_exact_child_readback[False]'
+      - name: Stop only this disposable CI daemon
+        if: always() && steps.private-engine.outputs.container_id != ''
+        run: docker --host=unix:///var/run/docker.sock rm --force '${{ steps.private-engine.outputs.container_id }}'
