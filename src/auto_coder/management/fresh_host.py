@@ -30,7 +30,7 @@ from .fresh_host_observation import (
     capture_prior_container,
     serve_one_fresh_grant,
 )
-from .fresh_initialization import FreshInitializationIntent, acquire_prior_owner_fence, claim_fresh_initialization, load_fresh_initialization
+from .fresh_initialization import FreshInitializationIntent, acquire_prior_owner_fence, claim_fresh_initialization, load_fresh_initialization, parse_fresh_intent
 
 
 def _protected_file(path: Path) -> bytes:
@@ -167,11 +167,7 @@ def main() -> None:
             print(_write_evidence(Path(args.guard_dir), {"management": asdict(management), "proxy": asdict(proxy)}))
         elif args.command == "claim":
             raw = json.loads(_protected_file(args.intent_file))
-            optional = {"host_prior_journal_root", "prior_journal_root", "prior_journal_device", "prior_journal_inode"}
-            fields = set(FreshInitializationIntent.__dataclass_fields__)
-            if not isinstance(raw, dict) or set(raw) not in (fields, fields - optional):
-                raise ValueError("fresh initialization intent is malformed")
-            intent = FreshInitializationIntent(**raw)
+            intent = parse_fresh_intent(raw)
             management, proxy, digest = _evidence(args.evidence_file)
             if (
                 management.container_id != intent.old_container_id

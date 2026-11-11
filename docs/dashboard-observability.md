@@ -3499,7 +3499,38 @@ The existing fresh initialization/recovery emissions retain their meaning.
 See `docs/client-features/management-new-instance-preflight.md` for the bounded
 subset and missing REQ-001–005 gates. Run `bash scripts/test.sh --ci-tests-only
 tests/test_management_new_instance_preflight.py
-tests/test_management_new_instance_begin.py` to verify host output/refusal,
-original byte preservation, real overlapping/crashed assessment scans and
-origin-record O_EXCL contention/interrupted publication. These
-are diagnostic regressions, not production authenticated launch evidence.
+tests/test_management_new_instance_begin.py
+tests/test_management_new_instance_profile.py
+tests/test_management_new_instance_admission_fence.py` to verify host refusal,
+source/profile reinspection, overlapping scans, original-record O_EXCL
+contention and real guard-lock contention. The separate
+`tests/test_management_new_instance_docker_created.py` supervisor integration
+suite inspects disposable Docker CREATED-state origins and invalidation after
+a real Docker start. None of these component diagnostics establish continuous
+prior-startup exclusion, a first management launch or authenticated readiness.
+
+## Prospective original management-attempt admission
+
+The optional `fresh-original-attempts-v1` host admission origin emits Loguru
+records with `original_history`, `original_attempt`, `original_boundary` and
+`evidence_only=true` after durable `anchor`, `claimed`, `never-created`,
+`unresolved` and `grant-possible` writes. Contention emits `original_boundary=contested`
+without inventing an admitted attempt. Filename, function and line remain in the
+shared configured diagnostic sinks. The existing application's colored console
+and rotating file configuration is retained; provenance helpers do not replace
+its sinks. Read-only verification adds no success/launch/recovery event.
+
+These host commands have no repository Issue/PR execution or dashboard job;
+adding such a job would misrepresent admission facts as execution. Therefore
+there is no dashboard event-schema or renderer change. The dashboard continues
+to have no recovery-success evidence for this origin. A possible grant,
+prospective enrollment, matched bounded object or unavailable legacy history
+must never project as recovery success or continuous exclusion.
+
+Run `bash scripts/test.sh --ci-tests-only tests/test_management_original_attempts.py`.
+`test_original_admission_trace_retains_boundaries_without_recovery_success`
+drives the real original admission/refusal producer, inspects structured Loguru
+fields and source locations, and checks that no success/recovery claim appears.
+The process contention cases use those actual post-fsync emissions as observable
+barriers. Full positive Docker-host lineage/cutover evidence remains unavailable;
+these tests do not substitute for the independent host suite.

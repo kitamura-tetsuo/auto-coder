@@ -171,3 +171,10 @@ CLI/refusal handler and bounded observer with three distinct controlled tasks;
 no claim or listener grant is created. Retry, evidence and launch authority
 are unchanged. Run `bash scripts/test.sh
 tests/test_management_fresh_initialization.py`.
+
+An explicitly selected prospective original-attempt profile adds immutable
+admission/frontier facts and a native first-store identity receipt. See
+`management-original-attempt-provenance.md` for source/history enrollment,
+non-repeatable host grant boundaries, the read-only verifier and unavailable
+legacy/host evidence. Existing unenrolled intents keep the ordinary fresh
+refusal behavior; enrollment does not restore a missing original journal.

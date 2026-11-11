@@ -118,6 +118,19 @@ def required_exclusions(prior: PriorContainer) -> tuple[ArchivedExclusion, ...]:
 
 def validate_successor(prior: PriorContainer, intent: FreshInitializationIntent, bootstrap_path: Path | None) -> tuple[ArchivedExclusion, ...]:
     required = required_exclusions(prior)
+    prior_config = json.loads(protected_bytes(Path(prior.bootstrap_source), private=False), object_pairs_hook=unique_pairs)
+    if prior_config.get("fresh_prior_lock_path") is not None:
+        # An explicitly enrolled original predecessor cannot silently lose its
+        # source-bound history when the next real host cutover is prepared.
+        # This does not claim coverage before enrollment or for sibling roots.
+        from .fresh_host_observation import _inspect
+
+        mounts = _inspect(prior.container_id)[11]
+        if not isinstance(mounts, list):
+            raise ValueError("original predecessor mount observation unavailable")
+        prior_intent, _ = load_fresh_initialization(_mount(mounts, "/management-child-state", rw=True), host=True)
+        if prior_intent.original_history and (intent.original_history, intent.original_history_id) != (prior_intent.original_history, prior_intent.original_history_id):
+            raise ValueError("covered original history cannot be omitted or replaced")
     if bootstrap_path is None:
         if required:
             raise ValueError("inherited exclusions require sealed successor bootstrap")
