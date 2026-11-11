@@ -276,9 +276,23 @@ manager app/client objects against the original journal. While the exact prior
 installed worker resumes, the original operation and lane remain owned, with
 no further recovery or child launch. Revealing the original receipt confirms
 recovery as `FAILED`, never `SUCCEEDED`. This case does not restart the manager
-OS process or change the Supervisor incarnation. The retained-recovery rebind
-and post-deadline read-only rules above are separately covered by component
-regressions until their installed-worker acceptance is recorded.
+OS process or change the Supervisor incarnation. Another installed acceptance
+case changes the Supervisor incarnation while the original recovery receipt
+remains unavailable. The reconstructed owner may adopt only that recovery's
+original digest and an independently verified restored prior package, without
+repeating the signed recovery POST or child launch. Post-deadline read-only
+settlement is separately covered by component regressions.
+
+Additional installed acceptance cases exercise two distinct effect boundaries:
+one starts from a genuinely stopped release Supervisor, replaces the source
+selection with a later same-SHA promotion after PREPARE but before START, and
+requires the original deployment to be superseded without launching any child.
+The other starts with a failed candidate that genuinely recovers the prior
+installed worker, then attempts another authenticated deployment while the
+restored prior's actual terminal receipt is held ahead of OS exit. After
+manager-app and Supervisor reconstruction, the original running lifetime must
+remain fenced until that OS exit is observed. Neither test fabricates a
+successful terminal receipt or prior child identity.
 
 All integrated cases verify original immutable replay, changed-intent
 `CONFLICT`, competing-key `BUSY`, untouched beta process/container identities,
@@ -301,11 +315,10 @@ unknown recovery, unverified installed binding or incomplete original receipt
 must never be promoted to `SUCCEEDED` merely to clear the release lane.
 
 These bounded cases do not complete REQ-010. Integrated held active invocations,
-unresolved recovery across a changed Supervisor incarnation or a separate manager
-OS-process restart, post-deadline original recovery settlement, and independent
-Supervisor OS-process reconstruction remain separate required acceptance
-scenarios. The app-only unknown-recovery case above covers its own retained lane
-but does not establish those remaining boundaries. Killing/restarting the current PID1 container destroys its
-worker PID namespace; the same-process listener reconstruction does not establish
-child survival across that OS boundary. Preserve the unresolved acceptance gate
-until the remaining exact scenarios and clean-revision CI are demonstrated.
+recovery across a separate manager OS-process restart, post-deadline original
+recovery settlement on an installed worker, and independent Supervisor OS-process
+reconstruction remain separate required acceptance scenarios. Killing/restarting
+the current PID1 container destroys its worker PID namespace; the same-process
+listener reconstruction does not establish child survival across that OS
+boundary. Preserve the unresolved acceptance gate until the remaining exact
+scenarios and clean-revision CI are demonstrated.

@@ -65,6 +65,9 @@ CONTAINER_REQUIRED = (
         "tests/test_release_worker_acceptance_container.py::test_installed_release_rejects_later_same_sha_selection_after_staging_before_drain",
         "tests/test_release_worker_acceptance_container.py::test_installed_release_genuine_terminal_receipt_does_not_bypass_old_os_lifetime",
         "tests/test_release_worker_acceptance_container.py::test_failed_installed_release_retains_uncertain_recovery_across_manager_reconstruction",
+        "tests/test_release_worker_acceptance_container.py::test_failed_installed_release_rebinds_original_recovery_after_supervisor_reconstruction",
+        "tests/test_release_worker_acceptance_container.py::test_stopped_installed_release_rejects_later_same_sha_selection_before_start",
+        "tests/test_release_worker_acceptance_container.py::test_restored_running_prior_holds_genuine_terminal_exit_across_reconstruction",
     )
     + tuple(
         f"tests/test_beta_runtime_smoke_container.py::{name}"
