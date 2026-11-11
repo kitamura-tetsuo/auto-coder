@@ -34,6 +34,23 @@ def test_dirty_fixture_does_not_build_or_publish_identity(tmp_path, monkeypatch)
     assert not output.exists()
 
 
+def test_source_fixture_exports_buildable_tag_only_after_immutable_verification(tmp_path, monkeypatch):
+    identity = SimpleNamespace(state="clean", source_revision="a" * 40, version="1.0")
+    image_id = "sha256:" + "b" * 64
+    monkeypatch.setattr(preparation, "resolve_build_identity", lambda _: identity)
+    monkeypatch.setattr(preparation, "serialize_build_identity", lambda _: '{"source_revision":"' + identity.source_revision + '"}')
+    monkeypatch.setattr(preparation.subprocess, "run", Mock())
+    monkeypatch.setattr(preparation.subprocess, "check_output", Mock(return_value=image_id))
+    verify = Mock(return_value=image_id)
+    monkeypatch.setattr(preparation, "verify_image", verify)
+    (tmp_path / "Dockerfile").write_text("FROM python:3.12-slim AS python-environment\n")
+    github_env = tmp_path / "github-env"
+
+    assert preparation.prepare_image(tmp_path, github_env) == image_id
+    verify.assert_called_once_with(tmp_path, image_id)
+    assert github_env.read_text() == "AUTOCODER_FRESH_TEST_BASE_IMAGE=auto-coder:management-fixture-aaaaaaaaaaaa\n"
+
+
 @pytest.mark.parametrize("failure", ["build", "malformed_identity", "provenance_mismatch"])
 def test_failed_fixture_never_exports_a_publishable_image(tmp_path, monkeypatch, failure):
     monkeypatch.setattr(preparation, "resolve_build_identity", lambda _: SimpleNamespace(state="clean", source_revision="a" * 40, version="1.0"))

@@ -90,7 +90,9 @@ def prepare_image(repository: Path, github_env: Path | None = None) -> str:
     verify_image(repository, image_id)
     if github_env is not None:
         with github_env.open("a", encoding="utf-8") as output:
-            output.write(f"AUTOCODER_FRESH_TEST_BASE_IMAGE={image_id}\n")
+            # Dockerfile FROM requires the local image tag; callers that execute
+            # the fixture resolve and verify the immutable image ID themselves.
+            output.write(f"AUTOCODER_FRESH_TEST_BASE_IMAGE={tag}\n")
     logger.info("Prepared Python-only management test fixture source={} image={}", identity.source_revision, image_id)
     return image_id
 

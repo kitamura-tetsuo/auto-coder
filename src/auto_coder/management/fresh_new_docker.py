@@ -86,6 +86,14 @@ def _docker_created_fields(container_id: str) -> tuple[object, ...]:
         raise HostObservationUnavailable("NEW Docker engine evidence unavailable") from error
     if len(values) != len(_FIELDS) or values[0] != container_id:
         raise HostObservationUnavailable("NEW Docker container identity changed")
+    # Docker's Mounts slice is not ordered by the API contract. Different
+    # Engine builds can enumerate the same bind mounts in a different order
+    # on consecutive inspections; every mount attribute must still match.
+    mount_index = _FIELDS.index(".Mounts")
+    mounts = values[mount_index]
+    if isinstance(mounts, list):
+        canonical_mounts = sorted(mounts, key=lambda entry: json.dumps(entry, sort_keys=True, separators=(",", ":")))
+        values = (*values[:mount_index], canonical_mounts, *values[mount_index + 1 :])
     return values
 
 
@@ -296,14 +304,20 @@ def _inspect_created_scope(request_file: Path, container_id: str, image_id: str)
     # still acquire continuous host exclusion and a durable first-launch claim.
     if bootstrap.new_docker_network is not None:
         _require_safe_loopback_docker_engine()
-    if (
-        _docker_created_fields(container_id) != fields
-        or _engine_id() != engine
-        or (bootstrap.new_docker_network is not None and _dedicated_network_id(bootstrap.new_docker_network) != network_id)
-        or inspect_new_instance_origin(request_file) != origin
-        or inspect_new_instance_profile(request_file) != profile
-    ):
-        raise HostObservationUnavailable("NEW Docker or original scope changed during observation")
+    rechecked_fields = _docker_created_fields(container_id)
+    changed_fields = [_FIELDS[index] for index, (before, after) in enumerate(zip(fields, rechecked_fields)) if before != after]
+    if changed_fields:
+        # The bounded field names contain no secrets. Preserve fail-closed
+        # semantics while identifying a host/Engine-specific unstable field.
+        raise HostObservationUnavailable("NEW Docker or original scope changed during observation (Docker: " + ", ".join(changed_fields) + ")")
+    if _engine_id() != engine:
+        raise HostObservationUnavailable("NEW Docker or original scope changed during observation (Engine identity)")
+    if bootstrap.new_docker_network is not None and _dedicated_network_id(bootstrap.new_docker_network) != network_id:
+        raise HostObservationUnavailable("NEW Docker or original scope changed during observation (network identity)")
+    if inspect_new_instance_origin(request_file) != origin:
+        raise HostObservationUnavailable("NEW Docker or original scope changed during observation (NEW original)")
+    if inspect_new_instance_profile(request_file) != profile:
+        raise HostObservationUnavailable("NEW Docker or original scope changed during observation (NEW profile)")
     if host_port:
         _assert_host_loopback_port_free(host_port)
     return CreatedNewDockerSnapshot(origin.request_id, origin.record_sha256, engine, container_id, image_id, created, tuple(entrypoint), tuple(command), digest, network_id, host_port)

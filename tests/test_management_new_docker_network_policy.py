@@ -64,3 +64,24 @@ def test_dedicated_new_bridge_rejects_ipv6_even_with_masquerading_disabled(monke
             fresh_new_docker._dedicated_network_id(name)
     else:
         assert fresh_new_docker._dedicated_network_id(name) == "a" * 64
+
+
+def test_created_scope_reinspection_ignores_mount_order_but_detects_mutated_mounts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Docker may reorder bind mounts, never change their contents."""
+    container_id = "a" * 64
+    mount_a = {"Type": "bind", "Source": "/safe/a", "Destination": "/safe/a", "RW": True}
+    mount_b = {"Type": "bind", "Source": "/safe/b", "Destination": "/safe/b", "RW": False}
+    mounts = [[mount_a, mount_b], [mount_b, mount_a], [mount_b, {**mount_a, "RW": False}]]
+
+    def fake_run(command: Sequence[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert command[:5] == ["docker", "inspect", "--type", "container", "--format"]
+        assert command[-1] == container_id
+        fields: list[object] = [None] * len(fresh_new_docker._FIELDS)
+        fields[0] = container_id
+        fields[fresh_new_docker._FIELDS.index(".Mounts")] = mounts.pop(0)
+        return subprocess.CompletedProcess(command, 0, "\\n".join(json.dumps(field) for field in fields), "")
+
+    monkeypatch.setattr(fresh_new_docker.subprocess, "run", fake_run)
+    first = fresh_new_docker._docker_created_fields(container_id)
+    assert fresh_new_docker._docker_created_fields(container_id) == first
+    assert fresh_new_docker._docker_created_fields(container_id) != first
