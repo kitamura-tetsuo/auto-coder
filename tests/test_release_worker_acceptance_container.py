@@ -104,7 +104,7 @@ def _ready(client: WorkerNetworkClient, source_sha: str) -> dict[str, object] | 
 
 
 @contextmanager
-def _installed_release(system: _SmokeSystem, root: Path, scenario: str, *, fail_candidate: bool = False, reconstruct_supervisor: bool = False) -> Iterator[_InstalledRelease]:
+def _installed_release(system: _SmokeSystem, root: Path, scenario: str, *, fail_candidate: bool = False, reconstruct_supervisor: bool = False, hold_terminal_exit: bool = False) -> Iterator[_InstalledRelease]:
     """Independently install both release versions, then start the prior one."""
     image = _image()
     source = Path(os.environ.get("GITHUB_WORKSPACE", str(Path(__file__).parents[1]))).resolve()
@@ -187,6 +187,10 @@ def _installed_release(system: _SmokeSystem, root: Path, scenario: str, *, fail_
             environment["AUTO_CODER_FIXTURE_FAIL_STAGED_ONCE"] = "1"
         if reconstruct_supervisor:
             environment["AUTO_CODER_TEST_RECONSTRUCT_SUPERVISOR"] = "1"
+        if hold_terminal_exit:
+            environment["AUTO_CODER_TEST_HOLD_INSTALLED_TERMINAL"] = "1"
+            (runtime / "fixture-hold-selected-runtime").write_text(str(previous["environment_path"]), encoding="utf-8")
+            (runtime / "fixture-hold-terminal-exit").write_text("hold after actual terminal receipt", encoding="utf-8")
         launch = ["run", "-d", "--rm", "--name", name, "--network", system.network, "--ip", address, "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--user", host_user, "--entrypoint", "python"]
         for host, guest, mode in ((runtime, "/runtime", ""), (workspace, "/workspace", ""), (routing, "/routing", ""), (fixtures, "/fixtures", "ro"), (trust, "/ci-trust", "ro"), (source, "/source", "ro")):
             launch.extend(["-v", f"{host}:{guest}" + (f":{mode}" if mode else "")])
@@ -275,9 +279,14 @@ def test_installed_release_rejects_later_same_sha_selection_after_staging_before
     _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=False, supersede_after_stage=True)
 
 
-def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch, *, fail_candidate: bool, lose_start_reconstruct: bool = False, supersede_after_stage: bool = False) -> None:
-    assert not (lose_start_reconstruct and supersede_after_stage)
-    prefix = "release-superseded-" if supersede_after_stage else "release-lost-start-" if lose_start_reconstruct else "release-failed-candidate-" if fail_candidate else "release-installed-join-"
+@pytest.mark.timeout(2400)
+def test_installed_release_genuine_terminal_receipt_does_not_bypass_old_os_lifetime(real_boundary, tmp_path: Path, monkeypatch, _use_real_commands: None, _use_real_sleep: None) -> None:
+    _exercise_installed_release_join(real_boundary, tmp_path, monkeypatch, fail_candidate=False, hold_terminal_exit=True)
+
+
+def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch, *, fail_candidate: bool, lose_start_reconstruct: bool = False, supersede_after_stage: bool = False, hold_terminal_exit: bool = False) -> None:
+    assert sum((fail_candidate, lose_start_reconstruct, supersede_after_stage, hold_terminal_exit)) <= 1
+    prefix = "release-held-terminal-" if hold_terminal_exit else "release-superseded-" if supersede_after_stage else "release-lost-start-" if lose_start_reconstruct else "release-failed-candidate-" if fail_candidate else "release-installed-join-"
     scenario = prefix + uuid.uuid4().hex[:12]
     with tempfile.TemporaryDirectory(prefix="release-join-", dir=tmp_path) as directory:
         root = Path(directory)
@@ -289,7 +298,7 @@ def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch,
             service = system.app.state.management_runtime
             system.http.portal.call(service.stop_monitor)
             system.http.portal.call(service.dispatcher.stop)
-            with _installed_release(system, root / "release", scenario, fail_candidate=fail_candidate, reconstruct_supervisor=lose_start_reconstruct) as release, _source_http(system.remote) as endpoint:
+            with _installed_release(system, root / "release", scenario, fail_candidate=fail_candidate, reconstruct_supervisor=lose_start_reconstruct, hold_terminal_exit=hold_terminal_exit) as release, _source_http(system.remote) as endpoint:
 
                 @contextmanager
                 def source_http_client(**_kwargs):
@@ -417,6 +426,23 @@ def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch,
                     competing = _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing"})
                     assert competing["status"] == "BUSY" and competing["operation_id"] == operation_id
 
+                    if hold_terminal_exit:
+                        hold_path = release.runtime / "fixture-hold-terminal-exit"
+                        _wait_for(lambda: (release.runtime / "fixture-terminal-exit-held").exists(), timeout=180)
+                        terminal_while_alive = json.loads((release.runtime / "last-terminal.json").read_text())
+                        assert all(terminal_while_alive[key] == value for key, value in {"process_run_id": old["process_run_id"], "deployment_generation": old["deployment_generation"], "lifecycle_state": "stopped", "is_graceful_ready": True, "unsettled_count": 0}.items())
+                        held = release.client.inspect_supervisor()
+                        assert held.data["alive"] is True and held.data["worker"]["process_run_id"] == old["process_run_id"]
+                        assert len((release.runtime / "fixture-launches.jsonl").read_text().splitlines()) == 1
+                        held_posts = (release.runtime / "fixture-posts").read_bytes()
+                        time.sleep(5)
+                        assert (release.runtime / "fixture-posts").read_bytes() == held_posts
+                        assert len((release.runtime / "fixture-launches.jsonl").read_text().splitlines()) == 1
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "selected_git_sha": system.revisions[1]})["status"] == "CONFLICT"
+                        assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing-held-terminal"})["status"] == "BUSY"
+                        hold_path.unlink()
+
                     if supersede_after_stage:
 
                         def staged_before_drain():
@@ -429,7 +455,8 @@ def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch,
                         stopped_at_boundary = _wait_for(staged_before_drain, timeout=150)
                         assert stopped_at_boundary["staged"]["source_sha"] == system.revisions[0]
                         assert "drain" not in stopped_at_boundary["steps"]
-                        assert not (release.runtime / "fixture-posts").exists()
+                        preparer_posts = (release.runtime / "fixture-posts").read_bytes()
+                        assert preparer_posts == b"post\n", "only signed PREPARE may have been dispatched"
                         assert _ready(release.client, system.revisions[1]) is not None
                         next_promotion = _call(
                             http,
@@ -443,7 +470,7 @@ def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch,
                         postpone_drain["value"] = False
                         superseded = _wait_for(lambda: result if (result := _call(http, system.bearer, "auto_coder_operation_get", {"target_id": "release-worker", "operation_id": operation_id}))["status"] == "SUPERSEDED" else None, timeout=50)
                         assert superseded["reason"] == "original_release_operation_superseded"
-                        assert not (release.runtime / "fixture-posts").exists(), "superseded selection must not send a replacement effect"
+                        assert (release.runtime / "fixture-posts").read_bytes() == preparer_posts, "superseded selection must not send a replacement effect"
                         assert len((release.runtime / "fixture-launches.jsonl").read_text().splitlines()) == 1
                         assert _ready(release.client, system.revisions[1]) is not None
                         assert _call(http, system.bearer, "auto_coder_deploy_release_source", arguments)["operation_id"] == operation_id
@@ -459,7 +486,7 @@ def _exercise_installed_release_join(real_boundary, tmp_path: Path, monkeypatch,
                         assert all(item == operation_id for item in denied_drain_saves)
                         not_durable = journal.lifecycle_snapshot(operation_id)
                         assert not_durable is not None and "drain" not in not_durable[1]["steps"]
-                        assert not (release.runtime / "fixture-posts").exists(), "no signed effect before confirmed durable boundary"
+                        assert (release.runtime / "fixture-posts").read_bytes() == b"post\n", "no signed replacement effect before confirmed durable boundary"
                         assert len((release.runtime / "fixture-launches.jsonl").read_text().splitlines()) == 1
                         assert _ready(release.client, system.revisions[1]) is not None
                         assert _call(http, system.bearer, "auto_coder_deploy_release_source", {**arguments, "idempotency_key": "competing-undurable"})["status"] == "BUSY"
