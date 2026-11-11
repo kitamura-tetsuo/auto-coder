@@ -54,7 +54,7 @@ def test_production_entrypoint_refuses_operator_scope_as_authority(tmp_path: Pat
     source = ROOT / "src/auto_coder/management/bootstrap_supervisor.py"
     original = source.read_bytes()
     report = _command(tmp_path, _scope((source,), profile))
-    assert report["schema"] == "current-containment-prerequisites-v4"
+    assert report["schema"] == "current-containment-prerequisites-v5"
     assert report["scope"]["profile"] == profile
     assert report["files"][0]["sha256"] == hashlib.sha256(original).hexdigest()
     assert report["files"][0]["inode"] == source.stat().st_ino
@@ -230,6 +230,8 @@ def test_unit_boundary_file_race_is_not_silently_accepted(tmp_path: Path, monkey
 
 def _engine_boundary(monkeypatch: pytest.MonkeyPatch) -> tuple[dict, list[tuple[str, ...]]]:
     """Unit protocol fixture, explicitly not Docker/profile acceptance evidence."""
+    watcher = observation.WatcherSystemdObservation("auto-coder-management-proxy-watch.service", "/etc/systemd/system/auto-coder-management-proxy-watch.service", "masked", "masked", "inactive", "dead", 0, False, 1, 2, 3, 0, 0o777, "/dev/null", True)
+    monkeypatch.setattr(observation, "observe_watcher_unit", lambda: watcher)
     objects = {
         key
         * 64: {

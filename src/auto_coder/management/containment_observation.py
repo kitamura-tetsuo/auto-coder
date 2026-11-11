@@ -24,6 +24,7 @@ from .archived_exclusions import unique_pairs
 from .containment_enrollment import EnrollmentObservation, EnrollmentUnavailable, observe_approved_enrollment
 from .fresh_host_observation import _validate_host_proc_profile
 from .proc_observation import ProcessObservation, observe_process
+from .systemd_watcher_observation import WatcherSystemdObservation, observe_watcher_unit
 
 PROFILES = ("ordinary-v1", "quarantined-original-v1")
 _LIMIT = 1024 * 1024
@@ -115,6 +116,7 @@ class PrerequisiteReport:
     processes: tuple[ProcessObservation, ...] = ()
     resource_limit: str = "All read descriptors are released before return; no namespace pin or owner fence is retained."
     approved_enrollment: EnrollmentObservation | None = None
+    watcher_systemd: WatcherSystemdObservation | None = None
 
 
 def _digest(value: object) -> str:
@@ -247,6 +249,13 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
         )
     if scope.profile == "quarantined-original-v1":
         unavailable.append(Unavailable("quarantined-original-profile", "Exact original bootstrap file mounts, no-new-privileges setting and support-mount purpose/source/destination/read-only execution binding are not registered; replacement admission is unchanged."))
+    watcher_systemd = None
+    try:
+        watcher_systemd = observe_watcher_unit()
+        if not watcher_systemd.inhibited:
+            unavailable.append(Unavailable("watcher-systemd", "The installed management proxy watcher unit is not independently confirmed masked, inactive and free of pending daemon-reload changes."))
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        unavailable.append(Unavailable("watcher-systemd", "The fixed installed management proxy watcher unit cannot be independently observed (" + type(exc).__name__ + ")."))
     boot_id, start_token = "", ""
     try:
         boot_id = str(uuid.UUID(Path("/proc/sys/kernel/random/boot_id").read_text().strip()))
@@ -304,7 +313,24 @@ def observe(scope: ProposedScope) -> PrerequisiteReport:
         process = process_by_pid[container.pid]
         if process.unavailable or not process.start_token or not process.boot_id or (boot_id and process.boot_id != boot_id):
             unavailable.append(Unavailable("docker-process:" + container.container_id, "Docker-selected live process could not be independently correlated to an inspectable current Linux lifetime."))
-    return PrerequisiteReport("current-containment-prerequisites-v4", "unavailable", scope, _digest(asdict(scope)), str(uuid.uuid4()), boot_id, os.getpid(), start_token, started, time.monotonic_ns(), tuple(files), docker, tuple(unavailable), processes, approved_enrollment=approved_enrollment)
+    return PrerequisiteReport(
+        "current-containment-prerequisites-v5",
+        "unavailable",
+        scope,
+        _digest(asdict(scope)),
+        str(uuid.uuid4()),
+        boot_id,
+        os.getpid(),
+        start_token,
+        started,
+        time.monotonic_ns(),
+        tuple(files),
+        docker,
+        tuple(unavailable),
+        processes,
+        approved_enrollment=approved_enrollment,
+        watcher_systemd=watcher_systemd,
+    )
 
 
 def verify(scope: ProposedScope, previous: object) -> PrerequisiteReport:
@@ -315,7 +341,7 @@ def verify(scope: ProposedScope, previous: object) -> PrerequisiteReport:
         reasons.append(Unavailable("saved-report", "Unsupported or authorizing saved report; no containment success schema exists."))
     else:
         current_value = json.loads(json.dumps(asdict(current)))
-        for field in ("scope", "scope_sha256", "boot_id", "files", "docker", "processes", "approved_enrollment", "unavailable", "resource_limit"):
+        for field in ("scope", "scope_sha256", "boot_id", "files", "docker", "processes", "approved_enrollment", "watcher_systemd", "unavailable", "resource_limit"):
             if previous[field] != current_value[field]:
                 reasons.append(Unavailable("saved-report:" + field, "Independent current observation differs from saved report."))
     return replace(current, unavailable=tuple(reasons))

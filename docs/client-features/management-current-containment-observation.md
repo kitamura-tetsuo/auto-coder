@@ -52,7 +52,7 @@ python -m auto_coder.management.containment_observation verify \
 ```
 
 Both commands return exit status **2**, even if every available sub-observation
-matches. Output is JSON. `current-containment-prerequisites-v4` includes the full
+matches. Output is JSON. `current-containment-prerequisites-v5` includes the full
 proposed scope and its hash, a new observation UUID, current boot ID, observer PID
 and process-start token, monotonic observation interval, observed file identities,
 available Docker identities and explicit unavailable authorities/reasons.
@@ -69,9 +69,10 @@ Two independent complete engine reads must agree. This inventory includes every
 listed container; it does **not** establish deployment enrollment, close launch
 routes or prove task absence.
 
-The verifier independently reads the selected current files, Docker facts and
-selected Linux process facts; it never accepts a saved success assertion. It
-compares scope, boot, file, Docker, process and resource-limit observations,
+The verifier independently reads the selected current files, Docker facts,
+selected Linux process facts and the fixed watcher systemd route; it never
+accepts a saved success assertion. It compares scope, boot, file, Docker,
+process, watcher and resource-limit observations,
 including all prior explicit unavailable reasons. Removing or replacing missing
 prerequisite reasons in a saved report is detected even though the reobserved
 result always remains unavailable. Its fresh process and observation identities
@@ -89,9 +90,9 @@ separately approved present-time enrollment and independent original installed
 source/controller/route authority. Merely naming an enrollment or supplying
 operator lists is insufficient. No enrollment or controller mutation is performed here.
 
-### Protected enrollment component (v4)
+### Protected enrollment component (v5; unchanged from v4)
 
-The v4 report optionally includes `approved_enrollment`, a bounded component
+The v5 report optionally includes `approved_enrollment`, a bounded component
 readback from the fixed trusted-local path
 `/var/lib/auto-coder/approved-containment-enrollments/<enrollment-id>.json`.
 The observer never writes to that path. Initial-namespace host root (matching
@@ -151,6 +152,34 @@ closed profile. The operator must ensure that the host, the fixed approval
 directory, the test image and temporary Docker/localhost-port effects are
 separately authorized before running this probe.
 
+### Fixed watcher systemd route component (v5)
+
+The v5 report also exposes a bounded `watcher_systemd` fact for the exact
+`auto-coder-management-proxy-watch.service` installed path. The observer runs
+`systemctl show` twice and reads the filesystem unit identity and symbolic link
+twice. The component reports inhibition only if PID 1 identifies the unit as
+`masked`, `inactive`, `dead`, PID 0, `NeedDaemonReload=no` and its fixed
+fragment path is a root-owned link to `/dev/null`. A changed status or link
+identity during observation refuses. A missing, unmasked, enabled, running,
+stale or uninspectable unit adds a `watcher-systemd` unavailable reason. The
+separate consumer independently repeats these reads, compares the complete
+watcher fact and refuses replay after any observed state/identity change.
+
+This is **one** current installed restarter inhibition fact, not the complete
+set of relevant watcher/reconcile, service/timer/socket, script, Docker or
+repair routes. Even a verified mask does not remove the independent
+`ordinary-route-closure` refusal or establish positive current containment.
+The observer never runs `systemctl disable`, `mask`, `daemon-reload`, or any
+process lifecycle command. Those remain separately authorized host-operator
+actions, outside REQ-405 observer behavior.
+
+For deterministic protocol, mask identity, race and separate-consumer refusal
+regressions, run:
+
+```sh
+.venv/bin/python -m pytest tests/test_management_systemd_watcher_observation.py tests/test_management_containment_observation.py -m 'not supervisor_integration'
+```
+
 The installed route inventory must independently cover the actual watcher and
 explicit reconciliation, services/timers, socket activation, Docker restart
 policies, configured local and remote scripts, repair/recreate routes, and
@@ -203,8 +232,9 @@ the corresponding production trace-to-view obligations.
 
 ## Complete current Docker inventory sub-observation
 
-The `current-containment-prerequisites-v4` report replaces v1/v2/v3. Older saved reports
-are refused; they did not bind the complete engine inventory. `docker` now includes
+The `current-containment-prerequisites-v5` report replaces v1/v2/v3/v4. Earlier
+reports are refused; v1/v2 did not bind the complete engine inventory, and v4
+did not bind the current fixed watcher systemd route. `docker` includes
 **every** container returned by unfiltered `docker container ls --all --quiet
 --no-trunc`, sorted by full ID, rather than only the proposed manager/proxy pair.
 Both selected objects must occur in that inventory. Each object records the engine,
@@ -274,7 +304,7 @@ Docker/controller acceptance remains unverified in this environment, and Issue
 
 ## Current Linux process observation component (bounded REQ-402/REQ-406 work)
 
-The v4 prerequisite report retains `processes`: current `/proc` observations for
+The v5 prerequisite report retains `processes`: current `/proc` observations for
 positive PIDs in the Docker inventory. A stopped object's PID 0 supplies no task
 absence evidence. Docker PIDs only select proposed current processes; this does
 not correlate them to original manager/proxy lifetimes or discover escaped tasks.
@@ -293,7 +323,7 @@ Both commands always return status 2 and `status: unavailable` under the separat
 saved objects never choose its scope. The consumer reopens procfs and pidfds and
 compares fresh complete process facts, including boot ID and task start tokens,
 without trusting signatures, saved success claims or numeric PID stability.
-The full v4 verifier likewise compares newly read `processes`; v1/v2/v3 reports are
+The full v5 verifier likewise compares newly read `processes`; earlier reports are
 refused as unsupported rather than upgraded into authority.
 
 Each selected process records every currently enumerated thread's TID, start
