@@ -67,7 +67,7 @@ operator-selected stage revision, exact source SHA and selected CI run/attempt/t
 ref and OID, configured beta/release targets, original management operation IDs,
 installed runtime IDs and generations, acceptance ref/OID, promotion
 operation/run/catalog ref/OID, stable original idempotency key, and
-`pending_effect_state`, immutable failure signature and its recovery count.
+`pending_effect_state`, exact `pending_operation_id`, immutable failure signature and its recovery count.
 This is a **reminder**, never a grant, proof of an effect or a current worker
 observation. Beta/full work without the original task, repository, Issue/PR
 identity or stage revision is BLOCKED. These retained values must be compared
@@ -80,7 +80,10 @@ or new idempotency key after an unknown send.
 `SENT_UNKNOWN` and `NEEDS_ATTENTION` preserve the original operation and
 the per-target lane. Reconcile only by the exact original operation ID
 already retained in the checkpoint and uniquely bound to its configured
-beta/release target (release promotion reads use the release target). A
+beta/release target (release promotion reads use the release target). The
+pending operation ID is stored separately from all completed operation IDs:
+when a pending effect exists, CLI readback MUST select that exact ID, even if
+another recorded operation belongs to the same target. A
 different target, ambiguous reused operation ID, unbound target or
 unrecognized nonempty pending-effect state fails closed before transport.
 The same unique original-operation/target binding is required for any optional

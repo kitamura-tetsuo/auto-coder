@@ -71,6 +71,7 @@ class DotCheckpoint:
     release_generation: str = ""
     idempotency_key: str = ""
     pending_effect_state: str = ""
+    pending_operation_id: str = ""
     failure_signature: str = ""
     recovery_attempts: int = 0
 
@@ -129,7 +130,29 @@ def load_checkpoint(path: Path | None) -> DotCheckpoint:
         raise ValueError("recovery attempt requires its immutable failure signature")
     if raw["pending_effect_state"] not in UNKNOWN_EFFECTS | {""}:
         raise ValueError("unsupported pending effect state: refuse unknown-operation reconciliation")
+    if raw["pending_effect_state"]:
+        if not raw["pending_operation_id"]:
+            raise ValueError("pending effect requires its exact original operation ID")
+        _original_operation_target(DotCheckpoint(**raw), raw["pending_operation_id"])
+    elif raw["pending_operation_id"]:
+        raise ValueError("pending original operation ID requires a pending effect state")
     return DotCheckpoint(**raw)
+
+
+def _original_operation_target(checkpoint: DotCheckpoint, operation_id: str) -> str:
+    """Bind a saved operation to exactly one original target, never a caller guess."""
+    bindings = [
+        target
+        for saved_id, target in (
+            (checkpoint.beta_operation_id, checkpoint.beta_target),
+            (checkpoint.promotion_operation_id, checkpoint.release_target),
+            (checkpoint.release_operation_id, checkpoint.release_target),
+        )
+        if saved_id == operation_id
+    ]
+    if len(bindings) != 1 or not bindings[0]:
+        raise ValueError("original operation ID must be uniquely bound to its configured target")
+    return bindings[0]
 
 
 def required_next_observation(checkpoint: DotCheckpoint) -> RolloutReport:
@@ -137,6 +160,12 @@ def required_next_observation(checkpoint: DotCheckpoint) -> RolloutReport:
     if checkpoint.pending_effect_state:
         if checkpoint.pending_effect_state not in UNKNOWN_EFFECTS:
             return RolloutReport("BLOCKED", checkpoint.stage, "Unsupported pending effect state; never assume no original effect")
+        if not checkpoint.pending_operation_id:
+            return RolloutReport("BLOCKED", checkpoint.stage, "Pending effect lacks its exact original operation ID")
+        try:
+            _original_operation_target(checkpoint, checkpoint.pending_operation_id)
+        except ValueError:
+            return RolloutReport("BLOCKED", checkpoint.stage, "Pending original operation ID is not uniquely bound to its target")
         return RolloutReport("BLOCKED", checkpoint.stage, "Reconcile the original unknown effect by original operation ID; never allocate another key")
     if checkpoint.recovery_attempts == 1 and checkpoint.failure_signature:
         return RolloutReport("BLOCKED", checkpoint.stage, "The unchanged failure signature has exhausted its one permitted recovery attempt")
@@ -185,22 +214,15 @@ def read_plan(checkpoint: DotCheckpoint, target: str, operation_id: str) -> tupl
         raise ValueError("invalid original operation ID")
     if checkpoint.pending_effect_state and checkpoint.pending_effect_state not in UNKNOWN_EFFECTS:
         raise ValueError("unsupported pending effect state")
-    if checkpoint.pending_effect_state in UNKNOWN_EFFECTS and not operation_id:
-        raise ValueError("unknown original effect requires its original operation ID")
-    if operation_id:
-        bindings = [
-            configured_target
-            for original_id, configured_target in (
-                (checkpoint.beta_operation_id, checkpoint.beta_target),
-                (checkpoint.promotion_operation_id, checkpoint.release_target),
-                (checkpoint.release_operation_id, checkpoint.release_target),
-            )
-            if original_id == operation_id
-        ]
-        if not bindings:
-            raise ValueError("requested original operation ID must be a checkpoint original operation ID")
-        if len(bindings) != 1 or not bindings[0] or bindings[0] != target:
-            raise ValueError("original operation ID must be uniquely bound to its configured target")
+    if checkpoint.pending_effect_state in UNKNOWN_EFFECTS:
+        if not checkpoint.pending_operation_id or not operation_id:
+            raise ValueError("unknown original effect requires its original operation ID")
+        if operation_id != checkpoint.pending_operation_id:
+            raise ValueError("pending original operation ID cannot be replaced by another saved operation")
+    if checkpoint.pending_operation_id and not checkpoint.pending_effect_state:
+        raise ValueError("pending original operation ID without unresolved effect state")
+    if operation_id and _original_operation_target(checkpoint, operation_id) != target:
+        raise ValueError("original operation ID must be uniquely bound to its configured target")
     original_read: tuple[str, dict[str, object]] = ("auto_coder_operation_get", {"target_id": target, "operation_id": operation_id})
     status_read: tuple[str, dict[str, object]] = ("auto_coder_status", {"target_id": target})
     deployment_read: tuple[str, dict[str, object]] = ("auto_coder_deployment_status", {"target_id": target})

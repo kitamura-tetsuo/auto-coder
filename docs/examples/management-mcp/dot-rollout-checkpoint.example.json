@@ -27,6 +27,7 @@
   "release_generation": "",
   "idempotency_key": "",
   "pending_effect_state": "",
+  "pending_operation_id": "",
   "failure_signature": "",
   "recovery_attempts": 0
 }
